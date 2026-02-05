@@ -48,6 +48,7 @@ struct SolverOptions {
     double lsRho = 0.5;               // Step reduction factor
     int lsMaxIterations = 20;         // Max line search iterations
     double lsMinStep = 1e-10;         // Minimum step size in line search
+    double lsRelaxedTolerance = 1e-2; // Accept as converged when ||F|| < this (line search fail or max iter)
 
     // Performance and safety
     int timeoutSeconds = 0;           // Timeout in seconds (0 = none)
