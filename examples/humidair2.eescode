@@ -34,7 +34,7 @@ RH_out=0.60
 epsilon_c=0.8
 epsilon_c=(w_out-w_su)/(w_out-w_c) "pour calculer w_c"
 w_out=humrat(airH2O,T=T_out,R=RH_out,P=P_in)
-T_c=temperature(airH2O,P=P_in,w=w_c,R=1)
+T_c=dewpoint(airH2O,P=P_in,w=w_c,T=T_out)
 epsilon_c=(T_out-T_ex_bat)/(T_out-T_c)
 
 	"post chauffe"

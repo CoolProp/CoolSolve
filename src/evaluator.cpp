@@ -585,6 +585,16 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                                     std::to_string(inputs.size()));
         }
         
+        // Check for incompatible water-content inputs (CoolProp limitation)
+        // R (relative humidity) and W (humidity ratio) cannot both be specified
+        bool hasR = inputs.find("r") != inputs.end();
+        bool hasW = inputs.find("w") != inputs.end();
+        if (hasR && hasW) {
+            throw std::runtime_error(
+                "CoolProp HumidAir cannot accept both R (relative humidity) and W (humidity ratio) as inputs. "
+                "If you need T at R=1 with given W, use dewpoint() instead: T_c = dewpoint(airH2O, P=..., W=..., T=T_ref)");
+        }
+        
         std::vector<std::string> inputNamesList;
         std::vector<ADValue> inputValues;
         for (const auto& [name, val] : inputs) {
