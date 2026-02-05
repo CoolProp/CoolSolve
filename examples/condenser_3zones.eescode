@@ -79,7 +79,7 @@ Procedure two_phase_CD(cf$,R$,t_cf_su,t_cf_ex,t_cd,M_dot_r,M_dot_cf,alpha,C_cf,C
 t_bar_cf=(t_cf_su+t_cf_ex)/2
 
 "Cold fluid properties"
-cp_cf=specheat(cf$,T=t_bar_cf,P=1)
+cp_cf=specheat(cf$,T=t_bar_cf,P=101325)
 
 " Thermal resistances "
 R_cf:=C_cf*(M_dot_cf)^(-n_cf)
