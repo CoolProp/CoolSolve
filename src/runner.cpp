@@ -16,6 +16,11 @@ CoolSolveRunner::CoolSolveRunner(const std::string& inputFile)
     : inputFile_(inputFile) {}
 
 bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
+    // Pay the CoolProp first-call cost up front so that later timings
+    // (especially variable inference) are not distorted by library
+    // initialization overhead.
+    timing_.coolprop_warmup_time_ms = warmupCoolProp();
+
     auto pipeline_start = std::chrono::high_resolution_clock::now();
     
     // 1. Parse
@@ -325,12 +330,16 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     prof << "# Profiling Report\n\n";
     prof << "## Pipeline Timing\n\n";
     prof << "| Stage | Time (ms) |\n|---|---|\n";
+    if (timing_.coolprop_warmup_time_ms > 0.0) {
+        prof << "| CoolProp warmup (first PropsSI) | " << timing_.coolprop_warmup_time_ms << " |\n";
+    }
     prof << "| Parse | " << timing_.parse_time_ms << " |\n";
     prof << "| IR Build | " << timing_.ir_time_ms << " |\n";
     prof << "| Variable Inference | " << timing_.infer_time_ms << " |\n";
     prof << "| Structural Analysis | " << timing_.analysis_time_ms << " |\n";
     prof << "| Solver | " << timing_.solve_time_ms << " |\n";
-    prof << "| **Total** | **" << timing_.total_time_ms << "** |\n";
+    double end_to_end_ms = timing_.total_time_ms + timing_.coolprop_warmup_time_ms;
+    prof << "| **Total** | **" << end_to_end_ms << "** |\n";
     
     prof << "\n## CoolProp Statistics\n\n";
     prof << "```\n" << coolsolve::getProfilingStatsString() << "\n```\n";

@@ -18,6 +18,18 @@ namespace coolsolve {
 void resetProfilingStats();
 std::string getProfilingStatsString();
 
+/**
+ * @brief Perform a one-time CoolProp warmup call and return its duration.
+ *
+ * This triggers CoolProp's internal initialization (fluid list loading, etc.)
+ * so that subsequent property evaluations are not penalized by the first-call
+ * overhead. The warmup is safe to call multiple times; only the first call
+ * performs work and records timing.
+ *
+ * @return Warmup duration in milliseconds (0.0 if already initialized or on failure).
+ */
+double warmupCoolProp();
+
 // ============================================================================
 // CoolProp Configuration API
 // ============================================================================

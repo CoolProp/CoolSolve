@@ -29,6 +29,8 @@ struct ProfilingStats {
     double hapropsSI_time_ms = 0.0;
     double block_eval_time_ms = 0.0;
     double expr_eval_time_ms = 0.0;
+    double coolprop_warmup_time_ms = 0.0;
+    bool coolprop_warmup_performed = false;
     
     void reset() {
         propsSI_calls = 0;
@@ -39,6 +41,8 @@ struct ProfilingStats {
         hapropsSI_time_ms = 0.0;
         block_eval_time_ms = 0.0;
         expr_eval_time_ms = 0.0;
+        coolprop_warmup_time_ms = 0.0;
+        coolprop_warmup_performed = false;
     }
     
     std::string toString() const {
@@ -56,12 +60,42 @@ struct ProfilingStats {
         oss << "Expression evaluations: " << expression_evaluations << "\n";
         oss << "Total CoolProp time: " << (propsSI_time_ms + hapropsSI_time_ms) << " ms\n";
         oss << "Non-CoolProp block eval time: " << (block_eval_time_ms - propsSI_time_ms - hapropsSI_time_ms) << " ms\n";
+        if (coolprop_warmup_performed) {
+            oss << "CoolProp warmup (first PropsSI) time: " << coolprop_warmup_time_ms << " ms\n";
+        }
         oss << "======================================\n\n";
         return oss.str();
     }
 };
 
 static ProfilingStats g_profilingStats;
+
+// One-time CoolProp warmup to pay first-call cost up front.
+double warmupCoolProp() {
+    if (g_profilingStats.coolprop_warmup_performed) {
+        return 0.0;
+    }
+
+    using clock = std::chrono::high_resolution_clock;
+    auto start = clock::now();
+    try {
+        // A simple, representative PropsSI call that forces CoolProp
+        // to load its fluid tables and internal data structures.
+        // We intentionally do NOT use timedPropsSI here so that the
+        // warmup cost is reported separately from normal PropsSI stats.
+        (void)CoolProp::PropsSI("H", "T", 300.0, "P", 101325.0, "Water");
+    } catch (...) {
+        // If warmup fails, we still mark it as performed to avoid
+        // repeatedly paying the cost on every run attempt.
+    }
+    auto end = clock::now();
+
+    g_profilingStats.coolprop_warmup_performed = true;
+    g_profilingStats.coolprop_warmup_time_ms =
+        std::chrono::duration<double, std::milli>(end - start).count();
+
+    return g_profilingStats.coolprop_warmup_time_ms;
+}
 
 // Wrapper for timed PropsSI calls
 static double timedPropsSI(const std::string& output, const std::string& name1, double val1,

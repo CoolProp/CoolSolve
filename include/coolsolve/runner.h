@@ -20,6 +20,7 @@ public:
     void generateDebugOutput(const std::string& debugDir, const std::string& sourceCode);
     
     struct PipelineTiming {
+        double coolprop_warmup_time_ms = 0.0;
         double parse_time_ms = 0.0;
         double ir_time_ms = 0.0;
         double infer_time_ms = 0.0;
