@@ -1,0 +1,79 @@
+"VL050415
+Répétition 8, exercice 5
+
+5.	Un fabricant de compresseurs scroll pour pompes à chaleur nous fournit les performances suivantes relatives à un point de fonctionnement de son compresseur :
+*	Température d'évaporation : 0 °C, surchauffe à l'aspiration : 5 K
+*	Température de condensation : 50 °C, sous - refroidissement : 4 K
+*	Puissance calorifique : 6.30 kW
+*	Puissance absorbée : 1.81 kW
+*	Puissance frigorifique : 4.60 kW
+*	Débit massique : 30.9 g/s et volume balayé : 5.92 m3/h
+*	Réfrigérant : R407C
+
+Vérifier que ces données sont cohérentes et calculer l'efficacité isentropique globale du compresseur. 
+
+"
+
+T_ev=0
+T_cd=50
+Q_dot_cd=6.3E3
+Q_dot_ev=4.6E3
+W_dot_el=1.81E3
+{COP=3.48}
+COP=Q_dot_cd/W_dot_el "on retrouve tout de suite la valeur du COP annoncée par le constructeur"
+DELTA_T_oh=5
+DELTA_T_sc=4
+{M_dot=30.9E-3} "on peut choisire de recalculer le débit prédit par le constructeur et le volume balayé V_dot_m3h"
+{V_dot_m3h=5.92}
+
+"entrée compresseur:"
+
+T_1=T_ev+DELTA_T_oh
+P_1=PRESSURE(R407C,T=T_ev,x=1)
+s_1=entropy(R407C,P=P_1,T=T_1)
+rho_1=density(R407C,P=P_1,T=T_1)
+
+"entrée condenseur=sortie compresseur"
+
+P_2=PRESSURE(R407C,T=T_cd,x=1)
+Q_dot_cd=M_dot*(h_2-h_3)
+T_2=temperature(R407C,P=P_2,h=h_2)
+h_2_s=enthalpy(R407C,P=P_2,s=s_1)
+h_3=enthalpy(R407C,P=P_3,T=T_3)
+
+epsilon_s_cp=(h_2_s-h_1)/(h_2-h_1)
+W_dot=M_dot*(h_2-h_1)
+W_dot_s=M_dot*(h_2_s-h_1)
+eta_el=W_dot/W_dot_el
+epsilon_s_cp_glob=W_dot_s/W_dot_el
+
+"sortie condenseur"
+
+T_3=T_cd-DELTA_T_sc
+P_3=PRESSURE(R407C,T=T_cd,x=0)
+
+"entrée évaporteur"
+
+h_4=h_3
+h_1=enthalpy(R407C,P=P_1,T=T_1)
+P_4=PRESSURE(R407C,T=T_ev,h=h_4)
+Q_dot_ev{_bis}=M_dot*(h_1-h_4)
+
+"calcul cylindrée"
+
+M_dot=V_dot*rho_1 "[kg/s]" "le compresseur est une machine volumétrique: pour une vitesse de rotation donnée, il aspire toujours le même débit volumique V_dot "
+V_dot_m3h=3600*V_dot "[m3/h]"
+
+P[1]=P_1
+h[1]=h_1
+
+P[2]=P_2
+h[2]=h_2
+
+P[3]=P_3
+h[3]=h_3
+
+P[4]=P_4
+h[4]=h_4
+
+"on retrouve des valeurs du débit massique et du volume balayé proches de celle annocées par le constructeur"{$ID$ #202: Laboratoire de Thermodynamique, U. de Liege}

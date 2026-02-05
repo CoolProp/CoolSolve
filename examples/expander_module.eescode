@@ -1,0 +1,129 @@
+module expander(fluid$,V_s_cp,r_v_in,A_leak,AU_su_exp_n,AU_ex_exp_n,M_dot_r_nom,T_m,AU_amb_exp,d_thr_su,M_dot_r_exp,N_rot_exp,t_amb_exp,t_amb,p_r_ex_exp,t_r_su_exp,t_r_ex_exp,p_r_su_exp,W_dot_sh_exp,epsilon_s_exp)
+$bookmark expander_model
+
+" Expander caracteristics"
+V_s_exp=V_s_cp/r_v_in
+
+" Supply expander"
+t_r_sat_su_exp=T_sat(fluid$,P=P_r_su_exp)
+DELTAT_oh_su_exp=T_r_su_exp-T_r_sat_su_exp
+r_p_exp=P_r_su_exp/P_r_ex_exp
+h_r_su_exp=enthalpy(fluid$,P=P_r_su_exp,T=t_r_su_exp)
+s_r_su_exp=entropy(fluid$,P=P_r_su_exp,T=t_r_su_exp)
+v_r_su_exp=volume(fluid$,P=P_r_su_exp,T=t_r_su_exp)
+
+"2.3 Supply pressure drop"
+A_thr_su=PI*d_thr_su^2/4
+h_r_su_exp=h_thr_su+C_thr_su^2/2
+V_dot_thr_su=A_thr_su*C_thr_su
+M_dot_r_exp=V_dot_thr_su/v_r_su_exp
+
+"Incompressible fluid hypothesis :"
+DELTAP_r_su_exp = C_thr_su^2/(v_r_su_exp*2)
+
+P_r_su1_exp=P_r_su_exp- DELTAP_r_su_exp
+
+" supply cooling down"
+C_dot_su_exp=M_dot_r_exp*cp_r_su_exp
+cp_r_su_exp=CP(fluid$,P=P_r_su1_exp,T=t_r_su_exp)
+NTU_su_exp=AU_su_exp/C_dot_su_exp
+AU_su_exp=AU_su_exp_n*(M_dot_r_exp/M_dot_r_nom)^0.6
+epsilon_su_exp=1-exp(-NTU_su_exp)
+Q_dot_r_wall_su_exp=epsilon_su_exp*C_dot_su_exp*(t_r_su_exp-t_wall_exp)
+Q_dot_r_wall_su_exp=C_dot_su_exp*(t_r_su_exp-t_r_su1_exp)
+h_r_su1_exp=enthalpy(fluid$,P=P_r_su1_exp,T=t_r_su1_exp)
+s_r_su1_exp=entropy(fluid$,P=P_r_su1_exp,T=t_r_su1_exp)
+v_r_su1_exp=volume(fluid$,P=P_r_su1_exp,T=t_r_su1_exp)
+
+" isentropic expansion up to the adapted pressure"
+r_v_in=v_r_in_exp/v_r_su1_exp
+P_r_in_exp=pressure(fluid$,v=v_r_in_exp,s=s_r_su1_exp)
+h_r_in_exp=enthalpy(fluid$,v=v_r_in_exp,P=P_r_in_exp)
+w_exp_1=h_r_su1_exp-h_r_in_exp
+r_p_in=P_r_su1_exp/P_r_in_exp
+
+" isochoric expansion from adapted pressure to exaust pressure"
+w_exp_2=v_r_in_exp*(P_r_in_exp-P_r_ex_exp)
+
+"2.6 total work"
+w_in_exp=w_exp_1+w_exp_2
+w_in_exp=h_r_su1_exp-h_r_ex2_exp
+
+" Power"
+W_dot_in_exp=M_dot_r_in_exp*w_in_exp
+
+" leakage flow rate"
+h_r_su1_exp=h_r_thr+C_thr^2/2
+P_r_su1_exp*v_r_su1_exp^gamma_r=P_r_thr*v_r_thr^gamma_r
+r=8314/MM_r
+MM_r=molarmass(fluid$)
+P_r_crit=P_r_su1_exp*(2/(gamma_r+1))^(gamma_r/(gamma_r-1))
+P_r_thr=P_r_crit
+h_r_thr=enthalpy(fluid$,P=P_r_thr,s=s_r_su1_exp)
+t_r_thr=temperature(fluid$,h=h_r_thr,P=P_r_thr)
+C_thr_bis=sqrt(gamma_r*r*(t_r_thr+273))
+t_r_thr_bis=t_r_su1_exp*2/(gamma_r+1)
+M_dot_r_leak_exp=A_leak*C_thr/v_r_thr
+v_r_thr=volume(fluid$,P=P_r_thr,h=h_r_thr) 
+
+" Mass flow rate"
+V_dot_s_exp=N_rot_exp/60*V_s_exp
+M_dot_r_in_exp=V_dot_s_exp/v_r_su1_exp
+M_dot_r_exp=M_dot_r_in_exp+M_dot_r_leak_exp
+
+"2.10 Mixing with leakage at exhaust"
+M_dot_r_in_exp*h_r_ex2_exp+M_dot_r_leak_exp*h_r_su1_exp=M_dot_r_exp*h_r_ex1_exp
+h_r_ex1_exp=enthalpy(fluid$,T=t_r_ex1_exp,P=P_r_ex_exp)
+
+" Exhaust cooling down"
+cp_r_ex_exp=CP(fluid$,P=P_r_ex_exp,T=t_r_ex1_exp)
+C_dot_ex_exp=M_dot_r_exp*cp_r_ex_exp
+NTU_ex_exp=AU_ex_exp/C_dot_ex_exp
+AU_ex_exp=AU_ex_exp_n*(M_dot_r_exp/M_dot_r_nom)^0.6
+epsilon_ex_exp=1-exp(-NTU_ex_exp)
+Q_dot_r_wall_ex_exp=epsilon_ex_exp*C_dot_ex_exp*(t_r_ex1_exp-t_wall_exp)
+Q_dot_r_wall_ex_exp=C_dot_ex_exp*(t_r_ex1_exp-t_r_ex_exp)
+
+" Calculated exhaust expander"
+h_r_ex_exp=enthalpy(fluid$,P=P_r_ex_exp,T=t_r_ex_exp)
+
+" Power"
+W_dot_sh_exp=W_dot_in_exp-W_dot_loss_exp
+W_dot_loss_exp=2*PI*N_rot_exp/60*T_m
+
+" Heat balance over the expander"
+Q_dot_exp_amb=AU_amb_exp*(t_wall_exp-t_amb_exp)
+Q_dot_r_wall_su_exp+Q_dot_r_wall_ex_exp+W_dot_loss_exp-Q_dot_exp_amb=0
+
+" Global isentropic effectiveness"
+W_dot_sh_exp_s=M_dot_r_exp*w_in_exp_s
+w_in_exp_s=h_r_su_exp-h_r_ex_exp_s
+h_r_ex_exp_s=enthalpy(fluid$,P=P_r_ex_exp,s=s_r_su_exp)
+epsilon_s_exp=W_dot_sh_exp/W_dot_sh_exp_s
+
+end
+
+
+call expander(fluid$,V_s_cp,r_v_in,A_leak,AU_su_exp_n,AU_ex_exp_n,M_dot_r_exp_n,T_m,AU_amb_exp,d_su,M_dot_r_exp,N_rot_exp,t_amb_exp,t_amb_exp,p_r_ex_exp,t_r_su_exp,t_r_ex_exp,p_r_su_exp,W_dot_sh_exp,epsilon_s_exp)
+
+V_s_cp=V_s_cp_cm3/1000000
+V_s_exp=V_s_cp/r_v_in
+V_s_exp=V_s_exp_cm3/1000000
+
+p_r_su_exp = 9.6e5
+T_r_su_exp = 170
+p_r_ex_exp = 1.3e5
+N_rot_exp = 2500
+T_amb_exp = 20
+fluid$='r123'
+
+AU_amb_exp=8.266 
+AU_ex_exp_n=34.5 
+AU_su_exp_n=20.69 
+A_leak=0.0000032*sqrt(2) 
+d_su=0.005749 
+T_m=0.5323 
+V_s_cp=0.000148 
+r_v_in=4.05
+M_dot_r_exp_n=0.12
+{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

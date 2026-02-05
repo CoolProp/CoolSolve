@@ -1,0 +1,61 @@
+"VL050517
+Répétition 12, exercice 4
+
+4.	Le condenseur d'une centrale à vapeur est constitué d'un échangeur à tubes et calandre 1-2 (1 passe côté calandre et 2 passes côté tubes). Il comporte 30000 tubes fins de 25 mm de diamètre extérieur. Le coefficient d'échange convectif du côté vapeur est égal à 11000 W.m-2.K-1. La puissance de l'échangeur est de 2000 MW. Sachant que l'eau (1 kg/s et par tube) entre dans le condenseur à 20°C et que la vapeur est à 50°C, on demande de calculer l'échauffement de l'eau et la longueur des tubes.
+"
+
+
+"données"
+D_ext=0.025 "[m]"
+N_tubes=30000
+h_vap=11000 "[W/m^2.K]"
+Q_dot=2000E6 "[W]"
+M_dot_1tube=1
+T_w_su=20 
+T_vap=50
+
+"température de sortie de l'eau"
+{cp_w=4186}
+cp_w=CP(Water,T=T_w_bar,P=100000)
+Q_dot=N_tubes*M_dot_1tube*cp_w*(T_w_ex-T_w_su)
+
+"efficacité"
+Q_dot=epsilon*Q_dot_max
+Q_dot_max=N_tubes*M_dot_1tube*cp_w*(T_vap-T_w_su)
+
+"AU"
+epsilon=1-exp(-NTU)
+NTU=AU/C_dot_w
+C_dot_w=N_tubes*M_dot_1tube*cp_w
+
+"évaluation coefficient d'échange convectif côté eau"
+Re=vit*D_in/nu_w
+D_in=D_ext "hypothèse implificatrice car on a pas de renseignement sur l'épaisseur des tubes"
+vit=V_dot_1tube/A_in
+A_in=PI*D_in^2/4 "section intérieure"
+V_dot_1tube=M_dot_1tube/rho_w
+T_w_bar=0.5*(T_w_su+T_w_ex)
+rho_w=density(water,T=T_w_bar,P=100000)
+nu_w=mu_w/rho_w "viscosité cinématique [m^2/s]"
+mu_w=VISCOSITY(Water,T=T_w_bar,P=100000) " viscosité dynamique [kg/m.s]"
+j=0.023*Re^(-0.2)
+j=St*Pr^(2/3)
+St=Nu/(Re*Pr)
+Pr=nu_w/alpha_w
+alpha_w=k_w/(rho_w*cp_w) "diffusivité thermique [m^2/s]"
+k_w=CONDUCTIVITY(Water,T=T_w_bar,P=100000) "conductivité thermique de l'eau [W/m.K]"
+Nu=h_w*D_in/k_w
+
+"coefficient de transfert global"
+U=1/(1/h_w+1/h_vap) "hyp"
+
+"surface totale d'échange"
+AU=A*U
+
+"longueur d'un tube"
+A=N_tubes*L_tube*PI*D_ext "surface d'un cylindre"
+L_tube_bis=L_tube/2 "car il y a deux passes côté eau (voir schéma)"
+
+"échauffement de l'eau"
+DELTAT_w=T_w_ex-T_w_su
+{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

@@ -1,0 +1,309 @@
+" This simple model of an Organic Rankine Cycle is designed for a quick evaluation of the cycle performance with imposed heat source and heat sink conditions and different working fluids. It is suitable for the 'screening method' describe in Chapter 5.3. For realistic performance prediction of an ORC, more advanced models must be used (such a the one proposed in Chapter 4).
+
+Some inputs are commented. These inputs can be used provided some other inputs are removed (eg. the heat temperature can be imposed if the equation imposing its flow rate of the working fluid rate is removed).
+This model is designed for subcritical operating conditions and azeotropic working fluids only.
+The model includes a recuperator, that can be removed by setting its effectiveness to zero.
+Thermodynamic digrams can be built by plotting the thermodynamic states recorded in the array table.
+
+This code is provided for educational purpose. It can be freely used and reproduced as long as full credit to the original source is provided:
+Quoilin, S. (2011). Sustainable energy conversion through the use of Organic Rankine Cycles for waste heat recovery and solar applications. Unpublished doctoral thesis, University of Liège, Liège, Belgium. 
+
+Sylvain Quoilin, 18 September 2011
+"
+
+"Nomenclature:
+cp			heat capacity (j/kgK)
+E_dot		exergy flow rate (W)
+h 			specific enthalpy, J/(kg K)
+M_dot 		mass flow rate, kg/s
+p 			pressure, Pa
+pinch 		pinch point value, K
+Q_dot 		Heat power, W
+q 			specific heat flux, W/kg
+r 			ratio, -
+s 			specific entropy, J/(kg K)
+T 			temperature, °C
+w 			specific work, J/kg
+W_dot 	mechanical or electrical power, W
+x 			vapor quality, -
+
+Greek symbols
+e 			effectiveness
+? 			differential
+? 			efficiency
+? 			density, kg/m3
+
+Subscripts and superscripts
+0			Reference conditions
+cd 			Condenser
+cf 			Cold fluid
+ev 			Evaporator
+ex 			Exhaust
+exp 		Expander
+l 			Liquid
+pp 			Pump
+rec 		Recuperator
+s 			Isentropic
+sf 			Secondary fluid
+su 			Supply
+tp 			Two-phase
+v 			Vapor
+"
+
+
+"! Inputs and parameters :"
+fluid$='r245fa'
+M_dot = 1
+T_0=20
+
+"pressures :"
+$ifnot parametrictable
+T_ev = 130
+$endif
+T_cd = 30
+//p_ex_cd=1E5
+//p_su_ev=8E5
+
+pinch_ev = 10
+pinch_cd = 10
+
+"heat source : "
+hf$='air_ha'
+//T_hf_su_ev = 85
+p_hf_ev = 1E5
+M_dot_hf = 5
+//DELTAT_hf_ev = 15
+
+"heat sink :"
+cf$='air_ha'
+//T_cf_su_cd = 0
+p_cf_cd = 1E5
+M_dot_cf = 10
+//DELTAT_cf_cd = 15
+
+"Pressure drops in the heat exchangers :"
+DELTAp_ev = 0E3
+DELTAp_cd = 0E3
+
+"Overheating and subcooling :"
+DELTAT_ex_ev = 5
+DELTAT_ex_cd = 5
+
+"Effectivenesses :"
+epsilon_exp = 0.8
+epsilon_pp = 0.8
+epsilon_rec = 0
+
+r_p = p_su_exp/p_ex_exp
+r_v = rho_su_exp/rho_ex_exp
+
+"!First processing : "
+
+"Saturation pressures :"
+T_ev = T_sat(fluid$,p=p_su_ev)
+T_cd = T_sat(fluid$,p=p_ex_cd)
+
+DELTAp_ev = p_su_ev - p_su_exp
+DELTAp_cd = p_ex_exp - p_ex_cd
+p_bar_ev = (p_su_ev + p_su_exp)/2
+p_bar_cd = (p_ex_exp + p_ex_cd)/2
+DELTAT_ex_ev = T_su_exp - t_sat(fluid$,p=p_su_exp)
+DELTAT_ex_cd = T_sat(fluid$,p=p_ex_cd) - T_ex_cd 
+
+"!Expansion :"
+h_su_exp = enthalpy(fluid$,t=t_su_exp,p=p_su_exp)
+s_su_exp = entropy(fluid$,t=t_su_exp,p=p_su_exp)
+epsilon_exp = (h_su_exp - h_ex_exp)/(h_su_exp - h_ex_exp_s)
+h_ex_exp_s = enthalpy(fluid$,p=p_ex_exp,s=s_su_exp)
+t_ex_exp = temperature(fluid$,p=p_ex_exp,h=h_ex_exp)
+rho_ex_exp = density(fluid$,p=p_ex_exp,t=t_ex_exp)
+rho_su_exp = density(fluid$,p=p_su_exp,t=t_su_exp)
+
+"!Condenser : "
+"hypothesis : the pressure drop is distributed in the heat exchanger proportionaly to the enthalpy change :"
+h_su_cd = h_ex_vap_rec
+T_su_cd = T_ex_vap_rec
+h_ex_cd = enthalpy(fluid$,p=p_ex_cd,t=t_ex_cd)
+h_cd_v = enthalpy(fluid$,p=p_cd_v,x=1)
+h_cd_l = enthalpy(fluid$,p=p_cd_l,x=0)	
+p_cd_v = p_ex_exp - DELTAp_cd * (h_ex_exp - h_cd_v)/(h_ex_exp - h_ex_cd)
+p_cd_l = p_ex_exp - DELTAp_cd * (h_ex_exp - h_cd_l)/(h_ex_exp - h_ex_cd)
+T_cd_v = temperature(fluid$,p=p_cd_v,x=1)
+T_cd_l = temperature(fluid$,p=p_cd_l,x=0)
+
+h_cf_su_cd = enthalpy(cf$,t=t_cf_su_cd,p=p_cf_cd)
+M_dot_cf * (h_cf_ex_cd - h_cf_su_cd) = M_dot * (h_su_cd - h_ex_cd)
+M_dot_cf * (h_cf_su_tp - h_cf_su_cd) =M_dot * (h_cd_l - h_ex_cd)
+M_dot_cf * (h_cf_ex_tp - h_cf_su_cd) = M_dot * (min(h_cd_v,h_su_cd) - h_ex_cd)
+
+T_cf_ex_cd = temperature(cf$,h=h_cf_ex_cd,p=p_cf_cd)
+T_cf_su_tp = temperature(cf$,h=h_cf_su_tp,p=p_cf_cd)
+T_cf_ex_tp = temperature(cf$,h=h_cf_ex_tp,p=p_cf_cd)
+
+DELTAT_cf_cd = T_cf_ex_cd - T_cf_su_cd
+pinch_cd = min(T_ex_cd - T_cf_su_cd,T_cd_v - T_cf_ex_tp,T_su_cd - T_cf_ex_cd)
+
+"! Pump :"
+h_su_pp = h_ex_cd
+v_su_pp = volume(fluid$,p=p_ex_cd,h=h_ex_cd)
+
+s_su_pp = entropy(fluid$,p=p_ex_cd,h=h_ex_cd)
+h_ex_pp = h_su_pp + v_su_pp*(p_su_ev-p_ex_cd)/epsilon_pp
+"Second method:"
+h_ex_pp_s = enthalpy(fluid$,s=s_su_pp,p=p_su_ev)
+epsilon_pp = (h_ex_pp_s- h_su_pp)/(h_ex_pp_bis - h_su_pp)
+
+t_ex_pp = temperature(fluid$,h=h_ex_pp,p=p_su_ev)
+
+"! Recuperator :"
+"Pressure drop :"
+DELTAp_vap_rec = DELTAp_cd * (h_ex_exp - h_ex_vap_rec)/(h_ex_exp - h_ex_cd)
+p_ex_vap_rec = p_su_vap_rec - DELTAp_vap_rec
+
+p_su_vap_rec = p_ex_exp
+
+h_su_liq_rec = h_ex_pp
+T_su_liq_rec = T_ex_pp
+p_liq_rec = p_su_ev
+
+H_su_vap_rec = h_ex_exp
+T_su_vap_rec = T_ex_exp
+p_vap_rec = (p_su_vap_rec + p_ex_vap_rec)/2
+
+cp_liq_rec = cp(fluid$,t=t_su_liq_rec,p=p_liq_rec)
+cp_vap_rec = cp(fluid$,t=t_su_vap_rec,p=p_vap_rec)
+
+C_dot_liq_rec = M_dot * cp_liq_rec
+C_dot_vap_rec = M_dot * cp_vap_rec
+
+C_dot_min_rec = min(C_dot_liq_rec,C_dot_vap_rec)
+C_dot_max_rec=max(C_dot_liq_rec,C_dot_vap_rec)
+Q_dot_rec = epsilon_rec * C_dot_min_rec * (T_su_vap_rec - T_su_liq_rec)
+
+Q_dot_rec = M_dot * (h_su_vap_rec - h_ex_vap_rec)
+Q_dot_rec = m_dot * (h_ex_liq_rec - h_su_liq_rec)
+
+T_ex_vap_rec = temperature(fluid$,h=h_ex_vap_rec,p=p_vap_rec)
+T_ex_liq_rec = temperature(fluid$,h=h_ex_liq_rec,p=p_liq_rec)
+
+
+"! Evaporator :"
+h_su_ev = h_ex_liq_rec
+T_su_ev = T_ex_liq_rec
+h_ex_ev  = h_su_exp
+h_ev_l = enthalpy(fluid$,p=p_ev_l,x=0)
+h_ev_v = enthalpy(fluid$,p=p_ev_v,x=1)
+p_ev_l = p_su_exp + DELTAp_ev * (h_ex_ev - h_ev_l)/(h_ex_ev - h_su_ev)
+p_ev_v = p_su_exp + DELTAp_ev * (h_ex_ev - h_ev_v)/(h_ex_ev - h_su_ev)
+T_ev_l = temperature(fluid$,x=0,p=p_ev_l)
+T_ev_v = temperature(fluid$,x=1,p=p_ev_v)
+
+"secondary fluid :"
+h_hf_su_ev = enthalpy(hf$,t=t_hf_su_ev,p=p_hf_ev)
+M_dot_hf * (h_hf_su_ev - h_hf_ex_ev) = M_dot * (h_ex_ev - h_su_ev)
+M_dot_hf * (h_hf_su_ev - h_hf_ex_tp) = M_dot * (h_ex_ev - h_ev_l)
+M_dot_hf * (h_hf_su_ev - h_hf_su_tp) = M_dot * (h_ex_ev - h_ev_v)
+
+T_hf_ex_ev = temperature(hf$,h=h_hf_ex_ev,p=p_hf_ev)
+T_hf_ex_tp = temperature(hf$,h=h_hf_ex_tp,p=p_hf_ev)
+T_hf_su_tp = temperature(hf$,h=h_hf_su_tp,p=p_hf_ev)
+DELTAT_hf_ev = T_hf_su_ev - T_hf_ex_ev
+
+pinch_ev = min(T_hf_ex_ev - T_su_ev,T_hf_ex_tp - T_ev_l,T_hf_su_tp - T_su_exp)
+
+"!T-s diagram :"
+s[1] = entropy(fluid$,t=t_ex_pp,p=p_su_ev)
+t[1] = t_ex_pp
+p[1] = p_su_ev
+h[1] = h_ex_pp
+
+s[2] = entropy(fluid$,t=t_ex_liq_rec,p=p_su_ev)
+t[2] = t_ex_liq_rec
+p[2] = p_su_ev
+h[2] = h_ex_liq_rec
+
+s[3] = entropy(fluid$,p=p_ev_l,x=0)
+t[3] = t_ev_l
+p[3] = p_ev_l
+h[3] = h_ev_l
+
+s[4] = entropy(fluid$,p=p_ev_v,x=1)
+t[4] = t_ev_v
+h[4] = h_ev_v
+p[4] = p_ev_v
+
+s[5] = s_su_exp
+t[5] = t_su_exp
+h[5] = h_su_exp
+p[5] = p_su_exp
+mu[5] = viscosity(fluid$,t=t_su_exp,p=p_su_exp)
+k[5] = conductivity(fluid$,t=t_su_exp,p=p_su_exp)
+
+s[6] = entropy(fluid$,h=h_ex_exp,p=p_ex_exp)
+t[6] = T_ex_exp
+h[6] = h_ex_exp
+p[6]= p_ex_exp
+mu[6] = viscosity(fluid$,t=t_ex_exp,p=p_ex_exp)
+k[6] = conductivity(fluid$,t=t_ex_exp,p=p_ex_exp)
+rho[6] = density(fluid$,t=t_ex_exp,p=p_ex_exp)
+
+s[7] = entropy(fluid$,h=h_ex_vap_rec,p=p_ex_vap_rec)
+t[7] = T_ex_vap_rec
+h[7] = h_ex_vap_rec
+p[7]= p_ex_vap_rec
+
+s[8] = min(s[5],entropy(fluid$,p=p_cd_v,x=1))
+t[8] = t_cd_v
+h[8] = min(h_ex_exp,h_cd_v)
+p[8] = min(p_ex_exp,p_cd_v)
+
+s[9] = entropy(fluid$,p=p_cd_l,x=0)
+t[9] = t_cd_l
+h[9] = h_cd_l
+p[9] = p_cd_l
+MM = molarmass(toluene)
+s[10] = entropy(fluid$,h=h_ex_cd,p=p_ex_cd)
+t[10] = t_ex_cd
+h[10] = h_ex_cd
+p[10] = p_ex_cd
+
+s[11] = s[1]
+t[11] = t[1]
+h[11] = h[1]
+p[11] = p[1]
+
+"T profile in heat exhangers :"
+T_hf[2] = T_hf_ex_ev
+T_hf[3] = T_hf_ex_tp
+T_hf[4] = T_hf_su_tp
+T_hf[5] = T_hf_su_ev
+
+T_cf[7] = T_cf_ex_cd
+T_cf[8] = T_cf_ex_tp
+T_cf[9] = T_cf_su_tp
+T_cf[10] = T_cf_su_cd
+
+"! Efficiency : "
+w_exp = h_su_exp - h_ex_exp
+w_pp = h_ex_pp - h_su_pp
+w_net = w_exp - w_pp
+q_ev = h_ex_ev - h_su_ev
+eta_cycle = (w_exp - w_pp)/q_ev
+
+W_dot_net = w_net * M_dot
+W_dot_exp = w_exp * M_dot
+W_dot_pp = w_pp * M_dot
+
+"! Second law efficiency:"
+E_dot_hf = M_dot_hf * ((h_hf_su_ev - h_hf_0) - (T_0 + 273.15) * (s_hf_su_ev - s_hf_0))
+s_hf_su_ev = entropy(hf$,h=h_hf_su_ev,p=p_hf_ev)
+h_hf_0 = enthalpy(hf$,T=T_0,p=p_hf_ev)
+s_hf_0 = entropy(hf$,t=t_0,p=p_hf_ev)
+
+eta_II = W_dot_net/E_dot_hf
+
+"! Fluid quality at the end of the expansion :"
+x = quality(fluid$,h=h_ex_exp,p=p_ex_exp)
+
+
+{$ID$ #0202: For use only by students and staff Laboratoire de Thermodynamique, University of Liege Administrator}

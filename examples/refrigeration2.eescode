@@ -1,0 +1,93 @@
+"VL050415
+Répétition 8, exercice 3
+
+3.	Une pompe à chaleur doit fournir une puissance utile de 30 kW. Elle travaille dans les conditions suivantes :
+*	Température d'évaporation : 8 °C
+*	Température de condensation : 60 °C, sous - refroidissement : 10 K
+*	Réfrigérant : R22
+
+Le fluide secondaire de l'évaporateur est de l'eau puisée dans la nappe phréatique à 10 °C. On suppose une efficacité de l'évaporateur égale à 1.
+
+Déterminer le COP de la machine et le débit de Fréon sachant que l'efficacité isentropique du compresseur est de 0.8. Calculer le débit d'eau puisé à la nappe phréatique.
+
+"
+
+T_cond=60 "!!""[°C]"
+T_ev=8 "!!"
+DELTA_T_sc=10 "!!" "sub cooling"
+DELTA_T_oh=0 "!!" "over heating"
+epsilon_s_cp=0.8 "!!"
+{eta_m=0.8} "!!"
+
+"débit massique"
+ "point 1: entrée du compresseur:"
+T_1=T_ev+DELTA_T_oh
+P_1=P_ev
+P_ev=pressure(R22,T=T_ev,x=1)"palier de changement de phase horizontal"
+h_1=enthalpy(R22,P=P_1,x=x_1) "!!"
+x_1=1"!!"
+
+
+	"point 2: sortie du compresseur= entrée du condenseur"
+P_2=P_cd
+P_cd=pressure(R22,T=T_cond,x=1)
+s_1=entropy(R22,T=T_1,x=x_1) "!!"
+h_2_s=enthalpy(R22,P=P_2,s=s_1)
+epsilon_s_cp=w_s/w
+w_s=h_2_s-h_1
+w=h_2-h_1 "permet de déterminer h_2"
+T_2=temperature(R22,P=P_2,h=h_2)
+
+
+	"point 3: sortie du condenseur"
+P_3=P_cd
+T_3=T_cond-DELTA_T_sc
+h_3=enthalpy(R22,P=P_3,T=T_3)
+
+	"point 4: entrée dans l'évaporateur"
+h_4=h_3 "détente isenthalpique"
+x_4=quality(R22,P=P_4,h=h_4)
+P_4=P_ev
+
+
+"calcul du débit" "!! on ne regarde plus l'évaporateur mais bien le condenseur"
+Q_dot_23=-30E3 "[W]" "!!"
+Q_dot_23=M_dot_r*w_23
+w_23=h_3-h_2
+
+
+"puissance absorbée par le compresseur"
+W_dot_12=M_dot_r*w_12
+w_12=h_2-h_1
+W_dot_cp=W_dot_12{/eta_m} "consommation électrique"
+
+"COP"
+
+COP=-Q_dot_23/W_dot_cp "!!"
+
+"débit d'eau puisé à la nappe phréatique "
+Q_dot_41=M_dot_r*(h_1-h_4) "puissance thermique absorbée à l'évaporateur"
+Q_dot_41=M_dot_w*cp_w*(T_w_su-T_w_ex) "permet de calculer M_dot_w"
+epsilon_ev=1
+T_w_su=10
+cp_w=4186
+epsilon_ev=(T_w_su-T_w_ex)/(T_w_su-T_ev)
+V_dot_w=M_dot_w/rho_w*3600 "[m^3/h]"
+rho_w=1000
+
+{
+"représentation du cycle dans le diagramme P-h"
+P[1]=P_1
+h[1]=h_1
+
+P[2]=P_2
+h[2]=h_2
+
+P[3]=P_3
+h[3]=h_3
+
+P[4]=P_4
+h[4]=h_4
+
+}
+{$ID$ #202: Laboratoire de Thermodynamique, U. de Liege}

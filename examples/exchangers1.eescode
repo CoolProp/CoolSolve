@@ -1,0 +1,36 @@
+"VL050517
+Répétition 12, exercice 1
+
+1.	Un échangeur à contre-courants ayant une surface d'échange de 12.5 m2 est utilisé pour refroidir de l'huile (c = 2100 J.kg-1.K-1) à 100°C avec de l'eau à 1 bar et 20°C. Les débits d'huile et d'eau sont égaux à 2 et 0.48 kg.s-1 respectivement. Sachant que le coefficient de transfert global est estimé à 400 W.m-2.K-1, quelles sont les températures de sortie des 2 fluides ainsi que la puissance transférée. On négligera les pertes de charge dans l'échangeur.
+
+"
+A=12.5 "[m^2]"
+c_oil=2100 "[J/g.K]"
+T_oil_su=100 "[°C]"
+P_w_su=1E5 "[Pa]"
+T_w_su=20
+M_dot_oil=2 "[kg/s]"
+M_dot_w=0.48 "[kg/s]"
+U=400 "[W/m^2.K]"
+
+c_w=CP(Water,T=T_w_su,P=P_w_su)
+
+"débits capacitifs:"
+C_dot_oil=M_dot_oil*c_oil
+C_dot_w=M_dot_w*c_w
+C_dot_min=min(C_dot_oil,C_dot_w)
+C_dot_max=max(C_dot_oil,C_dot_w)
+omega=C_dot_min/C_dot_max
+
+"NTU"
+AU=A*U
+NTU=AU/C_dot_min
+
+"efficacité échangeur"
+epsilon=(1-exp(-NTU*(1-omega)))/(1-omega*exp(-NTU*(1-omega)))
+
+"bilan"
+Q_dot=epsilon*C_dot_min*(T_oil_su-T_w_su) "[W]"
+Q_dot=C_dot_w*(T_w_ex-T_w_su)
+Q_dot=C_dot_oil*(T_oil_su-T_oil_ex)
+{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

@@ -1,0 +1,51 @@
+fluid$='n-pentane'{'R123'}
+epsilon=0.0000015 [m] "rugosité absolue"
+D_i=16E-3 [m] "Diam intérieur"
+
+"n-pentane conditions"
+	"gaz"
+{P=10E5
+T=T_sat+50}
+
+	"liquide"
+P=1E5
+T=T_sat+10
+
+T_sat=T_sat(fluid$,P=P)
+v=volume(fluid$,P=P,T=T)
+rho=1/v
+M_dot=80E-3 [kg/s]
+
+
+"coefficient de résistance conduite"
+
+1/sqrt(f)=-2*LOG10(epsilon/(3.7*D_i)+2.51/(Re*sqrt(f))) "colebrook"
+f_vlad=(-1.8*log10((6.9/Re+(epsilon/(3.7*D_i))^1.11)))^(-2)
+
+"perte de charge linéique"
+deltaP_lin=f/D_i*rho*U^2/2 "[Pa/m]"
+deltaP_lin_vlad=f_vlad/D_i*rho*U^2/2 "[Pa/m]"
+U=V_dot/A_i
+A_i=PI*D_i^2/4
+V_dot=M_dot*v
+
+"Re"
+Re=D_i*U/nu
+nu=mu/rho
+mu=viscosity(fluid$,P=P,T=T)
+
+"perte de charge totale"
+
+DELTAP=deltaP_lin*L "[Pa]"
+DELTAP_vlad=deltaP_lin_vlad*L "[Pa]"
+L=10 [m]
+DELTAPbar=DELTAP/1E5 "[bar]"
+DELTAP_vladbar=DELTAP_vlad/1E5 "[bar]"
+
+"pression dynamique"
+
+P_dyn=rho*U^2/2
+ratio=P_dyn/DELTAP
+
+
+{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

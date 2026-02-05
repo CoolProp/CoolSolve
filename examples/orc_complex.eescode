@@ -1,0 +1,1021 @@
+"=============================================================================================================================="
+"PUMP   MODEL"
+"=============================================================================================================================="
+$bookmark pump_model
+
+procedure pump(fluid$,epsilon_pp,h_r_su_pp,t_r_su_pp,p_r_su_pp,p_r_ex_pp,M_dot_r_pp:"<=inputs outputs=>"W_dot_pp,T_r_ex_pp,h_r_ex_pp)
+
+
+"4.3. Compression"
+s_r_su_pp=entropy(fluid$,p=p_r_su_pp,h=h_r_su_pp)
+h_r_ex_pp_s=enthalpy(fluid$,p=p_r_ex_pp,s=s_r_su_pp)
+w_pp_s=h_r_ex_pp_s-h_r_su_pp
+w_pp = w_pp_s/epsilon_pp
+h_r_ex_pp = h_r_su_pp + w_pp
+t_r_ex_pp=temperature(fluid$,p=p_r_ex_pp,h=h_r_ex_pp)
+
+"4.4. Swept volume"
+v_r_su_pp=volume(fluid$,p=p_r_su_pp,h=h_r_su_pp)
+V_dot_s_pp = M_dot_r_pp * v_r_su_pp
+V_dot_s_pplh=V_dot_s_pp*3600*1000
+
+"4.5. Power"
+W_dot_pp=M_dot_r_pp*w_pp
+
+
+end
+
+
+"=============================================================================================================================="
+"EXPANDER  MODEL"
+"=============================================================================================================================="
+$Bookmark Expander_model
+
+module expander(fluid$,V_s_exp,r_v_in,AU_su_exp_n,AU_ex_exp_n,AU_amb_exp,M_dot_r_exp_n,d_su,A_leak_mm2,alpha,W_dot_loss_0,T_m,eta_gen,N_rot_exp,T_amb_exp,p_r_su_exp,p_r_ex_exp,T_r_su_exp,h_r_su_exp"<=inputs outputs=>",M_dot_r_exp,h_r_ex_exp,t_r_ex_exp,W_dot_el_exp,Q_dot_amb_exp,W_dot_sh_exp,epsilon_s_exp,r_v_in_ideal)
+
+pressuredrop$ ='yes'
+heatTransfer$ = 'yes'
+unadaptedVolumeRatio$ = 'yes'
+mechanicalLosses$='yes'
+expandertype$='hermetic'
+
+"2.3. Supply status"
+T_r_sat_su_exp=temperature(fluid$,P=P_r_su_exp,x=1)
+DELTAToh_su_exp=t_r_su_exp-T_r_sat_su_exp
+v_r_su_exp=volume(fluid$,P=P_r_su_exp,T=t_r_su_exp)
+s_r_su_exp=entropy(fluid$,P=P_r_su_exp,T=t_r_su_exp)
+
+"2.4. Supply pressure drop: su=>su1"
+A_thr_su=PI*d_su^2/4
+"pressuredrop$='yes'" "! in diagram"
+$if pressuredrop$='yes'
+{M_dot_r_exp=A_thr_su*sqrt(2/v_r_su_exp*DELTAP_r_su_exp)}
+DELTAP_r_su_exp = M_dot_r_exp^2/A_thr_su^2 / 2 * v_r_su_exp
+$else pressuredrop$='no'
+DELTAP_r_su_exp=0
+$endif
+{r_p_su_exp=0.95}
+"M_dot_r_exp=0.1"
+r_p_su_exp=P_r_su1_exp/P_r_su_exp
+DELTAP_r_su_exp=P_r_su_exp-P_r_su1_exp
+h_r_su1_exp=h_r_su_exp "isenthalpique"
+T_r_su1_exp=temperature(fluid$,P=P_r_su1_exp,h=h_r_su1_exp)
+
+"2.5. Supply cooling down: su1=>su2"
+cp_r_su1_exp=CP(fluid$,P=P_r_su1_exp,T=T_r_su1_exp)
+C_dot_su1_exp=M_dot_r_exp*cp_r_su1_exp
+NTU_su_exp=AU_su_exp/C_dot_su1_exp
+AU_su_exp=AU_su_exp_n*(M_dot_r_exp/M_dot_r_exp_n)^0.8
+epsilon_su_exp=1-exp(-NTU_su_exp)
+$if heatTransfer$='yes'
+Q_dot_su_exp=epsilon_su_exp*C_dot_su1_exp*(T_r_su1_exp-T_w_exp)"0"
+$else heatTransfer$='no'
+Q_dot_su_exp=0
+$endif
+
+"T_w_exp=50"
+Q_dot_su_exp=M_dot_r_exp*(h_r_su1_exp-h_r_su2_exp)
+T_r_su2_exp=temperature(fluid$,P=P_r_su2_exp,h=h_r_su2_exp)
+s_r_su2_exp=entropy(fluid$,P=P_r_su2_exp,T=T_r_su2_exp)
+v_r_su2_exp=volume(fluid$,P=P_r_su2_exp,T=T_r_su2_exp)
+P_r_su2_exp=P_r_su1_exp
+"Q_dot_su_exp=100"
+
+"2.6. Mass flow rate"
+V_dot_s_exp=N_rot_exp/60*V_s_exp "[m^3/s]"
+M_dot_r_in=V_dot_s_exp/v_r_su2_exp "[kg/s]"
+M_dot_r_exp=M_dot_r_in+M_dot_r_leak
+
+"2.7. Leakage flow rate"
+A_leak_mm2=A_leak*1000^2
+{M_dot_r_leak={0.1*M_dot_r_in}0}
+h_r_su2_exp=h_r_thr+C_thr^2/2
+P_r_su2_exp*v_r_su2_exp^gamma_r{_bis}=P_r_thr*v_r_thr^gamma_r{_bis}
+{gamma_r=1.1}
+r=8314/MM_r
+MM_r=molarmass(fluid$)
+P_r_crit=P_r_su2_exp*(2/(gamma_r+1))^(gamma_r/(gamma_r-1))
+P_r_thr=P_r_crit
+h_r_thr=enthalpy(fluid$,P=P_r_thr,s=s_r_su2_exp)
+T_r_thr=temperature(fluid$,h=h_r_thr,P=P_r_thr)
+M_dot_r_leak{_bis}=A_leak*C_thr/v_r_thr
+v_r_thr=volume(fluid$,P=P_r_thr,h=h_r_thr) 
+
+ratio_leak=M_dot_r_leak/M_dot_r_exp
+
+"2.8. Expansion description"
+
+r_v_in_ideal=v_r_ex3_exp/v_r_su2_exp
+$if unadaptedVolumeRatio$='yes'
+P_r_in_exp=pressure(fluid$,v=v_r_in_exp,s=s_r_su2_exp)
+$else unadaptedVolumeRatio$='no'
+P_r_in_exp=P_r_ex3_exp
+$endif
+
+
+"2.8.1. Isentropic expansion up to the adapted pressure: su2=in"
+r_v_in=v_r_in_exp/v_r_su2_exp
+t_r_in_exp=temperature(fluid$,s=s_r_su2_exp,p=p_r_in_exp)
+h_r_in_exp=enthalpy(fluid$,s=s_r_su2_exp,p=p_r_in_exp)
+w_exp_1=h_r_su2_exp-h_r_in_exp
+r_p_in=P_r_su2_exp/P_r_in_exp
+
+"2.8.2. isochoric expansion from adapted pressure to exaust pressure: in=>ex3"
+w_exp_2=v_r_in_exp*(P_r_in_exp-P_r_ex3_exp)
+w_exp_2=h_r_in_exp-h_r_ex3_exp
+
+P_r_ex3_exp=P_r_ex2_exp
+T_r_ex3_exp=temperature(fluid$,h=h_r_ex3_exp,P=P_r_ex3_exp)
+x_r_ex3_exp=quality(fluid$,h=h_r_ex3_exp,P=P_r_ex3_exp)
+v_r_ex3_exp=volume(fluid$,h=h_r_ex3_exp,P=P_r_ex3_exp)
+
+"2.8.3. Total work"
+
+w_in_exp=w_exp_1+w_exp_2
+"w_in_exp=h_r_su2_exp-h_r_ex3_exp"
+
+"2.9. Power"
+W_dot_in_exp=M_dot_r_in*w_in_exp
+W_dot_sh_exp=W_dot_in_exp-W_dot_loss
+$if mechanicalLosses$='yes'
+	$if expanderType$='open'
+	W_dot_loss=2*PI*N_rot_exp/60*T_m
+	$else expanderType$='Hermetic'
+	W_dot_loss=W_dot_loss_0+alpha*W_dot_in_exp
+	$endif
+$else mechanicalLosses$='no'
+W_dot_loss=0
+$endif
+
+$if expanderType$='open'
+W_dot_el_exp=W_dot_sh_exp*eta_gen
+$else expanderType$='Hermetic'
+W_dot_el_exp=W_dot_sh_exp
+$endif
+
+"2.10.Mixing with leakage at exhaust ex3=>ex2"
+M_dot_r_in*h_r_ex3_exp+M_dot_r_leak*h_r_su2_exp=M_dot_r_exp*h_r_ex2_exp
+T_r_ex2_exp="t_r_ex3_exp"temperature(fluid$,h=h_r_ex2_exp,P=P_r_ex2_exp)
+P_r_ex2_exp=P_r_ex1_exp
+
+"2.11. Exhaust cooling down ex2=>ex1"
+
+cp_r_ex2_exp=CP(fluid$,P=P_r_ex2_exp,T=T_r_ex2_exp)
+C_dot_ex2_exp=M_dot_r_exp*cp_r_ex2_exp
+NTU_ex_exp=AU_ex_exp/C_dot_ex2_exp
+AU_ex_exp=AU_ex_exp_n*(M_dot_r_exp/M_dot_r_exp_n)^0.8
+epsilon_ex_exp=1-exp(-NTU_ex_exp)
+$if heatTransfer$='yes'
+Q_dot_ex_exp=epsilon_ex_exp*C_dot_ex2_exp*(T_r_ex2_exp-T_w_exp)
+$else heatTransfer$='no'
+Q_dot_ex_exp=0
+$endif
+Q_dot_ex_exp=M_dot_r_exp*(h_r_ex2_exp-h_r_ex1_exp)
+T_r_ex1_exp=temperature(fluid$,h=h_r_ex1_exp,P=P_r_ex1_exp)
+
+"2.12. Exhaust pressure drop ex1=>ex"
+P_r_ex1_exp=P_r_ex_exp
+h_r_ex1_exp=h_r_ex_exp
+t_r_ex_exp=temperature(fluid$,h=h_r_ex_exp,P=P_r_ex_exp)
+x_r_ex_exp=quality(fluid$,h=h_r_ex_exp,P=P_r_ex_exp)
+
+"2.13. Heat balance over the expander"
+Q_dot_su_exp+Q_dot_ex_exp+W_dot_loss-Q_dot_amb_exp=0
+"t_w_exp=60"
+Q_dot_amb_exp=AU_amb_exp*(T_w_exp-T_amb_exp)
+
+"2.14. Performances indicators"
+epsilon_s_exp=W_dot_sh_exp/(M_dot_r_exp*w_exp_s)
+w_exp_s=h_r_su_exp-h_r_ex_exp_s
+h_r_ex_exp_s=enthalpy(fluid$,P=P_r_ex_exp,s=s_r_su_exp)
+M_dot_r_exp*(h_r_su_exp-h_r_ex_exp)=W_dot_sh_exp+Q_dot_amb_exp+res_exp
+
+end
+
+
+
+
+
+
+
+"=============================================================================================================================="
+"EVAPORATOR  MODEL"
+"=============================================================================================================================="
+$Bookmark Evaporator_model
+
+module evaporator(fluid$,fluidev$,t_sf_su_ev,t_sf_ex_ev,p_sf_su_ev,M_dot_r_ev,T_r_su_ev,DELTAT_oh_ex_ev,pinch_ev,"<=inputs outputs=>"p_r_su_ev,p_r_ex_ev,p_ev,epsilon_ev_l,epsilon_ev_v,epsilon_ev_tp,t_r_ex_ev,h_r_ex_ev,Q_dot_ev,M_dot_sf_ev)
+
+
+"1.3. Liquid zone"
+"1.3.1. Refrigerant side"
+p_r_su_ev=p_ev
+t_ev=t_sat(fluid$,p=p_ev)
+h_r_su_ev=enthalpy(fluid$,p=p_r_su_ev,t=t_r_su_ev)
+Q_dot_ev_l=M_dot_r_ev*(h_r_su_ev_tp-h_r_su_ev)
+
+"1.3.2. Secondary fluid side"
+Q_dot_ev_l=M_dot_sf_ev*(h_sf_ex_ev_tp-h_sf_ex_ev)
+t_sf_ex_ev=temperature(fluidev$,h=h_sf_ex_ev,p=p_sf_ex_ev)
+p_sf_ex_ev=p_sf_su_ev
+
+"1.3.3. Effectiveness"
+Q_dot_ev_l=epsilon_ev_l*C_dot_min_ev_l*(t_sf_ex_ev_tp-t_r_su_ev)
+C_dot_min_ev_l=min(C_dot_r_ev_l,C_dot_sf_ev_l)
+C_dot_r_ev_l=M_dot_r_ev*c_p_r_ev_l
+c_p_r_ev_l=cp(fluid$,p=p_r_su_ev,t=(t_r_su_ev+t_r_su_ev_tp)/2)
+C_dot_sf_ev_l=M_dot_sf_ev*c_p_sf_ev_l
+c_p_sf_ev_l=cp(fluidev$,p=p_sf_ex_ev,t=(t_sf_ex_ev+t_sf_ex_ev_tp)/2)
+
+"1.3.4. AU_value"
+epsilon_ev_l"_bis"*(1-omega_ev_l*exp(-NTU_ev_l*(1-omega_ev_l)))=(1-exp(-NTU_ev_l*(1-omega_ev_l)))
+"NTU_ev_l=3"
+omega_ev_l=C_dot_min_ev_l/C_dot_max_ev_l
+C_dot_max_ev_l=max(C_dot_r_ev_l,C_dot_sf_ev_l)
+NTU_ev_l=AU_ev_l/C_dot_min_ev_l
+
+"1.4. Two-phase zone"
+"1.4.1. Refrigerant side"
+p_r_su_ev_tp=p_ev
+h_r_su_ev_tp=enthalpy(fluid$,p=p_r_su_ev_tp,x=0)
+t_r_su_ev_tp=temperature(fluid$,p=p_r_su_ev_tp,x=0)
+h_r_ex_ev_tp=enthalpy(fluid$,p=p_r_su_ev_tp,x=1)
+t_r_ex_ev_tp=temperature(fluid$,p=p_r_su_ev_tp,x=1)
+Q_dot_ev_tp=M_dot_r_ev*(h_r_ex_ev_tp-h_r_su_ev_tp)
+
+"1.4.2. Secondary fluid side"
+Q_dot_ev_tp=M_dot_sf_ev*(h_sf_su_ev_tp-h_sf_ex_ev_tp)
+t_sf_ex_ev_tp=temperature(fluidev$,h=h_sf_ex_ev_tp,p=p_sf_ex_ev_tp)
+p_sf_ex_ev_tp=p_sf_su_ev
+
+"1.4.3. Effectiveness"
+Q_dot_ev_tp=epsilon_ev_tp*C_dot_min_ev_tp*(t_sf_su_ev_tp-t_r_su_ev_tp{_bis})
+C_dot_min_ev_tp=C_dot_sf_ev_tp
+C_dot_sf_ev_tp=M_dot_sf_ev*c_p_sf_ev_tp
+c_p_sf_ev_tp=CP(fluidev$,p=p_sf_su_ev_tp,t=(t_sf_su_ev_tp+t_sf_ex_ev_tp)/2)
+
+"1.4.4. AU-value"
+epsilon_ev_tp=1-exp(-NTU_ev_tp)
+NTU_ev_tp=AU_ev_tp/C_dot_min_ev_tp
+
+"1.5. Vapor zone"
+"1.5.1. Refrigerant side"
+p_r_ex_ev=p_ev
+t_r_ex_ev=t_r_sat_ex_ev+DELTAT_oh_ex_ev
+t_r_sat_ex_ev=temperature(fluid$,p=p_r_ex_ev,x=1)
+h_r_ex_ev=enthalpy(fluid$,p=p_r_ex_ev,t=t_r_ex_ev)
+Q_dot_ev_v=M_dot_r_ev*(h_r_ex_ev-h_r_ex_ev_tp)
+{t_r_sat_ex_ev=110}
+
+"1.5.2. Secondary fluid side"
+h_sf_su_ev=enthalpy(fluidev$,p=p_sf_su_ev,t=t_sf_su_ev)
+Q_dot_ev_v=M_dot_sf_ev*(h_sf_su_ev-h_sf_su_ev_tp)
+t_sf_su_ev_tp=temperature(fluidev$,h=h_sf_su_ev_tp,p=p_sf_su_ev_tp)
+p_sf_su_ev_tp=p_sf_su_ev
+
+"1.5.3. Effectiveness"
+Q_dot_ev_v=epsilon_ev_v*C_dot_min_ev_v*(t_sf_su_ev-t_r_ex_ev_tp)
+C_dot_min_ev_v=min(C_dot_r_ev_v,C_dot_sf_ev_v)
+C_dot_r_ev_v=M_dot_r_ev*c_p_r_ev_v
+c_p_r_ev_v=cp(fluid$,p=p_r_ex_ev,t=(t_r_ex_ev+t_r_ex_ev_tp)/2)
+C_dot_sf_ev_v=M_dot_sf_ev*c_p_sf_ev_v
+c_p_sf_ev_v=cp(fluidev$,p=p_sf_su_ev,t=(t_sf_su_ev+t_sf_su_ev_tp)/2)
+
+"1.5.4. AU-value"
+epsilon_ev_v*(1-omega_ev_v*exp(-NTU_ev_v*(1-omega_ev_v)))=(1-exp(-NTU_ev_v*(1-omega_ev_v)))
+omega_ev_v=C_dot_min_ev_v/C_dot_max_ev_v
+C_dot_max_ev_v=max(C_dot_r_ev_v,C_dot_sf_ev_v)
+NTU_ev_v=AU_ev_v/C_dot_min_ev_v
+
+"1.6. Powers"
+Q_dot_ev=M_dot_r_ev*(h_r_ex_ev-h_r_su_ev)
+DELTAT_sf_ev=T_sf_su_ev-T_sf_ex_ev
+
+"1.7. Pinch point"
+
+Pinch_ev=min(t_sf_ex_ev-t_r_su_ev,t_sf_ex_ev_tp-t_r_su_ev_tp,t_sf_su_ev_tp-t_r_ex_ev_tp,t_sf_su_ev-t_r_ex_ev)
+
+"1.8. T-H_dot diagram"
+"1.8.1. Refrigerant side"
+T_r[1]=t_r_su_ev
+H_dot_r[1]=M_dot_r_ev*h_r_su_ev
+h_r[1]=h_r_su_ev
+P[1]=P_r_su_ev
+
+T_r[2]=t_r_su_ev_tp
+H_dot_r[2]=M_dot_r_ev*h_r_su_ev_tp
+h_r[2]=h_r_su_ev_tp
+P[2]=P_r_su_ev
+
+T_r[3]=t_r_ex_ev_tp
+H_dot_r[3]=M_dot_r_ev*h_r_ex_ev_tp
+h_r[3]=h_r_ex_ev_tp
+P[3]=P_r_su_ev
+
+T_r[4]=t_r_ex_ev
+H_dot_r[4]=M_dot_r_ev*h_r_ex_ev
+h_r[4]=h_r_ex_ev
+P[4]=P_r_su_ev
+
+"1.8.2. Secondary fluid side"
+T_sf_ev[1]=T_sf_su_ev
+H_dot_sf_ev[1]=H_dot_r[4]
+T_sf_ev[2]=T_sf_su_ev_tp
+H_dot_sf_ev[2]=H_dot_sf_ev[1]-Q_dot_ev_v
+T_sf_ev[3]=T_sf_ex_ev_tp
+H_dot_sf_ev[3]=H_dot_sf_ev[2]-Q_dot_ev_tp
+T_sf_ev[4]=T_sf_ex_ev
+H_dot_sf_ev[4]=H_dot_sf_ev[3]-Q_dot_ev_l
+
+end
+
+
+"=============================================================================================================================="
+"CONDENSER  MODEL"
+"=============================================================================================================================="
+$bookmark condenser_model
+
+procedure cond(fluid$,T_r_su_cd,M_dot_r_cd,DELTAT_r_ex_cd,Q_dot_cd1,T_w_ex_cd,T_w_su_cd,T_a_su_cd2,T_a_ex_cd2,p_r_cd:pinch_cd,h_r_ex_cd_v,t_r_ex_cd_v,h_r_ex_cd_tp,t_r_ex_cd_tp,T_r_ex_cd,h_r_ex_cd,M_dot_w_cd1,M_dot_a_cd2)
+c_w = 4180
+
+"3 zones description, refrigerant side :"
+
+h_r_su_cd = enthalpy(fluid$,T=t_r_su_cd,p=p_r_cd)
+h_r_ex_cd_v = enthalpy(fluid$,p=p_r_cd,x=1)
+T_r_ex_cd_v = temperature(fluid$,p=p_r_cd,h=h_r_ex_cd_v)
+Q_dot_cd_v = M_dot_r_cd * (h_r_su_cd - h_r_ex_cd_v)
+
+h_r_ex_cd_tp = enthalpy(fluid$,p=p_r_cd,x=0)
+T_r_ex_cd_tp = T_r_ex_cd_v
+Q_dot_cd_tp = -M_dot_r_cd * (h_r_ex_cd_tp - h_r_ex_cd_v)
+
+t_r_ex_cd = T_sat(fluid$,p=p_r_cd) - DELTAT_r_ex_cd
+h_r_ex_cd = enthalpy(fluid$,p=p_r_cd,t=t_r_ex_cd)
+Q_dot_cd_l = M_dot_r_cd * (h_r_ex_cd_tp - h_r_ex_cd)
+
+Q_dot_cd = Q_dot_cd_l + Q_dot_cd_tp + Q_dot_cd_v
+
+"Heat exchanger 1 :"
+if (Q_dot_cd1 > 0) then
+h_r_su_cd1 = h_r_su_cd
+h_r_ex_cd1 = h_r_su_cd1 - Q_dot_cd1/M_dot_r_cd
+M_dot_w_cd1 = Q_dot_cd1 /(c_w * (T_w_ex_cd - T_w_su_cd))
+h_r_ex_cd1_v = h_r_ex_cd_v
+T_r_ex_cd1_v =T_r_ex_cd_v
+Q_dot_cd1_v = Q_dot_cd_v
+T_w_su_cd1_v = T_w_ex_cd - Q_dot_cd1_v/(M_dot_w_cd1 * c_w)
+pinch_cd = t_r_ex_cd1_v - T_w_su_cd1_v
+T_w_su_cd1 = T_w_ex_cd - Q_dot_cd1/(M_dot_w_cd1*c_w)
+else
+M_dot_w_cd1 = 0
+h_r_su_cd1 = h_r_su_cd
+h_r_ex_cd1 = h_r_su_cd1
+endif
+
+"Heat exchanger 2 :"
+cp_a = cp(air,t=(t_a_su_cd2 + T_a_ex_cd2)/2)
+Q_dot_cd2 = Q_dot_cd - Q_dot_cd1
+
+if (Q_dot_cd1 = 0) then
+h_r_su_cd2 = h_r_su_cd
+h_r_ex_cd2 = h_r_su_cd1 - Q_dot_cd2/M_dot_r_cd
+M_dot_a_cd2 = Q_dot_cd2 /(cp_a * (T_a_ex_cd2 - T_a_su_cd2))
+h_r_ex_cd2_v = h_r_ex_cd_v
+T_r_ex_cd2_v =T_r_ex_cd_v
+Q_dot_cd2_v = Q_dot_cd_v
+T_a_su_cd2_v = T_a_ex_cd2 - Q_dot_cd2_v/(M_dot_a_cd2 * cp_a)
+pinch_cd = t_r_ex_cd2_v - T_a_su_cd2_v
+
+else {(Q_dot_cd1 >0)}
+h_r_su_cd2 = h_r_ex_cd1
+h_r_ex_cd2 = h_r_ex_cd
+M_dot_a_cd2 = Q_dot_cd2 / (cp_a * (T_a_ex_cd2 - T_a_su_cd2))
+endif
+
+end
+
+
+function write(eta_I,W_dot_el_net,eta_global,i)
+lookup('results',i,1) = eta_I *100
+lookup('results',i,2)= W_dot_el_net / 1000
+lookup('results',i,3) = eta_global * 100
+write =1
+end
+
+
+FUNCTION cp_g(T_p1,T_p2,m,n,p,e)
+
+MM_O2 = molarmass(O2)  
+MM_N2 = molarmass(N2)
+MM_CO2 = molarmass(CO2)  
+MM_H2O = molarmass(H2O)
+
+x_air_N2 = 0.79  
+x_air_O2= 0.21 
+
+nkmoltot = m+ n/2 + e*(m+n/4)+p/2+(x_air_N2/x_air_O2)*(1+e)*(m+n/4)
+x_CO2 = m/nkmoltot
+x_H2O = (n/2)/nkmoltot
+x_O2 = ((m+n/4)*e+p/2)/nkmoltot
+x_N2 = (m+n/4)*(1+e)*(x_air_N2/x_air_O2)/nkmoltot
+
+"Masse molaire des produits de combustion"
+MM_prod = x_CO2*MM_CO2+x_H2O*MM_H2O+x_O2*MM_O2+x_N2*MM_N2
+
+"Enthalpie et chaleur massique des produits de combustion ; /kg de produits"
+hp_1 = (enthalpy(CO2,T=T_p1)-enthalpy(CO2, T=T_p2))*MM_CO2
+hp_2 = (enthalpy(H2O,T=T_p1)-enthalpy(H2O, T=T_p2))*MM_H2O
+hp_3 = (enthalpy(O2,T=T_p1)-enthalpy(O2, T=T_p2))*MM_O2
+hp_4 = (enthalpy(N2,T=T_p1)-enthalpy(N2, T=T_p2))*MM_N2
+hp = (x_CO2*hp_1+x_H2O*hp_2+x_O2*hp_3+x_N2*hp_4)/MM_prod
+{cp_g  = hp/(T_p1-T_p2)}
+if (T_p1 > T_p2+1) then
+cp_g = hp/(T_p1-T_p2)
+else
+cp_g = 1000
+endif
+
+
+END
+
+"=============================================================================================================================="
+"BIOMASS BURNER  MODEL"
+"=============================================================================================================================="
+$bookmark subprog_biomass_burner
+
+subprogram biomass_burner(LHV_f,C%,H% ,O%,e,M_dot_g_n,AU_gw_n,AU_wenv,P_atm,T_w_su_boil,T_w_ex_boil,T_a_su,T_f_su,Q_dot_u_boil,P_w,M_dot_f,M_dot_g,T_g_ex_boil,Q_dot_gw,Q_dot_3,epsilon_gw,M_dot_w,m,n,p)
+
+
+"3.1. Adiabatic combustion chamber"
+
+T_amb=T_a_su
+MM_C=12
+MM_H=1
+MM_O=16
+MM_O2 = molarmass(O2)  
+MM_N2 = molarmass(N2)
+MM_CO2 = molarmass(CO2)  
+MM_H2O = molarmass(H2O)
+T_ref=25
+
+m=C%/MM_C
+n=H%/MM_H
+p=O%/MM_O
+
+
+f_st=(m*MM_C+n*MM_H+p*MM_O)/((m+n/4)*(MM_O2+3.76*MM_N2)) "recalcule e"
+f=f_st/(1+e)
+f=M_dot_f/M_dot_a
+M_dot_g=M_dot_f+M_dot_a
+
+Q_dot_1=M_dot_a*cp_a*(T_ref-T_a_su)
+Q_dot_2=M_dot_f*cp_f*(T_ref-T_f_su)
+cp_a=CP(air_ha,P=P_atm,T=T_a_su)
+cp_f=2600
+
+Q_dot_3=-M_dot_f*LHV_f
+Q_dot_4=0
+Q_dot_5=M_dot_g*c_p_g_5*(T_adiab-T_ref)
+c_p_g_5= cp_g(T_adiab,T_ref,m,n,p,e)
+
+Q_dot_1+Q_dot_2+Q_dot_3+Q_dot_4+Q_dot_5=0
+
+"3.2. Water-flue gas heat exchanger (gw)"
+T_g_su_gw=T_adiab
+T_w_su_gw=T_w_su_boil
+c_w_gw= CP(Water,P=P_w,T=(T_w_su_gw+T_w_ex_gw)/2)
+rho_w_gw= density(water,P=P_w,T=T_w_su_boil)
+v_w_su_boil=volume(water,P=P_w,T=T_w_su_boil)
+V_dot_w_boil=M_dot_w*v_w_su_boil
+V_dot_w_boil_lmin=V_dot_w_boil*1000*60
+Q_dot_gw=epsilon_gw*C_dot_min_gw*(T_g_su_gw-T_w_su_gw)
+Q_dot_gw=C_dot_w_gw*(T_w_ex_gw-T_w_su_gw)
+Q_dot_gw=C_dot_g_gw*(T_g_su_gw-T_g_ex_boil)
+C_dot_w_gw=M_dot_w*c_w_gw
+C_dot_g_gw=M_dot_g*c_p_g_gw
+c_p_g_gw= cp_g(T_g_su_gw,T_g_ex_boil,m,n,p,e)
+C_dot_min_gw=MIN(C_dot_w_gw,C_dot_g_gw)
+C_dot_max_gw=MAX(C_dot_w_gw,C_dot_g_gw)
+T_g_ex_gw=T_g_ex_boil
+x_w_ex_boil=quality(water,P=P_w,T=T_w_ex_boil)
+
+	"AU calculation"
+
+epsilon_gw=(1-exp(-NTU_gw*(1-omega_gw)))/(1-omega_gw*exp(-NTU_gw*(1-omega_gw)))
+NTU_gw=AU_gw/C_dot_min_gw
+omega_gw=C_dot_min_gw/C_dot_max_gw
+AU_gw=AU_gw_n*(M_dot_g/M_dot_g_n)^0.65
+
+
+"3.3. Water-environment heat exchanger (gw)"
+
+Q_dot_wenv=epsilon_wenv*C_dot_w_wenv*(T_w_ex_gw-T_env)
+T_env=T_amb
+epsilon_wenv=1-exp(-NTU_wenv)
+NTU_wenv=AU_wenv/C_dot_w_wenv
+
+C_dot_w_wenv=M_dot_w*c_w_wenv
+c_w_wenv= CP(water,P=P_w,T=(T_w_ex_gw+T_w_ex_wenv)/2)
+Q_dot_wenv=C_dot_w_wenv*(T_w_ex_gw-T_w_ex_wenv)
+T_w_ex_boil=T_w_ex_wenv
+
+"3.4. Performances"
+
+Q_dot_u_boil=Q_dot_gw-Q_dot_wenv
+eta_boil=-Q_dot_u_boil/Q_dot_3
+
+end
+
+"=============================================================================================================================="
+"0. BIOMASS BURNER :"
+"=============================================================================================================================="
+$Bookmark biomass_burner
+
+"1. Parameters"
+
+	"fuel characteristics"
+LHV_f=17E6 [J/kg] "! in diagram"
+C%=0.50 "! in diagram"
+H%=0.06 "! in diagram"
+"O%=0.44" "! in diagram"
+O%=1-C%-H%
+e=0.2 "! in diagram"
+
+M_dot_g_n=0.4504
+AU_gw_n=1670 "! in diagram"
+AU_wenv=5 "! in diagram"
+
+"2. Inputs"
+P_atm=1E5
+T_a_su=20 "! in diagram"
+T_f_su=20 "! in diagram"
+{Q_dot_u_boil=650e3 "! in diagram"}
+P_w=10e5 "! in diagram"
+
+"3. Model :"
+call biomass_burner(LHV_f,C%,H% ,O%,e,M_dot_g_n,AU_gw_n,AU_wenv,P_atm,T_w_su_boil,T_w_ex_boil,T_a_su,T_f_su,Q_dot_u_boil,P_w,M_dot_f,M_dot_g,T_g_ex_boil,Q_dot_gw,-Q_dot_tot_boil,epsilon_gw,M_dot_w,m,n,p)
+
+{M_dot_f=5.9/3600 [kg/s]} "! in diagram"
+M_dot_f=M_dot_f_kgh/3600
+
+"4. Connexions"
+T_w_su_boil = T_sf_ex_ev
+T_w_ex_boil = T_sf_su_ev
+M_dot_w = M_dot_sf_ev
+
+
+"=============================================================================================================================="
+"0.b WATER OVERHEATER :"
+"=============================================================================================================================="
+$bookmark Water_overheater
+
+$if water_overheater$='yes'
+
+"1. Parameters :"
+"epsilon_wo = 0.7"  "! in diagram"
+
+"2. Inputs : "
+
+
+"3. Connections : "
+t_g_su_wo = T_g_ex_econ
+T_w_su_wo = T_sf_ex_cd
+M_dot_w_wo = M_dot_sf_cd
+p_w_su_wo = p_sf_su_cd
+{M_dot_g}
+
+"4. Model :"
+c_p_g_wo= cp_g(T_g_su_wo,T_g_ex_wo,m,n,p,e)
+c_p_w_wo=cp(fluidcd$,p=p_w_su_wo,t=(t_w_su_wo+t_w_ex_wo)/2)
+C_dot_w_wo = M_dot_w_wo * c_p_w_wo
+C_dot_g_wo = M_dot_g * c_p_g_wo
+C_dot_min_wo = min(C_dot_g_wo,C_dot_w_wo)
+Q_dot_wo = epsilon_wo * C_dot_min_wo*(T_g_su_wo - T_w_su_wo)
+Q_dot_wo = c_p_g_wo * M_dot_g * (T_g_su_wo - T_g_ex_wo)
+Q_dot_wo = c_p_w_wo * M_dot_w_wo * (T_w_ex_wo - T_w_su_wo)
+
+$else water_overheater$='no'
+t_g_su_wo = T_g_ex_econ
+T_w_su_wo = T_sf_ex_cd
+M_dot_w_wo = M_dot_sf_cd
+p_w_su_wo = p_sf_su_cd
+T_w_ex_wo = T_w_su_wo
+T_g_ex_wo = T_g_su_wo
+Q_dot_wo=0
+
+$endif
+
+
+"=============================================================================================================================="
+"1. ECONOMISER"
+"=============================================================================================================================="
+$bookmark economiser
+
+
+$if economiser$='yes'
+
+"1. Parameters :"
+"epsilon_econ = 0.7"  "! in diagram"
+
+"2. Inputs : "
+
+
+"3. Connections : "
+t_g_su_econ = T_g_ex_oh
+T_r_su_econ = T_r_ex_reg_c
+M_dot_r_econ = M_dot_r_pp
+p_r_su_econ = p_r_ex_pp
+M_dot_g_econ = M_dot_g
+
+"4. Model :"
+c_p_g_econ= cp_g(T_g_su_econ,T_g_ex_econ,m,n,p,e)
+c_p_r_econ=cp(fluid$,p=p_r_su_econ,t=(t_r_su_econ+t_r_ex_econ)/2)
+{c_p_r_econ = 1000
+c_p_g_econ = 1000}
+C_dot_r_econ = M_dot_r_econ * c_p_r_econ
+C_dot_g_econ = M_dot_g_econ * c_p_g_econ
+C_dot_min_econ = min(C_dot_g_econ,C_dot_r_econ)
+Q_dot_econ = epsilon_econ * C_dot_min_econ*(T_g_su_econ - T_r_su_econ)
+Q_dot_econ = c_p_g_econ * M_dot_g_econ * (T_g_su_econ - T_g_ex_econ)
+Q_dot_econ = c_p_r_econ * M_dot_r_econ * (T_r_ex_econ - T_r_su_econ)
+
+$else economiser$='no'
+t_g_su_econ = T_g_ex_oh
+T_r_su_econ = T_r_ex_reg_c
+M_dot_r_econ = M_dot_r_pp
+p_r_su_econ = p_r_ex_cd
+T_r_ex_econ = T_r_su_econ
+T_g_ex_econ = T_g_su_econ
+Q_dot_econ = 0
+
+$endif
+
+
+
+
+"=============================================================================================================================="
+"1. EVAPORATOR"
+"=============================================================================================================================="
+$Bookmark Evaporator
+
+"1.1. Parameters"
+"epsilon_ev_tp=0.7" "! in diagram"
+
+"1.2. Inputs/Connections"
+"P_ev=10e5"
+"fluidev$='air_ha'" "! in diagram"
+"Q_dot_ev = 650E3"
+t_r_su_ev=t_r_ex_econ"90"
+"t_r_ex_pp=30"
+M_dot_r_ev=M_dot_r_exp_tot
+"t_sf_su_ev=150" "! in diagram"
+p_sf_su_ev=10e5 [Pa] "! in diagram"
+"M_dot_sf_ev=0.5" "! in diagram"
+"DELTAT_oh_ex_ev=10" "! in diagram"
+"pinch_ev=10" "! in diagram"
+
+
+DELTAT_sf_ev=T_sf_su_ev-T_sf_ex_ev
+
+{p_ev = 9E5}
+
+call evaporator(fluid$,fluidev$,t_sf_su_ev,t_sf_ex_ev,p_sf_su_ev,M_dot_r_ev,T_r_su_ev,DELTAT_oh_ex_ev,pinch_ev"<=Inputs  Outputs=>",p_r_su_ev,p_r_ex_ev,p_ev,epsilon_ev_l,epsilon_ev_v,epsilon_ev_tp,t_r_ex_ev,h_r_ex_ev,Q_dot_ev,M_dot_sf_ev)
+
+"=============================================================================================================================="
+"1bis. OVERHEATER"
+"=============================================================================================================================="
+$bookmark overheater
+
+$if overheater$='yes'
+
+"1. Parameters : "
+"epsilon_oh=0.7" "! when the overheater model will be coupled to the boiler model"
+
+"3. Connections : "
+t_g_su_oh = T_g_ex_boil
+h_r_su_oh=h_r_ex_ev
+M_dot_r_oh=M_dot_r_exp_tot
+p_r_su_oh=p_r_ex_ev
+
+"4. Model : "
+"Q_dot_oh=10000" "! in diagram"
+T_r_su_oh = temperature(fluid$,h=h_r_su_oh,p=p_r_su_oh)
+
+c_p_g_oh= cp_g(T_g_su_oh,T_g_ex_oh,m,n,p,e)
+{c_p_g_oh = 1000}
+c_p_r_oh=cp(fluid$,p=p_r_su_oh,t=(t_r_su_oh+t_r_ex_oh)/2)
+C_dot_r_oh = M_dot_r_oh * c_p_r_oh
+C_dot_g_oh = M_dot_g * c_p_g_oh
+C_dot_min_oh = min(C_dot_g_oh,C_dot_r_oh)
+Q_dot_oh = epsilon_oh * C_dot_min_oh*(T_g_su_oh - T_r_su_oh)
+Q_dot_oh = C_dot_g_oh * (T_g_su_oh - T_g_ex_oh)
+Q_dot_oh = C_dot_r_oh * (T_r_ex_oh - T_r_su_oh)
+p_r_ex_oh=p_r_su_oh
+
+$else overheater$='no'
+t_g_su_oh = T_g_ex_boil
+h_r_su_oh=h_r_ex_ev
+T_r_su_oh = temperature(fluid$,h=h_r_su_oh,p=p_r_su_oh)
+M_dot_r_oh=M_dot_r_exp_tot
+p_r_su_oh=p_r_ex_ev
+T_g_ex_oh = T_g_su_oh
+T_r_ex_oh = T_r_su_oh
+p_r_ex_oh = p_r_su_oh
+Q_dot_oh = 0
+
+$endif
+
+{T_r_su_oh = temperature(fluid$,h=h_r_su_oh,p=p_r_su_oh)}
+{p_r_ex_oh = p_r_su_oh}
+{t_r_ex_oh = t_r_su_oh + 10
+t_g_ex_oh = t_g_su_oh - 20}
+
+
+"=============================================================================================================================="
+"2. EXPANDER"
+"=============================================================================================================================="
+$Bookmark expander
+
+"2.1. Main Parameters"
+"fluid$='R123'"
+"V_s_cp=148E-6" "!! in diagram"
+V_s_cp=V_s_cp_cm3/1000000
+V_s_exp=V_s_cp/r_v_in{0.0000361}
+V_s_exp=V_s_exp_cm3/1000000
+V_dot_s_cp_m3h=N_rot_exp/60*V_s_cp*3600
+
+"r_v_in=4.1" "!! in diagram"
+"AU_su_exp_n=6" "! in diagram"
+"AU_ex_exp_n=9" "! in diagram"
+"AU_amb_exp=10"
+"M_dot_r_exp_n=0.1"
+"P_r_ex_exp=3e5
+N_rot_exp=2200"
+"T_amb_exp=20"
+"T_m=1"
+"A_leak=1E-7" "!! in diagram"
+
+$if expanderType$='open'
+r_v_in=r_v_in_1
+AU_su_exp_n=AU_su_exp_n_1
+AU_ex_exp_n=AU_ex_exp_n_1
+AU_amb_exp=AU_amb_exp_1
+M_dot_r_exp_n=M_dot_r_exp_n_1
+d_su=d_su_1
+A_leak_mm2=A_leak_mm2_1
+alpha=0
+W_dot_loss_0 = 0
+N_rot_exp=N_rot_exp_1
+V_s_cp_cm3=V_s_cp_cm3_1
+$else expanderType$='hermetic'
+r_v_in=r_v_in_2
+AU_su_exp_n=AU_su_exp_n_2
+AU_ex_exp_n=AU_ex_exp_n_2
+AU_amb_exp=AU_amb_exp_2
+M_dot_r_exp_n=M_dot_r_exp_n_2
+d_su=d_su_2
+A_leak_mm2=A_leak_mm2_2
+alpha=alpha_2
+W_dot_loss_0=W_dot_loss_0_2
+N_rot_exp=N_rot_exp_2
+V_s_cp_cm3=V_s_cp_cm3_2
+$endif
+
+$if pressuredrop$='no'
+d_su_input = 1E9
+$else pressuredrop$='yes'
+d_su_input = d_su
+$endif
+
+$if heatTransfer$='no'
+AU_su_exp_n_input = 1E-6
+AU_ex_exp_n_input = 1E-6
+$else heatTransfer$='yes'
+AU_su_exp_n_input = AU_su_exp_n
+AU_ex_exp_n_input = AU_ex_exp_n
+$endif
+
+$if unadaptedVolumeRatio$='yes'
+r_v_in_input = r_v_in
+$else unadaptedVolumeRatio$='no'
+r_v_in_input = r_v_in_ideal
+$endif
+
+$if mechanicalLosses$='yes'
+T_m_input = T_m
+alpha_input = alpha
+W_dot_loss_0_input = W_dot_loss_0
+$else mechanicalLosses$='no'
+T_m_input = 0
+alpha_input = 0
+W_dot_loss_0_input =0
+$endif
+
+$if expanderType$='open'
+eta_gen_input = eta_gen
+$else expanderType$='Hermetic'
+eta_gen_input = 1
+$endif
+
+
+"2.2Inputs/Connections"
+P_r_su_exp=p_r_ex_oh"10e5"
+t_r_su_exp=t_r_ex_oh"121"
+h_r_su_exp=enthalpy(fluid$,P=P_r_su_exp,T=t_r_su_exp)
+P_r_ex_exp=P_r_su_cd"5e5"
+
+
+
+call expander(fluid$,V_s_exp,r_v_in_input,AU_su_exp_n_input,AU_ex_exp_n_input,AU_amb_exp,M_dot_r_exp_n,d_su_input,A_leak_mm2,alpha_input,W_dot_loss_0_input,T_m_input,eta_gen_input,N_rot_exp,T_amb_exp,p_r_su_exp,p_r_ex_exp,T_r_su_exp,h_r_su_exp"<=inputs outputs=>",M_dot_r_exp,h_r_ex_exp,t_r_ex_exp,W_dot_el_exp,Q_dot_amb_exp,W_dot_sh_exp,epsilon_s_exp,r_v_in_ideal)
+
+{M_dot_r_exp  = 1
+t_r_ex_exp = 90
+h_r_ex_exp = enthalpy(fluid$,t=t_r_ex_exp,p=p_cd)
+W_dot_el_exp = 30E3
+Q_dot_amb_exp = 0
+W_dot_sh_exp = W_dot_el_exp
+epsilon_s_exp = 1}
+
+
+"2.15. Expanders in parallel"
+
+"n_exp=5" "! in diagram"
+M_dot_r_exp_tot=n_exp*M_dot_r_exp
+W_dot_sh_exp_tot=n_exp*W_dot_sh_exp
+Q_dot_amb_exp_tot=n_exp*Q_dot_amb_exp
+W_dot_el_exp_tot=n_exp*W_dot_el_exp
+
+"2.16. Points on the diagram"
+P_r[10]=P_r_ex_exp
+h_r[10]=h_r_ex_exp
+
+"=============================================================================================================================="
+"3. CONDENSER"
+"=============================================================================================================================="
+$bookmark condenser
+
+"3.1. Parameters"
+"epsilon_cd_tp=0.30" "! in diagram"
+
+"3.2. Inputs, connections"
+"p_cd=2e5 [Pa]"
+"DELTAT_sc_ex_cd=5" "! in diagram"
+M_dot_r_cd=M_dot_r_exp_tot
+h_r_su_cd="h_r_ex_exp"h_r_ex_reg_h
+t_r_su_cd="t_r_ex_exp"t_r_ex_reg_h
+fluidcd$='water'
+"t_sf_su_cd=10 [C]" "! in diagram"
+p_sf_su_cd=2e5 [Pa] "! in diagram"
+"M_dot_sf_cd=1" "!in diagram"
+
+"T_a_su_cd2 = 18"  "! in diagram"
+"T_a_ex_cd2 = 27"  "! in diagram"
+Q_dot_cd2 = Q_dot_cd - Q_dot_cd1
+
+{pinch_cd = 5}
+{p_cd = 2.8E5}
+
+
+p_r_su_cd = p_cd
+p_r_ex_cd = p_cd
+M_dot_sf_cd = M_dot_w_cd1
+T_sf_ex_cd = T_sf_ex_cd1
+T_sf_su_cd = T_sf_su_cd1
+Q_dot_cd=M_dot_r_cd*(h_r_su_cd-h_r_ex_cd)
+
+call cond(fluid$,T_r_su_cd,M_dot_r_cd,DELTAT_sc_ex_cd,Q_dot_cd1,T_sf_ex_cd,T_sf_su_cd,T_a_su_cd2,T_a_ex_cd2,p_cd:pinch_cd,h_r_su_cd_tp,t_r_su_cd_tp,h_r_ex_cd_tp,t_r_ex_cd_tp,T_r_ex_cd,h_r_ex_cd,M_dot_w_cd1,M_dot_a_cd2)
+
+
+
+
+"3.8. T-H_dot diagram"
+"3.8.1. Refrigerant side"
+T_r[5]=t_r_su_cd
+H_dot_r[5]=M_dot_r_cd*h_r_su_cd
+h_r[5]=h_r_su_cd
+P[5]=P_r_su_cd
+
+T_r[6]=t_r_su_cd_tp
+H_dot_r[6]=M_dot_r_cd*h_r_su_cd_tp
+h_r[6]=h_r_su_cd_tp
+P[6]=P_r_su_cd
+
+T_r[7]=t_r_ex_cd_tp
+H_dot_r[7]=M_dot_r_cd*h_r_ex_cd_tp
+h_r[7]=h_r_ex_cd_tp
+P[7]=P_r_su_cd
+
+T_r[8]=t_r_ex_cd
+H_dot_r[8]=M_dot_r_cd*h_r_ex_cd
+h_r[8]=h_r_ex_cd
+P[8]=P_r_su_cd
+
+"3.8.2. Secondary fluid side, condenser 1"
+T_sf_cd[1]=T_sf_ex_cd
+H_dot_sf_cd[1]=H_dot_r[5]
+T_sf_cd[2]=T_sf_su_cd
+H_dot_sf_cd[2]=H_dot_sf_cd[1]-Q_dot_cd1
+
+"Secondary fluid side, condenser 2 :"
+T_sf_cd[3]=T_a_ex_cd2
+H_dot_sf_cd[3]=H_dot_sf_cd[2]
+T_sf_cd[4]=T_a_su_cd2
+H_dot_sf_cd[4]=H_dot_sf_cd[1]-Q_dot_cd
+
+
+
+"=============================================================================================================================="
+"4. PUMP"
+"=============================================================================================================================="
+$bookmark pump
+
+"4.1. Parameters"
+"epsilon_s_pp=0.65" "! in diagram"
+eta_pp=epsilon_s_pp
+"4.2. Connections"
+h_r_su_pp=h_r_ex_cd
+p_r_su_pp=p_r_ex_cd
+t_r_su_pp=t_r_ex_cd
+p_r_ex_pp=p_r_su_ev
+M_dot_r_pp=M_dot_r_exp_tot
+
+call pump(fluid$,epsilon_s_pp,h_r_su_pp,t_r_su_pp,p_r_su_pp,p_r_ex_pp,M_dot_r_pp:"<=inputs outputs=>"W_dot_pp,T_r_ex_pp,h_r_ex_pp)
+
+"4.6. Points on the diagram"
+P_r[11]=P_r_su_exp
+h_r[11]=h_r_ex_pp
+
+"=============================================================================================================================="
+"5. REGENERATOR"
+"=============================================================================================================================="
+$bookmark regenerator
+
+$if regenerator$='yes'
+
+"5.1. Inputs"
+"epsilon_reg=0.7" "! in diagram"
+
+"5.2. Connections"
+t_r_su_reg_h=t_r_ex_exp
+"t_r_ex_reg_h=t_r_su_cd"
+t_r_su_reg_c=t_r_ex_pp
+"t_r_ex_reg_c=t_r_su_ev"
+h_r_su_reg_h=h_r_ex_exp
+h_r_su_reg_c=h_r_ex_pp
+M_dot_r_reg=M_dot_r_exp_tot
+
+"5.3. Model"
+c_p_r_reg_h=cp(fluid$,p=p_r_ex_exp,t=(t_r_su_reg_h+t_r_ex_reg_h)/2)
+c_p_r_reg_c=cp(fluid$,p=p_r_ex_pp,t=(t_r_su_reg_c+t_r_ex_reg_c)/2)
+C_dot_r_reg_h=M_dot_r_reg*c_p_r_reg_h
+C_dot_r_reg_c=M_dot_r_reg*c_p_r_reg_c
+C_dot_r_reg_min=min(C_dot_r_reg_h,C_dot_r_reg_c)
+
+Q_dot_reg=epsilon_reg*C_dot_r_reg_min*(t_r_su_reg_h-t_r_su_reg_c)
+"or:"
+"epsilon_reg=(t_r_su_reg_h-t_r_ex_reg_h)/(t_r_su_reg_h-t_r_su_reg_c)"
+
+Q_dot_reg=M_dot_r_reg*(h_r_su_reg_h-h_r_ex_reg_h)
+Q_dot_reg=M_dot_r_reg*(h_r_ex_reg_c-h_r_su_reg_c)
+h_r_ex_reg_h=enthalpy(fluid$,P=P_r_su_cd,t=t_r_ex_reg_h)
+h_r_ex_reg_c=enthalpy(fluid$,P=P_r_su_ev,t=t_r_ex_reg_c)
+
+$else regenerator$='no'
+t_r_su_reg_h=t_r_ex_exp
+t_r_su_reg_c=t_r_ex_pp
+h_r_su_reg_h=h_r_ex_exp
+h_r_su_reg_c=h_r_ex_pp
+M_dot_r_reg=M_dot_r_exp_tot
+h_r_ex_reg_h = h_r_su_reg_h
+h_r_ex_reg_c = h_r_su_reg_c
+T_r_ex_reg_h = t_r_su_reg_h
+t_r_ex_reg_c = t_r_su_reg_c
+Q_dot_reg = 0
+
+$endif
+
+
+"=============================================================================================================================="
+"7. CYCLE PERFORMANCES"
+"=============================================================================================================================="
+$bookmark performances
+
+"6.1. First law cycle efficiency"
+W_dot_el_net =W_dot_el_exp_tot-W_dot_pp
+eta_I=W_dot_el_net/(Q_dot_ev+Q_dot_econ+Q_dot_oh)
+
+
+"Global efficiency :"
+eta_global = (W_dot_el_net + Q_dot_cd + Q_dot_wo)/Q_dot_tot_boil
+
+
+"6.2. Carnot efficiency"
+eta_carnot=1-(T_sf_su_cd+273.15)/(T_sf_su_ev+273.15)
+
+"6.3. Pressure ratio"
+r_p=p_r_su_exp/p_r_ex_exp
+
+"6.4. Residual (calculation checking)"
+res_ref=Q_dot_ev-W_dot_sh_exp_tot-Q_dot_amb_exp_tot-Q_dot_cd+W_dot_pp + Q_dot_econ + Q_dot_oh
+
+written = write(eta_I,W_dot_el_net,eta_global,i)
+{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

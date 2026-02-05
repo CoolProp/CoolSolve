@@ -1,0 +1,52 @@
+"VL050517
+Répétition 12, exercice 3
+
+3.	Des gaz chauds (cp = 1000 J.kg-1.K-1) à une température de 300°C sont utilisés pour réchauffer de l'eau à 35°C et 2 bar et ce dans un échangeur à courants croisés. Le débit d'eau est de 1 kg/s. Les gaz et l'eau sortent de l'échangeur à 100°C et 125°C respectivement. Le coefficient de transfert du côté gaz est estimé à 100 W.m-2.K-1. Quelle est la surface d'échange de cet échangeur (supposé sans pertes de charge)?
+"
+
+c_gaz=1000 "[J/kg.K]"
+T_gaz_su=300
+T_w_su=35
+P_w=2E5 "[Pa]"
+M_dot_w=1 "[kg/s]"
+T_gaz_ex=100
+T_w_ex=125
+h_gaz=100 "[W/m^2.K]"
+
+"bilans"
+Q_dot=M_dot_gaz*c_gaz*(T_gaz_su-T_gaz_ex)
+Q_dot=M_dot_w*c_w*(T_w_ex-T_w_su)
+
+"débits capacitifs"
+C_dot_w=M_dot_w*c_w
+c_w=CP(water,P=P_w,T=T_w_bar) "on utilise T moyenne entrée sortie"
+T_w_bar=0.5*(T_w_su+T_w_ex)
+C_dot_gaz=M_dot_gaz*c_gaz
+C_dot_min=min(C_dot_w,C_dot_gaz)
+C_dot_max=max(C_dot_w,C_dot_gaz)
+omega=C_dot_min/C_dot_max
+
+
+"efficacité pour calculer NTU"
+epsilon=1-exp((1/omega)*NTU^0.22*(exp(-omega*NTU^0.78)-1))
+Q_dot=epsilon*C_dot_min*(T_gaz_su-T_w_su)
+
+"calcul de AU"
+NTU=AU/C_dot_min
+
+"autre calcul de AU"
+Q_dot=AU_bis*DELTAT_LM "IX.24"
+{AU=A*U}
+DELTAT_0=T_gaz_su-T_w_su
+DELTAT_L=T_w_ex-T_gaz_ex "??" ">0"
+DELTAT_LM=(DELTAT_0-DELTAT_L)/(ln(DELTAT_0/DELTAT_L))
+
+"température de paroi"
+Q_dot=A*h_gaz*(T_gaz_bar-T_wall)
+T_gaz_bar=0.5*(T_gaz_su+T_gaz_ex)
+Q_dot=A*h_w*(T_wall-T_w_bar)
+Q_dot=A*U*(T_gaz_bar-T_w_bar)
+1/U=1/h_gaz+1/h_w
+
+
+{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

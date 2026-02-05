@@ -1,0 +1,310 @@
+"!Title: Condenser three zones parametric model: purely crossflow configuration"
+"Date : 2008 January 8th"
+"Author: Cristian Cuevas"
+"Departamento de Ingeniería Mecánica
+Facultad de Ingeniería
+Universidad de Concepción
+Casilla 160-C, Concepción
+CHILE
+Phone: 56-41-2203550, Fax: 56-41-2251142
+"
+"Contact: crcuevas@udec.cl"
+"website : www.udec.cl/~crcuevas"
+"!Short Description :"
+"This model is able to predict the condenser performance by using a three zones model in a purely crossflow configuration"
+"!References :"
+"[1] Cuevas C. et Winandy E. 2002. Simplified 3 zones modelling of a car air-conditioning condenser, IIR Zero Leakage - Minimum Charge Conference, Stockholm (Sweden)"
+
+"[2] Cuevas C., Winandy E. et Lebrun J. 2003. Modelling of an air condenser working in critical zone for engine cooling by refrigeration loop, Vehicle Thermal Management Systems, Brighton (UK), May 2003"
+
+"[3] Cuevas C. 2006. PhD Thesis. Contribution to the modelling of refrigeration systems"
+
+"!Disclaimer"
+"The accuracy or reliability of information presented in this model is not guaranteed or warranted in any way. Every use of this model, for commercial purpose or not, incurs liability of the user only. This model is freely distributed and may not be sold or distributed for commercial purpose. The user is asked to cite his sources and the origin of this model."
+
+"!Help us improving this model : any feedback comment is very welcome" 
+"!*************************************************** MODEL ***************************************************"
+" ######################################################################################################################### "
+" ##################################################### CONDENSER MODEL ################################################ "
+" ######################################################################################################################### "
+
+" ----------------------------------------------------------- Single phase heat exchanger ------------------------------------------------------------ "
+PROCEDURE single_phase_HX(cf$,hf$,t_cf_su,t_cf_ex,P_cf_su,P_cf_ex,P_hf_su,P_hf_ex,t_hf_su,t_hf_ex,M_dot_hf,M_dot_cf,alpha,C_cf,C_hf,n_cf,n_hf:Q_dot,epsilon,NTU,AU)
+
+" cf: cold fluid "
+" hf: hot fluid "
+
+" Average pressure and temperature "
+P_bar_hf=(P_hf_su+P_hf_ex)/2
+P_bar_cf=(P_cf_su+P_cf_ex)/2
+t_bar_hf=(t_hf_ex+t_hf_su)/2
+t_bar_cf=(t_cf_su+t_cf_ex)/2
+
+"Air properties"
+cp_cf=specheat(cf$,T=t_bar_cf,P=P_bar_cf)
+
+"Refrigerant properties"
+cp_hf=specheat(hf$,T=t_bar_hf,P=P_bar_hf)
+
+" Thermal resistances "
+R_cf=C_cf*(M_dot_cf)^(-n_cf)
+R_hf=C_hf*(M_dot_hf)^(-n_hf)
+
+" Global heat transfer coefficient "
+AU=alpha/(R_cf+R_hf)
+
+" Mass flow rate "
+C_dot_hf=M_dot_hf*cp_hf
+C_dot_cf=alpha*cp_cf*M_dot_cf
+
+C_dot_min=min(C_dot_hf,C_dot_cf)
+C_dot_max=max(C_dot_hf,C_dot_cf)
+
+omega=C_dot_min/C_dot_max
+
+" Number of transfer units "
+NTU=AU/C_dot_min
+
+" Effectiveness "
+epsilon=(1-exp(-NTU*(1-omega)))/(1-omega*exp(-NTU*(1-omega)))
+
+" Fluid to fluid heat transfer "
+Q_dot=epsilon*C_dot_min*(t_hf_su-t_cf_su)
+
+end
+
+" ----------------------------------------------------------- Two phase heat exchanger --------------------------------------------------------------- "
+Procedure two_phase_CD(cf$,R$,t_cf_su,t_cf_ex,t_cd,M_dot_r,M_dot_cf,alpha,C_cf,C_r,n_cf,n_r:Q_dot,epsilon,NTU,AU)
+
+t_bar_cf=(t_cf_su+t_cf_ex)/2
+
+"Cold fluid properties"
+cp_cf=specheat(cf$,T=t_bar_cf,P=1)
+
+" Thermal resistances "
+R_cf:=C_cf*(M_dot_cf)^(-n_cf)
+R_r=C_r*(M_dot_r)^(-n_r)
+
+" Heat transfer coefficient "
+AU=alpha/(R_cf+R_r)
+
+" Flow capacities "
+C_dot_min=alpha*M_dot_cf*cp_cf
+
+" Number of transfer units "
+NTU=AU/C_dot_min
+
+" Effectiveness "
+epsilon=1-exp(-NTU)
+
+" Fluid to fluid heat transfer "
+Q_dot=epsilon*C_dot_min*(t_cd-t_cf_su)
+
+end
+
+" ########################################################################################################################## "
+"! ##################################################### MAIN PROGRAM ##################################################### "
+" ########################################################################################################################## "
+" ----------- Units ----------- "
+" Pressure	: Pa "
+" Temperature : °C "
+" Enthalpies :  J/kgK "
+" Powers : W "
+" DPcf : Pa "
+" DPr : Pa "
+
+" Fluids "
+R$='R134a'
+cf$='Air_ha'
+
+" Inputs "
+t_cf_su_cd=20			" Cold fluid supply temperature "
+DELTAT_sc=16		" Subcooling "
+M_dot_r_cd=0.1		" Refrigerant mass flow rate "
+M_dot_cf_cd=1.6		" Cold fluid mass flow rate "
+DELTAT_oh=50		" Supply overheating "
+P_cf_su_cd=101325	" Cold fluid supply pressure "
+
+" ############## Parameters ############ "
+" Heat transfer "
+C_cf_cd=0.1993/1000
+C_r_tp_cd=0.00744/1000
+C_r_sh_cd=0.03384/1000
+C_r_sc_cd=0.07837/1000
+
+n_cf=0.5
+n_r=0.8
+
+" Pressure drop "
+K_cf_cd_1=0
+K_cf_cd_2=64587
+n_cf_cd=-0.5
+
+K_r_cd_sh_1=0
+K_r_cd_tp_1=0
+K_r_cd_sc_1=0
+
+K_r_cd_sh_2=0
+K_r_cd_tp_2=0
+K_r_cd_sc_2=0
+
+n_r_cd_sh=0
+n_r_cd_tp=0
+n_r_cd_sc=0
+
+" ################################ EQUATIONS AND PROPERTIES ################################# "
+t_r_sat_su_cd=TEMPERATURE(R$,x=1,P=P_r_su_cd)
+t_r_su_cd=t_r_sat_su_cd+DELTAT_oh
+
+" Cold fluid properties "
+h_cf_su_cd=enthalpy(cf$,T=t_cf_su_cd,P=P_cf_su_cd)
+rho_cf_su_cd=DENSITY(cf$,T=t_cf_su_cd,P=P_cf_su_cd)
+mu_cf_su_cd=VISCOSITY(cf$,T=t_cf_su_cd,P=P_cf_su_cd)
+
+" Refrigerant properties "
+h_r_su_cd_sh=enthalpy(R$,T=t_r_su_cd_sh,P=P_r_su_cd_sh)
+h_r_ex_cd_sh=enthalpy(R$,x=1,P=P_r_ex_cd_sh)
+
+h_r_su_cd_tp=enthalpy(R$,x=1,P=P_r_su_cd_tp)
+h_r_ex_cd_tp=enthalpy(R$,x=0,P=P_r_ex_cd_tp)
+
+h_r_su_cd_sc=enthalpy(R$,x=0,P=P_r_su_cd_sc)
+h_r_ex_cd_sc=enthalpy(R$,T=t_r_ex_cd,P=P_r_ex_cd_sc)
+
+mu_r_su_cd_sh=VISCOSITY(R$,T=t_r_su_cd_sh,P=P_r_su_cd_sh)
+rho_r_su_cd_sh=DENSITY(R$,T=t_r_su_cd_sh,P=P_r_su_cd_sh)
+mu_r_su_cd_tp=VISCOSITY(R$,x=0,P=P_r_su_cd_tp)
+rho_r_su_cd_tp=DENSITY(R$,x=0,P=P_r_su_cd_tp)
+mu_r_su_cd_sc=VISCOSITY(R$,x=0,P=P_r_su_cd_sc)
+rho_r_su_cd_sc=DENSITY(R$,x=0,P=P_r_su_cd_sc)
+
+" ################################################################################################ "
+"! ######################################## De-superheating zone #################################### "
+" ################################################################################################ "
+" Fluid to fluid heat transfer "
+CALL single_phase_HX(cf$,R$,t_cf_su_cd_sh,t_cf_ex_cd_sh,P_cf_su_cd_sh,P_cf_ex_cd_sh,P_r_su_cd_sh,P_r_ex_cd_sh,t_r_su_cd_sh,t_r_ex_cd_sh,M_dot_r_cd,M_dot_cf_cd,alpha_cd_sh,C_cf_cd,C_r_sh_cd,n_cf,n_r:Q_dot_r_cd_sh,epsilon_cd_sh,NTU_cd_sh,AU_cd_sh)
+
+H_dot_r_cd_sh=Q_dot_r_cd_sh
+
+" Refrigerant flow enthalpy "
+H_dot_r_cd_sh=M_dot_r_cd*(h_r_su_cd_sh-h_r_ex_cd_sh)
+
+" Cold fluid flow enthalpy "
+H_dot_cf_cd_sh=M_dot_cf_cd_sh*(h_cf_ex_cd_sh-h_cf_su_cd_sh)
+
+" De-superheating thermal balance "
+H_dot_r_cd_sh-H_dot_cf_cd_sh=0
+
+" Refrigerant side pressure drop "
+DELTAP_r_cd_sh=K_r_cd_sh_1*M_dot_r_cd^2/rho_r_su_cd_sh+alpha_cd_sh*K_r_cd_sh_2*M_dot_r_cd^(2+n_r_cd_sh)/(rho_r_su_cd_sh*mu_r_su_cd_sh^n_r_cd_sh)
+
+" ################################################################################################ "
+"! ########################################### Two-phase zone ###################################### "
+" ################################################################################################ "
+" Fluid to fluid heat transfer "
+CALL two_phase_CD(cf$,R$,t_cf_su_cd_tp,t_cf_ex_cd_tp,t_r_cd,M_dot_r_cd,M_dot_cf_cd,alpha_cd_tp,C_cf_cd,C_r_tp_cd,n_cf,n_r:Q_dot_r_cd_tp,epsilon_cd_tp,NTU_cd_tp,AU_cd_tp)
+
+H_dot_r_cd_tp=Q_dot_r_cd_tp
+
+" Refrigerant side flow enthalpy "
+H_dot_r_cd_tp=M_dot_r_cd*(h_r_su_cd_tp-h_r_ex_cd_tp)
+
+" Cold fluid flow enthalpy "
+H_dot_cf_cd_tp=M_dot_cf_cd_tp*(h_cf_ex_cd_tp-h_cf_su_cd_tp)
+
+" Two phase thermal balance "
+H_dot_r_cd_tp-H_dot_cf_cd_tp=0
+
+" Refrigerant side pressure drop "
+DELTAP_r_cd_tp=K_r_cd_tp_1*M_dot_r_cd^2/rho_r_su_cd_tp+alpha_cd_tp*K_r_cd_tp_2*M_dot_r_cd^(2+n_r_cd_tp)/(rho_r_su_cd_tp*mu_r_su_cd_tp^n_r_cd_tp)
+
+" ################################################################################################ "
+"! ########################################### Subcooled zone ###################################### "
+" ################################################################################################ "
+" Fluid to fluid heat transfer "
+CALL single_phase_HX(cf$,R$,t_cf_su_cd_sc,t_cf_ex_cd_sc,P_cf_su_cd_sc,P_cf_ex_cd_sc,P_r_su_cd_sc,P_r_ex_cd_sc,t_r_su_cd_sc,t_r_ex_cd_sc,M_dot_r_cd,M_dot_cf_cd,alpha_cd_sc,C_cf_cd,C_r_sc_cd,n_cf,n_r:Q_dot_r_cd_sc,epsilon_cd_sc,NTU_cd_sc,AU_cd_sc)
+
+H_dot_r_cd_sc=Q_dot_r_cd_sc
+
+" Refrigerant side flow enthalpy "
+H_dot_r_cd_sc=M_dot_r_cd*(h_r_su_cd_sc-h_r_ex_cd_sc)
+
+" Cold fluid flow enthalpy "
+H_dot_cf_cd_sc=M_dot_cf_cd_sc*(h_cf_ex_cd_sc-h_cf_su_cd_sc)
+
+" Subcooled thermal balance "
+H_dot_r_cd_sc-H_dot_cf_cd_sc=0
+
+" Condensing pressure "
+P_r_cd=(P_r_su_cd_tp+P_r_ex_cd_tp)/2
+t_r_cd=temperature(R$,x=1,p=P_r_cd)
+
+" Refrigerant side pressure drop "
+DELTAP_r_cd_sc=K_r_cd_sc_1*M_dot_r_cd^2/rho_r_su_cd_sc+alpha_cd_sc*K_r_cd_sc_2*M_dot_r_cd^(2+n_r_cd_sc)/(rho_r_su_cd_sc*mu_r_su_cd_sc^n_r_cd_sc)
+
+" ################################################################################################ "
+"! ###################### Temperature and pressure profiles and connections ############################# "
+" ################################################################################################ "
+" Cold fluid side connections "
+h_cf_su_cd_sc=h_cf_su_cd
+h_cf_su_cd_tp=h_cf_su_cd
+h_cf_su_cd_sh=h_cf_su_cd
+
+" Cold-fluid side temperatures "
+t_cf_su_cd_sc=t_cf_su_cd
+t_cf_ex_cd_sc=temperature(cf$,h=h_cf_ex_cd_sc,P=P_cf_ex_cd_sc)
+t_cf_su_cd_tp=t_cf_su_cd
+t_cf_ex_cd_tp=temperature(cf$,h=h_cf_ex_cd_tp,P=P_cf_ex_cd_tp)
+t_cf_su_cd_sh=t_cf_su_cd
+t_cf_ex_cd_sh=temperature(cf$,h=h_cf_ex_cd_sh,P=P_cf_ex_cd_sh)
+t_cf_ex_cd=temperature(cf$,h=h_cf_ex_cd,P=P_cf_ex_cd_sh)
+
+"Cold fluid side pressures "
+P_cf_su_cd_sh=P_cf_su_cd
+P_cf_ex_cd_sh=P_cf_su_cd
+P_cf_su_cd_tp=P_cf_su_cd
+P_cf_ex_cd_tp=P_cf_su_cd
+P_cf_su_cd_sc=P_cf_su_cd
+P_cf_ex_cd_sc=P_cf_su_cd
+
+" Refrigerant side temperatures "
+t_r_su_cd_sh=t_r_su_cd
+t_r_ex_cd_sh=temperature(R$,x=1,p=P_r_ex_cd_sh)
+t_r_su_cd_tp=t_r_ex_cd_sh
+t_r_ex_cd_tp=temperature(R$,x=0,p=P_r_ex_cd_tp)
+t_r_su_cd_sc=t_r_ex_cd_tp
+t_r_ex_cd_sc=t_r_su_cd_sc-DELTAT_sc
+t_r_ex_cd=t_r_ex_cd_sc
+
+" Refrigerant side pressures "
+P_r_su_cd_sh=P_r_su_cd
+P_r_ex_cd_sh=P_r_su_cd_sh-DELTAP_r_cd_sh
+P_r_su_cd_tp=P_r_ex_cd_sh
+P_r_ex_cd_tp=P_r_su_cd_tp-DELTAP_r_cd_tp
+P_r_su_cd_sc=P_r_ex_cd_tp
+P_r_ex_cd_sc=P_r_su_cd_sc-DELTAP_r_cd_sc
+P_r_ex_cd=P_r_ex_cd_sc
+
+" ################################################################################################ "
+"! ############################################ Global results ####################################### "
+" ################################################################################################ "
+H_dot_r_cd=H_dot_r_cd_sh+H_dot_r_cd_tp+H_dot_r_cd_sc
+H_dot_cf_cd=H_dot_cf_cd_sh+H_dot_cf_cd_tp+H_dot_cf_cd_sc
+
+" Cold-fluid flow rate "
+M_dot_cf_cd_sh=alpha_cd_sh*M_dot_cf_cd
+M_dot_cf_cd_tp=alpha_cd_tp*M_dot_cf_cd
+M_dot_cf_cd_sc=alpha_cd_sc*M_dot_cf_cd
+
+M_dot_cf_cd_sh*h_cf_ex_cd_sh+M_dot_cf_cd_tp*h_cf_ex_cd_tp+M_dot_cf_cd_sc*h_cf_ex_cd_sc=M_dot_cf_cd*h_cf_ex_cd
+
+alpha_cd_sh+alpha_cd_tp+alpha_cd_sc=1
+
+" Refrigerant pressure drop "
+DELTAP_r_cd=(DELTAP_r_cd_sh+DELTAP_r_cd_tp+DELTAP_r_cd_sc)
+
+" Air pressure drop "
+DELTAP_cf_cd=K_cf_cd_1*M_dot_cf_cd^2/rho_cf_su_cd+K_cf_cd_2*M_dot_cf_cd^(2+n_cf_cd)/(rho_cf_su_cd*mu_cf_su_cd^n_cf_cd)
+
+"!*************************************************** END ***************************************************"
+{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

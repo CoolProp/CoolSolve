@@ -1,0 +1,246 @@
+"! 1-2 : Compresseur"
+
+"Data"
+{m_dot=2}
+
+
+p00=74.1;
+p01=-48.85;
+p02=16.43;
+p03=0.01193;
+p04=0.04961;
+p05=0.002922;
+p10=11.5;
+p11=5.76;
+p12=-6.184;
+p13=0.03933;
+p14=-0.01717;
+p20=-2.579;
+p21=2.234;
+p22=0.5891;
+p23=0.01292;
+p30=-0.203;
+p31=-0.322;
+p32=-0.02502;
+p40=0.04759;
+p41=0.01318;
+p50=-0.00205;
+
+"parameter Real gamma=1.292;
+parameter Real gamma_inlet;"
+p_su=76.8765E5;
+T_su=273.15+32.22;
+{p_ex=140E5;}
+"pex commenté car RPM fixe le p ex"
+
+
+"Equation"
+T[1]=T_su
+P[1]=P_su
+s[1]=Entropy(R744,T=T[1],P=P[1])
+h[1]=Enthalpy(R744,T=T[1],P=P[1])
+
+"isentropique"
+s_is=s[1]
+P_is=P_ex
+h_is=Enthalpy(R744,s=s_is,P=P_is)
+
+"2"
+eta_s=(h_is-h[1])/(h[2]-h[1])
+Dh=DELTAh/1055.056*0.45359237
+md=m_dot/0.45359237
+
+eta_s=1/100*(p00 + p10*md + p01*Dh + p20*md^2 + p11*md*Dh + p02*Dh^2 + p30*md^3 +  p21*md^2*Dh + p12*md*Dh^2 + p03*Dh^3 + p40*md^4 + p31*md^3*Dh  + p22*md^2*Dh^2 + p13*md*Dh^3 + p04*Dh^4 + p50*md^5 + p41*md^4*Dh  + p32*md^3*Dh^2 + p23*md^2*Dh^3 + p14*md*Dh^4 + p05*Dh^5)
+
+P[2]=P_ex
+s[2]=Entropy(R744,h=h[2],P=P[2])
+T[2]=Temperature(R744,h=h[2],s=s[2])
+DELTAh=h[2]-h[1]
+
+
+"Power"
+W_dot=(h[2]-h[1])*m_dot
+
+{"gamma"
+v[1]=Volume(R744,T=T[1],P=P[1])
+v[2]=Volume(R744,T=T[2],P=P[2])
+P[1]*v[1]^gamma=P[2]*v[2]^gamma
+
+cp[1]=Cp(R744,T=T[1],P=P[1])
+cv[1]=Cv(R744,T=T[1],P=P[1])
+cp[2]=Cp(R744,T=T[2],P=P[2])
+cv[2]=Cv(R744,T=T[2],P=P[2])
+gamma[1]=cp[1]/cv[1]
+gamma[2]=cp[2]/cv[2]}
+
+
+"RPM"
+k00 =       28.32  ;
+k10 =     -0.4254  ;
+k01 =       12.96  ;
+k20 =      0.2893 ;
+k11 =     -0.6651  ;
+k02 =    -0.05955;
+
+RPM=1000*(k00 + k10*md + k01*Dh + k20*md^2 + k11*Dh*md + k02*Dh^2)
+omega=RPM/60*2*pi
+RPM=75000
+{md=8
+Dh=4.1}
+
+
+"Pressure ratio"
+r_p=P[2]/P[1]
+
+
+"!2-3 : Echangeur avec 8-9 (CO2-C02 à CC)"
+P[3]=P[2]
+{T[3]-T[2]=T[8]-T[9]}
+h[3]-h[2]=h[8]-h[9]
+s[3]=Entropy(R744,T=T[3],P=P[3])
+h[3]=Enthalpy(R744,T=T[3],P=P[3])
+
+"!3-4 : pertes de chaleurs (et de charge ?) dans tuyau"
+xsi=0.97 "pertes de charges"
+{DELTAT_loss[3]=15;}
+DELTAT_loss[3]=2;
+P[4]=xsi*P[3]
+T[4]=T[3]-DELTAT_loss[3]
+
+
+"!4-5 : Apport solaire (air-C02)"
+"Débit air constant, mais T varie"
+P[5]=P[4]
+DELTAT_sun=150
+T[5]-T[4]=DELTAT_sun
+s[4]=Entropy(R744,T=T[4],P=P[4])
+s[5]=Entropy(R744,T=T[5],P=P[5])
+h[4]=Enthalpy(R744,T=T[4],P=P[4])
+h[5]=Enthalpy(R744,T=T[5],P=P[5])
+
+"!5-6 : idem 3-4"
+P[6]=xsi*P[5]
+T[6]-T[5]=DELTAT_loss[5]
+{DELTAT_loss[5]=10}
+DELTAT_loss[5]=2
+
+
+"!6-7 : Turbine"
+t00 =       174.9;
+t10 =      -158.2 ;
+t01 =       13.32  ;
+t20 =       45.27  ;
+t11 =      -3.034  ;
+t02 =     -0.1202  ;
+t30 =      -4.875  ;
+t21 =      0.5697 ;
+t12 =    -0.02777  ;
+t03 =    0.001934;
+
+
+RPM = 1000*(t00 + t10*md + t01*Dh_turb + t20*md^2 + t11*md*Dh_turb + t02*Dh_turb^2 + t30*md^3 + t21*md^2*Dh_turb + t12*md*Dh_turb^2 + t03*Dh_turb^3);
+Dh_turb=DELTAh_turb/1055.056*0.45359237;
+
+e00 =       57.65  ;
+e10 =       27.84 ;
+e01 =      -27.13 ;
+e20 =       23.77 ;
+e11 =       10.79  ;
+e02 =      0.8045 ;
+e30 =      -22.78  ;
+e21 =       1.824  ;
+e12 =     -0.8106  ;
+e03 =     0.01739  ;
+e40 =       5.788  ;
+e31 =      -1.027  ;
+e22 =      0.1345  ;
+e13 =    0.009117  ;
+e04 =  -0.0009196  ;
+e50 =     -0.6498  ;
+e41 =      0.2459  ;
+e32 =    -0.05374  ;
+e23 =    0.006088  ;
+e14 =  -0.0004917  ;
+e05 =   2.018e-05  ;
+
+
+eta_t=1/100*(e00 + e10*md + e01*Dh_turb + e20*md^2 + e11*md*Dh_turb + e02*Dh_turb^2 + e30*md^3 + e21*md^2*Dh_turb + e12*md*Dh_turb^2 + e03*Dh_turb^3 + e40*md^4 + e31*md^3*Dh_turb + e22*md^2*Dh_turb^2 + e13*md*Dh_turb^3 + e04*Dh_turb^4 + e50*md^5 + e41*md^4*Dh_turb + e32*md^3*Dh_turb^2 + e23*md^2*Dh_turb^3 + e14*md*Dh_turb^4 + e05*Dh_turb^5)
+
+eta_t=(h[6]-h[7])/(h[6]-h_is_t);
+DELTAh_turb=h[6]-h[7]
+h_is_t=Enthalpy(R744,P=P[7],s=s[6])
+
+h[6]=Enthalpy(R744,T=T[6],P=P[6])
+s[6]=Entropy(R744,T=T[6],P=P[6])
+h[7]=Enthalpy(R744,T=T[7],P=P[7])
+s[7]=Entropy(R744,T=T[7],P=P[7])
+
+"Power"
+W_dot_t=DELTAh_turb*m_dot
+
+"! 7-8 : idem (3-4)"
+P[8]=xsi*P[7]
+T[8]-T[7]=DELTAT_loss[7]
+{DELTAT_loss[7]=3}
+DELTAT_loss[7]=2
+
+"! 8-9 : échangeur (2-3)"
+"cf section 2-3"
+P[9]=P[8]
+s[8]=Entropy(R744,T=T[8],P=P[8])
+s[9]=Entropy(R744,T=T[9],P=P[9])
+h[8]=Enthalpy(R744,T=T[8],P=P[8])
+h[9]=Enthalpy(R744,T=T[9],P=P[9])
+
+"! 9-1 : cooler"
+"HEX (CO2-H20) à CC"
+P[1]=P[9]
+T[9]-T[1]=DELTAT_cool
+DELTAT_cool=25
+"Modélisation"
+m_dot_H2O=3
+T_H2O_in=15+273.15
+C_dot_hot=m_dot*cp_CO2
+cp_CO2=(h[1]-h[9])/(T[1]-T[9]) "calcul du cp moyen"
+C_dot_cold=m_dot_H2O*cp_w
+cp_w=Cp(Water,T=T_w,P=P_w)
+T_w=T_H2O_in
+P_w=101325
+C_dot_min=min(C_dot_hot,C_dot_cold)
+C_dot_max=max(C_dot_hot,C_dot_cold)
+C_r=C_dot_min/C_dot_max
+Q_dot_cool=m_dot*(h[9]-h[1])
+Q_dot_cool=epsilon*C_dot_min*(T[9]-T_H2O_in)
+epsilon=(1-exp(-NTU*(1+C_r)))/(1-C_r*exp(-NTU*(1+C_r)))
+NTU=AU/C_dot_min
+{AU=4200 "DETLAT de 25K"}
+
+
+"! Cp partout"
+cp[1]=Cp(R744,T=T[1],P=P[1])
+cp[2]=Cp(R744,T=T[2],P=P[2])
+cp[3]=Cp(R744,T=T[3],P=P[3])
+cp[4]=Cp(R744,T=T[4],P=P[4])
+cp[5]=Cp(R744,T=T[5],P=P[5])
+cp[6]=Cp(R744,T=T[6],P=P[6])
+cp[7]=Cp(R744,T=T[7],P=P[7])
+cp[8]=Cp(R744,T=T[8],P=P[8])
+cp[9]=Cp(R744,T=T[9],P=P[9])
+"T_C partout"
+T_C[1]=T[1]-273.15
+T_C[2]=T[2]-273.15
+T_C[3]=T[3]-273.15
+T_C[4]=T[4]-273.15
+T_C[5]=T[5]-273.15
+T_C[6]=T[6]-273.15
+T_C[7]=T[7]-273.15
+T_C[8]=T[8]-273.15
+T_C[9]=T[9]-273.15
+
+"Fausse étape 10 pour fermer le cycle"
+s[10]=s[1]
+h[10]=h[1]
+T[10]=T[1]
+P[10]=P[1]
+cp[10]=cp[1]
+T_C[10]=T_C[1]{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

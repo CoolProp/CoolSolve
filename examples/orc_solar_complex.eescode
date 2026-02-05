@@ -1,0 +1,3774 @@
+$bookmark hx_ev
+
+procedure hx_ev(fluid$,fluidev$,T_sf_su_ev,M_dot_sf,T_r_su_ev,T_r_ex_ev,M_dot_r,p_ev,p_sf,b,L_w_tot,L_h,beta:A_ev,DELTAp,DELTAp_sf)
+
+
+
+if fluidev$='glycol' then
+
+call prop_htf(fluidev$,T_sf_su_ev:mu_sf,rho_sf,cp_sf,k_sf)
+
+else
+
+cp_sf = cp(fluidev$,t=t_sf_su_ev,p=p_sf)
+
+endif
+
+
+
+
+
+"Saturation properties : "
+
+h_r_sat_v = enthalpy(fluid$,p=p_ev,x=1)
+
+h_r_sat_l = enthalpy(fluid$,p=p_ev,x=0)
+
+T_r_sat = temperature(fluid$,p=p_ev,x=0.5)
+
+
+
+"Supply-exhaust conditions for each zone :"
+
+h_r_su_ev = enthalpy(fluid$,t=t_r_su_ev,p=p_ev)
+
+h_r_ex_ev = enthalpy(fluid$,t=t_r_ex_ev,p=p_ev)
+
+
+
+
+
+	h_r_su_l = h_r_su_ev
+
+	h_r_ex_l = h_r_sat_l
+
+	h_r_su_tp = h_r_sat_l
+
+	h_r_ex_tp = h_r_sat_v
+
+	h_r_su_v = h_r_sat_v
+
+	h_r_ex_v = h_r_ex_ev
+
+
+
+"Heat flow rate for each zone :"
+
+Q_dot_tp = M_dot_r * (h_r_ex_tp - h_r_su_tp)
+
+Q_dot_v = M_dot_r * (h_r_ex_v - h_r_su_v)
+
+Q_dot_l = M_dot_r*(h_r_ex_l - h_r_su_l)
+
+
+
+Q_dot_ev = Q_dot_tp + Q_dot_v + Q_dot_l
+
+
+
+"Secondary fluid side :"
+
+//h_sf_su_ev = enthalpy(fluid$,t=t_sf_su_ev,p=p_sf)
+
+C_dot_sf = cp_sf * M_dot_sf
+
+T_sf_su_v = T_sf_su_ev
+
+T_sf_ex_v = T_sf_su_ev - Q_dot_v/C_dot_sf
+
+T_sf_su_tp = T_sf_ex_v
+
+T_sf_ex_tp = T_sf_su_tp - Q_dot_tp/C_dot_sf
+
+T_sf_su_l = T_sf_ex_tp
+
+T_sf_ex_l = T_sf_ex_tp - Q_dot_l/C_dot_sf
+
+
+
+T_sf_ex_ev = T_sf_su_ev - Q_dot_ev/C_dot_sf
+
+
+
+"Secondary fluid temperatures :"
+
+{T_sf_su_l = temperature(fluidev$,h=h_sf_su_l,p=p_sf)
+
+T_sf_ex_l = temperature(fluidev$,h=h_sf_ex_l,p=p_sf)
+
+T_sf_su_tp = temperature(fluidev$,h=h_sf_su_tp,p=p_sf)
+
+T_sf_ex_tp = temperature(fluidev$,h=h_sf_ex_tp,p=p_sf)
+
+T_sf_su_v = temperature(fluidev$,h=h_sf_su_v,p=p_sf)
+
+T_sf_ex_v = temperature(fluidev$,h=h_sf_ex_v,p=p_sf)}
+
+
+
+"Primary fluid temperatures :"
+
+T_r_su_l = temperature(fluid$,h=h_r_su_l,p=p_ev)
+
+T_r_ex_l = temperature(fluid$,h=h_r_ex_l,p=p_ev)
+
+T_r_su_tp = temperature(fluid$,h=h_r_su_tp,p=p_ev)
+
+T_r_ex_tp = temperature(fluid$,h=h_r_ex_tp,p=p_ev)
+
+T_r_su_v = temperature(fluid$,h=h_r_su_v,p=p_ev)
+
+T_r_ex_v = temperature(fluid$,h=h_r_ex_v,p=p_ev)
+
+
+
+"! Vapor zone"
+
+c_p_sf_v =cp_sf
+
+c_p_r_v = (h_r_ex_v - h_r_su_v)/(t_r_ex_v - t_r_su_v)
+
+
+
+C_dot_r_v=M_dot_r*c_p_r_v
+
+C_dot_sf_v=M_dot_sf*c_p_sf_v
+
+C_dot_min_v=min(C_dot_r_v,C_dot_sf_v)
+
+epsilon_ev_v=Q_dot_v/C_dot_min_v/(t_sf_su_v-t_r_su_v)
+
+
+
+"Mean logarithmic temperature difference :"
+
+if T_sf_ex_v > T_r_sat then
+
+	DELTAT_log_v = ((T_sf_su_v - T_r_ex_v) - (T_sf_ex_v - T_r_su_v))/ln((T_sf_su_v-T_r_ex_v)/(T_sf_ex_v-T_r_su_v))
+
+else
+
+	T_sf_ex_v_bis = T_r_sat + 0.1
+
+	DELTAT_log_v = ((T_sf_su_v - T_r_ex_v) - (T_sf_ex_v_bis - T_r_su_v))/ln((T_sf_su_v-T_r_ex_v)/(T_sf_ex_v_bis-T_r_su_v))
+
+endif
+
+AU_v = Q_dot_v/DELTAT_log_v
+
+
+
+pinch = min(T_sf_su_l - T_r_ex_l,T_sf_ex_l-T_r_su_l)
+
+
+
+
+
+"! Two-phase zone :"
+
+c_p_sf_tp =cp_sf
+
+
+
+C_dot_sf_tp=M_dot_sf*c_p_sf_tp
+
+
+
+if T_sf_ex_tp > T_r_sat then
+
+	AU_tp = -C_dot_sf_tp * ln(1 - (T_sf_su_tp - T_sf_ex_tp)/(T_sf_su_tp - T_r_sat))
+
+	DELTAT_log_tp = (T_sf_su_tp - T_sf_ex_tp)/ln((T_sf_su_tp - T_r_sat)/(T_sf_ex_tp - T_r_sat))
+
+	{AU_tp_bis = Q_dot_tp/DELTAT_log_tp}
+
+else
+
+	T_sf_ex_tp_bis = T_r_sat + 0.1
+
+	AU_tp = -C_dot_sf_tp * ln(1 - (T_sf_su_tp - T_sf_ex_tp_bis)/(T_sf_su_tp - T_r_sat))
+
+	DELTAT_log_tp = (T_sf_su_tp - T_sf_ex_tp)/ln((T_sf_su_tp - T_r_sat)/(T_sf_ex_tp_bis - T_r_sat))
+
+endif
+
+
+
+epsilon_tp = (T_sf_su_tp - T_sf_ex_tp)/(T_sf_su_tp - T_r_sat)
+
+pinch = min(pinch,T_sf_ex_tp - T_r_sat)
+
+
+
+
+
+
+
+"! Liquid zone :"
+
+
+
+c_p_sf_l = cp_sf
+
+c_p_r_l = (h_r_su_l - h_r_ex_l)/(t_r_su_l - t_r_ex_l)
+
+
+
+C_dot_r_l=M_dot_r*c_p_r_l
+
+C_dot_sf_l=M_dot_sf*c_p_sf_l
+
+C_dot_min_l=min(C_dot_r_l,C_dot_sf_l)
+
+
+
+epsilon_l=Q_dot_l/(C_dot_min_l*(t_sf_su_l-t_r_su_l))
+
+
+
+if T_sf_su_l > T_r_sat then
+
+	DELTAT_log_l = ((T_sf_su_l - T_r_ex_l) - (T_sf_ex_l - T_r_su_l))/ln((T_sf_su_l-T_r_ex_l)/(T_sf_ex_l-T_r_su_l))
+
+else
+
+	T_sf_su_l_bis = T_r_sat + 0.1
+
+	DELTAT_log_l = ((T_sf_su_l_bis - T_r_ex_l) - (T_sf_ex_l - T_r_su_l))/ln((T_sf_su_l_bis-T_r_ex_l)/(T_sf_ex_l-T_r_su_l))
+
+endif
+
+
+
+AU_l = Q_dot_l/DELTAT_log_l
+
+
+
+pinch=min(pinch,min(T_sf_su_l - T_r_ex_l,T_sf_ex_l - T_r_su_l))
+
+
+
+
+
+
+
+"Actual heat transfer coefficient and heat transfer area :"
+
+
+
+call Thonon(fluid$,P_ev,(T_r_su_ev+T_r_sat)/2,M_dot_r,b,L_w_tot,L_h,beta:h_l,DELTAp_l)
+
+call Thonon(fluid$,P_ev,(T_r_ex_ev+T_r_sat)/2,M_dot_r,b,L_w_tot,L_h,beta:h_v,DELTAp_v)
+
+call Thonon(fluidev$,P_ev,(T_sf_su_ev+T_sf_ex_l)/2,M_dot_sf,b,L_w_tot,L_h,beta:h_sf,DELTAp_sf)
+
+call Hsieh(fluid$,T_r_sat,M_dot_r,10000,b,L_w_tot,L_h:DELTAp_tp,h_tp)
+
+
+
+
+
+
+
+U_ev_l = (1/h_sf + 1/h_l)^(-1)
+
+A_l = AU_l / U_ev_l
+
+
+
+U_ev_tp = (1/h_sf + 1/h_tp)^(-1)
+
+A_tp = AU_tp / U_ev_tp
+
+
+
+U_ev_v = (1/h_sf + 1/h_v)^(-1)
+
+A_v = AU_v / U_ev_v
+
+
+
+L_l = A_l/L_w_tot
+
+L_v = A_v/L_w_tot
+
+L_tp = A_tp/L_w_tot
+
+
+
+"Total area :"
+
+A_ev = A_v + A_l + A_tp
+
+DELTAp = DELTAp_l*L_l/L_h + DELTAp_v*L_v/L_h + DELTAp_tp*L_tp/L_h
+
+
+
+
+
+
+
+
+
+"Write data into lookup table : "
+
+lookup('ev',1,1) = M_dot_r*h_r_su_l
+
+lookup('ev',2,1) = M_dot_r * h_r_ex_l
+
+lookup('ev',3,1) = M_dot_r * h_r_su_tp
+
+lookup('ev',4,1) = M_dot_r * h_r_ex_tp
+
+lookup('ev',5,1) = M_dot_r * h_r_su_v
+
+lookup('ev',6,1) = M_dot_r * h_r_ex_v
+
+
+
+lookup('ev',1,2) = T_r_su_l
+
+lookup('ev',2,2) = T_r_ex_l
+
+lookup('ev',3,2) = T_r_su_tp
+
+lookup('ev',4,2) = T_r_ex_tp
+
+lookup('ev',5,2) = T_r_su_v
+
+lookup('ev',6,2) = T_r_ex_v
+
+
+
+lookup('ev',1,3) = T_sf_ex_l
+
+lookup('ev',2,3) = T_sf_su_l
+
+lookup('ev',3,3) = T_sf_ex_tp
+
+lookup('ev',4,3) = T_sf_su_tp
+
+lookup('ev',5,3) = T_sf_ex_v
+
+lookup('ev',6,3) = T_sf_su_v
+
+
+
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+$Bookmark Thonon
+
+"Thonon correlation : Single phase correlation, tested for various chevron angles"
+
+Procedure Thonon(fluid$,P,T,M_dot,b,L_w_tot,L_h,beta:h,DELTAp)
+
+
+
+
+
+if fluid$='glycol' then
+
+call prop_htf(fluid$,T:mu,rho,cp,k)
+
+else
+
+cp = cp(fluid$,t=t,p=p)
+
+rho = density(fluid$,t=t,p=p)
+
+mu = viscosity(fluid$,p=p,t=t)
+
+k = conductivity(fluid$,t=t,p=p)
+
+endif
+
+
+
+
+
+Pr = cp * mu / k
+
+G = M_dot /(b*L_w_tot)
+
+D_h = 2*b   "or 2*b/phi  ??????"
+
+Re = G*D_h/mu
+
+if beta = 25 then
+
+	C_1 = 0.1
+
+	m = 0.687
+
+	if Re < 1000 then
+
+		C_2 = 28.21
+
+		pp= 0.9
+
+	endif
+
+	if Re >= 1000 then
+
+		C_2 = 0.872
+
+		pp = 0.392
+
+	endif
+
+endif
+
+
+
+if beta = 30 then
+
+	C_1 = 0.2267
+
+	m = 0.631
+
+	if Re < 550 then
+
+		C_2 = 26.34
+
+		pp= 0.830
+
+	endif
+
+	if Re >= 550 then
+
+		C_2 = 0.572
+
+		pp = 0.217
+
+	endif
+
+endif
+
+
+
+if beta = 45 then
+
+	C_1 = 0.2998
+
+	m = 0.645
+
+	if Re < 200 then
+
+		C_2 = 18.19
+
+		pp= 0.682
+
+	endif
+
+	if Re >= 200 then
+
+		C_2 = 0.6857
+
+		pp = 0.172
+
+	endif
+
+endif
+
+
+
+if beta = 60 then
+
+	C_1 = 0.2946
+
+	m = 0.7
+
+	if Re < 160 then
+
+		C_2 = 45.57
+
+		pp= 0.67
+
+	endif
+
+	if Re >= 160 then
+
+		C_2 = 0.370
+
+		pp = 0.172
+
+	endif
+
+endif
+
+
+
+Nu = C_1 * Re^m*Pr^(1/3)
+
+f = C_2 * Re^(-pp)
+
+
+
+h = Nu * k / D_h
+
+DELTAp = (f*2*G^2/rho * L_h)/D_h
+
+end
+
+
+
+
+
+
+
+
+
+$bookmark Hsieh
+
+Procedure Hsieh(fluid$,T_sat,M_dot,q,b,L_w_tot,L_h:DELTAp,h_tp_ev)
+
+
+
+
+
+"Hsieh YY, Lin TF. Saturated flow boiling heat transfer and pressure drop of
+
+refrigerant R410a in a vertical plate heat exchanger. Int J Heat Mass Trans
+
+2002;45:033-1044"
+
+
+
+	"average heat transfer coefficient:"
+
+	rho_g=density(fluid$,T=T_sat,x=1)
+
+	rho_l=density(fluid$,T=T_sat,x=0)
+
+	mu_g=viscosity(fluid$,T=T_sat,x=1)
+
+	mu_l=viscosity(fluid$,T=T_sat,x=0)	
+
+	k_l=conductivity(fluid$,T=T_sat,x=0)
+
+	Pr_l=Prandtl(fluid$,T=T_sat,x=0)
+
+	G=M_dot/(b*L_W_tot)
+
+	D_h= 2*b
+
+	Re_l=G*D_h/mu_l	
+
+	h_l=0.2092*(k_l/D_h)*Re_l^0.78*Pr_l^(1/3)	
+
+	i_fg=enthalpy(fluid$,T=T_sat,x=1)-enthalpy(fluid$,T=T_sat,x=0)
+
+	{Bo=Max(q/(G*i_fg), 1)}
+
+	Bo=q/(G*i_fg)
+
+	h_tp_ev=88*Bo^0.5*h_l
+
+
+
+	"Pressure drop:"
+
+	X_m = 0.5	"average value of the vapor quality between inlet and outlet"
+
+	v_m = 0.5/rho_l + 0.5/rho_g
+
+	G_eq = G * ( (1 - X_m) + X_m * (rho_l/rho_g)^0.5)
+
+	Re_eq = G_eq * D_h/mu_l
+
+	f_tp = 61000 * Re_eq^(-1.25)
+
+	DELTAp = 2 * G^2 * v_m * L_h * f_tp /D_h
+
+	
+
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+Procedure der_rp(r_p,rho_su:der_lnrp_epsilon)
+
+
+
+ln_rp = ln(r_p)
+
+ln_rho = ln(abs(rho_su))
+
+
+
+
+
+der_lnrp_epsilon=8.78565797E+01-2*5.94370452E+01*ln_rp+3*1.93242308E+01*ln_rp^2-4*2.99537977E+00*ln_rp^3+5*1.91534139E-01*ln_rp^4-4.76602687E+01*ln_rho+2*2.38778349E+01*ln_rho*ln_rp-3*4.14484550E+00*ln_rho*ln_rp^2+4*3.27260533E-02*ln_rho*ln_rp^3+8.93554087E+00*ln_rho^2-2*1.52076070E+00*ln_rho^2*ln_rp-3*1.22278613E+00*ln_rho^2*ln_rp^2+4*3.73428452E-01*ln_rho^2*ln_rp^3-2.85797998E-01*ln_rho^3-2*7.54213782E-01*ln_rho^3*ln_rp+3*5.80137678E-01*ln_rho^3*ln_rp^2-4*1.14378777E-01*ln_rho^3*ln_rp^3-4.22939970E-02*ln_rho^4+2*9.66480501E-02*ln_rho^4*ln_rp-3*5.44383937E-02*ln_rho^4*ln_rp^2+4*9.63087826E-03*ln_rho^4*ln_rp^3
+
+"!R^2 = 99.96"
+
+
+
+end
+
+
+
+
+
+Procedure der_rho(r_p,rho_su:der_lnrho_epsilon)
+
+
+
+ln_rp = ln(r_p)
+
+ln_rho = ln(rho_su)
+
+
+
+
+
+der_lnrho_epsilon=3.82342846E+01-2*1.02619531E+01*ln_rho+3*1.25366844E+00*ln_rho^2-4*7.25999469E-02*ln_rho^3+5*2.32160879E-03*ln_rho^4-4.76602687E+01*ln_rp+2.38778349E+01*ln_rp^2-4.14484550E+00*ln_rp^3+3.27260533E-02*ln_rp^4+2*8.93554087E+00*ln_rho*ln_rp-2*1.52076070E+00*ln_rho*ln_rp^2-2*1.22278613E+00*ln_rho*ln_rp^3+2*3.73428452E-01*ln_rho*ln_rp^4-3*2.85797998E-01*ln_rho^2*ln_rp-3*7.54213782E-01*ln_rho^2*ln_rp^2+3*5.80137678E-01*ln_rho^2*ln_rp^3-3*1.14378777E-01*ln_rho^2*ln_rp^4-4*4.22939970E-02*ln_rho^3*ln_rp+4*9.66480501E-02*ln_rho^3*ln_rp^2-4*5.44383937E-02*ln_rho^3*ln_rp^3+4*9.63087826E-03*ln_rho^3*ln_rp^4
+
+
+
+
+
+end
+
+
+
+
+
+Module doubleexpander(fluid$,p_su_exp,p_ex_exp,T_su_exp,N_rot_exp,M_dot"<inputs outputs>",epsilon_overall,epsilon_1,epsilon_2,V_s_1,V_s_2,W_dot_exp_1,W_dot_exp_2,FF_exp)
+
+
+
+r_p = p_su_exp/p_ex_exp
+
+rho_su_exp = density(fluid$,p=p_su_exp,t=t_su_exp)
+
+s_su_exp = entropy(fluid$,p=p_su_exp,t=t_su_exp)
+
+h_su_exp = enthalpy(fluid$,p=p_su_exp,t=t_su_exp)
+
+
+
+r_p_2 = r_p/r_p_1
+
+p_int_exp = p_su_exp/r_p_1
+
+call hermeticexpander(r_p_1,rho_su_exp:FF_exp,epsilon_s_exp_1)
+
+epsilon_s_exp_1 = (h_su_exp - h_int_exp)/(h_su_exp - h_int_exp_s)
+
+h_int_exp_s = enthalpy(fluid$,p=p_int_exp,s=s_su_exp)
+
+rho_int_exp = density(fluid$,p=p_int_exp,h=h_int_exp)
+
+s_int_exp = entropy(fluid$,h=h_int_exp,p=p_int_exp)
+
+M_dot = FF_exp * N_rot_exp/60 * V_s_1 * rho_su_exp
+
+
+
+call hermeticexpander(r_p_2,rho_int_exp:FF_exp_2,epsilon_s_exp_2)
+
+epsilon_s_exp_2 = (h_int_exp - h_ex_exp)/(h_int_exp - h_ex_exp_s_2)
+
+h_ex_exp_s_2 = enthalpy(fluid$,p=p_ex_exp,s=s_int_exp)
+
+M_dot = FF_exp_2 * N_rot_exp/60 * V_s_2 * rho_int_exp
+
+
+
+W_dot_exp_1 = M_dot*(h_su_exp - h_int_exp)
+
+W_dot_exp_2 = M_dot*(h_int_exp - h_ex_exp)
+
+
+
+h_ex_exp_s =(1- beta) * h_su_exp
+
+h_int_exp_s_bis = h_su_exp*(1-beta_1)
+
+h_ex_exp_s_2_bis = h_int_exp*(1-beta_2)
+
+
+
+//beta = 1 - r_p^((1-gamma)/gamma)
+
+gamma = 1 / (1 + ln(1- beta)/ln(r_p))
+
+beta_1 = 1 - r_p_1^((1-gamma)/gamma)
+
+beta_2 =1 - r_p_2^((1-gamma)/gamma)
+
+
+
+epsilon_appr = (epsilon_s_exp_1 * beta_1 + epsilon_s_exp_2 * beta_2 - epsilon_s_exp_1 * epsilon_s_exp_2 * beta_1 * beta_2)/beta
+
+
+
+beta_1_der = (gamma - 1)/gamma * r_p_1^((1-2*gamma)/gamma)
+
+beta_2_der = (1-gamma)/gamma * r_p^((1-gamma)/gamma) * r_p_1^(-1/gamma)
+
+
+
+call der_rp(r_p_1,rho_su_exp:der_lnrp_epsilon_1)
+
+call der_rp(r_p_2,rho_int_exp:der_lnrp_epsilon_2)
+
+call der_rho(r_p_2,rho_int_exp:der_lnrho_epsilon_2)
+
+
+
+der_rp_epsilon_1 = der_lnrp_epsilon_1 * 1/r_p_1
+
+der_rp_epsilon_2 = der_lnrp_epsilon_2 * 1/r_p_2
+
+der_rho_epsilon_2 = der_lnrho_epsilon_2 * 1/rho_int_exp
+
+
+
+epsilon_1 = epsilon_s_exp_1
+
+epsilon_2 = epsilon_s_exp_2
+
+epsilon_1_der = der_rp_epsilon_1
+
+epsilon_2_der = -r_p/r_p_1^2 * der_rp_epsilon_2 - rho_su_exp/gamma * r_p_1^((-gamma - 1)/gamma) * der_rho_epsilon_2
+
+
+
+xi = epsilon_1_der  * beta_1 + epsilon_1 * beta_1_der+ epsilon_2_der * beta_2 + epsilon_2 * beta_2_der - epsilon_1_der * epsilon_2 * beta_1 * beta_2 - epsilon_1 * epsilon_2_der * beta_1 * beta_2 - epsilon_1 * epsilon_2 * beta_1_der * beta_2 - epsilon_1 * epsilon_2 * beta_1 * beta_2_der
+
+
+
+//r_p_1 = r_p_1_nom
+
+xi = 0
+
+r_p_1_nom = sqrt(r_p)
+
+
+
+epsilon_overall = (h_su_exp - h_ex_exp)/(h_su_exp - h_ex_exp_s)
+
+h_ex_exp_s = enthalpy(fluid$,p=p_ex_exp,s=s_su_exp)
+
+
+
+end
+
+
+
+
+
+
+
+
+
+
+
+"******************************************************************************************************************
+
+Expander performance
+
+******************************************************************************************************************"
+
+
+
+procedure opendriveexpander(N_rot,r_p,rho_su:FF,epsilon_s)
+
+$bookmark expander correlation
+
+
+
+"These correlations are based on the experimental data obtained on the 148cm³ oil-free open-drive scroll expander described in the following paper:
+
+V. Lemort, S. Quoilin, C. Cuevas, J. Lebrun, Testing and modeling a scroll expander integrated into an Organic Rankine Cycle,   Applied Thermal Engineering, Volume 29, Issues 14-15, October 2009, Pages 3094-3102 
+
+The testing conditions were limited to the following boundaries:
+
+5.4 < p_su < 11 bars;   100  < T_su < 165°C  ;  0.42 < epsilon_s < 0.68   ;   0.046 < M_dot < 0.086   ;    2.7 < r_p < 5.4 ;   1661 < N_rot < 2770  ;   27.7 < rho_su < 59   ;  1.073 < FF < 1.3    ;    380 < W_dot < 1880
+
+However, the proposed model allows the extrapolation of the performance outside ot the testing conditions defined above.  This model has been run on 1970 different working conditions taking as input r_p, rho_su and N_rot.  The supply temperature was set 10 degrees higher than the saturation temperature at the supply pressure.  The correlations have been establish on the basis of the validated model inside the following operating conditions:
+
+1300 < N_rot < 4100     ;     30 < rho_su < 200    ;    2 < r_p < 10
+
+S. Quoilin, 28 September 2010 "
+
+
+
+" Warning Statement if the correlation is used out of range "
+
+If (N_rot < 1300) or (N_rot > 4100) Then CALL WARNING('The expander correlation is used outside of its validity range: N_rot = XXXA1', N_rot)
+
+If (r_p < 2) or (r_p > 10) Then CALL WARNING('The expander correlation is used outside of its validity range: r_p = XXXA1', r_p)
+
+If (rho_su < 30) or (rho_su > 200) Then CALL WARNING('The expander correlation is used outside of its validity range: rho_su = XXXA1', rho_su)
+
+
+
+
+
+log_nrot = ln(N_rot)
+
+FF=8.36779658E+00-1.41098700E+00*Log_nrot+6.19613713E-02*Log_nrot^2-5.13791668E-04*rho_su-5.77341306E-07*rho_su^2
+
+"! R^2 = 99.92"
+
+
+
+log_rp = ln(r_p)
+
+epsilon_s=-2.79239776E+00+3.47907685E-04*N_rot-4.41687016E-07*N_rot^2+6.38034061E-11*N_rot^3-1.90345930E-15*N_rot^4+8.13639166E-03*rho_su-4.11783018E-05*rho_su^2+2.45634069E-07*rho_su^3-6.67829905E-10*rho_su^4+6.61628002E+00*log_rp-5.72262776E+00*log_rp^2+2.23541748E+00*log_rp^3-3.27756408E-01*log_rp^4+1.07431065E-06*N_rot*rho_su-1.37297004E-08*N_rot*rho_su^2+4.47345839E-11*N_rot*rho_su^3-9.87009822E-05*N_rot*log_rp+1.61547027E-04*N_rot*log_rp^2-5.16386411E-05*N_rot*log_rp^3-1.36147164E-11*N_rot^2*rho_su+2.39666777E-12*N_rot^2*rho_su^2-1.00639121E-14*N_rot^2*rho_su^3+5.17720097E-07*N_rot^2*log_rp-3.18400063E-07*N_rot^2*log_rp^2+6.51264839E-08*N_rot^2*log_rp^3-1.41521063E-14*N_rot^3*rho_su-1.38668182E-16*N_rot^3*rho_su^2+8.00081966E-19*N_rot^3*rho_su^3-6.73843730E-11*N_rot^3*log_rp+4.20908816E-11*N_rot^3*log_rp^2-8.61513122E-12*N_rot^3*log_rp^3+3.67589670E-03*rho_su*log_rp-6.84091140E-03*rho_su*log_rp^2+1.83999314E-03*rho_su*log_rp^3-8.46321725E-05*rho_su^2*log_rp+7.95010219E-05*rho_su^2*log_rp^2-1.87127725E-05*rho_su^2*log_rp^3+2.59564671E-07*rho_su^3*log_rp-2.22612649E-07*rho_su^3*log_rp^2+5.09330057E-08*rho_su^3*log_rp^3
+
+"! R^2 = 99.88"
+
+
+
+epsilon_s = max(0,epsilon_s)
+
+
+
+end
+
+
+
+
+
+
+
+
+
+Procedure hermeticexpander(r_p,rho_su:phi,epsilon)
+
+$bookmark hermeticexpander
+
+
+
+"These correlations are based on the experimental data obtained on the Hermetic scroll expander described in the following paper:
+
+Vincent Lemort, Sylvain Quoilin and Christophe Pire, Experimental Investigation on a Hermetic Scroll Expander, in Proceedings ot the 7th International Conference on Compressors, Papiernicka, October 2009 
+
+The testing conditions were limited to the following boundaries:
+
+6.3 < p_su < 18 bars;   89  < T_su < 139°C  ;  0.036 < M_dot < 0.121   ;    2.4 < r_p < 6.8 ;   31 < rho_su < 105   ;  1 < FF < 1.1    ;     177 < W_dot < 2037
+
+However, the proposed model allows the extrapolation of the performance outside ot the testing conditions defined above.  This model has been run on 770 different working conditions taking as input r_p and rho_su.  The supply temperature was set 10 degrees higher than the saturation temperature at the supply pressure.  The filling factor is computed as if the expander speed was 3000 rpm, although this speed is higher because of the glide of the asynchronous generator, and depends on the output power.
+
+The correlations have been establish on the basis of the validated model inside the following operating conditions:
+
+30 < rho_su < 200    ;    1.2 < r_p < 12
+
+S. Quoilin, 30 September 2010 "
+
+
+
+If (r_p < 1.2) or (r_p > 12) Then CALL WARNING('The expander correlation is used outside of its validity range: r_p = XXXA1', r_p)
+
+If (rho_su < 30) or (rho_su > 200) Then CALL WARNING('The expander correlation is used outside of its validity range: rho_su = XXXA1', rho_su)
+
+
+
+r_p = max(r_p,1.2)
+
+r_p = min(r_p,12)
+
+rho_su = max(rho_su,30)
+
+rho_su = min(rho_su,200)
+
+
+
+ln_rp = ln(r_p)
+
+ln_rho = ln(rho_su)
+
+
+
+phi=7.57680390E-01+1.03377082E-01*ln_rho-9.44421504E-03*ln_rho^2-9.77306474E-04*ln_rho^3+1.21317764E-01*ln_rp-3.37184749E-02*ln_rp^2+2.66140555E-03*ln_rp^3-4.37896534E-02*ln_rho*ln_rp+9.10515577E-03*ln_rho*ln_rp^2+6.54874695E-03*ln_rho^2*ln_rp-1.34144803E-03*ln_rho^2*ln_rp^2
+
+"!R^2 = 99.98"
+
+
+
+epsilon=-5.64118460E+01+3.82342846E+01*ln_rho-1.02619531E+01*ln_rho^2+1.25366844E+00*ln_rho^3-7.25999469E-02*ln_rho^4+2.32160879E-03*ln_rho^5+8.78565797E+01*ln_rp-5.94370452E+01*ln_rp^2+1.93242308E+01*ln_rp^3-2.99537977E+00*ln_rp^4+1.91534139E-01*ln_rp^5-4.76602687E+01*ln_rho*ln_rp+2.38778349E+01*ln_rho*ln_rp^2-4.14484550E+00*ln_rho*ln_rp^3+3.27260533E-02*ln_rho*ln_rp^4+8.93554087E+00*ln_rho^2*ln_rp-1.52076070E+00*ln_rho^2*ln_rp^2-1.22278613E+00*ln_rho^2*ln_rp^3+3.73428452E-01*ln_rho^2*ln_rp^4-2.85797998E-01*ln_rho^3*ln_rp-7.54213782E-01*ln_rho^3*ln_rp^2+5.80137678E-01*ln_rho^3*ln_rp^3-1.14378777E-01*ln_rho^3*ln_rp^4-4.22939970E-02*ln_rho^4*ln_rp+9.66480501E-02*ln_rho^4*ln_rp^2-5.44383937E-02*ln_rho^4*ln_rp^3+9.63087826E-03*ln_rho^4*ln_rp^4
+
+"!R^2 = 99.96"
+
+
+
+epsilon = min(0.65,epsilon)
+
+epsilon = max(0,epsilon)
+
+
+
+end
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+"******************************************************************************************************************
+
+FUNCTION fq_56conv : Convective heat transfer rate between the glazing outer surface and the
+
+ambient air
+
+******************************************************************************************************************"
+
+$bookmark q_56conv
+
+FUNCTION q_56conv(T_5, T_6)
+
+	$Common D_5, L, P_6, v_6, GlazingIntact$
+
+
+
+	T_56 := (T_5 + T_6) / 2 "[C]"
+
+If (T_5<0) Then
+
+T_5=50
+
+Endif
+
+If (T_56<0) Then
+
+T_56=50
+
+Endif
+
+	" Thermophysical Properties for air "
+
+	MU_5 := VISCOSITY(Air,T=T_5) "[kg/m-s]"
+
+	MU_6 := VISCOSITY(Air,T=T_6) "[kg/m-s]"
+
+	MU_56 := VISCOSITY(Air, T=T_56) "[kg/m-s]"
+
+	k_5 := CONDUCTIVITY(Air,T=T_5) "[W/m-K]"
+
+	k_6 := CONDUCTIVITY(Air,T=T_6) "[W/m-K]"
+
+	k_56 := CONDUCTIVITY(Air, T=T_56) "[W/m-K]"
+
+	Cp_5 := SPECHEAT(Air,T=T_5) "[kJ/kg-K]"	
+
+	Cp_6 := SPECHEAT(Air,T=T_6) "[kJ/kg-K]"
+
+	Cp_56 := CP(AIR, T=T_56) "[kJ/kg-K]"
+
+	Rho_5 := DENSITY(Air,T=T_5, P=P_6) "[kg/m^3]"
+
+	Rho_6 := DENSITY(Air,T=T_6, P=P_6) "[kg/m^3]"
+
+	Rho_56 := DENSITY(Air, T=T_56, P=P_6) "[kg/m^3]"
+
+
+
+	" If the glass envelope is missing then the convection heat transfer from the glass envelope is forced to zero by T_5 = T_6 "
+
+	If (GlazingIntact$ = 'No') Then
+
+		fq_56conv := (T_5 - T_6) "[W/m]"
+
+	Else
+
+		If (v_6 <= 0.1) Then
+
+			" Coefficients for Churchill and Chu natural convection correlation "
+
+			NU_56 := MU_56 / Rho_56 "[m^2/s]"
+
+			Alpha_56 := k_56 / (Cp_56 * Rho_56 ) "[m^2/s]"
+
+			Beta_56 := 1 / (T_56 + 273.15) "[1/K]"
+
+			Ra_D5 := g# *Beta_56 * ABS(T_5 - T_6) * (D_5)^3 / (Alpha_56 * NU_56)
+
+
+
+			" Warning Statement if following Nusselt Number correlation is used out of range "
+
+			If (Ra_D5 <= 10^(-5)) or (Ra_D5 >= 10^12) Then CALL WARNING('The result may not be accurate, since 10^(-5) < Ra_D5 < 10^12 does not hold. See Function fq_56conv. Ra_D5 = XXXA1', Ra_D5)
+
+
+
+			" Churchill and Chu correlation for natural convection for a horizontal cylinder "
+
+			Pr_56 := NU_56 / Alpha_56
+
+			Nu#_bar := (0.60 + (0.387 * Ra_D5^(0.1667)) / (1 + (0.559 / Pr_56)^(0.5625))^(0.2963) )^2
+
+			h_6 := Nu#_bar * k_56 / D_5 "[W/m^2-K]"
+
+			fq_56conv := h_6 * PI * D_5 * (T_5 - T_6) "[W/m]"
+
+		Else
+
+			" Coefficients for Zhukauskas's correlation "
+
+			Alpha_5 := k_5 / (Cp_5 * Rho_5 ) "[m^2/s]"
+
+			Alpha_6 := k_6 / (Cp_6 * Rho_6) "[m^2/s]"
+
+			NU_5 := MU_5 / Rho_5 "[m^2/s]"
+
+			NU_6 := MU_6 / Rho_6 "[m^2/s]"
+
+			Pr_5 := NU_5 / Alpha_5
+
+			Pr_6 := NU_6 / Alpha_6
+
+			Re_D5 := v_6 * D_5 * Rho_6 / MU_6
+
+
+
+			" Warning Statement if following Nusselt Number correlation is used out of range "
+
+			If (Pr_6 <= 0.7) or (Pr_6 >= 500) Then CALL WARNING('The result may not be accurate, since 0.7 < Pr_6 < 500 does not hold. See Function fq_56conv. Pr_6 = XXXA1', Pr_6)
+
+			If (Re_D5 <= 1) or (Re_D5 >= 10^6) Then CALL WARNING('The result may not be accurate, since 1 < Re_D5 < 10^6 does not hold. See Function fq_56conv. Re_D5 = XXXA1 ', Re_D5)
+
+
+
+			" Zhukauskas's correlation for forced convection over a long horizontal cylinder "
+
+			If (Pr_6 <= 10) Then
+
+				n := 0.37
+
+			Else
+
+				n := 0.36
+
+			EndIf
+
+
+
+			If (Re_D5 < 40) Then
+
+				C := 0.75
+
+				m := 0.4
+
+			Else
+
+				If (40 <= Re_D5) and (Re_D5 < 10^3) Then
+
+					C := 0.51
+
+					m := 0.5
+
+				Else
+
+					If (10^3 <= Re_D5) and (Re_D5 < 2*10^5) Then
+
+						C := 0.26
+
+						m := 0.6
+
+					Else
+
+						If (2*10^5 <= Re_D5) and (Re_D5 < 10^6) Then
+
+							C := 0.076
+
+							m := 0.7
+
+						EndIf
+
+					EndIf
+
+				EndIf
+
+			EndIf
+
+{! MSO ADDED }
+
+Re_D5 = max(1000,Re_D5)
+
+Pr_6 = max(0.5,Pr_6)
+
+Pr_5 = max(0.5,Pr_5)
+
+
+
+			Nu#_6 := C * Re_D5^m * Pr_6^n *(Pr_6/Pr_5)^0.25
+
+			h_6 := Nu#_6 * k_6 / D_5 "[W/m^2-K]"
+
+			fq_56conv := h_6 * PI * D_5 * (T_5 - T_6) "[W/m]"
+
+		EndIf
+
+	EndIf
+
+q_56conv = fq_56conv
+
+End
+
+
+
+
+
+
+
+"******************************************************************************************************************
+
+FUNCTION fq_57rad : Radiation heat transfer rate between the glazing outer surface and the sky
+
+******************************************************************************************************************"
+
+$bookmark q57rad
+
+FUNCTION q_57rad(T_5, T_7)
+
+	$COMMON EPSILON_5, D_5, L, GlazingIntact$
+
+
+
+	" If glass envelope is missing then radiation heat transfer from glass envelope is set to zero; otherwise, radiative heat transfer for a small convex object in a large cavity "
+
+	If (GlazingIntact$ = 'No') Then
+
+		q_57rad := 0 "[W/m]"
+
+	Else
+
+		q_57rad := EPSILON_5 * PI * D_5 * sigma# * ((T_5 + 273.15)^4 - (T_7 + 273.15)^4) "[W/m]"
+
+	EndIf
+
+END
+
+
+
+
+
+
+
+"******************************************************************************************************************
+
+FUNCTION q_37rad : Radiation heat transfer rate between the absorber surface and glazing
+
+inner surface
+
+******************************************************************************************************************"
+
+$bookmark q_37rad
+
+FUNCTION q_37rad(T_3, T_7, i, EPSILON_3[1..imax#]) {! EPSILON_3[1..imax] moved from $COMMON}
+
+	$COMMON D_3, D_4, L, EPSILON_4
+
+	q_37rad :=EPSILON_3[i] * PI * D_3 * sigma# * ((T_3 + 273.15)^4 - (T_7 + 273.15)^4) "[W/m]"
+
+
+
+END
+
+
+
+
+
+
+
+"******************************************************************************************************************
+
+FUNCTION q_34rad : Radiation heat transfer rate between the absorber surface and glazing
+
+inner surface
+
+******************************************************************************************************************"
+
+$bookmark q_34rad
+
+FUNCTION q_34rad(T_3, T_4, i, EPSILON_3[1..imax#]) {! EPSILON_3[1..imax] moved from $COMMON}
+
+	$COMMON D_3, D_4, L, EPSILON_4
+
+	q_34rad := PI * D_3 * sigma# * ((T_3 + 273.15)^4 - (T_4 + 273.15)^4) / (1 / EPSILON_3[i] + D_3 / D_4 * ( 1 / EPSILON_4 - 1)) "[W/m]"
+
+END
+
+
+
+"******************************************************************************************************************
+
+FUNCTION fq_36conv : Convective heat transfer rate between the absorber outer surface and
+
+the environment (in the case where the glazing is missing)
+
+******************************************************************************************************************"
+
+$bookmark q_36conv
+
+FUNCTION fq_36conv(T_3, T_6, P_6,v_6)
+
+	$Common D_3, D_4, L, P_a
+
+
+
+	T_std = 25
+
+	P_a1 := P_a 
+
+	T_36 := (T_3 + T_6) / 2 "[C]"
+
+		" Thermophysical Properties for air "
+
+		Rho_3 := Density(AIR, T=T_3, P=P_6) "[kg/m^3]"
+
+		Rho_6 := Density(AIR, T=T_6, P=P_6) "[kg/m^3]"
+
+
+
+		If (v_6 <= 0.1) Then
+
+			MU_36 := viscosity(AIR, T=T_36) "[N-s/m^2]"
+
+			Rho_36 := Density(AIR, T=T_36, P=P_6) "[kg/m^3]"
+
+			Cp_36 := CP(AIR, T=T_36) "[kJ/kg-K]"
+
+			k_36 := conductivity(AIR, T=T_36) "[W/m-K]"
+
+			NU_36 := MU_36 / Rho_36 "[m^2/s]"
+
+			Alpha_36 := k_36 / (Cp_36 * Rho_36) "[m^2/s]"
+
+			Beta_36 := 1 / (T_36 + 273.15) "[1/K]"
+
+			Ra_D3 := g# * Beta_36 * ABS(T_3 - T_6) * (D_3)^3 / (Alpha_36 * NU_36)
+
+
+
+			" Warning Statement if following Nusselt Number correlation is used out of recommended range "
+
+			If (Ra_D3 <= 10^(-5)) or (Ra_D3 >= 10^12) Then CALL WARNING('The result may not be accurate, since 10^(-5) < Ra_D3 < 10^12 does not hold. See Function fq_34conv. Ra_D3 = XXXA1', Ra_D3)
+
+
+
+			" Churchill and Chu correlation for natural convection from a long isothermal horizontal cylinder "
+
+			Pr_36 := NU_36 / Alpha_36
+
+			Nu#_bar := (0.60 + (0.387 * Ra_D3^(0.1667)) / (1 + (0.559 / Pr_36)^(0.5625))^(0.2963) )^2
+
+			h_36 := Nu#_bar * k_36 / D_3 "[W/m^2-K]"
+
+			fq_36conv := h_36 * PI * D_3 * (T_3 - T_6) "[W/m]"
+
+		Else
+
+			" Thermophysical Properties for air "
+
+			MU_3 := viscosity(AIR, T=T_3) "[N-s/m^2]"
+
+			MU_6 := viscosity(AIR, T=T_6) "[N-s/m^2]"
+
+			k_3 := conductivity(AIR, T=T_3) "[W/m-K]"
+
+			k_6 := conductivity(AIR, T=T_6) "[W/m-K]"
+
+			k_36 := conductivity(AIR, T=T_36) "[W/m-K]"
+
+			Cp_3 := CP(AIR, T=T_3) "[kJ/kg-K]"
+
+			Cp_6 := CP(AIR, T=T_6) "[kJ/kg-K]"
+
+			NU_6 := MU_6 / Rho_6 "[m^2/s]"
+
+			NU_3 := MU_3 / Rho_3 "[m^2/s]"
+
+			Alpha_3 := k_3 / (Cp_3 * Rho_3 ) "[m^2/s]"
+
+			Alpha_6 := k_6 / (Cp_6 * Rho_6 ) "[m^2/s]"
+
+			Re_D3 := v_6 * D_3 / NU_6
+
+			Pr_3 := NU_3 / Alpha_3
+
+			Pr_6 := NU_6 / Alpha_6
+
+
+
+			" Warning Statements if following Nusselt Correlation is used out of range "
+
+			If (Re_D3 <= 1) or (Re_D3 >= 10^6) Then CALL WARNING('The result may not be accurate, since 1 < Re_D3 < 10^6 does not hold. See Function fq_34conv. Re_D3 = XXXA1', Re_D3)
+
+			If (Pr_6 <= 0.7) or (Pr_6 >= 500) Then CALL WARNING('The result may not be accurate, since 0.7 < Pr_6 < 500 does not hold. See Function fq_34conv. Pr_6 = XXXA1', Pr_6)
+
+
+
+			" Coefficients for external forced convection Nusselt Number correlation (Zhukauskas's correlation) "
+
+			If (Pr_6 <= 10) Then
+
+				n := 0.37
+
+			Else
+
+				n := 0.36
+
+			EndIf
+
+
+
+			If (Re_D3 < 40) Then
+
+				C := 0.75
+
+				m := 0.4
+
+			Else
+
+				If (40 <= Re_D3) and (Re_D3 < 10^3) Then
+
+					C := 0.51
+
+					m := 0.5
+
+				Else
+
+					If (10^3 <= Re_D3) and (Re_D3 < 2*10^5) Then
+
+						C := 0.26
+
+						m := 0.6
+
+					Else
+
+						If (2*10^5 <= Re_D3) and (Re_D3 < 10^6) Then
+
+							C := 0.076
+
+							m := 0.7
+
+						EndIf
+
+					EndIf
+
+				EndIf
+
+			EndIf
+
+
+
+			" Zhukauskas's correlation for external forced convection flow normal to an isothermal cylinder "
+
+			Nu#_bar := C * (Re_D3)^m * (Pr_6)^n * (Pr_6 / Pr_3)^(0.25)
+
+			h_36 := Nu#_bar * k_36 / D_3 "[W/m^2-K]"
+
+			fq_36conv := h_36 * D_3 * PI * (T_3 - T_6) "[W/m]"
+
+		EndIf
+
+end
+
+
+
+
+
+"******************************************************************************************************************
+
+FUNCTION fq_34conv : Convective heat transfer rate between the absorber outer surface and
+
+the glazing inner surface
+
+******************************************************************************************************************"
+
+$bookmark q_34conv
+
+FUNCTION fq_34conv(T_3, T_4, AnnulusGas$)
+
+	$Common D_3, D_4, L, P_a
+
+
+
+	T_std = 25
+
+	P_a1 := P_a 
+
+
+
+		T_34 := (T_3 + T_4) / 2 "[C]"
+
+
+
+		{! MSO ADDED }
+
+		T_34 = max(T_34,25)
+
+
+
+		MU_34 := VISCOSITY(AnnulusGas$, T=T_34) "[kg/m-s]"
+
+		Cp_34 := CP(AnnulusGas$, T=T_34) "[kJ/kg-K]"
+
+		Cv_34 := CV(AnnulusGas$, T=T_34) "[kJ/kg-K]"
+
+		k_34 := CONDUCTIVITY(AnnulusGas$, T=T_34) "[W/m-K]"
+
+		Rho_34 := DENSITY(AnnulusGas$, T=T_34, P=P_a1) "[kg/m^3]"
+
+		k_std := CONDUCTIVITY(AnnulusGas$, T=T_std) "[W/m-K]"
+
+		{!EndIf}
+
+
+
+		{! MSO ADDED }
+
+		{Cp_34=max(1,cp_34)
+
+		Rho_34=max(1,rho_34)}
+
+
+
+		" Modified Raithby and Hollands correlation for natural convection in an annular space between horizontal cylinders "
+
+		Alpha_34 := k_34 /(Cp_34 * Rho_34) "[m^2/s]"
+
+		NU_34 := MU_34 / Rho_34 "[m^2/s]"
+
+		Beta_34 := 1 / (T_34 + 273.15) "[1/K]"
+
+		Ra_D3 := g# * Beta_34 * ABS(T_3 - T_4) * (D_3)^3 / (Alpha_34 * NU_34)
+
+		Ra_D4 := g# * Beta_34 * ABS(T_3 - T_4) * (D_4)^3 / (Alpha_34 * NU_34)
+
+		Pr_34 := NU_34 / Alpha_34
+
+
+
+		{! MSO ADDED }
+
+		DelT_34=max(T_3 - T_4,1)
+
+
+
+
+
+		Natq_34conv := 2.425 * k_34 * (DelT_34) * (Pr_34 * Ra_D3 / (0.861 + Pr_34))^(0.25) / (1 + (D_3/ D_4)^(0.6))^(1.25) "[W/m]"
+
+
+
+		" Free-molecular heat transfer for an annular space between horizontal cylinders "
+
+		P := P_a
+
+		C1 := 2.331*10^(-20) "[mmHg-cm^3/K]"
+
+
+
+		If (AnnulusGas$ = 'Air') Then
+
+			Delta := 3.53 * 10^(-8) "[cm]"
+
+		EndIf
+
+
+
+		If (AnnulusGas$ = 'H2') Then
+
+			Delta := 2.4 * 10^(-8) "[cm]"
+
+		EndIf
+
+
+
+		If (AnnulusGas$ = 'Argon') Then
+
+			Delta := 3.8*10^(-8) "[cm]"
+
+		EndIf
+
+
+
+		Lambda := C1 * (T_34 + 273.15) / (P * Delta^2) "[cm]"
+
+		Gamma := Cp_34 / Cv_34
+
+		a := 1
+
+		b := (2 - a) * (9 * Gamma - 5) / (2 * a * (Gamma + 1))
+
+		h_34 := k_std / (D_3 / 2 * ln(D_4 / D_3) + b * Lambda * (D_3 / D_4 + 1)) "[W/m^2-K]"
+
+		Kineticq_34conv := D_3 * PI * h_34 * (T_3 - T_4) "[W/m]"
+
+
+
+		" Following compares free molecular heat transfer with natural convection heat transfer and uses the largest value for heat transfer in annulus "
+
+		If (Kineticq_34conv > Natq_34conv) Then
+
+			fq_34conv := Kineticq_34conv "[W/m]"
+
+
+
+			" Warning statement if free molecular correlation is used our of range"
+
+			If (Ra_D4 < 10^7) Then CALL WARNING('The result may not be accurate, since (D_4 / (D_4 - D_3))^4 < Ra_D4 < 10^7 does not hold. See Function fq_34conv. Ra_D4 = XXXA1', Ra_D4)
+
+		Else
+
+			fq_34conv := Natq_34conv "[W/m]"
+
+		EndIf
+
+
+
+End
+
+
+
+
+
+
+
+
+
+
+
+"******************************************************************************************************************
+
+FUNCTION fk_23: Absorber conductance
+
+******************************************************************************************************************"
+
+{ Based on linear fit of data from "Alloy Digest, Sourcebook, Stainless Steels"; ASM International, 2000.}
+
+$bookmark k_23
+
+FUNCTION k_23(AbsorberMaterial$,T_2, T_3)
+
+	$COMMON AbsorberMaterial$
+
+
+
+	T_23 := (T_2 + T_3)/2 "[C]"
+
+
+
+	{! added - AVM - for plain steel -- SHOULD BE FIXED FOR ACCURACY}
+
+	If (AbsorberMaterial$ = 'Steel') Then
+
+		k_23 := 50 "[W/m-K]"
+
+	EndIf
+
+
+
+
+
+	If (AbsorberMaterial$ = '304L') or (AbsorberMaterial$ = '316L') Then
+
+		k_23 := 0.013 * T_23 + 15.2 "[W/m-K]"
+
+	EndIf
+
+
+
+	If (AbsorberMaterial$ = '321H') Then
+
+		k_23 := 0.0153 * T_23 + 14.775 "[W/m-K]"
+
+	EndIf
+
+
+
+	If (AbsorberMaterial$ = 'B42 Copper Pipe') Then
+
+		k_23 := 400 "[W/m-K]"
+
+	EndIf
+
+END
+
+
+
+
+
+
+
+
+
+
+
+
+
+"******************************************************************************************************************
+
+PROCEDURE Pq_12conv : Convective heat transfer rate from the HTF to the inside of the
+
+receiver tube
+
+******************************************************************************************************************"
+
+$bookmark q_12conv
+
+PROCEDURE q_12conv(T_1ave, v_1ave, T_2, Fluid$: q_12)
+
+	$Common D_h, D_2, L, TestType$
+
+
+
+
+
+
+
+	" Thermophysical properties for HTF "
+
+
+
+	call prop_htf(fluid$,T_1ave:mu_1,rho_1,cp_1,k_1)
+
+	call prop_htf(fluid$,T_2:mu_2,rho_2,cp_2,k_2)
+
+	Re_D2 := ABS((RHO_1 * D_h * v_1ave) / (MU_1))
+
+	Pr_2 := ABS(Cp_2 * MU_2 / k_2)
+
+	Pr_1 := ABS(Cp_1 * MU_1 / k_1)
+
+	
+
+	{! added - AVM }
+
+	If (Pr_2 < 0) Then
+
+		Pr_2:=1
+
+	EndIf
+
+
+
+	" Warning statements if Nusselt Number correlation is used out of recommended range "
+
+	If (Pr_1 <= 0.5) or (2000 <= Pr_1) Then CALL WARNING('The result may not be accurate, since 0.5 < Pr_1 < 2000 does not hold. See PROCEDURE Pq_12conv. Pr_1 = XXXA1', Pr_1)
+
+	If (Pr_2 <= 0.5) or (2000 <= Pr_2) Then CALL WARNING('The result may not be accurate, since 0.5 < Pr_2 < 2000 does not hold. See PROCEDURE Pq_12conv. Pr_2 = XXXA1', Pr_2)
+
+	If ( Re_D2 <= (2300) ) or (5*10^6 <= Re_D2 ) Then CALL WARNING('The result may not be accurate, since 2300 < Re_D2 < (5 * 10^6) does not hold. See PROCEDURE Pq_12conv. Re_D2 =XXXA1', Re_D2)
+
+
+
+	" Turbulent/transitional flow Nusselt Number correlation (modified Gnielinski correlation) "
+
+	f_2 := (1.82 * LOG10(Re_D2) - 1.64)^(-2)
+
+	Nu#_D2 := (f_2 / 8) * (Re_D2 - 1000) * Pr_1 / (1 + 12.7 * (f_2/ 8)^(0.5) * (Pr_1^(0.6667) -1)) * (Pr_1 / Pr_2)^0.11
+
+	h_1 := Nu#_D2 * k_1 / D_h "[W/m^2-K]"
+
+	q_12 := h_1 * D_2 * PI * (T_2 - T_1ave) "[W/m]"
+
+
+
+End
+
+
+
+
+
+
+
+
+
+"Curve fits for the transport procedure of the heat transfer fluids"
+
+
+
+procedure prop_htf(fluid$,T:mu,rho,cp,k)
+
+$bookmark prop_htf
+
+if fluid$='glycol' then
+
+mu=-0.00197505085+0.450245894/T-1.01338701/T^2	"! T is in °C !"
+
+rho=1148.28275 - 0.675538335*T - 0.000198964867*T^2
+
+Cp=2329.09926 + 4.81933829*T
+
+k=0.304902525 - 0.000771015939*T
+
+endif
+
+end
+
+
+
+
+
+"******************************************************************************************************************
+
+PROCEDURE SelectiveCoatingProperties: Selective Coating Emissivity and Absorptance
+
+******************************************************************************************************************"
+
+$bookmark SelectiveCoating
+
+PROCEDURE SelectiveCoatingProperties(imax#, T_3[1..imax#]: EPSILON_3[1..imax#], Alpha_abs, TAU_envelope)
+
+	$COMMON TAU_envelope_UD, Alpha_abs_UD, EPSILON_3_100_UD, EPSILON_3_400_UD, SelectiveCoating$
+
+
+
+	" Do-Loop to calculate emissivity for all the HCE increments, and to return optical properties for chosen selective coating type "
+
+	j := 0
+
+	repeat
+
+		j := j+1
+
+		
+
+		If (SelectiveCoating$ = 'Black Chrome') Then
+
+			TAU_envelope := 0.935
+
+			Alpha_abs := 0.94
+
+			EPSILON_3[j] := 0.0005333 * (T_3[j]+273.15) - 0.0856
+
+			If (EPSILON_3[j] < 0.11) Then
+
+				EPSILON_3[j] := 0.11
+
+			EndIf
+
+			
+
+		Endif
+
+
+
+		If (SelectiveCoating$ = 'Solec Hi/Sorb-II') Then
+
+			TAU_envelope := 0.96
+
+			Alpha_abs := 0.91
+
+			EPSILON_3[j] := 0.39  "http://www.solarmirror.com/cgi-bin/faq.cgi?_recurse=1&file=27"
+
+		Endif
+
+
+
+		If (SelectiveCoating$ = 'Luz Cermet') Then
+
+			TAU_envelope := 0.935
+
+			Alpha_abs := 0.92
+
+			EPSILON_3[j] := 0.000327 * (T_3[j]+273.15) - 0.065971
+
+			If (EPSILON_3[j] < 0.05) Then
+
+				EPSILON_3[j] := 0.05
+
+			EndIf
+
+		Endif
+
+
+
+		If (SelectiveCoating$ = 'Solel UVAC Cermet') Then   "(SNL test a) from Forristall 2003"
+
+			TAU_envelope := 0.965
+
+			Alpha_abs := 0.96
+
+			EPSILON_3[j] := 2.249*10^(-7)*(T_3[j])^2 + 1.039*10^(-4)*T_3[j] + 5.599*10^(-2)
+
+		EndIf
+
+
+
+		until (j>=(imax#))
+
+END
+
+
+
+"******************************************************************************************************************
+
+PROCEDURE HCEdimensions: HCE dimensions based on HCE type
+
+******************************************************************************************************************"
+
+$bookmark HCEdimensions
+
+PROCEDURE HCEdimensions(HCEtype$: D_4, D_5, A_aperture, L_aperture, L_HCE, Number_HCE)
+
+	$COMMON TestType$
+
+
+
+	If (HCEtype$ = 'LS-2') Then
+
+		D_5 := 0.115 "[m]"
+
+		D_4 := 0.109 "[m]"
+
+		L_HCE := 4.06 "[m]"
+
+
+
+		If (TestType$ = 'SNL AZTRAK Platform') Then
+
+			A_aperture := 39 "[m^2]"
+
+			Number_HCE := 2
+
+			L_aperture := Number_HCE * L_HCE "[m]"
+
+		Else
+
+			If (TestType$ = 'KJC Test Loop') Then
+
+				A_aperture := 235 * 16 "[m^2]"
+
+				Number_HCE := 12 * 16
+
+				L_aperture := L_HCE * Number_HCE "[m]"
+
+			Endif
+
+		Endif
+
+	EndIf
+
+
+
+	If (HCEtype$ = 'LS-3') Then
+
+		D_4 := 0.115 "[m]"
+
+		D_5 := 0.121 "[m]"
+
+		L_HCE := 4.06 "[m]"
+
+		A_aperture := 545 "[m^2]"
+
+		Number_HCE := 24
+
+		L_aperture := L_HCE * Number_HCE "[m]"
+
+	EndIf
+
+
+
+	If (HCEtype$ = 'IST') Then
+
+		D_4 := 0.075 "[m]"
+
+		D_5 := 0.0702 "[m]"
+
+		A_aperture := 13.19 "[m^2]"
+
+		L_HCE := 2.16 "[m]"
+
+		Number_HCE := 1
+
+		L_aperture := L_HCE * Number_HCE "[m]"
+
+	EndIf
+
+
+
+END
+
+
+
+"******************************************************************************************************************
+
+PROCEDURE OpticalEfficiency: Optical Efficiencies based on HCE type
+
+******************************************************************************************************************"
+
+$bookmark OpticalEfficiency
+
+PROCEDURE OpticalEfficiency(HCEtype$: OptEff_env, OptEff_abs)
+
+	{! UD variables added by AVM}
+
+	$COMMON  K, Reflectivity, TAU_envelope, GlazingIntact$, Shadowing_UD, TrackingError_UD, GeomEffects_UD
+
+
+
+	{! Added to conform with 1D model - AVM}
+
+	If (HCEtype$ = 'UserDefined') Then
+
+		Shadowing := Shadowing_UD
+
+		TrackingError := TrackingError_UD
+
+		GeomEffects := GeomEffects_UD
+
+		Rho_mirror_clean := 0.935
+
+		Dirt_mirror := Reflectivity/Rho_mirror_clean
+
+		Dirt_HCE := (1+ Dirt_mirror)/2	"! ?????????????????????"
+
+		Error := 0.96
+
+	EndIf
+
+
+
+	" All the following optical properties should be modified as updated values are determined "
+
+	If (HCEtype$ = 'LS-2') Then
+
+		Shadowing := 0.974
+
+		TrackingError := 0.994
+
+		GeomEffects := 0.98
+
+		Rho_mirror_clean := 0.935
+
+		Dirt_mirror := Reflectivity/Rho_mirror_clean
+
+		Dirt_HCE := (1+ Dirt_mirror)/2
+
+		Error := 0.96
+
+	EndIf
+
+
+
+	If (HCEtype$ = 'LS-3') or (HCEtype$ = 'IST') Then
+
+		Shadowing := 0.974
+
+		TrackingError := 0.994
+
+		GeomEffects := 0.98
+
+		Rho_mirror_clean := 0.935
+
+		Dirt_mirror := Reflectivity/Rho_mirror_clean
+
+		Dirt_HCE := (1+ Dirt_mirror)/2
+
+		Error := 0.96
+
+	EndIf
+
+
+
+	" following if statement prevents Dirt_mirror and Dirt_HCE from being larger then 1 if the input for Reflectivity is larger then Rho_mirror_clean "
+
+	If (Dirt_mirror > 1) Then
+
+		Dirt_mirror := 1
+
+		Dirt_HCE := 1
+
+	EndIf
+
+
+
+	If (GlazingIntact$ = 'No') Then
+
+		OptEff_env := 0
+
+		OptEff_abs := Shadowing * TrackingError * GeomEffects * Rho_mirror_clean * Dirt_mirror * Error * K
+
+	Else
+
+		OptEff_env := Shadowing * TrackingError * GeomEffects * Rho_mirror_clean * Dirt_mirror * Dirt_HCE * Error * K
+
+		OptEff_abs := OptEff_env * TAU_Envelope
+
+	Endif
+
+END
+
+
+
+
+
+
+
+
+
+"******************************************************************************************************************
+
+FUNCTION fq_cond_bracket: Heat loss estimate through HCE support bracket
+
+******************************************************************************************************************"
+
+$bookmark q_cond_bracket
+
+FUNCTION q_cond_bracket(T_3, i)
+
+	$COMMON L_HCE, Number_HCE, L_aperture, T_6,  P_6, v_6, DELTAL
+
+
+
+	{! added - AVM - debug}
+
+	{CALL WARNING('iteration number i=',i)}
+
+
+
+	" effective bracket perimeter for convection heat transfer"
+
+	P_brac := 0.2032 "[m]"
+
+
+
+	" effective bracket diameter (2 x 1in) "
+
+	D_brac := 0.0508 "[m]"
+
+
+
+	" minimum bracket cross-sectional area for conduction heat transfer"
+
+	A_cs_brac := 0.00016129 "[m^2]"
+
+
+
+	" conduction coefficient for carbon steel at 600 K"
+
+	k_brac := 48 "[W/m-K]"
+
+
+
+	" effective bracket base temperature"
+
+	T_base := T_3 - 10 [C] "[C]"
+
+
+
+	" estimate average bracket temperature "
+
+	T_brac := (T_base + T_6) / 3 "[C]"
+
+
+
+	" estimate film temperature for support bracket "
+
+	T_brac6 := (T_brac + T_6) /2 "[C]"
+
+
+
+	" convection coefficient with and without wind"
+
+	If (v_6 <= 0.1) Then
+
+		MU_brac6 := viscosity(AIR, T=T_brac6) "[N-s/m^2]"
+
+		Rho_brac6 := Density(AIR, T=T_brac6, P=P_6) "[kg/m^3]"
+
+		Cp_brac6 := CP(AIR, T=T_brac6) "[kJ/kg-K]"
+
+		k_brac6 := conductivity(AIR, T=T_brac6) "[W/m-K]"
+
+		NU_brac6 := MU_brac6 / Rho_brac6 "[m^2/s]"
+
+		Alpha_brac6 := k_brac6 / (Cp_brac6 * Rho_brac6) "[m^2/s]"
+
+		Beta_brac6 := 1 / (T_brac6 + 273.15) "[1/K]"
+
+		Ra_Dbrac := g# * Beta_brac6 * ABS(T_brac - T_6) * (D_brac)^3 / (Alpha_brac6 * NU_brac6)
+
+
+
+		" Warning Statement if following Nusselt Number correlation is used out of recommended range "
+
+		If (Ra_Dbrac <= 10^(-5)) or (Ra_Dbrac >= 10^12) Then CALL WARNING('The result may not be accurate, since 10^(-5) < Ra_Dbrac < 10^12 does not hold. See Function q_cond_bracket. Ra_Dbrac = XXXA1', Ra_Dbrac)
+
+
+
+		" Churchill and Chu correlation for natural convection from a long isothermal horizontal cylinder "
+
+		Pr_brac6 := NU_brac6 / Alpha_brac6
+
+		Nu#_bar := (0.60 + (0.387 * Ra_Dbrac^(0.1667)) / (1 + (0.559 / Pr_brac6)^(0.5625))^(0.2963))^2
+
+		h_brac6 := Nu#_bar * k_brac6 / D_brac "[W/m^2-K]"
+
+	Else
+
+		" Thermophysical Properties for air "
+
+
+
+		{! I added MSO }
+
+		T_brac = max(25,T_brac)
+
+		{! }
+
+
+
+		MU_brac := viscosity(AIR, T=T_brac) "[N-s/m^2]"
+
+		MU_6 := viscosity(AIR, T=T_6) "[N-s/m^2]"
+
+		Rho_6 := Density(AIR, T=T_6, P=P_6) "[kg/m^3]"
+
+		Rho_brac := Density(AIR, T=T_brac, P=P_6) "[kg/m^3]"
+
+		k_brac := conductivity(AIR, T=T_brac) "[W/m-K]"
+
+		k_6 := conductivity(AIR, T=T_6) "[W/m-K]"
+
+		k_brac6 := conductivity(AIR, T=T_brac6) "[W/m-K]"
+
+		Cp_brac := CP(AIR, T=T_brac) "[kJ/kg-K]"
+
+		Cp_6 := CP(AIR, T=T_6) "[kJ/kg-K]"
+
+		NU_6 := MU_6 / Rho_6 "[m^2/s]"
+
+		NU_brac := MU_brac / Rho_brac "[m^2/s]"
+
+		Alpha_brac := k_brac / (Cp_brac * Rho_brac) "[m^2/s]"
+
+		Alpha_6 := k_6 / (Cp_6 * Rho_6 ) "[m^2/s]"
+
+		Re_Dbrac := v_6 * D_brac / NU_6
+
+		Pr_brac := NU_brac / Alpha_brac
+
+		Pr_6 := NU_6 / Alpha_6
+
+
+
+		" Warning Statements if following Nusselt Correlation is used out of range "
+
+		If (Re_Dbrac <= 1) or (Re_Dbrac >= 10^6) Then CALL WARNING('The result may not be accurate, since 1 < Re_Dbrac < 10^6 does not hold. See Function fq_cond_bracket. Re_Dbrac = XXXA1', Re_Dbrac)
+
+		If (Pr_6 <= 0.7) or (Pr_6 >= 500) Then CALL WARNING('The result may not be accurate, since 0.7 < Pr_6 < 500 does not hold. See Function fq_cond_bracket. Pr_6 = XXXA1', Pr_6)
+
+
+
+		" Coefficients for external forced convection Nusselt Number correlation (Zhukauskas's correlation) "
+
+		If (Pr_6 <= 10) Then
+
+			n := 0.37
+
+		Else
+
+			n := 0.36
+
+		EndIf
+
+
+
+		If (Re_Dbrac < 40) Then
+
+			C := 0.75
+
+			m := 0.4
+
+		Else
+
+			If (40 <= Re_Dbrac) and (Re_Dbrac< 10^3) Then
+
+				C := 0.51
+
+				m := 0.5
+
+			Else
+
+				If (10^3 <= Re_Dbrac) and (Re_Dbrac < 2*10^5) Then
+
+					C := 0.26
+
+					m := 0.6
+
+				Else
+
+					If (2*10^5 <= Re_Dbrac) and (Re_Dbrac < 10^6) Then
+
+						C := 0.076
+
+						m := 0.7
+
+					EndIf
+
+				EndIf
+
+			EndIf
+
+		EndIf
+
+
+
+		{! MSO ADDED }
+
+		If (Pr_6<0) Then	
+
+			Pr_6=1
+
+		Endif
+
+
+
+		{! MSO ADDED }
+
+		If (Pr_brac<0) Then
+
+			Pr_brac=1
+
+		Endif
+
+		{! end}
+
+
+
+		" Zhukauskas's correlation for external forced convection flow normal to an isothermal cylinder"
+
+		Nu#_bar := C * (Re_Dbrac)^m * (Pr_6)^n * (Pr_6 / Pr_brac)^(0.25)
+
+		h_brac6 := Nu#_bar * k_brac6 / D_brac "[W/m^2-K]"
+
+
+
+		{! MSO ADDED }
+
+		If (h_brac6<0) Then
+
+			h_brac6=1
+
+		Endif
+
+		{! }
+
+	EndIf
+
+
+
+	" number of HCE support brackets for each HCE segment "
+
+	If (DELTAL <= L_HCE) Then
+
+		index_1 := ROUND(i * DELTAL / L_HCE)
+
+		index_2 := index_1 * L_HCE
+
+		If (((i - 1) * DELTAL) <= index_2) AND (index_2 <= (i * DELTAL)) Then
+
+			n := 1
+
+		Else
+
+			n := 0
+
+		EndIf
+
+	Else
+
+		n := ROUND(DELTAL / L_HCE)
+
+	EndIf
+
+
+
+	If (i = 1) OR (i = imax#) Then
+
+		n := n + 1
+
+	EndIf
+
+
+
+	q_cond_bracket := n * (SQRT(h_brac6 * P_brac * k_brac * A_cs_brac)) * (T_base - T_6) "[W]"
+
+END
+
+
+
+
+
+"%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+**********************************************************EQUATIONS - SOLAR THERMAL COLLECTORS*********************************************************************
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+
+
+
+$bookmark Collector model
+
+
+
+"******************************************************************************************************************
+
+Parameters
+
+******************************************************************************************************************"
+
+
+
+
+
+K_45 = 1.04 "[W/m-K]"	" Glass envelope conductance "
+
+e = 1.5E-6 "[m]"	" Absorber pipe inside surface equivalent roughness factor "
+
+Alpha_env = .04	" Glass envelope absorbtivity  from Forristal pg. 36 "
+
+
+
+" Inner and outer glass envelope surface emissivities (pyrex)"
+
+EPSILON_4 = 0.86
+
+EPSILON_5 = 0.86
+
+
+
+
+
+reflectivity = 1
+
+
+
+" Incident angle modifier from test data for SEGS LS-2 Receiver "
+
+THETA=0 "[degrees]"	"! provisoire"
+
+K = COS(THETA) + 0.000884 * THETA - 0.00005369 * (THETA)^2	"! A vérifier degrés-radians"
+
+
+
+
+
+"User defined parameters (overwritten if pre-defined configurations are selected):"
+
+TAU_envelope_UD=0.95
+
+Alpha_abs_UD=0.95
+
+EPSILON_3_100_UD=0.3
+
+EPSILON_3_400_UD=0.4
+
+
+
+GeomEffects_UD=0.93 
+
+Shadowing_UD=0.98 
+
+TrackingError_UD=0.92 
+
+
+
+L_HCE=1 [m]
+
+Number_HCE=10 
+
+
+
+
+
+
+
+"******************************************************************************************************************
+
+Heat collector element size
+
+******************************************************************************************************************"
+
+
+
+" Inner and outer absorber pipe diameters "
+
+D_2 = 0.066 "[m]"
+
+D_3 = 0.070 "[m]"
+
+D_4=0.08 "[m]"
+
+D_5=0.088 "[m]"
+
+
+
+
+
+" Calls procedure for determining HCE dimensions based on 'HCE Type'"
+
+{! CALL pHCEdimensions(HCEtype$: D_4, D_5, A_aperture, L_aperture, L_HCE, Number_HCE) }
+
+{! below added by AVM}
+
+L = 46 "m"
+
+W_Aperture_UD=2.5 "[m]"
+
+L_aperture = L "[m]"
+
+A_aperture = L_aperture*W_aperture_UD "[m^2]"
+
+
+
+{! end adding}
+
+
+
+
+
+"******************************************************************************************************************
+
+Inputs
+
+******************************************************************************************************************"
+
+T_amb = 15
+
+p_amb = 0.83e5
+
+I_beam=800 "[W/m^2]"
+
+vel_wind = 2
+
+p_a = p_amb	"Annulus gas pressure"
+
+
+
+$CONSTANT imax#=20
+
+TestType$='UserDefined'
+
+
+
+GlazingIntact$='Yes'
+
+vacuum = 0
+
+
+
+$if TestType$='UserDefined'
+
+D_p = 0
+
+$else
+
+D_p = 0.0508 "[m]"	" 'SNL AZTRAK Tracker' plug diameter"
+
+$endif
+
+
+
+m_dot_HTF=1.27 [kg/s]
+
+//T_htf_su_col = 120	"! provisoire"
+
+
+
+htf$='glycol'
+
+AbsorberMaterial$='Steel'
+
+AnnulusGas$='Air'
+
+SelectiveCoating$='Solec Hi/Sorb-II'
+
+HCEtype$='UserDefined'
+
+
+
+
+
+"******************************************************************************************************************
+
+Ambient conditions
+
+******************************************************************************************************************"
+
+" Effective sky temperature estimated as 8 C below ambient "
+
+T_6 = T_amb
+
+T_7 = T_6 - 8 [C] "[C]"
+
+
+
+" Converts ambient pressure from 0.83 atm to kPa, ambient pressure is treated as a constant "
+
+P_6 =p_amb
+
+
+
+" Standard ambient air temperature "
+
+T_std = 25 "[C]"
+
+
+
+" Incoming solar irradiance per aperture segment set by imax# "
+
+q_i = I_beam * A_aperture / L "[W/segment]"
+
+
+
+v_6 = vel_wind
+
+
+
+"******************************************************************************************************************
+
+Indexes
+
+******************************************************************************************************************"
+
+" Iteration stepsize along aperture length "
+
+DELTAL = (L_aperture)/(imax#) "[m]"
+
+
+
+"******************************************************************************************************************
+
+Hydraulic diameter
+
+******************************************************************************************************************"
+
+" Calls function to calculate HTF hydraulic diameter "
+
+
+
+
+
+D_h =D_2 - D_p	"Hydraulic diameter"
+
+
+
+"******************************************************************************************************************
+
+Heat transfer fluid flow rates
+
+******************************************************************************************************************"
+
+A_cs =pi * (D_2^2 - D_p^2)/4 "[m^2]"	"Cross-section"
+
+
+
+
+
+
+
+call prop_htf(htf$,T_htf_su_col:mu_su_col,rho_su_col,cp_su_col,k_su_col)
+
+
+
+M_dot_htf = V_dot_htf* RHO_su_col 
+
+V_dot_htf = v_su_col*A_cs 
+
+
+
+CALL SelectiveCoatingProperties(imax#, T_3[1..imax#]: epsilon_3[1..imax#], Alpha_abs, TAU_envelope)	" Calls procedure that determines optical properties "
+
+
+
+CALL OpticalEfficiency(HCEtype$: OptEff_env, OptEff_abs) 	" Calls procedure that determines optical efficiencies at the glass envelope and absorber "
+
+
+
+
+
+
+
+"******************************************************************************************************************
+
+*******************************************************************************************************************
+
+*******************************************************************************************************************
+
+Do-loops for temperatures along aperture length
+
+*******************************************************************************************************************
+
+*******************************************************************************************************************
+
+******************************************************************************************************************"
+
+" Do-Loop to set the inlet temperature and velocity of each increment to the previous increment's outlet temperature and velocity"
+
+T_1in[1] = T_htf_su_col "[C]"
+
+v_1in[1] = v_su_col "[m/s]"
+
+{T_1out[1] = lookup('initialization',1,1)}	"! Uncomment in case of convergence issues"
+
+{v_1out[1] = lookup('initialization',1,2)}
+
+
+
+Duplicate i = 1, (imax#-1)
+
+	{T_1out[i+1] = lookup('initialization',i+1,1)}	"! Uncomment in case of convergence issues"
+
+	{v_1out[i+1] = lookup('initialization',i+1,2)}
+
+
+
+	T_1in[i+1] = T_1out[i] "[C]"
+
+	v_1in[i+1] = v_1out[i] "[m/s]"
+
+	
+
+End
+
+
+
+" Do-Loop to conduct an energy balance on each increment that determines outlet temperature, heat loss, and efficiency "
+
+Duplicate i = 1,imax#
+
+	j[i] = i
+
+	meter[i]=(i)*(L/imax#)
+
+	v_1ave[i] = (v_1in[i] + v_1out[i])/2 "[m/s]"
+
+	T_1ave[i] = (T_1in[i] + T_1out[i])/2 "[C]"
+
+
+
+	" HTF Densities "
+
+	call prop_htf(htf$,T_1out[i]:mu_1out[i],rho_1out[i],cp_1out[i],k_1out[i])
+
+	call prop_htf(htf$,T_1ave[i]:mu_1ave[i],rho_1ave[i],cp_1ave[i],k_1ave[i])
+
+	Re_D2ave[i] = RHO_1ave[i] * v_1ave[i] * D_2 / MU_1ave[i]
+
+
+
+	" friction factor, f, relation "
+
+	{! 1 / SQRT(f[i]) = -2.0 * LOG10( e / (D_2 * 3.7) + 2.51 / (Re_D2ave[i] * SQRT(f[i]))) I changed this out for now}
+
+	f[i]=(1.82 * LOG10(2300) - 1.64)^(-2)
+
+
+
+	"******************************************************************************************************************
+
+	HTF velocities
+
+	******************************************************************************************************************"
+
+	" Outlet velocity of each increment "
+
+	v_1out[i] = m_dot_htf / (RHO_1out[i] * A_cs) "[m/s]"
+
+
+
+	"******************************************************************************************************************
+
+	Heat loss estimate through HCE support bracket
+
+	******************************************************************************************************************"
+
+	q_cond_bracket[i] = q_cond_bracket(T_3[i], i) "[W]"
+
+
+
+	"******************************************************************************************************************
+
+	HTF temperatures
+
+	******************************************************************************************************************"
+
+	" Outlet HTF temperature for each increment "
+
+
+
+	{HeatLoss[i] = (q_34conv[i] + q_34rad[i])*(1-vacuum) + (q_56conv[i] + q_57rad[i])*glazing}
+
+	{T_1out_old[i] = ((q_5SolAbs + q_3SolAbs - HeatLoss[i] )* DELTAL - q_cond_bracket[i]) / (m_dot_htf * Cp_1ave[i]) + ((v_1in[i])^2 - (v_1out[i])^2)/2 / Cp_1ave[i] + T_1in[i] "[C]"}
+
+
+
+	"! Comment in case of convergence issues:"
+
+	T_1out[i] = T_1in[i] + q_12conv[i] * DELTAL/(m_dot_htf * Cp_1ave[i]) 
+
+
+
+	" Average HTF temperature for each increment "
+
+	DELTAP[i] = ( f[i] * (DELTAL / D_2) * (m_dot_htf/A_cs)^2 ) /(2*RHO_1ave[i]) "[Pa]"
+
+
+
+	"Local efficiency of absorber"
+
+	epsilon_local[i]=q_12conv[i]/(I_beam*W_Aperture_UD)
+
+
+
+	"******************************************************************************************************************
+
+	q_12conv[i] Convective heat transfer rate between the heat transfer fluid and absorber
+
+	******************************************************************************************************************"
+
+	{T_2[i] = T_1ave[i] + 8}	"!Provisoire"
+
+	CALL q_12conv(T_1ave[i], v_1ave[i], T_2[i], htf$:q_12conv[i])
+
+
+
+	"******************************************************************************************************************
+
+	q_23cond[i] Conduction heat transfer rate through the absorber
+
+	******************************************************************************************************************"
+
+	" Absorber conductance, temperature and material type dependent "
+
+	k_23[i] = k_23(AbsorberMaterial$,T_2[i], T_3[i]) "[W/m-K]"
+
+	q_23cond[i] = 2 * PI * k_23[i] * (T_3[i] - T_2[i]) / LN(D_3 / D_2) "[W/m]"
+
+
+
+$if glazingintact$='yes'
+
+
+
+	"******************************************************************************************************************
+
+	q_34conv[i] Convective heat transfer rate between the absorber pipe and glazing
+
+	******************************************************************************************************************"
+
+	{T_4[i] = T_3[i] + 10}	"! Provisoire"
+
+	q_34conv[i] = fq_34conv(T_3[i], T_4[i], AnnulusGas$) * (1-vacuum) "[W/m]"	"If vacuum is intact, the convection heat transfer is set to 0"
+
+
+
+	"******************************************************************************************************************
+
+	q_34rad[i] Radiation heat transfer rate between the absorber surface and glazing inner surface
+
+	******************************************************************************************************************"
+
+	q_34rad[i] = q_34rad(T_3[i], T_4[i], i, EPSILON_3[1..imax#]) "[W/m]"
+
+
+
+	"******************************************************************************************************************
+
+	q_45cond[i] Conduction heat transfer rate through the glass envelope
+
+	******************************************************************************************************************"
+
+	{T_5[i] = T_4[i] +5}
+
+	q_45cond[i] = 2 * PI * K_45 * (T_4[i] - T_5[i]) / LN(D_5 / D_4) "[W/m]"
+
+
+
+	"******************************************************************************************************************
+
+	q_56conv[i] Convective heat transfer rate from the glazing to the atmosphere
+
+	******************************************************************************************************************"
+
+	q_56conv[i] = q_56conv(T_5[i], T_6) "[W/m]"
+
+
+
+	"******************************************************************************************************************
+
+	q_57rad[i] Radiation heat transfer rate between the glazing outer surface and the sky
+
+	******************************************************************************************************************"
+
+	q_57rad[i] = q_57rad(T_5[i], T_7) "[W/m]"
+
+
+
+
+
+
+
+$else "Glazing is missing"
+
+	 q_36conv[i] = fq_36conv(T_3[i], T_6, P_6,v_6)
+
+	q_37rad[i] = q_37rad(T_3[i], T_7, i, EPSILON_3[1..imax#]) 
+
+$endif
+
+
+
+	"******************************************************************************************************************
+
+	One dimensional (Radial) model
+
+	******************************************************************************************************************"
+
+$if glazingintact$='yes'
+
+	q_45cond[i] = q_34conv[i] + q_34rad[i]
+
+	q_56conv[i] = q_45cond[i]+ q_5SolAbs - q_57rad[i]		"!Q5solabs doit être fixé"
+
+	q_12conv[i] = q_23cond[i] "[W/m]"
+
+	q_3SolAbs - q_23cond[i] - q_34conv[i] - q_34rad[i] - q_cond_bracket[i] / DELTAL = 0 "[W/m]"	"!q_3solabs doit être fixé"
+
+	{q_12conv_bis[i] = q_5solabs + q_3solabs - q_56conv[i] - q_57rad[i] - q_cond_bracket[i]/DELTAL}
+
+$else
+
+	q_12conv[i] = q_23cond[i] "[W/m]"
+
+	q_3SolAbs - q_23cond[i] - q_36conv[i] - q_37rad[i] - q_cond_bracket[i] / DELTAL = 0 "[W/m]"	"!q_3solabs doit être fixé"
+
+	T_4[i] = T_6
+
+	T_5[i] = T_6
+
+$endif
+
+
+
+End
+
+
+
+"******************************************************************************************************************
+
+*******************************************************************************************************************
+
+******************************************************************************************************************"
+
+
+
+q_5SolAbs = q_i * OptEff_env * Alpha_env
+
+q_3SolAbs = q_i * OptEff_abs * Alpha_abs "[W/m]"
+
+
+
+" Outlet temperature set equal to the final increment outlet temperature "
+
+T_htf_ex_col = T_1out[imax#] "[C]"
+
+v_htf_ex_col = v_1out[imax#] "[m/s]"
+
+DELTAP_htf_col = SUM(DELTAP[j], j=1, imax#) "[Pa]"
+
+
+
+"******************************************************************************************************************
+
+Average HTF Temperature
+
+******************************************************************************************************************"
+
+T_bar_htf = AVERAGE(T_1ave[1..imax#]) "[C]"
+
+DELTAT_htf_col  = T_htf_ex_col - T_htf_su_col
+
+
+
+
+
+"******************************************************************************************************************
+
+ETA_Col Collector efficiency
+
+******************************************************************************************************************"
+
+" Total HTF convection heat gain equals summation of heat gain for each increment "
+
+Q_dot_col = SUM((q_12conv[j] * DELTAL ), j=1,imax#) "[W]"
+
+mean = ceil(imax#/2)
+
+Q_dot_col_bis = M_dot_htf * cp_1ave[mean] * (T_htf_ex_col - T_htf_su_col)
+
+ETA_Col = Q_dot_col/Q_dot_sol
+
+Q_dot_sol=q_i*L_aperture
+
+
+
+
+
+
+
+"******************************************************************************************************************
+
+Local atmospheric pressure correction
+
+******************************************************************************************************************"
+
+
+
+{P_local=760*EXP(-g#*0.0289*(alt*1000)/(8.31*(T_local+273))) "Torr"
+
+
+
+
+
+"******************************************************************************************************************
+
+Local average Temperature and windspeed
+
+******************************************************************************************************************"
+
+
+
+T_local=interpolate2d('Climate', Latitude, Longitude, T_amb_ave, Latitude=Lat, Longitude=Long, 8) 	"[C]"
+
+T_6=T_local
+
+
+
+Clouds=interpolate2d('Climate', Latitude, Longitude, Cloud, Latitude=Lat, Longitude=Long, 8) 	"Cloud data from NASA meteorology database online"
+
+
+
+Wind10m=interpolate2d('Climate', Latitude, Longitude, Wind, Latitude=Lat, Longitude=Long) "[m/s]"
+
+
+
+Wind2m=Wind10m*(2/10)^0.08 { formula and power factor from Suresh H. Jangamshetti,  Guruprasada Rau 1999}
+
+
+
+
+
+I_ave=I_ANNUAL_AVE*(1-Clouds)
+
+
+
+}
+
+
+
+"%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% ORC Model %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
+
+
+
+$bookmark ORC Model
+
+
+
+"! Connection:"
+
+cp_hf = (cp_1ave[1] + cp_1ave[imax#])/2
+
+T_hf_su_ev = T_htf_ex_col
+
+T_hf_ex_ev = T_htf_su_col
+
+M_dot_hf = M_dot_htf
+
+//cp_hf = 2000
+
+
+
+"! Inputs and parameters :"
+
+
+
+calcarea$='yes'
+
+fluid$='r245fa'
+
+//M_dot = 0.2
+
+
+
+"pressures :"
+
+$ifnot parametrictable
+
+T_ev = 135
+
+$endif
+
+
+
+
+
+//T_cd = 30
+
+
+
+{p_cd=1E5
+
+p_su_ev=8E5}
+
+
+
+pinch_ev = 8
+
+pinch_cd = 8
+
+
+
+"heat sink :"
+
+cf$='water'
+
+//T_cf_su_cd = 0
+
+p_cf_cd = 2E5
+
+{M_dot_cf = 0.6}
+
+DELTAT_cf_cd = 15
+
+
+
+//V_s_exp = 180e-6/4.05
+
+N_rot_exp = 3000
+
+
+
+"Pressure drops in the heat exchangers :"
+
+DELTAp_cd = 0E3
+
+
+
+"Overheating and subcooling :"
+
+DELTAT_ex_ev = 5
+
+DELTAT_ex_cd = 5
+
+
+
+"Effectivenesses :"
+
+epsilon_pp = 0.7
+
+epsilon_rec = 0.8
+
+
+
+"Heat exchanger geometry:"
+
+Beta_ph=45	"Chevron Angle"
+
+L_ph = 0.269  [m] 	"plate length, measured between the center of the port holes"
+
+W_ph = 0.112 [m]	"plate width between gaskets"
+
+p_ph=0.0015	
+
+b_ph = p_ph - t_ph 	"Space between two plates"
+
+t_ph=0.0005 [m] 	"plate thickness, evaluated with the weight of one plate"
+
+phi_ph=1.15	"Enlargement factor"
+
+D_h_ph = 2*b_ph	"Hydraulic diameter"
+
+
+
+
+
+{$if calcarea$='yes' 
+
+
+
+//N_p_ph=40	"Number of plate"
+
+A_tot_ev_bis = L_ph*W_ph*(N_p_ph - 1)
+
+A_tot_ev = A_tot_ev_bis
+
+
+
+//N_p_cd =20
+
+A_tot_cd_bis = L_ph*W_ph*(N_p_cd - 1)
+
+A_tot_cd = A_tot_cd_bis
+
+
+
+$endif}
+
+
+
+
+
+r_p = p_ev/p_cd
+
+r_v = rho_su_exp/rho_ex_exp
+
+
+
+"!First processing : "
+
+
+
+"Saturation pressures :"
+
+{T_ev = T_sat(fluid$,p=p_ev)
+
+T_cd = T_sat(fluid$,p=p_cd)}
+
+p_ev = p_sat(fluid$,t=t_ev)
+
+p_cd = p_sat(fluid$,t=t_cd)
+
+
+
+DELTAT_ex_ev = T_su_exp - t_sat(fluid$,p=p_ev)
+
+DELTAT_ex_cd = T_sat(fluid$,p=p_cd) - T_ex_cd 
+
+
+
+"!Expansion :"
+
+$bookmark expander
+
+$if calcarea$='yes'
+
+p_su_exp = p_ev - DELTAp_ev
+
+p_ex_exp = p_cd + DELTAp_vap_rec
+
+$else
+
+p_su_exp = p_ev 
+
+p_ex_exp = p_cd
+
+$endif
+
+
+
+rho_su_exp = density(fluid$,p=p_su_exp,t=t_su_exp)
+
+
+
+h_su_exp = enthalpy(fluid$,t=t_su_exp,p=p_su_exp)
+
+s_su_exp = entropy(fluid$,t=t_su_exp,p=p_su_exp)
+
+epsilon_s_exp = (h_su_exp - h_ex_exp)/(h_su_exp - h_ex_exp_s)
+
+h_ex_exp_s = enthalpy(fluid$,p=p_ex_exp,s=s_su_exp)
+
+t_ex_exp = temperature(fluid$,p=p_ex_exp,h=h_ex_exp)
+
+rho_ex_exp = density(fluid$,p=p_ex_exp,t=t_ex_exp)
+
+
+
+twostage$='yes'
+
+
+
+M_dot = FF_exp * N_rot_exp/60 * V_s_exp * rho_su_exp
+
+
+
+$if twostage$='no'
+
+call hermeticexpander(r_p,rho_su_exp:FF_exp,epsilon_s_exp)
+
+
+
+$else
+
+
+
+call doubleexpander(fluid$,p_su_exp,p_ex_exp,T_su_exp,N_rot_exp,M_dot"<inputs outputs>",epsilon_s_exp,epsilon_s_exp_1,epsilon_s_exp_2,V_s_exp_1,V_s_exp_2,W_dot_exp_1,W_dot_exp_2,FF_exp)
+
+
+
+$endif
+
+
+
+
+
+"! Choice of the expander type. It should be noted that the output of the opendrive is mechanical power, while that of the the hermetic expander is electrical power:"
+
+//call opendriveexpander(N_rot_exp,r_p,rho_su_exp:FF_exp,epsilon_s_exp)
+
+
+
+
+
+
+
+
+
+"!Condenser : "
+
+$bookmark condenser
+
+h_su_cd = h_ex_vap_rec
+
+T_su_cd = T_ex_vap_rec
+
+h_ex_cd = enthalpy(fluid$,p=p_cd,t=t_ex_cd)
+
+h_cd_v = enthalpy(fluid$,p=p_cd,x=1)
+
+h_cd_l = enthalpy(fluid$,p=p_cd,x=0)	
+
+
+
+h_cf_su_cd = enthalpy(cf$,t=t_cf_su_cd,p=p_cf_cd)
+
+M_dot_cf * (h_cf_ex_cd - h_cf_su_cd) = M_dot * (h_su_cd - h_ex_cd)
+
+M_dot_cf * (h_cf_su_tp - h_cf_su_cd) =M_dot * (h_cd_l - h_ex_cd)
+
+M_dot_cf * (h_cf_ex_tp - h_cf_su_cd) = M_dot * (min(h_cd_v,h_su_cd) - h_ex_cd)
+
+
+
+T_cf_ex_cd = temperature(cf$,h=h_cf_ex_cd,p=p_cf_cd)
+
+T_cf_su_tp = temperature(cf$,h=h_cf_su_tp,p=p_cf_cd)
+
+T_cf_ex_tp = temperature(cf$,h=h_cf_ex_tp,p=p_cf_cd)
+
+
+
+DELTAT_cf_cd = T_cf_ex_cd - T_cf_su_cd
+
+//pinch_cd = min(T_ex_cd - T_cf_su_cd,T_cd - T_cf_ex_tp,T_su_cd - T_cf_ex_cd)
+
+T_cd = T_cf_su_cd + pinch_cd
+
+
+
+Q_dot_cd = M_dot * (h_su_cd - h_ex_cd)
+
+
+
+"Polynomial fit from the Witt condensers datasheet:"
+
+W_dot_fan_cd=(54.4643644 + 0.0184902555*Q_dot_cd)* (8.333/pinch_cd)
+
+pinch_cd = T_cd - T_amb
+
+
+
+$if calcarea$ ='yes'
+
+{q = M_dot * (h_cd_v - h_cd_l)/A_tp_cd	"A_tot_cd"
+
+
+
+call Thonon(cf$,P_hf_ev,(T_cf_su_cd+T_cf_ex_cd)/2,M_dot_hf,N_p_cd,b_ph,W_ph,L_ph,beta_ph:h_cf,DELTAp_cf)
+
+call Yan(fluid$,P_cd,M_dot,q,N_p_cd,b_ph,W_ph,L_ph,beta_ph,phi_ph:h_tp_cd,DELTAp_tp_cd)
+
+
+
+
+
+
+
+AU_tp_cd = M_dot_cf * cp(cf$,t=t_cf_su_cd,p=p_cf_cd) * ln(1 - (T_cf_su_tp - T_cf_ex_tp)/(T_cd - T_cf_su_tp ))
+
+A_tp_cd = AU_tp_cd * (1/h_tp_cd + 1/h_cf)
+
+//A_tp_cd = 1
+
+
+
+call Thonon(fluid$,P_cd,(T_su_cd+T_cd)/2,M_dot,N_p_cd,b_ph,W_ph,L_ph*A_v_cd/A_tot_cd,beta_ph:h_v_cd,DELTAp_v_cd)
+
+DELTAT_log_v_cd = -((T_cf_ex_tp - T_cd) - (T_cf_ex_cd - T_su_cd))/ln(((T_cf_ex_tp - T_cd)/(T_cf_ex_cd - T_su_cd)))
+
+AU_v_cd = M_dot*(h_su_cd - h_cd_v)/DELTAT_log_v_cd
+
+A_v_cd = AU_v_cd * (1/h_v_cd + 1/h_cf)
+
+
+
+call Thonon(fluid$,P_cd,(T_ex_cd+T_cd)/2-1,M_dot,N_p_cd,b_ph,W_ph,L_ph*A_l_cd/A_tot_cd,beta_ph:h_l_cd,DELTAp_l_cd)
+
+DELTAT_log_l_cd = -((T_cf_su_tp - T_cd) - (T_cf_su_cd - T_ex_cd))/ln(((T_cf_su_tp - T_cd)/(T_cf_su_cd - T_ex_cd)))
+
+AU_l_cd = M_dot*(h_cd_l - h_ex_cd)/DELTAT_log_l_cd
+
+A_l_cd = AU_l_cd * (1/h_l_cd + 1/h_cf)
+
+
+
+A_tot_cd = A_l_cd + A_v_cd + A_tp_cd
+
+DELTAp_tot_cd = DELTAp_l_cd + DELTAp_v_cd + DELTAp_tp_cd
+
+//DELTAp_tot_cd = 0}
+
+
+
+$endif
+
+
+
+
+
+"! Pump :"
+
+h_su_pp = h_ex_cd
+
+v_su_pp = volume(fluid$,p=p_cd,h=h_ex_cd)
+
+
+
+s_su_pp = entropy(fluid$,p=p_cd,h=h_ex_cd)
+
+h_ex_pp = h_su_pp + v_su_pp*(p_ev-p_cd)/epsilon_pp
+
+"Second method:"
+
+h_ex_pp_s = enthalpy(fluid$,s=s_su_pp,p=p_ev)
+
+epsilon_pp = (h_ex_pp_s- h_su_pp)/(h_ex_pp_bis - h_su_pp)
+
+
+
+t_ex_pp = temperature(fluid$,h=h_ex_pp,p=p_ev)
+
+
+
+"! Récupérateur :"
+
+$bookmark recuperator
+
+"Perte de charge :"
+
+//DELTAp_vap_rec = DELTAp_cd * (h_ex_exp - h_ex_vap_rec)/(h_ex_exp - h_ex_cd)
+
+p_ex_vap_rec = p_su_vap_rec - DELTAp_vap_rec
+
+
+
+p_su_vap_rec = p_cd
+
+
+
+h_su_liq_rec = h_ex_pp
+
+T_su_liq_rec = T_ex_pp
+
+p_liq_rec = p_ev
+
+
+
+H_su_vap_rec = h_ex_exp
+
+T_su_vap_rec = T_ex_exp
+
+p_vap_rec = (p_su_vap_rec + p_ex_vap_rec)/2
+
+
+
+cp_liq_rec = cp(fluid$,t=t_su_liq_rec,p=p_liq_rec)
+
+cp_vap_rec = cp(fluid$,t=t_su_vap_rec,p=p_vap_rec)
+
+
+
+C_dot_liq_rec = M_dot * cp_liq_rec
+
+C_dot_vap_rec = M_dot * cp_vap_rec
+
+
+
+C_dot_min_rec = min(C_dot_liq_rec,C_dot_vap_rec)
+
+C_dot_max_rec=max(C_dot_liq_rec,C_dot_vap_rec)
+
+Q_dot_rec = epsilon_rec * C_dot_min_rec * (T_su_vap_rec - T_su_liq_rec)
+
+
+
+Q_dot_rec = M_dot * (h_su_vap_rec - h_ex_vap_rec)
+
+Q_dot_rec = m_dot * (h_ex_liq_rec - h_su_liq_rec)
+
+
+
+T_ex_vap_rec = temperature(fluid$,h=h_ex_vap_rec,p=p_vap_rec)
+
+T_ex_liq_rec = temperature(fluid$,h=h_ex_liq_rec,p=p_liq_rec)
+
+
+
+$if calcarea$='yes'
+
+DELTAT_log_rec = ((T_su_vap_rec- T_ex_liq_rec) - (T_ex_vap_rec - T_su_liq_rec))/ln((T_su_vap_rec- T_ex_liq_rec)/(T_ex_vap_rec - T_su_liq_rec))
+
+AU_rec  = Q_dot_rec/DELTAT_log_rec
+
+
+
+//L_w_tot_rec = 1
+
+DELTAP_vap_rec = 100E2
+
+L_w_tot_rec = L_w * (N_p_rec - 1)/2
+
+
+
+
+
+call Thonon(fluid$,P_cd,(T_su_vap_rec+T_ex_vap_rec)/2,M_dot,b,L_w_tot_rec,L_h,beta:h_vap_rec,DELTAp_vap_rec)
+
+call Thonon(fluid$,P_ev,(T_su_liq_rec+T_ex_liq_rec)/2,M_dot,b,L_w_tot_rec,L_h,beta:h_liq_rec,DELTAp_liq_rec)
+
+
+
+U_rec = (1/h_liq_rec + 1/h_vap_rec)^(-1)
+
+
+
+A_rec = AU_rec/U_rec
+
+
+
+L_rec = A_rec/L_w_tot*2
+
+
+
+
+
+$else
+
+DELTAP_vap_rec = 0
+
+
+
+$endif
+
+
+
+$bookmark evaporator
+
+"! Evaporator :"
+
+h_su_ev = h_ex_liq_rec
+
+T_su_ev = T_ex_liq_rec
+
+h_ex_ev  = h_su_exp
+
+h_ev_l = enthalpy(fluid$,p=P_ev,x=0)
+
+h_ev_v = enthalpy(fluid$,p=P_ev,x=1)
+
+
+
+"secondary fluid :"
+
+
+
+M_dot_hf * cp_hf* (T_hf_su_ev - T_hf_ex_ev) = M_dot * (h_ex_ev - h_su_ev)
+
+M_dot_hf *cp_hf* (T_hf_su_ev - T_hf_ex_tp) = M_dot * (h_ex_ev - h_ev_l)
+
+M_dot_hf * cp_hf*(T_hf_su_ev - T_hf_su_tp) = M_dot * (h_ex_ev - h_ev_v)
+
+
+
+DELTAT_hf_ev = T_hf_su_ev - T_hf_ex_ev
+
+
+
+pinch_ev = min(T_hf_ex_ev - T_su_ev,T_hf_ex_tp - T_ev,T_hf_su_ev - T_su_exp)
+
+
+
+
+
+$if calcarea$='yes'
+
+
+
+//N_p = 75	"Number of plates"
+
+b = 0.002  [m]	"Channel spacing"
+
+L_w = 0.21   [m]	"Plate width"
+
+L_h = 0.5 [m]	"Plate hight"
+
+PHI = 1.2	"Enlargement factor"
+
+beta = 45	"Chevron angle"
+
+
+
+
+
+L_w_tot = L_w * (N_p - 1)/2	"Total width: parameter to be optimized"
+
+DELTAp_ev = 100e2
+
+
+
+call hx_ev(fluid$,htf$,T_hf_su_ev,M_dot_hf,T_su_ev,T_su_exp,M_dot,p_ev,1E5,b,L_w_tot,L_h,beta:A_ev,DELTAp_ev,DELTAp_hf_ev)
+
+
+
+
+
+
+
+$endif
+
+
+
+
+
+"!T-s diagram :"
+
+s[1] = entropy(fluid$,t=t_ex_pp,p=p_ev)
+
+t[1] = t_ex_pp
+
+p[1] = p_ev
+
+h[1] = h_ex_pp
+
+
+
+s[2] = entropy(fluid$,t=t_ex_liq_rec,p=p_ev)
+
+t[2] = t_ex_liq_rec
+
+p[2] = p_ev
+
+h[2] = h_ex_liq_rec
+
+
+
+s[3] = entropy(fluid$,p=P_ev,x=0)
+
+t[3] = T_ev
+
+p[3] = P_ev
+
+h[3] = h_ev_l
+
+
+
+s[4] = entropy(fluid$,p=P_ev,x=1)
+
+t[4] = T_ev
+
+h[4] = h_ev_v
+
+p[4] = P_ev
+
+
+
+s[5] = s_su_exp
+
+t[5] = t_su_exp
+
+h[5] = h_su_exp
+
+p[5] = p_ev
+
+mu[5] = viscosity(fluid$,t=t_su_exp,p=p_ev)
+
+k[5] = conductivity(fluid$,t=t_su_exp,p=p_ev)
+
+
+
+s[6] = entropy(fluid$,h=h_ex_exp,p=p_cd)
+
+t[6] = T_ex_exp
+
+h[6] = h_ex_exp
+
+p[6]= p_cd
+
+mu[6] = viscosity(fluid$,t=t_ex_exp,p=p_cd)
+
+k[6] = conductivity(fluid$,t=t_ex_exp,p=p_cd)
+
+rho[6] = density(fluid$,t=t_ex_exp,p=p_cd)
+
+
+
+s[7] = entropy(fluid$,h=h_ex_vap_rec,p=p_ex_vap_rec)
+
+t[7] = T_ex_vap_rec
+
+h[7] = h_ex_vap_rec
+
+p[7]= p_ex_vap_rec
+
+
+
+s[8] = min(s[5],entropy(fluid$,p=p_cd,x=1))
+
+t[8] = T_cd
+
+h[8] = min(h_ex_exp,h_cd_v)
+
+p[8] = min(p_cd,p_cd)
+
+
+
+s[9] = entropy(fluid$,p=p_cd,x=0)
+
+t[9] = T_cd
+
+h[9] = h_cd_l
+
+p[9] = p_cd
+
+MM = molarmass(toluene)
+
+s[10] = entropy(fluid$,h=h_ex_cd,p=p_cd)
+
+t[10] = t_ex_cd
+
+h[10] = h_ex_cd
+
+p[10] = p_cd
+
+
+
+s[11] = s[1]
+
+t[11] = t[1]
+
+h[11] = h[1]
+
+p[11] = p[1]
+
+
+
+"T profile in heat exhangers :"
+
+T_hf[2] = T_hf_ex_ev
+
+T_hf[3] = T_hf_ex_tp
+
+T_hf[4] = T_hf_su_tp
+
+T_hf[5] = T_hf_su_ev
+
+
+
+T_cf[7] = T_cf_ex_cd
+
+T_cf[8] = T_cf_ex_tp
+
+T_cf[9] = T_cf_su_tp
+
+T_cf[10] = T_cf_su_cd
+
+
+
+"! Efficiency : "
+
+Q_dot_ev = (h_ex_ev - h_su_ev)*M_dot
+
+eta_cycle = W_dot_net/Q_dot_ev
+
+
+
+W_dot_net = W_dot_exp - W_dot_pp - W_dot_fan_cd
+
+W_dot_exp = (h_su_exp - h_ex_exp) * M_dot
+
+W_dot_pp = (h_ex_pp - h_su_pp) * M_dot
+
+
+
+eta_carnot = 1 - (T_cf_su_cd +273.15)/(T_hf_su_ev + 273.15)
+
+
+
+eta_II = eta_cycle/eta_carnot
+
+
+
+
+
+eta_overall = eta_cycle * eta_col
+
+
+
+"! Fluid quality at the end of the expansion :"
+
+x = quality(fluid$,h=h_ex_exp,p=p_cd)
+
+
+
+
+
+{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}
+
+
+ 

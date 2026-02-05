@@ -1,0 +1,74 @@
+"VL050415
+Répétition 8, exercice 1
+
+1.	Une machine frigorifique au Fréon R134a fonctionne entre les températures suivantes : 20 °C au condenseur et -10 °C à l'évaporateur. Le fluide est sous-refroidi de 6 K à la sortie du condenseur et surchauffé de 2 K à la sortie de l'évaporateur. L'efficacité isentropique du compresseur vaut 0.75 et le rendement du moteur électrique d'entraînement vaut 0.80.
+
+Sachant que la machine doit produire un effet utile de 50 kW, déterminer :
+*	Le débit massique
+*	La puissance absorbée par le compresseur
+*	Le COP de la machine
+
+"
+T_cond=20"[°C]"
+T_ev=-10
+DELTA_T_sc=6 "sub cooling"
+DELTA_T_oh=2 "over heating"
+epsilon_s_cp=0.75
+eta_m=0.8
+
+"débit massique"
+ "point 1: entrée du compresseur:"
+T_1=T_ev+DELTA_T_oh
+P_1=P_ev
+P_ev=pressure(R134a,T=T_ev,x=1)"palier de changement de phase horizontal (=> on peut calculer la pression en prenant n'importe qu'elle valeur de x entre 0 et 1)"
+h_1=enthalpy(R134a,P=P_1,T=T_1)
+
+	"point 2: sortie du compresseur= entrée du condenseur"
+P_2=P_cd
+P_cd=pressure(R134a,T=T_cond,x=1)
+s_1=entropy(R134a,T=T_1,P=P_1)
+h_2_s=enthalpy(R134a,P=P_2,s=s_1)
+epsilon_s_cp=w_s/w
+w_s=h_2_s-h_1 "[J/kg]"
+w=h_2-h_1 "permet de déterminer h_2"
+T_2=temperature(R134a,P=P_2,h=h_2)
+
+	"point 3: sortie du condenseur"
+P_3=P_cd
+T_3=T_cond-DELTA_T_sc
+h_3=enthalpy(R134a,P=P_3,T=T_3)
+
+	"point 4: entrée dans l'évaporateur"
+h_4=h_3 "détente isenthalpique"
+x_4=quality(R134a,P=P_4,h=h_4)
+P_4=P_ev
+
+"calcul du débit"
+Q_dot_41=50E3 "[W]"
+Q_dot_41=M_dot_r*w_41
+w_41=h_1-h_4
+
+"puissance absorbée par le compresseur"
+W_dot_12=M_dot_r*w_12
+w_12=h_2-h_1
+W_dot_cp=W_dot_12/eta_m "consommation électrique"
+
+"COP"
+
+COP=Q_dot_41/W_dot_cp
+
+"représentation du cycle dans le diagramme P-h"
+P[1]=P_1
+h[1]=h_1
+
+P[2]=P_2
+h[2]=h_2
+
+P[3]=P_3
+h[3]=h_3
+
+P[4]=P_4
+h[4]=h_4
+
+
+{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

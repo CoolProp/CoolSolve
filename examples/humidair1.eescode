@@ -1,0 +1,50 @@
+"VL050429
+Répétition 10, exercice 1
+
+1.	Soit de l'air dont la température est de 32°C et l'humidité relative de 40% que l'on refroidit jusqu'à la température de 20°C  par passage sur une batterie dont la température superficielle moyenne est de 5°C (pression de l'air 1 bar). Calculer :
+*	La quantité de chaleur qu'il faut prélever à l'air à traiter
+*	La part correspondant à la chaleur latente et la part correspondant à la chaleur sensible
+*	La quantité de vapeur d'eau par kg d'air qui s'est condensée lors du passage de l'air sur la batterie
+
+"
+
+T_su=32 "[°C]" "!!"
+RH_su=0.4
+T_ex=20
+T_c=5
+P=1E5 "[Pa]"
+
+"efficacité de contact (cf p VII.36)"
+
+epsilon_c=(T_su-T_ex)/(T_su-T_c)
+w_su=humrat(airH2O,T=T_su,R=RH_su,P=P) "[kg eau/kg air sec]"
+
+RH_c=1
+w_c=humrat(airH2O,T=T_c,R=RH_c,P=P)
+
+"calcul humidité à la sortie de la batterie"
+epsilon_c=(w_su-w_ex)/(w_su-w_c)
+
+"quantité de chaleur prélevée"
+q=h_su-h_ex
+h_su=ENTHALPY(AirH2O,T=T_su,P=P,w=w_su)
+h_ex=ENTHALPY(AirH2O,T=T_ex,P=P,w=w_ex)
+
+"chaleur sensible"
+q_s=h_su_air-h_ex_air
+h_su_air=ENTHALPY(Air,T=T_su)
+h_ex_air=ENTHALPY(Air,T=T_ex)
+
+"chaleur latente"
+q_l=(w_su-w_ex)*L_fg "[J/kg]"
+L_fg=2500000 "[J/kg]"
+
+"qtité d'eau condensée"
+DELTAw=w_su-w_ex
+
+T[1]=T_su
+T[2]=T_ex
+T[3]=T_c
+w[1]=w_su
+w[2]=w_ex
+w[3]=w_c{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

@@ -1,0 +1,203 @@
+"########################################################################
+
+	SCROLL COMPRESSOR REFERENCE MODEL IN REFRIGERATION CYCLE
+
+					Exemple: hermetic scroll compressor
+
+########################################################################"
+
+"References:
+- Winandy E., Saavedra C. and Lebrun J., Experimental analysis and simplified modelling of a hermetic scroll refrigeration compressor, to be published in  Applied Thermal Engineering, 2002.
+- Winandy E., Contribution to reciprocating and scroll refrigeration compressors performance analysis, PhD Thesis, 
+Univerity of Concepcion, Chile, 1999."
+
+$ifnot parametrictable
+T_ev = 30
+$endif
+
+"CYCLE
+------------------------------------------------------------------------------------------"
+Q_dot_ev = M_dot * ( h_ex_ev - h_su_ev )
+Q_dot_cd = M_dot * ( h_su_cd- h_ex_cd )
+COP_c = Q_dot_ev / W_dot
+COP_h = Q_dot_cd / W_dot
+
+h_ex_ev = enthalpy( fluid$ , p = p_ev , t = t_ex_ev ) 
+h_su_cd = enthalpy( fluid$ , t=t_su_cd , p = p_cd )  
+h_ex_cd = enthalpy( fluid$ , p = p_cd , t = t_ex_cd ) 
+p_ev=pressure(fluid$,x=0, t=t_ev)
+p_cd=pressure(fluid$,x=0,t=t_cd)
+t_ex_ev=t_ev+DELTAt_sh_ev
+t_ex_cd=t_cd-DELTAt_sc_cd
+
+"Connection Evaporator - compressor:"
+t_su_cp=t_ex_ev
+p_su_cp=p_ev
+
+"Connection Condenser- compressor:"
+t_ex_cp=t_su_cd
+p_ex_cp=p_cd
+
+"Connection Condenseur - Evaporateur"
+h_ex_cd=h_su_ev
+
+
+"COMPRESSOR REFERENCE MODEL
+------------------------------------------------------------------------------------------"
+
+"This model includes heat transfer at the supply, at the exhaust and to the ambiant.  The pressure drop during the suction and discharge are neglected as well as any lubricant circulation.  The compression is considered isentropic up to the adapted pressure and then at constant volume until the exhaust pressure.  The evolution of the refrigerant is decomposed into four steps: 
+(i)	No pressure drop (su = su1)
+(ii)	Heating-up (su1 - su2). 
+(iii)	Isentropic compression (su2 - ad)
+(iv)	Compression at a fixed volume (ad -ex2).
+(v)	Cooling down (ex2 -ex1)
+(vi)	      No pressure drop (ex1 - ex)"
+
+"1.	First step: pressure drop from su to su1
+=================================
+The supply throttling produces a variable pressure drop that corresponds to the different obstacles through the manifold and through the valve.  As it has been observed, a fixed area obstacle model is justified and is used here. The pressure drop is represented by:
+1. Isentropic expansion in the nozzle,
+2. Isobaric diffusion .
+In the case of this hermetic scroll compressor, the supply pressure drop is not important and can be neglected.  To stay general, we keep the same equation with d_su=1 (very large)"
+t_su1_cp = temperature( fluid$,h=h_su1_cp, p = p_su1_cp) 
+v_su1_cp = volume(fluid$,t=t_su1_cp,p=p_su1_cp)  
+h_su1_cp = h_su_cp   
+p_su1_cp = p_su_cp - C_su_cp^2 / (2000*v_su_cp)  
+C_su_cp = V_dot_su_cp / A_su_cp   
+A_su_cp = pi * d_su_cp^2 / 4  "  m2  "
+DELTAp_su1_cp=p_su_cp-p_su1_cp
+
+"Fluid definition:"
+v_su_cp = volume( fluid$, t = t_su_cp , p = p_su_cp ) 
+h_su_cp = enthalpy( fluid$ , t = t_su_cp , p = p_su_cp )  
+s_su_cp= entropy( fluid$, t = t_su_cp , p = p_su_cp )  
+h_exs_cp = enthalpy( fluid$ , p = p_ex_cp , s = s_su_cp ) 
+
+"2.	Second step: heating from su1 to su2:
+================================
+In general, the different heat transfers in a compressor include the one to the suction gas, the heating-up due to the electromechanical losses, the heat given by the high temperature discharge gas and the heat transfer to the ambiant.
+We assume that a fictitious wall of uniform temperature tw is able to represent all the heat transfer modes mentioned above.  The equations for the fictitious suction heat exchanger of constant wall temperature are :"
+
+h_su2_cp - h_su1_cp = Q_dot_su1_cp / M_dot   
+Q_dot_su1_cp = epsilon_su1_cp*C_dot_su1_cp*( t_w_cp - t_su1_cp )   
+epsilon_su1_cp = 1 - exp(-NTU_su1_cp)  
+NTU_su1_cp = AU_su1_cp / C_dot_su1_cp   
+C_dot_su1_cp = M_dot * c_p_su1_cp   				"	kW/K"
+c_p_su1_cp = specheat(fluid$,T=t_su1_cp,P=p_su1_cp)  "	kJ/kgK"
+t_su2_cp=t_su1_cp+DELTAt_su12_cp
+p_su2_cp=p_su1_cp
+
+t_su2_cp = temperature( fluid$, h=h_su2_cp, p=p_su2_cp )  
+v_su2_cp = volume( fluid$, t = t_su2_cp , p = p_su2_cp ) 
+s_su2_cp= entropy( fluid$, t = t_su2_cp , p = p_su2_cp )  
+
+"Wall balance:"
+W_dot - W_dot_in - Q_dot_su1_cp - Q_dot_ex2_cp + Q_dot_amb_cp = 0   
+"With the ambiant losses given by:"
+Q_dot_amb_cp = AU_amb_cp * ( t_amb_cp - t_w_cp )   
+
+"3.	Third step: suction
+=================="
+M_dot=V_s_cp*N_cp/volume(fluid$,t=t_su2_cp,p=p_su2_cp)
+N_cp=N_nom_cp*(1-C_sd_cp*W_dot)
+
+"where N is the compressor revolution speed that depends on the motor sliding, Vs is the constant swept volume, not known a priori, and the specific volume at the compressor inlet vsu2 has to be computed taking into account the heating up.  We do not consider throttling."
+
+"The global volumutric effectiveness is given by:"
+V_dot_su_cp = M_dot * v_su_cp  
+V_dot_su_cp = epsilon_v_cp * V_dot_s_cp 
+" where "
+V_dot_s_cp = V_s_cp * N_cp  "   volume flow rate displaced by the compressor "
+"V_s_cp = swept volume "
+
+
+"4.	Fourth step: isentropic compression with fixed internal volume ratio:
+=====================================================
+The compression step is considered adiabatic from su1 to ex1, so the discharge temperature can easily be computed by" t_ex2_cp=temperature(fluid$,h=h_ex2_cp,p=p_ex2_cp)
+h_ex2_cp=h_su2_cp+w_in
+
+"We assume that the compression is adiabatic.  We divide the compression in two parts, the first one is adiabatic-reversible and so isentropic up to the adapted pressure, and the second one adiabatic but no reversible and at constant absolute volume.  This second part corresponds to the opening of the compression chamber to the discharge plenum.  We have then:	"
+
+w_ad=( enthalpy(fluid$,s=s_su2_cp,p=p_ad_cp) - enthalpy(fluid$,t=t_su2_cp,p=p_su2_cp) )
+p_ad_cp=pressure(fluid$,s=s_su2_cp,v=v_fi_cp )
+t_ad_cp=temperature(fluid$,s=s_su2_cp,v=v_fi_cp)
+v_fi_cp=v_in_cp/R_v_i_cp
+v_in_cp=volume(fluid$,t=t_su2_cp,p=p_su2_cp)
+w_nad= v_fi_cp * (p_ex2_cp-p_ad_cp)*1E+5/1E+3
+w_in=w_ad+w_nad
+W_dot_in=M_dot * w_in
+
+"The compressor shaft power can be split into several terms	"
+W_dot=W_dot_in+W_dot_loss
+W_dot_loss=W_dot_loss0+alpha_cp*W_dot_in
+IMEP_cp=W_dot_in/(V_s_cp*N_cp)
+FMEP_cp=W_dot_loss/(V_s_cp*N_cp)
+
+"Calculation of the (electrical or shaft)  power:" 
+W_dot = M_dot * w  
+w = w_s / epsilon_s_cp  
+w_s=h_exs_cp-h_su_cp
+
+"	"
+"5.	Fifth step: cooling to the ambiant from exs2 to ex1:
+=========================================
+The same set of equations is used for the exhaust heat transfer"
+t_ex1_cp=temperature(fluid$,h=h_ex1_cp,p=p_ex1_cp)
+h_ex1_cp - h_ex2_cp = Q_dot_ex2_cp / M_dot
+Q_dot_ex2_cp = epsilon_ex2_cp*C_dot_ex2_cp*( t_w_cp - t_ex2_cp )  
+epsilon_ex2_cp = 1 - exp(-NTU_ex2_cp)   
+NTU_ex2_cp = AU_ex2_cp / C_dot_ex2_cp    
+C_dot_ex2_cp = M_dot * c_p_ex2_cp   
+c_p_ex2_cp = specheat(fluid$,T=t_ex2_cp,p=p_ex2_cp)    
+t_ex2_cp=t_ex1_cp+DELTAt_ex12_cp
+p_ex1_cp = p_ex2_cp   
+
+"6.	Sixth step: throttling from ex1 to ex:
+=============================="
+p_ex_cp = p_ex1_cp - DELTAp_ex1_cp   
+h_ex_cp = h_ex1_cp   
+t_ex_cp = temperature( fluid$, h = h_ex_cp, p = p_ex_cp )  
+
+R_p_cp=p_ex_cp/p_su_cp
+"								Simulation"
+"--------------------------------------------------------------------------------------------------------------------------"
+
+"PARAMETERS"
+"The test results presented in the lookup table are used to identify the parameters related to the flow rate characteristic, heat transfers and power losses.
+The identification process itself was not considered as mathematically relevant here so it was carried out manually,  i.e. iteratively considering the result trends at each step. Default values were used as first guesses, then these values were modified in order to obtain results that fit to right orders of magnitude, for example for the supply and exhaust throttling, for the heating-up,...Finally the paramaters were modified to obtain a better agreement with the experimental results.   
+First the swept volume was fixed to the theoretical one  as guess value. Then  the AU were tuned in order to give reasonable pressure drops, heating-up and cooling-down.  The power losses parameters were fixed to100W for the constant losses and 0.2 
+alpha.   Then the iterative identification process was carried out as described herebefore.
+The identification gives the following results:"
+V_s_cp=174e-6
+N_nom_cp=50
+C_sd_cp=0.04/10
+d_su_cp=1
+DELTAp_ex1_cp=0
+AU_su1_cp=0.05*(M_dot/M_dot_ref)^0.8
+AU_ex2_cp=0.05
+AU_amb_cp=0.01
+R_v_i_cp=2.775
+W_dot_loss0=0.2
+alpha_cp=0.315
+
+"General variables used for comparison between compressors:"
+"- the losses mean effective pressure:"
+FMEP_0_cp=W_dot_loss0/(N_0_cp*V_s_cp)
+"-A normalized heat transfer coefficient can be defined as the ratio of the AU (supply, exhaust and ambient) and a compressor characteristic area chosen here as the cubic root of the quadratic swept volume:"
+AUDsu_cp=AU_su1_cp/(V_s_cp)^(2/3)
+AUDex_cp=AU_ex2_cp/(V_s_cp)^(2/3)
+AUDamb_cp=AU_amb_cp/(V_s_cp)^(2/3)
+"and the dimensionless mass flow rate defined by:"
+Madim=M_dot/M_dot_ref
+N_0_cp=2900/60
+M_dot_ref=0.25
+
+"INPUTS:"
+fluid$='R22'
+t_amb_cp=30
+
+{t_ev=0}
+t_cd=40
+DELTAt_sh_ev=5
+DELTAt_sc_cd=5
+ {$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

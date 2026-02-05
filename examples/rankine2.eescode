@@ -1,0 +1,78 @@
+"VL050211
+Répétition 7, exercice 3
+
+Que deviendrait le rendement du cycle si le soutirage de l'exercice précédent était effectué à 25 bar?
+"
+
+W_dot_el=60E6 "[W]"
+p_cd=0.1E5 "[Pa]"
+DELTA_p=4E5 "[Pa]"
+eta_boiler=0.9
+DELTAT_w_cd=10
+epsilon_s_t=0.83
+eta_a=0.95
+epsilon_s_p=0.85
+eta_m=0.94
+
+"POINT 1: sortie du condenseur:"
+x_1=0
+h_1=enthalpy(water,P=P_cd,x=x_1)
+s_1=entropy(water,P=P_cd,x=x_1)
+
+"POINT 2: sortie de la pompe 1"
+epsilon_s_p=(h_2_s-h_1)/(h_2-h_1)
+h_2_s=enthalpy(water,s=s_1,P=P_2)
+P_2=P_2a{+DELTA_P}
+P_2a=P_3a
+P_3a=14E5 "car dans table paramétrique"
+P_3=70E5
+
+"POINT 2A: sortie du mélangeur"
+
+(M_dot_steam-M_dot_steam_s)*h_2+M_dot_steam_s*h_3a=M_dot_steam*h_2a
+"!!"h_2a=enthalpy(water,p=p_2a,x=0)"!!" "A la sortie de ce réchauffeur, l'eau est à l'état saturé"
+s_2a=entropy(water,P=P_2a,h=h_2a)
+
+"POINT 2B: sortie de la pompe 2"
+epsilon_s_p*(h_2b-h_2a)=(h_2b_s-h_2a)
+{h_2b=h_2b_s}
+h_2b_s=enthalpy(water,s=s_2a,P=P_2"!!"b"!!")
+P_2"!!"b"!!"=P_3+DELTA_P
+
+
+"POINT 3: sortie de la chaudière= entrée de la turbine"
+T_3=500 "[°C]"
+h_3=enthalpy(water,P=P_3,T=T_3)
+s_3=entropy(water,P=P_3,T=T_3)
+
+"POINT 3a: sortie de la turbine1"
+epsilon_s_t=(h_3-h_3a)/(h_3-h_3a_s) "permet de calculer h_3a"
+h_3a_s=enthalpy(water,s=s_3,P=P_3a)
+s_3a=entropy(water,h=h_3a,P=P_3a)
+
+"POINT 4: sortie de la turbine 2"
+epsilon_s_t=(h_3a-h_4)/(h_3a-h_4_s)
+h_4_s=enthalpy(water,s=s_3"!!"a"!!",P=P_cd)
+x_4=quality(water,P=P_cd,h=h_4)
+
+"PUISSANCE CENTRALE:"
+W_dot_el=W_dot_t*eta_a
+W_dot_t=W_dot_t_1+W_dot_t_2
+W_dot_t_1=M_dot_steam*(h_3-h_3a)
+W_dot_t_2=(M_dot_steam-M_dot_steam_s)*(h_3a-h_4)
+
+"CHAUDIERE"
+Q_dot_boiler=M_dot_steam*(h_3-h_2"!!"b"!!")/eta_boiler
+
+"TRAVAIL POMPE"
+W_dot_p=W_dot_p_1+W_dot_p_2
+W_dot_p_1=M_dot_steam*(h_2-h_1)/eta_m
+W_dot_p_2=M_dot_steam*(h_2b-h_2a)/eta_m
+
+"RENDEMENT"
+eta=W_dot_el/(Q_dot_boiler+W_dot_p)
+
+"DEBIT EAU CONDENSEUR"
+Q_dot_cd=(M_dot_steam-M_dot_steam_s)*(h_4-h_1)
+Q_dot_cd=M_dot_w_cd*cp_w*DELTAT_w_cd
+cp_w=4186{$ID$ #202: Laboratoire de Thermodynamique, U. de Liege}
