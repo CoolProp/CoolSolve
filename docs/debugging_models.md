@@ -83,7 +83,7 @@ For large algebraic loops that fail to converge, a practical approach is to **fi
 2. Pick a variable that strongly couples the loop (e.g. a pressure, temperature, or mass fraction) and **fix it** to a known value from `.initials` or EES.
 3. Replace the equation that originally determined it with an explicit assignment.
 
-Example (condenser_3zones):
+Example (condenser-style model):
 
 ```ees
 " Original (in implicit block): P_r_su_cd is unknown "
@@ -143,15 +143,49 @@ For difficult models, you can adjust `SolverOptions` in code (e.g. in `runner.cp
 
 ## Example: condenser_3zones
 
-The `condenser_3zones.eescode` model originally failed with `LineSearchFailed` in Block 38 (62 equations). The workflow was:
+This example shows how to diagnose and fix a failing model when you do **not** have correct initial values. The repository keeps `condenser_3zones.initialsnotok` (inadequate) and `condenser_3zones.initials` (working) for comparison.
 
-1. Run `./coolsolve -d condenser_3zones.eescode` → saw Block 38, size 62, LineSearchFailed/MaxIterations.
-2. Create `condenser_3zones_simple.eescode` with `P_r_su_cd=949215` fixed.
-3. Solve simple model with `-g` → it converged.
-4. Copy `condenser_3zones_simple.initials` to `condenser_3zones.initials`.
-5. Run full model → it converged with the new initials.
+### Diagnosis
 
-Additionally, `P=1` was corrected to `P=101325` in the `two_phase_CD` procedure for the `specheat` call (CoolProp pressure in Pa).
+1. Run in debug mode:
+   ```bash
+   ./coolsolve -d condenser_3zones.eescode
+   ```
+   Result: Block 38 (62 equations) fails with `LineSearchFailed` or `MaxIterations`.
+
+2. Inspect `coolsolve_residuals.md`: equations like `h_cf_su_cd_sc = h_cf_su_cd` show LHS = 1.0 instead of ~4e5. Variables without values in `.initials` default to 1.0; enthalpies should be ~4e5 J/kg for air.
+
+3. Inspect the `two_phase_CD` procedure: `specheat(cf$, T=t_bar_cf, P=1)` uses P=1. CoolProp expects Pa; 1 Pa is unphysical for air. EES may treat 1 as 1 bar; CoolProp does not.
+
+### Fixes
+```
+
+**Fix: Obtain good initials via a simplified model**
+
+The 62-equation block is a tight algebraic loop. Create a **temporary** simplified model to break it and get usable initials:
+
+1. Copy the model to `condenser_3zones_simple.eescode`.
+2. Add an explicit assignment for a key coupling variable, e.g. fix the condenser inlet pressure:
+   ```ees
+   P_r_su_cd=949215
+   ```
+   (Use a value from `.initials` or EES if available.) Ensure the system stays square.
+3. Use existing initials for the simplified model (even partial ones may work once the loop is broken): `cp condenser_3zones.initials condenser_3zones_simple.initials`, or copy from `.initialsnotok` if that is all you have.
+4. Solve and update initials:
+   ```bash
+   ./coolsolve -g condenser_3zones_simple.eescode
+   ```
+5. Copy the solution to the full model:
+   ```bash
+   cp condenser_3zones_simple.initials condenser_3zones.initials
+   ```
+6. Run the full model:
+   ```bash
+   ./coolsolve condenser_3zones.eescode
+   ```
+   It should converge. You can then delete `condenser_3zones_simple.eescode` and `condenser_3zones_simple.initials`; keep the updated `condenser_3zones.initials`.
+
+**Alternative:** If fixing one variable is not enough, try fixing zone fractions (e.g. `alpha_cd_sh`, `alpha_cd_tp`) or other coupling variables. The aim is to shrink the algebraic loop so the simplified model solves, giving you good initials for the full model.
 
 ## Summary Checklist
 
@@ -159,7 +193,6 @@ Additionally, `P=1` was corrected to `P=101325` in the `two_phase_CD` procedure 
 - [ ] Identify error type and failing block from `solver_errors.md`, `report.md`
 - [ ] Inspect `solver_trace.md`, `evaluator.md`, `coolsolve_residuals.md`
 - [ ] Check `.initials` and default values for unphysical guesses
-- [ ] Create simplified model by fixing one or more coupling variables
-- [ ] Solve simplified model with `-g` and copy initials to full model
+- [ ] Improve initials: fix missing/wrong values, or use simplified-model workflow (Step 5)
 - [ ] Fix unit mismatches (especially pressure) in procedures
 - [ ] Re-run full model with improved initials
