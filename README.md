@@ -150,7 +150,7 @@ rm -rf build .fetchcontent_cache
 
 ### Debug Mode
 
-Debug mode creates a folder containing all analysis information, useful for understanding the equation structure and debugging:
+Debug mode creates a folder containing all analysis information, useful for understanding the equation structure and debugging. For a complete guide on diagnosing and fixing solver failures (including the simplified-model workflow), see [Debugging Models](docs/debugging_models.md).
 
 ```bash
 # Create debug output in <input>_coolsolve/ folder
