@@ -171,10 +171,15 @@ std::vector<std::vector<int>> StructuralAnalyzer::buildDependencyGraph(
     // Create reverse mapping: variable name -> equation that determines it
     std::map<std::string, int, CaseInsensitiveLess> varToEq;
     const auto& vars = ir.getVariables();
+    
+    // IMPORTANT: Build indexToVar excluding constants, matching how Hopcroft-Karp
+    // builds its allVars list. The matching indices are into this filtered list.
     std::vector<std::string> indexToVar;
     indexToVar.reserve(vars.size());
     for (const auto& [name, info] : vars) {
-        indexToVar.push_back(name);
+        if (!Constants::isConstant(name)) {
+            indexToVar.push_back(name);
+        }
     }
     
     for (int eq = 0; eq < numEq; ++eq) {
