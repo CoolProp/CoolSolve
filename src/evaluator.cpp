@@ -759,6 +759,13 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     std::string input1Str = paramToString(input1Param);
     std::string input2Str = paramToString(input2Param);
     
+    // Check for unsupported input pairs
+    // CoolProp does not support T,H as an input pair for any output property
+    if ((input1Param == CoolProp::iT && input2Param == CoolProp::iHmass) ||
+        (input1Param == CoolProp::iHmass && input2Param == CoolProp::iT)) {
+        throw std::runtime_error("CoolProp does not support T,H as input pair. Use P,H or T,S instead.");
+    }
+    
     double val1 = inputValues[0].value;
     double val2 = inputValues[1].value;
     

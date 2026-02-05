@@ -56,7 +56,7 @@ P_3=PRESSURE(R407C,T=T_cd,x=0)
 
 h_4=h_3
 h_1=enthalpy(R407C,P=P_1,T=T_1)
-P_4=PRESSURE(R407C,T=T_ev,h=h_4)
+h_4=PRESSURE(R407C,T=T_ev,p=p_4)
 Q_dot_ev{_bis}=M_dot*(h_1-h_4)
 
 "calcul cylindrée"
