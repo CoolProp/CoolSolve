@@ -1,21 +1,20 @@
-# Thermodynamic state variables for orc_co2 model
-# Calculated using CoolProp with R744 (CO2)
-# Expected W_dot_t = 117440, calculated = 117445 (0.004% error)
+# Thermodynamic state variables - calculated using CoolProp with R744 (CO2)
+# These values use CoolProp's reference state (ASHRAE: h=0 at -40°C)
 
 # Temperatures (Celsius)
 T[1]=32.2200
-T[2]=45.7959
-T[3]=77.9552
-T[4]=75.9552
-T[5]=225.9552
-T[6]=223.9552
-T[7]=170.0000
-T[8]=149.7490
+T[2]=45.8189
+T[3]=158.1947
+T[4]=156.1947
+T[5]=306.1947
+T[6]=304.1947
+T[7]=272.4658
+T[8]=270.4658
 T[9]=57.2200
 T[10]=32.2200
 
 # Pressures (Pa)
-P[1]=7688000.0
+P[1]=7687650.0
 P[2]=11650000.0
 P[3]=11650000.0
 P[4]=11300500.0
@@ -23,80 +22,72 @@ P[5]=11300500.0
 P[6]=10961485.0
 P[7]=7925000.0
 P[8]=7687250.0
-P[9]=7688000.0
-P[10]=7688000.0
+P[9]=7687650.0
+P[10]=7687650.0
 
 # Enthalpies (J/kg)
-h[1]=310918.6
-h[2]=321239.0
-h[3]=447140.1
-h[4]=446881.7
-h[5]=658673.8
-h[6]=657374.2
-h[7]=605620.7
-h[8]=583202.9
-h[9]=457301.8
-h[10]=310918.6
+h[1]=310948.3
+h[2]=321342.1
+h[3]=574314.1
+h[4]=573407.9
+h[5]=752627.6
+h[6]=751027.1
+h[7]=721791.3
+h[8]=710278.9
+h[9]=457306.9
+h[10]=310948.3
 
 # Entropies (J/kg-K)
-s[1]=1361.7211
-s[2]=1373.8973
-s[3]=1752.5580
-s[4]=1755.3055
-s[5]=2268.9258
-s[6]=2271.6634
-s[7]=2217.7670
-s[8]=2171.1584
-s[9]=1832.0681
-s[10]=1361.7211
+s[1]=1361.8205
+s[2]=1374.2204
+s[3]=2081.9195
+s[4]=2084.7207
+s[5]=2443.5200
+s[6]=2446.3465
+s[7]=2453.6771
+s[8]=2437.9257
+s[9]=1832.0894
+s[10]=1361.8205
 
 # Auxiliary thermodynamic variables
-s_is=1361.7211
-h_is=317360.8
-T_is=44.9127
-P_is=11650000.0
-h_is_t=598696.7
+h_is=310414.0
+h_is_t=723109.0
 T_su=305.37
+P_is=11650000.0
 P_ex=11650000.0
-p_su=7688000.0
+p_su=7687650.0
 
-# Temperature losses
-DELTAT_loss[3]=2
-DELTAT_loss[5]=2
-DELTAT_loss[7]=2
-
-# Performance variables
-DELTAh=10320.5
-DELTAh_turb=51753.5
-Dh=4.4370
-Dh_turb=22.2500
-eta_s=0.6242
-eta_t=0.882
-epsilon=0.6267
-
-# Mass flow and speed variables
-md=5.003
-m_dot=2.2693
-m_dot_H2O=3
-omega=7854
-RPM=75000
-
-# Power outputs
-W_dot=23420.5
-W_dot_t=117445.4
-
-# Heat exchanger variables
+# Heat exchanger and performance variables
 AU=572.1
-cp_CO2=2594
+cp_CO2=5854
 cp_w=4184
-C_dot_cold=5889
-C_dot_hot=5889
-C_dot_max=12551
-C_dot_min=5889
-C_r=0.469
+C_dot_cold=12551
+C_dot_hot=13285
+C_dot_max=13285
+C_dot_min=12551
+C_r=0.9448
+DELTAh=10320
+DELTAh_turb=51755
+DELTAT_cool=25
+DELTAT_sun=150
+Dh=4.437
+Dh_turb=22.25
+epsilon=0.6267
+eta_s=0.6241
+eta_t=0.882
 NTU=0.04558
 Q_dot_cool=332119
 r_p=1.515
+W_dot=23419
+W_dot_t=117440
+xsi=0.97
+
+# Mass flow and speed variables
+md=5.003
+m_dot=2.269
+m_dot_H2O=3
+omega=7854
+RPM=75000
 
 # Cooler variables
 T_H2O_in=288.2
@@ -168,6 +159,3 @@ k02=-0.05955
 k10=-0.4254
 k11=-0.6651
 k20=0.2893
-
-# Other
-xsi=0.97
