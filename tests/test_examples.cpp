@@ -67,7 +67,7 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"expander_module.eescode",   {"W_dot_sh_exp", 2202}},
     {"humidair1.eescode",         {"DELTAw", 0.002933}},
     {"humidair2.eescode",         {"M_dot_w_cond", 0.0001046}},
-    {"orc_ammonia.eescode",       {"W_dot_t", 117440}},
+    {"orc_co2.eescode",       {"W_dot_t", 117440}},
     {"orc_complex.eescode",       {"eta_I", 0.108}},
     {"orc_extraction.eescode",    {"eta", 0.1172}},
     {"orc_r245fa.eescode",        {"eta_cycle", 0.1574}},
