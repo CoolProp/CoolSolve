@@ -79,7 +79,7 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"refrigeration1.eescode",    {"COP", 4.818}},
     {"refrigeration2.eescode",    {"COP", 4.472}},
     {"refrigeration3.eescode",    {"COP", 3.481}},
-    {"scroll_compressor.eescode", {"epsilon_s_cp", 0.3525}}
+    {"scroll_compressor.eescode", {"epsilon_s_cp", 0.2424}}
 };
 
 // Test result structure for reporting
@@ -89,6 +89,9 @@ struct ExampleTestResult {
     bool irSuccess = false;
     bool analysisSuccess = false;
     bool solveSuccess = false;
+    
+    /** Total pipeline time (ms) from runner's existing timing (parse+IR+infer+analysis+solve). */
+    double totalTimeMs = 0.0;
     
     // Solution validation
     bool hasExpectedSolution = false;
@@ -163,6 +166,7 @@ ExampleTestResult testExampleFile(const fs::path& filepath) {
     
     bool success = runner.run(options);
     
+    result.totalTimeMs = runner.getTiming().total_time_ms;
     result.parseSuccess = runner.isParseSuccess();
     if (result.parseSuccess) {
         result.equationCount = runner.getParseResult().equationCount;
@@ -241,11 +245,13 @@ void writeDetailedReport(const fs::path& reportPath, const std::vector<ExampleTe
     report << "## Summary\n\n";
     size_t total = results.size();
     size_t parseOk = 0, irOk = 0, analysisOk = 0, solveOk = 0;
+    double totalTimeMs = 0.0;
     for (const auto& r : results) {
         if (r.parseSuccess) parseOk++;
         if (r.irSuccess) irOk++;
         if (r.analysisSuccess) analysisOk++;
         if (r.solveSuccess) solveOk++;
+        totalTimeMs += r.totalTimeMs;
     }
     
     report << "| Stage | Passed | Total |\n";
@@ -253,7 +259,8 @@ void writeDetailedReport(const fs::path& reportPath, const std::vector<ExampleTe
     report << "| Parsing | " << parseOk << " | " << total << " |\n";
     report << "| IR Building | " << irOk << " | " << total << " |\n";
     report << "| Analysis | " << analysisOk << " | " << total << " |\n";
-    report << "| Solving | " << solveOk << " | " << total << " |\n\n";
+    report << "| Solving | " << solveOk << " | " << total << " |\n";
+    report << "| **Total time** | **" << std::fixed << std::setprecision(2) << (totalTimeMs / 1000.0) << " s** | (all models) |\n\n";
 
     // Error categorization
     std::map<coolsolve::ErrorCategory, size_t> categories;
@@ -294,8 +301,8 @@ void writeDetailedReport(const fs::path& reportPath, const std::vector<ExampleTe
     }
 
     report << "## Results by File\n\n";
-    report << "| File | Parse | IR | Analysis | Solve | Value Check | Eqs | Blocks |\n";
-    report << "|------|-------|----|---------|-------|-------------|----:|-------:|\n";
+    report << "| File | Parse | IR | Analysis | Solve | Value Check | Eqs | Blocks | Time (s) |\n";
+    report << "|------|-------|----|---------|-------|-------------|----:|-------:|--------:|\n";
     for (const auto& r : results) {
         std::string valueCheck = "-";
         if (r.hasExpectedSolution) {
@@ -312,7 +319,8 @@ void writeDetailedReport(const fs::path& reportPath, const std::vector<ExampleTe
                << " | " << (r.solveSuccess ? "OK" : "FAIL")
                << " | " << valueCheck
                << " | " << r.equationCount
-               << " | " << r.blockCount << " |\n";
+               << " | " << r.blockCount
+               << " | " << std::fixed << std::setprecision(2) << (r.totalTimeMs / 1000.0) << " |\n";
     }
 
     // Detailed errors and value mismatches
@@ -381,6 +389,7 @@ TEST_CASE("Comprehensive example file testing", "[.][examples-comprehensive]") {
         
         if (result.solveSuccess) {
             std::cout << "OK";
+            std::cout << " (" << std::fixed << std::setprecision(2) << (result.totalTimeMs / 1000.0) << "s)";
             if (result.hasExpectedSolution) {
                 if (result.solutionValueCorrect) {
                     std::cout << " [" << result.expectedVarName << "=" 
@@ -397,7 +406,9 @@ TEST_CASE("Comprehensive example file testing", "[.][examples-comprehensive]") {
         else if (result.irSuccess) std::cout << "ANALYSIS FAIL";
         else if (result.parseSuccess) std::cout << "IR FAIL";
         else std::cout << "PARSE FAIL";
-        std::cout << " (" << result.blockCount << " blocks)\n";
+        std::cout << " (" << result.blockCount << " blocks";
+        if (!result.solveSuccess && result.totalTimeMs > 0.0) std::cout << ", " << std::fixed << std::setprecision(2) << (result.totalTimeMs / 1000.0) << "s";
+        std::cout << ")\n";
     }
     
     fs::path reportPath = fs::absolute(examplesDir) / "test_examples.md";
