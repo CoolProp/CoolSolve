@@ -141,53 +141,60 @@ public:
         
         bool unsupportedFound = false;
         bool inMultiLineQuote = false;
-        bool inMultiLineBrace = false;
+        bool inMultiLineQuoteStandalone = false;  // true if block started by a line that is exactly `"`
+        int braceCommentDepth = 0; // Track nested { } comments across lines
         while (std::getline(stream, line)) {
             lineNumber++;
             
-            // Handle multi-line brace comments { ... }
-            if (inMultiLineBrace) {
-                size_t braceEnd = line.find('}');
-                if (braceEnd != std::string::npos) {
-                    inMultiLineBrace = false;
-                    result.commentCount++;
-                    line = line.substr(braceEnd + 1);
-                } else {
-                    continue; // Entire line is inside a brace comment
-                }
-            }
-            
             // Handle multi-line quote comments " ... "
             if (inMultiLineQuote) {
+                std::string innerTrimmed = trim(line);
+                if (innerTrimmed == "\"") {
+                    // Standalone `"` always ends a quote block (and starts one when not in block).
+                    inMultiLineQuote = false;
+                    result.commentCount++;
+                    continue;
+                }
+                if (inMultiLineQuoteStandalone) {
+                    // Block started with standalone `"` -> only a standalone `"` can close it.
+                    continue;
+                }
+                // Classic style: block started with `"` on a line with no closing `"` -> first `"` on a line closes.
                 size_t quoteEnd = line.find('"');
                 if (quoteEnd != std::string::npos) {
                     inMultiLineQuote = false;
                     result.commentCount++;
                     line = line.substr(quoteEnd + 1);
                 } else {
-                    continue; // Entire line is inside a quote comment
+                    continue;
                 }
             }
 
-            // Check for start of multi-line comments in the remaining line
-            // Note: This is a simplified check that doesn't handle nested or mixed comments on one line perfectly,
-            // but it addresses the primary issue of comments spanning multiple lines.
-            
+            // Strip nested brace comments that can span multiple lines.
+            // This is done before any further processing so that code inside
+            // `{ ... }` (including nested braces) is completely ignored.
+            line = stripBraceComments(line, braceCommentDepth, result);
+            if (braceCommentDepth > 0 && line.empty()) {
+                // Still inside a block comment and nothing else on this line.
+                continue;
+            }
+
             // Skip empty lines
             if (isEmptyOrWhitespace(line)) continue;
             
             std::string trimmed = trim(line);
             if (trimmed.empty()) continue;
 
-            // Handle start of multi-line quote
-            if (trimmed.front() == '"' && (trimmed.size() == 1 || trimmed.find('"', 1) == std::string::npos)) {
+            // Start of multi-line quote: (1) line is exactly `"` (standalone delimiter), or
+            // (2) line starts with `"` and has no closing `"` on the same line (classic EES style).
+            if (trimmed == "\"") {
                 inMultiLineQuote = true;
+                inMultiLineQuoteStandalone = true;
                 continue;
             }
-            
-            // Handle start of multi-line brace
-            if (trimmed.front() == '{' && (trimmed.size() == 1 || trimmed.find('}', 1) == std::string::npos)) {
-                inMultiLineBrace = true;
+            if (trimmed.front() == '"' && trimmed.find('"', 1) == std::string::npos) {
+                inMultiLineQuote = true;
+                inMultiLineQuoteStandalone = false;
                 continue;
             }
 
@@ -335,6 +342,75 @@ private:
     void initializeGrammar() {
         // Use a simpler grammar approach - parse expressions directly
         grammarValid_ = true;  // We'll use manual parsing
+    }
+
+    // Strip brace-delimited comments `{ ... }` from a line, tracking nested
+    // comments across lines via `braceDepth`. Text inside comments is removed,
+    // while code outside comments is preserved. Braces appearing inside
+    // single-quoted string literals are ignored (treated as normal characters).
+    std::string stripBraceComments(const std::string& line, int& braceDepth, ParseResult& result) {
+        if (line.empty()) return line;
+        
+        std::string output;
+        output.reserve(line.size());
+        
+        bool inString = false; // single-quoted EES string literal
+        
+        for (size_t i = 0; i < line.size(); ++i) {
+            char c = line[i];
+            
+            // Handle single-quoted strings (used for literals like 'R134a')
+            if (c == '\'') {
+                // Toggle string state, but only when not inside a brace comment
+                if (braceDepth == 0) {
+                    inString = !inString;
+                    output += c;
+                } else {
+                    // Inside a comment, we do not need to keep string delimiters
+                    // or contents; just skip them.
+                }
+                continue;
+            }
+            
+            if (inString) {
+                // Inside a string literal, copy characters verbatim
+                if (braceDepth == 0) {
+                    output += c;
+                }
+                continue;
+            }
+            
+            // Outside of string literals, handle brace comments
+            if (c == '{') {
+                // Starting a new brace comment when not already in one:
+                // count it once as a comment. Nested `{` while braceDepth>0
+                // simply increase depth.
+                if (braceDepth == 0) {
+                    result.commentCount++;
+                }
+                braceDepth++;
+                continue; // Do not copy '{'
+            }
+            
+            if (c == '}') {
+                if (braceDepth > 0) {
+                    braceDepth--;
+                    // We don't copy the closing brace either.
+                    continue;
+                }
+                // Unmatched '}' outside a comment is treated as a normal char
+                // to avoid being overly strict on slightly malformed input.
+                output += c;
+                continue;
+            }
+            
+            // Only keep characters that are outside of any brace comment
+            if (braceDepth == 0) {
+                output += c;
+            }
+        }
+        
+        return output;
     }
     
     std::string preprocess(const std::string& source) {

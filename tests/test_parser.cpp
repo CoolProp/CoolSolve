@@ -121,6 +121,57 @@ TEST_CASE("Parser comments", "[parser]") {
         REQUIRE(result.success);
         REQUIRE(result.equationCount == 1);
     }
+
+    SECTION("Inline brace comment after equation") {
+        auto result = parser.parse("x = 5 {value in meters}");
+        REQUIRE(result.success);
+        REQUIRE(result.equationCount == 1);
+    }
+
+    SECTION("Multi-line quote block comments behave like brace comments") {
+        const std::string code_quotes = R"(
+x = 1
+"
+    y = 2
+"
+z = 3
+)";
+        const std::string code_braces = R"(
+x = 1
+{
+    y = 2
+}
+z = 3
+)";
+
+        auto res_quotes = parser.parse(code_quotes);
+        auto res_braces = parser.parse(code_braces);
+
+        REQUIRE(res_quotes.success);
+        REQUIRE(res_braces.success);
+        // In both cases only the equations outside the comment block should be kept.
+        REQUIRE(res_quotes.equationCount == 2);
+        REQUIRE(res_braces.equationCount == 2);
+    }
+
+    SECTION("Nested brace block comments spanning multiple lines") {
+        const std::string code = R"(
+a = 1
+b = 2
+{
+    c = 3
+    { nested comment start
+        d = 4
+    } nested comment end
+    e = 5
+}
+f = 6
+)";
+        auto result = parser.parse(code);
+        REQUIRE(result.success);
+        // Only equations outside the brace comment block should be counted.
+        REQUIRE(result.equationCount == 3); // a = 1, b = 2, f = 6
+    }
 }
 
 TEST_CASE("Parser units annotation", "[parser]") {
