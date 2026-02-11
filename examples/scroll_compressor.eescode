@@ -12,7 +12,7 @@
 Univerity of Concepcion, Chile, 1999."
 
 $ifnot parametrictable
-T_ev = 30
+T_ev = -1
 $endif
 
 "CYCLE
