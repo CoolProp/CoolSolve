@@ -179,6 +179,36 @@ with acceleration using m previous iterates
 
 ---
 
+### Solution 8: Explicit Solve for Size-1 Blocks (Long-Term Plan)
+
+**Concept**: For blocks with exactly one equation and one variable—structurally explicit assignments of the form `x = expr(known_vars)`—bypass Newton entirely and solve by direct evaluation.
+
+**How it works**:
+1. **Detection**: When solving a block of size 1, check that the equation has the form `lhs_var = rhs_expr` where the LHS is a single variable and the RHS depends only on variables already solved (external to this block).
+2. **Evaluation**: Evaluate the RHS expression with current external variable values (no Jacobian, no iteration).
+3. **Assignment**: Assign the result to the block variable.
+4. **Validation**: Optionally verify that the residual (LHS − RHS) is acceptably small as a consistency check.
+
+**Implementation sketch**: `tryExplicitSolve(blockIndex)` currently returns `false`. Extend it to detect the explicit pattern (variable on LHS, expression on RHS with no cycle) and, if applicable, evaluate the RHS and assign to the output variable.
+
+**Benefits for robustness**:
+- **No Jacobian exposure**: Explicit blocks never compute or invert a Jacobian, so singular/NaN Jacobians (e.g. from AD edge cases like `pow(x,y)` at x=0) cannot occur for these blocks.
+- **No Newton failure modes**: No line search failures, no convergence stalls, no invalid Newton steps.
+- **Deterministic**: A single evaluation always succeeds when the RHS is well-defined; no iteration and no numerical solver instability.
+- **Reduced solver surface**: Fewer blocks use the nonlinear solver, reducing the chance of hitting solver pathologies.
+
+**Benefits for computational efficiency**:
+- **One evaluation vs many**: Newton typically needs several F and J evaluations per block; explicit solve needs one RHS evaluation.
+- **No Jacobian computation**: Avoids building and storing the Jacobian and computing AD gradients for that block.
+- **No linear algebra**: No QR or linear solve for these blocks.
+- **Scalability**: In typical EES models, many blocks are size 1 (e.g. 40 of 41 in scroll_compressor). Solving them explicitly can cut solver cost substantially (often 50% or more of block evaluations).
+
+**Typical impact**: Models like `scroll_compressor.eescode` have dozens of explicit blocks. Treating them as explicit would eliminate most Newton calls and Jacobian computations, speeding up solves and avoiding the singular Jacobian issue that currently affects block 19.
+
+**Status**: Planned for later implementation. Does not replace the short-term AD fix (guard `pow` at x=0) but complements it by avoiding the nonlinear solver for many blocks.
+
+---
+
 ## Recommended Strategy
 
 ### Phase 1: Variable Scaling (Quick Win)
@@ -202,6 +232,12 @@ If Phase 1-2 insufficient, implement block partitioning:
 - Solve in 2-3 stages
 - Iterate between stages
 
+### Phase 4: Explicit Solve for Size-1 Blocks (Long-Term)
+Implement `tryExplicitSolve()` for structurally explicit blocks:
+- Detect `x = expr(known_vars)` pattern in size-1 blocks
+- Evaluate RHS directly and assign; skip Newton and Jacobian
+- Improves both robustness and efficiency for models with many explicit equations
+
 ---
 
 ## Implementation Priority
@@ -209,6 +245,7 @@ If Phase 1-2 insufficient, implement block partitioning:
 1. **Variable Scaling** (easiest, most impact)
 2. **Trust Region** (medium difficulty, robustness)
 3. **Hierarchical Solving** (hardest, best accuracy)
+4. **Explicit Solve for Size-1 Blocks** (medium difficulty, robustness + efficiency)
 
 The key insight: **Don't just fix the solver algorithm - fix the problem formulation** through scaling and structure exploitation.
 
