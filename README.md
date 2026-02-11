@@ -32,6 +32,8 @@ CoolSolve is a parser, structural analyzer, and equation evaluator for the EES (
   - System-level orchestration for sequential block solving
   - **CoolProp integration** for thermodynamic property calculations
   - Automatic temperature conversion (Celsius ↔ Kelvin)
+  - **Trust-Region Solver** for robust convergence on stiff nonlinear blocks
+  - **Partitioned Block Updates** as a fallback for ill-conditioned algebraic loops
 
 - **Output Formats**:
   - JSON (for automated testing and integration)
@@ -312,6 +314,29 @@ The evaluator system provides numerical computation:
 2. **BlockEvaluator**: Evaluates a block of equations, returning residuals F(x) and Jacobian J.
 
 3. **SystemEvaluator**: Orchestrates evaluation across all blocks with proper variable handling.
+
+### 5b. Solver Algorithms (Newton, Trust Region, Partitioned Updates)
+
+CoolSolve uses a hybrid nonlinear solve strategy for algebraic loops:
+
+1. **Newton + Line Search** (default fast path)
+   - Solves `J(x) * dx = -F(x)` and applies backtracking to ensure descent.
+   - Efficient when the Jacobian is well-conditioned and the model is smooth.
+
+2. **Trust-Region Dogleg** (robust fallback)
+   - When line search stalls, a trust region uses a dogleg step that blends
+     steepest descent with the Newton step to keep updates inside a safe radius.
+   - This helps avoid oversized steps that drive thermodynamic calls into
+     invalid regions (e.g., non-physical pressure/temperature).
+
+3. **Partitioned Block Updates** (ill-conditioned loop fallback)
+   - Uses the equation-to-output-variable mapping from structural matching to
+     apply **per-variable diagonal updates** inside a block:
+     `x_i <- x_i - w * F_i / (dF_i/dx_i)`.
+   - This mimics a DAE-style “tear” without changing the block structure: each
+     equation directly updates its matched variable, reducing coupling and
+     improving stability in stiff or highly nonlinear loops.
+   - Designed as a last-resort stabilizer when full Newton steps are unreliable.
 
 ### 6. Output
 

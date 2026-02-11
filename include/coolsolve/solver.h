@@ -61,6 +61,13 @@ struct SolverOptions {
     double trShrinkFactor = 0.5;      // Factor to shrink trust region on rejection (less aggressive)
     double trGrowFactor = 2.0;        // Factor to grow trust region on good steps
 
+    // Partitioned block solver options (variable-wise updates)
+    bool usePartitionedSolver = true;     // Enable partitioned fallback for hard blocks
+    int partitionedMaxIterations = 300;   // Max iterations for partitioned solver
+    double partitionedRelaxation = 0.6;   // Relaxation factor for updates (0 < w <= 1)
+    double partitionedMinDiagonal = 1e-12; // Minimum |dF_i/dx_i| to update variable
+    int partitionedMinBlockSize = 4;      // Only use partitioned solver for blocks >= this size
+
     // Performance and safety
     int timeoutSeconds = 0;           // Timeout in seconds (0 = none)
 };
@@ -386,6 +393,23 @@ private:
                            const SolverOptions& options,
                            SolverTrace* trace,
                            std::string* outErrorMessage = nullptr);
+
+    /**
+     * @brief Partitioned block solve using per-equation variable updates.
+     *
+     * Uses the equation-to-output-variable mapping from structural matching
+     * to apply diagonal Newton-like updates per variable. This is a robust
+     * fallback for highly nonlinear or ill-conditioned blocks.
+     */
+    SolverStatus solveBlockPartitioned(size_t blockIndex,
+                                       BlockEvaluator& blockEval,
+                                       const std::vector<std::string>& varNames,
+                                       const std::map<std::string, double>& externalVars,
+                                       const std::map<std::string, std::string>& externalStringVars,
+                                       Eigen::VectorXd& x,
+                                       const SolverOptions& options,
+                                       SolverTrace* trace,
+                                       std::string* outErrorMessage = nullptr);
     
     /**
      * @brief Try to solve an explicit block directly.

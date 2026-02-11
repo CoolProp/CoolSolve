@@ -103,7 +103,7 @@ Where:
 
 ---
 
-### Solution 4: Trust-Region Dogleg Method (replace line search)
+### Solution 4: Trust-Region Dogleg Method (replace line search) - IMPLEMENTED
 
 **Concept**: Line search only works along the Newton direction. Trust regions adaptively choose between Newton and steepest descent based on model accuracy.
 
@@ -211,3 +211,30 @@ If Phase 1-2 insufficient, implement block partitioning:
 3. **Hierarchical Solving** (hardest, best accuracy)
 
 The key insight: **Don't just fix the solver algorithm - fix the problem formulation** through scaling and structure exploitation.
+
+
+## Status of coolsolve_test
+
+The best implementation leads to the following results:
+| File | Parse | IR | Analysis | Solve | Value Check | Eqs | Blocks |
+|------|-------|----|---------|-------|-------------|----:|-------:|
+| condenser_3zones.eescode | OK | OK | OK | OK | OK | 99 | 50 |
+| exchangers1.eescode | OK | OK | OK | OK | OK | 20 | 20 |
+| exchangers2.eescode | OK | OK | OK | OK | OK | 29 | 26 |
+| exchangers3.eescode | OK | OK | OK | OK | OK | 35 | 33 |
+| humidair1.eescode | OK | OK | OK | OK | OK | 25 | 25 |
+| humidair2.eescode | OK | OK | OK | OK | OK | 37 | 33 |
+| orc_co2.eescode | OK | OK | OK | FAIL | - | 159 | 132 |
+| orc_complex.eescode | FAIL | FAIL | FAIL | FAIL | - | 0 | 0 |
+| orc_extraction.eescode | OK | OK | OK | OK | OK | 133 | 113 |
+| orc_r245fa.eescode | OK | OK | OK | OK | OK | 173 | 151 |
+| orc_simple.eescode | OK | OK | OK | OK | OK | 172 | 150 |
+| pressuredrop.eescode | OK | OK | OK | OK | OK | 26 | 26 |
+| rankine1.eescode | OK | OK | OK | OK | OK | 30 | 30 |
+| rankine2.eescode | OK | OK | OK | OK | OK | 45 | 42 |
+| refrigeration1.eescode | OK | OK | OK | OK | OK | 39 | 39 |
+| refrigeration2.eescode | OK | OK | OK | OK | OK | 39 | 39 |
+| refrigeration3.eescode | OK | OK | OK | OK | OK | 38 | 38 |
+| scroll_compressor.eescode | OK | OK | OK | FAIL | - | 99 | 66 |
+
+Any modfication of coolsolve should improve these results, or at leat not deteriorate them. This table will be updated as the code improves.

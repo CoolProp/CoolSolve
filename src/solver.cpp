@@ -1070,6 +1070,30 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         }
     }
     
+    
+    // Third attempt: Partitioned block updates (variable-wise) as a robust fallback
+    if ((status == SolverStatus::LineSearchFailed || status == SolverStatus::MaxIterations ||
+         status == SolverStatus::SingularJacobian) &&
+        options.usePartitionedSolver && n >= static_cast<size_t>(options.partitionedMinBlockSize)) {
+        if (options.verbose) {
+            std::cout << "Block " << blockIndex << ": Newton/TrustRegion failed ("
+                      << statusToString(status) << "), trying partitioned solver" << std::endl;
+        }
+
+        // Reset initial guess from current state
+        for (size_t i = 0; i < n; ++i) {
+            x[i] = evaluator_.getVariableValue(varNames[i]);
+        }
+
+        SolverOptions partOptions = options;
+        if (partOptions.partitionedMaxIterations < options.maxIterations) {
+            partOptions.partitionedMaxIterations = options.maxIterations;
+        }
+
+        status = solveBlockPartitioned(blockIndex, blockEval, varNames, externalVars,
+                                       externalStringVars, x, partOptions, trace, &solverError);
+    }
+
     if (!solverError.empty()) {
         if (outErrorMessage) {
             if (!outErrorMessage->empty()) *outErrorMessage += "\n";
@@ -1089,6 +1113,185 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
     }
     
     return status;
+}
+
+
+SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
+                                           BlockEvaluator& blockEval,
+                                           const std::vector<std::string>& varNames,
+                                           const std::map<std::string, double>& externalVars,
+                                           const std::map<std::string, std::string>& externalStringVars,
+                                           Eigen::VectorXd& x,
+                                           const SolverOptions& options,
+                                           SolverTrace* trace,
+                                           std::string* outErrorMessage) {
+    auto startTime = std::chrono::high_resolution_clock::now();
+
+    if (trace) {
+        if (trace->solverType.empty()) {
+            trace->solverType = "Partitioned";
+        } else if (trace->solverType.find("Partitioned") == std::string::npos) {
+            trace->solverType += " -> Partitioned";
+        }
+    }
+
+    const size_t n = varNames.size();
+    const auto& equationIds = blockEval.getEquationIds();
+    if (n == 0 || equationIds.size() != n) {
+        if (outErrorMessage) {
+            std::ostringstream ss;
+            ss << "Partitioned solver requires a square block (vars=" << n
+               << ", eqs=" << equationIds.size() << ").";
+            *outErrorMessage = ss.str();
+        }
+        return SolverStatus::InvalidInput;
+    }
+
+    // Map variable name -> index (case-insensitive)
+    std::map<std::string, size_t, CaseInsensitiveLess> varIndex;
+    for (size_t i = 0; i < n; ++i) {
+        varIndex[varNames[i]] = i;
+    }
+
+    const auto& equations = ir_.getEquations();
+    std::vector<int> eqToVarIndex(equationIds.size(), -1);
+    std::vector<bool> varUsed(n, false);
+
+    for (size_t eq = 0; eq < equationIds.size(); ++eq) {
+        int eqId = equationIds[eq];
+        if (eqId < 0 || eqId >= static_cast<int>(equations.size())) {
+            continue;
+        }
+        const auto& eqInfo = equations[eqId];
+        if (eqInfo.outputVariable.empty()) {
+            continue;
+        }
+        auto it = varIndex.find(eqInfo.outputVariable);
+        if (it == varIndex.end()) {
+            continue;
+        }
+        size_t varIdx = it->second;
+        if (varUsed[varIdx]) {
+            continue;
+        }
+        eqToVarIndex[eq] = static_cast<int>(varIdx);
+        varUsed[varIdx] = true;
+    }
+
+    for (size_t eq = 0; eq < eqToVarIndex.size(); ++eq) {
+        if (eqToVarIndex[eq] < 0) {
+            if (outErrorMessage) {
+                std::ostringstream ss;
+                ss << "Partitioned solver missing output-variable mapping for equation "
+                   << equationIds[eq] << ".";
+                *outErrorMessage = ss.str();
+            }
+            return SolverStatus::InvalidInput;
+        }
+    }
+
+    double initialResidualNorm = 0.0;
+
+    for (int iter = 0; iter < options.partitionedMaxIterations; ++iter) {
+        EvaluationResult evalResult;
+        try {
+            std::vector<double> x_std(x.data(), x.data() + x.size());
+            evalResult = blockEval.evaluate(x_std, externalVars, externalStringVars);
+        } catch (const std::exception& e) {
+            if (outErrorMessage) {
+                *outErrorMessage = std::string("Partitioned solver evaluation failed: ") + e.what();
+            }
+            if (trace) {
+                trace->finalStatus = SolverStatus::EvaluationError;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            return SolverStatus::EvaluationError;
+        }
+
+        Eigen::VectorXd F(evalResult.residuals.size());
+        for (size_t i = 0; i < evalResult.residuals.size(); ++i) {
+            F[static_cast<int>(i)] = evalResult.residuals[i];
+        }
+
+        double residualNorm = F.lpNorm<Eigen::Infinity>();
+        if (iter == 0) {
+            initialResidualNorm = residualNorm;
+        }
+
+        if (options.verbose) {
+            std::cout << "Partitioned iter " << iter << ": ||F||_inf = " << residualNorm << std::endl;
+        }
+
+        if (trace) {
+            SolverTrace::Iteration traceIter;
+            traceIter.iter = iter;
+            traceIter.residualNorm = residualNorm;
+            traceIter.stepNorm = 0.0;
+            traceIter.lambda = options.partitionedRelaxation;
+            traceIter.x = std::vector<double>(x.data(), x.data() + x.size());
+            traceIter.residuals = std::vector<double>(F.data(), F.data() + F.size());
+            trace->iterations.push_back(traceIter);
+        }
+
+        if (residualNorm < options.tolerance) {
+            if (trace) {
+                trace->finalStatus = SolverStatus::Success;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            return SolverStatus::Success;
+        }
+
+        if (initialResidualNorm > 0 && residualNorm / initialResidualNorm < options.relativeTolerance) {
+            if (trace) {
+                trace->finalStatus = SolverStatus::Success;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            return SolverStatus::Success;
+        }
+
+        Eigen::VectorXd dx = Eigen::VectorXd::Zero(static_cast<int>(n));
+        for (size_t eq = 0; eq < eqToVarIndex.size(); ++eq) {
+            int varIdx = eqToVarIndex[eq];
+            double diag = evalResult.jacobian[eq][static_cast<size_t>(varIdx)];
+            if (std::abs(diag) < options.partitionedMinDiagonal) {
+                continue;
+            }
+            double step = -options.partitionedRelaxation * evalResult.residuals[eq] / diag;
+            if (!std::isfinite(step)) {
+                continue;
+            }
+            dx[varIdx] = step;
+        }
+
+        double stepNorm = dx.lpNorm<Eigen::Infinity>();
+        x += dx;
+
+        if (trace && !trace->iterations.empty()) {
+            trace->iterations.back().stepNorm = stepNorm;
+        }
+
+        if (stepNorm < options.stepTolerance) {
+            if (residualNorm < options.tolerance * 100 || residualNorm < options.lsRelaxedTolerance) {
+                if (trace) {
+                    trace->finalStatus = SolverStatus::Success;
+                    trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+                }
+                return SolverStatus::Success;
+            }
+        }
+    }
+
+    if (trace) {
+        trace->finalStatus = SolverStatus::MaxIterations;
+        trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+    }
+    if (outErrorMessage) {
+        std::ostringstream ss;
+        ss << "Partitioned solver: Max iterations (" << options.partitionedMaxIterations
+           << ") reached without convergence.";
+        *outErrorMessage = ss.str();
+    }
+    return SolverStatus::MaxIterations;
 }
 
 SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
