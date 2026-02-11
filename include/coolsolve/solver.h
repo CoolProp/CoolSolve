@@ -53,6 +53,14 @@ struct SolverOptions {
     // Variable scaling
     bool enableScaling = true;        // Enable automatic variable scaling for improved conditioning
 
+    // Trust region options
+    bool useTrustRegion = true;       // Use trust region dogleg method instead of line search
+    double trInitialRadius = 10.0;    // Initial trust region radius (larger for aggressive steps)
+    double trMaxRadius = 1000.0;      // Maximum trust region radius
+    double trEta = 0.05;              // Threshold for accepting step (rho >= eta) - more lenient
+    double trShrinkFactor = 0.5;      // Factor to shrink trust region on rejection (less aggressive)
+    double trGrowFactor = 2.0;        // Factor to grow trust region on good steps
+
     // Performance and safety
     int timeoutSeconds = 0;           // Timeout in seconds (0 = none)
 };
@@ -91,6 +99,9 @@ std::string categoryToString(ErrorCategory category);
 /**
  * @brief Records the iteration history for debugging.
  */
+/**
+ * @brief Records the iteration history for debugging.
+ */
 struct SolverTrace {
     struct Iteration {
         int iter;
@@ -104,6 +115,7 @@ struct SolverTrace {
     std::vector<Iteration> iterations;
     SolverStatus finalStatus;
     std::chrono::duration<double> totalTime;
+    std::string solverType;  // "Newton" or "TrustRegion" for debugging
     
     std::string toString() const;
 };
@@ -209,6 +221,66 @@ private:
                       const Eigen::VectorXd& dx,
                       const Eigen::VectorXd& F,
                       const SolverOptions& options);
+};
+
+// ============================================================================
+// Trust Region Dogleg Solver
+// ============================================================================
+
+/**
+ * @brief Trust region solver using the dogleg method.
+ *
+ * More robust than line search for highly nonlinear problems.
+ * Adapts step size based on model accuracy and switches between
+ * Newton and gradient descent directions as needed.
+ *
+ * Algorithm:
+ * 1. Compute Newton step dx_n by solving J*dx_n = -F
+ * 2. Compute Cauchy (steepest descent) step dx_c
+ * 3. If ||dx_n|| <= Delta, use Newton step
+ * 4. If ||dx_c|| >= Delta, use scaled Cauchy step
+ * 5. Otherwise, use dogleg path interpolation
+ * 6. Adapt trust radius Delta based on actual vs predicted reduction
+ */
+class TrustRegionSolver : public NonLinearSolver {
+public:
+    SolverStatus solve(Problem& problem,
+                       Eigen::VectorXd& x_guess,
+                       const SolverOptions& options = SolverOptions(),
+                       SolverTrace* trace = nullptr,
+                       std::string* detailedError = nullptr) override;
+    
+private:
+    /**
+     * @brief Compute automatic scaling factors for variables.
+     */
+    Eigen::VectorXd computeScalingFactors(const Eigen::VectorXd& x) const;
+    
+    /**
+     * @brief Compute the dogleg step within the trust region.
+     *
+     * @param dx_n Newton step
+     * @param dx_c Cauchy step (steepest descent)
+     * @param delta Trust region radius
+     * @return The dogleg step
+     */
+    Eigen::VectorXd doglegStep(const Eigen::VectorXd& dx_n,
+                               const Eigen::VectorXd& dx_c,
+                               double delta);
+    
+    /**
+     * @brief Evaluate the model at a proposed step.
+     *
+     * m(p) = 0.5 * ||F + J*p||^2
+     *
+     * @param F Current residual
+     * @param J Current Jacobian
+     * @param p Proposed step
+     * @return Model value
+     */
+    double evaluateModel(const Eigen::VectorXd& F,
+                         const Eigen::MatrixXd& J,
+                         const Eigen::VectorXd& p);
 };
 
 // ============================================================================

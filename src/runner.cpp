@@ -352,7 +352,11 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         for (size_t i = 0; i < solveResult_.blockTraces.size(); ++i) {
             const auto& tr = solveResult_.blockTraces[i];
             if (tr.iterations.empty()) continue;
-            trace << "## Block " << i << "\n\n";
+            trace << "## Block " << i;
+            if (!tr.solverType.empty()) {
+                trace << " (Solver: " << tr.solverType << ")";
+            }
+            trace << "\n\n";
             trace << "```\n" << tr.toString() << "\n```\n\n";
         }
         writeFile(debugDir / "solver_trace.md", trace.str());

@@ -33,11 +33,16 @@ std::string statusToString(SolverStatus status) {
 std::string SolverTrace::toString() const {
     std::ostringstream ss;
     ss << std::scientific << std::setprecision(6);
-    ss << "Solver Trace (" << iterations.size() << " iterations, "
-       << statusToString(finalStatus) << ")\n";
+    
+    // Include solver type in header if available
+    if (!solverType.empty()) {
+        ss << "Solver: " << solverType << " | ";
+    }
+    ss << "Iterations: " << iterations.size() << " | Status: "
+       << statusToString(finalStatus) << "\n";
     ss << "Total time: " << totalTime.count() << " s\n";
-    ss << std::setw(6) << "Iter" 
-       << std::setw(15) << "||F||" 
+    ss << std::setw(6) << "Iter"
+       << std::setw(15) << "||F||"
        << std::setw(15) << "||dx||"
        << std::setw(12) << "lambda" << "\n";
     ss << std::string(48, '-') << "\n";
@@ -220,6 +225,11 @@ SolverStatus NewtonSolver::solve(Problem& problem,
                                  SolverTrace* trace,
                                  std::string* detailedError) {
     auto startTime = std::chrono::high_resolution_clock::now();
+    
+    // Record solver type in trace for debugging
+    if (trace) {
+        trace->solverType = "Newton";
+    }
     
     const int n = problem.size;
     if (n <= 0 || x.size() != n) {
@@ -453,6 +463,380 @@ SolverStatus NewtonSolver::solve(Problem& problem,
 }
 
 // ============================================================================
+// Trust Region Dogleg Solver Implementation
+// ============================================================================
+
+Eigen::VectorXd TrustRegionSolver::computeScalingFactors(const Eigen::VectorXd& x) const {
+    const int n = x.size();
+    Eigen::VectorXd scale(n);
+    
+    for (int i = 0; i < n; ++i) {
+        double xi = std::abs(x(i));
+        if (xi < 1.0) {
+            scale(i) = 1.0;
+        } else {
+            double log10x = std::floor(std::log10(xi));
+            scale(i) = std::pow(10.0, log10x);
+            scale(i) = std::max(1e-6, std::min(scale(i), 1e6));
+        }
+    }
+    
+    return scale;
+}
+
+double TrustRegionSolver::evaluateModel(const Eigen::VectorXd& F,
+                                        const Eigen::MatrixXd& J,
+                                        const Eigen::VectorXd& p) {
+    // m(p) = 0.5 * ||F + J*p||^2
+    Eigen::VectorXd F_plus_Jp = F + J * p;
+    return 0.5 * F_plus_Jp.squaredNorm();
+}
+
+Eigen::VectorXd TrustRegionSolver::doglegStep(const Eigen::VectorXd& dx_n,
+                                              const Eigen::VectorXd& dx_c,
+                                              double delta) {
+    double norm_n = dx_n.norm();
+    double norm_c = dx_c.norm();
+    
+    // Case 1: Newton step is inside trust region
+    if (norm_n <= delta) {
+        return dx_n;
+    }
+    
+    // Case 2: Cauchy step is outside trust region, scale it
+    if (norm_c >= delta) {
+        return (delta / norm_c) * dx_c;
+    }
+    
+    // Case 3: Dogleg path - find interpolation between Cauchy and Newton
+    // Path: p(tau) = dx_c + tau*(dx_n - dx_c) for tau in [0, 1]
+    // Find tau such that ||p(tau)|| = delta
+    Eigen::VectorXd diff = dx_n - dx_c;
+    
+    // Solve: ||dx_c + tau*diff||^2 = delta^2
+    // => (diff^T*diff)*tau^2 + 2*(dx_c^T*diff)*tau + (dx_c^T*dx_c - delta^2) = 0
+    double a = diff.squaredNorm();
+    double b = 2.0 * dx_c.dot(diff);
+    double c = dx_c.squaredNorm() - delta * delta;
+    
+    // Quadratic formula: tau = (-b + sqrt(b^2 - 4ac)) / (2a)
+    double discriminant = b * b - 4.0 * a * c;
+    if (discriminant < 0.0) {
+        discriminant = 0.0;  // Shouldn't happen, but be safe
+    }
+    
+    // We want the root in [0, 1], which is the positive one
+    double tau = (-b + std::sqrt(discriminant)) / (2.0 * a);
+    tau = std::max(0.0, std::min(1.0, tau));
+    
+    return dx_c + tau * diff;
+}
+
+SolverStatus TrustRegionSolver::solve(Problem& problem,
+                                      Eigen::VectorXd& x,
+                                      const SolverOptions& options,
+                                      SolverTrace* trace,
+                                      std::string* detailedError) {
+    auto startTime = std::chrono::high_resolution_clock::now();
+    
+    // Record solver type in trace for debugging
+    if (trace) {
+        trace->solverType = "TrustRegion";
+    }
+    
+    const int n = problem.size;
+    if (n <= 0 || x.size() != n) {
+        return SolverStatus::InvalidInput;
+    }
+    
+    // Compute scaling factors
+    Eigen::VectorXd scale;
+    if (options.enableScaling) {
+        scale = computeScalingFactors(x);
+        if (options.verbose) {
+            std::cout << "TrustRegion: Scaling enabled - factors min=" << scale.minCoeff()
+                      << ", max=" << scale.maxCoeff() << std::endl;
+        }
+    } else {
+        scale = Eigen::VectorXd::Ones(n);
+    }
+    
+    // Work in scaled coordinates: y = x ./ scale
+    Eigen::VectorXd y = x.cwiseQuotient(scale);
+    
+    Eigen::VectorXd F(n);
+    Eigen::MatrixXd J(n, n);
+    Eigen::MatrixXd J_unscaled(n, n);
+    
+    double initialResidualNorm = 0.0;
+    double delta = options.trInitialRadius;  // Trust region radius
+    
+    for (int iter = 0; iter < options.maxIterations; ++iter) {
+        // Check for timeout
+        if (TimeoutGuard::hasTimedOut()) {
+            if (detailedError) *detailedError = "Solver timed out";
+            x = y.cwiseProduct(scale);
+            return SolverStatus::EvaluationError;
+        }
+        
+        // Evaluate F(x) and J(x)
+        try {
+            Eigen::VectorXd x_unscaled = y.cwiseProduct(scale);
+            problem.evaluate(x_unscaled, F, J_unscaled, true);
+            // Scale Jacobian: dF/dy = dF/dx * dx/dy = J_unscaled * diag(scale)
+            J = J_unscaled * scale.asDiagonal();
+        } catch (const std::exception& e) {
+            if (options.verbose) {
+                std::cerr << "TrustRegion: Evaluation failed at iter " << iter
+                          << ": " << e.what() << std::endl;
+            }
+            x = y.cwiseProduct(scale);
+            throw;
+        }
+        
+        // Check convergence
+        double residualNorm = F.lpNorm<Eigen::Infinity>();
+        
+        if (iter == 0) {
+            initialResidualNorm = residualNorm;
+        }
+        
+        if (options.verbose) {
+            std::cout << "TrustRegion iter " << iter << ": ||F||_inf = " << residualNorm
+                      << ", delta = " << delta << std::endl;
+        }
+        
+        // Record trace
+        if (trace) {
+            SolverTrace::Iteration traceIter;
+            traceIter.iter = iter;
+            traceIter.residualNorm = residualNorm;
+            traceIter.stepNorm = 0.0;
+            traceIter.lambda = 1.0;
+            Eigen::VectorXd x_unscaled = y.cwiseProduct(scale);
+            traceIter.x = std::vector<double>(x_unscaled.data(), x_unscaled.data() + x_unscaled.size());
+            traceIter.residuals = std::vector<double>(F.data(), F.data() + F.size());
+            trace->iterations.push_back(traceIter);
+        }
+        
+        // Check absolute tolerance
+        if (residualNorm < options.tolerance) {
+            if (trace) {
+                trace->finalStatus = SolverStatus::Success;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            x = y.cwiseProduct(scale);
+            return SolverStatus::Success;
+        }
+        
+        // Check relative tolerance
+        if (initialResidualNorm > 0 &&
+            residualNorm / initialResidualNorm < options.relativeTolerance) {
+            if (trace) {
+                trace->finalStatus = SolverStatus::Success;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            x = y.cwiseProduct(scale);
+            return SolverStatus::Success;
+        }
+        
+        // Compute gradient: g = J^T * F
+        Eigen::VectorXd g = J.transpose() * F;
+        
+        // Compute Cauchy step (steepest descent with optimal step length)
+        // dx_c = -alpha * g where alpha = (g^T*g) / (g^T*J^T*J*g)
+        Eigen::VectorXd dx_c;
+        double g_norm_sq = g.squaredNorm();
+        if (g_norm_sq < 1e-30) {
+            // Gradient is essentially zero, we're at a stationary point
+            // but residual is not small enough - might be local minimum
+            if (residualNorm < options.lsRelaxedTolerance) {
+                if (trace) {
+                    trace->finalStatus = SolverStatus::Success;
+                    trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+                }
+                x = y.cwiseProduct(scale);
+                return SolverStatus::Success;
+            }
+            if (options.verbose) {
+                std::cerr << "TrustRegion: Gradient is zero but residual is large" << std::endl;
+            }
+            if (trace) {
+                trace->finalStatus = SolverStatus::SingularJacobian;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            x = y.cwiseProduct(scale);
+            return SolverStatus::SingularJacobian;
+        }
+        
+        Eigen::VectorXd Jg = J * g;
+        double alpha = g_norm_sq / Jg.squaredNorm();
+        dx_c = -alpha * g;
+        
+        // Compute Newton step by solving J * dx_n = -F
+        Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(J);
+        Eigen::VectorXd dx_n = qr.solve(-F);
+        
+        // Check for invalid Newton step
+        if (!dx_n.allFinite()) {
+            if (options.verbose) {
+                std::cerr << "TrustRegion: Invalid Newton step (contains NaN/Inf)" << std::endl;
+            }
+            // Fall back to Cauchy step
+            dx_n = dx_c;
+        }
+        
+        // Compute dogleg step within trust region
+        Eigen::VectorXd dy = doglegStep(dx_n, dx_c, delta);
+        
+        // Evaluate proposed step
+        Eigen::VectorXd y_new = y + dy;
+        Eigen::VectorXd F_new(n);
+        Eigen::MatrixXd J_dummy;
+        
+        try {
+            Eigen::VectorXd x_new = y_new.cwiseProduct(scale);
+            problem.evaluate(x_new, F_new, J_dummy, false);
+        } catch (const std::exception& e) {
+            // Evaluation failed - reject step and shrink trust region
+            if (options.verbose) {
+                std::cout << "TrustRegion: Evaluation failed, shrinking delta from " << delta << std::endl;
+            }
+            delta *= options.trShrinkFactor;
+            if (delta < 1e-8) {
+                // Trust region too small - reset and try a gradient descent step
+                if (options.verbose) {
+                    std::cout << "TrustRegion: Delta too small, resetting to initial radius" << std::endl;
+                }
+                delta = options.trInitialRadius;
+                
+                // If we've reset multiple times, try a different approach
+                if (iter > 50 && residualNorm < initialResidualNorm * 0.5) {
+                    // We've made significant progress but stuck - accept current solution
+                    if (residualNorm < options.lsRelaxedTolerance) {
+                        if (options.verbose) {
+                            std::cout << "TrustRegion: Accepting suboptimal solution after significant progress" << std::endl;
+                        }
+                        if (trace) {
+                            trace->finalStatus = SolverStatus::Success;
+                            trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+                        }
+                        x = y.cwiseProduct(scale);
+                        return SolverStatus::Success;
+                    }
+                }
+                
+                // If trust region keeps collapsing, give up
+                if (iter > options.maxIterations * 0.8) {
+                    if (trace) {
+                        trace->finalStatus = SolverStatus::LineSearchFailed;
+                        trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+                    }
+                    if (detailedError) {
+                        std::ostringstream ss;
+                        ss << "Trust region collapsed at iteration " << iter << ".\n"
+                           << "Residual norm ||F|| = " << residualNorm;
+                        *detailedError = ss.str();
+                    }
+                    x = y.cwiseProduct(scale);
+                    return SolverStatus::LineSearchFailed;
+                }
+            }
+            continue;
+        }
+        
+        double residualNormNew = F_new.lpNorm<Eigen::Infinity>();
+        
+        // Compute actual vs predicted reduction
+        double phi_old = 0.5 * F.squaredNorm();
+        double phi_new = 0.5 * F_new.squaredNorm();
+        double model_old = evaluateModel(F, J, Eigen::VectorXd::Zero(n));
+        double model_new = evaluateModel(F, J, dy);
+        
+        double actualReduction = phi_old - phi_new;
+        double predictedReduction = model_old - model_new;
+        
+        double rho = 0.0;
+        if (std::abs(predictedReduction) > 1e-30) {
+            rho = actualReduction / predictedReduction;
+        }
+        
+        if (options.verbose) {
+            std::cout << "TrustRegion: rho = " << rho << ", actual = " << actualReduction
+                      << ", predicted = " << predictedReduction << std::endl;
+        }
+        
+        // Update trust region and accept/reject step
+        // Accept step if it makes ANY positive progress (actual reduction > 0)
+        // This is key for highly nonlinear problems where the model may be poor
+        bool acceptStep = (actualReduction > 0);
+        
+        if (!acceptStep) {
+            // Reject step and shrink trust region
+            if (options.verbose) {
+                std::cout << "TrustRegion: Rejecting step (rho=" << rho
+                          << ", actual=" << actualReduction << "), shrinking delta" << std::endl;
+            }
+            delta *= options.trShrinkFactor;
+            
+            // If trust region gets too small, try a gradient descent step
+            if (delta < 1e-6) {
+                if (options.verbose) {
+                    std::cout << "TrustRegion: Delta too small, resetting" << std::endl;
+                }
+                delta = options.trInitialRadius;
+            }
+        }
+        
+        if (acceptStep) {
+            // Accept step
+            y = y_new;
+            residualNorm = residualNormNew;  // Update residual for next iteration
+            double stepNorm = dy.lpNorm<Eigen::Infinity>();
+            
+            // Update trace
+            if (trace && !trace->iterations.empty()) {
+                trace->iterations.back().stepNorm = stepNorm;
+            }
+            
+            // Check for tiny step (convergence stall)
+            if (stepNorm < options.stepTolerance) {
+                if (residualNormNew < options.tolerance * 100 ||
+                    residualNormNew < options.lsRelaxedTolerance) {
+                    if (trace) {
+                        trace->finalStatus = SolverStatus::Success;
+                        trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+                    }
+                    x = y.cwiseProduct(scale);
+                    return SolverStatus::Success;
+                }
+            }
+            
+            // Grow trust region if step was good
+            if (rho > 0.75 && dy.norm() >= 0.9 * delta) {
+                delta = std::min(options.trGrowFactor * delta, options.trMaxRadius);
+                if (options.verbose) {
+                    std::cout << "TrustRegion: Growing delta to " << delta << std::endl;
+                }
+            }
+        }
+    }
+    
+    if (trace) {
+        trace->finalStatus = SolverStatus::MaxIterations;
+        trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+    }
+    if (detailedError) {
+        std::ostringstream ss;
+        ss << "Trust region: Max iterations (" << options.maxIterations
+           << ") reached without convergence.";
+        *detailedError = ss.str();
+    }
+    x = y.cwiseProduct(scale);
+    return SolverStatus::MaxIterations;
+}
+
+// ============================================================================
 // Solver (Orchestrator) Implementation
 // ============================================================================
 
@@ -605,15 +989,15 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         return SolverStatus::Success;
     }
     
-    // Create problem for Newton solver
+    // Create problem for solver
     NonLinearSolver::Problem problem;
     problem.size = static_cast<int>(n);
     
     // Lambda to evaluate block
     problem.evaluate = [&blockEval, &varNames, &externalVars, &externalStringVars]
-                       (const Eigen::VectorXd& xv, 
-                        Eigen::VectorXd& F, 
-                        Eigen::MatrixXd& J, 
+                       (const Eigen::VectorXd& xv,
+                        Eigen::VectorXd& F,
+                        Eigen::MatrixXd& J,
                         bool computeJacobian) {
         // Convert Eigen vector to std::vector
         std::vector<double> x_std(xv.data(), xv.data() + xv.size());
@@ -639,21 +1023,58 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         }
     };
     
-    // Solve using Newton
-    NewtonSolver newton;
+    // Hybrid solver strategy:
+    // 1. Try Newton with line search first (fast when it works)
+    // 2. If Newton fails with LineSearchFailed, fall back to Trust Region (more robust)
     SolverStatus status;
-    std::string newtonError;
+    std::string solverError;
+    
+    // First attempt: Newton solver
+    if (options.verbose) {
+        std::cout << "Block " << blockIndex << " (size " << n << "): Trying Newton solver" << std::endl;
+    }
+    
     try {
-        status = newton.solve(problem, x, options, trace, &newtonError);
-        if (!newtonError.empty()) {
-            if (outErrorMessage) {
-                if (!outErrorMessage->empty()) *outErrorMessage += "\n";
-                *outErrorMessage += newtonError;
-            }
-        }
+        NewtonSolver newton;
+        status = newton.solve(problem, x, options, trace, &solverError);
     } catch (const std::exception& e) {
-        if (outErrorMessage) *outErrorMessage = e.what();
-        return SolverStatus::EvaluationError;
+        status = SolverStatus::EvaluationError;
+        solverError = e.what();
+    }
+    
+    // Second attempt: If Newton failed with LineSearchFailed and trust region is enabled, try Trust Region
+    if ((status == SolverStatus::LineSearchFailed || status == SolverStatus::MaxIterations)
+        && options.useTrustRegion && n > 2) {
+        if (options.verbose) {
+            std::cout << "Block " << blockIndex << ": Newton failed (" << statusToString(status)
+                      << "), falling back to Trust Region" << std::endl;
+        }
+        
+        // Reset initial guess from current state (might have been modified by Newton)
+        for (size_t i = 0; i < n; ++i) {
+            x[i] = evaluator_.getVariableValue(varNames[i]);
+        }
+        
+        // Use more iterations for trust region
+        SolverOptions trOptions = options;
+        if (trOptions.maxIterations < 500) {
+            trOptions.maxIterations = 500;
+        }
+        
+        try {
+            TrustRegionSolver trSolver;
+            status = trSolver.solve(problem, x, trOptions, trace, &solverError);
+        } catch (const std::exception& e) {
+            status = SolverStatus::EvaluationError;
+            solverError = e.what();
+        }
+    }
+    
+    if (!solverError.empty()) {
+        if (outErrorMessage) {
+            if (!outErrorMessage->empty()) *outErrorMessage += "\n";
+            *outErrorMessage += solverError;
+        }
     }
     
     // Update state with solution
