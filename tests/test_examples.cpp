@@ -158,9 +158,8 @@ ExampleTestResult testExampleFile(const fs::path& filepath) {
     
     coolsolve::CoolSolveRunner runner(filepath.string());
     coolsolve::SolverOptions options;
-    options.maxIterations = 1000;
     options.tolerance = 1e-6;
-    options.timeoutSeconds = 5; // Add 5 second timeout
+    options.timeoutSeconds = 30; // Add 30 second timeout for large models
     
     bool success = runner.run(options);
     

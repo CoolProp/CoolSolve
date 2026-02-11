@@ -50,6 +50,9 @@ struct SolverOptions {
     double lsMinStep = 1e-10;         // Minimum step size in line search
     double lsRelaxedTolerance = 1e-2; // Accept as converged when ||F|| < this (line search fail or max iter)
 
+    // Variable scaling
+    bool enableScaling = true;        // Enable automatic variable scaling for improved conditioning
+
     // Performance and safety
     int timeoutSeconds = 0;           // Timeout in seconds (0 = none)
 };
@@ -178,11 +181,22 @@ public:
     
 private:
     /**
+     * @brief Compute automatic scaling factors for variables.
+     *
+     * Variables with different magnitudes (T~300, P~1e7, h~3e5) create
+     * ill-conditioned Jacobians. Scaling improves convergence.
+     *
+     * @param x Initial guess vector
+     * @return Vector of scaling factors (one per variable)
+     */
+    Eigen::VectorXd computeScalingFactors(const Eigen::VectorXd& x) const;
+    
+    /**
      * @brief Perform backtracking line search.
-     * 
+     *
      * Finds lambda such that phi(lambda) = ||F(x + lambda*dx)||^2 < phi(0)
      * using the Armijo condition.
-     * 
+     *
      * @param problem Problem definition
      * @param x Current point
      * @param dx Newton direction

@@ -132,6 +132,28 @@ bool TimeoutGuard::hasTimedOut() {
 // Newton Solver Implementation
 // ============================================================================
 
+Eigen::VectorXd NewtonSolver::computeScalingFactors(const Eigen::VectorXd& x) const {
+    const int n = x.size();
+    Eigen::VectorXd scale(n);
+    
+    for (int i = 0; i < n; ++i) {
+        double xi = std::abs(x(i));
+        if (xi < 1.0) {
+            // For small values, use 1.0 as scale (no scaling)
+            scale(i) = 1.0;
+        } else {
+            // Use order of magnitude as scale: scale = 10^floor(log10(x))
+            // This gives scale factors like 1, 10, 100, 1000, 1e5, etc.
+            double log10x = std::floor(std::log10(xi));
+            scale(i) = std::pow(10.0, log10x);
+            // Clamp to reasonable range to avoid extreme scaling
+            scale(i) = std::max(1e-6, std::min(scale(i), 1e6));
+        }
+    }
+    
+    return scale;
+}
+
 double NewtonSolver::lineSearch(Problem& problem,
                                 const Eigen::VectorXd& x,
                                 const Eigen::VectorXd& dx,
@@ -192,8 +214,8 @@ double NewtonSolver::lineSearch(Problem& problem,
     return 0.0;  // Line search failed
 }
 
-SolverStatus NewtonSolver::solve(Problem& problem, 
-                                 Eigen::VectorXd& x, 
+SolverStatus NewtonSolver::solve(Problem& problem,
+                                 Eigen::VectorXd& x,
                                  const SolverOptions& options,
                                  SolverTrace* trace,
                                  std::string* detailedError) {
@@ -204,9 +226,27 @@ SolverStatus NewtonSolver::solve(Problem& problem,
         return SolverStatus::InvalidInput;
     }
     
+    // Compute scaling factors (either automatic or unity)
+    Eigen::VectorXd scale;
+    if (options.enableScaling) {
+        scale = computeScalingFactors(x);
+        if (options.verbose) {
+            std::cout << "Newton: Scaling enabled - factors min=" << scale.minCoeff()
+                      << ", max=" << scale.maxCoeff() << std::endl;
+        }
+    } else {
+        scale = Eigen::VectorXd::Ones(n);
+    }
+    
+    // Work in scaled coordinates: y = x ./ scale
+    // When scaling is disabled, scale = 1 so y = x (no overhead)
+    Eigen::VectorXd y = x.cwiseQuotient(scale);
+    
     Eigen::VectorXd F(n);
     Eigen::MatrixXd J(n, n);
-    Eigen::VectorXd dx(n);
+    Eigen::MatrixXd J_unscaled(n, n);
+    Eigen::VectorXd dy(n);
+    Eigen::VectorXd x_unscaled(n);
     
     double initialResidualNorm = 0.0;
     
@@ -216,17 +256,22 @@ SolverStatus NewtonSolver::solve(Problem& problem,
             if (detailedError) *detailedError = "Solver timed out";
             return SolverStatus::EvaluationError; // Or add a Timeout status
         }
-        // Step 1: Evaluate F(x) and J(x)
+        // Step 1: Evaluate F(x) and J(x) in original coordinates, then scale Jacobian
         try {
-            problem.evaluate(x, F, J, true);
+            // Transform from scaled to original: x = scale .* y
+            x_unscaled = y.cwiseProduct(scale);
+            // Evaluate in original coordinates
+            problem.evaluate(x_unscaled, F, J_unscaled, true);
+            // Scale Jacobian: dF/dy = dF/dx * dx/dy = J_unscaled * diag(scale)
+            J = J_unscaled * scale.asDiagonal();
         } catch (const std::exception& e) {
             if (options.verbose) {
-                std::cerr << "Newton: Evaluation failed at iter " << iter 
+                std::cerr << "Newton: Evaluation failed at iter " << iter
                           << ": " << e.what() << std::endl;
             }
             // We can't easily return the error message here without changing the interface
             // but we can rethrow it and catch it in solveBlock
-            throw; 
+            throw;
         }
         
         // Step 2: Check convergence
@@ -240,14 +285,15 @@ SolverStatus NewtonSolver::solve(Problem& problem,
             std::cout << "Newton iter " << iter << ": ||F||_inf = " << residualNorm << std::endl;
         }
         
-        // Record trace
+        // Record trace (store unscaled x for easier debugging)
         if (trace) {
             SolverTrace::Iteration traceIter;
             traceIter.iter = iter;
             traceIter.residualNorm = residualNorm;
             traceIter.stepNorm = 0.0;
             traceIter.lambda = 1.0;
-            traceIter.x = std::vector<double>(x.data(), x.data() + x.size());
+            Eigen::VectorXd x_unscaled = y.cwiseProduct(scale);
+            traceIter.x = std::vector<double>(x_unscaled.data(), x_unscaled.data() + x_unscaled.size());
             traceIter.residuals = std::vector<double>(F.data(), F.data() + F.size());
             trace->iterations.push_back(traceIter);
         }
@@ -258,35 +304,39 @@ SolverStatus NewtonSolver::solve(Problem& problem,
                 trace->finalStatus = SolverStatus::Success;
                 trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
             }
+            // Transform solution back to unscaled coordinates
+            x = y.cwiseProduct(scale);
             return SolverStatus::Success;
         }
         
         // Check relative tolerance
-        if (initialResidualNorm > 0 && 
+        if (initialResidualNorm > 0 &&
             residualNorm / initialResidualNorm < options.relativeTolerance) {
             if (trace) {
                 trace->finalStatus = SolverStatus::Success;
                 trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
             }
+            // Transform solution back to unscaled coordinates
+            x = y.cwiseProduct(scale);
             return SolverStatus::Success;
         }
         
-        // Step 3: Solve J * dx = -F
+        // Step 3: Solve J * dy = -F (in scaled coordinates)
         // Use ColPivHouseholderQR for robustness (handles rank-deficient cases)
         Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(J);
         
         if (qr.rank() < n) {
             if (options.verbose) {
-                std::cerr << "Newton: Jacobian is rank-deficient (rank=" << qr.rank() 
+                std::cerr << "Newton: Jacobian is rank-deficient (rank=" << qr.rank()
                           << ", n=" << n << ")" << std::endl;
             }
             // Try pseudo-inverse solution anyway
         }
         
-        dx = qr.solve(-F);
+        dy = qr.solve(-F);
         
         // Check for invalid step
-        if (!dx.allFinite()) {
+        if (!dy.allFinite()) {
             if (options.verbose) {
                 std::cerr << "Newton: Invalid Newton step (contains NaN/Inf)" << std::endl;
             }
@@ -297,8 +347,19 @@ SolverStatus NewtonSolver::solve(Problem& problem,
             return SolverStatus::SingularJacobian;
         }
         
-        // Step 4: Line search
-        double lambda = lineSearch(problem, x, dx, F, options);
+        // Step 4: Line search (in scaled coordinates)
+        // Create a wrapper for line search that handles coordinate transformation
+        Problem lsProblem;
+        lsProblem.size = n;
+        lsProblem.evaluate = [&](const Eigen::VectorXd& y_trial,
+                                  Eigen::VectorXd& F_out,
+                                  Eigen::MatrixXd& J_out,
+                                  bool computeJac) {
+            Eigen::VectorXd x_trial = y_trial.cwiseProduct(scale);
+            Eigen::MatrixXd J_temp;
+            problem.evaluate(x_trial, F_out, J_temp, false);
+        };
+        double lambda = lineSearch(lsProblem, y, dy, F, options);
         
         if (lambda == 0.0) {
             // Relaxed acceptance: if residual is already small, accept as converged
@@ -307,14 +368,17 @@ SolverStatus NewtonSolver::solve(Problem& problem,
                     trace->finalStatus = SolverStatus::Success;
                     trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
                 }
+                // Transform solution back to unscaled coordinates
+                x = y.cwiseProduct(scale);
                 return SolverStatus::Success;
             }
-            // Fallback: try a minimal step to make progress
+            // Fallback: try a minimal step to make progress (in scaled coordinates)
             for (double fallbackLambda : {0.1, 0.01, 0.001}) {
-                Eigen::VectorXd x_trial = x + fallbackLambda * dx;
+                Eigen::VectorXd y_trial = y + fallbackLambda * dy;
                 Eigen::VectorXd F_trial(n);
                 Eigen::MatrixXd J_dummy;
                 try {
+                    Eigen::VectorXd x_trial = y_trial.cwiseProduct(scale);
                     problem.evaluate(x_trial, F_trial, J_dummy, false);
                     double phi_trial = 0.5 * F_trial.squaredNorm();
                     double phi0 = 0.5 * F.squaredNorm();
@@ -338,19 +402,21 @@ SolverStatus NewtonSolver::solve(Problem& problem,
                     std::ostringstream ss;
                     ss << "Line search failed at iteration " << iter << ".\n"
                        << "Residual norm ||F|| = " << residualNorm << "\n"
-                       << "Newton step norm ||dx|| = " << dx.norm() << "\n"
+                       << "Newton step norm ||dy|| = " << dy.norm() << "\n"
                        << "Current variables:\n";
                     *detailedError = ss.str();
                 }
+                // Transform back to unscaled coordinates before returning
+                x = y.cwiseProduct(scale);
                 return SolverStatus::LineSearchFailed;
             }
         }
         
-        // Step 5: Update x
-        double stepNorm = (lambda * dx).lpNorm<Eigen::Infinity>();
-        x += lambda * dx;
+        // Step 5: Update y (in scaled coordinates)
+        double stepNorm = (lambda * dy).lpNorm<Eigen::Infinity>();
+        y += lambda * dy;
         
-        // Update trace with actual step info
+        // Update trace with actual step info (convert step to unscaled for reporting)
         if (trace && !trace->iterations.empty()) {
             trace->iterations.back().stepNorm = stepNorm;
             trace->iterations.back().lambda = lambda;
@@ -364,6 +430,8 @@ SolverStatus NewtonSolver::solve(Problem& problem,
                     trace->finalStatus = SolverStatus::Success;
                     trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
                 }
+                // Transform solution back to unscaled coordinates before returning
+                x = y.cwiseProduct(scale);
                 return SolverStatus::Success;
             }
         }
@@ -379,6 +447,8 @@ SolverStatus NewtonSolver::solve(Problem& problem,
            << "Last residual norm ||F|| = " << F.lpNorm<Eigen::Infinity>();
         *detailedError = ss.str();
     }
+    // Transform current y back to unscaled x even on failure
+    x = y.cwiseProduct(scale);
     return SolverStatus::MaxIterations;
 }
 
