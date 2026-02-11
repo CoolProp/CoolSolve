@@ -123,6 +123,10 @@ struct SolverTrace {
     SolverStatus finalStatus;
     std::chrono::duration<double> totalTime;
     std::string solverType;  // "Newton" or "TrustRegion" for debugging
+
+    // Singular Jacobian diagnostics (only populated when finalStatus == SingularJacobian)
+    std::vector<double> singularJacobianF;           // Residual vector F at failure
+    std::vector<std::vector<double>> singularJacobianJ;  // Jacobian matrix J at failure
     
     std::string toString() const;
 };

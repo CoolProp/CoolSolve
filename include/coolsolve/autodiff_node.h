@@ -113,12 +113,22 @@ inline ADValue pow(const ADValue& x, double y) {
 // Power: z = x^y (where both are ADValues)
 // z = exp(y * ln(x))
 // z.gradient = x^y * (y.gradient * ln(x) + y * x.gradient / x)
+// When x=0, ln(x) and 1/x are undefined; use power-rule d(x^y)/dx = y*x^(y-1)*x.gradient
 inline ADValue pow(const ADValue& x, const ADValue& y) {
     double val = std::pow(x.value, y.value);
-    double lnx = std::log(x.value);
     ADValue z(val, x.gradient.size());
-    for (size_t i = 0; i < z.gradient.size(); ++i) {
-        z.gradient[i] = val * (y.gradient[i] * lnx + y.value * x.gradient[i] / x.value);
+    constexpr double eps = 1e-14;
+    if (std::abs(x.value) < eps) {
+        // At x≈0: avoid ln(0) and division by zero; use power-rule for d/dx
+        double dval = (y.value >= 1.0) ? y.value * std::pow(x.value, y.value - 1.0) : 0.0;
+        for (size_t i = 0; i < z.gradient.size(); ++i) {
+            z.gradient[i] = dval * x.gradient[i];
+        }
+    } else {
+        double lnx = std::log(x.value);
+        for (size_t i = 0; i < z.gradient.size(); ++i) {
+            z.gradient[i] = val * (y.gradient[i] * lnx + y.value * x.gradient[i] / x.value);
+        }
     }
     return z;
 }

@@ -361,6 +361,53 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         }
         writeFile(debugDir / "solver_trace.md", trace.str());
     }
+
+    // 13b. Singular Jacobian diagnostics (when applicable)
+    for (size_t i = 0; i < solveResult_.blockTraces.size(); ++i) {
+        const auto& tr = solveResult_.blockTraces[i];
+        if (tr.finalStatus != SolverStatus::SingularJacobian) continue;
+        if (tr.singularJacobianF.empty() && tr.singularJacobianJ.empty()) continue;
+
+        std::ostringstream diag;
+        diag << "# Singular Jacobian Diagnostics\n\n";
+        diag << "**Block:** " << i << "\n\n";
+        diag << "**Equation:** ";
+        const auto& block = analysisResult_.blocks[i];
+        for (int eqId : block.equationIds) {
+            if (eqId >= 0 && eqId < static_cast<int>(ir_->getEquations().size())) {
+                diag << ir_->getEquations()[eqId].originalText;
+                break;
+            }
+        }
+        diag << "\n\n";
+        diag << "**Variables:** ";
+        for (size_t j = 0; j < block.variables.size(); ++j) {
+            if (j > 0) diag << ", ";
+            diag << block.variables[j];
+        }
+        diag << "\n\n";
+
+        diag << "## Residual vector F\n\n";
+        diag << "| Index | Value |\n|---|---|\n";
+        for (size_t j = 0; j < tr.singularJacobianF.size(); ++j) {
+            diag << "| " << j << " | " << std::scientific << std::setprecision(6)
+                 << tr.singularJacobianF[j] << " |\n";
+        }
+
+        diag << "\n## Jacobian matrix J\n\n";
+        diag << "| Row | Col | Value |\n|---|---|---|\n";
+        for (size_t r = 0; r < tr.singularJacobianJ.size(); ++r) {
+            for (size_t c = 0; c < tr.singularJacobianJ[r].size(); ++c) {
+                diag << "| " << r << " | " << c << " | " << std::scientific << std::setprecision(6)
+                     << tr.singularJacobianJ[r][c] << " |\n";
+            }
+        }
+        diag << "\n**Interpretation:** A zero or near-zero Jacobian diagonal entry `J[i][i]` "
+             << "indicates that equation `i` does not depend on variable `i` (or the derivative is "
+             << "numerically zero), causing singularity.\n";
+        writeFile(debugDir / "solver_singular_diagnostics.md", diag.str());
+        break;  // Only first failing block
+    }
     
     // 14. Index
     std::ostringstream index;
@@ -378,6 +425,9 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     index << "| [profiling.md](profiling.md) | Performance profiling and stats |\n";
     if (!solveResult_.blockTraces.empty()) {
         index << "| [solver_trace.md](solver_trace.md) | Detailed solver iteration trace |\n";
+    }
+    if (!solveResult_.success && fs::exists(debugDir / "solver_singular_diagnostics.md")) {
+        index << "| [solver_singular_diagnostics.md](solver_singular_diagnostics.md) | Jacobian diagnostics when singular |\n";
     }
     writeFile(debugDir / "README.md", index.str());
 }

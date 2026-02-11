@@ -353,6 +353,11 @@ SolverStatus NewtonSolver::solve(Problem& problem,
             if (trace) {
                 trace->finalStatus = SolverStatus::SingularJacobian;
                 trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+                // Capture J and F for debug diagnostics
+                trace->singularJacobianF.assign(F.data(), F.data() + F.size());
+                trace->singularJacobianJ.resize(J.rows());
+                for (Eigen::Index r = 0; r < J.rows(); ++r)
+                    trace->singularJacobianJ[r].assign(J.row(r).data(), J.row(r).data() + J.cols());
             }
             return SolverStatus::SingularJacobian;
         }
@@ -664,6 +669,11 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
             if (trace) {
                 trace->finalStatus = SolverStatus::SingularJacobian;
                 trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+                // Capture J and F for debug diagnostics
+                trace->singularJacobianF.assign(F.data(), F.data() + F.size());
+                trace->singularJacobianJ.resize(J.rows());
+                for (Eigen::Index r = 0; r < J.rows(); ++r)
+                    trace->singularJacobianJ[r].assign(J.row(r).data(), J.row(r).data() + J.cols());
             }
             x = y.cwiseProduct(scale);
             return SolverStatus::SingularJacobian;
