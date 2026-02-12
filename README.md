@@ -33,6 +33,7 @@ CoolSolve is a parser, structural analyzer, and equation evaluator for the EES (
   - **CoolProp integration** for thermodynamic property calculations
   - Automatic temperature conversion (Celsius ↔ Kelvin)
   - **Configurable Solver Pipeline** with multiple algorithms and execution modes
+  - **Explicit solve for size-1 blocks**: Bypasses Newton entirely for structurally explicit assignments (one residual evaluation, no Jacobian)
   - **Newton + Line Search** for fast convergence on well-conditioned blocks
   - **Trust-Region Dogleg** for robust convergence on stiff nonlinear blocks
   - **Levenberg-Marquardt** for improved convergence when initial guesses are poor
@@ -488,6 +489,5 @@ For new equation systems, use CoolProp-computed values for initial guesses to en
 The next steps in the implementation plan include:
 - **KINSOL (SUNDIALS) integration**: For large-scale nonlinear systems requiring robust preconditioning
 - **Homotopy / Continuation methods**: Gradually transform from an easy problem to the target for highly nonlinear systems
-- **Explicit solve for size-1 blocks**: Bypass Newton entirely for structurally explicit assignments
 - **Analytical Derivatives**: Use CoolProp's `AbstractState::first_partial_deriv` for exact derivatives
 - **Profiling and optimization**: Improve the solving time

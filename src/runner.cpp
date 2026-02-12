@@ -145,6 +145,13 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     stats << "| Total blocks | " << analysisResult_.totalBlocks << " |\n";
     stats << "| Largest block | " << analysisResult_.largestBlockSize << " |\n";
     stats << "| Explicit equations | " << analysisResult_.explicitEquationCount << " |\n";
+    if (!solveResult_.blockTraces.empty()) {
+        int explicitSolveCount = 0;
+        for (const auto& tr : solveResult_.blockTraces) {
+            if (tr.solverType == "Explicit") ++explicitSolveCount;
+        }
+        stats << "| Blocks solved by direct evaluation | " << explicitSolveCount << " |\n";
+    }
     
     if (solveResult_.status != SolverStatus::InvalidInput) { // If solver ran
         stats << "| Solver Status | " << (solveResult_.success ? "SUCCESS" : "FAILED") << " |\n";
@@ -359,6 +366,11 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         trace << "# Solver Trace\n\n";
         for (size_t i = 0; i < solveResult_.blockTraces.size(); ++i) {
             const auto& tr = solveResult_.blockTraces[i];
+            if (tr.solverType == "Explicit") {
+                trace << "## Block " << i << " (Explicit solve)\n\n";
+                trace << "Solved by direct evaluation (no Newton iterations).\n\n";
+                continue;
+            }
             if (tr.iterations.empty()) continue;
             trace << "## Block " << i;
             if (!tr.solverType.empty()) {

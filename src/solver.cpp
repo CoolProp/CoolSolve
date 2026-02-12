@@ -1258,14 +1258,60 @@ void Solver::setStringVariable(const std::string& name, const std::string& value
 }
 
 bool Solver::tryExplicitSolve(size_t blockIndex) {
-    // For now, always use Newton for implicit solve
-    // In the future, we could try to detect simple explicit patterns like:
-    //   x = expr(known_vars)
-    // and solve directly.
-    
-    // For size-1 blocks, we still use Newton, but it will typically 
-    // converge in 1-2 iterations for explicit equations.
-    return false;
+    const Block& block = analysis_.blocks[blockIndex];
+    if (block.equationIds.size() != 1 || block.variables.size() != 1)
+        return false;
+
+    const int eqId = block.equationIds[0];
+    const std::string& outVar = block.variables[0];
+    const auto& equations = ir_.getEquations();
+    if (eqId < 0 || eqId >= static_cast<int>(equations.size()))
+        return false;
+
+    const EquationInfo& eq = equations[eqId];
+    // Structurally explicit: equation must be "x = expr(others)" so we can set x = value(RHS).
+    // 1) Output variable must not appear in the RHS.
+    if (eq.rhsVariables.count(outVar) != 0)
+        return false;
+    // 2) LHS must be exactly the output variable (not e.g. x^2 or f(x)).
+    if (!eq.lhs || !eq.lhs->is<Variable>())
+        return false;
+    const std::string& lhsName = eq.lhs->as<Variable>().flattenedName();
+    auto caseInsensitiveEqual = [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(a[i])) !=
+                std::tolower(static_cast<unsigned char>(b[i])))
+                return false;
+        }
+        return true;
+    };
+    if (!caseInsensitiveEqual(lhsName, outVar))
+        return false;
+
+    BlockEvaluator& blockEval = evaluator_.getBlock(blockIndex);
+
+    std::map<std::string, double> externalVars;
+    for (const auto& [name, value] : evaluator_.getAllVariables()) {
+        if (!caseInsensitiveEqual(name, outVar))
+            externalVars[name] = value;
+    }
+    std::map<std::string, std::string> externalStringVars;
+    for (const auto& [name, value] : evaluator_.getAllStringVariables()) {
+        externalStringVars[name] = value;
+    }
+
+    const double xCurrent = evaluator_.getVariableValue(outVar);
+    try {
+        EvaluationResult result = blockEval.evaluate({xCurrent}, externalVars, externalStringVars);
+        if (result.residuals.empty()) return false;
+        // Residual is LHS - RHS; for x = expr we have residual = x - expr, so x_solution = expr = x - residual
+        const double xSolution = xCurrent - result.residuals[0];
+        evaluator_.setVariableValue(outVar, xSolution);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 SolverStatus Solver::solveBlock(size_t blockIndex, 
@@ -1385,6 +1431,10 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
     
     // For size-1 blocks, check if it's truly implicit or just needs direct evaluation
     if (n == 1 && tryExplicitSolve(blockIndex)) {
+        if (trace) {
+            trace->solverType = "Explicit";
+            trace->finalStatus = SolverStatus::Success;
+        }
         return SolverStatus::Success;
     }
     

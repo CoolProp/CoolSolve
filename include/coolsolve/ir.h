@@ -73,8 +73,10 @@ struct EquationInfo {
     // Procedure call (if this is a CALL statement)
     std::optional<ProcedureCall> procedureCall;
     
-    // Variables appearing in this equation
+    // Variables appearing in this equation (LHS and RHS combined)
     std::set<std::string, CaseInsensitiveLess> variables;
+    /// Variables appearing only in the RHS (for explicit-solve detection: if output is not here, equation is x = expr(others))
+    std::set<std::string, CaseInsensitiveLess> rhsVariables;
     
     // After matching: the variable this equation determines
     std::string outputVariable;

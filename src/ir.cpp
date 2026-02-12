@@ -32,6 +32,8 @@ IR IR::fromAST(const Program& program) {
             // Extract variables from both sides
             ir.extractVariables(eq.lhs, eqInfo.variables);
             ir.extractVariables(eq.rhs, eqInfo.variables);
+            // RHS only: for explicit-solve detection (if output var not in RHS, we can solve by direct evaluation)
+            ir.extractVariables(eq.rhs, eqInfo.rhsVariables);
             
             // Register all variables
             for (const auto& varName : eqInfo.variables) {
@@ -85,6 +87,7 @@ IR IR::fromAST(const Program& program) {
                 eqInfo.originalText = "CALL " + call.name + "(...)";
                 eqInfo.procedureCall = call;
                 eqInfo.variables = callVars;
+                eqInfo.rhsVariables = callVars;  // no LHS/RHS; treat as implicit
                 ir.equations_.push_back(eqInfo);
             } else {
                 for (size_t i = 0; i < call.outputVars.size(); ++i) {
@@ -94,6 +97,7 @@ IR IR::fromAST(const Program& program) {
                     eqInfo.originalText = "CALL " + call.name + "(...) [output " + std::to_string(i+1) + "]";
                     eqInfo.procedureCall = call;
                     eqInfo.variables = callVars;
+                    eqInfo.rhsVariables = callVars;  // procedure outputs are implicit, not explicit
                     ir.equations_.push_back(eqInfo);
                 }
             }
