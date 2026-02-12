@@ -111,9 +111,15 @@ int main(int argc, char* argv[]) {
     // Use CoolSolveRunner to handle the execution pipeline
     coolsolve::CoolSolveRunner runner(inputFile);
     
-    // Configure solver options
+    // Configure solver options (defaults from solver.h)
     coolsolve::SolverOptions options;
     options.verbose = false; // Disable stdout/stderr verbosity
+
+    // Override from coolsolve.conf in the same folder as the input file (not subfolders)
+    fs::path configPath = fs::path(inputFile).parent_path() / "coolsolve.conf";
+    if (fs::exists(configPath)) {
+        coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    }
     
     // Run the pipeline (Parse -> IR -> Infer -> Analyze -> Solve)
     // Note: runner.run() automatically loads .initials if present

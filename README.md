@@ -54,6 +54,7 @@ CoolSolve uses several file formats for input and verification:
 
 - **.eescode**: The EES source code to be parsed and solved.
 - **.initials**: Initial values for variables, used to seed the solver or evaluator. Format: `variable=value` (one per line).
+- **coolsolve.conf**: Optional solver configuration. Place in the **same folder** as your .eescode file (not in subfolders). Format: `key = value` per line; lines starting with `#` are comments. Only the options you set override the defaults (see `include/coolsolve/solver.h` for `SolverOptions`). An example with all keys and comments is in `examples/coolsolve.conf`. In debug mode (`-d`), this file is copied into the debug folder.
 
 ## Building
 
@@ -166,6 +167,7 @@ The debug folder contains:
 | File | Description |
 |------|-------------|
 | `README.md` | Index of all generated files |
+| `coolsolve.conf` | Copy of solver config from source folder (if present) |
 | `report.md` | Model statistics and block summary |
 | `variables.md` | Variable mapping table (Markdown) |
 | `variables.csv` | Variable mapping (CSV for external tools) |

@@ -46,7 +46,7 @@ struct SolverOptions {
     // Line search options
     double lsAlpha = 1e-4;            // Armijo condition parameter
     double lsRho = 0.5;               // Step reduction factor
-    int lsMaxIterations = 20;         // Max line search iterations
+    int lsMaxIterations = 100;         // Max line search iterations
     double lsMinStep = 1e-10;         // Minimum step size in line search
     double lsRelaxedTolerance = 1e-2; // Accept as converged when ||F|| < this (line search fail or max iter)
 
@@ -71,6 +71,15 @@ struct SolverOptions {
     // Performance and safety
     int timeoutSeconds = 0;           // Timeout in seconds (0 = none)
 };
+
+/**
+ * @brief Load solver options from a coolsolve.conf file.
+ * Only keys present in the file are applied; others keep their current values.
+ * @param path Path to the config file (e.g. dir/coolsolve.conf)
+ * @param options Options to override (modified in place)
+ * @return true if the file was found and read, false otherwise
+ */
+bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options);
 
 /**
  * @brief Categories for solver/evaluator errors.

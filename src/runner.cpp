@@ -116,7 +116,15 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     
     // 1. Copy original source code
     writeFile(debugDir / "original.eescode", sourceCode);
-    
+
+    // 1b. Copy coolsolve.conf from source folder if present
+    fs::path configInSource = fs::path(inputFile_).parent_path() / "coolsolve.conf";
+    if (fs::exists(configInSource)) {
+        try {
+            fs::copy_file(configInSource, debugDir / "coolsolve.conf", fs::copy_options::overwrite_existing);
+        } catch (const std::exception&) { /* ignore copy errors */ }
+    }
+
     // 2. Generate model statistics
     std::ostringstream stats;
     stats << "# CoolSolve Analysis Report\n\n";
@@ -415,6 +423,9 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     index << "Analysis of: `" << inputFile_ << "`\n\n";
     index << "## Contents\n\n";
     index << "| File | Description |\n|---|---|\n";
+    if (fs::exists(debugDir / "coolsolve.conf")) {
+        index << "| [coolsolve.conf](coolsolve.conf) | Solver config used for this run |\n";
+    }
     index << "| [report.md](report.md) | Model statistics and block summary |\n";
     index << "| [variables.md](variables.md) | Variable mapping table |\n";
     index << "| [coolsolve_residuals.md](coolsolve_residuals.md) | Detailed equation values and residuals |\n";

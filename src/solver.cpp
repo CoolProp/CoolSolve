@@ -2,8 +2,10 @@
 #include <iostream>
 #include <iomanip>
 #include <sstream>
+#include <fstream>
 #include <cmath>
 #include <algorithm>
+#include <cctype>
 #include <csignal>
 #include <atomic>
 
@@ -96,6 +98,68 @@ std::string categoryToString(ErrorCategory category) {
         case ErrorCategory::Other: return "Other";
         default: return "Unknown";
     }
+}
+
+// ============================================================================
+// Config file loading
+// ============================================================================
+
+static std::string trim(const std::string& s) {
+    auto start = s.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return "";
+    auto end = s.find_last_not_of(" \t\r\n");
+    return s.substr(start, end == std::string::npos ? std::string::npos : end - start + 1);
+}
+
+static bool parseBool(const std::string& v) {
+    std::string s = v;
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (s == "true" || s == "1" || s == "yes") return true;
+    if (s == "false" || s == "0" || s == "no") return false;
+    return std::stoi(v) != 0;
+}
+
+bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) {
+    std::ifstream f(path);
+    if (!f.is_open()) return false;
+    std::string line;
+    while (std::getline(f, line)) {
+        line = trim(line);
+        if (line.empty() || line[0] == '#') continue;
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = trim(line.substr(0, eq));
+        std::string val = trim(line.substr(eq + 1));
+        if (key.empty()) continue;
+        try {
+            if (key == "maxIterations") options.maxIterations = std::stoi(val);
+            else if (key == "tolerance") options.tolerance = std::stod(val);
+            else if (key == "relativeTolerance") options.relativeTolerance = std::stod(val);
+            else if (key == "stepTolerance") options.stepTolerance = std::stod(val);
+            else if (key == "verbose") options.verbose = parseBool(val);
+            else if (key == "lsAlpha") options.lsAlpha = std::stod(val);
+            else if (key == "lsRho") options.lsRho = std::stod(val);
+            else if (key == "lsMaxIterations") options.lsMaxIterations = std::stoi(val);
+            else if (key == "lsMinStep") options.lsMinStep = std::stod(val);
+            else if (key == "lsRelaxedTolerance") options.lsRelaxedTolerance = std::stod(val);
+            else if (key == "enableScaling") options.enableScaling = parseBool(val);
+            else if (key == "useTrustRegion") options.useTrustRegion = parseBool(val);
+            else if (key == "trInitialRadius") options.trInitialRadius = std::stod(val);
+            else if (key == "trMaxRadius") options.trMaxRadius = std::stod(val);
+            else if (key == "trEta") options.trEta = std::stod(val);
+            else if (key == "trShrinkFactor") options.trShrinkFactor = std::stod(val);
+            else if (key == "trGrowFactor") options.trGrowFactor = std::stod(val);
+            else if (key == "usePartitionedSolver") options.usePartitionedSolver = parseBool(val);
+            else if (key == "partitionedMaxIterations") options.partitionedMaxIterations = std::stoi(val);
+            else if (key == "partitionedRelaxation") options.partitionedRelaxation = std::stod(val);
+            else if (key == "partitionedMinDiagonal") options.partitionedMinDiagonal = std::stod(val);
+            else if (key == "partitionedMinBlockSize") options.partitionedMinBlockSize = std::stoi(val);
+            else if (key == "timeoutSeconds") options.timeoutSeconds = std::stoi(val);
+        } catch (...) {
+            // Ignore malformed values
+        }
+    }
+    return true;
 }
 
 // ============================================================================
