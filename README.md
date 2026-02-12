@@ -488,6 +488,7 @@ For new equation systems, use CoolProp-computed values for initial guesses to en
 
 The next steps in the implementation plan include:
 - **KINSOL (SUNDIALS) integration**: For large-scale nonlinear systems requiring robust preconditioning
+- **alternative solvers**: https://www.osti.gov/servlets/purl/876345
 - **Homotopy / Continuation methods**: Gradually transform from an easy problem to the target for highly nonlinear systems
 - **Analytical Derivatives**: Use CoolProp's `AbstractState::first_partial_deriv` for exact derivatives
 - **Profiling and optimization**: Improve the solving time
