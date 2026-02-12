@@ -99,7 +99,6 @@ struct SolverOptions {
     bool enableScaling = true;        // Enable automatic variable scaling for improved conditioning
 
     // Trust region options
-    bool useTrustRegion = true;       // Use trust region dogleg method instead of line search
     double trInitialRadius = 10.0;    // Initial trust region radius (larger for aggressive steps)
     double trMaxRadius = 1000.0;      // Maximum trust region radius
     double trEta = 0.05;              // Threshold for accepting step (rho >= eta) - more lenient
@@ -114,7 +113,6 @@ struct SolverOptions {
     double lmMaxLambda = 1e8;         // Maximum damping parameter
 
     // Partitioned block solver options (variable-wise updates)
-    bool usePartitionedSolver = true;     // Enable partitioned fallback for hard blocks
     int partitionedMaxIterations = 300;   // Max iterations for partitioned solver
     double partitionedRelaxation = 0.6;   // Relaxation factor for updates (0 < w <= 1)
     double partitionedMinDiagonal = 1e-12; // Minimum |dF_i/dx_i| to update variable
