@@ -32,8 +32,12 @@ CoolSolve is a parser, structural analyzer, and equation evaluator for the EES (
   - System-level orchestration for sequential block solving
   - **CoolProp integration** for thermodynamic property calculations
   - Automatic temperature conversion (Celsius ↔ Kelvin)
-  - **Trust-Region Solver** for robust convergence on stiff nonlinear blocks
+  - **Configurable Solver Pipeline** with multiple algorithms and execution modes
+  - **Newton + Line Search** for fast convergence on well-conditioned blocks
+  - **Trust-Region Dogleg** for robust convergence on stiff nonlinear blocks
+  - **Levenberg-Marquardt** for improved convergence when initial guesses are poor
   - **Partitioned Block Updates** as a fallback for ill-conditioned algebraic loops
+  - **Parallel solver execution** (multithreaded, first-to-converge wins)
 
 - **Output Formats**:
   - JSON (for automated testing and integration)
@@ -54,7 +58,9 @@ CoolSolve uses several file formats for input and verification:
 
 - **.eescode**: The EES source code to be parsed and solved.
 - **.initials**: Initial values for variables, used to seed the solver or evaluator. Format: `variable=value` (one per line).
-- **coolsolve.conf**: Optional solver configuration. Place in the **same folder** as your .eescode file (not in subfolders). Format: `key = value` per line; lines starting with `#` are comments. Only the options you set override the defaults (see `include/coolsolve/solver.h` for `SolverOptions`). An example with all keys and comments is in `examples/coolsolve.conf`. In debug mode (`-d`), this file is copied into the debug folder.
+- **coolsolve.conf**: Optional solver configuration. Place in the **same folder** as your .eescode file (not in subfolders). Format: `key = value` per line; lines starting with `#` are comments. Only the options you set override the defaults (see `include/coolsolve/solver.h` for `SolverOptions`). An example with all keys and comments is in `examples/coolsolve.conf`. In debug mode (`-d`), this file is copied into the debug folder. Key pipeline options:
+  - `solverPipeline`: Comma-separated list of solvers to try (e.g. `Newton, LM, TrustRegion, Partitioned`)
+  - `pipelineMode`: `sequential` (default) or `parallel` (first-to-converge wins)
 
 ## Building
 
@@ -252,16 +258,21 @@ CoolSolve/
 │   ├── ir.h                    # Intermediate Representation
 │   ├── structural_analysis.h   # Analysis algorithms
 │   ├── autodiff_node.h         # Forward-mode AD types and operations
-│   └── evaluator.h             # Block and system evaluators
+│   ├── evaluator.h             # Block and system evaluators
+│   └── solver.h                # Solver pipeline, Newton, TR, LM, Partitioned
 ├── src/
 │   ├── parser.cpp              # EES parser implementation
 │   ├── ir.cpp                  # IR building and LaTeX generation
 │   ├── structural_analysis.cpp # Matching and SCC algorithms
 │   ├── autodiff_node.cpp       # AD function implementations
-│   └── evaluator.cpp           # Evaluator implementations
+│   ├── evaluator.cpp           # Evaluator implementations
+│   └── solver.cpp              # All solver implementations + pipeline orchestrator
 ├── tests/
 │   ├── test_parser.cpp         # Parser/IR unit tests (Catch2)
 │   ├── test_evaluator.cpp      # AD/Evaluator unit tests (Catch2)
+│   ├── test_newton.cpp         # Newton solver unit tests
+│   ├── test_solver_pipeline.cpp # Pipeline, LM, config tests
+│   ├── test_solver_integration.cpp # Full-system solver integration tests
 │   └── test_examples.cpp       # Integration tests with example files
 └── examples/                   # Example .eescode files for testing
 ```
@@ -317,28 +328,72 @@ The evaluator system provides numerical computation:
 
 3. **SystemEvaluator**: Orchestrates evaluation across all blocks with proper variable handling.
 
-### 5b. Solver Algorithms (Newton, Trust Region, Partitioned Updates)
+### 5b. Solver Pipeline
 
-CoolSolve uses a hybrid nonlinear solve strategy for algebraic loops:
+CoolSolve uses a **configurable solver pipeline** for algebraic loops.  Multiple
+solver algorithms can be composed into a fallback chain (sequential mode) or
+launched concurrently (parallel mode, first-to-converge wins).
 
-1. **Newton + Line Search** (default fast path)
+The pipeline is configured via `coolsolve.conf` (see below) or programmatically
+through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
+
+#### Available Solver Algorithms
+
+1. **Newton + Line Search** (`Newton`)
    - Solves `J(x) * dx = -F(x)` and applies backtracking to ensure descent.
    - Efficient when the Jacobian is well-conditioned and the model is smooth.
 
-2. **Trust-Region Dogleg** (robust fallback)
-   - When line search stalls, a trust region uses a dogleg step that blends
-     steepest descent with the Newton step to keep updates inside a safe radius.
-   - This helps avoid oversized steps that drive thermodynamic calls into
-     invalid regions (e.g., non-physical pressure/temperature).
+2. **Trust-Region Dogleg** (`TrustRegion`)
+   - Uses a dogleg step that blends steepest descent with the Newton step to
+     keep updates inside a safe radius.
+   - Helps avoid oversized steps that drive thermodynamic calls into invalid
+     regions (e.g., non-physical pressure/temperature).
 
-3. **Partitioned Block Updates** (ill-conditioned loop fallback)
+3. **Levenberg-Marquardt** (`LM` or `LevenbergMarquardt`)
+   - Solves `(J^T J + λ D) dx = -J^T F` with adaptive damping parameter λ.
+   - When λ is large → gradient descent (safe, slow); when λ is small →
+     Gauss-Newton (fast, quadratic convergence near solution).
+   - Particularly effective when the initial guess is far from the solution,
+     because the damping prevents oversized steps that would cause divergence.
+
+4. **Partitioned Block Updates** (`Partitioned`)
    - Uses the equation-to-output-variable mapping from structural matching to
      apply **per-variable diagonal updates** inside a block:
      `x_i <- x_i - w * F_i / (dF_i/dx_i)`.
-   - This mimics a DAE-style “tear” without changing the block structure: each
+   - This mimics a DAE-style "tear" without changing the block structure: each
      equation directly updates its matched variable, reducing coupling and
      improving stability in stiff or highly nonlinear loops.
    - Designed as a last-resort stabilizer when full Newton steps are unreliable.
+
+#### Pipeline Modes
+
+- **Sequential** (default): Solvers are tried one after another.  If the first
+  solver fails, the initial guess is reset and the next solver is tried.
+- **Parallel**: All solvers are launched concurrently in separate threads.  The
+  first solver to converge wins and its solution is used.  This can save time
+  when it is unclear which algorithm will work best for a given block.
+
+#### Default Pipeline
+
+```
+solverPipeline = Newton, TrustRegion, LevenbergMarquardt, Partitioned
+pipelineMode = sequential
+```
+
+#### Example: Single Solver
+
+To use only Levenberg-Marquardt (no fallback):
+
+```ini
+solverPipeline = LM
+```
+
+#### Example: Parallel Execution
+
+```ini
+solverPipeline = Newton, TrustRegion, LM
+pipelineMode = parallel
+```
 
 ### 6. Output
 
@@ -431,6 +486,8 @@ For new equation systems, use CoolProp-computed values for initial guesses to en
 ## Future Work
 
 The next steps in the implementation plan include:
-- **Numerical Solver**: Integration with KINSOL or Ceres for Newton iteration on algebraic loops
+- **KINSOL (SUNDIALS) integration**: For large-scale nonlinear systems requiring robust preconditioning
+- **Homotopy / Continuation methods**: Gradually transform from an easy problem to the target for highly nonlinear systems
+- **Explicit solve for size-1 blocks**: Bypass Newton entirely for structurally explicit assignments
 - **Analytical Derivatives**: Use CoolProp's `AbstractState::first_partial_deriv` for exact derivatives
 - **Profiling and optimization**: Improve the solving time

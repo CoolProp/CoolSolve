@@ -133,10 +133,14 @@ target_include_directories(coolsolve_lib PUBLIC
     ${peglib_SOURCE_DIR}
 )
 
-# Link with nlohmann_json and Eigen
-target_link_libraries(coolsolve_lib PUBLIC 
+# Find threading library (needed for parallel solver pipeline)
+find_package(Threads REQUIRED)
+
+# Link with nlohmann_json, Eigen, and Threads
+target_link_libraries(coolsolve_lib PUBLIC
     nlohmann_json::nlohmann_json
     Eigen3::Eigen
+    Threads::Threads
 )
 
 # Link with CoolProp

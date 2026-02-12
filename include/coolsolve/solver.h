@@ -8,6 +8,10 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <future>
 
 namespace coolsolve {
 
@@ -34,6 +38,47 @@ enum class SolverStatus {
 std::string statusToString(SolverStatus status);
 
 /**
+ * @brief Identifies a solver algorithm that can be used in the solver pipeline.
+ *
+ * Each value corresponds to a concrete NonLinearSolver subclass.
+ * Solvers can be composed into fallback chains or run in parallel.
+ */
+enum class SolverStrategy {
+    Newton,            ///< Damped Newton-Raphson with backtracking line search
+    TrustRegion,       ///< Trust-region dogleg method
+    LevenbergMarquardt,///< Levenberg-Marquardt (damped least-squares)
+    Partitioned        ///< Per-variable diagonal updates (tear-based)
+};
+
+/**
+ * @brief Convert SolverStrategy to a human-readable string.
+ */
+std::string strategyToString(SolverStrategy strategy);
+
+/**
+ * @brief Parse a solver strategy name (case-insensitive) to enum.
+ * @return true if parsing succeeded, false if the name is unknown.
+ */
+bool parseStrategy(const std::string& name, SolverStrategy& out);
+
+/**
+ * @brief Execution mode for the solver pipeline.
+ *
+ * - Sequential: solvers are tried one after another (fallback chain).
+ * - Parallel:   solvers are launched simultaneously in separate threads;
+ *               the first one to converge wins and the others are cancelled.
+ */
+enum class SolverPipelineMode {
+    Sequential,  ///< Try solvers in order; stop at first success (default)
+    Parallel     ///< Run solvers concurrently; first success wins
+};
+
+/**
+ * @brief Convert SolverPipelineMode to string.
+ */
+std::string pipelineModeToString(SolverPipelineMode mode);
+
+/**
  * @brief Options for non-linear solvers.
  */
 struct SolverOptions {
@@ -45,8 +90,8 @@ struct SolverOptions {
     
     // Line search options
     double lsAlpha = 1e-4;            // Armijo condition parameter
-    double lsRho = 0.5;               // Step reduction factor
-    int lsMaxIterations = 100;         // Max line search iterations
+    double lsRho = 0.5;              // Step reduction factor
+    int lsMaxIterations = 100;        // Max line search iterations
     double lsMinStep = 1e-10;         // Minimum step size in line search
     double lsRelaxedTolerance = 1e-2; // Accept as converged when ||F|| < this (line search fail or max iter)
 
@@ -61,12 +106,32 @@ struct SolverOptions {
     double trShrinkFactor = 0.5;      // Factor to shrink trust region on rejection (less aggressive)
     double trGrowFactor = 2.0;        // Factor to grow trust region on good steps
 
+    // Levenberg-Marquardt options
+    double lmInitialLambda = 1e-3;    // Initial damping parameter
+    double lmLambdaIncrease = 10.0;   // Factor to increase lambda on bad step
+    double lmLambdaDecrease = 0.1;    // Factor to decrease lambda on good step
+    double lmMinLambda = 1e-12;       // Minimum damping parameter
+    double lmMaxLambda = 1e8;         // Maximum damping parameter
+
     // Partitioned block solver options (variable-wise updates)
     bool usePartitionedSolver = true;     // Enable partitioned fallback for hard blocks
     int partitionedMaxIterations = 300;   // Max iterations for partitioned solver
     double partitionedRelaxation = 0.6;   // Relaxation factor for updates (0 < w <= 1)
     double partitionedMinDiagonal = 1e-12; // Minimum |dF_i/dx_i| to update variable
     int partitionedMinBlockSize = 4;      // Only use partitioned solver for blocks >= this size
+
+    // --- Solver pipeline configuration ---
+    // The pipeline defines which solvers to try and in what order.
+    // Default: Newton -> TrustRegion -> Partitioned (backward-compatible).
+    std::vector<SolverStrategy> solverPipeline = {
+        SolverStrategy::Newton,
+        SolverStrategy::TrustRegion,
+        SolverStrategy::LevenbergMarquardt,
+        SolverStrategy::Partitioned
+    };
+
+    /// Execution mode: sequential fallback or parallel (first-to-solve wins)
+    SolverPipelineMode pipelineMode = SolverPipelineMode::Sequential;
 
     // Performance and safety
     int timeoutSeconds = 0;           // Timeout in seconds (0 = none)
@@ -304,6 +369,73 @@ private:
 };
 
 // ============================================================================
+// Levenberg-Marquardt Solver
+// ============================================================================
+
+/**
+ * @brief Levenberg-Marquardt solver for nonlinear least-squares problems.
+ *
+ * Blends Gauss-Newton and gradient descent via an adaptive damping parameter λ.
+ * Particularly effective when the initial guess is far from the solution,
+ * because the damping prevents oversized steps that would cause divergence.
+ *
+ * Solves: min 0.5*||F(x)||^2  by iterating
+ *   (J^T J + λ I) dx = -J^T F
+ *
+ * - When λ is large → gradient descent (safe, slow)
+ * - When λ is small → Gauss-Newton (fast, quadratic convergence near solution)
+ * - λ is adapted based on actual vs predicted reduction (gain ratio).
+ */
+class LevenbergMarquardtSolver : public NonLinearSolver {
+public:
+    SolverStatus solve(Problem& problem,
+                       Eigen::VectorXd& x_guess,
+                       const SolverOptions& options = SolverOptions(),
+                       SolverTrace* trace = nullptr,
+                       std::string* detailedError = nullptr) override;
+
+private:
+    /**
+     * @brief Compute automatic scaling factors for variables.
+     */
+    Eigen::VectorXd computeScalingFactors(const Eigen::VectorXd& x) const;
+};
+
+// ============================================================================
+// Solver Factory
+// ============================================================================
+
+/**
+ * @brief Create a NonLinearSolver instance for the given strategy.
+ *
+ * @param strategy The solver algorithm to instantiate
+ * @return A unique_ptr to the solver (never null)
+ */
+std::unique_ptr<NonLinearSolver> createSolver(SolverStrategy strategy);
+
+// ============================================================================
+// Cancellation Token (for parallel solver execution)
+// ============================================================================
+
+/**
+ * @brief Thread-safe cancellation token used to stop parallel solvers
+ *        once one of them has converged.
+ */
+class CancellationToken {
+public:
+    CancellationToken() : cancelled_(false) {}
+
+    /// Request cancellation (thread-safe).
+    void cancel() { cancelled_.store(true, std::memory_order_release); }
+
+    /// Check whether cancellation has been requested (thread-safe).
+    bool isCancelled() const { return cancelled_.load(std::memory_order_acquire); }
+
+private:
+    std::atomic<bool> cancelled_;
+};
+
+// ============================================================================
 // Main Solver (Orchestrator)
 // ============================================================================
 
@@ -344,27 +476,32 @@ struct SolveResult {
 
 /**
  * @brief Main solver class that orchestrates the solution of the entire system.
- * 
+ *
  * Iterates through blocks in topological order:
  * - For size-1 blocks: Attempts direct evaluation, falls back to Newton if implicit
- * - For larger blocks: Uses Newton solver
+ * - For larger blocks: Uses the configured solver pipeline (fallback chain or parallel)
+ *
+ * The solver pipeline is configured via SolverOptions::solverPipeline and
+ * SolverOptions::pipelineMode.  In **sequential** mode the solvers are tried
+ * one after another; in **parallel** mode they are launched concurrently and
+ * the first one to converge wins.
  */
 class Solver {
 public:
     /**
      * @brief Construct a solver with the given system.
-     * 
+     *
      * @param ir The intermediate representation of the equation system
      * @param analysis The structural analysis result
      * @param config CoolProp configuration
      */
-    Solver(const IR& ir, 
+    Solver(const IR& ir,
            const StructuralAnalysisResult& analysis,
            const CoolPropConfig& config = CoolPropConfig());
     
     /**
      * @brief Solve the complete system.
-     * 
+     *
      * @param options Solver options
      * @param enableTracing If true, record iteration traces for each block
      * @return SolveResult containing solution and status
@@ -394,18 +531,74 @@ private:
     const StructuralAnalysisResult& analysis_;
     
     /**
-     * @brief Solve a single block.
-     * 
+     * @brief Solve a single block using the configured solver pipeline.
+     *
+     * Dispatches to solveBlockSequential() or solveBlockParallel() depending
+     * on the pipeline mode.
+     *
      * @param blockIndex Index of the block to solve
-     * @param options Solver options
+     * @param options Solver options (includes pipeline config)
      * @param trace Optional trace for debugging
      * @param outErrorMessage Optional output for detailed error message
      * @return Status of solving this block
      */
-    SolverStatus solveBlock(size_t blockIndex, 
+    SolverStatus solveBlock(size_t blockIndex,
                            const SolverOptions& options,
                            SolverTrace* trace,
                            std::string* outErrorMessage = nullptr);
+
+    /**
+     * @brief Run a single NonLinearSolver strategy on a block.
+     *
+     * Handles the Partitioned strategy specially (it needs the structural
+     * matching information).  All other strategies go through the
+     * NonLinearSolver interface.
+     *
+     * @return SolverStatus from the chosen strategy.
+     */
+    SolverStatus runSolverStrategy(SolverStrategy strategy,
+                                   size_t blockIndex,
+                                   NonLinearSolver::Problem& problem,
+                                   BlockEvaluator& blockEval,
+                                   const std::vector<std::string>& varNames,
+                                   const std::map<std::string, double>& externalVars,
+                                   const std::map<std::string, std::string>& externalStringVars,
+                                   Eigen::VectorXd& x,
+                                   const SolverOptions& options,
+                                   SolverTrace* trace,
+                                   std::string* outErrorMessage);
+
+    /**
+     * @brief Sequential fallback: try each solver in the pipeline in order.
+     */
+    SolverStatus solveBlockSequential(size_t blockIndex,
+                                      NonLinearSolver::Problem& problem,
+                                      BlockEvaluator& blockEval,
+                                      const std::vector<std::string>& varNames,
+                                      const std::map<std::string, double>& externalVars,
+                                      const std::map<std::string, std::string>& externalStringVars,
+                                      Eigen::VectorXd& x,
+                                      const SolverOptions& options,
+                                      SolverTrace* trace,
+                                      std::string* outErrorMessage);
+
+    /**
+     * @brief Parallel execution: launch all pipeline solvers concurrently.
+     *
+     * Each solver runs in its own thread with a copy of the initial guess.
+     * The first solver to converge sets the solution; the others are
+     * (logically) abandoned.
+     */
+    SolverStatus solveBlockParallel(size_t blockIndex,
+                                    NonLinearSolver::Problem& problem,
+                                    BlockEvaluator& blockEval,
+                                    const std::vector<std::string>& varNames,
+                                    const std::map<std::string, double>& externalVars,
+                                    const std::map<std::string, std::string>& externalStringVars,
+                                    Eigen::VectorXd& x,
+                                    const SolverOptions& options,
+                                    SolverTrace* trace,
+                                    std::string* outErrorMessage);
 
     /**
      * @brief Partitioned block solve using per-equation variable updates.
@@ -426,9 +619,9 @@ private:
     
     /**
      * @brief Try to solve an explicit block directly.
-     * 
+     *
      * For size-1 blocks where the equation can be rearranged to x = expr(other_vars).
-     * 
+     *
      * @return true if solved directly, false if Newton iteration needed
      */
     bool tryExplicitSolve(size_t blockIndex);

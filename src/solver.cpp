@@ -8,6 +8,10 @@
 #include <cctype>
 #include <csignal>
 #include <atomic>
+#include <thread>
+#include <mutex>
+#include <future>
+#include <memory>
 
 #ifdef __unix__
 #include <unistd.h>
@@ -101,6 +105,58 @@ std::string categoryToString(ErrorCategory category) {
 }
 
 // ============================================================================
+// Solver Strategy Utilities
+// ============================================================================
+
+std::string strategyToString(SolverStrategy strategy) {
+    switch (strategy) {
+        case SolverStrategy::Newton:            return "Newton";
+        case SolverStrategy::TrustRegion:       return "TrustRegion";
+        case SolverStrategy::LevenbergMarquardt: return "LevenbergMarquardt";
+        case SolverStrategy::Partitioned:       return "Partitioned";
+        default:                                return "Unknown";
+    }
+}
+
+bool parseStrategy(const std::string& name, SolverStrategy& out) {
+    std::string lower = name;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lower == "newton")                          { out = SolverStrategy::Newton; return true; }
+    if (lower == "trustregion" || lower == "trust_region" || lower == "tr")
+                                                    { out = SolverStrategy::TrustRegion; return true; }
+    if (lower == "levenbergmarquardt" || lower == "levenberg_marquardt" || lower == "lm")
+                                                    { out = SolverStrategy::LevenbergMarquardt; return true; }
+    if (lower == "partitioned")                     { out = SolverStrategy::Partitioned; return true; }
+    return false;
+}
+
+std::string pipelineModeToString(SolverPipelineMode mode) {
+    switch (mode) {
+        case SolverPipelineMode::Sequential: return "Sequential";
+        case SolverPipelineMode::Parallel:   return "Parallel";
+        default:                             return "Unknown";
+    }
+}
+
+std::unique_ptr<NonLinearSolver> createSolver(SolverStrategy strategy) {
+    switch (strategy) {
+        case SolverStrategy::Newton:
+            return std::make_unique<NewtonSolver>();
+        case SolverStrategy::TrustRegion:
+            return std::make_unique<TrustRegionSolver>();
+        case SolverStrategy::LevenbergMarquardt:
+            return std::make_unique<LevenbergMarquardtSolver>();
+        case SolverStrategy::Partitioned:
+            // Partitioned is handled specially by the orchestrator (needs structural info).
+            // Return nullptr; the caller must handle this case.
+            return nullptr;
+        default:
+            return nullptr;
+    }
+}
+
+// ============================================================================
 // Config file loading
 // ============================================================================
 
@@ -155,6 +211,37 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             else if (key == "partitionedMinDiagonal") options.partitionedMinDiagonal = std::stod(val);
             else if (key == "partitionedMinBlockSize") options.partitionedMinBlockSize = std::stoi(val);
             else if (key == "timeoutSeconds") options.timeoutSeconds = std::stoi(val);
+            // Levenberg-Marquardt options
+            else if (key == "lmInitialLambda") options.lmInitialLambda = std::stod(val);
+            else if (key == "lmLambdaIncrease") options.lmLambdaIncrease = std::stod(val);
+            else if (key == "lmLambdaDecrease") options.lmLambdaDecrease = std::stod(val);
+            else if (key == "lmMinLambda") options.lmMinLambda = std::stod(val);
+            else if (key == "lmMaxLambda") options.lmMaxLambda = std::stod(val);
+            // Solver pipeline configuration
+            else if (key == "solverPipeline") {
+                // Parse comma-separated list of solver names
+                // e.g. "Newton, TrustRegion, LM"
+                options.solverPipeline.clear();
+                std::istringstream ss(val);
+                std::string token;
+                while (std::getline(ss, token, ',')) {
+                    token = trim(token);
+                    SolverStrategy strat;
+                    if (parseStrategy(token, strat)) {
+                        options.solverPipeline.push_back(strat);
+                    }
+                }
+            }
+            else if (key == "pipelineMode") {
+                std::string lower = val;
+                std::transform(lower.begin(), lower.end(), lower.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (lower == "parallel") {
+                    options.pipelineMode = SolverPipelineMode::Parallel;
+                } else {
+                    options.pipelineMode = SolverPipelineMode::Sequential;
+                }
+            }
         } catch (...) {
             // Ignore malformed values
         }
@@ -911,6 +998,246 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
 }
 
 // ============================================================================
+// Levenberg-Marquardt Solver Implementation
+// ============================================================================
+
+Eigen::VectorXd LevenbergMarquardtSolver::computeScalingFactors(const Eigen::VectorXd& x) const {
+    const int n = x.size();
+    Eigen::VectorXd scale(n);
+    for (int i = 0; i < n; ++i) {
+        double xi = std::abs(x(i));
+        if (xi < 1.0) {
+            scale(i) = 1.0;
+        } else {
+            double log10x = std::floor(std::log10(xi));
+            scale(i) = std::pow(10.0, log10x);
+            scale(i) = std::max(1e-6, std::min(scale(i), 1e6));
+        }
+    }
+    return scale;
+}
+
+SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
+                                              Eigen::VectorXd& x,
+                                              const SolverOptions& options,
+                                              SolverTrace* trace,
+                                              std::string* detailedError) {
+    auto startTime = std::chrono::high_resolution_clock::now();
+
+    if (trace) {
+        if (trace->solverType.empty())
+            trace->solverType = "LevenbergMarquardt";
+        else if (trace->solverType.find("LevenbergMarquardt") == std::string::npos)
+            trace->solverType += " -> LevenbergMarquardt";
+    }
+
+    const int n = problem.size;
+    if (n <= 0 || x.size() != n) {
+        return SolverStatus::InvalidInput;
+    }
+
+    // Compute scaling factors
+    Eigen::VectorXd scale;
+    if (options.enableScaling) {
+        scale = computeScalingFactors(x);
+    } else {
+        scale = Eigen::VectorXd::Ones(n);
+    }
+
+    // Work in scaled coordinates: y = x ./ scale
+    Eigen::VectorXd y = x.cwiseQuotient(scale);
+
+    Eigen::VectorXd F(n);
+    Eigen::MatrixXd J(n, n);
+    Eigen::MatrixXd J_unscaled(n, n);
+    Eigen::VectorXd x_unscaled(n);
+
+    double lambda = options.lmInitialLambda;
+    double initialResidualNorm = 0.0;
+
+    for (int iter = 0; iter < options.maxIterations; ++iter) {
+        if (TimeoutGuard::hasTimedOut()) {
+            if (detailedError) *detailedError = "LM solver timed out";
+            x = y.cwiseProduct(scale);
+            return SolverStatus::EvaluationError;
+        }
+
+        // Evaluate F(x) and J(x)
+        try {
+            x_unscaled = y.cwiseProduct(scale);
+            problem.evaluate(x_unscaled, F, J_unscaled, true);
+            // Scale Jacobian: dF/dy = J_unscaled * diag(scale)
+            J = J_unscaled * scale.asDiagonal();
+        } catch (const std::exception& e) {
+            if (options.verbose) {
+                std::cerr << "LM: Evaluation failed at iter " << iter
+                          << ": " << e.what() << std::endl;
+            }
+            throw;
+        }
+
+        double residualNorm = F.lpNorm<Eigen::Infinity>();
+        if (iter == 0) initialResidualNorm = residualNorm;
+
+        if (options.verbose) {
+            std::cout << "LM iter " << iter << ": ||F||_inf = " << residualNorm
+                      << ", lambda = " << lambda << std::endl;
+        }
+
+        // Record trace
+        if (trace) {
+            SolverTrace::Iteration traceIter;
+            traceIter.iter = iter;
+            traceIter.residualNorm = residualNorm;
+            traceIter.stepNorm = 0.0;
+            traceIter.lambda = lambda;
+            Eigen::VectorXd xu = y.cwiseProduct(scale);
+            traceIter.x = std::vector<double>(xu.data(), xu.data() + xu.size());
+            traceIter.residuals = std::vector<double>(F.data(), F.data() + F.size());
+            trace->iterations.push_back(traceIter);
+        }
+
+        // Check convergence
+        if (residualNorm < options.tolerance) {
+            if (trace) {
+                trace->finalStatus = SolverStatus::Success;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            x = y.cwiseProduct(scale);
+            return SolverStatus::Success;
+        }
+        if (initialResidualNorm > 0 &&
+            residualNorm / initialResidualNorm < options.relativeTolerance) {
+            if (trace) {
+                trace->finalStatus = SolverStatus::Success;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            x = y.cwiseProduct(scale);
+            return SolverStatus::Success;
+        }
+
+        // Solve (J^T J + lambda * I) dy = -J^T F
+        Eigen::MatrixXd JtJ = J.transpose() * J;
+        Eigen::VectorXd JtF = J.transpose() * F;
+
+        // Add damping: (J^T J + lambda * diag(J^T J)) dy = -J^T F
+        // Using the diagonal scaling variant (Marquardt's improvement)
+        Eigen::VectorXd diag_JtJ = JtJ.diagonal();
+        for (int i = 0; i < n; ++i) {
+            JtJ(i, i) += lambda * std::max(diag_JtJ(i), 1e-6);
+        }
+
+        Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(JtJ);
+        Eigen::VectorXd dy = qr.solve(-JtF);
+
+        if (!dy.allFinite()) {
+            if (options.verbose) {
+                std::cerr << "LM: Invalid step (NaN/Inf), increasing lambda" << std::endl;
+            }
+            lambda *= options.lmLambdaIncrease;
+            if (lambda > options.lmMaxLambda) {
+                if (trace) {
+                    trace->finalStatus = SolverStatus::SingularJacobian;
+                    trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+                }
+                x = y.cwiseProduct(scale);
+                return SolverStatus::SingularJacobian;
+            }
+            continue;
+        }
+
+        // Evaluate at trial point
+        Eigen::VectorXd y_new = y + dy;
+        Eigen::VectorXd F_new(n);
+        Eigen::MatrixXd J_dummy;
+        double phi_old = 0.5 * F.squaredNorm();
+        double phi_new;
+
+        try {
+            Eigen::VectorXd x_trial = y_new.cwiseProduct(scale);
+            problem.evaluate(x_trial, F_new, J_dummy, false);
+            phi_new = 0.5 * F_new.squaredNorm();
+        } catch (...) {
+            // Trial point failed; increase damping and retry
+            lambda *= options.lmLambdaIncrease;
+            if (lambda > options.lmMaxLambda) {
+                if (trace) {
+                    trace->finalStatus = SolverStatus::EvaluationError;
+                    trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+                }
+                x = y.cwiseProduct(scale);
+                return SolverStatus::EvaluationError;
+            }
+            continue;
+        }
+
+        // Compute gain ratio: actual reduction / predicted reduction
+        // For LM with (J^T J + lambda*D) dy = -J^T F, the predicted reduction is:
+        //   predicted = 0.5 * dy^T * (lambda * D * dy - J^T * F)
+        // where D = diag(max(diag(J^T J), 1e-6))
+        Eigen::VectorXd D = diag_JtJ.cwiseMax(1e-6);
+        double predicted = 0.5 * dy.dot(lambda * D.cwiseProduct(dy) - JtF);
+        double actual = phi_old - phi_new;
+
+        double rho = (std::abs(predicted) > 1e-30) ? actual / predicted : 0.0;
+
+        if (options.verbose) {
+            std::cout << "LM: rho = " << rho << ", actual = " << actual
+                      << ", predicted = " << predicted << std::endl;
+        }
+
+        if (actual > 0) {
+            // Accept step
+            y = y_new;
+
+            double stepNorm = dy.lpNorm<Eigen::Infinity>();
+            if (trace && !trace->iterations.empty()) {
+                trace->iterations.back().stepNorm = stepNorm;
+            }
+
+            // Decrease lambda (move towards Gauss-Newton)
+            if (rho > 0.75) {
+                lambda = std::max(lambda * options.lmLambdaDecrease, options.lmMinLambda);
+            } else if (rho < 0.25) {
+                lambda = std::min(lambda * options.lmLambdaIncrease, options.lmMaxLambda);
+            }
+
+            // Check for tiny step
+            if (stepNorm < options.stepTolerance) {
+                double newNorm = F_new.lpNorm<Eigen::Infinity>();
+                if (newNorm < options.tolerance * 100 || newNorm < options.lsRelaxedTolerance) {
+                    if (trace) {
+                        trace->finalStatus = SolverStatus::Success;
+                        trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+                    }
+                    x = y.cwiseProduct(scale);
+                    return SolverStatus::Success;
+                }
+            }
+        } else {
+            // Reject step; increase lambda (move towards gradient descent)
+            lambda = std::min(lambda * options.lmLambdaIncrease, options.lmMaxLambda);
+            if (options.verbose) {
+                std::cout << "LM: Rejecting step, lambda -> " << lambda << std::endl;
+            }
+        }
+    }
+
+    if (trace) {
+        trace->finalStatus = SolverStatus::MaxIterations;
+        trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+    }
+    if (detailedError) {
+        std::ostringstream ss;
+        ss << "Levenberg-Marquardt: Max iterations (" << options.maxIterations
+           << ") reached without convergence.";
+        *detailedError = ss.str();
+    }
+    x = y.cwiseProduct(scale);
+    return SolverStatus::MaxIterations;
+}
+
+// ============================================================================
 // Solver (Orchestrator) Implementation
 // ============================================================================
 
@@ -1097,86 +1424,20 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         }
     };
     
-    // Hybrid solver strategy:
-    // 1. Try Newton with line search first (fast when it works)
-    // 2. If Newton fails with LineSearchFailed, fall back to Trust Region (more robust)
+    // Dispatch to the configured pipeline mode
     SolverStatus status;
-    std::string solverError;
-    
-    // First attempt: Newton solver
-    if (options.verbose) {
-        std::cout << "Block " << blockIndex << " (size " << n << "): Trying Newton solver" << std::endl;
-    }
-    
-    try {
-        NewtonSolver newton;
-        status = newton.solve(problem, x, options, trace, &solverError);
-    } catch (const std::exception& e) {
-        status = SolverStatus::EvaluationError;
-        solverError = e.what();
-    }
-    
-    // Second attempt: If Newton failed with LineSearchFailed and trust region is enabled, try Trust Region
-    if ((status == SolverStatus::LineSearchFailed || status == SolverStatus::MaxIterations)
-        && options.useTrustRegion && n > 2) {
-        if (options.verbose) {
-            std::cout << "Block " << blockIndex << ": Newton failed (" << statusToString(status)
-                      << "), falling back to Trust Region" << std::endl;
-        }
-        
-        // Reset initial guess from current state (might have been modified by Newton)
-        for (size_t i = 0; i < n; ++i) {
-            x[i] = evaluator_.getVariableValue(varNames[i]);
-        }
-        
-        // Use more iterations for trust region
-        SolverOptions trOptions = options;
-        if (trOptions.maxIterations < 500) {
-            trOptions.maxIterations = 500;
-        }
-        
-        try {
-            TrustRegionSolver trSolver;
-            status = trSolver.solve(problem, x, trOptions, trace, &solverError);
-        } catch (const std::exception& e) {
-            status = SolverStatus::EvaluationError;
-            solverError = e.what();
-        }
-    }
-    
-    
-    // Third attempt: Partitioned block updates (variable-wise) as a robust fallback
-    if ((status == SolverStatus::LineSearchFailed || status == SolverStatus::MaxIterations ||
-         status == SolverStatus::SingularJacobian) &&
-        options.usePartitionedSolver && n >= static_cast<size_t>(options.partitionedMinBlockSize)) {
-        if (options.verbose) {
-            std::cout << "Block " << blockIndex << ": Newton/TrustRegion failed ("
-                      << statusToString(status) << "), trying partitioned solver" << std::endl;
-        }
-
-        // Reset initial guess from current state
-        for (size_t i = 0; i < n; ++i) {
-            x[i] = evaluator_.getVariableValue(varNames[i]);
-        }
-
-        SolverOptions partOptions = options;
-        if (partOptions.partitionedMaxIterations < options.maxIterations) {
-            partOptions.partitionedMaxIterations = options.maxIterations;
-        }
-
-        status = solveBlockPartitioned(blockIndex, blockEval, varNames, externalVars,
-                                       externalStringVars, x, partOptions, trace, &solverError);
+    if (options.pipelineMode == SolverPipelineMode::Parallel && options.solverPipeline.size() > 1) {
+        status = solveBlockParallel(blockIndex, problem, blockEval, varNames,
+                                    externalVars, externalStringVars, x, options,
+                                    trace, outErrorMessage);
+    } else {
+        status = solveBlockSequential(blockIndex, problem, blockEval, varNames,
+                                      externalVars, externalStringVars, x, options,
+                                      trace, outErrorMessage);
     }
 
-    if (!solverError.empty()) {
-        if (outErrorMessage) {
-            if (!outErrorMessage->empty()) *outErrorMessage += "\n";
-            *outErrorMessage += solverError;
-        }
-    }
-    
     // Update state with solution
-    if (status == SolverStatus::Success || 
+    if (status == SolverStatus::Success ||
         status == SolverStatus::MaxIterations) {
         for (size_t i = 0; i < n; ++i) {
             evaluator_.setVariableValue(varNames[i], x[i]);
@@ -1187,6 +1448,254 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
     }
     
     return status;
+}
+
+// ----------------------------------------------------------------------------
+// runSolverStrategy – run a single solver on a block
+// ----------------------------------------------------------------------------
+
+SolverStatus Solver::runSolverStrategy(SolverStrategy strategy,
+                                       size_t blockIndex,
+                                       NonLinearSolver::Problem& problem,
+                                       BlockEvaluator& blockEval,
+                                       const std::vector<std::string>& varNames,
+                                       const std::map<std::string, double>& externalVars,
+                                       const std::map<std::string, std::string>& externalStringVars,
+                                       Eigen::VectorXd& x,
+                                       const SolverOptions& options,
+                                       SolverTrace* trace,
+                                       std::string* outErrorMessage) {
+    const size_t n = varNames.size();
+
+    // Partitioned solver needs structural info – handle specially
+    if (strategy == SolverStrategy::Partitioned) {
+        if (n < static_cast<size_t>(options.partitionedMinBlockSize)) {
+            if (outErrorMessage) {
+                *outErrorMessage = "Partitioned solver skipped: block too small";
+            }
+            return SolverStatus::InvalidInput;
+        }
+        SolverOptions partOpts = options;
+        if (partOpts.partitionedMaxIterations < options.maxIterations) {
+            partOpts.partitionedMaxIterations = options.maxIterations;
+        }
+        return solveBlockPartitioned(blockIndex, blockEval, varNames,
+                                     externalVars, externalStringVars,
+                                     x, partOpts, trace, outErrorMessage);
+    }
+
+    // All other solvers go through the NonLinearSolver interface
+    auto solver = createSolver(strategy);
+    if (!solver) {
+        if (outErrorMessage) {
+            *outErrorMessage = "Unknown solver strategy: " + strategyToString(strategy);
+        }
+        return SolverStatus::InvalidInput;
+    }
+
+    // For trust-region and LM, allow more iterations
+    SolverOptions solverOpts = options;
+    if (strategy == SolverStrategy::TrustRegion && solverOpts.maxIterations < 500) {
+        solverOpts.maxIterations = 500;
+    }
+
+    try {
+        return solver->solve(problem, x, solverOpts, trace, outErrorMessage);
+    } catch (const std::exception& e) {
+        if (outErrorMessage) {
+            *outErrorMessage = e.what();
+        }
+        return SolverStatus::EvaluationError;
+    }
+}
+
+// ----------------------------------------------------------------------------
+// solveBlockSequential – fallback chain
+// ----------------------------------------------------------------------------
+
+SolverStatus Solver::solveBlockSequential(size_t blockIndex,
+                                          NonLinearSolver::Problem& problem,
+                                          BlockEvaluator& blockEval,
+                                          const std::vector<std::string>& varNames,
+                                          const std::map<std::string, double>& externalVars,
+                                          const std::map<std::string, std::string>& externalStringVars,
+                                          Eigen::VectorXd& x,
+                                          const SolverOptions& options,
+                                          SolverTrace* trace,
+                                          std::string* outErrorMessage) {
+    const size_t n = varNames.size();
+    SolverStatus status = SolverStatus::InvalidInput;
+    std::string lastError;
+
+    for (size_t idx = 0; idx < options.solverPipeline.size(); ++idx) {
+        SolverStrategy strategy = options.solverPipeline[idx];
+
+        if (options.verbose) {
+            std::cout << "Block " << blockIndex << " (size " << n
+                      << "): Trying " << strategyToString(strategy)
+                      << " [" << (idx + 1) << "/" << options.solverPipeline.size() << "]"
+                      << std::endl;
+        }
+
+        // Reset initial guess from evaluator state before each attempt
+        if (idx > 0) {
+            for (size_t i = 0; i < n; ++i) {
+                x[i] = evaluator_.getVariableValue(varNames[i]);
+            }
+        }
+
+        std::string solverError;
+        status = runSolverStrategy(strategy, blockIndex, problem, blockEval,
+                                   varNames, externalVars, externalStringVars,
+                                   x, options, trace, &solverError);
+
+        if (status == SolverStatus::Success) {
+            return status;
+        }
+
+        // Accumulate error messages
+        if (!solverError.empty()) {
+            if (!lastError.empty()) lastError += "\n";
+            lastError += "[" + strategyToString(strategy) + "] " + solverError;
+        }
+
+        if (options.verbose) {
+            std::cout << "Block " << blockIndex << ": "
+                      << strategyToString(strategy) << " failed ("
+                      << statusToString(status) << ")" << std::endl;
+        }
+    }
+
+    // All solvers failed
+    if (outErrorMessage && !lastError.empty()) {
+        if (!outErrorMessage->empty()) *outErrorMessage += "\n";
+        *outErrorMessage += lastError;
+    }
+    return status;
+}
+
+// ----------------------------------------------------------------------------
+// solveBlockParallel – concurrent first-to-solve-wins
+// ----------------------------------------------------------------------------
+
+SolverStatus Solver::solveBlockParallel(size_t blockIndex,
+                                        NonLinearSolver::Problem& problem,
+                                        BlockEvaluator& blockEval,
+                                        const std::vector<std::string>& varNames,
+                                        const std::map<std::string, double>& externalVars,
+                                        const std::map<std::string, std::string>& externalStringVars,
+                                        Eigen::VectorXd& x,
+                                        const SolverOptions& options,
+                                        SolverTrace* trace,
+                                        std::string* outErrorMessage) {
+    const size_t n = varNames.size();
+    const auto& pipeline = options.solverPipeline;
+
+    // Each thread gets its own copy of x and its own Problem lambda.
+    // The Problem lambda captures blockEval by reference, but BlockEvaluator::evaluate
+    // is const-safe (it doesn't mutate shared state), so concurrent calls are safe
+    // as long as each thread uses its own x vector.
+
+    struct ThreadResult {
+        SolverStatus status = SolverStatus::InvalidInput;
+        Eigen::VectorXd solution;
+        SolverTrace trace;
+        std::string error;
+        SolverStrategy strategy;
+    };
+
+    std::vector<std::future<ThreadResult>> futures;
+    futures.reserve(pipeline.size());
+
+    // Shared flag: set to true when any thread succeeds
+    auto winnerFound = std::make_shared<std::atomic<bool>>(false);
+
+    for (const auto& strategy : pipeline) {
+        // Each thread gets its own copy of x
+        Eigen::VectorXd x_copy = x;
+
+        // Each thread needs its own Problem with its own capture of x_copy
+        // We create a new problem lambda per thread
+        futures.push_back(std::async(std::launch::async,
+            [this, strategy, blockIndex, &blockEval, &varNames,
+             &externalVars, &externalStringVars, &options,
+             x_copy, winnerFound]() mutable -> ThreadResult {
+                ThreadResult result;
+                result.strategy = strategy;
+                result.solution = x_copy;
+
+                // Create a thread-local problem lambda
+                NonLinearSolver::Problem localProblem;
+                localProblem.size = static_cast<int>(varNames.size());
+                localProblem.evaluate = [&blockEval, &varNames, &externalVars, &externalStringVars]
+                                        (const Eigen::VectorXd& xv,
+                                         Eigen::VectorXd& F,
+                                         Eigen::MatrixXd& J,
+                                         bool computeJacobian) {
+                    std::vector<double> x_std(xv.data(), xv.data() + xv.size());
+                    auto evalResult = blockEval.evaluate(x_std, externalVars, externalStringVars);
+                    const size_t nEqs = evalResult.residuals.size();
+                    F.resize(nEqs);
+                    for (size_t i = 0; i < nEqs; ++i) F[i] = evalResult.residuals[i];
+                    if (computeJacobian) {
+                        J.resize(nEqs, xv.size());
+                        for (size_t i = 0; i < nEqs; ++i)
+                            for (size_t j = 0; j < evalResult.jacobian[i].size(); ++j)
+                                J(i, j) = evalResult.jacobian[i][j];
+                    }
+                };
+
+                result.status = runSolverStrategy(strategy, blockIndex, localProblem,
+                                                  blockEval, varNames,
+                                                  externalVars, externalStringVars,
+                                                  result.solution, options,
+                                                  &result.trace, &result.error);
+
+                if (result.status == SolverStatus::Success) {
+                    winnerFound->store(true, std::memory_order_release);
+                }
+                return result;
+            }));
+    }
+
+    // Collect results – pick the first successful one
+    SolverStatus bestStatus = SolverStatus::InvalidInput;
+    std::string allErrors;
+
+    for (auto& fut : futures) {
+        ThreadResult result = fut.get();
+
+        if (result.status == SolverStatus::Success && bestStatus != SolverStatus::Success) {
+            bestStatus = SolverStatus::Success;
+            x = result.solution;
+            if (trace) *trace = result.trace;
+            if (options.verbose) {
+                std::cout << "Block " << blockIndex << ": "
+                          << strategyToString(result.strategy)
+                          << " won (parallel)" << std::endl;
+            }
+        } else if (bestStatus != SolverStatus::Success) {
+            // Keep the "best" failure (prefer MaxIterations over others)
+            if (result.status == SolverStatus::MaxIterations ||
+                bestStatus == SolverStatus::InvalidInput) {
+                bestStatus = result.status;
+                x = result.solution;
+                if (trace) *trace = result.trace;
+            }
+        }
+
+        if (!result.error.empty()) {
+            if (!allErrors.empty()) allErrors += "\n";
+            allErrors += "[" + strategyToString(result.strategy) + "] " + result.error;
+        }
+    }
+
+    if (bestStatus != SolverStatus::Success && outErrorMessage && !allErrors.empty()) {
+        if (!outErrorMessage->empty()) *outErrorMessage += "\n";
+        *outErrorMessage += allErrors;
+    }
+
+    return bestStatus;
 }
 
 
