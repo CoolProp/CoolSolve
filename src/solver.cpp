@@ -47,6 +47,17 @@ std::string SolverTrace::toString() const {
     ss << "Iterations: " << iterations.size() << " | Status: "
        << statusToString(finalStatus) << "\n";
     ss << "Total time: " << totalTime.count() << " s\n";
+    
+    // Show tear variable names if available
+    if (!tearVarNames.empty()) {
+        ss << "Tear variables: ";
+        for (size_t i = 0; i < tearVarNames.size(); ++i) {
+            if (i > 0) ss << ", ";
+            ss << tearVarNames[i];
+        }
+        ss << "\n";
+    }
+    
     ss << std::setw(6) << "Iter"
        << std::setw(15) << "||F||"
        << std::setw(15) << "||dx||"
@@ -58,6 +69,10 @@ std::string SolverTrace::toString() const {
            << std::setw(15) << it.residualNorm
            << std::setw(15) << it.stepNorm
            << std::setw(12) << it.lambda << "\n";
+        // Print per-iteration detail (e.g. tear variable values, inner solver progress)
+        if (!it.detail.empty()) {
+            ss << it.detail;
+        }
     }
     return ss.str();
 }
@@ -208,6 +223,10 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             else if (key == "partitionedRelaxation") options.partitionedRelaxation = std::stod(val);
             else if (key == "partitionedMinDiagonal") options.partitionedMinDiagonal = std::stod(val);
             else if (key == "partitionedMinBlockSize") options.partitionedMinBlockSize = std::stoi(val);
+            else if (key == "enableTearing") options.enableTearing = parseBool(val);
+            else if (key == "tearingMaxIterations") options.tearingMaxIterations = std::stoi(val);
+            else if (key == "tearingMinBlockSize") options.tearingMinBlockSize = std::stoi(val);
+            else if (key == "tearingInnerIterations") options.tearingInnerIterations = std::stoi(val);
             else if (key == "timeoutSeconds") options.timeoutSeconds = std::stoi(val);
             // Levenberg-Marquardt options
             else if (key == "lmInitialLambda") options.lmInitialLambda = std::stod(val);
@@ -377,7 +396,10 @@ SolverStatus NewtonSolver::solve(Problem& problem,
     
     // Record solver type in trace for debugging
     if (trace) {
-        trace->solverType = "Newton";
+        if (trace->solverType.empty())
+            trace->solverType = "Newton";
+        else if (trace->solverType.find("Newton") == std::string::npos)
+            trace->solverType += " -> Newton";
     }
     
     const int n = problem.size;
@@ -695,7 +717,10 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
     
     // Record solver type in trace for debugging
     if (trace) {
-        trace->solverType = "TrustRegion";
+        if (trace->solverType.empty())
+            trace->solverType = "TrustRegion";
+        else if (trace->solverType.find("TrustRegion") == std::string::npos)
+            trace->solverType += " -> TrustRegion";
     }
     
     const int n = problem.size;
@@ -1437,6 +1462,340 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         }
         return SolverStatus::Success;
     }
+
+    // For size-1 implicit blocks, use a specialized 1D root-finding solver.
+    // Standard Newton with line search can fail when the initial guess is very
+    // far from the solution (e.g. enthalpy equations where default guess is 1
+    // but solution is ~1e5). This solver uses:
+    //   1. Newton steps with adaptive trust-region limiting
+    //   2. Sign-change detection → bisection fallback
+    //   3. Multiple starting point exploration if Newton diverges
+    if (n == 1) {
+        auto startTime1D = std::chrono::high_resolution_clock::now();
+        if (trace) {
+            if (trace->solverType.empty())
+                trace->solverType = "Newton1D";
+            else
+                trace->solverType += " -> Newton1D";
+        }
+        
+        // Lambda for evaluating the 1D residual+derivative
+        auto eval1D = [&](double xval) -> std::pair<double, double> {
+            std::vector<double> x_std = {xval};
+            auto er = blockEval.evaluate(x_std, externalVars, externalStringVars);
+            double f = er.residuals[0];
+            double j = (er.jacobian.size() > 0 && er.jacobian[0].size() > 0) ? er.jacobian[0][0] : 0.0;
+            return {f, j};
+        };
+        
+        // Phase 1: Try Newton with trust-region limiting
+        double xCur = x[0];
+        double radius = std::max(std::abs(xCur) * 2.0, 100.0);
+        bool converged = false;
+        
+        // Track bracket for bisection fallback
+        bool hasBracket = false;
+        double xLo = 0, xHi = 0, fLo = 0, fHi = 0;
+        
+        // Phase 1 uses fewer iterations since Phase 2 probing is more effective
+        // for problems where the initial guess is far from the solution
+        int phase1MaxIter = std::min(options.maxIterations, 50);
+        for (int iter = 0; iter < phase1MaxIter && !converged; ++iter) {
+            double f, j;
+            try {
+                auto [fv, jv] = eval1D(xCur);
+                f = fv; j = jv;
+            } catch (...) {
+                // Evaluation failed — try reducing x toward zero
+                xCur *= 0.5;
+                continue;
+            }
+            
+            if (trace) {
+                SolverTrace::Iteration traceIter;
+                traceIter.iter = iter;
+                traceIter.residualNorm = std::abs(f);
+                traceIter.stepNorm = 0.0;
+                traceIter.lambda = 1.0;
+                traceIter.x = {xCur};
+                traceIter.residuals = {f};
+                trace->iterations.push_back(traceIter);
+            }
+            
+            if (std::abs(f) < options.tolerance) {
+                converged = true;
+                break;
+            }
+            
+            // Update bracket
+            if (!hasBracket) {
+                if (iter == 0) {
+                    xLo = xCur; fLo = f;
+                } else {
+                    if (f * fLo < 0) {
+                        hasBracket = true;
+                        xHi = xCur; fHi = f;
+                        if (xLo > xHi) { std::swap(xLo, xHi); std::swap(fLo, fHi); }
+                    } else {
+                        xLo = xCur; fLo = f;
+                    }
+                }
+            } else {
+                // Keep bracket tight
+                if (f * fLo < 0) { xHi = xCur; fHi = f; }
+                else { xLo = xCur; fLo = f; }
+                if (xLo > xHi) { std::swap(xLo, xHi); std::swap(fLo, fHi); }
+            }
+            
+            double dx;
+            if (hasBracket) {
+                // Use bisection-Newton hybrid (Illinois/Dekker-style)
+                double xNewton = (std::abs(j) > 1e-30) ? xCur - f / j : (xLo + xHi) / 2.0;
+                // If Newton step is within bracket, use it; otherwise bisect
+                if (xNewton > xLo && xNewton < xHi) {
+                    dx = xNewton - xCur;
+                } else {
+                    dx = (xLo + xHi) / 2.0 - xCur;
+                }
+            } else if (std::abs(j) > 1e-30) {
+                // Newton step with trust-region clamping
+                dx = -f / j;
+                if (std::abs(dx) > radius) {
+                    dx = (dx > 0 ? 1.0 : -1.0) * radius;
+                }
+                // Grow trust region on each step
+                radius = std::max(radius, std::abs(dx) * 2.0);
+            } else {
+                // Zero derivative — explore by stepping
+                dx = radius;
+                radius *= 2.0;
+            }
+            
+            xCur += dx;
+            if (trace && !trace->iterations.empty()) {
+                trace->iterations.back().stepNorm = std::abs(dx);
+            }
+        }
+        
+        // Phase 2: If Newton didn't converge and no bracket found,
+        // try multiple starting points to find a sign change.
+        // Scan both positive and negative ranges on a log scale, plus
+        // intermediate values that may cross sign near poles.
+        if (!converged && !hasBracket) {
+            // Build comprehensive probe list
+            std::vector<double> probes;
+            // Dense scan around zero
+            for (double v : {0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0}) {
+                probes.push_back(v);
+                probes.push_back(-v);
+            }
+            // Log-spaced scan
+            for (double scale = 100; scale <= 1e8; scale *= 2.0) {
+                probes.push_back(scale);
+                probes.push_back(-scale);
+            }
+            // KEY STRATEGY: Probe near external variable values.
+            // Solutions of equations are typically at scales related to their inputs.
+            // Without this, narrow sign-change regions near poles are missed.
+            for (const auto& [name, val] : externalVars) {
+                if (!std::isfinite(val) || val == 0.0) continue;
+                double absVal = std::abs(val);
+                // Probe at, near, and around the external variable value
+                for (double frac : {0.5, 0.9, 0.95, 0.99, 1.0, 1.01, 1.05, 1.1, 1.5, 2.0}) {
+                    probes.push_back(val * frac);
+                    if (val > 0) probes.push_back(-val * frac); // Also try negative
+                }
+            }
+            
+            // Record all evaluated points with their residuals for bracket detection
+            struct ProbeResult { double x; double f; bool valid; };
+            std::vector<ProbeResult> results;
+            
+            double bestF = 1e30;
+            double bestX = xCur;
+
+            for (double probe : probes) {
+                try {
+                    auto [f, j] = eval1D(probe);
+                    if (!std::isfinite(f)) continue;
+                    results.push_back({probe, f, true});
+                    if (std::abs(f) < bestF) {
+                        bestF = std::abs(f);
+                        bestX = probe;
+                    }
+                    if (std::abs(f) < options.tolerance) {
+                        xCur = probe;
+                        converged = true;
+                        break;
+                    }
+                } catch (...) {
+                    results.push_back({probe, 0.0, false});
+                    continue;
+                }
+            }
+            
+            // Look for sign changes between any pair of valid probe results.
+            // Collect ALL sign changes, then pick the best one (smallest midpoint |f|)  
+            // to avoid locking onto poles instead of roots.
+            if (!converged) {
+                // Sort by x value
+                std::sort(results.begin(), results.end(), 
+                          [](const ProbeResult& a, const ProbeResult& b) { return a.x < b.x; });
+                
+                struct Bracket { double lo, flo, hi, fhi, midF; };
+                std::vector<Bracket> brackets;
+                
+                for (size_t i = 0; i + 1 < results.size(); ++i) {
+                    if (!results[i].valid || !results[i+1].valid) continue;
+                    if (results[i].f * results[i+1].f < 0) {
+                        // Found a sign change — evaluate midpoint to score it
+                        double lo = results[i].x, hi = results[i+1].x;
+                        double flo = results[i].f, fhi = results[i+1].f;
+                        double mid = (lo + hi) / 2.0;
+                        double fmid = 1e30;
+                        try {
+                            auto [fm, jm] = eval1D(mid);
+                            fmid = std::abs(fm);
+                        } catch (...) {
+                            fmid = 1e30; // Evaluation failed at midpoint — likely a pole
+                        }
+                        brackets.push_back({lo, flo, hi, fhi, fmid});
+                    }
+                }
+                
+                if (!brackets.empty()) {
+                    // Pick bracket with smallest midpoint |f| (most likely a root, not a pole)
+                    auto& best = *std::min_element(brackets.begin(), brackets.end(),
+                        [](const Bracket& a, const Bracket& b) { return a.midF < b.midF; });
+                    hasBracket = true;
+                    xLo = best.lo; fLo = best.flo;
+                    xHi = best.hi; fHi = best.fhi;
+                    if (xLo > xHi) { std::swap(xLo, xHi); std::swap(fLo, fHi); }
+                }
+            }
+            
+            if (!converged && !hasBracket) {
+                // Use the best point found as starting point for another Newton attempt
+                xCur = bestX;
+            }
+        }
+        
+        // Phase 3: If we have a bracket, use bisection + Newton
+        if (!converged && hasBracket) {
+            for (int iter = 0; iter < options.maxIterations && !converged; ++iter) {
+                double xMid = (xLo + xHi) / 2.0;
+                try {
+                    auto [f, j] = eval1D(xMid);
+                    
+                    if (trace) {
+                        SolverTrace::Iteration traceIter;
+                        traceIter.iter = 1000 + iter; // Distinguish bisection iterations
+                        traceIter.residualNorm = std::abs(f);
+                        traceIter.stepNorm = (xHi - xLo) / 2.0;
+                        traceIter.lambda = 1.0;
+                        traceIter.x = {xMid};
+                        traceIter.residuals = {f};
+                        traceIter.detail = "       [bisection] bracket: [" + std::to_string(xLo) + ", " + std::to_string(xHi) + "]\n";
+                        trace->iterations.push_back(traceIter);
+                    }
+                    
+                    if (std::abs(f) < options.tolerance) {
+                        xCur = xMid;
+                        converged = true;
+                        break;
+                    }
+                    
+                    // Try Newton step within bracket
+                    if (std::abs(j) > 1e-30) {
+                        double xNewton = xMid - f / j;
+                        if (xNewton > xLo && xNewton < xHi) {
+                            try {
+                                auto [fn, jn] = eval1D(xNewton);
+                                if (std::abs(fn) < std::abs(f)) {
+                                    if (fn * fLo < 0) { xHi = xNewton; fHi = fn; }
+                                    else { xLo = xNewton; fLo = fn; }
+                                    continue;
+                                }
+                            } catch (...) {}
+                        }
+                    }
+                    
+                    // Fall back to bisection
+                    if (f * fLo < 0) { xHi = xMid; fHi = f; }
+                    else { xLo = xMid; fLo = f; }
+                    
+                    if (xHi - xLo < options.stepTolerance) {
+                        xCur = (xLo + xHi) / 2.0;
+                        converged = true;
+                    }
+                } catch (...) {
+                    // Evaluation failed at midpoint — narrow bracket from the other side
+                    xHi = xMid;
+                }
+            }
+        }
+        
+        // Phase 4: If still not converged, try one more round of Newton from best position
+        if (!converged) {
+            for (int iter = 0; iter < 50 && !converged; ++iter) {
+                try {
+                    auto [f, j] = eval1D(xCur);
+                    if (std::abs(f) < options.tolerance) { converged = true; break; }
+                    if (std::abs(f) < options.lsRelaxedTolerance) { converged = true; break; }
+                    if (std::abs(j) < 1e-30) break;
+                    double dx = -f / j;
+                    double maxStep = std::max(std::abs(xCur) * 2.0, 1e6);
+                    if (std::abs(dx) > maxStep) dx = (dx > 0 ? 1.0 : -1.0) * maxStep;
+                    xCur += dx;
+                } catch (...) {
+                    break;
+                }
+            }
+        }
+        
+        if (converged) {
+            x[0] = xCur;
+            evaluator_.setVariableValue(varNames[0], xCur);
+            if (trace) {
+                trace->finalStatus = SolverStatus::Success;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime1D;
+            }
+            return SolverStatus::Success;
+        }
+        
+        // Newton1D failed — reset x and fall through to standard pipeline
+        x[0] = evaluator_.getVariableValue(varNames[0]);
+        if (trace) {
+            trace->iterations.clear(); // Clear Newton1D iterations for clean pipeline trace
+        }
+    }
+
+    if (options.enableTearing && n >= static_cast<size_t>(options.tearingMinBlockSize) && n > 1) {
+        Eigen::VectorXd x_saved = x;  // Save initial guess for fallback
+        SolverStatus tearStatus = solveBlockTearing(blockIndex, blockEval, varNames,
+                                                    externalVars, externalStringVars,
+                                                    x, options, trace, outErrorMessage);
+        if (tearStatus == SolverStatus::Success) {
+            for (size_t i = 0; i < n; ++i) {
+                evaluator_.setVariableValue(varNames[i], x[i]);
+                if (options.verbose) {
+                    std::cout << "  Updated " << varNames[i] << " = " << x[i] << std::endl;
+                }
+            }
+            return SolverStatus::Success;
+        }
+        // Tearing failed: restore initial guess and clear tearing iterations from trace
+        x = x_saved;
+        if (trace) {
+            // Keep the tearing info in the solver type but clear its iterations
+            // so the pipeline solver has a clean trace
+            trace->iterations.clear();
+        }
+        if (options.verbose) {
+            std::cout << "Block " << blockIndex << ": Tearing failed ("
+                      << statusToString(tearStatus) << "), trying pipeline" << std::endl;
+        }
+    }
     
     // Create problem for solver
     NonLinearSolver::Problem problem;
@@ -1920,6 +2279,287 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
         std::ostringstream ss;
         ss << "Partitioned solver: Max iterations (" << options.partitionedMaxIterations
            << ") reached without convergence.";
+        *outErrorMessage = ss.str();
+    }
+    return SolverStatus::MaxIterations;
+}
+
+// ----------------------------------------------------------------------------
+// solveBlockTearing – structural tearing (FVS + acyclic solve + Newton on tears)
+// ----------------------------------------------------------------------------
+
+SolverStatus Solver::solveBlockTearing(size_t blockIndex,
+                                       BlockEvaluator& blockEval,
+                                       const std::vector<std::string>& varNames,
+                                       const std::map<std::string, double>& externalVars,
+                                       const std::map<std::string, std::string>& externalStringVars,
+                                       Eigen::VectorXd& x,
+                                       const SolverOptions& options,
+                                       SolverTrace* trace,
+                                       std::string* outErrorMessage) {
+    auto startTime = std::chrono::high_resolution_clock::now();
+    if (trace) {
+        if (trace->solverType.empty()) {
+            trace->solverType = "Tearing";
+        } else if (trace->solverType.find("Tearing") == std::string::npos) {
+            trace->solverType += " -> Tearing";
+        }
+        trace->varNames = varNames;
+    }
+
+    const size_t n = varNames.size();
+    if (blockIndex >= analysis_.blocks.size()) {
+        if (outErrorMessage) *outErrorMessage = "Invalid block index for tearing";
+        return SolverStatus::InvalidInput;
+    }
+    const Block& block = analysis_.blocks[blockIndex];
+    BlockTearSetResult tearResult = computeBlockTearSet(block, ir_);
+    if (tearResult.tearVarNames.empty()) {
+        if (outErrorMessage) *outErrorMessage = "Tear set empty (block too small or no cycles)";
+        return SolverStatus::InvalidInput;
+    }
+
+    // Store tear variable names in trace
+    if (trace) {
+        trace->tearVarNames = tearResult.tearVarNames;
+    }
+
+    auto caseInsensitiveEqual = [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (std::tolower(static_cast<unsigned char>(a[i])) !=
+                std::tolower(static_cast<unsigned char>(b[i]))) return false;
+        }
+        return true;
+    };
+
+    std::vector<size_t> tearVarIndices;
+    for (const auto& tv : tearResult.tearVarNames) {
+        for (size_t i = 0; i < n; ++i) {
+            if (caseInsensitiveEqual(varNames[i], tv)) {
+                tearVarIndices.push_back(i);
+                break;
+            }
+        }
+    }
+    const auto& equationIds = blockEval.getEquationIds();
+    std::vector<size_t> tearEqLocalIndices;
+    for (int globalEqId : tearResult.tearEquationIds) {
+        for (size_t eq = 0; eq < equationIds.size(); ++eq) {
+            if (equationIds[eq] == globalEqId) {
+                tearEqLocalIndices.push_back(eq);
+                break;
+            }
+        }
+    }
+    if (tearEqLocalIndices.size() != tearVarIndices.size()) {
+        if (outErrorMessage) *outErrorMessage = "Tear set size mismatch";
+        return SolverStatus::InvalidInput;
+    }
+
+    std::vector<size_t> nonTearEqLocalIndices;
+    for (int globalEqId : tearResult.topoOrderNonTearEqIds) {
+        for (size_t eq = 0; eq < equationIds.size(); ++eq) {
+            if (equationIds[eq] == globalEqId) {
+                nonTearEqLocalIndices.push_back(eq);
+                break;
+            }
+        }
+    }
+
+    std::map<std::string, size_t, CaseInsensitiveLess> varNameToIndex;
+    for (size_t i = 0; i < n; ++i) varNameToIndex[varNames[i]] = i;
+
+    const size_t nTear = tearVarIndices.size();
+    const int maxOuter = options.tearingMaxIterations;
+    const int maxInner = options.tearingInnerIterations;
+
+    if (options.verbose) {
+        std::cout << "Tearing: block " << blockIndex << " tear vars=" << nTear
+                  << " acyclic eqs=" << nonTearEqLocalIndices.size() << std::endl;
+        for (size_t i = 0; i < tearResult.tearVarNames.size(); ++i) {
+            std::cout << "  tear[" << i << "] = " << tearResult.tearVarNames[i]
+                      << " (x[" << tearVarIndices[i] << "])" << std::endl;
+        }
+    }
+
+    for (int outer = 0; outer < maxOuter; ++outer) {
+        std::vector<double> x_std(x.data(), x.data() + x.size());
+        EvaluationResult evalResult;
+        try {
+            evalResult = blockEval.evaluate(x_std, externalVars, externalStringVars);
+        } catch (const std::exception& e) {
+            if (outErrorMessage) *outErrorMessage = std::string("Tearing evaluation failed: ") + e.what();
+            if (trace) {
+                trace->finalStatus = SolverStatus::EvaluationError;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            return SolverStatus::EvaluationError;
+        }
+
+        Eigen::VectorXd F(static_cast<int>(evalResult.residuals.size()));
+        Eigen::MatrixXd J(F.size(), static_cast<int>(n));
+        for (size_t i = 0; i < evalResult.residuals.size(); ++i) F(static_cast<int>(i)) = evalResult.residuals[i];
+        for (size_t i = 0; i < evalResult.jacobian.size(); ++i) {
+            for (size_t j = 0; j < evalResult.jacobian[i].size(); ++j) {
+                J(static_cast<int>(i), static_cast<int>(j)) = evalResult.jacobian[i][j];
+            }
+        }
+
+        for (size_t k = 0; k < nonTearEqLocalIndices.size(); ++k) {
+            size_t eq = nonTearEqLocalIndices[k];
+            size_t varIdx = eq;
+            for (int inner = 0; inner < maxInner; ++inner) {
+                x_std.assign(x.data(), x.data() + x.size());
+                EvaluationResult er;
+                try {
+                    er = blockEval.evaluate(x_std, externalVars, externalStringVars);
+                } catch (...) {
+                    break;
+                }
+                double fEq = er.residuals[eq];
+                double jEq = (eq < er.jacobian.size() && varIdx < er.jacobian[eq].size())
+                             ? er.jacobian[eq][varIdx] : 0.0;
+                if (std::abs(jEq) < 1e-14) break;
+                double step = -fEq / jEq;
+                if (!std::isfinite(step)) break;
+                x[varIdx] += step;
+                if (std::abs(fEq) < options.tolerance) break;
+            }
+        }
+
+        x_std.assign(x.data(), x.data() + x.size());
+        try {
+            evalResult = blockEval.evaluate(x_std, externalVars, externalStringVars);
+        } catch (const std::exception& e) {
+            if (outErrorMessage) *outErrorMessage = std::string("Tearing evaluation failed: ") + e.what();
+            if (trace) {
+                trace->finalStatus = SolverStatus::EvaluationError;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            return SolverStatus::EvaluationError;
+        }
+        for (size_t i = 0; i < evalResult.residuals.size(); ++i) F(static_cast<int>(i)) = evalResult.residuals[i];
+        for (size_t i = 0; i < evalResult.jacobian.size(); ++i) {
+            for (size_t j = 0; j < evalResult.jacobian[i].size(); ++j) {
+                J(static_cast<int>(i), static_cast<int>(j)) = evalResult.jacobian[i][j];
+            }
+        }
+
+        Eigen::VectorXd F_tear(static_cast<int>(nTear));
+        for (size_t i = 0; i < nTear; ++i) {
+            F_tear(static_cast<int>(i)) = F(static_cast<int>(tearEqLocalIndices[i]));
+        }
+
+        // Schur complement Jacobian: S = A - B D^{-1} C (total derivative of tear residuals w.r.t. tear vars)
+        // A = J_tear,tear, B = J_tear,acyclic, C = J_acyclic,tear, D = J_acyclic,acyclic (lower triangular)
+        const size_t nAcyclic = nonTearEqLocalIndices.size();
+        Eigen::MatrixXd S(static_cast<int>(nTear), static_cast<int>(nTear));
+        if (nAcyclic == 0) {
+            for (size_t i = 0; i < nTear; ++i) {
+                for (size_t j = 0; j < nTear; ++j) {
+                    S(static_cast<int>(i), static_cast<int>(j)) =
+                        J(static_cast<int>(tearEqLocalIndices[i]), static_cast<int>(tearVarIndices[j]));
+                }
+            }
+        } else {
+            Eigen::MatrixXd A(static_cast<int>(nTear), static_cast<int>(nTear));
+            Eigen::MatrixXd B(static_cast<int>(nTear), static_cast<int>(nAcyclic));
+            Eigen::MatrixXd C(static_cast<int>(nAcyclic), static_cast<int>(nTear));
+            Eigen::MatrixXd D(static_cast<int>(nAcyclic), static_cast<int>(nAcyclic));
+            for (size_t i = 0; i < nTear; ++i) {
+                for (size_t j = 0; j < nTear; ++j) {
+                    A(static_cast<int>(i), static_cast<int>(j)) =
+                        J(static_cast<int>(tearEqLocalIndices[i]), static_cast<int>(tearVarIndices[j]));
+                }
+                for (size_t j = 0; j < nAcyclic; ++j) {
+                    size_t acyclicVarIdx = nonTearEqLocalIndices[j];
+                    B(static_cast<int>(i), static_cast<int>(j)) =
+                        J(static_cast<int>(tearEqLocalIndices[i]), static_cast<int>(acyclicVarIdx));
+                }
+            }
+            for (size_t i = 0; i < nAcyclic; ++i) {
+                for (size_t j = 0; j < nTear; ++j) {
+                    C(static_cast<int>(i), static_cast<int>(j)) =
+                        J(static_cast<int>(nonTearEqLocalIndices[i]), static_cast<int>(tearVarIndices[j]));
+                }
+                for (size_t j = 0; j < nAcyclic; ++j) {
+                    D(static_cast<int>(i), static_cast<int>(j)) =
+                        J(static_cast<int>(nonTearEqLocalIndices[i]), static_cast<int>(nonTearEqLocalIndices[j]));
+                }
+            }
+            // V = D^{-1} C by forward substitution (D is lower triangular)
+            Eigen::MatrixXd V = D.triangularView<Eigen::Lower>().solve(C);
+            S = A - B * V;
+        }
+
+        double tearNorm = F_tear.lpNorm<Eigen::Infinity>();
+        double fullNorm = F.lpNorm<Eigen::Infinity>();
+        if (trace) {
+            SolverTrace::Iteration traceIter;
+            traceIter.iter = outer;
+            traceIter.residualNorm = tearNorm;
+            traceIter.stepNorm = 0.0;
+            traceIter.lambda = 1.0;
+            traceIter.x = std::vector<double>(x.data(), x.data() + x.size());
+            traceIter.residuals = std::vector<double>(F_tear.data(), F_tear.data() + F_tear.size());
+            // Build detail string with tear variable values and full residual norm
+            std::ostringstream detail;
+            detail << std::scientific << std::setprecision(6);
+            detail << "       Full ||F||_inf = " << fullNorm << "\n";
+            detail << "       Tear vars: ";
+            for (size_t i = 0; i < nTear; ++i) {
+                if (i > 0) detail << ", ";
+                detail << tearResult.tearVarNames[i] << "=" << x[tearVarIndices[i]];
+            }
+            detail << "\n";
+            detail << "       Tear residuals: ";
+            for (size_t i = 0; i < nTear; ++i) {
+                if (i > 0) detail << ", ";
+                detail << F_tear(static_cast<int>(i));
+            }
+            detail << "\n";
+            traceIter.detail = detail.str();
+            trace->iterations.push_back(traceIter);
+        }
+        if (options.verbose) {
+            std::cout << "Tearing outer " << outer << ": ||F_tear||_inf = " << tearNorm << std::endl;
+        }
+
+        if (tearNorm < options.tolerance) {
+            if (trace) {
+                trace->finalStatus = SolverStatus::Success;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            return SolverStatus::Success;
+        }
+
+        Eigen::VectorXd dx_tear;
+        Eigen::FullPivLU<Eigen::MatrixXd> lu(S);
+        if (!lu.isInvertible()) {
+            if (outErrorMessage) *outErrorMessage = "Tearing: singular Schur complement (tear system)";
+            if (trace) {
+                trace->finalStatus = SolverStatus::SingularJacobian;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            return SolverStatus::SingularJacobian;
+        }
+        dx_tear = lu.solve(-F_tear);
+        for (size_t i = 0; i < nTear; ++i) {
+            x[tearVarIndices[i]] += dx_tear(static_cast<int>(i));
+        }
+        if (trace && !trace->iterations.empty()) {
+            trace->iterations.back().stepNorm = dx_tear.lpNorm<Eigen::Infinity>();
+        }
+    }
+
+    if (trace) {
+        trace->finalStatus = SolverStatus::MaxIterations;
+        trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+    }
+    if (outErrorMessage) {
+        std::ostringstream ss;
+        ss << "Tearing: max iterations (" << options.tearingMaxIterations << ") reached.";
         *outErrorMessage = ss.str();
     }
     return SolverStatus::MaxIterations;

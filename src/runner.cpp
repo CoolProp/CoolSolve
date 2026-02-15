@@ -382,6 +382,37 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         writeFile(debugDir / "solver_trace.md", trace.str());
     }
 
+    // 13a. Tearing info (tear sets for each block, for debugging when enableTearing is used)
+    {
+        std::ostringstream tearOut;
+        tearOut << "# Tearing (Feedback Vertex Set)\n\n";
+        tearOut << "When `enableTearing = true`, blocks of size >= tearingMinBlockSize are solved by\n";
+        tearOut << "selecting a tear set (variables to iterate with Newton) and solving the acyclic part sequentially.\n\n";
+        int blocksWithTear = 0;
+        for (size_t bi = 0; bi < analysisResult_.blocks.size(); ++bi) {
+            const auto& block = analysisResult_.blocks[bi];
+            if (block.size() < 2) continue;
+            BlockTearSetResult tr = computeBlockTearSet(block, *ir_);
+            if (tr.tearVarNames.empty()) continue;
+            blocksWithTear++;
+            tearOut << "## Block " << bi << " (size " << block.size() << ")\n\n";
+            tearOut << "**Tear variables (" << tr.tearVarNames.size() << "):** ";
+            for (size_t i = 0; i < tr.tearVarNames.size(); ++i) {
+                if (i > 0) tearOut << ", ";
+                tearOut << tr.tearVarNames[i];
+            }
+            tearOut << "\n\n**Acyclic equation order (global IDs):** ";
+            for (size_t i = 0; i < tr.topoOrderNonTearEqIds.size(); ++i) {
+                if (i > 0) tearOut << ", ";
+                tearOut << tr.topoOrderNonTearEqIds[i];
+            }
+            tearOut << "\n\n";
+        }
+        if (blocksWithTear > 0) {
+            writeFile(debugDir / "tearing.md", tearOut.str());
+        }
+    }
+
     // 13b. Singular Jacobian diagnostics (when applicable)
     for (size_t i = 0; i < solveResult_.blockTraces.size(); ++i) {
         const auto& tr = solveResult_.blockTraces[i];
@@ -448,6 +479,9 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     index << "| [profiling.md](profiling.md) | Performance profiling and stats |\n";
     if (!solveResult_.blockTraces.empty()) {
         index << "| [solver_trace.md](solver_trace.md) | Detailed solver iteration trace |\n";
+    }
+    if (fs::exists(debugDir / "tearing.md")) {
+        index << "| [tearing.md](tearing.md) | Tear sets per block (when enableTearing is used) |\n";
     }
     if (!solveResult_.success && fs::exists(debugDir / "solver_singular_diagnostics.md")) {
         index << "| [solver_singular_diagnostics.md](solver_singular_diagnostics.md) | Jacobian diagnostics when singular |\n";

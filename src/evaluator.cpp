@@ -803,6 +803,33 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     double val1 = inputValues[0].value;
     double val2 = inputValues[1].value;
     
+    // Clamp quality inputs to [0, 1]: CoolProp returns -1 for subcooled and values >1 for
+    // superheated states, but when quality is used as *input* to another CoolProp call
+    // (e.g. enthalpy(Water, P=P, x=Q)), out-of-range values cause NaN results.
+    if (input1Param == CoolProp::iQ) {
+        if (val1 < 0.0) {
+            std::cerr << "Warning: quality input clamped from " << val1 << " to 0 (subcooled state) for " << outputStr << "(" << cpFluidName << ")" << std::endl;
+            val1 = 0.0;
+            // Zero out gradient since we're clamping (derivative is 0 at the boundary)
+            for (size_t i = 0; i < numVariables_; ++i) inputValues[0].gradient[i] = 0.0;
+        } else if (val1 > 1.0) {
+            std::cerr << "Warning: quality input clamped from " << val1 << " to 1 (superheated state) for " << outputStr << "(" << cpFluidName << ")" << std::endl;
+            val1 = 1.0;
+            for (size_t i = 0; i < numVariables_; ++i) inputValues[0].gradient[i] = 0.0;
+        }
+    }
+    if (input2Param == CoolProp::iQ) {
+        if (val2 < 0.0) {
+            std::cerr << "Warning: quality input clamped from " << val2 << " to 0 (subcooled state) for " << outputStr << "(" << cpFluidName << ")" << std::endl;
+            val2 = 0.0;
+            for (size_t i = 0; i < numVariables_; ++i) inputValues[1].gradient[i] = 0.0;
+        } else if (val2 > 1.0) {
+            std::cerr << "Warning: quality input clamped from " << val2 << " to 1 (superheated state) for " << outputStr << "(" << cpFluidName << ")" << std::endl;
+            val2 = 1.0;
+            for (size_t i = 0; i < numVariables_; ++i) inputValues[1].gradient[i] = 0.0;
+        }
+    }
+    
     UnitType type1 = UnitType::Dimensionless;
     UnitType type2 = UnitType::Dimensionless;
     
@@ -872,6 +899,20 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 << input1Str << "=" << val1 << ", "
                 << input2Str << "=" << val2;
             throw std::runtime_error(oss.str());
+        }
+        
+        // Clamp quality output: CoolProp returns -1 for subcooled, values > 1 for superheated.
+        // Clamp to [0, 1] so downstream equations using quality as input get valid values.
+        if (outputInfo.param == CoolProp::iQ) {
+            if (result < 0.0) {
+                std::cerr << "Warning: quality output clamped from " << result << " to 0 (subcooled state) for " << cpFluidName
+                          << " with inputs " << input1Str << "=" << val1 << ", " << input2Str << "=" << val2 << std::endl;
+                result = 0.0;
+            } else if (result > 1.0) {
+                std::cerr << "Warning: quality output clamped from " << result << " to 1 (superheated state) for " << cpFluidName
+                          << " with inputs " << input1Str << "=" << val1 << ", " << input2Str << "=" << val2 << std::endl;
+                result = 1.0;
+            }
         }
         
         if (outputInfo.unitType == UnitType::Temperature) result = UnitConverter::fromSI(result, outputInfo.unitType, units.temperature);

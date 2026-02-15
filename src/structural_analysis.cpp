@@ -206,6 +206,169 @@ std::vector<std::vector<int>> StructuralAnalyzer::buildDependencyGraph(
 }
 
 // ============================================================================
+// Tear Set Computation (Greedy Feedback Vertex Set)
+// ============================================================================
+
+namespace {
+
+// Build equation dependency graph for a single block (local indices 0..n-1).
+// eq i depends on eq j if the output variable of eq j appears in eq i.
+std::vector<std::vector<int>> buildBlockDependencyGraph(
+    const Block& block,
+    const IR& ir)
+{
+    const auto& equations = ir.getEquations();
+    const size_t n = block.equationIds.size();
+    std::vector<std::vector<int>> adj(n);
+
+    for (size_t i = 0; i < n; ++i) {
+        const int globalEqId = block.equationIds[i];
+        if (globalEqId < 0 || globalEqId >= static_cast<int>(equations.size())) continue;
+        const auto& varsInEq = equations[static_cast<size_t>(globalEqId)].variables;
+        for (size_t j = 0; j < n; ++j) {
+            if (i == j) continue;
+            if (varsInEq.count(block.variables[j])) {
+                adj[i].push_back(static_cast<int>(j));
+            }
+        }
+    }
+    return adj;
+}
+
+// Find any cycle in the graph (only among nodes where removed[i] is false).
+std::vector<int> findAnyCycle(const std::vector<std::vector<int>>& adj,
+                              const std::vector<bool>& removed) {
+    const int n = static_cast<int>(adj.size());
+    std::vector<int> color(n, 0);
+    std::vector<int> parent(n, -1);
+    std::vector<int> cycleNodes;
+
+    std::function<bool(int)> dfs = [&](int v) -> bool {
+        if (removed[v]) return false;
+        color[v] = 1;
+        for (int w : adj[v]) {
+            if (removed[w]) continue;
+            if (color[w] == 0) {
+                parent[w] = v;
+                if (dfs(w)) return true;
+            } else if (color[w] == 1) {
+                cycleNodes.push_back(w);
+                for (int u = v; u != w; u = parent[u]) {
+                    cycleNodes.push_back(u);
+                }
+                return true;
+            }
+        }
+        color[v] = 2;
+        return false;
+    };
+
+    for (int i = 0; i < n; ++i) {
+        if (removed[i] || color[i] != 0) continue;
+        if (dfs(i)) {
+            return cycleNodes;
+        }
+    }
+    return cycleNodes;
+}
+
+// Topological sort of non-removed nodes. adj[i] = equations i depends on (j in adj[i] => j before i).
+// inDegree[i] = count of (non-removed) deps of i. When we add v, decrement inDegree for i such that v in adj[i].
+void topologicalSort(
+    const std::vector<std::vector<int>>& adj,
+    const std::vector<bool>& removed,
+    std::vector<int>& order)
+{
+    const int n = static_cast<int>(adj.size());
+    std::vector<int> inDegree(n, 0);
+    std::vector<std::vector<int>> revAdj(n);
+    for (int i = 0; i < n; ++i) {
+        if (removed[i]) continue;
+        for (int j : adj[i]) {
+            if (!removed[j]) {
+                inDegree[i]++;
+                revAdj[j].push_back(i);
+            }
+        }
+    }
+    std::queue<int> q;
+    for (int i = 0; i < n; ++i) {
+        if (!removed[i] && inDegree[i] == 0) q.push(i);
+    }
+    order.clear();
+    while (!q.empty()) {
+        int v = q.front();
+        q.pop();
+        order.push_back(v);
+        for (int i : revAdj[v]) {
+            if (removed[i]) continue;
+            inDegree[i]--;
+            if (inDegree[i] == 0) q.push(i);
+        }
+    }
+}
+
+}  // namespace
+
+BlockTearSetResult computeBlockTearSet(const Block& block, const IR& ir) {
+    BlockTearSetResult result;
+    if (block.size() < 2) {
+        return result;
+    }
+
+    std::vector<std::vector<int>> adj = buildBlockDependencyGraph(block, ir);
+    const int n = static_cast<int>(adj.size());
+    std::vector<bool> removed(n, false);
+
+    // Greedy feedback vertex set: repeatedly find a cycle and remove the node with max out-degree in that cycle
+    while (true) {
+        std::vector<int> cycle = findAnyCycle(adj, removed);
+        if (cycle.empty()) break;
+        // Build active adjacency (excluding removed)
+        std::vector<std::vector<int>> activeAdj(n);
+        for (int i = 0; i < n; ++i) {
+            if (removed[i]) continue;
+            for (int j : adj[i]) {
+                if (!removed[j]) activeAdj[i].push_back(j);
+            }
+        }
+        std::vector<int> activeCycle;
+        for (int v : cycle) {
+            if (!removed[v]) activeCycle.push_back(v);
+        }
+        if (activeCycle.empty()) break;
+        int best = activeCycle[0];
+        int bestOut = static_cast<int>(activeAdj[best].size());
+        for (size_t i = 1; i < activeCycle.size(); ++i) {
+            int v = activeCycle[i];
+            int out = static_cast<int>(activeAdj[v].size());
+            if (out > bestOut) {
+                bestOut = out;
+                best = v;
+            }
+        }
+        removed[best] = true;
+    }
+
+    // Tear equations = removed nodes. Tear vars = their output variables.
+    for (int i = 0; i < n; ++i) {
+        if (removed[i]) {
+            result.tearEquationIds.push_back(block.equationIds[i]);
+            result.tearVarNames.push_back(block.variables[i]);
+        }
+    }
+
+    // Topological order of non-tear equations (global equation IDs)
+    std::vector<int> order;
+    topologicalSort(adj, removed, order);
+    for (int localIdx : order) {
+        result.topoOrderNonTearEqIds.push_back(block.equationIds[localIdx]);
+    }
+
+    return result;
+}
+
+// ============================================================================
 // Main Analysis Function
 // ============================================================================
 

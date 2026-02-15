@@ -87,6 +87,30 @@ private:
 };
 
 // ============================================================================
+// Tearing (feedback vertex set for algebraic loops)
+// ============================================================================
+
+/**
+ * Result of tear set computation for a single block.
+ * Used when enableTearing is true: tear variables are iterated with Newton;
+ * the acyclic part is solved in topoOrderNonTearEqIds order.
+ */
+struct BlockTearSetResult {
+    std::vector<std::string> tearVarNames;       // Variables to tear (output of tear equations)
+    std::vector<int> topoOrderNonTearEqIds;      // Global equation IDs in dependency order (acyclic)
+    std::vector<int> tearEquationIds;           // Global equation IDs that define tear variables
+};
+
+/**
+ * Compute a tear set for a block using a greedy feedback-vertex-set heuristic.
+ * Breaks the block's equation dependency graph so the remaining equations form a DAG.
+ * @param block Block (SCC) to tear
+ * @param ir IR for incidence (which variables appear in which equation)
+ * @return Tear set result, or empty tearVarNames if block size < 2
+ */
+BlockTearSetResult computeBlockTearSet(const Block& block, const IR& ir);
+
+// ============================================================================
 // Residuals File Parser
 // ============================================================================
 

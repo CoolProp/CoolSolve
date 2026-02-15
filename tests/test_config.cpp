@@ -51,3 +51,23 @@ TEST_CASE("Config file options are applied", "[config][solver]") {
     REQUIRE(options.tolerance == 1e-6);
     REQUIRE(options.verbose == true);
 }
+
+TEST_CASE("Tearing options are loaded from config", "[config][solver][tearing]") {
+    fs::path tmpDir = fs::temp_directory_path();
+    fs::path configPath = tmpDir / "coolsolve_test_tearing.conf";
+    std::ofstream f(configPath);
+    REQUIRE(f.is_open());
+    f << "enableTearing = true\n";
+    f << "tearingMaxIterations = 200\n";
+    f << "tearingMinBlockSize = 2\n";
+    f << "tearingInnerIterations = 8\n";
+    f.close();
+    coolsolve::SolverOptions options;
+    bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    fs::remove(configPath);
+    REQUIRE(loaded);
+    REQUIRE(options.enableTearing == true);
+    REQUIRE(options.tearingMaxIterations == 200);
+    REQUIRE(options.tearingMinBlockSize == 2);
+    REQUIRE(options.tearingInnerIterations == 8);
+}

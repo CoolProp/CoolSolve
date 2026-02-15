@@ -34,6 +34,7 @@ CoolSolve is a parser, structural analyzer, and equation evaluator for the EES (
   - Automatic temperature conversion (Celsius ↔ Kelvin)
   - **Configurable Solver Pipeline** with multiple algorithms and execution modes
   - **Explicit solve for size-1 blocks**: Bypasses Newton entirely for structurally explicit assignments (one residual evaluation, no Jacobian)
+  - **Newton1D root-finder** for size-1 implicit blocks with multi-probe exploration and bisection fallback
   - **Newton + Line Search** for fast convergence on well-conditioned blocks
   - **Trust-Region Dogleg** for robust convergence on stiff nonlinear blocks
   - **Levenberg-Marquardt** for improved convergence when initial guesses are poor
@@ -62,6 +63,7 @@ CoolSolve uses several file formats for input and verification:
 - **coolsolve.conf**: Optional solver configuration. Place in the **same folder** as your .eescode file (not in subfolders). Format: `key = value` per line; lines starting with `#` are comments. Only the options you set override the defaults (see `include/coolsolve/solver.h` for `SolverOptions`). An example with all keys and comments is in `examples/coolsolve.conf`. In debug mode (`-d`), this file is copied into the debug folder. Key pipeline options:
   - `solverPipeline`: Comma-separated list of solvers to try (e.g. `Newton, LM, TrustRegion, Partitioned`)
   - `pipelineMode`: `sequential` (default) or `parallel` (first-to-converge wins)
+  - `enableTearing`: When `true`, use structural tearing for blocks of size ≥ `tearingMinBlockSize`: a greedy feedback-vertex-set breaks the block into tear variables (solved with Newton) and an acyclic part (solved sequentially). Can help on stiff or ill-conditioned algebraic loops. See also `tearingMaxIterations`, `tearingMinBlockSize`, `tearingInnerIterations`.
 
 ## Building
 
@@ -331,14 +333,42 @@ The evaluator system provides numerical computation:
 
 ### 5b. Solver Pipeline
 
-CoolSolve uses a **configurable solver pipeline** for algebraic loops.  Multiple
-solver algorithms can be composed into a fallback chain (sequential mode) or
-launched concurrently (parallel mode, first-to-converge wins).
+CoolSolve solves each block using a strategy adapted to the block's size and
+structure, with several layers of fallback:
+
+```
+Block to solve
+  ├── Size 1, explicit?  →  Direct evaluation (no iteration)
+  ├── Size 1, implicit?  →  Newton1D solver (see below)
+  ├── Size ≥ tearingMinBlockSize & tearing enabled?
+  │     →  Structural tearing (FVS + acyclic solve + Newton on tears)
+  │     └── On failure: restore initial guess, fall through ↓
+  └── Solver pipeline (configurable fallback chain)
+        →  Newton → TrustRegion → LM → Partitioned  (default, sequential)
+```
 
 The pipeline is configured via `coolsolve.conf` (see below) or programmatically
 through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
 
 #### Available Solver Algorithms
+
+0. **Newton1D** (automatic for size-1 implicit blocks)
+   - Specialized root-finding solver for single-equation blocks where the
+     unknown cannot be isolated symbolically.
+   - **Phase 1 — Trust-region Newton**: Standard Newton steps with adaptive
+     radius limiting and sign-change detection for bisection fallback.
+   - **Phase 2 — Multi-probe exploration**: If Phase 1 stalls (e.g. initial
+     guess far from root), evaluates the residual at ~900 probe points:
+     log-spaced values across ±1e8, **plus values near every external
+     variable** (×0.5, ×0.9, …, ×2.0).  This finds narrow sign-change
+     regions even when they occur near poles in the residual.  All sign
+     changes are scored by midpoint residual to prefer true roots over poles.
+   - **Phase 3 — Bisection + Newton hybrid**: Once a bracket is found,
+     alternates bisection and Newton steps within the bracket for fast,
+     guaranteed convergence.
+   - **Phase 4 — Final Newton polish**: A short Newton loop from the best
+     point found, with relaxed tolerance acceptance.
+   - Falls through to the standard pipeline if all phases fail.
 
 1. **Newton + Line Search** (`Newton`)
    - Solves `J(x) * dx = -F(x)` and applies backtracking to ensure descent.
@@ -365,6 +395,18 @@ through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
      equation directly updates its matched variable, reducing coupling and
      improving stability in stiff or highly nonlinear loops.
    - Designed as a last-resort stabilizer when full Newton steps are unreliable.
+
+5. **Structural Tearing** (option `enableTearing`)
+   - When enabled, blocks of size ≥ `tearingMinBlockSize` are first solved via
+     **equation tearing**: a greedy **feedback vertex set (FVS)** is computed so
+     that removing the corresponding equations (and their output variables) makes
+     the block acyclic. The acyclic part is then solved sequentially (one
+     equation, one unknown per step), and the tear variables are updated with
+     Newton on the tear residuals. This reduces the simultaneous system to the
+     tear set only and can improve robustness on stiff or ill-conditioned loops.
+   - Config: `enableTearing = true`, `tearingMaxIterations`, `tearingMinBlockSize`,
+     `tearingInnerIterations`. In debug mode (`-d`), a `tearing.md` file lists
+     tear sets and acyclic order per block.
 
 #### Pipeline Modes
 

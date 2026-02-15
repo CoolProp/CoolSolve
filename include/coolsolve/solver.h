@@ -118,6 +118,14 @@ struct SolverOptions {
     double partitionedMinDiagonal = 1e-12; // Minimum |dF_i/dx_i| to update variable
     int partitionedMinBlockSize = 4;      // Only use partitioned solver for blocks >= this size
 
+    // --- Tearing (structural decomposition of algebraic loops) ---
+    // When enabled, blocks above tearingMinBlockSize are solved by selecting a tear set
+    // (feedback vertex set), solving the acyclic part sequentially, then Newton on tear residuals.
+    bool enableTearing = false;           // Use tearing for large blocks when true
+    int tearingMaxIterations = 100;      // Max outer (tear) Newton iterations
+    int tearingMinBlockSize = 3;         // Only apply tearing to blocks of this size or larger
+    int tearingInnerIterations = 5;      // Max 1D iterations per equation in acyclic solve
+
     // --- Solver pipeline configuration ---
     // The pipeline defines which solvers to try and in what order.
     // Default: Newton -> TrustRegion -> Partitioned (backward-compatible).
@@ -189,12 +197,18 @@ struct SolverTrace {
         double lambda;  // Line search step size
         std::vector<double> x;
         std::vector<double> residuals;
+        std::string detail;  // Optional per-iteration detail (e.g. inner solver info for tearing)
     };
     
     std::vector<Iteration> iterations;
     SolverStatus finalStatus;
     std::chrono::duration<double> totalTime;
-    std::string solverType;  // "Newton" or "TrustRegion" for debugging
+    std::string solverType;  // "Newton", "TrustRegion", "Tearing", etc.
+
+    // Variable names for enriched trace output (especially for tearing)
+    std::vector<std::string> varNames;
+    // Tear variable names (only populated for tearing solver)
+    std::vector<std::string> tearVarNames;
 
     // Singular Jacobian diagnostics (only populated when finalStatus == SingularJacobian)
     std::vector<double> singularJacobianF;           // Residual vector F at failure
@@ -623,6 +637,21 @@ private:
      * @return true if solved directly, false if Newton iteration needed
      */
     bool tryExplicitSolve(size_t blockIndex);
+
+    /**
+     * @brief Solve a block using structural tearing (feedback vertex set + acyclic solve + Newton on tears).
+     *
+     * When enableTearing is true and the block is large enough, this can be tried first.
+     */
+    SolverStatus solveBlockTearing(size_t blockIndex,
+                                   BlockEvaluator& blockEval,
+                                   const std::vector<std::string>& varNames,
+                                   const std::map<std::string, double>& externalVars,
+                                   const std::map<std::string, std::string>& externalStringVars,
+                                   Eigen::VectorXd& x,
+                                   const SolverOptions& options,
+                                   SolverTrace* trace,
+                                   std::string* outErrorMessage = nullptr);
 };
 
 // ============================================================================
