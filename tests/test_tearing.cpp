@@ -138,3 +138,39 @@ TEST_CASE("Solver without tearing still solves 2-equation cycle", "[tearing][sol
     SolveResult result = solver.solve(options, false);
     REQUIRE(result.success);
 }
+
+TEST_CASE("Tearing with Schur complement solves strongly-coupled nonlinear system", "[tearing][solver][integration]") {
+    // x + y = 10, y = x^2 - 6  ->  strongly coupled nonlinear block.
+    // The partial-derivative Jacobian (dF_tear/dx_tear only) would miss the
+    // coupling through y, making convergence slow or impossible.
+    // The Schur complement captures the total derivative and converges fast.
+    // Solutions: x ≈ 3.3166... (positive root of x^2 + x - 16 = 0)
+    std::string code = R"(
+        x + y = 10
+        y = x^2 - 6
+    )";
+    EESParser parser;
+    auto parseResult = parser.parse(code);
+    REQUIRE(parseResult.success);
+    IR ir = IR::fromAST(parseResult.program);
+    StructuralAnalysisResult analysis = StructuralAnalyzer::analyze(ir);
+    REQUIRE(analysis.success);
+
+    CoolPropConfig config;
+    Solver solver(ir, analysis, config);
+    solver.setGuess("x", 5.0);
+    solver.setGuess("y", 5.0);
+
+    SolverOptions options;
+    options.enableTearing = true;
+    options.tearingMinBlockSize = 2;
+    options.verbose = false;
+
+    SolveResult result = solver.solve(options, false);
+    REQUIRE(result.success);
+    double x = result.variables.at("x");
+    double y = result.variables.at("y");
+    // Check both equations are satisfied
+    REQUIRE(std::abs(x + y - 10) < 1e-6);
+    REQUIRE(std::abs(y - (x * x - 6)) < 1e-6);
+}
