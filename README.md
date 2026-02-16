@@ -408,13 +408,35 @@ through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
      `tearingInnerIterations`. In debug mode (`-d`), a `tearing.md` file lists
      tear sets and acyclic order per block.
 
+#### CoolProp Robustness
+
+Models operating near phase boundaries or critical points (e.g. supercritical
+CO2) can produce unphysical trial points during Newton iteration. Two layers of
+protection are applied:
+
+- **Input clamping**: Pressure, temperature, and density are clamped to
+  physically valid floors ($P \geq 1000$ Pa, $T \geq 50$ K,
+  $\rho \geq 10^{-4}$) before CoolProp calls, preventing the most common
+  crash-inducing inputs.
+- **Penalty-based error handling**: If CoolProp still throws, a finite penalty
+  value (10⁴) is returned instead of propagating the exception, keeping the
+  residual landscape smooth for TR and LM solvers.
+
 #### Pipeline Modes
 
-- **Sequential** (default): Solvers are tried one after another.  If the first
-  solver fails, the initial guess is reset and the next solver is tried.
+- **Sequential** (default): Solvers are tried one after another.  Each
+  subsequent solver **warm-starts** from the best solution found so far
+  (rather than resetting to the original initial guess).  If a full pipeline
+  pass reduces the residual by ≥5% without converging, the pipeline
+  **restarts** from the best point for up to 10 rounds.  The Partitioned
+  solver is automatically skipped in later rounds if it worsens the solution.
 - **Parallel**: All solvers are launched concurrently in separate threads.  The
   first solver to converge wins and its solution is used.  This can save time
   when it is unclear which algorithm will work best for a given block.
+
+On failure, the error message reports both the initial and best-achieved
+residual norms with the percentage of reduction, helping diagnose whether the
+problem is a poor initial guess or a genuinely unsolvable system.
 
 #### Default Pipeline
 
