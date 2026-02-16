@@ -7,6 +7,95 @@ import { api } from '../api/client';
 
 let languageRegistered = false;
 
+// Expose editor ref globally so Toolbar can invoke comment actions
+export let editorInstance: any = null;
+
+/**
+ * Toggle EES invisible comment: wraps/unwraps selected lines in { ... }
+ */
+export function toggleBraceComment(editor: any) {
+  if (!editor) return;
+  const model = editor.getModel();
+  const selection = editor.getSelection();
+  if (!model || !selection) return;
+
+  const startLine = selection.startLineNumber;
+  const endLine = selection.endLineNumber;
+  const firstLineText = model.getLineContent(startLine);
+  const lastLineText = model.getLineContent(endLine);
+
+  // Check if already wrapped: first line starts with { and last line ends with }
+  const trimFirst = firstLineText.trimStart();
+  const trimLast = lastLineText.trimEnd();
+  const isWrapped = trimFirst.startsWith('{') && trimLast.endsWith('}');
+
+  const edits: any[] = [];
+  if (isWrapped) {
+    // Unwrap: remove leading { from the first line and trailing } from the last line
+    if (startLine === endLine) {
+      // Single line: remove first { and last }
+      const openIdx = firstLineText.indexOf('{');
+      const closeIdx = lastLineText.lastIndexOf('}');
+      if (openIdx >= 0 && closeIdx > openIdx) {
+        const newText = firstLineText.substring(0, openIdx) + firstLineText.substring(openIdx + 1, closeIdx) + firstLineText.substring(closeIdx + 1);
+        edits.push({ range: { startLineNumber: startLine, startColumn: 1, endLineNumber: startLine, endColumn: firstLineText.length + 1 }, text: newText });
+      }
+    } else {
+      // Multi-line: remove { from first line, } from last line
+      const openIdx = firstLineText.indexOf('{');
+      if (openIdx >= 0) {
+        const newFirst = firstLineText.substring(0, openIdx) + firstLineText.substring(openIdx + 1);
+        edits.push({ range: { startLineNumber: startLine, startColumn: 1, endLineNumber: startLine, endColumn: firstLineText.length + 1 }, text: newFirst });
+      }
+      const closeIdx = lastLineText.lastIndexOf('}');
+      if (closeIdx >= 0) {
+        const newLast = lastLineText.substring(0, closeIdx) + lastLineText.substring(closeIdx + 1);
+        edits.push({ range: { startLineNumber: endLine, startColumn: 1, endLineNumber: endLine, endColumn: lastLineText.length + 1 }, text: newLast });
+      }
+    }
+  } else {
+    // Wrap: add { at start of first line, } at end of last line
+    edits.push({ range: { startLineNumber: startLine, startColumn: 1, endLineNumber: startLine, endColumn: 1 }, text: '{' });
+    const lastLen = model.getLineContent(endLine).length;
+    edits.push({ range: { startLineNumber: endLine, startColumn: lastLen + 1, endLineNumber: endLine, endColumn: lastLen + 1 }, text: '}' });
+  }
+
+  if (edits.length > 0) {
+    editor.executeEdits('comment-toggle', edits);
+  }
+}
+
+/**
+ * Toggle EES visible comment: wraps/unwraps selected text in "..."
+ */
+export function toggleQuoteComment(editor: any) {
+  if (!editor) return;
+  const model = editor.getModel();
+  const selection = editor.getSelection();
+  if (!model || !selection) return;
+
+  const selectedText = model.getValueInRange(selection);
+  if (!selectedText) return;
+
+  const trimmed = selectedText.trim();
+  const isWrapped = trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2;
+
+  if (isWrapped) {
+    // Unwrap: remove surrounding quotes
+    const newText = selectedText.replace(/^(\s*)"/, '$1').replace(/"(\s*)$/, '$1');
+    editor.executeEdits('comment-toggle', [{
+      range: selection,
+      text: newText,
+    }]);
+  } else {
+    // Wrap: add quotes around selected text
+    editor.executeEdits('comment-toggle', [{
+      range: selection,
+      text: '"' + selectedText + '"',
+    }]);
+  }
+}
+
 export default function CodeEditor() {
   const eescode = useModelStore((s) => s.eescode);
   const setEescode = useModelStore((s) => s.setEescode);
@@ -17,6 +106,7 @@ export default function CodeEditor() {
 
   const handleMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
+    editorInstance = editor;
 
     if (!languageRegistered) {
       registerEESLanguage(monaco);
@@ -28,6 +118,20 @@ export default function CodeEditor() {
     if (model) {
       monaco.editor.setModelLanguage(model, EES_LANGUAGE_ID);
     }
+
+    // Register comment toggle actions
+    editor.addAction({
+      id: 'ees.toggleBraceComment',
+      label: 'Toggle { } Comment',
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Slash],
+      run: () => toggleBraceComment(editor),
+    });
+    editor.addAction({
+      id: 'ees.toggleQuoteComment',
+      label: 'Toggle " " Comment',
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Slash],
+      run: () => toggleQuoteComment(editor),
+    });
 
     // Focus editor
     editor.focus();

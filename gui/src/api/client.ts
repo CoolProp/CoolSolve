@@ -63,6 +63,12 @@ export const api = {
   saveFile: () =>
     request<{ success: boolean }>('/files/save', { method: 'POST' }),
 
+  saveFileAs: (path: string) =>
+    request<{ success: boolean; filePath: string }>('/files/save-as', {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+
   // Parse
   parse: (source: string) =>
     request<ParseResponse>('/parse', {
@@ -95,6 +101,9 @@ export const api = {
   },
 
   getSolveResult: () => request<SolveResponse>('/solve/result'),
+
+  cancelSolve: () =>
+    request<{ success: boolean; message: string }>('/solve/cancel', { method: 'POST' }),
 
   // Variables
   getVariables: () => request<VariablesResponse>('/variables'),

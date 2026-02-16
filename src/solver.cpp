@@ -2709,6 +2709,21 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
     // Solve blocks in topological order
     int totalBlocks = static_cast<int>(evaluator_.getNumBlocks());
     for (size_t blockIdx = 0; blockIdx < evaluator_.getNumBlocks(); ++blockIdx) {
+        // Check cancellation before each block
+        if (options.cancelToken && options.cancelToken->load()) {
+            result.success = false;
+            result.status = SolverStatus::MaxIterations;
+            result.errorMessage = "Solve cancelled by user";
+            result.variables = evaluator_.getAllVariables();
+            result.stringVariables = evaluator_.getAllStringVariables();
+            result.totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            
+            if (options.progressCallback) {
+                options.progressCallback(static_cast<int>(blockIdx), totalBlocks, "fail", 0, 0.0);
+            }
+            return result;
+        }
+        
         SolverTrace* trace = enableTracing ? &result.blockTraces[blockIdx] : nullptr;
         
         // Notify progress: block starting

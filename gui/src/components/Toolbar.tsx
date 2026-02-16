@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Play, FolderOpen, Save, RefreshCw, Bug, Sun, Moon,
-  ChevronDown, ChevronUp, BookOpen,
+  ChevronDown, ChevronUp, BookOpen, Square, SaveAll,
+  Braces, Quote,
 } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
 import { api } from '../api/client';
+import { editorInstance, toggleBraceComment, toggleQuoteComment } from './CodeEditor';
 import type { ExampleFile, SSEEvent, SolveResponse } from '../api/types';
 
 export default function Toolbar() {
@@ -21,6 +23,7 @@ export default function Toolbar() {
   const setInitials = useModelStore((s) => s.setInitials);
   const setEescode = useModelStore((s) => s.setEescode);
   const setConf = useModelStore((s) => s.setConf);
+  const setFilePath = useModelStore((s) => s.setFilePath);
   const loadFile = useModelStore((s) => s.loadFile);
 
   const theme = useUIStore((s) => s.theme);
@@ -262,6 +265,60 @@ export default function Toolbar() {
     }
   }, [setInitials, addConsoleLine]);
 
+  // Save As — prompt for path or use File System Access API
+  const handleSaveAs = useCallback(async () => {
+    // Try File System Access API (Chrome/Edge)
+    if ('showSaveFilePicker' in window) {
+      try {
+        const handle = await (window as any).showSaveFilePicker({
+          suggestedName: filePath ? filePath.split('/').pop() : 'model.eescode',
+          types: [{
+            description: 'EES Code Files',
+            accept: { 'text/plain': ['.eescode'] },
+          }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(eescode);
+        await writable.close();
+        addConsoleLine(`>>> Saved: ${handle.name}`);
+        setFilePath(handle.name);
+        return;
+      } catch (e: any) {
+        if (e.name === 'AbortError') return;
+        // Fall through to prompt
+      }
+    }
+    // Fallback: prompt for path
+    const newPath = prompt('Save as (full path):', filePath || 'model.eescode');
+    if (!newPath) return;
+    try {
+      const res = await api.saveFileAs(newPath);
+      addConsoleLine(`>>> Saved as: ${res.filePath}`);
+      setFilePath(res.filePath);
+    } catch (err: any) {
+      addConsoleLine(`>>> ERROR: ${err.message}`);
+    }
+  }, [eescode, filePath, addConsoleLine, setFilePath]);
+
+  // Stop/cancel solve
+  const handleStopSolve = useCallback(async () => {
+    try {
+      await api.cancelSolve();
+      addConsoleLine('>>> Cancel requested...');
+    } catch (err: any) {
+      addConsoleLine(`>>> ${err.message}`);
+    }
+  }, [addConsoleLine]);
+
+  // Comment toggles
+  const handleBraceComment = useCallback(() => {
+    toggleBraceComment(editorInstance);
+  }, []);
+
+  const handleQuoteComment = useCallback(() => {
+    toggleQuoteComment(editorInstance);
+  }, []);
+
   // Open example
   const handleOpenExample = useCallback(
     async (ex: ExampleFile) => {
@@ -279,18 +336,25 @@ export default function Toolbar() {
         if (!solving) handleSolve(e.shiftKey);
       } else if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
-        handleSave();
+        if (e.shiftKey) {
+          handleSaveAs();
+        } else {
+          handleSave();
+        }
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
         e.preventDefault();
         handleOpenFile();
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
         e.preventDefault();
         handleUpdateGuesses();
+      } else if (e.key === 'Escape' && solving) {
+        e.preventDefault();
+        handleStopSolve();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [solving, handleSolve, handleSave, handleOpenFile, handleUpdateGuesses]);
+  }, [solving, handleSolve, handleSave, handleSaveAs, handleOpenFile, handleUpdateGuesses, handleStopSolve]);
 
   return (
     <div className="toolbar">
@@ -311,6 +375,9 @@ export default function Toolbar() {
         </button>
         <button className="toolbar-btn" onClick={handleSave} title="Save (Ctrl+S)">
           <Save size={16} /> Save
+        </button>
+        <button className="toolbar-btn" onClick={handleSaveAs} title="Save As (Ctrl+Shift+S)">
+          <SaveAll size={16} /> Save As
         </button>
       </div>
 
@@ -357,6 +424,15 @@ export default function Toolbar() {
         >
           <Bug size={16} /> Debug
         </button>
+        {solving && (
+          <button
+            className="toolbar-btn danger"
+            onClick={handleStopSolve}
+            title="Stop solve (Escape)"
+          >
+            <Square size={16} /> Stop
+          </button>
+        )}
       </div>
 
       <div className="toolbar-separator" />
@@ -365,6 +441,18 @@ export default function Toolbar() {
       <div className="toolbar-group">
         <button className="toolbar-btn" onClick={handleUpdateGuesses} title="Update guesses (Ctrl+G)">
           <RefreshCw size={16} /> Update Guesses
+        </button>
+      </div>
+
+      <div className="toolbar-separator" />
+
+      {/* Comment toggles */}
+      <div className="toolbar-group">
+        <button className="toolbar-btn" onClick={handleBraceComment} title="Toggle { } comment (Ctrl+/)">
+          <Braces size={16} /> {'{}'}
+        </button>
+        <button className="toolbar-btn" onClick={handleQuoteComment} title='Toggle &quot; &quot; comment (Ctrl+Shift+/)'>
+          <Quote size={16} /> &quot;&quot;
         </button>
       </div>
 

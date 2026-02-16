@@ -151,6 +151,10 @@ struct SolverOptions {
         int iterations, double residualNorm
     )>;
     ProgressCallback progressCallback = nullptr;
+
+    // Cancellation token (optional, for GUI stop button)
+    // When set, the solver checks this between blocks and aborts if cancelled.
+    std::atomic<bool>* cancelToken = nullptr;
 };
 
 /**

@@ -131,6 +131,15 @@ body {
   opacity: 0.5;
 }
 
+.toolbar-btn.danger {
+  background: var(--error-color);
+  color: white;
+}
+
+.toolbar-btn.danger:hover {
+  opacity: 0.85;
+}
+
 .toolbar-spacer { flex: 1; }
 
 .toolbar-status {

@@ -55,7 +55,9 @@ frontend is compiled and embedded directly into the binary via
 | `GET` | `/api/v1/solve/result` | Get last solve result |
 | `GET` | `/api/v1/solve/stream` | Real-time SSE progress events (chunked content provider, per-block callbacks) |
 | `GET` | `/api/v1/variables` | Get solved variable values |
+| `POST` | `/api/v1/files/save-as` | Save files to a new path (creates parent dirs, updates session) |
 | `POST` | `/api/v1/update-guesses` | Copy .sol → .initials |
+| `POST` | `/api/v1/solve/cancel` | Cancel a running solve |
 | `GET` | `/api/v1/examples` | List example files |
 
 ### Frontend (React + TypeScript + Vite)
@@ -104,6 +106,9 @@ frontend is compiled and embedded directly into the binary via
 | SSE solve streaming (curl) | ✅ Pass | 30/30 blocks streamed with start/done events, final result JSON embedded |
 | Async `POST /solve` | ✅ Pass | Returns `{"status":"started"}` immediately, solve runs in background |
 | All C++ unit tests | ✅ Pass | 708 assertions in 94 test cases |
+| `/api/v1/files/save-as` | ✅ Pass | Creates file at new path with companion files |
+| `/api/v1/solve/cancel` (no solve) | ✅ Pass | Returns 409 "No solve is in progress" |
+| `/api/v1/solve/cancel` (during solve) | ✅ Pass | Cancels at block 79/112, SSE stream shows "Solve cancelled by user" |
 
 ---
 
@@ -119,11 +124,9 @@ These items are needed to make the GUI genuinely usable for interactive work:
 | ~~Resizable split panes~~ | ~~Medium~~ | ✅ Done — `SplitPane.tsx` component with drag resize, horizontal/vertical modes, integrated into `App.tsx` for editor/panel and main/console splits |
 | ~~Editable initial guesses~~ | ~~Medium~~ | ✅ Done — `VariableTable.tsx` parses initials text, shows editable Initial column, inline editing with commit on Enter/blur, syncs via `PUT /files/initials` |
 | ~~File Open dialog (browser)~~ | ~~Medium~~ | ✅ Done — File System Access API (`showOpenFilePicker`) with fallback to `<input type="file" multiple>`, companion file discovery for .initials and .conf |
-| **Save As** | Medium | `POST /api/v1/files/save-as` endpoint is not yet implemented |
-| **Comment toggle** | Low | Toolbar buttons for toggling `{ }` and `" "` comments on selected editor lines (Monaco editor actions, no backend needed) |
-| **Error line clicking** | Low | Console error messages should be clickable to jump to the corresponding line in the editor |
-| **Loading/splash screen** | Low | Show a loading indicator while CoolProp warms up (check `/api/v1/health` on mount) |
-| **Stop/cancel solve** | Low | No cancellation mechanism yet — a long-running solve cannot be interrupted |
+| ~~Save As~~ | ~~Medium~~ | ✅ Done — `POST /api/v1/files/save-as` endpoint + File System Access API (`showSaveFilePicker`) with prompt fallback, creates parent dirs, ensures `.eescode` extension, saves companion files |
+| ~~Comment toggle~~ | ~~Low~~ | ✅ Done — Monaco editor actions for `{ }` (invisible) and `" "` (visible) comments with `Ctrl+/` and `Ctrl+Shift+/` keybindings, toolbar buttons |
+| ~~Stop/cancel solve~~ | ~~Low~~ | ✅ Done — `POST /api/v1/solve/cancel` endpoint, `cancelToken` in `SolverOptions`, checked between blocks in solver loop, Stop button (red, shown only while solving), `Escape` shortcut |
 
 ### Phase 2 — Online Deployment & Polish
 

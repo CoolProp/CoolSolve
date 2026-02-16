@@ -429,6 +429,62 @@ int startServer(const ServerOptions& options) {
         res.set_content(j.dump(), "application/json");
     });
     
+    // POST /api/v1/files/save-as - Save to a new file path (local mode)
+    svr.Post("/api/v1/files/save-as", [&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            if (!body.contains("path")) {
+                res.status = 400;
+                json j = {{"error", "Missing 'path' in request body"}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+            std::string newPath = body["path"].get<std::string>();
+            
+            // Ensure path ends with .eescode
+            if (newPath.size() < 8 || newPath.substr(newPath.size() - 8) != ".eescode") {
+                newPath += ".eescode";
+            }
+            
+            // Create parent directory if needed
+            fs::path parentDir = fs::path(newPath).parent_path();
+            if (!parentDir.empty()) {
+                fs::create_directories(parentDir);
+            }
+            
+            bool ok = writeStringToFile(newPath, session.eescodeContent);
+            if (!ok) {
+                res.status = 500;
+                json j = {{"error", "Failed to write file"}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+            
+            // Save companion files
+            fs::path dir = fs::path(newPath).parent_path();
+            std::string stem = fs::path(newPath).stem().string();
+            
+            // Always save .initials (even if empty, so the companion file exists)
+            writeStringToFile((dir / (stem + ".initials")).string(), session.initialsContent);
+            if (!session.confContent.empty()) {
+                writeStringToFile((dir / "coolsolve.conf").string(), session.confContent);
+            }
+            if (!session.solContent.empty()) {
+                writeStringToFile((dir / (stem + ".sol")).string(), session.solContent);
+            }
+            
+            // Update current open file path
+            session.openFilePath = newPath;
+            
+            json j = {{"success", true}, {"filePath", newPath}};
+            res.set_content(j.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j = {{"error", e.what()}};
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+    
     // ================================================================
     // Parse endpoint (for real-time editor feedback)
     // ================================================================
@@ -559,6 +615,9 @@ int startServer(const ServerOptions& options) {
                     if (fs::exists(confPath)) {
                         loadSolverOptionsFromFile(confPath.string(), solverOpts);
                     }
+                    
+                    // Wire cancellation token
+                    solverOpts.cancelToken = &session.cancelRequested;
                     
                     // Set up progress callback for real-time SSE events
                     solverOpts.progressCallback = [&session](
@@ -716,6 +775,21 @@ int startServer(const ServerOptions& options) {
             return;
         }
         json j = solveResultToJSON(session.lastResult, session.lastTiming);
+        res.set_content(j.dump(), "application/json");
+    });
+    
+    // ================================================================
+    // Cancel solve
+    // ================================================================
+    svr.Post("/api/v1/solve/cancel", [&](const httplib::Request&, httplib::Response& res) {
+        if (!session.solving.load()) {
+            res.status = 409;
+            json j = {{"error", "No solve is in progress"}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        session.cancelRequested.store(true);
+        json j = {{"success", true}, {"message", "Cancel requested"}};
         res.set_content(j.dump(), "application/json");
     });
     
