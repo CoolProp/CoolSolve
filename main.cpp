@@ -3,6 +3,9 @@
 #include "coolsolve/runner.h"
 #include "coolsolve/structural_analysis.h"
 #include "coolsolve/evaluator.h"  // For profiling stats
+#ifdef COOLSOLVE_GUI
+#include "coolsolve/server.h"
+#endif
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -22,6 +25,10 @@ void printUsage(const char* programName) {
     std::cerr << "  --no-sol                Disable generation of .sol file\n";
     std::cerr << "  -g, --guess             Update .initials file with solution on success\n";
     std::cerr << "  --no-superancillary     Disable CoolProp superancillary functions (faster VLE solving)\n";
+#ifdef COOLSOLVE_GUI
+    std::cerr << "  --gui [port]            Start the GUI web server (default port: 8550)\n";
+    std::cerr << "  --no-browser            Don't open browser automatically (with --gui)\n";
+#endif
     std::cerr << "  -h, --help              Show this help message\n";
 }
 
@@ -44,6 +51,11 @@ int main(int argc, char* argv[]) {
     bool writeSolFile = true;
     bool enableSuperancillary = true;
     bool updateGuessFile = false;
+#ifdef COOLSOLVE_GUI
+    bool guiMode = false;
+    int guiPort = 8550;
+    bool guiOpenBrowser = true;
+#endif
     
     // Parse command line arguments
     for (int i = 1; i < argc; ++i) {
@@ -58,6 +70,22 @@ int main(int argc, char* argv[]) {
             enableSuperancillary = false;
         } else if (arg == "-g" || arg == "--guess") {
             updateGuessFile = true;
+#ifdef COOLSOLVE_GUI
+        } else if (arg == "--gui") {
+            guiMode = true;
+            // Check if next arg is a port number
+            if (i + 1 < argc) {
+                try {
+                    int port = std::stoi(argv[i + 1]);
+                    if (port > 0 && port < 65536) {
+                        guiPort = port;
+                        ++i;
+                    }
+                } catch (...) {}
+            }
+        } else if (arg == "--no-browser") {
+            guiOpenBrowser = false;
+#endif
         } else if (arg == "-d" || arg == "--debug") {
             debugMode = true;
             // Check if next arg is a directory (not starting with - and not ending with .eescode)
@@ -98,10 +126,30 @@ int main(int argc, char* argv[]) {
     }
     
     if (inputFile.empty()) {
+#ifdef COOLSOLVE_GUI
+        if (guiMode) {
+            coolsolve::ServerOptions serverOpts;
+            serverOpts.port = guiPort;
+            serverOpts.openBrowser = guiOpenBrowser;
+            return coolsolve::startServer(serverOpts);
+        }
+#endif
         std::cerr << "Error: No input file specified\n";
         printUsage(argv[0]);
         return 1;
     }
+    
+#ifdef COOLSOLVE_GUI
+    // GUI mode with input file: open it in the GUI
+    if (guiMode) {
+        coolsolve::ServerOptions serverOpts;
+        serverOpts.port = guiPort;
+        serverOpts.openBrowser = guiOpenBrowser;
+        // The server will be able to load this file via the /api/v1/files/open endpoint
+        // For now, pass via environment or we'll handle in the server startup
+        return coolsolve::startServer(serverOpts);
+    }
+#endif
     
     // Apply CoolProp configuration before any CoolProp calls
     coolsolve::CoolPropConfig cpConfig;

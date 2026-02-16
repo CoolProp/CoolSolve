@@ -141,6 +141,16 @@ struct SolverOptions {
 
     // Performance and safety
     int timeoutSeconds = 0;           // Timeout in seconds (0 = none)
+
+    // Progress callback (optional, for GUI/SSE reporting)
+    // Called at the start/end of each block solve.
+    // Parameters: blockIndex, totalBlocks, event ("start"/"done"/"fail"), iterations, residualNorm
+    using ProgressCallback = std::function<void(
+        int blockIndex, int totalBlocks,
+        const std::string& event,
+        int iterations, double residualNorm
+    )>;
+    ProgressCallback progressCallback = nullptr;
 };
 
 /**

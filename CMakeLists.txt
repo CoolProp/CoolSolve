@@ -17,6 +17,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # --- Build Options ---
 option(COOLSOLVE_USE_SYSTEM_COOLPROP "Use system-installed CoolProp instead of fetching" OFF)
+option(COOLSOLVE_BUILD_GUI "Build embedded GUI server (requires cpp-httplib)" ON)
 set(COOLSOLVE_COOLPROP_TAG "master" CACHE STRING "CoolProp git tag/branch/commit to use")
 
 # --- Fetch Dependencies ---
@@ -56,6 +57,20 @@ set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(eigen)
+
+# cpp-httplib - Header-only HTTP server library (for GUI)
+if(COOLSOLVE_BUILD_GUI)
+    FetchContent_Declare(
+        httplib
+        GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+        GIT_TAG v0.18.3
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_GetProperties(httplib)
+    if(NOT httplib_POPULATED)
+        FetchContent_Populate(httplib)
+    endif()
+endif()
 
 # --- CoolProp Library ---
 if(COOLSOLVE_USE_SYSTEM_COOLPROP)
@@ -125,6 +140,9 @@ file(GLOB_RECURSE SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
 
+# Exclude server.cpp from base sources (it's conditionally added)
+list(FILTER SOURCES EXCLUDE REGEX ".*server\\.cpp$")
+
 # --- CoolSolve Library ---
 add_library(coolsolve_lib ${SOURCES})
 
@@ -132,6 +150,39 @@ target_include_directories(coolsolve_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${peglib_SOURCE_DIR}
 )
+
+# --- GUI Server ---
+if(COOLSOLVE_BUILD_GUI)
+    target_sources(coolsolve_lib PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/server.cpp")
+    target_compile_definitions(coolsolve_lib PUBLIC COOLSOLVE_GUI)
+    target_include_directories(coolsolve_lib PUBLIC ${httplib_SOURCE_DIR})
+    
+    # Embed frontend assets if the built frontend exists
+    set(GUI_DIST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/gui/dist")
+    if(EXISTS "${GUI_DIST_DIR}/index.html")
+        message(STATUS "GUI dist found, embedding frontend assets")
+        # Generate embedded assets source file
+        file(GLOB_RECURSE GUI_ASSETS "${GUI_DIST_DIR}/*")
+        set(EMBEDDED_ASSETS_CPP "${CMAKE_CURRENT_BINARY_DIR}/embedded_assets.cpp")
+        set(EMBEDDED_ASSETS_H "${CMAKE_CURRENT_BINARY_DIR}/embedded_assets.h")
+        
+        # Build the embedded assets at configure time
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} 
+                -DGUI_DIST_DIR=${GUI_DIST_DIR}
+                -DOUTPUT_CPP=${EMBEDDED_ASSETS_CPP}
+                -DOUTPUT_H=${EMBEDDED_ASSETS_H}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_assets.cmake
+        )
+        
+        target_sources(coolsolve_lib PRIVATE ${EMBEDDED_ASSETS_CPP})
+        target_include_directories(coolsolve_lib PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+        target_compile_definitions(coolsolve_lib PRIVATE COOLSOLVE_EMBEDDED_ASSETS)
+    else()
+        message(STATUS "GUI dist not found, server will serve from filesystem (dev mode)")
+        target_compile_definitions(coolsolve_lib PRIVATE COOLSOLVE_GUI_DEV_DIR="${GUI_DIST_DIR}")
+    endif()
+endif()
 
 # Find threading library (needed for parallel solver pipeline)
 find_package(Threads REQUIRED)

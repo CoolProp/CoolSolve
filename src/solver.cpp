@@ -2707,8 +2707,14 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
     }
     
     // Solve blocks in topological order
+    int totalBlocks = static_cast<int>(evaluator_.getNumBlocks());
     for (size_t blockIdx = 0; blockIdx < evaluator_.getNumBlocks(); ++blockIdx) {
         SolverTrace* trace = enableTracing ? &result.blockTraces[blockIdx] : nullptr;
+        
+        // Notify progress: block starting
+        if (options.progressCallback) {
+            options.progressCallback(static_cast<int>(blockIdx), totalBlocks, "start", 0, 0.0);
+        }
         
         // Setup timeout protection
         TimeoutGuard timeout(options.timeoutSeconds);
@@ -2735,6 +2741,12 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
         }
         
         if (blockStatus != SolverStatus::Success) {
+            // Notify progress: block failed
+            if (options.progressCallback) {
+                options.progressCallback(static_cast<int>(blockIdx), totalBlocks, "fail",
+                    br.iterations, br.maxResidual);
+            }
+            
             result.success = false;
             result.status = blockStatus;
             result.detailedError = blockError;
@@ -2762,6 +2774,12 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
             result.totalTime = std::chrono::high_resolution_clock::now() - startTime;
             
             return result;
+        }
+        
+        // Notify progress: block done
+        if (options.progressCallback) {
+            options.progressCallback(static_cast<int>(blockIdx), totalBlocks, "done",
+                br.iterations, br.maxResidual);
         }
     }
     
