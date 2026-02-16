@@ -1902,8 +1902,14 @@ SolverStatus Solver::runSolverStrategy(SolverStrategy strategy,
 
     // For trust-region and LM, allow more iterations
     SolverOptions solverOpts = options;
-    if (strategy == SolverStrategy::TrustRegion && solverOpts.maxIterations < 500) {
-        solverOpts.maxIterations = 500;
+    if (strategy == SolverStrategy::TrustRegion) {
+        // Allow more iterations for TR which takes conservative steps
+        int minIter = (n > 10) ? 500 : 300;
+        if (solverOpts.maxIterations < minIter) solverOpts.maxIterations = minIter;
+    }
+    if (strategy == SolverStrategy::LevenbergMarquardt) {
+        int minIter = (n > 10) ? 500 : 300;
+        if (solverOpts.maxIterations < minIter) solverOpts.maxIterations = minIter;
     }
 
     try {
@@ -1934,20 +1940,83 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
     SolverStatus status = SolverStatus::InvalidInput;
     std::string lastError;
 
+    // Track the best (lowest-residual) solution found across all solvers so
+    // that subsequent solvers can start from a better point instead of always
+    // resetting to the original initial guess.
+    Eigen::VectorXd bestX = x;
+    double bestResidualNorm = std::numeric_limits<double>::max();
+    double initialResidualNorm = std::numeric_limits<double>::max();
+
+    // Evaluate residual at the initial guess for comparison
+    {
+        Eigen::VectorXd F0(n);
+        Eigen::MatrixXd J0;
+        try {
+            problem.evaluate(x, F0, J0, false);
+            bestResidualNorm = F0.lpNorm<Eigen::Infinity>();
+            initialResidualNorm = bestResidualNorm;
+        } catch (...) {
+            // If even the initial eval fails, keep max residual
+        }
+    }
+
+    // ── Multi-round pipeline ────────────────────────────────────────
+    // If a full pass through the pipeline reduced the residual
+    // substantially (>50%) but did not converge, restart the pipeline
+    // from the best solution found so far.  This lets later-stage
+    // solvers (such as Newton) finish the job when the initial guess
+    // was originally too far away.
+    constexpr int    MAX_ROUNDS             = 10;
+    constexpr double RESTART_MIN_IMPROVEMENT = 0.05; // restart if residual dropped by at least 5%
+    bool skipPartitioned = false; // set if Partitioned worsens the solution
+
+    for (int round = 0; round < MAX_ROUNDS; ++round) {
+        double roundStartResidual = bestResidualNorm;
+
     for (size_t idx = 0; idx < options.solverPipeline.size(); ++idx) {
         SolverStrategy strategy = options.solverPipeline[idx];
+
+        // Skip Partitioned if it previously worsened the solution
+        if (strategy == SolverStrategy::Partitioned && skipPartitioned) {
+            continue;
+        }
 
         if (options.verbose) {
             std::cout << "Block " << blockIndex << " (size " << n
                       << "): Trying " << strategyToString(strategy)
                       << " [" << (idx + 1) << "/" << options.solverPipeline.size() << "]"
+                      << (round > 0 ? " (round " + std::to_string(round + 1) + ")" : "")
                       << std::endl;
         }
 
-        // Reset initial guess from evaluator state before each attempt
-        if (idx > 0) {
+        // Start from whichever is better: initial evaluator state or best
+        // solution found so far by a previous solver.
+        if (idx > 0 || round > 0) {
+            Eigen::VectorXd x_init(n);
             for (size_t i = 0; i < n; ++i) {
-                x[i] = evaluator_.getVariableValue(varNames[i]);
+                x_init[i] = evaluator_.getVariableValue(varNames[i]);
+            }
+            // Evaluate residual at initial guess
+            double initResidualNorm = std::numeric_limits<double>::max();
+            try {
+                Eigen::VectorXd F_init(n);
+                Eigen::MatrixXd J_dummy;
+                problem.evaluate(x_init, F_init, J_dummy, false);
+                initResidualNorm = F_init.lpNorm<Eigen::Infinity>();
+            } catch (...) {}
+
+            // Use whichever starting point has the smaller residual
+            if (bestResidualNorm < initResidualNorm) {
+                x = bestX;
+                if (options.verbose) {
+                    std::cout << "Block " << blockIndex
+                              << ": Warm-starting from best previous solution"
+                              << " (||F|| = " << bestResidualNorm
+                              << " vs initial " << initResidualNorm << ")"
+                              << std::endl;
+                }
+            } else {
+                x = x_init;
             }
         }
 
@@ -1958,6 +2027,29 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
 
         if (status == SolverStatus::Success) {
             return status;
+        }
+
+        // Even on failure, check whether this solver found a better point
+        {
+            Eigen::VectorXd F_curr(n);
+            Eigen::MatrixXd J_dummy;
+            try {
+                problem.evaluate(x, F_curr, J_dummy, false);
+                double currResidualNorm = F_curr.lpNorm<Eigen::Infinity>();
+                if (currResidualNorm < bestResidualNorm) {
+                    bestResidualNorm = currResidualNorm;
+                    bestX = x;
+                } else if (strategy == SolverStrategy::Partitioned &&
+                           currResidualNorm > bestResidualNorm * 10.0) {
+                    // Partitioned solver worsened solution dramatically — skip it in future rounds
+                    skipPartitioned = true;
+                }
+            } catch (...) {
+                if (strategy == SolverStrategy::Partitioned) {
+                    skipPartitioned = true;
+                }
+                // Current x is infeasible, ignore it
+            }
         }
 
         // Accumulate error messages
@@ -1971,12 +2063,50 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
                       << strategyToString(strategy) << " failed ("
                       << statusToString(status) << ")" << std::endl;
         }
-    }
+    } // end of pipeline loop
 
-    // All solvers failed
-    if (outErrorMessage && !lastError.empty()) {
+    // Check if this round made sufficient progress to justify restarting
+    if (bestResidualNorm < roundStartResidual * (1.0 - RESTART_MIN_IMPROVEMENT) &&
+        bestResidualNorm > options.tolerance) {
+        if (options.verbose) {
+            std::cout << "Block " << blockIndex
+                      << ": Pipeline round " << (round + 1)
+                      << " reduced residual from " << roundStartResidual
+                      << " to " << bestResidualNorm
+                      << " — restarting pipeline" << std::endl;
+        }
+        // Clear accumulated errors for fresh reporting on retry
+        lastError.clear();
+        continue; // restart the pipeline
+    }
+    break; // no significant progress, stop
+    } // end of round loop
+
+    // Restore best solution found across all solvers and rounds
+    x = bestX;
+
+    // All solvers failed — build informative error message
+    if (outErrorMessage) {
+        std::ostringstream ss;
+        if (!lastError.empty()) {
+            ss << lastError;
+        }
+        // Add summary of progress made
+        if (initialResidualNorm < std::numeric_limits<double>::max()) {
+            ss << "\nInitial ||F||_inf = " << initialResidualNorm
+               << ", best achieved = " << bestResidualNorm;
+            if (bestResidualNorm < initialResidualNorm * 0.9) {
+                double reduction = (1.0 - bestResidualNorm / initialResidualNorm) * 100.0;
+                if (reduction > 99.99) {
+                    ss << " (>99.99% reduction)";
+                } else {
+                    ss << " (" << std::fixed << std::setprecision(1)
+                       << reduction << "% reduction)";
+                }
+            }
+        }
         if (!outErrorMessage->empty()) *outErrorMessage += "\n";
-        *outErrorMessage += lastError;
+        *outErrorMessage += ss.str();
     }
     return status;
 }

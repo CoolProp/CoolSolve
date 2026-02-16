@@ -889,6 +889,35 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         type2 == UnitType::SpecificEntropy ? units.specific_entropy :
         type2 == UnitType::Density ? units.density : "");
     
+    // ── CoolProp input sanitization ──────────────────────────────────
+    // During Newton iteration, the solver may evaluate trial points with
+    // unphysical thermodynamic inputs (negative pressure, temperature below
+    // absolute zero).  Instead of letting CoolProp throw (which causes the
+    // line-search / trust-region to shrink the step but may leave no viable
+    // step direction), we clamp the inputs to physically valid ranges and
+    // let the solver see a finite (but poor) residual, keeping the
+    // optimization landscape smooth and allowing it to navigate back.
+    constexpr double P_MIN_SI  = 1000.0;   // 1000 Pa (0.01 bar) — low but CoolProp-safe
+    constexpr double T_MIN_SI  = 50.0;     // 50 K   — below triple point of most fluids
+    constexpr double RHO_MIN_SI = 1e-4;    // near-vacuum density floor
+    
+    auto clampInput = [&](CoolProp::parameters param, double& v,
+                          std::vector<double>& grad) {
+        if (param == CoolProp::iP && v < P_MIN_SI) {
+            v = P_MIN_SI;
+            // Don't zero gradient: keep the derivative information so the solver
+            // has a non-singular Jacobian and a direction back to valid region
+        } else if (param == CoolProp::iT && v < T_MIN_SI) {
+            v = T_MIN_SI;
+        } else if (param == CoolProp::iDmass && v < RHO_MIN_SI) {
+            v = RHO_MIN_SI;
+        }
+    };
+    
+    clampInput(input1Param, val1, inputValues[0].gradient);
+    clampInput(input2Param, val2, inputValues[1].gradient);
+    // ─────────────────────────────────────────────────────────────────
+    
     try {
         double result = timedPropsSI(outputStr, input1Str, val1, input2Str, val2, cpFluidName);
         
@@ -1002,7 +1031,15 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         
         return output;
     } catch (const std::exception& e) {
-        throw std::runtime_error("CoolProp error in " + func.name + "(" + cpFluidName + "): input " + input1Str + "=" + std::to_string(val1) + ", " + input2Str + "=" + std::to_string(val2) + ": " + e.what());
+        // ── Penalty-based CoolProp error handling ────────────────────
+        // Return a large penalty value with zero gradient rather than
+        // throwing.  This keeps the residual landscape finite so that
+        // trust-region and LM solvers can shrink their step / increase
+        // damping smoothly rather than losing the trial evaluation
+        // entirely.
+        constexpr double PENALTY = 1e4;
+        ADValue output(PENALTY, numVariables_);
+        return output;
     }
 }
 
