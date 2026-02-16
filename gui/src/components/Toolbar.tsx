@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Play, FolderOpen, Save, RefreshCw, Bug, Sun, Moon,
   ChevronDown, ChevronUp, BookOpen, Square, SaveAll,
-  Braces, Quote,
+  Braces, Quote, Download, Upload,
 } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
@@ -310,6 +310,41 @@ export default function Toolbar() {
     }
   }, [addConsoleLine]);
 
+  // Download ZIP bundle
+  const handleDownloadBundle = useCallback(() => {
+    window.location.href = '/api/v1/files/bundle';
+  }, []);
+
+  // Upload files
+  const handleUploadFiles = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.zip,.eescode,.initials,.conf,.sol';
+    input.multiple = true;
+    input.onchange = async (e) => {
+      const files = (e.target as HTMLInputElement).files;
+      if (!files || files.length === 0) return;
+      const formData = new FormData();
+      for (const file of Array.from(files)) {
+        formData.append('file', file);
+      }
+      try {
+        const res = await api.uploadFiles(formData);
+        if (res.success) {
+          const ees = await api.getEescode();
+          const init = await api.getInitials();
+          const sol = await api.getSol();
+          const conf = await api.getConf();
+          loadFile(res.fileName, ees.content, init.content, sol.content, conf.content);
+          addConsoleLine(`>>> Uploaded: ${res.fileName}`);
+        }
+      } catch (err: any) {
+        addConsoleLine(`>>> ERROR uploading: ${err.message}`);
+      }
+    };
+    input.click();
+  }, [loadFile, addConsoleLine]);
+
   // Comment toggles
   const handleBraceComment = useCallback(() => {
     toggleBraceComment(editorInstance);
@@ -378,6 +413,12 @@ export default function Toolbar() {
         </button>
         <button className="toolbar-btn" onClick={handleSaveAs} title="Save As (Ctrl+Shift+S)">
           <SaveAll size={16} /> Save As
+        </button>
+        <button className="toolbar-btn" onClick={handleDownloadBundle} title="Download ZIP bundle">
+          <Download size={16} /> Download
+        </button>
+        <button className="toolbar-btn" onClick={handleUploadFiles} title="Upload files">
+          <Upload size={16} /> Upload
         </button>
       </div>
 

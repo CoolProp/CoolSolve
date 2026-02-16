@@ -59,6 +59,10 @@ frontend is compiled and embedded directly into the binary via
 | `POST` | `/api/v1/update-guesses` | Copy .sol → .initials |
 | `POST` | `/api/v1/solve/cancel` | Cancel a running solve |
 | `GET` | `/api/v1/examples` | List example files |
+| `GET` | `/api/v1/files/bundle` | Download ZIP bundle of eescode+initials+sol+conf |
+| `POST` | `/api/v1/files/upload` | Upload multipart .zip or individual files |
+| `GET` | `/api/v1/debug/files` | List debug output files for current session |
+| `GET` | `/api/v1/debug/file` | Get content of a specific debug file (`?name=...`) |
 
 ### Frontend (React + TypeScript + Vite)
 
@@ -109,6 +113,13 @@ frontend is compiled and embedded directly into the binary via
 | `/api/v1/files/save-as` | ✅ Pass | Creates file at new path with companion files |
 | `/api/v1/solve/cancel` (no solve) | ✅ Pass | Returns 409 "No solve is in progress" |
 | `/api/v1/solve/cancel` (during solve) | ✅ Pass | Cancels at block 79/112, SSE stream shows "Solve cancelled by user" |
+| Session cookie | ✅ Pass | `Set-Cookie: coolsolve_session=...` on first request, persists across calls |
+| Session isolation | ✅ Pass | New session (no cookie) gets empty state; original session retains loaded files |
+| ZIP bundle download | ✅ Pass | Valid ZIP with 4 files (eescode, initials, sol, conf), 6972 bytes |
+| ZIP bundle upload | ✅ Pass | Re-uploaded ZIP, all companion files detected and loaded |
+| Debug files (before solve) | ✅ Pass | Returns `{"files":[]}` |
+| Debug files (after debug solve) | ✅ Pass | 15+ files generated (report.md, equations.md, variables.md, analysis.json, etc.) |
+| Debug file content (report.md) | ✅ Pass | Full analysis content with session-isolated temp path |
 
 ---
 
@@ -132,11 +143,11 @@ These items are needed to make the GUI genuinely usable for interactive work:
 
 | Task | Description |
 |------|-------------|
-| Session management | Multi-user sessions with isolated temp directories |
-| ZIP bundle upload/download | `POST /files/upload` (multipart), `GET /files/bundle` (ZIP download) |
-| Config editor tab | Form-based `coolsolve.conf` editor with grouped fields, defaults, and "Reset" button |
-| Debug output viewer tab | Tree-based viewer for debug output files (report.md, variables.md, equations.md, etc.) |
-| Array variables tab | Spreadsheet view for `var[i]` variables (rows = indices, columns = base names) |
+| ~~Session management~~ | ✅ Done — Cookie-based `SessionManager` class, `coolsolve_session` cookie with 32-hex-char IDs, `std::map<string, shared_ptr<Session>>`, session-isolated temp dirs at `/tmp/coolsolve_sessions/{id}/`, all 17+ handlers updated |
+| ~~ZIP bundle upload/download~~ | ✅ Done — Custom minimal uncompressed ZIP creation/extraction with CRC32, `GET /files/bundle` creates ZIP of eescode+initials+sol+conf, `POST /files/upload` accepts multipart .zip or individual files |
+| ~~Config editor tab~~ | ✅ Done — `ConfigEditor.tsx` with full schema (9 groups × 30+ fields matching all `SolverOptions` keys), collapsible groups, inline editing, boolean dropdowns, Reset All button, syncs via `PUT /files/conf` |
+| ~~Debug output viewer tab~~ | ✅ Done — `DebugViewer.tsx` with file list panel + content viewer, priority-sorted files, refresh button, integrated with `runner.generateDebugOutput()` (~15 files: report.md, equations.md, variables.md, analysis.json, solver_trace.md, etc.) |
+| ~~Array variables tab~~ | ✅ Done — `ArrayTable.tsx` spreadsheet grid parsing `var[i]` from solve results, columns = base names (sorted alpha), rows = indices (sorted numeric), filter input, "N arrays × M indices" count |
 | LaTeX report generation | `/api/v1/report` endpoint + download as `.tex` or PDF |
 | AG Grid for variable table | Replace the simple HTML table with AG Grid (sorting, filtering, column pinning, in-cell editing) |
 | Deployment config | Docker image, nginx reverse proxy, session expiry |
@@ -203,6 +214,9 @@ These items are needed to make the GUI genuinely usable for interactive work:
 | `gui/src/components/VariableTable.tsx` | Variable table with filtering |
 | `gui/src/components/Console.tsx` | Console log panel |
 | `gui/src/components/Toolbar.tsx` | Toolbar with all actions + keyboard shortcuts |
+| `gui/src/components/ConfigEditor.tsx` | Form-based config editor with 9 groups, 30+ fields |
+| `gui/src/components/DebugViewer.tsx` | Debug output file list + content viewer |
+| `gui/src/components/ArrayTable.tsx` | Spreadsheet view for array variables |
 
 ---
 

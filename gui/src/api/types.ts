@@ -117,3 +117,13 @@ export interface SSEDoneEvent {
 }
 
 export type SSEEvent = SSEBlockEvent | SSEProgressEvent | SSEDoneEvent;
+
+// Debug output
+export interface DebugFile {
+  name: string;
+  size: number;
+}
+
+export interface DebugFilesResponse {
+  files: DebugFile[];
+}

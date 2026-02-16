@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import Toolbar from './components/Toolbar';
 import CodeEditor from './components/CodeEditor';
 import VariableTable from './components/VariableTable';
+import ArrayTable from './components/ArrayTable';
+import ConfigEditor from './components/ConfigEditor';
+import DebugViewer from './components/DebugViewer';
 import Console from './components/Console';
 import SplitPane from './components/SplitPane';
 import { useModelStore } from './stores/modelStore';
@@ -75,19 +78,29 @@ export default function App() {
                 Variables
               </button>
               <button
+                className={`tab-btn ${rightTab === 'arrays' ? 'active' : ''}`}
+                onClick={() => setRightTab('arrays')}
+              >
+                Arrays
+              </button>
+              <button
                 className={`tab-btn ${rightTab === 'config' ? 'active' : ''}`}
                 onClick={() => setRightTab('config')}
               >
                 Config
               </button>
+              <button
+                className={`tab-btn ${rightTab === 'debug' ? 'active' : ''}`}
+                onClick={() => setRightTab('debug')}
+              >
+                Debug
+              </button>
             </div>
             <div className="tab-content">
               {rightTab === 'variables' && <VariableTable />}
-              {rightTab === 'config' && (
-                <div style={{ padding: 16, color: 'var(--text-muted)', fontSize: 13 }}>
-                  Config editor coming soon.
-                </div>
-              )}
+              {rightTab === 'arrays' && <ArrayTable />}
+              {rightTab === 'config' && <ConfigEditor />}
+              {rightTab === 'debug' && <DebugViewer />}
             </div>
           </div>
         </SplitPane>

@@ -23,6 +23,7 @@
 #include <iomanip>
 #include <cstdlib>
 #include <condition_variable>
+#include <random>
 
 #ifdef COOLSOLVE_EMBEDDED_ASSETS
 #include "embedded_assets.h"
@@ -73,6 +74,9 @@ struct Session {
     
     std::string openFilePath;                   // Path of currently open .eescode file
     
+    fs::path tempDir;                               // Session temp directory
+    std::string debugDir;                           // Last debug output directory
+    
     // Solve state
     std::atomic<bool> solving{false};
     std::atomic<bool> solveFinished{true};
@@ -115,6 +119,137 @@ struct Session {
         return events;
     }
 };
+
+// ============================================================================
+// Session management for multi-user support
+// ============================================================================
+
+class SessionManager {
+    std::map<std::string, std::shared_ptr<Session>> sessions_;
+    std::mutex mutex_;
+public:
+    std::shared_ptr<Session> getOrCreate(const std::string& sessionId) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = sessions_.find(sessionId);
+        if (it != sessions_.end()) return it->second;
+        auto s = std::make_shared<Session>();
+        s->tempDir = fs::temp_directory_path() / "coolsolve_sessions" / sessionId;
+        fs::create_directories(s->tempDir);
+        sessions_[sessionId] = s;
+        return s;
+    }
+};
+
+static std::string getCookieValue(const httplib::Request& req, const std::string& name) {
+    auto range = req.headers.equal_range("Cookie");
+    for (auto it = range.first; it != range.second; ++it) {
+        size_t pos = 0;
+        const auto& c = it->second;
+        while (pos < c.size()) {
+            while (pos < c.size() && (c[pos] == ' ' || c[pos] == ';')) pos++;
+            auto eq = c.find('=', pos);
+            if (eq == std::string::npos) break;
+            auto semi = c.find(';', eq);
+            if (semi == std::string::npos) semi = c.size();
+            if (c.substr(pos, eq - pos) == name)
+                return c.substr(eq + 1, semi - eq - 1);
+            pos = semi + 1;
+        }
+    }
+    return "";
+}
+
+static std::string generateSessionId() {
+    static const char hex[] = "0123456789abcdef";
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, 15);
+    std::string id;
+    id.reserve(32);
+    for (int i = 0; i < 32; i++) id += hex[dis(gen)];
+    return id;
+}
+
+// ============================================================================
+// ZIP helpers (minimal uncompressed archive implementation)
+// ============================================================================
+
+static uint32_t zipCrc32(const uint8_t* data, size_t length) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < length; i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++)
+            crc = (crc >> 1) ^ (0xEDB88320u & (~(crc & 1) + 1));
+    }
+    return ~crc;
+}
+
+static void zipW16(std::string& s, uint16_t v) {
+    s += static_cast<char>(v & 0xFF);
+    s += static_cast<char>((v >> 8) & 0xFF);
+}
+static void zipW32(std::string& s, uint32_t v) {
+    s += static_cast<char>(v & 0xFF);
+    s += static_cast<char>((v >> 8) & 0xFF);
+    s += static_cast<char>((v >> 16) & 0xFF);
+    s += static_cast<char>((v >> 24) & 0xFF);
+}
+static uint16_t zipR16(const char* p) {
+    return static_cast<uint8_t>(p[0]) | (static_cast<uint8_t>(p[1]) << 8);
+}
+static uint32_t zipR32(const char* p) {
+    return static_cast<uint8_t>(p[0]) | (static_cast<uint8_t>(p[1]) << 8)
+         | (static_cast<uint8_t>(p[2]) << 16) | (static_cast<uint8_t>(p[3]) << 24);
+}
+
+static std::string createZipBundle(const std::vector<std::pair<std::string, std::string>>& files) {
+    std::string out;
+    struct E { std::string name; uint32_t crc, size, off; };
+    std::vector<E> entries;
+    for (const auto& [name, data] : files) {
+        E e{name, zipCrc32(reinterpret_cast<const uint8_t*>(data.data()), data.size()),
+            static_cast<uint32_t>(data.size()), static_cast<uint32_t>(out.size())};
+        zipW32(out, 0x04034b50); zipW16(out, 20); zipW16(out, 0); zipW16(out, 0);
+        zipW16(out, 0); zipW16(out, 0);
+        zipW32(out, e.crc); zipW32(out, e.size); zipW32(out, e.size);
+        zipW16(out, static_cast<uint16_t>(name.size())); zipW16(out, 0);
+        out += name; out += data;
+        entries.push_back(e);
+    }
+    uint32_t cdOff = static_cast<uint32_t>(out.size());
+    for (const auto& e : entries) {
+        zipW32(out, 0x02014b50); zipW16(out, 20); zipW16(out, 20);
+        zipW16(out, 0); zipW16(out, 0); zipW16(out, 0); zipW16(out, 0);
+        zipW32(out, e.crc); zipW32(out, e.size); zipW32(out, e.size);
+        zipW16(out, static_cast<uint16_t>(e.name.size()));
+        zipW16(out, 0); zipW16(out, 0); zipW16(out, 0); zipW16(out, 0);
+        zipW32(out, 0); zipW32(out, e.off);
+        out += e.name;
+    }
+    uint32_t cdSize = static_cast<uint32_t>(out.size()) - cdOff;
+    zipW32(out, 0x06054b50); zipW16(out, 0); zipW16(out, 0);
+    zipW16(out, static_cast<uint16_t>(entries.size()));
+    zipW16(out, static_cast<uint16_t>(entries.size()));
+    zipW32(out, cdSize); zipW32(out, cdOff); zipW16(out, 0);
+    return out;
+}
+
+static std::map<std::string, std::string> extractZipBundle(const std::string& data) {
+    std::map<std::string, std::string> files;
+    size_t pos = 0;
+    while (pos + 30 <= data.size()) {
+        if (zipR32(data.data() + pos) != 0x04034b50) break;
+        uint16_t nameLen = zipR16(data.data() + pos + 26);
+        uint16_t extraLen = zipR16(data.data() + pos + 28);
+        uint32_t compSize = zipR32(data.data() + pos + 18);
+        std::string name(data.data() + pos + 30, nameLen);
+        pos += 30 + nameLen + extraLen;
+        if (pos + compSize <= data.size())
+            files[name] = std::string(data.data() + pos, compSize);
+        pos += compSize;
+    }
+    return files;
+}
 
 // ============================================================================
 // Helper: Read file to string
@@ -247,7 +382,17 @@ static void openBrowser(const std::string& url) {
 // ============================================================================
 int startServer(const ServerOptions& options) {
     httplib::Server svr;
-    Session session;
+    SessionManager sessionMgr;
+    
+    // getSession: extract session from cookie, create if new
+    auto getSession = [&sessionMgr](const httplib::Request& req, httplib::Response& res) -> std::shared_ptr<Session> {
+        std::string sid = getCookieValue(req, "coolsolve_session");
+        if (sid.empty()) {
+            sid = generateSessionId();
+            res.set_header("Set-Cookie", "coolsolve_session=" + sid + "; Path=/; SameSite=Lax");
+        }
+        return sessionMgr.getOrCreate(sid);
+    };
     
     // CoolProp warmup state
     std::atomic<bool> coolpropReady{false};
@@ -296,7 +441,8 @@ int startServer(const ServerOptions& options) {
     // ================================================================
     
     // GET /api/v1/files/eescode - Get current .eescode content
-    svr.Get("/api/v1/files/eescode", [&](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/api/v1/files/eescode", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         json j = {
             {"content", session.eescodeContent},
             {"filePath", session.openFilePath}
@@ -306,6 +452,7 @@ int startServer(const ServerOptions& options) {
     
     // PUT /api/v1/files/eescode - Save .eescode content
     svr.Put("/api/v1/files/eescode", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         try {
             auto body = json::parse(req.body);
             session.eescodeContent = body.value("content", "");
@@ -319,13 +466,15 @@ int startServer(const ServerOptions& options) {
     });
     
     // GET /api/v1/files/initials - Get current .initials content
-    svr.Get("/api/v1/files/initials", [&](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/api/v1/files/initials", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         json j = {{"content", session.initialsContent}};
         res.set_content(j.dump(), "application/json");
     });
     
     // PUT /api/v1/files/initials - Save .initials content  
     svr.Put("/api/v1/files/initials", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         try {
             auto body = json::parse(req.body);
             session.initialsContent = body.value("content", "");
@@ -339,19 +488,22 @@ int startServer(const ServerOptions& options) {
     });
     
     // GET /api/v1/files/sol - Get .sol content
-    svr.Get("/api/v1/files/sol", [&](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/api/v1/files/sol", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         json j = {{"content", session.solContent}};
         res.set_content(j.dump(), "application/json");
     });
     
     // GET /api/v1/files/conf - Get coolsolve.conf content
-    svr.Get("/api/v1/files/conf", [&](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/api/v1/files/conf", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         json j = {{"content", session.confContent}};
         res.set_content(j.dump(), "application/json");
     });
     
     // PUT /api/v1/files/conf - Save coolsolve.conf content
     svr.Put("/api/v1/files/conf", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         try {
             auto body = json::parse(req.body);
             session.confContent = body.value("content", "");
@@ -366,6 +518,7 @@ int startServer(const ServerOptions& options) {
     
     // POST /api/v1/files/open - Open a file from disk (local mode)
     svr.Post("/api/v1/files/open", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         try {
             auto body = json::parse(req.body);
             std::string filePath = body.value("path", "");
@@ -402,7 +555,8 @@ int startServer(const ServerOptions& options) {
     });
     
     // POST /api/v1/files/save - Save to current file path (local mode)
-    svr.Post("/api/v1/files/save", [&](const httplib::Request&, httplib::Response& res) {
+    svr.Post("/api/v1/files/save", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         if (session.openFilePath.empty()) {
             res.status = 400;
             json j = {{"error", "No file is currently open"}};
@@ -431,6 +585,7 @@ int startServer(const ServerOptions& options) {
     
     // POST /api/v1/files/save-as - Save to a new file path (local mode)
     svr.Post("/api/v1/files/save-as", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         try {
             auto body = json::parse(req.body);
             if (!body.contains("path")) {
@@ -489,6 +644,7 @@ int startServer(const ServerOptions& options) {
     // Parse endpoint (for real-time editor feedback)
     // ================================================================
     svr.Post("/api/v1/parse", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         try {
             auto body = json::parse(req.body);
             std::string source = body.value("source", session.eescodeContent);
@@ -544,6 +700,8 @@ int startServer(const ServerOptions& options) {
     // Solve endpoint (async — returns immediately, results via SSE)
     // ================================================================
     svr.Post("/api/v1/solve", [&](const httplib::Request& req, httplib::Response& res) {
+        auto sessionPtr = getSession(req, res);
+        auto& session = *sessionPtr;
         if (session.solving.load()) {
             res.status = 409;
             json j = {{"error", "A solve is already in progress"}};
@@ -571,8 +729,8 @@ int startServer(const ServerOptions& options) {
                 return;
             }
             
-            // Write temp files for the runner
-            auto tmpDir = fs::temp_directory_path() / "coolsolve_gui";
+            // Write temp files for the runner (session-isolated temp dir)
+            auto tmpDir = session.tempDir;
             fs::create_directories(tmpDir);
             
             auto tmpEes = tmpDir / "model.eescode";
@@ -601,7 +759,8 @@ int startServer(const ServerOptions& options) {
             std::string confContent = session.confContent;
             
             // Launch solve in background thread
-            std::thread([&session, tmpEes, tmpDir, enableTracing, confContent]() {
+            std::thread([sessionPtr, tmpEes, tmpDir, enableTracing, confContent, eesSource]() {
+                auto& session = *sessionPtr;
                 try {
                     session.addProgressEvent("{\"type\":\"start\",\"message\":\"Solve started\"}");
                     
@@ -652,6 +811,14 @@ int startServer(const ServerOptions& options) {
                     session.addProgressEvent("{\"type\":\"progress\",\"message\":\"Parsing...\"}");
                     
                     bool success = runner.run(solverOpts, enableTracing);
+                    
+                    // Generate debug output if tracing enabled
+                    if (enableTracing) {
+                        auto debugPath = tmpDir / "debug_output";
+                        runner.generateDebugOutput(debugPath.string(), eesSource);
+                        session.debugDir = debugPath.string();
+                        session.addProgressEvent("{\"type\":\"progress\",\"message\":\"Debug output generated\"}");
+                    }
                     
                     // Store result
                     {
@@ -730,14 +897,16 @@ int startServer(const ServerOptions& options) {
     // ================================================================
     // SSE progress stream (real-time chunked streaming)
     // ================================================================
-    svr.Get("/api/v1/solve/stream", [&](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/api/v1/solve/stream", [&](const httplib::Request& req, httplib::Response& res) {
+        auto sessionPtr = getSession(req, res);
         res.set_header("Cache-Control", "no-cache");
         res.set_header("Connection", "keep-alive");
         res.set_header("X-Accel-Buffering", "no");  // Disable nginx buffering
         
         res.set_chunked_content_provider(
             "text/event-stream",
-            [&session](size_t /*offset*/, httplib::DataSink& sink) {
+            [sessionPtr](size_t /*offset*/, httplib::DataSink& sink) {
+                auto& session = *sessionPtr;
                 // Wait for events (blocks up to 100ms)
                 auto events = session.waitForEvents(100);
                 
@@ -766,7 +935,8 @@ int startServer(const ServerOptions& options) {
     // ================================================================
     // Get last solve result
     // ================================================================
-    svr.Get("/api/v1/solve/result", [&](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/api/v1/solve/result", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         std::lock_guard<std::mutex> lock(session.resultMutex);
         if (!session.hasResult) {
             res.status = 404;
@@ -781,7 +951,8 @@ int startServer(const ServerOptions& options) {
     // ================================================================
     // Cancel solve
     // ================================================================
-    svr.Post("/api/v1/solve/cancel", [&](const httplib::Request&, httplib::Response& res) {
+    svr.Post("/api/v1/solve/cancel", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         if (!session.solving.load()) {
             res.status = 409;
             json j = {{"error", "No solve is in progress"}};
@@ -796,7 +967,8 @@ int startServer(const ServerOptions& options) {
     // ================================================================
     // Update guesses: copy .sol -> .initials
     // ================================================================
-    svr.Post("/api/v1/update-guesses", [&](const httplib::Request&, httplib::Response& res) {
+    svr.Post("/api/v1/update-guesses", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         if (session.solContent.empty()) {
             res.status = 400;
             json j = {{"error", "No solution available to use as guesses"}};
@@ -811,7 +983,8 @@ int startServer(const ServerOptions& options) {
     // ================================================================
     // Variables endpoint (from last solve)
     // ================================================================
-    svr.Get("/api/v1/variables", [&](const httplib::Request&, httplib::Response& res) {
+    svr.Get("/api/v1/variables", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
         std::lock_guard<std::mutex> lock(session.resultMutex);
         if (!session.hasResult) {
             res.status = 404;
@@ -869,6 +1042,134 @@ int startServer(const ServerOptions& options) {
         }
         
         json j = {{"examples", examples}};
+        res.set_content(j.dump(), "application/json");
+    });
+    
+    // ================================================================
+    // Bundle download (ZIP of all model files)
+    // ================================================================
+    svr.Get("/api/v1/files/bundle", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        std::string stem = "model";
+        if (!session.openFilePath.empty())
+            stem = fs::path(session.openFilePath).stem().string();
+        
+        std::vector<std::pair<std::string, std::string>> files;
+        if (!session.eescodeContent.empty())
+            files.push_back({stem + ".eescode", session.eescodeContent});
+        if (!session.initialsContent.empty())
+            files.push_back({stem + ".initials", session.initialsContent});
+        if (!session.solContent.empty())
+            files.push_back({stem + ".sol", session.solContent});
+        if (!session.confContent.empty())
+            files.push_back({"coolsolve.conf", session.confContent});
+        
+        if (files.empty()) {
+            res.status = 400;
+            json j = {{"error", "No files to bundle"}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        std::string zip = createZipBundle(files);
+        res.set_header("Content-Disposition", "attachment; filename=\"" + stem + ".zip\"");
+        res.set_content(zip, "application/zip");
+    });
+    
+    // ================================================================
+    // File upload (multipart form — individual files or ZIP)
+    // ================================================================
+    svr.Post("/api/v1/files/upload", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        bool loaded = false;
+        std::string fileName;
+        
+        for (const auto& [name, file] : req.files) {
+            if (endsWith(file.filename, ".zip") && file.content.size() > 4) {
+                auto extracted = extractZipBundle(file.content);
+                for (const auto& [zname, zcontent] : extracted) {
+                    if (endsWith(zname, ".eescode")) {
+                        session.eescodeContent = zcontent; fileName = zname; loaded = true;
+                    } else if (endsWith(zname, ".initials")) {
+                        session.initialsContent = zcontent;
+                    } else if (endsWith(zname, ".sol")) {
+                        session.solContent = zcontent;
+                    } else if (zname == "coolsolve.conf" || endsWith(zname, ".conf")) {
+                        session.confContent = zcontent;
+                    }
+                }
+            } else if (endsWith(file.filename, ".eescode")) {
+                session.eescodeContent = file.content; fileName = file.filename; loaded = true;
+            } else if (endsWith(file.filename, ".initials")) {
+                session.initialsContent = file.content;
+            } else if (endsWith(file.filename, ".sol")) {
+                session.solContent = file.content;
+            } else if (file.filename == "coolsolve.conf" || endsWith(file.filename, ".conf")) {
+                session.confContent = file.content;
+            }
+        }
+        
+        if (!loaded) {
+            res.status = 400;
+            json j = {{"error", "No .eescode file found in upload"}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        session.openFilePath.clear();
+        json j = {{"success", true}, {"fileName", fileName},
+                  {"hasInitials", !session.initialsContent.empty()},
+                  {"hasSol", !session.solContent.empty()},
+                  {"hasConf", !session.confContent.empty()}};
+        res.set_content(j.dump(), "application/json");
+    });
+    
+    // ================================================================
+    // Debug output files
+    // ================================================================
+    svr.Get("/api/v1/debug/files", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        if (session.debugDir.empty() || !fs::exists(session.debugDir)) {
+            json j = {{"files", json::array()}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        json files = json::array();
+        for (const auto& entry : fs::directory_iterator(session.debugDir)) {
+            if (entry.is_regular_file()) {
+                json f;
+                f["name"] = entry.path().filename().string();
+                f["size"] = entry.file_size();
+                files.push_back(f);
+            }
+        }
+        json j = {{"files", files}};
+        res.set_content(j.dump(), "application/json");
+    });
+    
+    svr.Get("/api/v1/debug/file", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        if (session.debugDir.empty()) {
+            res.status = 404;
+            json j = {{"error", "No debug output available. Run a Debug Solve first."}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        auto name = req.get_param_value("name");
+        if (name.empty() || name.find('/') != std::string::npos ||
+            name.find('\\') != std::string::npos || name.find("..") != std::string::npos) {
+            res.status = 400;
+            json j = {{"error", "Invalid or missing filename"}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        fs::path filePath = fs::path(session.debugDir) / name;
+        if (!fs::exists(filePath)) {
+            res.status = 404;
+            json j = {{"error", "File not found: " + name}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        std::string content = readFileToString(filePath.string());
+        json j = {{"name", name}, {"content", content}};
         res.set_content(j.dump(), "application/json");
     });
     

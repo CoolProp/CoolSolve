@@ -114,4 +114,18 @@ export const api = {
 
   // Examples
   getExamples: () => request<ExamplesResponse>('/examples'),
+
+  // Debug output
+  getDebugFiles: () => request<{ files: { name: string; size: number }[] }>('/debug/files'),
+  getDebugFile: (name: string) => request<{ name: string; content: string }>(`/debug/file?name=${encodeURIComponent(name)}`),
+
+  // Upload files (multipart — don't set Content-Type, let browser handle boundary)
+  uploadFiles: async (formData: FormData): Promise<{ success: boolean; fileName: string; hasInitials: boolean; hasSol: boolean; hasConf: boolean }> => {
+    const res = await fetch(`${API_BASE}/files/upload`, { method: 'POST', body: formData });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
 };
