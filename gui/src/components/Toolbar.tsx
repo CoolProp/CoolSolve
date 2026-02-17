@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Play, FolderOpen, Save, RefreshCw, Bug, Sun, Moon,
   ChevronDown, ChevronUp, BookOpen, Square,
-  Braces, Quote, FilePlus, Undo,
+  Braces, Quote, FilePlus, Undo, Pencil,
 } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
@@ -21,6 +21,8 @@ export default function Toolbar() {
   const sol = useModelStore((s) => s.sol);
   const conf = useModelStore((s) => s.conf);
   const filePath = useModelStore((s) => s.filePath);
+  const modelName = useModelStore((s) => s.modelName);
+  const setModelName = useModelStore((s) => s.setModelName);
   const canGoBack = useModelStore((s) => s.canGoBack);
   const setSol = useModelStore((s) => s.setSol);
   const setInitials = useModelStore((s) => s.setInitials);
@@ -36,7 +38,23 @@ export default function Toolbar() {
 
   const [examples, setExamples] = useState<ExampleFile[]>([]);
   const [showExamples, setShowExamples] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameInput, setNameInput] = useState('');
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // Update page title when model name changes
+  useEffect(() => {
+    document.title = modelName ? `CoolSolve: ${modelName}` : 'CoolSolve';
+  }, [modelName]);
+
+  // Focus name input when editing starts
+  useEffect(() => {
+    if (editingName && nameInputRef.current) {
+      nameInputRef.current.focus();
+      nameInputRef.current.select();
+    }
+  }, [editingName]);
 
   // Load examples on mount
   useEffect(() => {
@@ -171,7 +189,7 @@ export default function Toolbar() {
           const solRes = await api.getSol();
           const confRes = await api.getConf();
           setCanGoBack(true);
-          loadFile(file.name.replace(/\.zip$/, ''), ees.content, init.content, solRes.content, confRes.content);
+          loadFile(file.name.replace(/\.zip$/, ''), ees.content, init.content, solRes.content, confRes.content, res.modelName);
           addConsoleLine(`>>> Opened: ${res.files.join(', ')}`);
         }
       } catch (err: any) {
@@ -194,11 +212,20 @@ export default function Toolbar() {
       await api.putEescode(eescode);
       if (initials) await api.putInitials(initials);
 
+      // If no model name, prompt for one
+      let name = modelName;
+      if (!name) {
+        const input = prompt('Enter model name:', 'model');
+        if (!input) return; // cancelled
+        name = input.trim() || 'model';
+        setModelName(name);
+        await api.setModelName(name);
+      }
+
       // Build file list for logging
-      const stem = filePath ? filePath.replace(/\.[^.]+$/, '').split('/').pop() || 'model' : 'model';
-      const fileNames: string[] = [stem + '.eescode'];
-      if (initials) fileNames.push(stem + '.initials');
-      if (sol) fileNames.push(stem + '.sol');
+      const fileNames: string[] = [name + '.eescode'];
+      if (initials) fileNames.push(name + '.initials');
+      if (sol) fileNames.push(name + '.sol');
       if (conf) fileNames.push('coolsolve.conf');
       // Check for debug files
       try {
@@ -211,7 +238,7 @@ export default function Toolbar() {
     } catch (err: any) {
       addConsoleLine(`>>> ERROR: ${err.message}`);
     }
-  }, [eescode, initials, sol, conf, filePath, addConsoleLine]);
+  }, [eescode, initials, sol, conf, modelName, setModelName, addConsoleLine]);
 
   // ================================================================
   // Back — restore previous model
@@ -224,7 +251,7 @@ export default function Toolbar() {
         const init = await api.getInitials();
         const solRes = await api.getSol();
         const confRes = await api.getConf();
-        loadFile(ees.filePath || '', ees.content, init.content, solRes.content, confRes.content);
+        loadFile(ees.filePath || '', ees.content, init.content, solRes.content, confRes.content, res.modelName);
         setCanGoBack(false);
         // Try to restore solve result
         try {
@@ -248,8 +275,8 @@ export default function Toolbar() {
         const solRes = await api.getSol();
         const confRes = await api.getConf();
         setCanGoBack(true);
-        loadFile(res.filePath, ees.content, init.content, solRes.content, confRes.content);
-        addConsoleLine(`>>> Opened example: ${res.filePath.split('/').pop()}`);
+        loadFile(res.filePath, ees.content, init.content, solRes.content, confRes.content, res.modelName);
+        addConsoleLine(`>>> Opened example: ${res.modelName || res.filePath.split('/').pop()}`);
       }
     } catch (err: any) {
       addConsoleLine(`>>> ERROR opening example: ${err.message}`);
@@ -418,9 +445,41 @@ export default function Toolbar() {
 
       <div className="toolbar-spacer" />
 
-      {/* Status */}
-      <div className="toolbar-status">
-        {filePath ? filePath.split('/').pop() : 'Untitled'}
+      {/* Status — editable model name */}
+      <div className="toolbar-status" title="Click to rename model">
+        {editingName ? (
+          <input
+            ref={nameInputRef}
+            className="model-name-input"
+            value={nameInput}
+            onChange={(e) => setNameInput(e.target.value)}
+            onBlur={() => {
+              const trimmed = nameInput.trim();
+              if (trimmed && trimmed !== modelName) {
+                setModelName(trimmed);
+                api.setModelName(trimmed).catch(() => {});
+              }
+              setEditingName(false);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                (e.target as HTMLInputElement).blur();
+              } else if (e.key === 'Escape') {
+                setEditingName(false);
+              }
+            }}
+          />
+        ) : (
+          <span
+            className="model-name-display"
+            onClick={() => {
+              setNameInput(modelName || '');
+              setEditingName(true);
+            }}
+          >
+            {modelName || 'Untitled'} <Pencil size={12} />
+          </span>
+        )}
       </div>
 
       <div className="toolbar-separator" />

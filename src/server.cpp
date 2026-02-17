@@ -72,6 +72,7 @@ struct SessionSnapshot {
     std::string solContent;
     std::string confContent;
     std::string openFilePath;
+    std::string modelName;
     std::string debugDir;
     bool hasResult = false;
     SolveResult lastResult;
@@ -88,6 +89,7 @@ struct Session {
     std::string confContent;                    // coolsolve.conf content
     
     std::string openFilePath;                   // Path of currently open .eescode file
+    std::string modelName;                      // User-facing model name (for ZIP filename and page title)
     
     fs::path tempDir;                               // Session temp directory
     std::string debugDir;                           // Last debug output directory
@@ -119,6 +121,7 @@ struct Session {
         snap->solContent = solContent;
         snap->confContent = confContent;
         snap->openFilePath = openFilePath;
+        snap->modelName = modelName;
         snap->debugDir = debugDir;
         {
             std::lock_guard<std::mutex> lock(resultMutex);
@@ -139,6 +142,7 @@ struct Session {
         solContent = previousState->solContent;
         confContent = previousState->confContent;
         openFilePath = previousState->openFilePath;
+        modelName = previousState->modelName;
         debugDir = previousState->debugDir;
         {
             std::lock_guard<std::mutex> lock(resultMutex);
@@ -507,7 +511,8 @@ int startServer(const ServerOptions& options) {
         auto& session = *getSession(req, res);
         json j = {
             {"content", session.eescodeContent},
-            {"filePath", session.openFilePath}
+            {"filePath", session.openFilePath},
+            {"modelName", session.modelName}
         };
         res.set_content(j.dump(), "application/json");
     });
@@ -596,6 +601,7 @@ int startServer(const ServerOptions& options) {
             session.saveSnapshot();
             
             session.openFilePath = filePath;
+            session.modelName = fs::path(filePath).stem().string();
             session.eescodeContent = readFileToString(filePath);
             session.initialsContent.clear();
             session.solContent.clear();
@@ -613,6 +619,7 @@ int startServer(const ServerOptions& options) {
             json j = {
                 {"success", true},
                 {"filePath", filePath},
+                {"modelName", session.modelName},
                 {"hasInitials", !session.initialsContent.empty()},
                 {"hasSol", !session.solContent.empty()},
                 {"hasConf", !session.confContent.empty()}
@@ -643,6 +650,7 @@ int startServer(const ServerOptions& options) {
         session.solContent.clear();
         session.confContent.clear();
         session.openFilePath.clear();
+        session.modelName.clear();
         
         // Clear debug
         if (!session.debugDir.empty()) {
@@ -675,8 +683,31 @@ int startServer(const ServerOptions& options) {
             return;
         }
         session.restoreSnapshot();
-        json j = {{"success", true}};
+        json j = {{"success", true}, {"modelName", session.modelName}};
         res.set_content(j.dump(), "application/json");
+    });
+    
+    // ================================================================
+    // Model name — get or set the user-facing model name
+    // ================================================================
+    svr.Get("/api/v1/model-name", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        json j = {{"modelName", session.modelName}};
+        res.set_content(j.dump(), "application/json");
+    });
+    
+    svr.Put("/api/v1/model-name", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        try {
+            auto body = json::parse(req.body);
+            session.modelName = body.value("modelName", "");
+            json j = {{"success", true}};
+            res.set_content(j.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            json j = {{"error", e.what()}};
+            res.set_content(j.dump(), "application/json");
+        }
     });
     
     // ================================================================
@@ -1102,9 +1133,7 @@ int startServer(const ServerOptions& options) {
     // ================================================================
     svr.Get("/api/v1/files/bundle", [&](const httplib::Request& req, httplib::Response& res) {
         auto& session = *getSession(req, res);
-        std::string stem = "model";
-        if (!session.openFilePath.empty())
-            stem = fs::path(session.openFilePath).stem().string();
+        std::string stem = session.modelName.empty() ? "model" : session.modelName;
         
         std::vector<std::pair<std::string, std::string>> files;
         if (!session.eescodeContent.empty())
@@ -1145,9 +1174,11 @@ int startServer(const ServerOptions& options) {
         
         // Find the uploaded ZIP file
         std::string zipContent;
+        std::string zipFilename;
         for (const auto& [name, file] : req.files) {
             if (endsWith(file.filename, ".zip") && file.content.size() > 4) {
                 zipContent = file.content;
+                zipFilename = file.filename;
                 break;
             }
         }
@@ -1184,6 +1215,11 @@ int startServer(const ServerOptions& options) {
         session.solContent.clear();
         session.confContent.clear();
         session.openFilePath.clear();
+        session.modelName.clear();
+        // Set model name from ZIP filename
+        if (!zipFilename.empty()) {
+            session.modelName = fs::path(zipFilename).stem().string();
+        }
         if (!session.debugDir.empty()) {
             std::error_code ec;
             fs::remove_all(session.debugDir, ec);
@@ -1223,7 +1259,7 @@ int startServer(const ServerOptions& options) {
         }
         if (hasDebug) fileList.push_back("debug_output/");
         
-        json j = {{"success", true}, {"files", fileList}};
+        json j = {{"success", true}, {"files", fileList}, {"modelName", session.modelName}};
         res.set_content(j.dump(), "application/json");
     });
     

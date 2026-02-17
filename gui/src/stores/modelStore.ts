@@ -4,6 +4,7 @@ import type { SolveResponse, ParseError, SolvedVariable } from '../api/types';
 interface ModelState {
   // File state
   filePath: string;
+  modelName: string;
   eescode: string;
   initials: string;
   sol: string;
@@ -30,6 +31,7 @@ interface ModelState {
   setInitials: (initials: string) => void;
   setConf: (conf: string) => void;
   setFilePath: (path: string) => void;
+  setModelName: (name: string) => void;
   setParseResult: (errors: ParseError[], eqCount: number, varCount: number, isSquare: boolean) => void;
   setSolving: (solving: boolean) => void;
   setSolveResult: (result: SolveResponse) => void;
@@ -38,12 +40,13 @@ interface ModelState {
   setCanGoBack: (canGoBack: boolean) => void;
   addConsoleLine: (line: string) => void;
   clearConsole: () => void;
-  loadFile: (path: string, eescode: string, initials: string, sol: string, conf: string) => void;
+  loadFile: (path: string, eescode: string, initials: string, sol: string, conf: string, modelName?: string) => void;
   clearModel: () => void;
 }
 
 export const useModelStore = create<ModelState>((set) => ({
   filePath: '',
+  modelName: '',
   eescode: '',
   initials: '',
   sol: '',
@@ -66,6 +69,7 @@ export const useModelStore = create<ModelState>((set) => ({
   setInitials: (initials) => set({ initials }),
   setConf: (conf) => set({ conf }),
   setFilePath: (path) => set({ filePath: path }),
+  setModelName: (name) => set({ modelName: name }),
   setParseResult: (errors, eqCount, varCount, isSquare) =>
     set({ parseErrors: errors, equationCount: eqCount, variableCount: varCount, isSquare }),
   setSolving: (solving) => set({ solving }),
@@ -76,8 +80,8 @@ export const useModelStore = create<ModelState>((set) => ({
   addConsoleLine: (line) =>
     set((state) => ({ consoleLines: [...state.consoleLines, line] })),
   clearConsole: () => set({ consoleLines: [] }),
-  loadFile: (path, eescode, initials, sol, conf) =>
-    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [] }),
+  loadFile: (path, eescode, initials, sol, conf, modelName) =>
+    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '' }),
   clearModel: () =>
-    set({ filePath: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true }),
+    set({ filePath: '', modelName: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true }),
 }));

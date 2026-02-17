@@ -80,6 +80,7 @@ export interface VariablesResponse {
 export interface FileOpenResponse {
   success: boolean;
   filePath: string;
+  modelName: string;
   hasInitials: boolean;
   hasSol: boolean;
   hasConf: boolean;
@@ -97,6 +98,7 @@ export interface ExamplesResponse {
 export interface UploadResponse {
   success: boolean;
   files: string[];
+  modelName: string;
 }
 
 // SSE progress events from /api/v1/solve/stream

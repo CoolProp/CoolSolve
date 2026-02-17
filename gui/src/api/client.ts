@@ -67,7 +67,16 @@ export const api = {
 
   // Back (restore previous model)
   goBack: () =>
-    request<{ success: boolean }>('/back', { method: 'POST' }),
+    request<{ success: boolean; modelName: string }>('/back', { method: 'POST' }),
+
+  // Model name
+  getModelName: () =>
+    request<{ modelName: string }>('/model-name'),
+  setModelName: (modelName: string) =>
+    request<{ success: boolean }>('/model-name', {
+      method: 'PUT',
+      body: JSON.stringify({ modelName }),
+    }),
 
   // Parse
   parse: (source: string) =>
