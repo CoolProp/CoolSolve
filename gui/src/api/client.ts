@@ -7,6 +7,7 @@ import type {
   VariablesResponse,
   FileOpenResponse,
   ExamplesResponse,
+  UploadResponse,
   SSEEvent,
 } from './types';
 
@@ -60,14 +61,13 @@ export const api = {
       body: JSON.stringify({ path }),
     }),
 
-  saveFile: () =>
-    request<{ success: boolean }>('/files/save', { method: 'POST' }),
+  // New model (clear session)
+  newModel: () =>
+    request<{ success: boolean; hadContent: boolean }>('/new', { method: 'POST' }),
 
-  saveFileAs: (path: string) =>
-    request<{ success: boolean; filePath: string }>('/files/save-as', {
-      method: 'POST',
-      body: JSON.stringify({ path }),
-    }),
+  // Back (restore previous model)
+  goBack: () =>
+    request<{ success: boolean }>('/back', { method: 'POST' }),
 
   // Parse
   parse: (source: string) =>
@@ -119,8 +119,8 @@ export const api = {
   getDebugFiles: () => request<{ files: { name: string; size: number }[] }>('/debug/files'),
   getDebugFile: (name: string) => request<{ name: string; content: string }>(`/debug/file?name=${encodeURIComponent(name)}`),
 
-  // Upload files (multipart — don't set Content-Type, let browser handle boundary)
-  uploadFiles: async (formData: FormData): Promise<{ success: boolean; fileName: string; hasInitials: boolean; hasSol: boolean; hasConf: boolean }> => {
+  // Upload ZIP file
+  uploadFiles: async (formData: FormData): Promise<UploadResponse> => {
     const res = await fetch(`${API_BASE}/files/upload`, { method: 'POST', body: formData });
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: res.statusText }));

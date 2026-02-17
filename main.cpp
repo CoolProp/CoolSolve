@@ -169,6 +169,27 @@ int main(int argc, char* argv[]) {
         coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
     }
     
+    // Clean up previous solve outputs before starting a new solve
+    {
+        fs::path inputPath(inputFile);
+        // Delete existing .sol file
+        fs::path solPath = inputPath.parent_path() / (inputPath.stem().string() + ".sol");
+        if (fs::exists(solPath)) {
+            fs::remove(solPath);
+        }
+        // Delete existing debug directory
+        fs::path defDebugPath;
+        if (debugDir.empty()) {
+            defDebugPath = inputPath.parent_path() / (inputPath.stem().string() + "_coolsolve");
+        } else {
+            defDebugPath = debugDir;
+        }
+        if (fs::exists(defDebugPath)) {
+            std::error_code ec;
+            fs::remove_all(defDebugPath, ec);
+        }
+    }
+    
     // Run the pipeline (Parse -> IR -> Infer -> Analyze -> Solve)
     // Note: runner.run() automatically loads .initials if present
     // Pass debugMode as enableTracing

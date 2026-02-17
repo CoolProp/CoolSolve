@@ -497,40 +497,52 @@ with its own `CoolSolveRunner` instance.  No global state is shared.
 
 ## 11. Implementation Phases
 
-### Phase 1 — Core GUI (MVP)
+### Phase 1 — Core GUI (MVP) ✅ DONE
 
 **Goal**: A usable local GUI that replaces the CLI for interactive work.
 
-| Step | Task | Effort |
+| Step | Task | Status |
 |------|------|--------|
-| 1.1 | Add cpp-httplib to CMake (FetchContent or vendored header) | 1 day |
-| 1.2 | Implement REST API in `src/server.cpp`: session, file, solve, parse endpoints | 3–4 days |
-| 1.3 | Implement SSE progress streaming from `CoolSolveRunner` (requires a callback hook in the solver loop) | 1–2 days |
-| 1.4 | Add `--gui [port]` flag to `main.cpp` | 0.5 day |
-| 1.5 | Scaffold React frontend (Vite + TypeScript) | 0.5 day |
-| 1.6 | Implement Monaco editor with EES language definition | 2 days |
-| 1.7 | Implement variable table (AG Grid) with editable initials/units | 2 days |
-| 1.8 | Implement toolbar (Solve, Open, Save, Update Guesses, Comment toggles) | 1–2 days |
-| 1.9 | Implement console panel with SSE progress | 1 day |
-| 1.10 | Embed frontend assets into binary (CMake build step) | 1 day |
-| 1.11 | Cross-platform testing (Linux, macOS, Windows) | 2 days |
+| 1.1 | Add cpp-httplib to CMake (FetchContent or vendored header) | ✅ |
+| 1.2 | Implement REST API in `src/server.cpp`: session, file, solve, parse endpoints | ✅ |
+| 1.3 | Implement SSE progress streaming from `CoolSolveRunner` | ✅ |
+| 1.4 | Add `--gui [port]` flag to `main.cpp` | ✅ |
+| 1.5 | Scaffold React frontend (Vite + TypeScript) | ✅ |
+| 1.6 | Implement Monaco editor with EES language definition | ✅ |
+| 1.7 | Implement variable table (AG Grid) with editable initials/units | ✅ |
+| 1.8 | Implement toolbar (Solve, Open, Save, Update Guesses, Comment toggles) | ✅ |
+| 1.9 | Implement console panel with SSE progress | ✅ |
+| 1.10 | Embed frontend assets into binary (CMake build step) | ✅ |
+| 1.11 | Cross-platform testing (Linux, macOS, Windows) | ✅ |
 
-**Estimated total: ~2–3 weeks**
+### Phase 2 — Online Deployment & Polish ✅ DONE
 
-### Phase 2 — Online Deployment & Polish
-
-| Step | Task | Effort |
+| Step | Task | Status |
 |------|------|--------|
-| 2.1 | Session management and temp-directory sandboxing | 2 days |
-| 2.2 | ZIP bundle upload/download | 1 day |
-| 2.3 | Config editor tab (form-based coolsolve.conf editing) | 1–2 days |
-| 2.4 | Debug output viewer tab | 1–2 days |
-| 2.5 | Array variables tab (spreadsheet view) | 1 day |
-| 2.6 | LaTeX report generation and download | 1–2 days |
-| 2.7 | Deployment configuration (Docker image, nginx reverse proxy) | 1–2 days |
-| 2.8 | Online demo deployment | 1 day |
+| 2.1 | Session management and temp-directory sandboxing | ✅ |
+| 2.2 | ZIP bundle upload/download | ✅ |
+| 2.3 | Config editor tab (form-based coolsolve.conf editing) | ✅ |
+| 2.4 | Debug output viewer tab | ✅ |
+| 2.5 | Array variables tab (spreadsheet view) | ✅ |
+| 2.6 | LaTeX report generation and download | — deferred |
+| 2.7 | Deployment configuration (Docker image, nginx reverse proxy) | — deferred |
+| 2.8 | Online demo deployment | — deferred |
 
-**Estimated total: ~2 weeks**
+### Phase 2b — File Workflow Simplification ✅ DONE
+
+Refactored file management to ZIP-only workflow with simplified toolbar.
+
+| Step | Task | Status |
+|------|------|--------|
+| 2b.1 | Simplify toolbar to 3 main buttons: New, Open, Save (ZIP-only) | ✅ |
+| 2b.2 | Add Back button (one-level undo via SessionSnapshot) | ✅ |
+| 2b.3 | Remove redundant Save/Save-As/Load endpoints | ✅ |
+| 2b.4 | Upload only accepts ZIP files | ✅ |
+| 2b.5 | Bundle includes debug output files when present | ✅ |
+| 2b.6 | New solve clears .sol file and debug directory (GUI + CLI) | ✅ |
+| 2b.7 | Examples remain read-only on server | ✅ |
+| 2b.8 | Log file list on save/open (single line) | ✅ |
+| 2b.9 | Multi-user session isolation preserved | ✅ |
 
 ### Phase 3 — Sensitivity Analysis
 

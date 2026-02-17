@@ -64,7 +64,22 @@ static std::string getMimeType(const std::string& path) {
 }
 
 // ============================================================================
-// Session state (single session for local mode)
+// Snapshot for Back button (one-level undo for model loading)
+// ============================================================================
+struct SessionSnapshot {
+    std::string eescodeContent;
+    std::string initialsContent;
+    std::string solContent;
+    std::string confContent;
+    std::string openFilePath;
+    std::string debugDir;
+    bool hasResult = false;
+    SolveResult lastResult;
+    CoolSolveRunner::PipelineTiming lastTiming;
+};
+
+// ============================================================================
+// Session state
 // ============================================================================
 struct Session {
     std::string eescodeContent;                 // Current .eescode source
@@ -76,6 +91,9 @@ struct Session {
     
     fs::path tempDir;                               // Session temp directory
     std::string debugDir;                           // Last debug output directory
+    
+    // Snapshot for Back button
+    std::unique_ptr<SessionSnapshot> previousState;
     
     // Solve state
     std::atomic<bool> solving{false};
@@ -92,6 +110,50 @@ struct Session {
     std::mutex progressMutex;
     std::condition_variable progressCV;
     std::vector<std::string> progressEvents;
+    
+    // Save current state as snapshot (for Back button)
+    void saveSnapshot() {
+        auto snap = std::make_unique<SessionSnapshot>();
+        snap->eescodeContent = eescodeContent;
+        snap->initialsContent = initialsContent;
+        snap->solContent = solContent;
+        snap->confContent = confContent;
+        snap->openFilePath = openFilePath;
+        snap->debugDir = debugDir;
+        {
+            std::lock_guard<std::mutex> lock(resultMutex);
+            snap->hasResult = hasResult;
+            if (hasResult) {
+                snap->lastResult = lastResult;
+                snap->lastTiming = lastTiming;
+            }
+        }
+        previousState = std::move(snap);
+    }
+    
+    // Restore state from snapshot (Back button)
+    bool restoreSnapshot() {
+        if (!previousState) return false;
+        eescodeContent = previousState->eescodeContent;
+        initialsContent = previousState->initialsContent;
+        solContent = previousState->solContent;
+        confContent = previousState->confContent;
+        openFilePath = previousState->openFilePath;
+        debugDir = previousState->debugDir;
+        {
+            std::lock_guard<std::mutex> lock(resultMutex);
+            hasResult = previousState->hasResult;
+            if (previousState->hasResult) {
+                lastResult = previousState->lastResult;
+                lastTiming = previousState->lastTiming;
+            } else {
+                lastResult = SolveResult{};
+                lastTiming = CoolSolveRunner::PipelineTiming{};
+            }
+        }
+        previousState.reset();
+        return true;
+    }
     
     void addProgressEvent(const std::string& event) {
         {
@@ -516,7 +578,7 @@ int startServer(const ServerOptions& options) {
         }
     });
     
-    // POST /api/v1/files/open - Open a file from disk (local mode)
+    // POST /api/v1/files/open - Open a file from disk (used for examples)
     svr.Post("/api/v1/files/open", [&](const httplib::Request& req, httplib::Response& res) {
         auto& session = *getSession(req, res);
         try {
@@ -530,11 +592,20 @@ int startServer(const ServerOptions& options) {
                 return;
             }
             
+            // Save snapshot for Back button
+            session.saveSnapshot();
+            
             session.openFilePath = filePath;
             session.eescodeContent = readFileToString(filePath);
             session.initialsContent.clear();
             session.solContent.clear();
             session.confContent.clear();
+            session.debugDir.clear();
+            {
+                std::lock_guard<std::mutex> lock(session.resultMutex);
+                session.hasResult = false;
+                session.lastResult = SolveResult{};
+            }
             
             // Auto-discover companion files
             discoverCompanionFiles(session);
@@ -554,90 +625,58 @@ int startServer(const ServerOptions& options) {
         }
     });
     
-    // POST /api/v1/files/save - Save to current file path (local mode)
-    svr.Post("/api/v1/files/save", [&](const httplib::Request& req, httplib::Response& res) {
+    // ================================================================
+    // New model — clear session state
+    // ================================================================
+    svr.Post("/api/v1/new", [&](const httplib::Request& req, httplib::Response& res) {
         auto& session = *getSession(req, res);
-        if (session.openFilePath.empty()) {
-            res.status = 400;
-            json j = {{"error", "No file is currently open"}};
-            res.set_content(j.dump(), "application/json");
-            return;
+        bool hadContent = !session.eescodeContent.empty();
+        
+        // Save snapshot for Back button (if there was content)
+        if (hadContent) {
+            session.saveSnapshot();
         }
         
-        bool ok = writeStringToFile(session.openFilePath, session.eescodeContent);
+        // Clear all model state
+        session.eescodeContent.clear();
+        session.initialsContent.clear();
+        session.solContent.clear();
+        session.confContent.clear();
+        session.openFilePath.clear();
         
-        // Also save .initials if content exists
-        if (!session.initialsContent.empty()) {
-            fs::path dir = fs::path(session.openFilePath).parent_path();
-            std::string stem = fs::path(session.openFilePath).stem().string();
-            writeStringToFile((dir / (stem + ".initials")).string(), session.initialsContent);
+        // Clear debug
+        if (!session.debugDir.empty()) {
+            std::error_code ec;
+            fs::remove_all(session.debugDir, ec);
+            session.debugDir.clear();
         }
         
-        // Save .conf if content exists
-        if (!session.confContent.empty()) {
-            fs::path dir = fs::path(session.openFilePath).parent_path();
-            writeStringToFile((dir / "coolsolve.conf").string(), session.confContent);
+        // Clear solve result
+        {
+            std::lock_guard<std::mutex> lock(session.resultMutex);
+            session.hasResult = false;
+            session.lastResult = SolveResult{};
+            session.lastTiming = CoolSolveRunner::PipelineTiming{};
         }
         
-        json j = {{"success", ok}};
+        json j = {{"success", true}, {"hadContent", hadContent}};
         res.set_content(j.dump(), "application/json");
     });
     
-    // POST /api/v1/files/save-as - Save to a new file path (local mode)
-    svr.Post("/api/v1/files/save-as", [&](const httplib::Request& req, httplib::Response& res) {
+    // ================================================================
+    // Back — restore previous model state
+    // ================================================================
+    svr.Post("/api/v1/back", [&](const httplib::Request& req, httplib::Response& res) {
         auto& session = *getSession(req, res);
-        try {
-            auto body = json::parse(req.body);
-            if (!body.contains("path")) {
-                res.status = 400;
-                json j = {{"error", "Missing 'path' in request body"}};
-                res.set_content(j.dump(), "application/json");
-                return;
-            }
-            std::string newPath = body["path"].get<std::string>();
-            
-            // Ensure path ends with .eescode
-            if (newPath.size() < 8 || newPath.substr(newPath.size() - 8) != ".eescode") {
-                newPath += ".eescode";
-            }
-            
-            // Create parent directory if needed
-            fs::path parentDir = fs::path(newPath).parent_path();
-            if (!parentDir.empty()) {
-                fs::create_directories(parentDir);
-            }
-            
-            bool ok = writeStringToFile(newPath, session.eescodeContent);
-            if (!ok) {
-                res.status = 500;
-                json j = {{"error", "Failed to write file"}};
-                res.set_content(j.dump(), "application/json");
-                return;
-            }
-            
-            // Save companion files
-            fs::path dir = fs::path(newPath).parent_path();
-            std::string stem = fs::path(newPath).stem().string();
-            
-            // Always save .initials (even if empty, so the companion file exists)
-            writeStringToFile((dir / (stem + ".initials")).string(), session.initialsContent);
-            if (!session.confContent.empty()) {
-                writeStringToFile((dir / "coolsolve.conf").string(), session.confContent);
-            }
-            if (!session.solContent.empty()) {
-                writeStringToFile((dir / (stem + ".sol")).string(), session.solContent);
-            }
-            
-            // Update current open file path
-            session.openFilePath = newPath;
-            
-            json j = {{"success", true}, {"filePath", newPath}};
+        if (!session.previousState) {
+            res.status = 409;
+            json j = {{"error", "No previous model to restore"}};
             res.set_content(j.dump(), "application/json");
-        } catch (const std::exception& e) {
-            res.status = 400;
-            json j = {{"error", e.what()}};
-            res.set_content(j.dump(), "application/json");
+            return;
         }
+        session.restoreSnapshot();
+        json j = {{"success", true}};
+        res.set_content(j.dump(), "application/json");
     });
     
     // ================================================================
@@ -727,6 +766,19 @@ int startServer(const ServerOptions& options) {
                 json j = {{"error", "No source code to solve"}};
                 res.set_content(j.dump(), "application/json");
                 return;
+            }
+            
+            // Clear previous debug output and .sol before new solve
+            session.solContent.clear();
+            if (!session.debugDir.empty()) {
+                std::error_code ec;
+                fs::remove_all(session.debugDir, ec);
+                session.debugDir.clear();
+            }
+            {
+                std::lock_guard<std::mutex> lock(session.resultMutex);
+                session.hasResult = false;
+                session.lastResult = SolveResult{};
             }
             
             // Write temp files for the runner (session-isolated temp dir)
@@ -1046,7 +1098,7 @@ int startServer(const ServerOptions& options) {
     });
     
     // ================================================================
-    // Bundle download (ZIP of all model files)
+    // Bundle download (ZIP of all model files + debug if present)
     // ================================================================
     svr.Get("/api/v1/files/bundle", [&](const httplib::Request& req, httplib::Response& res) {
         auto& session = *getSession(req, res);
@@ -1064,6 +1116,16 @@ int startServer(const ServerOptions& options) {
         if (!session.confContent.empty())
             files.push_back({"coolsolve.conf", session.confContent});
         
+        // Include debug files if they exist
+        if (!session.debugDir.empty() && fs::exists(session.debugDir)) {
+            for (const auto& entry : fs::directory_iterator(session.debugDir)) {
+                if (entry.is_regular_file()) {
+                    std::string content = readFileToString(entry.path().string());
+                    files.push_back({"debug_output/" + entry.path().filename().string(), content});
+                }
+            }
+        }
+        
         if (files.empty()) {
             res.status = 400;
             json j = {{"error", "No files to bundle"}};
@@ -1076,49 +1138,92 @@ int startServer(const ServerOptions& options) {
     });
     
     // ================================================================
-    // File upload (multipart form — individual files or ZIP)
+    // File upload (ZIP only)
     // ================================================================
     svr.Post("/api/v1/files/upload", [&](const httplib::Request& req, httplib::Response& res) {
         auto& session = *getSession(req, res);
-        bool loaded = false;
-        std::string fileName;
         
+        // Find the uploaded ZIP file
+        std::string zipContent;
         for (const auto& [name, file] : req.files) {
             if (endsWith(file.filename, ".zip") && file.content.size() > 4) {
-                auto extracted = extractZipBundle(file.content);
-                for (const auto& [zname, zcontent] : extracted) {
-                    if (endsWith(zname, ".eescode")) {
-                        session.eescodeContent = zcontent; fileName = zname; loaded = true;
-                    } else if (endsWith(zname, ".initials")) {
-                        session.initialsContent = zcontent;
-                    } else if (endsWith(zname, ".sol")) {
-                        session.solContent = zcontent;
-                    } else if (zname == "coolsolve.conf" || endsWith(zname, ".conf")) {
-                        session.confContent = zcontent;
-                    }
-                }
-            } else if (endsWith(file.filename, ".eescode")) {
-                session.eescodeContent = file.content; fileName = file.filename; loaded = true;
-            } else if (endsWith(file.filename, ".initials")) {
-                session.initialsContent = file.content;
-            } else if (endsWith(file.filename, ".sol")) {
-                session.solContent = file.content;
-            } else if (file.filename == "coolsolve.conf" || endsWith(file.filename, ".conf")) {
-                session.confContent = file.content;
+                zipContent = file.content;
+                break;
             }
         }
         
-        if (!loaded) {
+        if (zipContent.empty()) {
             res.status = 400;
-            json j = {{"error", "No .eescode file found in upload"}};
+            json j = {{"error", "Please upload a .zip file"}};
             res.set_content(j.dump(), "application/json");
             return;
         }
+        
+        auto extracted = extractZipBundle(zipContent);
+        
+        // Verify there is an .eescode file
+        bool hasEescode = false;
+        for (const auto& [zname, _] : extracted) {
+            if (endsWith(zname, ".eescode") && !startsWith(zname, "debug_output/")) {
+                hasEescode = true; break;
+            }
+        }
+        if (!hasEescode) {
+            res.status = 400;
+            json j = {{"error", "ZIP must contain an .eescode file"}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        
+        // Save snapshot for Back button
+        session.saveSnapshot();
+        
+        // Clear previous state
+        session.eescodeContent.clear();
+        session.initialsContent.clear();
+        session.solContent.clear();
+        session.confContent.clear();
         session.openFilePath.clear();
-        json j = {{"success", true}, {"fileName", fileName},
-                  {"hasInitials", !session.initialsContent.empty()},
-                  {"hasSol", !session.solContent.empty()},
-                  {"hasConf", !session.confContent.empty()}};
+        if (!session.debugDir.empty()) {
+            std::error_code ec;
+            fs::remove_all(session.debugDir, ec);
+            session.debugDir.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(session.resultMutex);
+            session.hasResult = false;
+            session.lastResult = SolveResult{};
+        }
+        
+        // Extract files from ZIP
+        json fileList = json::array();
+        bool hasDebug = false;
+        for (const auto& [zname, zcontent] : extracted) {
+            if (startsWith(zname, "debug_output/") && zname.size() > 13) {
+                // Write debug files to session temp dir
+                auto debugDir = session.tempDir / "debug_output";
+                fs::create_directories(debugDir);
+                std::string debugFileName = zname.substr(13);
+                writeStringToFile((debugDir / debugFileName).string(), zcontent);
+                session.debugDir = debugDir.string();
+                hasDebug = true;
+            } else if (endsWith(zname, ".eescode")) {
+                session.eescodeContent = zcontent;
+                fileList.push_back(zname);
+            } else if (endsWith(zname, ".initials")) {
+                session.initialsContent = zcontent;
+                fileList.push_back(zname);
+            } else if (endsWith(zname, ".sol")) {
+                session.solContent = zcontent;
+                fileList.push_back(zname);
+            } else if (zname == "coolsolve.conf" || endsWith(zname, ".conf")) {
+                session.confContent = zcontent;
+                fileList.push_back(zname);
+            }
+        }
+        if (hasDebug) fileList.push_back("debug_output/");
+        
+        json j = {{"success", true}, {"files", fileList}};
         res.set_content(j.dump(), "application/json");
     });
     

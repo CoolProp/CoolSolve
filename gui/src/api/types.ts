@@ -94,6 +94,11 @@ export interface ExamplesResponse {
   examples: ExampleFile[];
 }
 
+export interface UploadResponse {
+  success: boolean;
+  files: string[];
+}
+
 // SSE progress events from /api/v1/solve/stream
 export interface SSEBlockEvent {
   type: 'block';

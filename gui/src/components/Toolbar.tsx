@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Play, FolderOpen, Save, RefreshCw, Bug, Sun, Moon,
-  ChevronDown, ChevronUp, BookOpen, Square, SaveAll,
-  Braces, Quote, Download, Upload,
+  ChevronDown, ChevronUp, BookOpen, Square,
+  Braces, Quote, FilePlus, Undo,
 } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
@@ -18,13 +18,15 @@ export default function Toolbar() {
   const clearConsole = useModelStore((s) => s.clearConsole);
   const eescode = useModelStore((s) => s.eescode);
   const initials = useModelStore((s) => s.initials);
+  const sol = useModelStore((s) => s.sol);
+  const conf = useModelStore((s) => s.conf);
   const filePath = useModelStore((s) => s.filePath);
+  const canGoBack = useModelStore((s) => s.canGoBack);
   const setSol = useModelStore((s) => s.setSol);
   const setInitials = useModelStore((s) => s.setInitials);
-  const setEescode = useModelStore((s) => s.setEescode);
-  const setConf = useModelStore((s) => s.setConf);
-  const setFilePath = useModelStore((s) => s.setFilePath);
+  const setCanGoBack = useModelStore((s) => s.setCanGoBack);
   const loadFile = useModelStore((s) => s.loadFile);
+  const clearModel = useModelStore((s) => s.clearModel);
 
   const theme = useUIStore((s) => s.theme);
   const toggleTheme = useUIStore((s) => s.toggleTheme);
@@ -34,7 +36,6 @@ export default function Toolbar() {
 
   const [examples, setExamples] = useState<ExampleFile[]>([]);
   const [showExamples, setShowExamples] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   // Load examples on mount
@@ -96,7 +97,7 @@ export default function Toolbar() {
                 addConsoleLine(`    Time: ${result.timing.total_ms.toFixed(0)} ms (solve: ${result.timing.solve_ms.toFixed(0)} ms)`);
                 addConsoleLine(`    Variables solved: ${Object.keys(result.variables).length}`);
                 // Fetch .sol content
-                api.getSol().then((sol) => setSol(sol.content)).catch(() => {});
+                api.getSol().then((s) => setSol(s.content)).catch(() => {});
               }
               setSolving(false);
               es.close();
@@ -135,123 +136,135 @@ export default function Toolbar() {
     [eescode, initials, setSolving, clearConsole, addConsoleLine, setSolveResult, setSol, setBottomPanelOpen]
   );
 
-  // Open file via backend path (for examples and known paths)
+  // ================================================================
+  // New — clear everything
+  // ================================================================
+  const handleNew = useCallback(async () => {
+    try {
+      const res = await api.newModel();
+      clearModel();
+      setCanGoBack(res.hadContent);
+      addConsoleLine('>>> New model');
+    } catch (err: any) {
+      addConsoleLine(`>>> ERROR: ${err.message}`);
+    }
+  }, [clearModel, addConsoleLine, setCanGoBack]);
+
+  // ================================================================
+  // Open — upload ZIP file
+  // ================================================================
+  const handleOpen = useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.zip';
+    input.onchange = async (e) => {
+      const files = (e.target as HTMLInputElement).files;
+      if (!files || files.length === 0) return;
+      const file = files[0];
+      const formData = new FormData();
+      formData.append('file', file);
+      try {
+        const res = await api.uploadFiles(formData);
+        if (res.success) {
+          const ees = await api.getEescode();
+          const init = await api.getInitials();
+          const solRes = await api.getSol();
+          const confRes = await api.getConf();
+          setCanGoBack(true);
+          loadFile(file.name.replace(/\.zip$/, ''), ees.content, init.content, solRes.content, confRes.content);
+          addConsoleLine(`>>> Opened: ${res.files.join(', ')}`);
+        }
+      } catch (err: any) {
+        addConsoleLine(`>>> ERROR: ${err.message}`);
+      }
+    };
+    input.click();
+  }, [loadFile, addConsoleLine, setCanGoBack]);
+
+  // ================================================================
+  // Save — download ZIP bundle
+  // ================================================================
+  const handleSave = useCallback(async () => {
+    if (!eescode.trim()) {
+      addConsoleLine('>>> Nothing to save');
+      return;
+    }
+    try {
+      // Sync current content to backend before downloading
+      await api.putEescode(eescode);
+      if (initials) await api.putInitials(initials);
+
+      // Build file list for logging
+      const stem = filePath ? filePath.replace(/\.[^.]+$/, '').split('/').pop() || 'model' : 'model';
+      const fileNames: string[] = [stem + '.eescode'];
+      if (initials) fileNames.push(stem + '.initials');
+      if (sol) fileNames.push(stem + '.sol');
+      if (conf) fileNames.push('coolsolve.conf');
+      // Check for debug files
+      try {
+        const debugRes = await api.getDebugFiles();
+        if (debugRes.files.length > 0) fileNames.push('debug_output/');
+      } catch { /* no debug */ }
+
+      addConsoleLine(`>>> Saved: ${fileNames.join(', ')}`);
+      window.location.href = '/api/v1/files/bundle';
+    } catch (err: any) {
+      addConsoleLine(`>>> ERROR: ${err.message}`);
+    }
+  }, [eescode, initials, sol, conf, filePath, addConsoleLine]);
+
+  // ================================================================
+  // Back — restore previous model
+  // ================================================================
+  const handleBack = useCallback(async () => {
+    try {
+      const res = await api.goBack();
+      if (res.success) {
+        const ees = await api.getEescode();
+        const init = await api.getInitials();
+        const solRes = await api.getSol();
+        const confRes = await api.getConf();
+        loadFile(ees.filePath || '', ees.content, init.content, solRes.content, confRes.content);
+        setCanGoBack(false);
+        // Try to restore solve result
+        try {
+          const result = await api.getSolveResult();
+          setSolveResult(result);
+        } catch { /* no result */ }
+        addConsoleLine('>>> Restored previous model');
+      }
+    } catch (err: any) {
+      addConsoleLine(`>>> ERROR: ${err.message}`);
+    }
+  }, [loadFile, addConsoleLine, setCanGoBack, setSolveResult]);
+
+  // Open example by server path
   const openFileByPath = useCallback(async (path: string) => {
     try {
       const res = await api.openFile(path);
       if (res.success) {
         const ees = await api.getEescode();
         const init = await api.getInitials();
-        const sol = await api.getSol();
-        const conf = await api.getConf();
-        loadFile(res.filePath, ees.content, init.content, sol.content, conf.content);
-        addConsoleLine(`>>> Opened: ${res.filePath}`);
+        const solRes = await api.getSol();
+        const confRes = await api.getConf();
+        setCanGoBack(true);
+        loadFile(res.filePath, ees.content, init.content, solRes.content, confRes.content);
+        addConsoleLine(`>>> Opened example: ${res.filePath.split('/').pop()}`);
       }
     } catch (err: any) {
-      addConsoleLine(`>>> ERROR opening file: ${err.message}`);
+      addConsoleLine(`>>> ERROR opening example: ${err.message}`);
     }
-  }, [loadFile, addConsoleLine]);
+  }, [loadFile, addConsoleLine, setCanGoBack]);
 
-  // Open file via browser file picker
-  const handleOpenFile = useCallback(async () => {
-    // Try File System Access API first (Chrome/Edge)
-    if ('showOpenFilePicker' in window) {
-      try {
-        const [handle] = await (window as any).showOpenFilePicker({
-          types: [{
-            description: 'EES Code Files',
-            accept: { 'text/plain': ['.eescode'] },
-          }],
-          multiple: false,
-        });
-        const file = await handle.getFile();
-        const content = await file.text();
-        
-        // Load into editor and send to backend
-        setEescode(content);
-        await api.putEescode(content);
-        
-        // Try to load companion files from same directory
-        try {
-          const dirHandle = await handle.getParent?.();
-          if (dirHandle) {
-            const stem = file.name.replace(/\.eescode$/, '');
-            // Try .initials
-            try {
-              const initHandle = await dirHandle.getFileHandle(stem + '.initials');
-              const initFile = await initHandle.getFile();
-              const initContent = await initFile.text();
-              setInitials(initContent);
-              await api.putInitials(initContent);
-            } catch { /* no initials file */ }
-            // Try coolsolve.conf
-            try {
-              const confHandle = await dirHandle.getFileHandle('coolsolve.conf');
-              const confFile = await confHandle.getFile();
-              const confContent = await confFile.text();
-              setConf(confContent);
-              await api.putConf(confContent);
-            } catch { /* no conf file */ }
-          }
-        } catch { /* getParent not supported */ }
-        
-        loadFile(file.name, content, useModelStore.getState().initials, '', useModelStore.getState().conf);
-        addConsoleLine(`>>> Opened: ${file.name}`);
-        return;
-      } catch (e: any) {
-        if (e.name === 'AbortError') return; // User cancelled
-        // Fall through to input element
-      }
-    }
-    
-    // Fallback: use hidden file input
-    fileInputRef.current?.click();
-  }, [loadFile, addConsoleLine, setEescode, setInitials, setConf]);
-
-  // Handle file input change (fallback for browsers without File System Access API)
-  const handleFileInputChange = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    let eesContent = '';
-    let initContent = '';
-    let confContent = '';
-    let fileName = '';
-
-    for (const file of Array.from(files)) {
-      const content = await file.text();
-      if (file.name.endsWith('.eescode')) {
-        eesContent = content;
-        fileName = file.name;
-      } else if (file.name.endsWith('.initials')) {
-        initContent = content;
-      } else if (file.name === 'coolsolve.conf') {
-        confContent = content;
-      }
-    }
-
-    if (eesContent) {
-      await api.putEescode(eesContent);
-      if (initContent) await api.putInitials(initContent);
-      if (confContent) await api.putConf(confContent);
-      loadFile(fileName, eesContent, initContent, '', confContent);
-      addConsoleLine(`>>> Opened: ${fileName}`);
-    }
-
-    // Reset input so same file can be selected again
-    e.target.value = '';
-  }, [loadFile, addConsoleLine]);
-
-  // Save file
-  const handleSave = useCallback(async () => {
+  // Stop/cancel solve
+  const handleStopSolve = useCallback(async () => {
     try {
-      await api.putEescode(eescode);
-      await api.saveFile();
-      addConsoleLine(`>>> Saved: ${filePath || '<no path>'}`);
+      await api.cancelSolve();
+      addConsoleLine('>>> Cancel requested...');
     } catch (err: any) {
-      addConsoleLine(`>>> ERROR saving: ${err.message}`);
+      addConsoleLine(`>>> ${err.message}`);
     }
-  }, [eescode, filePath, addConsoleLine]);
+  }, [addConsoleLine]);
 
   // Update guesses
   const handleUpdateGuesses = useCallback(async () => {
@@ -264,86 +277,6 @@ export default function Toolbar() {
       addConsoleLine(`>>> ERROR: ${err.message}`);
     }
   }, [setInitials, addConsoleLine]);
-
-  // Save As — prompt for path or use File System Access API
-  const handleSaveAs = useCallback(async () => {
-    // Try File System Access API (Chrome/Edge)
-    if ('showSaveFilePicker' in window) {
-      try {
-        const handle = await (window as any).showSaveFilePicker({
-          suggestedName: filePath ? filePath.split('/').pop() : 'model.eescode',
-          types: [{
-            description: 'EES Code Files',
-            accept: { 'text/plain': ['.eescode'] },
-          }],
-        });
-        const writable = await handle.createWritable();
-        await writable.write(eescode);
-        await writable.close();
-        addConsoleLine(`>>> Saved: ${handle.name}`);
-        setFilePath(handle.name);
-        return;
-      } catch (e: any) {
-        if (e.name === 'AbortError') return;
-        // Fall through to prompt
-      }
-    }
-    // Fallback: prompt for path
-    const newPath = prompt('Save as (full path):', filePath || 'model.eescode');
-    if (!newPath) return;
-    try {
-      const res = await api.saveFileAs(newPath);
-      addConsoleLine(`>>> Saved as: ${res.filePath}`);
-      setFilePath(res.filePath);
-    } catch (err: any) {
-      addConsoleLine(`>>> ERROR: ${err.message}`);
-    }
-  }, [eescode, filePath, addConsoleLine, setFilePath]);
-
-  // Stop/cancel solve
-  const handleStopSolve = useCallback(async () => {
-    try {
-      await api.cancelSolve();
-      addConsoleLine('>>> Cancel requested...');
-    } catch (err: any) {
-      addConsoleLine(`>>> ${err.message}`);
-    }
-  }, [addConsoleLine]);
-
-  // Download ZIP bundle
-  const handleDownloadBundle = useCallback(() => {
-    window.location.href = '/api/v1/files/bundle';
-  }, []);
-
-  // Upload files
-  const handleUploadFiles = useCallback(() => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.zip,.eescode,.initials,.conf,.sol';
-    input.multiple = true;
-    input.onchange = async (e) => {
-      const files = (e.target as HTMLInputElement).files;
-      if (!files || files.length === 0) return;
-      const formData = new FormData();
-      for (const file of Array.from(files)) {
-        formData.append('file', file);
-      }
-      try {
-        const res = await api.uploadFiles(formData);
-        if (res.success) {
-          const ees = await api.getEescode();
-          const init = await api.getInitials();
-          const sol = await api.getSol();
-          const conf = await api.getConf();
-          loadFile(res.fileName, ees.content, init.content, sol.content, conf.content);
-          addConsoleLine(`>>> Uploaded: ${res.fileName}`);
-        }
-      } catch (err: any) {
-        addConsoleLine(`>>> ERROR uploading: ${err.message}`);
-      }
-    };
-    input.click();
-  }, [loadFile, addConsoleLine]);
 
   // Comment toggles
   const handleBraceComment = useCallback(() => {
@@ -371,14 +304,13 @@ export default function Toolbar() {
         if (!solving) handleSolve(e.shiftKey);
       } else if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
-        if (e.shiftKey) {
-          handleSaveAs();
-        } else {
-          handleSave();
-        }
+        handleSave();
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
         e.preventDefault();
-        handleOpenFile();
+        handleOpen();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+        e.preventDefault();
+        handleNew();
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
         e.preventDefault();
         handleUpdateGuesses();
@@ -389,36 +321,23 @@ export default function Toolbar() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [solving, handleSolve, handleSave, handleSaveAs, handleOpenFile, handleUpdateGuesses, handleStopSolve]);
+  }, [solving, handleSolve, handleSave, handleOpen, handleNew, handleUpdateGuesses, handleStopSolve]);
 
   return (
     <div className="toolbar">
-      {/* Hidden file input for fallback browser file picker */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept=".eescode,.initials,.conf"
-        multiple
-        style={{ display: 'none' }}
-        onChange={handleFileInputChange}
-      />
-
       {/* File group */}
       <div className="toolbar-group">
-        <button className="toolbar-btn" onClick={handleOpenFile} title="Open file (Ctrl+O)">
+        <button className="toolbar-btn" onClick={handleNew} title="New model (Ctrl+N)">
+          <FilePlus size={16} /> New
+        </button>
+        <button className="toolbar-btn" onClick={handleOpen} title="Open ZIP file (Ctrl+O)">
           <FolderOpen size={16} /> Open
         </button>
-        <button className="toolbar-btn" onClick={handleSave} title="Save (Ctrl+S)">
+        <button className="toolbar-btn" onClick={handleSave} disabled={!eescode.trim()} title="Save as ZIP (Ctrl+S)">
           <Save size={16} /> Save
         </button>
-        <button className="toolbar-btn" onClick={handleSaveAs} title="Save As (Ctrl+Shift+S)">
-          <SaveAll size={16} /> Save As
-        </button>
-        <button className="toolbar-btn" onClick={handleDownloadBundle} title="Download ZIP bundle">
-          <Download size={16} /> Download
-        </button>
-        <button className="toolbar-btn" onClick={handleUploadFiles} title="Upload files">
-          <Upload size={16} /> Upload
+        <button className="toolbar-btn" onClick={handleBack} disabled={!canGoBack} title="Restore previous model">
+          <Undo size={16} /> Back
         </button>
       </div>
 

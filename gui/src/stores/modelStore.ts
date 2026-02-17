@@ -9,6 +9,7 @@ interface ModelState {
   sol: string;
   conf: string;
   dirty: boolean;
+  canGoBack: boolean;
 
   // Parse state
   parseErrors: ParseError[];
@@ -34,9 +35,11 @@ interface ModelState {
   setSolveResult: (result: SolveResponse) => void;
   setSolvedVariables: (vars: SolvedVariable[]) => void;
   setSol: (sol: string) => void;
+  setCanGoBack: (canGoBack: boolean) => void;
   addConsoleLine: (line: string) => void;
   clearConsole: () => void;
   loadFile: (path: string, eescode: string, initials: string, sol: string, conf: string) => void;
+  clearModel: () => void;
 }
 
 export const useModelStore = create<ModelState>((set) => ({
@@ -46,6 +49,7 @@ export const useModelStore = create<ModelState>((set) => ({
   sol: '',
   conf: '',
   dirty: false,
+  canGoBack: false,
 
   parseErrors: [],
   equationCount: 0,
@@ -68,9 +72,12 @@ export const useModelStore = create<ModelState>((set) => ({
   setSolveResult: (result) => set({ lastResult: result }),
   setSolvedVariables: (vars) => set({ solvedVariables: vars }),
   setSol: (sol) => set({ sol }),
+  setCanGoBack: (canGoBack) => set({ canGoBack }),
   addConsoleLine: (line) =>
     set((state) => ({ consoleLines: [...state.consoleLines, line] })),
   clearConsole: () => set({ consoleLines: [] }),
   loadFile: (path, eescode, initials, sol, conf) =>
     set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [] }),
+  clearModel: () =>
+    set({ filePath: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true }),
 }));
