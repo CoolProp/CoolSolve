@@ -9,6 +9,9 @@ import type {
   ExamplesResponse,
   UploadResponse,
   SSEEvent,
+  InferredVariablesResponse,
+  CoolPropFluidsResponse,
+  SaturationResponse,
 } from './types';
 
 const API_BASE = '/api/v1';
@@ -137,4 +140,19 @@ export const api = {
     }
     return res.json();
   },
+
+  // Inferred variables (thermodynamic property inference)
+  getInferredVariables: () =>
+    request<InferredVariablesResponse>('/variables/inferred'),
+
+  // CoolProp fluids
+  getCoolPropFluids: () =>
+    request<CoolPropFluidsResponse>('/coolprop/fluids'),
+
+  // Saturation dome
+  getSaturationDome: (fluid: string, nPoints?: number) =>
+    request<SaturationResponse>('/coolprop/saturation', {
+      method: 'POST',
+      body: JSON.stringify({ fluid, nPoints: nPoints || 200 }),
+    }),
 };

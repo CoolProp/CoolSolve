@@ -20,7 +20,6 @@ export default function Toolbar() {
   const initials = useModelStore((s) => s.initials);
   const sol = useModelStore((s) => s.sol);
   const conf = useModelStore((s) => s.conf);
-  const filePath = useModelStore((s) => s.filePath);
   const modelName = useModelStore((s) => s.modelName);
   const setModelName = useModelStore((s) => s.setModelName);
   const canGoBack = useModelStore((s) => s.canGoBack);

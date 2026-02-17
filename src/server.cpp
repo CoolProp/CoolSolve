@@ -8,8 +8,12 @@
 #include "coolsolve/evaluator.h"
 #include "coolsolve/solver.h"
 #include "coolsolve/constants.h"
+#include "coolsolve/fluids.h"
+#include "coolsolve/variable_inference.h"
+#include "coolsolve/units.h"
 
 #include <httplib.h>
+#include "CoolProp.h"
 #include <nlohmann/json.hpp>
 
 #include <iostream>
@@ -24,6 +28,7 @@
 #include <cstdlib>
 #include <condition_variable>
 #include <random>
+#include <set>
 
 #ifdef COOLSOLVE_EMBEDDED_ASSETS
 #include "embedded_assets.h"
@@ -64,6 +69,18 @@ static std::string getMimeType(const std::string& path) {
 }
 
 // ============================================================================
+// Inferred variable data (extracted from IR after solve)
+// ============================================================================
+struct InferredVariable {
+    std::string name;
+    double value = 0.0;
+    std::string inferredProperty;  // "T", "P", "H", "S", "D", "Q", etc.
+    std::string inferredFluid;     // "Water", "R134a", etc.
+    std::string units;             // "[K]", "[Pa]", etc.
+    bool isArray = false;
+};
+
+// ============================================================================
 // Snapshot for Back button (one-level undo for model loading)
 // ============================================================================
 struct SessionSnapshot {
@@ -77,6 +94,8 @@ struct SessionSnapshot {
     bool hasResult = false;
     SolveResult lastResult;
     CoolSolveRunner::PipelineTiming lastTiming;
+    std::vector<InferredVariable> inferredVariables;
+    std::vector<std::string> modelFluids;
 };
 
 // ============================================================================
@@ -108,6 +127,10 @@ struct Session {
     CoolSolveRunner::PipelineTiming lastTiming;
     bool hasResult = false;
     
+    // Inferred variable data (for thermodynamic diagrams)
+    std::vector<InferredVariable> inferredVariables;
+    std::vector<std::string> modelFluids;  // unique fluids in the model
+    
     // SSE progress events (protected by mutex + condition variable)
     std::mutex progressMutex;
     std::condition_variable progressCV;
@@ -123,6 +146,8 @@ struct Session {
         snap->openFilePath = openFilePath;
         snap->modelName = modelName;
         snap->debugDir = debugDir;
+        snap->inferredVariables = inferredVariables;
+        snap->modelFluids = modelFluids;
         {
             std::lock_guard<std::mutex> lock(resultMutex);
             snap->hasResult = hasResult;
@@ -144,6 +169,8 @@ struct Session {
         openFilePath = previousState->openFilePath;
         modelName = previousState->modelName;
         debugDir = previousState->debugDir;
+        inferredVariables = previousState->inferredVariables;
+        modelFluids = previousState->modelFluids;
         {
             std::lock_guard<std::mutex> lock(resultMutex);
             hasResult = previousState->hasResult;
@@ -667,6 +694,10 @@ int startServer(const ServerOptions& options) {
             session.lastTiming = CoolSolveRunner::PipelineTiming{};
         }
         
+        // Clear inference data
+        session.inferredVariables.clear();
+        session.modelFluids.clear();
+        
         json j = {{"success", true}, {"hadContent", hadContent}};
         res.set_content(j.dump(), "application/json");
     });
@@ -742,6 +773,16 @@ int startServer(const ServerOptions& options) {
             if (parseResult.success) {
                 auto ir = IR::fromAST(parseResult.program);
                 
+                // Run variable inference to detect fluids used in the model
+                try {
+                    inferVariables(ir);
+                } catch (...) {
+                    // Non-fatal: inference failure shouldn't block parse results
+                }
+                
+                // Extract model fluids from inference
+                std::set<std::string> fluidSet;
+                
                 json variables = json::array();
                 for (const auto& [name, info] : ir.getVariables()) {
                     if (!Constants::isConstant(name)) {
@@ -750,8 +791,13 @@ int startServer(const ServerOptions& options) {
                         varObj["units"] = info.units;
                         varObj["isArray"] = (name.find('[') != std::string::npos);
                         variables.push_back(varObj);
+                        if (!info.inferredFluid.empty()) {
+                            fluidSet.insert(info.inferredFluid);
+                        }
                     }
                 }
+                session.modelFluids.assign(fluidSet.begin(), fluidSet.end());
+                
                 j["variables"] = variables;
                 j["variableCount"] = ir.getNonConstantVariableCount();
                 j["equationCount"] = ir.getEquationCount();
@@ -909,6 +955,30 @@ int startServer(const ServerOptions& options) {
                         session.lastResult = runner.getSolveResult();
                         session.lastTiming = runner.getTiming();
                         session.hasResult = true;
+                    }
+                    
+                    // Extract inference data from IR for thermodynamic diagrams
+                    if (runner.isIRSuccess()) {
+                        const auto& ir = runner.getIR();
+                        session.inferredVariables.clear();
+                        std::set<std::string> fluidSet;
+                        for (const auto& [name, info] : ir.getVariables()) {
+                            if (Constants::isConstant(name)) continue;
+                            auto it = runner.getSolveResult().variables.find(name);
+                            if (it == runner.getSolveResult().variables.end()) continue;
+                            InferredVariable iv;
+                            iv.name = name;
+                            iv.value = it->second;
+                            iv.inferredProperty = info.inferredProperty;
+                            iv.inferredFluid = info.inferredFluid;
+                            iv.units = info.units;
+                            iv.isArray = (name.find('[') != std::string::npos);
+                            session.inferredVariables.push_back(iv);
+                            if (!info.inferredFluid.empty()) {
+                                fluidSet.insert(info.inferredFluid);
+                            }
+                        }
+                        session.modelFluids.assign(fluidSet.begin(), fluidSet.end());
                     }
                     
                     // Build .sol content if successful
@@ -1094,6 +1164,218 @@ int startServer(const ServerOptions& options) {
         
         json j = {{"variables", vars}};
         res.set_content(j.dump(), "application/json");
+    });
+    
+    // ================================================================
+    // Inferred variables endpoint (for thermodynamic diagrams)
+    // ================================================================
+    svr.Get("/api/v1/variables/inferred", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        
+        json vars = json::array();
+        for (const auto& iv : session.inferredVariables) {
+            json varObj;
+            varObj["name"] = iv.name;
+            varObj["value"] = iv.value;
+            varObj["inferredProperty"] = iv.inferredProperty;
+            varObj["inferredFluid"] = iv.inferredFluid;
+            varObj["units"] = iv.units;
+            varObj["isArray"] = iv.isArray;
+            vars.push_back(varObj);
+        }
+        
+        json j = {{"variables", vars}};
+        res.set_content(j.dump(), "application/json");
+    });
+    
+    // ================================================================
+    // CoolProp fluids listing
+    // ================================================================
+    svr.Get("/api/v1/coolprop/fluids", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        
+        json fluidsArr = json::array();
+        auto allFluids = FluidRegistry::getAllFluids();
+        // Sort by name for consistent output
+        std::sort(allFluids.begin(), allFluids.end(),
+            [](const auto& a, const auto& b) { return a->getName() < b->getName(); });
+        
+        for (const auto& fluid : allFluids) {
+            std::string typeStr;
+            switch (fluid->getType()) {
+                case FluidType::Real: typeStr = "Real"; break;
+                case FluidType::IdealGas: typeStr = "IdealGas"; break;
+                case FluidType::HumidAir: typeStr = "HumidAir"; break;
+                case FluidType::Incompressible: typeStr = "Incompressible"; break;
+                case FluidType::Mixture: typeStr = "Mixture"; break;
+                default: typeStr = "Unknown"; break;
+            }
+            fluidsArr.push_back({
+                {"name", fluid->getName()},
+                {"coolpropName", fluid->getCoolPropName()},
+                {"type", typeStr},
+                {"hasDome", fluid->getType() == FluidType::Real}
+            });
+        }
+        
+        json j;
+        j["fluids"] = fluidsArr;
+        j["modelFluids"] = session.modelFluids;
+        res.set_content(j.dump(), "application/json");
+    });
+    
+    // ================================================================
+    // CoolProp saturation dome endpoint
+    // ================================================================
+    svr.Post("/api/v1/coolprop/saturation", [&](const httplib::Request& req, httplib::Response& res) {
+        try {
+            auto body = json::parse(req.body);
+            if (!body.contains("fluid")) {
+                res.status = 400;
+                json j = {{"error", "Missing 'fluid' parameter"}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+            
+            std::string fluidName = body["fluid"].get<std::string>();
+            int nPoints = body.value("nPoints", 200);
+            
+            // Validate fluid
+            auto fluid = FluidRegistry::getFluid(fluidName);
+            if (!fluid) {
+                res.status = 400;
+                json j = {{"error", "Unknown fluid: " + fluidName}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+            if (fluid->getType() != FluidType::Real) {
+                res.status = 400;
+                std::string typeStr;
+                switch (fluid->getType()) {
+                    case FluidType::IdealGas: typeStr = "ideal gas"; break;
+                    case FluidType::HumidAir: typeStr = "humid air"; break;
+                    case FluidType::Incompressible: typeStr = "incompressible fluid"; break;
+                    case FluidType::Mixture: typeStr = "mixture"; break;
+                    default: typeStr = "unsupported fluid type"; break;
+                }
+                json j = {{"error", "No saturation curve for " + typeStr + ": " + fluidName}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+            
+            std::string cpFluid = fluid->getCoolPropName();
+            
+            auto t_start = std::chrono::high_resolution_clock::now();
+            
+            // Get critical and triple point temperatures
+            double Tcrit, Pcrit, Ttriple;
+            try {
+                Tcrit = CoolProp::PropsSI("Tcrit", "", 0, "", 0, cpFluid);
+                Pcrit = CoolProp::PropsSI("pcrit", "", 0, "", 0, cpFluid);
+                Ttriple = CoolProp::PropsSI("T_triple", "", 0, "", 0, cpFluid);
+            } catch (const std::exception& e) {
+                res.status = 500;
+                json j = {{"error", std::string("CoolProp error getting critical/triple point: ") + e.what()}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+            
+            // Get critical point properties
+            double Hcrit = 0, Scrit = 0, Dcrit = 0;
+            try {
+                Hcrit = CoolProp::PropsSI("H", "T", Tcrit - 0.01, "Q", 0, cpFluid);
+                Scrit = CoolProp::PropsSI("S", "T", Tcrit - 0.01, "Q", 0, cpFluid);
+                Dcrit = CoolProp::PropsSI("D", "T", Tcrit - 0.01, "Q", 0, cpFluid);
+            } catch (...) {
+                // Non-fatal: critical point properties may fail for some fluids
+            }
+            
+            // Generate temperature points from Ttriple+1 to Tcrit-0.1
+            double Tmin = Ttriple + 1.0;
+            double Tmax = Tcrit - 0.1;
+            if (Tmin >= Tmax) {
+                res.status = 400;
+                json j = {{"error", "Temperature range too narrow for saturation curve"}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+            
+            // Use logarithmic spacing in (Tcrit - T) for better resolution near critical point
+            std::vector<double> temps(nPoints);
+            double logMin = std::log(Tcrit - Tmax);  // small
+            double logMax = std::log(Tcrit - Tmin);   // large
+            for (int i = 0; i < nPoints; i++) {
+                double frac = static_cast<double>(i) / (nPoints - 1);
+                double logVal = logMax - frac * (logMax - logMin);  // from far to near critical
+                temps[i] = Tcrit - std::exp(logVal);
+            }
+            
+            // Compute saturation properties using PropsSImulti for efficiency
+            // CoolProp reuses the AbstractState object internally when given vectors
+            json liquid, vapor;
+            std::vector<double> lT, lP, lH, lS, lD;
+            std::vector<double> vT, vP, vH, vS, vD;
+            
+            for (int i = 0; i < nPoints; i++) {
+                double T = temps[i];
+                try {
+                    double pL = CoolProp::PropsSI("P", "T", T, "Q", 0, cpFluid);
+                    double hL = CoolProp::PropsSI("H", "T", T, "Q", 0, cpFluid);
+                    double sL = CoolProp::PropsSI("S", "T", T, "Q", 0, cpFluid);
+                    double dL = CoolProp::PropsSI("D", "T", T, "Q", 0, cpFluid);
+                    
+                    double pV = CoolProp::PropsSI("P", "T", T, "Q", 1, cpFluid);
+                    double hV = CoolProp::PropsSI("H", "T", T, "Q", 1, cpFluid);
+                    double sV = CoolProp::PropsSI("S", "T", T, "Q", 1, cpFluid);
+                    double dV = CoolProp::PropsSI("D", "T", T, "Q", 1, cpFluid);
+                    
+                    // Skip non-finite values
+                    if (!std::isfinite(pL) || !std::isfinite(hL) || !std::isfinite(sL) || !std::isfinite(dL) ||
+                        !std::isfinite(pV) || !std::isfinite(hV) || !std::isfinite(sV) || !std::isfinite(dV)) {
+                        continue;
+                    }
+                    
+                    lT.push_back(T); lP.push_back(pL); lH.push_back(hL); lS.push_back(sL); lD.push_back(dL);
+                    vT.push_back(T); vP.push_back(pV); vH.push_back(hV); vS.push_back(sV); vD.push_back(dV);
+                } catch (...) {
+                    // Skip points where CoolProp fails (near triple/critical point)
+                    continue;
+                }
+            }
+            
+            auto t_end = std::chrono::high_resolution_clock::now();
+            double computeTime = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+            
+            // Convert temperatures from CoolProp SI (K) to CoolSolve units (°C)
+            UnitSystem defaultUnits;
+            for (auto& t : lT) t = UnitConverter::fromSI(t, UnitType::Temperature, defaultUnits.temperature);
+            for (auto& t : vT) t = UnitConverter::fromSI(t, UnitType::Temperature, defaultUnits.temperature);
+            double TcritCS = UnitConverter::fromSI(Tcrit, UnitType::Temperature, defaultUnits.temperature);
+            double TtripleCS = UnitConverter::fromSI(Ttriple, UnitType::Temperature, defaultUnits.temperature);
+            
+            liquid["T"] = lT; liquid["P"] = lP; liquid["H"] = lH; liquid["S"] = lS; liquid["D"] = lD;
+            vapor["T"] = vT; vapor["P"] = vP; vapor["H"] = vH; vapor["S"] = vS; vapor["D"] = vD;
+            
+            json j;
+            j["fluid"] = fluidName;
+            j["critical"] = {{"T", TcritCS}, {"P", Pcrit}, {"H", Hcrit}, {"S", Scrit}, {"D", Dcrit}};
+            j["triplePoint"] = {{"T", TtripleCS}};
+            j["liquid"] = liquid;
+            j["vapor"] = vapor;
+            j["nPoints"] = static_cast<int>(lT.size());
+            j["computeTime_ms"] = computeTime;
+            
+            res.set_content(j.dump(), "application/json");
+            
+        } catch (const json::exception& e) {
+            res.status = 400;
+            json j = {{"error", std::string("Invalid JSON: ") + e.what()}};
+            res.set_content(j.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 500;
+            json j = {{"error", std::string("Server error: ") + e.what()}};
+            res.set_content(j.dump(), "application/json");
+        }
     });
     
     // ================================================================

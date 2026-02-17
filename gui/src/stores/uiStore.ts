@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-type RightTab = 'variables' | 'arrays' | 'config' | 'debug';
+type RightTab = 'variables' | 'arrays' | 'config' | 'debug' | 'diagrams';
 type BottomTab = 'console' | 'sensitivity' | 'diagrams';
 
 interface UIState {

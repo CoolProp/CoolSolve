@@ -80,30 +80,15 @@ foreach(ASSET_FILE ${ASSET_FILES})
     # Get file size
     file(SIZE "${FULL_PATH}" FILE_SIZE)
     
-    # Convert hex string to comma-separated 0xNN bytes
-    string(LENGTH "${FILE_HEX}" HEX_LEN)
-    set(BYTE_ARRAY "")
-    set(LINE_BYTES 0)
-    math(EXPR LAST_POS "${HEX_LEN} - 2")
-    
-    foreach(POS RANGE 0 ${LAST_POS} 2)
-        string(SUBSTRING "${FILE_HEX}" ${POS} 2 BYTE)
-        if(LINE_BYTES GREATER 0)
-            string(APPEND BYTE_ARRAY ",")
-        endif()
-        if(LINE_BYTES EQUAL 16)
-            string(APPEND BYTE_ARRAY "\n    ")
-            set(LINE_BYTES 0)
-        endif()
-        string(APPEND BYTE_ARRAY "0x${BYTE}")
-        math(EXPR LINE_BYTES "${LINE_BYTES} + 1")
-    endforeach()
+    # Fast conversion: use regex to insert 0x prefix and commas in one pass
+    # "aabb" -> "0xaa,0xbb"
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," FILE_HEX "${FILE_HEX}")
+    # Remove trailing comma
+    string(REGEX REPLACE ",$" "" FILE_HEX "${FILE_HEX}")
+    # Add line breaks every ~16 values for readability (optional, skip for speed)
     
     # Add a null terminator so text assets can be used as C strings
-    if(LINE_BYTES GREATER 0)
-        string(APPEND BYTE_ARRAY ",")
-    endif()
-    string(APPEND BYTE_ARRAY "0x00")
+    string(APPEND FILE_HEX ",0x00")
     
     # Create a valid C identifier from the file path
     string(MAKE_C_IDENTIFIER "asset_${ASSET_FILE}" VAR_NAME)
@@ -112,7 +97,7 @@ foreach(ASSET_FILE ${ASSET_FILES})
     guess_mime_type("${ASSET_FILE}" MIME)
     
     # Append the data array to source
-    string(APPEND SOURCE_CONTENT "static const unsigned char ${VAR_NAME}[] = {\n    ${BYTE_ARRAY}\n};\n\n")
+    string(APPEND SOURCE_CONTENT "static const unsigned char ${VAR_NAME}[] = {\n    ${FILE_HEX}\n};\n\n")
     
     # Build map entry (use / prefix for URL matching)
     string(APPEND MAP_ENTRIES "    {\"/${ASSET_FILE}\", {${VAR_NAME}, ${FILE_SIZE}, \"${MIME}\"}},\n")

@@ -5,6 +5,7 @@ import VariableTable from './components/VariableTable';
 import ArrayTable from './components/ArrayTable';
 import ConfigEditor from './components/ConfigEditor';
 import DebugViewer from './components/DebugViewer';
+import ThermoDiagram from './components/ThermoDiagram';
 import Console from './components/Console';
 import SplitPane from './components/SplitPane';
 import { useModelStore } from './stores/modelStore';
@@ -95,12 +96,21 @@ export default function App() {
               >
                 Debug
               </button>
+              <button
+                className={`tab-btn ${rightTab === 'diagrams' ? 'active' : ''}`}
+                onClick={() => setRightTab('diagrams')}
+              >
+                Diagrams
+              </button>
             </div>
             <div className="tab-content">
               {rightTab === 'variables' && <VariableTable />}
               {rightTab === 'arrays' && <ArrayTable />}
               {rightTab === 'config' && <ConfigEditor />}
               {rightTab === 'debug' && <DebugViewer />}
+              <div style={{ display: rightTab === 'diagrams' ? 'contents' : 'none' }}>
+                <ThermoDiagram />
+              </div>
             </div>
           </div>
         </SplitPane>

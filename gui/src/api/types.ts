@@ -134,3 +134,57 @@ export interface DebugFile {
 export interface DebugFilesResponse {
   files: DebugFile[];
 }
+
+// Inferred variables (thermodynamic property inference)
+export interface InferredVariable {
+  name: string;
+  value: number;
+  inferredProperty: string; // T, P, H, S, D, Q, V, L, C
+  inferredFluid: string;
+  units: string;
+  isArray: boolean;
+}
+
+export interface InferredVariablesResponse {
+  variables: InferredVariable[];
+}
+
+// CoolProp fluids
+export interface FluidInfo {
+  name: string;
+  coolpropName: string;
+  type: string;
+  hasDome: boolean;
+}
+
+export interface CoolPropFluidsResponse {
+  fluids: FluidInfo[];
+  modelFluids: string[];
+}
+
+// Saturation dome
+export interface SaturationData {
+  T: number[];
+  P: number[];
+  H: number[];
+  S: number[];
+  D: number[];
+}
+
+export interface CriticalPoint {
+  T: number;
+  P: number;
+  H: number;
+  S: number;
+  D: number;
+}
+
+export interface SaturationResponse {
+  fluid: string;
+  critical: CriticalPoint;
+  triplePoint: { T: number };
+  liquid: SaturationData;
+  vapor: SaturationData;
+  nPoints: number;
+  computeTime_ms: number;
+}

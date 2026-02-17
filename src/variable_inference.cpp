@@ -123,6 +123,12 @@ void inferVariables(IR& ir) {
             std::string fluidName = extractString((!func.args.empty()) ? func.args[0] : nullptr, ir);
             if (fluidName.empty()) return;
 
+            // Normalize to canonical CoolProp name (e.g., "water" -> "Water")
+            auto canonicalFluid = FluidRegistry::getFluid(fluidName);
+            if (canonicalFluid) {
+                fluidName = canonicalFluid->getName();
+            }
+
             // Check named arguments
             for (const auto& [name, expr] : func.namedArgs) {
                 if (expr->is<Variable>()) {
@@ -165,6 +171,14 @@ void inferVariables(IR& ir) {
             if (mapping) {
                 // It is a thermo function
                 std::string fluidName = extractString((!func.args.empty()) ? func.args[0] : nullptr, ir);
+                
+                // Normalize to canonical CoolProp name (e.g., "water" -> "Water")
+                if (!fluidName.empty()) {
+                    auto canonicalFluid = FluidRegistry::getFluid(fluidName);
+                    if (canonicalFluid) {
+                        fluidName = canonicalFluid->getName();
+                    }
+                }
                 
                 // If fluid found, set property for LHS
                 if (!fluidName.empty()) {
