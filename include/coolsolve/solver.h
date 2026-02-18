@@ -29,7 +29,8 @@ enum class SolverStatus {
     SingularJacobian,  // Jacobian is singular or near-singular
     InvalidInput,      // Invalid input (e.g., wrong dimensions)
     EvaluationError,   // Error during function evaluation
-    Diverged           // Solution diverged (residual increasing)
+    Diverged,          // Solution diverged (residual increasing)
+    ParseFailed        // Input failed to parse
 };
 
 /**

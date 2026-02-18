@@ -5,9 +5,12 @@
 #include "coolsolve/structural_analysis.h"
 #include "coolsolve/evaluator.h"
 #include "coolsolve/solver.h"
+#include "coolsolve/runner.h"
 
 #include <iostream>
 #include <sstream>
+#include <fstream>
+#include <filesystem>
 
 using namespace coolsolve;
 using Catch::Matchers::WithinRel;
@@ -700,4 +703,104 @@ TEST_CASE("Non-square system with conflicting constraints", "[solver][integratio
     // Should be caught as non-square (3 equations, 2 variables)
     REQUIRE_FALSE(structure.success);
     REQUIRE(structure.errorMessage.find("not square") != std::string::npos);
+}
+
+// ============================================================================
+// Parse Failure → Solver Abort Tests
+// ============================================================================
+
+TEST_CASE("Parse failure aborts solver pipeline via CoolSolveRunner", "[solver][integration][parse-fail]") {
+    // Write a temporary file with unparseable content
+    namespace fs = std::filesystem;
+    auto tmpDir = fs::temp_directory_path() / "coolsolve_test_parse_fail";
+    fs::create_directories(tmpDir);
+    auto tmpFile = tmpDir / "bad_model.eescode";
+
+    SECTION("Completely unparseable input") {
+        {
+            std::ofstream f(tmpFile);
+            f << "MODULE bad_module\n";
+            f << "  x = 1\n";
+            f << "END\n";
+        }
+
+        CoolSolveRunner runner(tmpFile.string());
+        bool success = runner.run();
+
+        REQUIRE_FALSE(success);
+        REQUIRE_FALSE(runner.isParseSuccess());
+
+        // Solver should NOT have run — result must reflect ParseFailed
+        const auto& result = runner.getSolveResult();
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.status == SolverStatus::ParseFailed);
+        REQUIRE(result.errorMessage.find("Parse failed") != std::string::npos);
+        REQUIRE(result.blockResults.empty());
+        INFO("Error: " << result.errorMessage);
+    }
+
+    SECTION("Partial parse failure still aborts") {
+        // Model with some valid equations but also parse errors
+        {
+            std::ofstream f(tmpFile);
+            f << "x = 1\n";
+            f << "y = x + 2\n";
+            f << "MODULE not_supported\n";
+            f << "  z = 3\n";
+            f << "END\n";
+        }
+
+        CoolSolveRunner runner(tmpFile.string());
+        bool success = runner.run();
+
+        REQUIRE_FALSE(success);
+        REQUIRE_FALSE(runner.isParseSuccess());
+
+        const auto& result = runner.getSolveResult();
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.status == SolverStatus::ParseFailed);
+        REQUIRE(result.errorMessage.find("Parse failed") != std::string::npos);
+        // No blocks should have been solved
+        REQUIRE(result.blockResults.empty());
+    }
+
+    fs::remove_all(tmpDir);
+}
+
+TEST_CASE("Parse failure includes line-level error details", "[solver][integration][parse-fail]") {
+    namespace fs = std::filesystem;
+    auto tmpDir = fs::temp_directory_path() / "coolsolve_test_parse_fail2";
+    fs::create_directories(tmpDir);
+    auto tmpFile = tmpDir / "bad_model2.eescode";
+
+    {
+        std::ofstream f(tmpFile);
+        f << "MODULE unsupported_construct\n";
+        f << "  x = 1\n";
+        f << "END\n";
+    }
+
+    CoolSolveRunner runner(tmpFile.string());
+    runner.run();
+
+    const auto& parseResult = runner.getParseResult();
+    REQUIRE_FALSE(parseResult.success);
+    REQUIRE_FALSE(parseResult.errors.empty());
+
+    // The error should mention 'module' or the specific construct
+    bool foundModuleError = false;
+    for (const auto& err : parseResult.errors) {
+        if (err.message.find("module") != std::string::npos ||
+            err.message.find("MODULE") != std::string::npos ||
+            err.message.find("Module") != std::string::npos) {
+            foundModuleError = true;
+        }
+    }
+    REQUIRE(foundModuleError);
+
+    // The solveResult should also contain the error details
+    const auto& solveResult = runner.getSolveResult();
+    REQUIRE(solveResult.detailedError.find("Parse failed") != std::string::npos);
+
+    fs::remove_all(tmpDir);
 }

@@ -941,6 +941,36 @@ int startServer(const ServerOptions& options) {
                     
                     bool success = runner.run(solverOpts, enableTracing);
                     
+                    // Check for parse failure and report immediately
+                    if (!runner.isParseSuccess()) {
+                        const auto& parseResult = runner.getParseResult();
+                        std::ostringstream errMsg;
+                        errMsg << "Parse failed:";
+                        for (const auto& err : parseResult.errors) {
+                            errMsg << "\n  Line " << err.line << ": " << err.message;
+                        }
+                        
+                        // Store a minimal result
+                        {
+                            std::lock_guard<std::mutex> lock(session.resultMutex);
+                            session.lastResult = runner.getSolveResult();
+                            session.lastTiming = runner.getTiming();
+                            session.hasResult = true;
+                        }
+                        
+                        json resultJson = solveResultToJSON(runner.getSolveResult(), runner.getTiming());
+                        json finalEvt;
+                        finalEvt["type"] = "error";
+                        finalEvt["message"] = errMsg.str();
+                        finalEvt["result"] = resultJson;
+                        session.addProgressEvent(finalEvt.dump());
+                        
+                        session.solving.store(false);
+                        session.solveFinished.store(true);
+                        session.progressCV.notify_all();
+                        return;  // Exit the solve thread early
+                    }
+                    
                     // Generate debug output if tracing enabled
                     if (enableTracing) {
                         auto debugPath = tmpDir / "debug_output";

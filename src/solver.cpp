@@ -32,6 +32,7 @@ std::string statusToString(SolverStatus status) {
         case SolverStatus::InvalidInput: return "InvalidInput";
         case SolverStatus::EvaluationError: return "EvaluationError";
         case SolverStatus::Diverged: return "Diverged";
+        case SolverStatus::ParseFailed: return "ParseFailed";
         default: return "Unknown";
     }
 }

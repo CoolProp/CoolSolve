@@ -30,7 +30,17 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
     auto t2 = std::chrono::high_resolution_clock::now();
     timing_.parse_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
     
-    if (!parseResult_.success && parseResult_.equationCount == 0) {
+    if (!parseResult_.success) {
+        // Build a descriptive error message from parse errors
+        std::ostringstream errMsg;
+        errMsg << "Parse failed:";
+        for (const auto& err : parseResult_.errors) {
+            errMsg << "\n  Line " << err.line << ": " << err.message;
+        }
+        solveResult_.success = false;
+        solveResult_.status = SolverStatus::ParseFailed;
+        solveResult_.errorMessage = errMsg.str();
+        solveResult_.detailedError = errMsg.str();
         return false;
     }
 
