@@ -330,4 +330,4 @@ s_hf_0 = entropy(hf$,t=t_0,p=p_hf_ev)
 eta_II = W_dot_net/E_dot_hf}
 
 "! Fluid quality at the end of the expansion :"
-x = quality(fluid$,h=h_ex_exp,p=p_ex_exp){$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}
+x = quality(fluid$,h=h_ex_exp,p=p_ex_exp)

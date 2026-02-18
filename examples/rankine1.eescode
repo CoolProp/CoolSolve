@@ -67,4 +67,4 @@ eta=W_dot_el/(Q_dot_boiler+W_dot_p)
 "DEBIT EAU CONDENSEUR"
 Q_dot_cd=M_dot_steam*(h_4-h_1)
 Q_dot_cd=M_dot_w_cd*cp_w*DELTAT_w_cd
-cp_w=4186{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}
+cp_w=4186

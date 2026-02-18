@@ -47,5 +47,3 @@ DELTAP_vladbar=DELTAP_vlad/1E5 "[bar]"
 P_dyn=rho*U^2/2
 ratio=P_dyn/DELTAP
 
-
-{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

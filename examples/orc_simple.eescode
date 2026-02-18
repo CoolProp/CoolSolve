@@ -306,4 +306,3 @@ eta_II = W_dot_net/E_dot_hf
 x = quality(fluid$,h=h_ex_exp,p=p_ex_exp)
 
 
-{$ID$ #0202: For use only by students and staff Laboratoire de Thermodynamique, University of Liege Administrator}

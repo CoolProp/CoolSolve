@@ -58,4 +58,3 @@ L_tube_bis=L_tube/2 "car il y a deux passes côté eau (voir schéma)"
 
 "échauffement de l'eau"
 DELTAT_w=T_w_ex-T_w_su
-{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

@@ -48,5 +48,3 @@ Q_dot=A*h_w*(T_wall-T_w_bar)
 Q_dot=A*U*(T_gaz_bar-T_w_bar)
 1/U=1/h_gaz+1/h_w
 
-
-{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

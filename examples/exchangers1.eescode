@@ -33,4 +33,3 @@ epsilon=(1-exp(-NTU*(1-omega)))/(1-omega*exp(-NTU*(1-omega)))
 Q_dot=epsilon*C_dot_min*(T_oil_su-T_w_su) "[W]"
 Q_dot=C_dot_w*(T_w_ex-T_w_su)
 Q_dot=C_dot_oil*(T_oil_su-T_oil_ex)
-{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

@@ -1018,4 +1018,3 @@ r_p=p_r_su_exp/p_r_ex_exp
 res_ref=Q_dot_ev-W_dot_sh_exp_tot-Q_dot_amb_exp_tot-Q_dot_cd+W_dot_pp + Q_dot_econ + Q_dot_oh
 
 written = write(eta_I,W_dot_el_net,eta_global,i)
-{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}

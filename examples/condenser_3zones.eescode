@@ -307,4 +307,3 @@ DELTAP_r_cd=(DELTAP_r_cd_sh+DELTAP_r_cd_tp+DELTAP_r_cd_sc)
 DELTAP_cf_cd=K_cf_cd_1*M_dot_cf_cd^2/rho_cf_su_cd+K_cf_cd_2*M_dot_cf_cd^(2+n_cf_cd)/(rho_cf_su_cd*mu_cf_su_cd^n_cf_cd)
 
 "!*************************************************** END ***************************************************"
-{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique, Univ. Liege sylvain}{$PX$96}
