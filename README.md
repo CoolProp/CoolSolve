@@ -247,6 +247,56 @@ ctest --output-on-failure
 
 The comprehensive test runs all `.eescode` files in the `examples/` folder and validates solutions against known expected values (with 1% tolerance). A detailed report is written to `examples/test_examples.md`.
 
+## GUI (Web Interface)
+
+The CoolSolve GUI is a React/TypeScript single-page app served by an embedded HTTP server inside the `coolsolve` binary. The GUI is **optional**; the CLI continues to work as described above.
+
+### GUI Prerequisites
+
+- **Node.js + npm**: Required only to build or develop the frontend (no Node.js is needed at runtime once the binary is built).
+
+### Run the GUI in development mode (hot reload)
+
+Use this when working on the GUI itself:
+
+```bash
+# Terminal 1: build and run the backend with the embedded HTTP server
+mkdir -p build
+cd build
+cmake -DCOOLSOLVE_BUILD_GUI=ON ..
+make -j$(nproc) coolsolve
+./coolsolve --gui --no-browser
+
+# Terminal 2: run the frontend dev server with hot reload
+cd gui
+npm install
+npm run dev
+# Then open http://localhost:5173 in your browser
+```
+
+In this mode, Vite serves the frontend on port `5173` and proxies API calls to the CoolSolve server (default port `8550`).
+
+### Run the GUI from the compiled binary (no dev server)
+
+To use the GUI as an integrated part of the `coolsolve` binary (no Node.js or Vite needed at runtime):
+
+```bash
+# 1) Build the frontend once
+cd gui
+npm install
+npm run build        # produces gui/dist/
+
+# 2) Build or rebuild the backend so it embeds gui/dist/ into the binary
+cd ../build
+cmake -DCOOLSOLVE_BUILD_GUI=ON ..
+make -j$(nproc) coolsolve
+
+# 3) Run the GUI
+./coolsolve --gui     # opens the default browser, serving on http://localhost:8550
+```
+
+For more detailed information on the GUI architecture and advanced workflows (ZIP bundles, online deployment, thermodynamic diagrams, etc.), see `docs/gui_progress.md` and `docs/gui_plan.md`.
+
 ## Project Structure
 
 ```
