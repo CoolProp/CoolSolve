@@ -48,7 +48,9 @@ enum class SolverStrategy {
     Newton,            ///< Damped Newton-Raphson with backtracking line search
     TrustRegion,       ///< Trust-region dogleg method
     LevenbergMarquardt,///< Levenberg-Marquardt (damped least-squares)
-    Partitioned        ///< Per-variable diagonal updates (tear-based)
+    Partitioned,       ///< Per-variable diagonal updates (tear-based)
+    BisectionND,       ///< Multi-dimensional bisection (small systems only, n≤8)
+    Homotopy           ///< Homotopy continuation (global convergence)
 };
 
 /**
@@ -129,11 +131,12 @@ struct SolverOptions {
 
     // --- Solver pipeline configuration ---
     // The pipeline defines which solvers to try and in what order.
-    // Default: Newton -> TrustRegion -> Partitioned (backward-compatible).
+    // Default: Newton -> TrustRegion -> LM -> Homotopy -> Partitioned.
     std::vector<SolverStrategy> solverPipeline = {
         SolverStrategy::Newton,
         SolverStrategy::TrustRegion,
         SolverStrategy::LevenbergMarquardt,
+        SolverStrategy::Homotopy,
         SolverStrategy::Partitioned
     };
 
@@ -422,10 +425,48 @@ public:
                        std::string* detailedError = nullptr) override;
 
 private:
-    /**
-     * @brief Compute automatic scaling factors for variables.
-     */
     Eigen::VectorXd computeScalingFactors(const Eigen::VectorXd& x) const;
+};
+
+// ============================================================================
+// Multi-Dimensional Bisection Solver (small systems only)
+// ============================================================================
+
+/**
+ * @brief Multi-dimensional bisection for small nonlinear systems (n ≤ 8).
+ *
+ * Maintains a simplex of vertices with diverse residual sign patterns and
+ * iteratively bisects the longest edge.  Guaranteed to converge if a simplex
+ * with the right sign structure is found.  Only used as a last resort for
+ * small blocks that resist Newton-type methods.
+ */
+class BisectionNDSolver : public NonLinearSolver {
+public:
+    SolverStatus solve(Problem& problem,
+                       Eigen::VectorXd& x_guess,
+                       const SolverOptions& options = SolverOptions(),
+                       SolverTrace* trace = nullptr,
+                       std::string* detailedError = nullptr) override;
+};
+
+// ============================================================================
+// Homotopy Continuation Solver
+// ============================================================================
+
+/**
+ * @brief Homotopy continuation solver for global convergence.
+ *
+ * Constructs H(x,t) = t·F(x) + (1-t)·(x-x0) and tracks the solution
+ * from t=0 (trivial) to t=1 (target) using an existing solver as corrector.
+ * Adaptive step-size control: increase dt on success, decrease on failure.
+ */
+class HomotopySolver : public NonLinearSolver {
+public:
+    SolverStatus solve(Problem& problem,
+                       Eigen::VectorXd& x_guess,
+                       const SolverOptions& options = SolverOptions(),
+                       SolverTrace* trace = nullptr,
+                       std::string* detailedError = nullptr) override;
 };
 
 // ============================================================================

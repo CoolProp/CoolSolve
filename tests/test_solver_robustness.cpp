@@ -250,6 +250,7 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
          {coolsolve::SolverStrategy::Newton,
           coolsolve::SolverStrategy::TrustRegion,
           coolsolve::SolverStrategy::LevenbergMarquardt,
+          coolsolve::SolverStrategy::Homotopy,
           coolsolve::SolverStrategy::Partitioned},
          true, false},
 
@@ -265,6 +266,10 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
          {coolsolve::SolverStrategy::LevenbergMarquardt},
          true, false},
 
+        {"Homotopy only (with initials)",
+         {coolsolve::SolverStrategy::Homotopy},
+         true, false},
+
         {"Partitioned only (with initials)",
          {coolsolve::SolverStrategy::Partitioned},
          true, false},
@@ -273,6 +278,7 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
          {coolsolve::SolverStrategy::Newton,
           coolsolve::SolverStrategy::TrustRegion,
           coolsolve::SolverStrategy::LevenbergMarquardt,
+          coolsolve::SolverStrategy::Homotopy,
           coolsolve::SolverStrategy::Partitioned},
          true, true},
 
@@ -281,6 +287,7 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
          {coolsolve::SolverStrategy::Newton,
           coolsolve::SolverStrategy::TrustRegion,
           coolsolve::SolverStrategy::LevenbergMarquardt,
+          coolsolve::SolverStrategy::Homotopy,
           coolsolve::SolverStrategy::Partitioned},
          false, false},
 
@@ -296,6 +303,10 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
          {coolsolve::SolverStrategy::LevenbergMarquardt},
          false, false},
 
+        {"Homotopy only (NO initials)",
+         {coolsolve::SolverStrategy::Homotopy},
+         false, false},
+
         {"Partitioned only (NO initials)",
          {coolsolve::SolverStrategy::Partitioned},
          false, false},
@@ -304,6 +315,7 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
          {coolsolve::SolverStrategy::Newton,
           coolsolve::SolverStrategy::TrustRegion,
           coolsolve::SolverStrategy::LevenbergMarquardt,
+          coolsolve::SolverStrategy::Homotopy,
           coolsolve::SolverStrategy::Partitioned},
          false, true},
     };

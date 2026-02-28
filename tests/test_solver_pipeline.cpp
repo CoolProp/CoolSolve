@@ -326,12 +326,13 @@ TEST_CASE("TrustRegion-only pipeline solves circle", "[pipeline][tr-only]") {
 // Default pipeline backward compatibility
 // ============================================================================
 
-TEST_CASE("Default pipeline includes all four solvers", "[pipeline][defaults]") {
+TEST_CASE("Default pipeline includes all five solvers", "[pipeline][defaults]") {
     SolverOptions defaults;
-    REQUIRE(defaults.solverPipeline.size() == 4);
+    REQUIRE(defaults.solverPipeline.size() == 5);
     CHECK(defaults.solverPipeline[0] == SolverStrategy::Newton);
     CHECK(defaults.solverPipeline[1] == SolverStrategy::TrustRegion);
     CHECK(defaults.solverPipeline[2] == SolverStrategy::LevenbergMarquardt);
-    CHECK(defaults.solverPipeline[3] == SolverStrategy::Partitioned);
+    CHECK(defaults.solverPipeline[3] == SolverStrategy::Homotopy);
+    CHECK(defaults.solverPipeline[4] == SolverStrategy::Partitioned);
     CHECK(defaults.pipelineMode == SolverPipelineMode::Sequential);
 }
