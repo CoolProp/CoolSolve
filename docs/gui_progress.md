@@ -724,15 +724,6 @@ These are the existing code locations relevant to Phase 4:
   in the `.coolsolve` project bundle.
 - **Interactive hover**: show property values on hover over the dome.
 
-### Phase 5 — Advanced Features
-
-| Task | Description |
-|------|-------------|
-| `.coolsolve` project format | Notebook-style bundling of code, sweeps, plots, cached results |
-| Multi-model comparison | Solve two `.eescode` files side by side |
-| Undo/redo | Full state snapshots |
-| Collaborative editing | Online CRDT/OT (far future) |
-
 ---
 
 ## File Inventory

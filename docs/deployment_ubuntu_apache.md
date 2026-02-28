@@ -424,15 +424,6 @@ sudo systemctl restart systemd-journald
 
 ## 12. Troubleshooting
 
-### Common Errors
-
-**1. Invalid command 'ProxyPreserveHost'**
-If you see this error when restarting Apache, it means the required proxy modules are not enabled.
-```bash
-sudo a2enmod proxy proxy_http
-sudo systemctl restart apache2
-```
-
 | Symptom | Check |
 |---------|-------|
 | 502 Bad Gateway | `sudo systemctl status coolsolve` — is it running? |
