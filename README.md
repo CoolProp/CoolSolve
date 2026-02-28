@@ -295,7 +295,7 @@ make -j$(nproc) coolsolve
 ./coolsolve --gui     # opens the default browser, serving on http://localhost:8550
 ```
 
-For more detailed information on the GUI architecture and advanced workflows (ZIP bundles, online deployment, thermodynamic diagrams, etc.), see `docs/gui_progress.md` and `docs/gui_plan.md`.
+For more detailed information on the GUI architecture and advanced workflows (ZIP bundles, online deployment, thermodynamic diagrams, etc.), see `docs/gui.md`.
 
 ## Project Structure
 
