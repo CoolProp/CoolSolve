@@ -90,6 +90,10 @@ SolverStatus NewtonSolver::solve(Problem& problem,
             if (detailedError) *detailedError = "Solver timed out";
             return SolverStatus::EvaluationError;
         }
+        if (options.cancelToken && options.cancelToken->load(std::memory_order_relaxed)) {
+            if (detailedError) *detailedError = "Newton: cancelled";
+            return SolverStatus::MaxIterations;
+        }
 
         // Evaluate F(x), J(x) in original coordinates, then scale Jacobian
         try {

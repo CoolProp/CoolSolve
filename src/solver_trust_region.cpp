@@ -78,6 +78,11 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
             x = y.cwiseProduct(scale);
             return SolverStatus::EvaluationError;
         }
+        if (options.cancelToken && options.cancelToken->load(std::memory_order_relaxed)) {
+            if (detailedError) *detailedError = "TrustRegion: cancelled";
+            x = y.cwiseProduct(scale);
+            return SolverStatus::MaxIterations;
+        }
 
         try {
             Eigen::VectorXd xu = y.cwiseProduct(scale);

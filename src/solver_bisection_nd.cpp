@@ -278,6 +278,10 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
             if (detailedError) *detailedError = "BisectionND: timed out";
             break;
         }
+        if (options.cancelToken && options.cancelToken->load(std::memory_order_relaxed)) {
+            if (detailedError) *detailedError = "BisectionND: cancelled";
+            break;
+        }
 
         // Find vertex with smallest residual (candidate solution)
         int bestVtx = 0;

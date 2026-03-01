@@ -1206,8 +1206,22 @@ SolverStatus Solver::solveBlockParallel(size_t blockIndex,
     std::vector<std::future<ThreadResult>> futures;
     futures.reserve(pipeline.size());
 
-    // Shared flag: set to true when any thread succeeds
-    auto winnerFound = std::make_shared<std::atomic<bool>>(false);
+    // Shared stop flag: fires when any thread wins OR user cancels
+    auto parallelStop = std::make_shared<std::atomic<bool>>(false);
+
+    // Monitor thread: propagate external cancel → parallelStop
+    std::thread cancelMonitor;
+    if (options.cancelToken) {
+        cancelMonitor = std::thread([cancelToken = options.cancelToken, parallelStop]() {
+            while (!parallelStop->load(std::memory_order_relaxed)) {
+                if (cancelToken->load(std::memory_order_relaxed)) {
+                    parallelStop->store(true, std::memory_order_release);
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        });
+    }
 
     for (const auto& strategy : pipeline) {
         // Each thread gets its own copy of x
@@ -1218,10 +1232,14 @@ SolverStatus Solver::solveBlockParallel(size_t blockIndex,
         futures.push_back(std::async(std::launch::async,
             [this, strategy, blockIndex, &blockEval, &varNames,
              &externalVars, &externalStringVars, &options,
-             x_copy, winnerFound]() mutable -> ThreadResult {
+             x_copy, parallelStop]() mutable -> ThreadResult {
                 ThreadResult result;
                 result.strategy = strategy;
                 result.solution = x_copy;
+
+                // Thread-local options with combined cancel token
+                SolverOptions threadOptions = options;
+                threadOptions.cancelToken = parallelStop.get();
 
                 // Create a thread-local problem lambda
                 NonLinearSolver::Problem localProblem;
@@ -1247,11 +1265,11 @@ SolverStatus Solver::solveBlockParallel(size_t blockIndex,
                 result.status = runSolverStrategy(strategy, blockIndex, localProblem,
                                                   blockEval, varNames,
                                                   externalVars, externalStringVars,
-                                                  result.solution, options,
+                                                  result.solution, threadOptions,
                                                   &result.trace, &result.error);
 
                 if (result.status == SolverStatus::Success) {
-                    winnerFound->store(true, std::memory_order_release);
+                    parallelStop->store(true, std::memory_order_release);
                 }
                 return result;
             }));
@@ -1293,6 +1311,10 @@ SolverStatus Solver::solveBlockParallel(size_t blockIndex,
         if (!outErrorMessage->empty()) *outErrorMessage += "\n";
         *outErrorMessage += allErrors;
     }
+
+    // Shut down monitor thread
+    parallelStop->store(true, std::memory_order_release);
+    if (cancelMonitor.joinable()) cancelMonitor.join();
 
     return bestStatus;
 }
@@ -1375,6 +1397,10 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
     double initialResidualNorm = 0.0;
 
     for (int iter = 0; iter < options.partitionedMaxIterations; ++iter) {
+        if (options.cancelToken && options.cancelToken->load(std::memory_order_relaxed)) {
+            if (outErrorMessage) *outErrorMessage = "Partitioned: cancelled";
+            return SolverStatus::MaxIterations;
+        }
         EvaluationResult evalResult;
         try {
             std::vector<double> x_std(x.data(), x.data() + x.size());

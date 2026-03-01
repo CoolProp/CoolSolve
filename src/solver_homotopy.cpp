@@ -58,6 +58,10 @@ SolverStatus HomotopySolver::solve(Problem& problem,
             if (detailedError) *detailedError = "Homotopy: timed out";
             break;
         }
+        if (options.cancelToken && options.cancelToken->load(std::memory_order_relaxed)) {
+            if (detailedError) *detailedError = "Homotopy: cancelled";
+            break;
+        }
 
         double t_new = std::min(t + dt, 1.0);
 
