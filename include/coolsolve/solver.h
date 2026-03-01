@@ -129,13 +129,29 @@ struct SolverOptions {
     int tearingMinBlockSize = 3;         // Only apply tearing to blocks of this size or larger
     int tearingInnerIterations = 5;      // Max 1D iterations per equation in acyclic solve
 
+    // --- BisectionND options ---
+    // BisectionND is a derivative-free sign-change bisection solver.
+    // It is only feasible for small blocks because it requires 2^n function evaluations
+    // per probe phase, and the iteration cost also grows exponentially with n.
+    // Blocks larger than bisectionNDMaxBlockSize are automatically skipped (InvalidInput).
+    int bisectionNDMaxBlockSize = 8;   // Skip BisectionND for blocks with more than this many unknowns.
+                                       // Default: 8. Increase with caution: cost is exponential in n.
+    // Multiplier applied to maxIterations for the BisectionND bisection loop.
+    // Because bisection converges slowly (linear), more iterations than Newton-type
+    // solvers are often needed.  bisectionNDMaxBlockSize is unaffected by this factor.
+    // Example: bisectionNDIterFactor = 5 gives 500 bisection steps when maxIterations = 100.
+    double bisectionNDIterFactor = 1.0; // Multiplier for max bisection iterations (default: 1.0).
+
     // --- Solver pipeline configuration ---
     // The pipeline defines which solvers to try and in what order.
-    // Default: Newton -> TrustRegion -> LM -> Homotopy -> Partitioned.
+    // Default: Newton -> TrustRegion -> LM -> BisectionND (small blocks only)
+    //       -> Homotopy -> Partitioned.
+    // BisectionND automatically returns InvalidInput for blocks > bisectionNDMaxBlockSize and is skipped.
     std::vector<SolverStrategy> solverPipeline = {
         SolverStrategy::Newton,
         SolverStrategy::TrustRegion,
         SolverStrategy::LevenbergMarquardt,
+        SolverStrategy::BisectionND,
         SolverStrategy::Homotopy,
         SolverStrategy::Partitioned
     };

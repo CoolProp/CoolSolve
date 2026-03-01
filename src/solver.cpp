@@ -269,6 +269,9 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
                     options.pipelineMode = SolverPipelineMode::Sequential;
                 }
             }
+            // BisectionND options
+            else if (key == "bisectionNDMaxBlockSize") options.bisectionNDMaxBlockSize = std::stoi(val);
+            else if (key == "bisectionNDIterFactor")   options.bisectionNDIterFactor   = std::stod(val);
         } catch (...) {
             // Ignore malformed values
         }

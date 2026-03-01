@@ -38,6 +38,8 @@ CoolSolve is a parser, structural analyzer, and equation evaluator for the EES (
   - **Newton + Line Search** for fast convergence on well-conditioned blocks
   - **Trust-Region Dogleg** for robust convergence on stiff nonlinear blocks
   - **Levenberg-Marquardt** for improved convergence when initial guesses are poor
+  - **Multi-dimensional Bisection (BisectionND)** for small blocks (configurable size limit, default n ≤ 8 via `bisectionNDMaxBlockSize`): derivative-free sign-change bisection that works even when the Jacobian is singular or zero
+  - **Homotopy continuation** for convergence from distant or difficult starting points where gradient methods fail
   - **Partitioned Block Updates** as a fallback for ill-conditioned algebraic loops
   - **Parallel solver execution** (multithreaded, first-to-converge wins)
 
@@ -61,9 +63,11 @@ CoolSolve uses several file formats for input and verification:
 - **.eescode**: The EES source code to be parsed and solved.
 - **.initials**: Initial values for variables, used to seed the solver or evaluator. Format: `variable=value` (one per line).
 - **coolsolve.conf**: Optional solver configuration. Place in the **same folder** as your .eescode file (not in subfolders). Format: `key = value` per line; lines starting with `#` are comments. Only the options you set override the defaults (see `include/coolsolve/solver.h` for `SolverOptions`). An example with all keys and comments is in `examples/coolsolve.conf`. In debug mode (`-d`), this file is copied into the debug folder. Key pipeline options:
-  - `solverPipeline`: Comma-separated list of solvers to try (e.g. `Newton, LM, TrustRegion, Partitioned`)
+  - `solverPipeline`: Comma-separated list of solvers to try (e.g. `Newton, LM, TrustRegion, BisectionND, Homotopy, Partitioned`). Available solvers: `Newton`, `TrustRegion`, `LM` (or `LevenbergMarquardt`), `BisectionND`, `Homotopy`, `Partitioned`.
   - `pipelineMode`: `sequential` (default) or `parallel` (first-to-converge wins)
-  - `enableTearing`: When `true`, use structural tearing for blocks of size ≥ `tearingMinBlockSize`: a greedy feedback-vertex-set breaks the block into tear variables (solved with Newton) and an acyclic part (solved sequentially). Can help on stiff or ill-conditioned algebraic loops. See also `tearingMaxIterations`, `tearingMinBlockSize`, `tearingInnerIterations`.
+  - `enableTearing`: When `true`, use structural tearing for blocks of size ≥ `tearingMinBlockSize`: a greedy feedback-vertex-set breaks the block into tear variables (solved with Newton) and an acyclic part (solved sequentially). If tearing succeeds, the pipeline solvers are not called. Can help on stiff or ill-conditioned algebraic loops. See also `tearingMaxIterations`, `tearingMinBlockSize`, `tearingInnerIterations`.
+  - `bisectionNDMaxBlockSize`: Maximum block size (number of unknowns) for which BisectionND is attempted. Blocks larger than this return `InvalidInput` and are transparently skipped by the pipeline. Default: `8`. Increase this if you want BisectionND to try larger blocks (warning: cost is O(2ⁿ) function evaluations per iteration).
+  - `bisectionNDIterFactor`: Multiplier applied to `maxIterations` to compute BisectionND's iteration budget. Default: `1.0` (same budget as other solvers). Increase (e.g. `5.0`) if BisectionND hits `MaxIterations` on near-convergent problems.
 
 ## Building
 
@@ -312,20 +316,30 @@ CoolSolve/
 │   ├── structural_analysis.h   # Analysis algorithms
 │   ├── autodiff_node.h         # Forward-mode AD types and operations
 │   ├── evaluator.h             # Block and system evaluators
-│   └── solver.h                # Solver pipeline, Newton, TR, LM, Partitioned
+│   └── solver.h                # Solver pipeline, all SolverOptions declarations
 ├── src/
 │   ├── parser.cpp              # EES parser implementation
 │   ├── ir.cpp                  # IR building and LaTeX generation
 │   ├── structural_analysis.cpp # Matching and SCC algorithms
 │   ├── autodiff_node.cpp       # AD function implementations
 │   ├── evaluator.cpp           # Evaluator implementations
-│   └── solver.cpp              # All solver implementations + pipeline orchestrator
+│   ├── solver.cpp              # Pipeline orchestrator, Newton, tearing, config loading
+│   ├── solver_bisection_nd.cpp # Multi-dimensional bisection solver
+│   ├── solver_homotopy.cpp     # Homotopy continuation solver
+│   ├── solver_lm.cpp           # Levenberg-Marquardt solver
+│   ├── solver_newton.cpp       # Newton + line search solver
+│   └── solver_trust_region.cpp # Trust-region dogleg solver
 ├── tests/
 │   ├── test_parser.cpp         # Parser/IR unit tests (Catch2)
 │   ├── test_evaluator.cpp      # AD/Evaluator unit tests (Catch2)
 │   ├── test_newton.cpp         # Newton solver unit tests
 │   ├── test_solver_pipeline.cpp # Pipeline, LM, config tests
 │   ├── test_solver_integration.cpp # Full-system solver integration tests
+│   ├── test_new_solvers.cpp    # BisectionND, Homotopy, advantage tests
+│   ├── test_solver_robustness.cpp  # Robustness tests (stiff/near-singular blocks)
+│   ├── test_tearing.cpp        # Structural tearing unit tests
+│   ├── test_config.cpp         # coolsolve.conf loading tests
+│   ├── test_fluids.cpp         # CoolProp fluid property tests
 │   └── test_examples.cpp       # Integration tests with example files
 └── examples/                   # Example .eescode files for testing
 ```
@@ -394,7 +408,7 @@ Block to solve
   │     →  Structural tearing (FVS + acyclic solve + Newton on tears)
   │     └── On failure: restore initial guess, fall through ↓
   └── Solver pipeline (configurable fallback chain)
-        →  Newton → TrustRegion → LM → Partitioned  (default, sequential)
+        →  Newton → TrustRegion → LM → BisectionND → Homotopy → Partitioned  (default, sequential)
 ```
 
 The pipeline is configured via `coolsolve.conf` (see below) or programmatically
@@ -437,7 +451,40 @@ through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
    - Particularly effective when the initial guess is far from the solution,
      because the damping prevents oversized steps that would cause divergence.
 
-4. **Partitioned Block Updates** (`Partitioned`)
+4. **Multi-dimensional Bisection** (`BisectionND`)
+   - A derivative-free solver based on sign-change bisection in n dimensions
+     (Vrahatis-style). Automatically skipped for blocks exceeding
+     `bisectionNDMaxBlockSize` unknowns (default: 8). Returns `InvalidInput`
+     so the pipeline transparently advances to the next solver. The error
+     message names the configurable parameter when triggered, e.g.
+     `"BisectionND: block too large (n=34 > bisectionNDMaxBlockSize=8).
+     Increase bisectionNDMaxBlockSize in coolsolve.conf..."`. The iteration
+     budget is `maxIterations × bisectionNDIterFactor` (default multiplier: 1.0);
+   - **Phase 1 — Structured probe**: Evaluates F at axis-aligned points
+     (±0.1…±5× scale) plus all 2^n diagonal corner combinations at two radii
+     (±2× and ±5× scale). This ensures all sign patterns can be discovered
+     even when the root is not reachable from axis-only probes.
+   - **Phase 2 — Bisection with full sign-pattern simplex**: Builds a simplex
+     with one vertex per distinct sign pattern found (up to 2^n vertices).
+     Bisects the longest edge whose midpoint is not a duplicate, replacing the
+     matching-sign vertex. If all edges produce duplicates (degenerate simplex),
+     the worst vertex is randomly perturbed to escape the cycle.
+   - **Advantage**: Unlike gradient-based solvers, BisectionND converges even
+     when J(x₀) = 0 (e.g. at a stationary point of ‖F‖²) because it relies
+     only on function evaluations and sign patterns.
+
+5. **Homotopy Continuation** (`Homotopy`)
+   - Deforms the problem F(x)=0 into an easy auxiliary problem G(x)=0 via a
+     homotopy parameter t ∈ [0,1]: H(x,t) = (1-t)G(x) + t F(x).
+   - **Predictor–corrector path following**: Takes Newton-corrected tangent
+     predictor steps along the homotopy path, gradually transforming x from
+     the G-solution toward the F-solution.
+   - **Advantage**: Can reach solutions from starting points that are too far
+     from the root for Newton, TrustRegion, or LM to converge, because the
+     smooth deformation avoids the large nonlinear barriers that trap
+     gradient-based methods.
+
+6. **Partitioned Block Updates** (`Partitioned`)
    - Uses the equation-to-output-variable mapping from structural matching to
      apply **per-variable diagonal updates** inside a block:
      `x_i <- x_i - w * F_i / (dF_i/dx_i)`.
@@ -446,7 +493,7 @@ through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
      improving stability in stiff or highly nonlinear loops.
    - Designed as a last-resort stabilizer when full Newton steps are unreliable.
 
-5. **Structural Tearing** (option `enableTearing`)
+7. **Structural Tearing** (option `enableTearing`)
    - When enabled, blocks of size ≥ `tearingMinBlockSize` are first solved via
      **equation tearing**: a greedy **feedback vertex set (FVS)** is computed so
      that removing the corresponding equations (and their output variables) makes
@@ -491,9 +538,27 @@ problem is a poor initial guess or a genuinely unsolvable system.
 #### Default Pipeline
 
 ```
-solverPipeline = Newton, TrustRegion, LevenbergMarquardt, Partitioned
+solverPipeline = Newton, TrustRegion, LevenbergMarquardt, BisectionND, Homotopy, Partitioned
 pipelineMode = sequential
 ```
+
+> **Note**: `BisectionND` automatically returns `InvalidInput` for blocks
+> exceeding `bisectionNDMaxBlockSize` unknowns (default: 8) and is
+> transparently skipped by the pipeline.  For large blocks the effective
+> default is Newton → TrustRegion → LM → Homotopy → Partitioned.
+> Use `bisectionNDIterFactor` (default: 1.0) to multiply the iteration budget
+> when BisectionND exits early with `MaxIterations`.
+> Each solver is characterised by the class of problems where it has a
+> specific advantage:
+>
+> | Solver | Characteristic advantage |
+> |--------|--------------------------|
+> | Newton | Quadratic convergence near a good starting point |
+> | TrustRegion | Safe steps inside bounded search regions (e.g. log-domain constraints) |
+> | LevenbergMarquardt | Near-singular Jacobians; blends gradient descent and Newton |
+> | BisectionND | Zero or undefined Jacobian at the start; derivative-free |
+> | Homotopy | Distant starting points; avoids large nonlinear barriers |
+> | Partitioned | Ill-conditioned algebraic loops; diagonal per-variable update |
 
 #### Example: Single Solver
 
@@ -603,6 +668,5 @@ For new equation systems, use CoolProp-computed values for initial guesses to en
 The next steps in the implementation plan include:
 - **KINSOL (SUNDIALS) integration**: For large-scale nonlinear systems requiring robust preconditioning
 - **alternative solvers**: https://www.osti.gov/servlets/purl/876345
-- **Homotopy / Continuation methods**: Gradually transform from an easy problem to the target for highly nonlinear systems
 - **Analytical Derivatives**: Use CoolProp's `AbstractState::first_partial_deriv` for exact derivatives
 - **Profiling and optimization**: Improve the solving time

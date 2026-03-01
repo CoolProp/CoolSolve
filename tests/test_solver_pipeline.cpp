@@ -8,6 +8,10 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "coolsolve/solver.h"
+#include "coolsolve/parser.h"
+#include "coolsolve/structural_analysis.h"
+#include "coolsolve/evaluator.h"
+#include "coolsolve/variable_inference.h"
 #include <cmath>
 #include <iostream>
 #include <fstream>
@@ -326,13 +330,69 @@ TEST_CASE("TrustRegion-only pipeline solves circle", "[pipeline][tr-only]") {
 // Default pipeline backward compatibility
 // ============================================================================
 
-TEST_CASE("Default pipeline includes all five solvers", "[pipeline][defaults]") {
+TEST_CASE("Default pipeline includes all solvers in order", "[pipeline][defaults]") {
     SolverOptions defaults;
-    REQUIRE(defaults.solverPipeline.size() == 5);
+    // Newton, TrustRegion, LM, BisectionND, Homotopy, Partitioned
+    REQUIRE(defaults.solverPipeline.size() == 6);
     CHECK(defaults.solverPipeline[0] == SolverStrategy::Newton);
     CHECK(defaults.solverPipeline[1] == SolverStrategy::TrustRegion);
     CHECK(defaults.solverPipeline[2] == SolverStrategy::LevenbergMarquardt);
-    CHECK(defaults.solverPipeline[3] == SolverStrategy::Homotopy);
-    CHECK(defaults.solverPipeline[4] == SolverStrategy::Partitioned);
+    CHECK(defaults.solverPipeline[3] == SolverStrategy::BisectionND);
+    CHECK(defaults.solverPipeline[4] == SolverStrategy::Homotopy);
+    CHECK(defaults.solverPipeline[5] == SolverStrategy::Partitioned);
     CHECK(defaults.pipelineMode == SolverPipelineMode::Sequential);
+}
+
+// ============================================================================
+// Parallel pipeline functional test
+//
+// Verifies that pipelineMode = Parallel produces the correct solution.
+//
+// In parallel mode, all solvers in the pipeline are launched concurrently
+// (each in its own std::async thread). The first one to converge wins and
+// its solution is used. Slower solvers are still awaited (future.get()),
+// but their results are discarded if the winner has already been found.
+//
+// This test uses the full Solver infrastructure (parse → structural analysis
+// → Solver) on a small 2-variable algebraic loop to exercise the real
+// multithreaded code path.
+// ============================================================================
+TEST_CASE("Parallel pipeline produces correct solution", "[pipeline][parallel]") {
+    // A simple 2-equation 2-unknown nonlinear system (one algebraic loop):
+    //   x^2 + y^2 = 4
+    //   x - y = 0
+    // Solution: x = y = sqrt(2) ≈ 1.41421
+    std::string code = "x^2 + y^2 = 4\nx - y = 0\n";
+
+    EESParser parser;
+    auto parseResult = parser.parse(code);
+    REQUIRE(parseResult.success);
+
+    IR ir = IR::fromAST(parseResult.program);
+    inferVariables(ir);
+    initializeVariables(ir);
+    StructuralAnalysisResult structure = StructuralAnalyzer::analyze(ir);
+    REQUIRE(structure.success);
+
+    // Use a 2-solver pipeline in parallel mode so both solvers race.
+    // Both Newton and TrustRegion solve this problem; whichever finishes first wins.
+    SolverOptions opts;
+    opts.pipelineMode = SolverPipelineMode::Parallel;
+    opts.solverPipeline = { SolverStrategy::Newton, SolverStrategy::TrustRegion };
+    opts.tolerance = 1e-10;
+
+    Solver solver(ir, structure);
+    auto result = solver.solve(opts);
+
+    REQUIRE(result.success);
+
+    // Both x and y should equal sqrt(2)
+    const double expect = std::sqrt(2.0);
+    REQUIRE(result.variables.count("x") > 0);
+    REQUIRE(result.variables.count("y") > 0);
+    double xVal = result.variables.at("x");
+    double yVal = result.variables.at("y");
+    INFO("x = " << xVal << ", y = " << yVal);
+    CHECK_THAT(xVal, WithinAbs(expect, 1e-7));
+    CHECK_THAT(yVal, WithinAbs(expect, 1e-7));
 }
