@@ -271,18 +271,19 @@ TEST_CASE("ExpressionEvaluator basic expressions", "[evaluator]") {
     }
     
     SECTION("Expression with standard functions") {
-        // y = sin(x) at x = pi/6
+        // y = sin(x) at x = 30 degrees (EES uses degrees)
         auto parseResult = parser.parse("y = sin(x)");
         REQUIRE(parseResult.success);
         
         auto ir = coolsolve::IR::fromAST(parseResult.program);
         
         coolsolve::ExpressionEvaluator eval(1);
-        eval.setVariable("x", coolsolve::ADValue::independent(M_PI / 6.0, 0, 1));
+        eval.setVariable("x", coolsolve::ADValue::independent(30.0, 0, 1));
         
         auto rhs = eval.evaluate(ir.getEquations()[0].rhs);
-        REQUIRE_THAT(rhs.value, WithinAbs(0.5, 1e-10));
-        REQUIRE_THAT(rhs.gradient[0], WithinAbs(std::sqrt(3.0) / 2.0, 1e-10));  // cos(pi/6)
+        REQUIRE_THAT(rhs.value, WithinAbs(0.5, 1e-10));  // sin(30°) = 0.5
+        constexpr double deg2rad = M_PI / 180.0;
+        REQUIRE_THAT(rhs.gradient[0], WithinAbs(std::sqrt(3.0) / 2.0 * deg2rad, 1e-10));  // cos(30°) * pi/180
     }
 }
 

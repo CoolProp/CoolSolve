@@ -1,0 +1,73 @@
+"MSTH 051024 Exercice 2"
+"Déterminez les régimes de fonctionnement, les températures de sortie, les
+     puissances dissipées et les puissances électriques moyennes consommées par la
+     tour de la question précédente, lorsque l'on fait varier de 26 à 36 °C la température
+     de consigne  de l'eau à la sortie de la tour.
+     La tour est équipée d'un ventilateur à deux vitesses. :
+     Vitesse nominale et vitesse réduite de moitié.
+     Puissance consommée par le ventilateur à vitesse nominale : 15 kW.
+     Supposez que le débit d'air et le coefficient d'échange de la tour sont tous les                deux pratiquement   proportionnels à la vitesse de rotation du ventilateur.
+    Négligez la variation possible du rendement du ventilateur."
+"On doit définir le régime à vitesse réduite:"
+AU=90E3
+M_dot_w=50
+M_dot_a=60
+AU_r=45E3
+M_dot_a_r=30
+t_w_su=35
+P=101325
+t_a_su=25
+RH_su=70E-2
+
+Q_dot=epsilon_f*C_dot_min_f*(t_w_su-t_wb_su)
+epsilon_f=(1-exp(-NTU_f*(1-omega_f)))/(1-omega_f*exp(-NTU_f*(1-omega_f)))
+NTU_f=AU_f/C_dot_min_f
+AU_f=AU*c_p_f/c_p
+c_p_f=(h_a_ex-h_a_su)/(t_wb_ex-t_wb_su)
+Q_dot_r=epsilon_f_r*C_dot_min_f_r*(t_w_su-t_wb_su)
+epsilon_f_r=(1-exp(-NTU_f_r*(1-omega_f_r)))/(1-omega_f_r*exp(-NTU_f_r*(1-omega_f_r)))
+NTU_f_r=AU_f_r/C_dot_min_f_r
+AU_f_r=AU_r*c_p_f_r/c_p
+c_p_f_r=(h_a_ex_r-h_a_su)/(t_wb_ex_r-t_wb_su)
+
+"valeur provisoire:"
+//c_p_f=4000
+//c_p_f_r=4000
+c_p=SPECHEAT(AirH2O,T=T_a_su,P=P,R=RH_su)
+t_wb_su=WETBULB(AirH2O,T=T_a_su,P=P,R=RH_su)
+C_dot_min_f=min(C_dot_w,C_dot_f)
+C_dot_min_f_r=min(C_dot_w,C_dot_f_r)
+C_dot_w=M_dot_w*c_w
+c_w=4187
+C_dot_f=M_dot_a*c_p_f
+omega_f=C_dot_min_f/C_dot_max_f
+C_dot_max_f=max(C_dot_w,C_dot_f)
+Q_dot=M_dot_a*(h_a_ex-h_a_su)
+C_dot_f_r=M_dot_a_r*c_p_f_r
+omega_f_r=C_dot_min_f_r/C_dot_max_f_r
+C_dot_max_f_r=max(C_dot_w,C_dot_f_r)
+Q_dot_r=M_dot_a_r*(h_a_ex_r-h_a_su)
+h_a_su=ENTHALPY(AirH2O,T=T_a_su,P=P,R=RH_su)
+t_wb_ex=temperature(AirH2O,h=h_a_ex,P=P,R=1)
+Q_dot=C_dot_w*(t_w_su-t_w_ex)
+t_wb_ex_r=temperature(AirH2O,h=h_a_ex_r,P=P,R=1)
+Q_dot_r=C_dot_w*(t_w_su-t_w_ex_r)
+"Puissance consommée par le ventilateur:"
+W_dot=15E3
+W_dot=V_dot_a*DELTAp/eta
+"avec"
+eta=0.6
+"(valeur hypothétique; ça n'a pas d'importance ici)"
+V_dot_a=A*C_a
+V_dot_a=M_dot_a*v_a
+v_a*DELTAp=C_a^2/2
+v_a=VOLUME(AirH2O,T=T_a_su,P=P,R=RH_su)
+W_dot_r=V_dot_a_r*DELTAp_r/eta
+V_dot_a_r=A*C_a_r
+V_dot_a_r=M_dot_a_r*v_a
+v_a*DELTAp_r=C_a_r^2/2
+t_w_ex_set=theta*t_w_ex+(1-theta)*t_w_ex_r
+t_w_ex_set=25
+W_dot_mean=theta*W_dot+(1-theta)*W_dot_r
+W_dot_mean_1=theta_1*W_dot_r
+t_w_ex_set=theta_1*t_w_ex_r+(1-theta_1)*t_w_su

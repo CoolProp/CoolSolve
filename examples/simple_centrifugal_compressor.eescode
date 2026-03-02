@@ -1,0 +1,47 @@
+"MSTH 041012 exercice 4"
+"Un turbocompresseur centrifuge a été conçu de telle sorte que ses performances soient les meilleures dans les conditions suivantes:
+	Fluide : air sec et pur
+	Pression et température d'aspiration : 1 bar et 20°C
+	Pression de refoulement : 2.5 bar
+	Débit : 6000 m3/h
+	Facteur de débit : 0.3
+	Facteur d'enthalpie : 1.4
+Déterminez:
+	- Le diamètre et la vitesse de rotation optimale de la roue;
+	- Le diamètre et la vitesse de rotation à attribuer à un compresseur du même type pour comprimer 12000 m3/h de méthane de 2 bar, 20 °C à 3 bar."
+"!Détermination de la vitesse de rotation optimale N et du diamètre"
+p_su=1E5
+t_su=20
+p_ex=2.5E5
+V_dot_su=6000/3600
+phi=0.3
+psi=1.4
+phi=V_dot_su/(U*A)
+U=pi*D*N
+A=pi*D^2/4
+rpm=N*60
+psi=DELTAh_s/(U^2/2)
+DELTAh_s=h_exs-h_su
+h_su=ENTHALPY(Air,T=T_su)
+h_exs=ENTHALPY(Air,s=s_su,p=p_ex)
+s_su=ENTROPY(Air,T=T_su,P=P_su)
+
+"Solution:
+Variables in Main
+A=0.01566 
+D=0.1412 
+DELTAh_s=88103 
+h_exs=381638 [J/kg]
+h_su=293534 [J/kg]
+N=799.7 
+phi=0.3 
+psi=1.4 
+p_ex=250000 
+p_su=100000 
+rpm=47985 
+s_su=5682 [J/kg-K]
+t_su=20 
+U=354.8 
+V_dot_su=1.667 
+"
+

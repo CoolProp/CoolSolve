@@ -1,0 +1,46 @@
+"MSTh - SB - R11 - Exercice 2"
+
+"Données"
+T_ev=5
+DELTAT_oh=0
+T_abs=40
+T_cd=45
+DELTAT_sc=0
+T_gen=130
+P_ev=PRESSURE(Water,T=T_ev,x=0.5)
+P_cd=PRESSURE(Water,T=T_cd,x=0.5)
+"hypothèse:"
+M_dot_w=1
+
+"!évaporateur:"
+Q_dot_ev=M_dot_w*(h_w_ev_ex-h_w_ev_su)
+h_w_ev_su=h_w_cd_ex
+h_w_ev_ex=ENTHALPY(Water,T=T_ev,x=1)
+
+"!condenseur:"
+h_w_cd_ex=ENTHALPY(Water,T=T_cd,x=0)
+Q_dot_cd=M_dot_w*(h_w_cd_su-h_w_cd_ex)
+
+"!générateur:"
+"conservation du débit"
+M_dot_weak=M_dot_w+M_dot_rich
+"bilan énergétique"
+M_dot_weak*h_weak_gen_su+Q_dot_gen=M_dot_w*h_w_gen_ex+M_dot_rich*h_rich_gen_ex
+h_w_gen_ex=h_w_cd_su
+h_w_gen_ex=ENTHALPY(Water,T=T_gen,P=P_cd)
+"débits et concentrations des solutions"
+M_dot_libr=x_abs*M_dot_weak
+M_dot_libr=x_gen*M_dot_rich
+x_abs=X_LIBR('SI',T_abs,P_ev/1000)
+x_gen=X_LIBR('SI',T_gen,P_cd/1000)
+"enthalpies du LiBr"
+h_weak_abs_ex=H_LIBR('SI',T_abs,x_abs)*1000
+h_rich_gen_ex=H_LIBR('SI',T_gen,x_gen)*1000
+"!ajout d'un échangeur de récupération"
+Q_dot_HEX=epsilon_HEX*M_dot_rich*(h_rich_gen_ex-h_rich_abs_su_min)
+h_rich_abs_su_min=H_LIBR('SI',T_abs,x_gen)*1000
+epsilon_HEX=0.75
+Q_dot_HEX=M_dot_weak*(h_weak_gen_su-h_weak_abs_ex)
+Q_dot_HEX=M_dot_rich*(h_rich_gen_ex-h_rich_abs_su)
+"Performances du cycle"
+COP=Q_dot_ev/Q_dot_gen

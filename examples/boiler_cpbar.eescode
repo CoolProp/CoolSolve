@@ -1,0 +1,82 @@
+"
+VL051107
+Répétition 7, exercice 1
+
+1.	Une chaudière est caractérisée comme suit :
+AUgw=34 W/K
+AUwenv=7 W/K
+Combustible: fuel oil (86.9% de C et 13.1% de H)
+Chaleur massique : 1.8 kJ/kg.K
+LHV=43 MJ/kg
+Débit de combustible : 0.6 g/s
+Fuel/air ratio : f=6.2 10-2
+Température de l'ambiance, de l'air et du fuel : 20°C
+
+Déterminez le rendement de cette chaudière lorsqu'elle est alimentée en eau à 60°C à raison de 0.28 kg/s.
+
+"
+
+AU_1=34
+AU_2=7
+
+y_c=0.869 "fraction massique de C"
+y_h=1-y_c
+c_f=1800 "[J/kg.K]" "chaleur massique du fuel"
+LHV=4.3E7 "[J/kg]"
+M_dot_f=0.0006
+f=0.062 "fuel air ratio"
+T_a_su=20
+T_f_su=20
+T_env=20
+
+T_w_su=60 "retour de l'eau vers chaudière"
+M_dot_w=0.28 "[kg/s]"
+
+"pour 1 kg de fuel, on a y_c kg de C et y_h de H
+pour 1 kg de fuel on a y_c/12 kmol de C et y_h/1 kmol de H
+pour 1 mole de C, on a y_h*12/y_c mole de C"
+
+m=1
+n=y_h*12/y_c
+
+"température adiabatique de combustion"
+M_dot_f*LHV+M_dot_a*cp_a*(T_a_su-T_ref)+M_dot_f*c_f*(T_f_su-T_ref)=M_dot_p*cp_p*(T_p_ad-T_ref)
+
+
+M_dot_a=M_dot_f/f
+T_ref=25
+cp_a=CP(air,T=T_a_su)
+//cp_p=cpbar(m,n,f,T_p_ad,T_ref){1300}
+cp_p = 1300
+M_dot_p=M_dot_a+M_dot_f
+
+"échangeur gaz-eau"
+
+T_gas_su=T_p_ad
+C_dot_p=M_dot_p*cp_p_hex
+//cp_p_hex=cpbar(m,n,f,T_gas_su,T_gas_ex){1300} "dans un premier temps"
+cp_p_hex = 1300
+C_dot_w=M_dot_w*cp_w
+cp_w=4186
+C_dot_min_1=MIN(C_dot_p,C_dot_w)
+C_dot_max_1=MAX(C_dot_p,C_dot_w)
+omega_1=C_dot_min_1/C_dot_max_1
+epsilon_1=(1-exp(-NTU_1*(1-omega_1)))/(1-omega_1*exp(-NTU_1*(1-omega_1)))
+NTU_1=AU_1/C_dot_min_1
+
+Q_dot_1=epsilon_1*C_dot_min_1*(T_gas_su-T_w_su)
+Q_dot_1=C_dot_w*(T_w_ex_1-T_w_su) "pour calculer T_w_ex_1"
+Q_dot_1=C_dot_p*(T_gas_su-T_gas_ex) "calcul de la température de cheminée T_gas_ex"
+
+"enveloppe: 2"
+NTU_2=AU_2/C_dot_w
+epsilon_2=1-exp(-NTU_2)
+Q_dot_2=epsilon_2*C_dot_w*(T_w_ex_1-T_env)
+Q_dot_2=C_dot_w*(T_w_ex_1-T_w_ex) "pour calculer T_w_ex"
+
+Q_dot_u=Q_dot_1-Q_dot_2
+Q_dot_c=M_dot_f*LHV
+eta=Q_dot_u/Q_dot_c
+
+
+

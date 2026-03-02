@@ -1,0 +1,94 @@
+"MSTh R2 - Exercice 2 (suite)"
+
+DELTAT_sc=3
+DELTAT_oh=5
+
+"régime n°1"
+T_cd_1=34
+T_ev_1=-6
+Q_dot_ev_1=64000
+W_dot_1=16000
+
+"régime n°2"
+T_cd_2=46
+T_ev_2=0
+Q_dot_ev_2=70000
+W_dot_2=20000
+
+"hypothèse"
+N=rpm/60
+rpm=3000
+
+"!Calculs régime 1"
+"!Cycle frigo"
+"évaporateur"
+Q_dot_ev_1=M_dot_1*(h_1_1-h_4_1)
+h_1_1=ENTHALPY(R22,T=T_1_1,P=P_ev_1)
+P_ev_1=PRESSURE(R22,x=0.5,T=T_ev_1)
+T_1_1=T_ev_1+DELTAT_oh
+h_4_1=h_3_1
+h_3_1=ENTHALPY(R22,T=T_3_1,P=P_cd_1)
+P_cd_1=PRESSURE(R22,x=0.5,T=T_cd_1)
+T_3_1=T_cd_1-DELTAT_sc
+
+"compresseur"
+W_dot_s_1=M_dot_1*(h_2_1-h_1_1)
+h_2_1=ENTHALPY(R22,s=s_1_1,P=P_cd_1)
+s_1_1=ENTROPY(R22,T=T_1_1,P=P_ev_1)
+
+W_dot_1=W_dot_loss_0+(1+alpha)*W_dot_s_1
+
+epsilon_v_1=V_dot_su_1/V_dot_s
+V_dot_s=N*V_s
+V_dot_su_1=M_dot_1*v_1_1
+v_1_1=VOLUME(R22,T=T_1_1,P=P_ev_1)
+epsilon_v_1=1-C*(r_v_1-1)
+//C = 0.28
+r_v_1=v_1_1/v_2_1
+//r_v_1 = 2.86
+v_2_1=VOLUME(R22,h=h_2_1,P=P_cd_1)
+
+"Réprésentation graphique"
+h[1]=h_1_1
+h[2]=h_2_1
+h[3]=h_3_1
+h[4]=h_4_1
+P[1]=P_ev_1
+P[2]=P_cd_1
+P[3]=P_cd_1
+P[4]=P_ev_1
+
+"!Calculs régime 2"
+"!Cycle frigo"
+"évaporateur"
+Q_dot_ev_2=M_dot_2*(h_1_2-h_4_2)
+h_1_2=ENTHALPY(R22,T=T_1_2,P=P_ev_2)
+P_ev_2=PRESSURE(R22,x=0.5,T=T_ev_2)
+T_1_2=T_ev_2+DELTAT_oh
+h_4_2=h_3_2
+h_3_2=ENTHALPY(R22,T=T_3_2,P=P_cd_2)
+P_cd_2=PRESSURE(R22,x=0.5,T=T_cd_2)
+T_3_2=T_cd_2-DELTAT_sc
+
+"compresseur"
+W_dot_s_2=M_dot_2*(h_2_2-h_1_2)
+h_2_2=ENTHALPY(R22,s=s_1_2,P=P_cd_2)
+s_1_2=ENTROPY(R22,T=T_1_2,P=P_ev_2)
+
+W_dot_2=W_dot_loss_0+(1+alpha)*W_dot_s_2
+
+epsilon_v_2=V_dot_su_2/V_dot_s
+V_dot_su_2=M_dot_1*v_1_2
+v_1_2=VOLUME(R22,T=T_1_2,P=P_ev_2)
+epsilon_v_2=1-C*(r_v_2-1)
+r_v_2=v_1_2/v_2_2
+//r_v_2 = 3.15
+v_2_2=VOLUME(R22,h=h_2_2,P=P_cd_2)
+
+"!Résultats"
+
+"On obtient les caractéristiques suivantes pour le compresseur:"
+"alpha=0.204 
+W_dot_loss_0=2238 "
+
+

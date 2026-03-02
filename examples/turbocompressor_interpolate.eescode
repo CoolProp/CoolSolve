@@ -1,0 +1,26 @@
+"MSTH 041012 exercice 6"
+"On dispose, pour un turbocompresseur alimenté en air et entraîné à vitesse de rotation constante, des données suivantes :
+	p2 / p1 	MÖT1 /p1 	es
+	5.0	32.9		0.86
+	4.7	33.8		0.79
+	4.5	34.3		0.77
+(avec les températures en K et les pressions en bar !)
+Déterminez les variations possibles du débit d'air et de la puissance absorbée par ce compresseur dans les conditions suivantes :
+Pression d'aspiration: 0.9 bar
+Pression de refoulement : variable de 4.3 à 4.8 bar.
+Température d'aspiration : supposée constante et égale à 20 °C."
+p_su=0.9
+t_su=20
+p_ex=4.5
+r_p=p_ex/p_su
+M_r=M_dot*sqrt(t_su+273)/p_su
+W_dot=M_dot*w_s/epsilon_s
+w_s=h_exs-h_su
+h_su=enthalpy(air, t=t_su)
+h_exs=enthalpy(air,p=p_ex,s=s_su)
+s_su=entropy(air,t=t_su, p=p_su)
+"epsilon_s=0.79
+M_r=33"
+epsilon_s=INTERPOLATE('lookup 1','epsilon_s','r_p',r_p=r_p)
+M_r=INTERPOLATE('lookup 1','M_r','r_p',r_p=r_p)
+

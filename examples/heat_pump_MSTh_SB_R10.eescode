@@ -1,0 +1,110 @@
+"MSTh - SB - R10 - Exercice 1"
+
+"Exercice : 2"
+"Dédoubler les équations (indice 'r')- modifier données (températures,puissance interne de pompage) - introduire équations de régulations"
+
+"Compresseur semi-hermétique:"
+
+W_dot_loss_0=1294
+alpha=0.228
+C=0.125
+V_dot_s=0.0233
+AU_ev=7000
+AU_cd=15000
+"conditions de fonctionnement:"
+"R22"
+M_dot_w_ev=2.4
+M_dot_w_cd=2.2
+T_w_ev_ex=10
+DELTAT_oh=5
+T_w_cd_su=40
+DELTAT_sc=3
+
+"Résultats:"
+
+Q_dot_u=Q_dot_ev
+Q_dot_c=W_dot_cp
+COP=Q_dot_u/Q_dot_c
+
+"!Calculs"
+"Bilan frigo:"
+Q_dot_ev+W_dot_cp=Q_dot_cd
+
+P_ev=PRESSURE(R22,T=T_ev,x=0.5)
+P_cd=PRESSURE(R22,T=T_cd,x=0.5)
+
+h_1=ENTHALPY(R22,T=T_ev+DELTAT_oh,x=1)
+h_3=ENTHALPY(R22,T=T_cd-DELTAT_sc,x=0)
+h_4=h_3
+Q_dot_ev=M_dot_r*(h_1-h_4)
+
+"!Compresseur:"
+"Valeurs provisoires: "
+"Q_dot_ev=50000
+Q_dot_cd=70000"
+
+W_dot_loss=Q_dot_rech "compresseur semi-hermétique"
+Q_dot_rech=M_dot_r*(h_su_cp_1-h_su_cp)
+h_su_cp=ENTHALPY(R22,T=T_su_cp,P=P_su_cp)
+{Q_dot_rech=M_dot_r*cp_r*(T_su_cp_1-T_su_cp)
+cp_r=CP(R22,T=T_su_cp,x=1)}
+
+r_v_1=v_su_1/v_ex_1
+v_su_1=VOLUME(R22,T=T_su_cp_1,P=P_su_cp)
+v_ex_1=VOLUME(R22,h=h_ex_cp_s_1,P=P_ex_cp)
+epsilon_v_1=1-C*(r_v_1-1)
+
+epsilon_v_1=V_dot_su_1/V_dot_s
+V_dot_su_1=M_dot_r*v_su_1
+
+W_dot_cp=W_dot_loss+W_dot_in
+W_dot_loss=W_dot_loss_0+alpha*W_dot_in
+
+W_dot_in=M_dot_r*(h_ex_cp_s_1-h_su_cp_1)
+h_su_cp_1=ENTHALPY(R22,T=T_su_cp_1,P=P_su_cp)
+h_ex_cp_s_1=ENTHALPY(R22,s=s_su_1,P=P_cd)
+s_su_1=ENTROPY(R22,T=T_su_cp_1,P=P_su_cp)
+
+T_su_cp=T_ev+DELTAT_oh
+P_su_cp=P_ev
+P_ex_cp=P_cd
+
+{"Sans tenir compte du fait que le compresseur est semi-hermétique:"
+epsilon_v=1-C*(r_v-1)
+r_v=v_su/v_ex
+v_su=VOLUME(R22,T=T_su_cp,P=P_su_cp)
+v_ex=VOLUME(R22,h=h_ex_cp_s,P=P_ex_cp)
+
+epsilon_v=V_dot_su/V_dot_s
+V_dot_su=M_dot_r*v_su
+
+W_dot_cp=W_dot_loss+W_dot_in
+W_dot_loss=W_dot_loss_0+alpha*W_dot_in
+
+W_dot_in=M_dot_r*(h_ex_cp_s-h_su_cp)
+h_su_cp=h_1
+h_ex_cp_s=ENTHALPY(R22,s=s_su,P=P_cd)
+s_su=ENTROPY(R22,T=T_su_cp,x=1)}
+
+"!Evaporateur:"
+Q_dot_ev=M_dot_w_ev*cp_w_ev*(T_w_ev_su-T_w_ev_ex)
+cp_w_ev=CP(Water,T=T_w_ev_m,P=P_atm)
+T_w_ev_m=(T_w_ev_su+T_w_ev_ex)/2
+P_atm=101325
+"valeur provisoire:"
+//cp_w_ev=4187
+Q_dot_ev=epsilon_ev*C_dot_min_ev*(T_w_ev_su-T_ev)
+C_dot_min_ev=M_dot_w_ev*cp_w_ev
+epsilon_ev=1-exp(-NTU_ev)
+NTU_ev=AU_ev/C_dot_min_ev
+
+"!Condenseur"
+Q_dot_cd=M_dot_w_cd*cp_w_cd*(T_w_cd_ex-T_w_cd_su)
+cp_w_cd=CP(Water,T=T_w_cd_m,P=P_atm)
+T_w_cd_m=(T_w_cd_su+T_w_cd_ex)/2
+"valeur provisoire:"
+//cp_w_cd=4187
+Q_dot_cd=epsilon_cd*C_dot_min_cd*(T_cd-T_w_cd_su)
+C_dot_min_cd=M_dot_w_cd*cp_w_cd
+epsilon_cd=1-exp(-NTU_cd)
+NTU_cd=AU_cd/C_dot_min_cd

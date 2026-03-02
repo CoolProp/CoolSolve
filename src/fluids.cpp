@@ -170,6 +170,14 @@ void FluidRegistry::initialize() {
     addIdeal("C2H6", "Ethane");
     addIdeal("C3H8", "Propane");
     
+    // H2O as ideal gas (water vapor for combustion/chemistry).
+    // Use a low dummy pressure (100 Pa) so CoolProp stays in the gas phase
+    // even at low temperatures (saturation T at 100 Pa ≈ −23 °C).
+    {
+        auto fluid = std::make_shared<IdealGasFluid>("H2O", "Water", 100.0);
+        registry_["h2o"] = fluid;
+    }
+    
     // --- Real Fluid Air_ha (EES real gas) ---
     addReal("Air_ha", "Air");
 

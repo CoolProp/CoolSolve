@@ -46,17 +46,21 @@ ADValue evaluateStandardFunction(const std::string& funcName,
     if (args.size() == 1) {
         const ADValue& x = args[0];
         
-        if (name == "sin") return sin(x);
-        if (name == "cos") return cos(x);
-        if (name == "tan") return tan(x);
+        // EES convention: trig functions use degrees
+        constexpr double deg2rad = 3.14159265358979323846 / 180.0;
+        constexpr double rad2deg = 180.0 / 3.14159265358979323846;
+        
+        if (name == "sin") { ADValue xrad = x * ADValue::constant(deg2rad, x.gradient.size()); return sin(xrad); }
+        if (name == "cos") { ADValue xrad = x * ADValue::constant(deg2rad, x.gradient.size()); return cos(xrad); }
+        if (name == "tan") { ADValue xrad = x * ADValue::constant(deg2rad, x.gradient.size()); return tan(xrad); }
         if (name == "exp") return exp(x);
         if (name == "ln" || name == "log") return log(x);
         if (name == "log10") return log10(x);
         if (name == "sqrt") return sqrt(x);
         if (name == "abs") return abs(x);
-        if (name == "asin" || name == "arcsin") return asin(x);
-        if (name == "acos" || name == "arccos") return acos(x);
-        if (name == "atan" || name == "arctan") return atan(x);
+        if (name == "asin" || name == "arcsin") return asin(x) * ADValue::constant(rad2deg, x.gradient.size());
+        if (name == "acos" || name == "arccos") return acos(x) * ADValue::constant(rad2deg, x.gradient.size());
+        if (name == "atan" || name == "arctan") return atan(x) * ADValue::constant(rad2deg, x.gradient.size());
         if (name == "sinh") return sinh(x);
         if (name == "cosh") return cosh(x);
         if (name == "tanh") return tanh(x);
@@ -70,14 +74,13 @@ ADValue evaluateStandardFunction(const std::string& funcName,
         if (name == "pow") return pow(x, y);
         if (name == "atan2") {
             // atan2(y, x) = atan(y/x) with proper quadrant handling
-            // For simplicity, we compute it numerically and use chain rule
-            // d(atan2(y,x))/dy = x / (x^2 + y^2)
-            // d(atan2(y,x))/dx = -y / (x^2 + y^2)
-            double val = std::atan2(x.value, y.value);  // Note: atan2(y, x) in standard math
+            // Returns result in degrees (EES convention)
+            double val = std::atan2(x.value, y.value) * 180.0 / 3.14159265358979323846;
             double denom = x.value * x.value + y.value * y.value;
+            double rad2deg = 180.0 / 3.14159265358979323846;
             ADValue z(val, x.gradient.size());
             for (size_t i = 0; i < z.gradient.size(); ++i) {
-                z.gradient[i] = (y.value * x.gradient[i] - x.value * y.gradient[i]) / denom;
+                z.gradient[i] = rad2deg * (y.value * x.gradient[i] - x.value * y.gradient[i]) / denom;
             }
             return z;
         }

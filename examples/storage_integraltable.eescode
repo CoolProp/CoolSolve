@@ -1,0 +1,43 @@
+"MSTH051024 Exercice 4"
+"Pour stocker de l'énergie frigorifique, on utilise un réservoir contenant 120 m3 d'eau et un échangeur alimentée en eau glycolée.
+Le débit d'eau glycolée est fixé à 90 kg/s.
+Le coefficient d'échange en cours de décharge est évalué à 0.5 MW/K.
+Déterminez la courbe de puissance disponible en cours de décharge, sachant que la température de l'eau glycolée à l'entrée du réservoir est maintenue à +5°C.
+Supposez que la chaleur massique de l'eau glycolée est de 3.8 kJ /kgK.
+Supposez que la décharge commence alors que toute l'eau contenue dans le réservoir est à l'état de glace à 0°C (négligez le sous-refroidissement initial).
+Négligez les échanges de chaleur avec l'ambiance."
+"Données:"
+V_res=120
+M_dot=90
+AU=1E6
+t_su=5
+c_p=3.8E3
+"Bilan du système à un instant donné:"
+H_dot=M*u_dot
+"(c'est l'équation différentielle que nous devrons intégrer)"
+M=V_res*1000
+H_dot=epsilon*C_dot*(t_su-t_w)
+C_dot=M_dot*c_p
+epsilon=1- exp(-NTU)
+NTU=AU/C_dot
+"Intégration:"
+DELTAu=INTEGRAL(u_dot,tau, tau_1, tau_2)
+DELTAu=u-u_1
+u_1=u_ice_0
+u_ice_0=INTENERGY(Water,T=-0.01,P=P)
+p=1E5
+t_w=if(u,u_ice_0,t_ice_0,0,t_melt)
+t_ice_0=-0.01
+t_melt=if(u,0,0,0,t_liquid)
+t_liquid=u/c_liquid
+c_liquid=4187
+tau_1=0
+tau_2=50000
+x=if(u,u_ice_0,1,1,x_melt)
+x_melt=if(u,0,y,0,0)
+y=u/u_ice_0
+$IntegralTable tau:10,  x,u,t_w,H_dot
+
+
+
+

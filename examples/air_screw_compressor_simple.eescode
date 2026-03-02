@@ -1,0 +1,93 @@
+"VL050926
+Répétition 2, exercice 1, troisième partie
+
+Soit un compresseur à vis sec, conçu pour fonctionner dans les conditions suivantes :
+	fluide : air sec et pur
+	pression et température d'admission : 1 bar 15 C
+	pression de refoulement : 3 bar
+
+	Quand ce compresseur fonctionne à 7000 tours par minute, on observe que les efficacités volumétrique et isentropique sont respectivement de 90 et 70%.
+	
+	Quelles pourraient être les performances de ce même compresseur à 2000 tours par minute ?
+	
+	Indication pratique : négligez les effets des pertes de charge à l'aspiration et au refoulement du compresseur, mais tenez compte de la fuite interne.
+
+"
+
+"dans cette deuxième partie, nous imposons les paramètres du modèle de compresseur: V_s, T_m, A_thr_leak + table paramétrique sur vitesse de rotation"
+
+"***********************************************************************************"
+
+V_s=0.007876 "!!"
+A_thr=0.0001309 "!!"
+T_m=46.25 "!!"
+
+P_su=1E5
+T_su=15
+P_ex=3E5
+N=rpm/60{7000/60} "[Hz]" 
+rpm = 3000
+
+"conditions d'entrée"
+
+h_su=enthalpy(air_ha,P=P_su,T=T_su)
+s_su=entropy(air_ha,P=P_su,T=T_su)
+v_su=volume(air_ha,P=P_su,T=T_su)
+
+{epsilon_v=0.9 
+epsilon_s=0.7} "!!"
+
+"calcul du débit de fuite"
+
+epsilon_v=M_dot/M_dot_th
+{M_dot=1 "on travaille en valeur relative"}"!!"
+M_dot_th=V_dot_s/v_su 
+M_dot_in=V_dot_s/{v_su}v_su1 "v_su1 tient compte du remélange avec la fuite" "!! faire tourner avec v_su, puis updater les guesses"
+{v_su1=v_su "en première approximation"}
+M_dot=M_dot_in-M_dot_leak"permet de calculer M_dot_leak"
+V_dot_s=N*V_s
+
+"remélange avec la fuite"
+
+M_dot_leak*h_ex+M_dot*h_su=M_dot_in*h_su1
+v_su1=volume(air_ha,P=P_su,h=h_su1)
+s_su1=entropy(air_ha,P=P_su,h=h_su1)
+
+
+" travail de compression "
+
+h_ex1_s=enthalpy(air_ha,P=P_ex,s=s_su1)
+W_dot_in=M_dot_in*(h_ex1_s-h_su1)
+W_dot=W_dot_in+W_dot_loss
+W_dot_loss=2*PI*N*T_m "identification du couple de pertes"
+epsilon_s=W_dot_s/W_dot
+W_dot_s=M_dot*w_s
+w_s=h_ex_s-h_su
+h_ex_s=enthalpy(air_ha,P=P_ex,s=s_su)
+
+h_ex={h_ex_s}h_ex1_s "on suppose que le compresseur est adiabatique, mais que les pertes mécaniques sont dissipées à l'ambiance"
+								"!! faire tourner avec h_ex_s, puis updater les guesses"
+s_ex=entropy(air_ha,P=P_ex,h=h_ex)
+v_ex=volume(air_ha,P=P_ex,h=h_ex)
+
+"calcul de l'aire fictive de fuite"
+
+M_dot_leak=V_dot_leak/v_thr_leak
+{v_thr_leak=v_ex} "en première approximation" 
+V_dot_leak=C_thr_leak*A_thr "pour calculer l'aire fictive de fuite"
+P_thr_leak=((2/(gamma+1))^(gamma/(gamma-1)))*P_ex "la pression critique ne dépend que de la pression d'entrée dans la tuyère"
+	"la pression en sortie de la tuyère (pression d'entrée du compresseur) est inférieure à la pression critique: la tuyère est choquée"
+gamma=1.4
+h_ex=h_thr_leak+0.5*C_thr_leak^2 "écoulement isenthalpique"
+h_thr_leak=enthalpy(air_ha,P=P_thr_leak,s=s_ex) "détente isentropique dans la tuyère"
+v_thr_leak=volume(air_ha,P=P_thr_leak,s=s_ex) "détente isentropique dans la tuyère"
+T_thr_leak=temperature(air_ha,P=P_thr_leak,s=s_ex) "détente isentropique dans la tuyère"
+
+
+r=8314/MM_air
+MM_air=MOLARMASS(Air_ha)
+C_thr_leak_bis=sqrt(gamma*r*(T_thr_leak+273)) "autre façon de calculer la vitesse au col"
+
+
+
+

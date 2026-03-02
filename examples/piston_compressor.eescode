@@ -1,0 +1,96 @@
+"MSTh - SB - R1 - Exercice 1"
+
+P_su=1E5
+T_su=15
+rpm=3000
+N=3000/60
+
+"Premier point"
+P_ex_1=7E5
+M_dot_1=0.1
+W_dot_1=32000
+
+"Deuxième point"
+P_ex_2=3E5
+M_dot_2=0.11
+W_dot_2=20000
+
+"!Déterminons les caractéristiques de ce compresseur à piston"
+
+V_dot_s=N*V_s
+
+"Premier régime:"
+
+W_dot_1=W_dot_loss_0+(1+alpha)*W_dot_in_1
+epsilon_v_1=1-C*(r_v_1-1)
+r_v_1=v_su_1/v_ex_1
+v_su_1=VOLUME(Air,T=T_su,P=P_su)
+v_ex_1=VOLUME(Air,s=s_su,P=P_ex_1) "compression interne isentropique"
+s_su=ENTROPY(Air,T=T_su,P=P_su)
+
+epsilon_v_1=V_dot_su_1/V_dot_s
+V_dot_su_1=M_dot_1*v_su_1
+
+W_dot_in_1=M_dot_1*(h_ex_s_1-h_su_1)
+h_su_1=ENTHALPY(Air,T=T_su)
+h_ex_s_1=ENTHALPY(Air,s=s_su,P=P_ex_1)
+
+"Deuxième régime:"
+
+W_dot_2=W_dot_loss_0+(1+alpha)*W_dot_in_2
+epsilon_v_2=1-C*(r_v_2-1)
+r_v_2=v_su_2/v_ex_2
+v_su_2=v_su_1
+v_ex_2=VOLUME(Air,s=s_su,P=P_ex_2) "compression interne isentropique"
+
+epsilon_v_2=V_dot_su_2/V_dot_s
+V_dot_su_2=M_dot_2*v_su_2
+
+W_dot_in_2=M_dot_2*(h_ex_s_2-h_su_2)
+h_su_1=h_su_2
+h_ex_s_2=ENTHALPY(Air,s=s_su,P=P_ex_2)
+
+"!Evaluez le débit d'air et la puissance consommée de ce compresseur"
+alpha_cp=0.2295 
+C_cp=0.04671 
+V_s_cp=0.001927 
+W_dot_loss_0_cp=5570 
+"1) à la vitesse de rotation 3000 rpm et à la pression de refoulement 10 bar"
+"Nouveau régime"
+N_3=3000/60
+P_ex_3=10E5
+
+V_dot_s_3=N_3*V_s_cp
+
+W_dot_3=W_dot_loss_0_cp+(1+alpha_cp)*W_dot_in_3
+epsilon_v_3=1-C_cp*(r_v_3-1)
+r_v_3=v_su_3/v_ex_3
+v_su_3=v_su_1
+v_ex_3=VOLUME(Air,s=s_su,P=P_ex_3) "compression interne isentropique"
+
+epsilon_v_3=V_dot_su_3/V_dot_s_3
+V_dot_su_3=M_dot_3*v_su_3
+
+W_dot_in_3=M_dot_3*(h_ex_s_3-h_su_3)
+h_su_3=h_su_1
+h_ex_s_3=ENTHALPY(Air,s=s_su,P=P_ex_3)
+
+"2) à la vitesse de rotation 2500 rpm et à la pression de refoulement 7 bar"
+"Nouveau régime"
+N_4=2500/60
+P_ex_4=7E5
+
+V_dot_s_4=N_4*V_s_cp
+
+W_dot_4=W_dot_loss_0_cp+(1+alpha_cp)*W_dot_in_4
+epsilon_v_4=1-C_cp*(r_v_4-1)
+r_v_4=v_su_4/v_ex_4
+v_su_4=v_su_1
+v_ex_4=VOLUME(Air,s=s_su,P=P_ex_4) "compression interne isentropique"
+
+epsilon_v_4=V_dot_su_4/V_dot_s_4
+V_dot_su_4=M_dot_4*v_su_4
+
+W_dot_in_4=M_dot_4*(h_ex_s_4-h_su_4)
+h_su_4=h_su_1
+h_ex_s_4=ENTHALPY(Air,s=s_su,P=P_ex_4)

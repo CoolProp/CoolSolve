@@ -57,13 +57,19 @@ private:
 
 class IdealGasFluid : public Fluid {
 public:
-    IdealGasFluid(const std::string& name, const std::string& cpName) 
-        : name_(name), cpName_(cpName) {}
+    IdealGasFluid(const std::string& name, const std::string& cpName,
+                  double dummyPressureSI = 101325.0) 
+        : name_(name), cpName_(cpName), dummyPressure_(dummyPressureSI) {}
         
     std::string getName() const override { return name_; }
     std::string getCoolPropName() const override { return cpName_; }
     FluidType getType() const override { return FluidType::IdealGas; }
     int getMinInputs() const override { return 1; }
+
+    // Dummy pressure (Pa) to inject when only thermal-only properties are
+    // requested.  For most ideal gases 101325 Pa is fine; for H2O a lower
+    // pressure (e.g. 100 Pa) keeps us in the gas phase at all temperatures.
+    double getDummyPressureSI() const { return dummyPressure_; }
     
     bool propertyDependsOnPressure(const std::string& prop) const override {
         std::string p = prop;
@@ -77,6 +83,7 @@ public:
 private:
     std::string name_;
     std::string cpName_;
+    double dummyPressure_;
 };
 
 class HumidAirFluid : public Fluid {

@@ -60,14 +60,17 @@ struct ExpectedSolution {
 };
 
 const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
+    // Original models
     {"condenser_3zones.eescode",  {"epsilon_cd_tp", 0.952}},
+    {"cooling_coil.eescode",      {"epsilon_c", 0.8111}},
+    {"cpbar.eescode",             {"c_bar_p", 1020.3}},
     {"exchangers1.eescode",       {"Q_dot", 134349}},
     {"exchangers2.eescode",       {"A", 7.378}},
     {"exchangers3.eescode",       {"DELTAT_w", 15.94}},
     {"expander_module.eescode",   {"W_dot_sh_exp", 2202}},
     {"humidair1.eescode",         {"DELTAw", 0.002933}},
     {"humidair2.eescode",         {"M_dot_w_cond", 0.0001046}},
-    {"orc_co2.eescode",       {"W_dot_t", 117440}},
+    {"orc_co2.eescode",           {"W_dot_t", 117440}},
     {"orc_complex.eescode",       {"eta_I", 0.108}},
     {"orc_extraction.eescode",    {"eta", 0.1172}},
     {"orc_r245fa.eescode",        {"eta_cycle", 0.1574}},
@@ -79,7 +82,25 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"refrigeration1.eescode",    {"COP", 4.818}},
     {"refrigeration2.eescode",    {"COP", 4.472}},
     {"refrigeration3.eescode",    {"COP", 3.481}},
-    {"scroll_compressor.eescode", {"epsilon_s_cp", 0.2424}}
+    {"scroll_compressor.eescode", {"epsilon_s_cp", 0.2424}},
+    // Models from notsolving/ (fixed)
+    {"internal_combustion_engine.eescode",      {"W_dot", 190817}},
+    {"internal_combustion_engine_cpbar.eescode", {"M_dot_a", 0.004209}},
+    {"piston_compressor.eescode",               {"C", 0.04694}},
+    {"turbocompressor.eescode",                 {"M_dot", 0.6660}},
+    // Models from solving/
+    {"air_screw_compressor.eescode",            {"epsilon_s", 0.4896}},
+    {"air_screw_compressor_simple.eescode",     {"epsilon_s", 0.5918}},
+    {"boiler_cpbar.eescode",                    {"eta", 0.8853}},
+    {"boiler_cpbar2.eescode",                   {"eta", 0.8838}},
+    {"compressor_refrigeration_simple.eescode", {"COP_1", 3.934}},
+    {"condenser_wet.eescode",                   {"AU_f", 1767.5}},
+    {"cooling_tower.eescode",                   {"Q_dot", 1977305}},
+    {"cooling_tower2.eescode",                  {"Q_dot", 1977305}},
+    {"evaporator.eescode",                      {"epsilon_ev_f", 0.7153}},
+    {"heat_pump_MSTh_SB_R10.eescode",           {"COP", 3.311}},
+    {"refrigeration_compressor.eescode",        {"epsilon_v_1", 0.4729}},
+    {"simple_centrifugal_compressor.eescode",   {"U", 354.8}},
 };
 
 // Test result structure for reporting
@@ -163,10 +184,19 @@ ExampleTestResult testExampleFile(const fs::path& filepath) {
     coolsolve::SolverOptions options;
     options.tolerance = 1e-6;
     options.timeoutSeconds = 30; // Add 30 second timeout for large models
+
+    // Load coolsolve.conf from the same directory as the model (same as CLI)
+    auto configPath = filepath.parent_path() / "coolsolve.conf";
+    if (fs::exists(configPath)) {
+        coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+        options.tolerance = 1e-6;          // keep our test tolerance
+        options.timeoutSeconds = 30;       // keep our test timeout
+    }
     
     bool success = runner.run(options);
     
-    result.totalTimeMs = runner.getTiming().total_time_ms;
+    const auto& timing = runner.getTiming();
+    result.totalTimeMs = timing.total_time_ms;
     result.parseSuccess = runner.isParseSuccess();
     if (result.parseSuccess) {
         result.equationCount = runner.getParseResult().equationCount;
@@ -402,7 +432,14 @@ TEST_CASE("Comprehensive example file testing", "[.][examples-comprehensive]") {
                 }
             }
         }
-        else if (result.analysisSuccess) std::cout << "SOLVE FAIL";
+        else if (result.analysisSuccess) {
+            auto cat = coolsolve::categorizeError(result.errorMsg);
+            if (cat == coolsolve::ErrorCategory::UnsupportedFunction || 
+                result.errorMsg.find("Unknown fluid") != std::string::npos)
+                std::cout << "UNSUPPORTED";
+            else
+                std::cout << "SOLVE FAIL";
+        }
         else if (result.irSuccess) std::cout << "ANALYSIS FAIL";
         else if (result.parseSuccess) std::cout << "IR FAIL";
         else std::cout << "PARSE FAIL";

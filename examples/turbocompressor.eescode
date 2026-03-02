@@ -1,0 +1,89 @@
+"MSTH_041012 exercice 1"
+"Evaluez le débit d'air aspiré par un turbocompresseur centrifuge dans les conditions suivantes :
+	Diamètre de la roue : 7 cm
+	Epaisseur périphérique de la roue : 1 cm
+	Inclinaison des aubages à la périphérie de la roue : 130°
+	Température et pression d'aspiration : 20°C  1 bar
+	Pression de refoulement : 1.5 bar
+	Vitesse de rotation : 100 000 rpm"
+"indice 2 pour la sortie de la roue"
+D_2=0.07
+e=0.01
+beta_2=130
+t_su=20
+p_su=1E5
+p_ex=1.5E5
+rpm=100000
+"équations de la page 60"
+"D'abord sans diffuseur:"
+V_dot_2=A_2*W_2*sin(beta_2)
+A_2=pi*D_2*e
+M_dot=V_dot_2/v_2
+w=h_t_2-h_1
+w=U_2^2+U_2*W_2*cos(beta_2)
+h_t_2=h_2+C_2^2/2
+h_2s+C_2^2/2-h_1=epsilon_s_i*w
+//r_p_i=p_2/p_1
+"estimation provisoire, sans le diffuseur:"
+r_p_i=1.25
+C_2^2=W_2^2+U_2^2+2*U_2*W_2*cos(beta_2)
+h_3=h_2+C_2^2/2
+"h_3-h_1=w"
+h_3s-h_2=epsilon_s_d*C_2^2/2
+r_p=p_3/p_1
+U_2=pi*D_2*N
+N=rpm/60
+h_1=enthalpy(air,t=t_1)
+s_1=entropy(air, t=t_1, p=p_1)
+t_1=t_su
+p_1=p_su
+h_2s=enthalpy(air,p=p_2,s=s_1)
+s_2=entropy(air, h=h_2, p=p_2)
+
+h_3s=enthalpy(air,p=p_3,s=s_2)
+p_3=p_ex
+v_2=VOLUME(Air,h=h_2,P=P_2)
+epsilon_s_i=0.85
+"epsilon_s_i=1"
+epsilon_s_d=0.75
+"epsilon_s_d=1"
+"Solution:
+Variables in Main
+A_2=0.002199 
+beta_2=130 
+C_2=296.3 
+D_2=0.07 
+e=0.01 
+epsilon_s_d=0.75 
+epsilon_s_i=0.85 
+h_1=293534 [J/kg]
+h_2=306164 
+h_2s=297685 [J/kg]
+h_3=350062 
+h_3s=339087 
+h_t_2=350062 
+M_dot=0.6659 
+N=1667 
+p_1=100000 
+p_2=105021 
+p_3=150000 
+p_ex=150000 
+p_su=100000 
+rpm=100000 
+r_p=1.5 
+r_p_i=1.05 
+s_1=5682 [J/kg-K]
+s_2=5710 
+t_1=20 
+t_su=20 
+U_2=366.5 
+v_2=0.8355 
+V_dot_2=0.5564 
+w=56527 
+W_2=330.3 
+"
+
+
+
+
+

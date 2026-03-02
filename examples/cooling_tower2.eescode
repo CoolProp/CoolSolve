@@ -1,0 +1,38 @@
+"MSTH 051024 Exercice 1"
+"Déterminez la température de l'eau à la sortie d'une tour de refroidissement dans les conditions suivantes :
+	Circulation à contre-courant
+	Coefficient de transfert global en régime sec: 90 kW K-1
+	Débits d'eau et d'air : 50 et 60 kg s-1
+	Température de l'eau à l'entrée de la tour : 35 °C
+	Pression atmosphérique : 101325 Pascal.
+       Température et degré de saturation de l'air ambiant : 25°C, 70 %.
+       Indication pratique : considérez l'air comme saturé à la sortie de la tour. "
+AU=90E3
+M_dot_w=50
+M_dot_a=60
+t_w_su=35
+P=101325
+t_a_su=25
+RH_su=70E-2
+
+
+"(voir équations page 95)"
+Q_dot=epsilon_f*C_dot_min_f*(t_w_su-t_wb_su)
+epsilon_f=(1-exp(-NTU_f*(1-omega_f)))/(1-omega_f*exp(-NTU_f*(1-omega_f)))
+NTU_f=AU_f/C_dot_min_f
+AU_f=AU*c_p_f/c_p
+c_p_f=(h_a_ex-h_a_su)/(t_wb_ex-t_wb_su)
+"valeur provisoire:"
+"c_p_f=4000"
+c_p=SPECHEAT(AirH2O,T=T_a_su,P=P,R=RH_su)
+t_wb_su=WETBULB(AirH2O,T=T_a_su,P=P,R=RH_su)
+C_dot_min_f=min(C_dot_w,C_dot_f)
+C_dot_w=M_dot_w*c_w
+c_w=4187
+C_dot_f=M_dot_a*c_p_f
+omega_f=C_dot_min_f/C_dot_max_f
+C_dot_max_f=max(C_dot_w,C_dot_f)
+Q_dot=M_dot_a*(h_a_ex-h_a_su)
+h_a_su=ENTHALPY(AirH2O,T=T_a_su,P=P,R=RH_su)
+t_wb_ex=temperature(AirH2O,h=h_a_ex,P=P,R=1)
+Q_dot=C_dot_w*(t_w_su-t_w_ex)

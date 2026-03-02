@@ -121,6 +121,17 @@ std::string categoryToString(ErrorCategory category) {
 }
 
 // ============================================================================
+// Fatal error detection
+// ============================================================================
+
+/// Check if an exception message indicates a fatal evaluation error that
+/// no solver strategy can recover from (e.g. unsupported functions, unknown fluids).
+static bool isFatalEvaluationError(const std::string& what) {
+    return what.find("Unknown or unsupported function") != std::string::npos
+        || what.find("Unknown fluid") != std::string::npos;
+}
+
+// ============================================================================
 // Solver Strategy Utilities
 // ============================================================================
 
@@ -564,8 +575,16 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
             try {
                 auto [fv, jv] = eval1D(xCur);
                 f = fv; j = jv;
+            } catch (const std::exception& e) {
+                if (isFatalEvaluationError(e.what())) {
+                    // Unsupported function/fluid — no point iterating
+                    if (outErrorMessage) *outErrorMessage = e.what();
+                    return SolverStatus::EvaluationError;
+                }
+                // Recoverable evaluation failure — try reducing x toward zero
+                xCur *= 0.5;
+                continue;
             } catch (...) {
-                // Evaluation failed — try reducing x toward zero
                 xCur *= 0.5;
                 continue;
             }
@@ -1089,6 +1108,14 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
 
         if (status == SolverStatus::Success) {
             return status;
+        }
+
+        // Fatal evaluation error (unsupported function/fluid) — stop pipeline immediately
+        if (isFatalEvaluationError(solverError)) {
+            if (outErrorMessage) {
+                *outErrorMessage = solverError;
+            }
+            return SolverStatus::EvaluationError;
         }
 
         // Even on failure, check whether this solver found a better point

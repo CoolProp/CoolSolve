@@ -492,6 +492,31 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
         return evaluateUserFunction(it->second, func);
     }
     
+    // Check for user-defined procedure called with inline syntax (single output)
+    // EES allows: result = proc(a, b, c) when the procedure has exactly one output
+    {
+        auto procIt = userProcedures_.find(name);
+        if (procIt != userProcedures_.end()) {
+            const auto& proc = procIt->second;
+            if (func.args.size() == proc.inputs.size()) {
+                if (proc.outputs.size() != 1) {
+                    throw std::runtime_error("Procedure " + func.name + " has " +
+                        std::to_string(proc.outputs.size()) +
+                        " outputs and cannot be called as a function (inline syntax requires exactly 1 output)");
+                }
+                // Build a temporary ProcedureCall and evaluate it
+                ProcedureCall tempCall;
+                tempCall.name = name;
+                tempCall.inputArgs = func.args;
+                Variable outVar;
+                outVar.name = "__proc_inline_" + name;
+                tempCall.outputVars = {outVar};
+                evaluateProcedureCall(tempCall);
+                return getVariable("__proc_inline_" + name);
+            }
+        }
+    }
+    
     // Check if it's a thermodynamic function handled by CoolProp
     bool isThermo = false;
     try {
@@ -668,13 +693,45 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             double result = timedHAPropsSI(outputStr, inputStrs[0], vals[0], inputStrs[1], vals[1], inputStrs[2], vals[2]);
             
             if (!std::isfinite(result)) {
-                std::ostringstream oss;
-                oss << "HumidAir returned invalid result (NaN or Inf) for " << outputStr 
-                    << " with inputs: " 
-                    << inputStrs[0] << "=" << vals[0] << ", "
-                    << inputStrs[1] << "=" << vals[1] << ", "
-                    << inputStrs[2] << "=" << vals[2];
-                throw std::runtime_error(oss.str());
+                // Special handling for relative humidity with supersaturated air:
+                // when W > W_sat at the given T and P, HAPropsSI("R",...) returns
+                // NaN.  Compute RH = W / W_sat instead (gives RH > 1, which the
+                // model can use to detect condensation).
+                bool handled = false;
+                if (outParam == HAParam::R) {
+                    // Find the W and non-W inputs
+                    int wIdx = -1;
+                    for (size_t k = 0; k < 3; ++k) {
+                        if (inParams[k] == HAParam::W) { wIdx = k; break; }
+                    }
+                    if (wIdx >= 0) {
+                        // Build a call with R=1 instead of W to get W_sat
+                        std::vector<std::string> satStrs;
+                        std::vector<double> satVals;
+                        for (size_t k = 0; k < 3; ++k) {
+                            if ((int)k == wIdx) {
+                                satStrs.push_back("R");
+                                satVals.push_back(1.0);
+                            } else {
+                                satStrs.push_back(inputStrs[k]);
+                                satVals.push_back(vals[k]);
+                            }
+                        }
+                        double wSat = timedHAPropsSI("W", satStrs[0], satVals[0],
+                                                     satStrs[1], satVals[1],
+                                                     satStrs[2], satVals[2]);
+                        if (std::isfinite(wSat) && wSat > 0) {
+                            result = vals[wIdx] / wSat;
+                            handled = true;
+                        }
+                    }
+                }
+                if (!handled) {
+                    // Generic penalty for other NaN/Inf cases
+                    constexpr double PENALTY = 1e4;
+                    ADValue output(PENALTY, numVariables_);
+                    return output;
+                }
             }
             
             // Convert output from SI
@@ -740,7 +797,10 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             
             return output;
         } catch (const std::exception& e) {
-            throw std::runtime_error("HumidAir error: " + std::string(e.what()));
+            // Penalty-based HumidAir error handling (consistent with PropsSI)
+            constexpr double PENALTY = 1e4;
+            ADValue output(PENALTY, numVariables_);
+            return output;
         }
     }
     
@@ -757,10 +817,36 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     std::string cpFluidName = fluid->getCoolPropName();
     
     if (fluid->getType() == FluidType::IdealGas && inputs.size() == 1) {
-        if (fluid->propertyDependsOnPressure(funcName)) {
+        // For ideal gases, properties that depend only on temperature {T, h, u,
+        // cp, cv} can be computed from any other member of this set without
+        // knowing pressure.  When exactly one input is given, check that both
+        // the requested output and the provided input belong to this
+        // "thermal-only" set.  If so, inject a dummy pressure so CoolProp gets
+        // its required 2-input state; otherwise require explicit pressure.
+        auto isThermalOnly = [](const std::string& prop) {
+            std::string p = prop;
+            for (auto& c : p) c = std::tolower(c);
+            return p == "h" || p == "enthalpy" || p == "u" || p == "internalenergy" ||
+                   p == "cp" || p == "cv" || p == "specheat" ||
+                   p == "t" || p == "temperature";
+        };
+        
+        std::string inputName = inputs.begin()->first;
+        if (isThermalOnly(funcName) && isThermalOnly(inputName)) {
+            // Both output and input are T-dependent-only → inject dummy pressure
+            // Use fluid-specific dummy pressure (e.g. 100 Pa for H2O to avoid
+            // liquid phase at room temperature).
+            auto idealGas = std::dynamic_pointer_cast<IdealGasFluid>(fluid);
+            double dummyP = idealGas ? idealGas->getDummyPressureSI() : 101325.0;
+            inputs["p"] = ADValue::constant(UnitConverter::fromSI(dummyP, UnitType::Pressure, units.pressure), numVariables_);
+        } else if (!fluid->propertyDependsOnPressure(funcName)) {
+            // Output doesn't depend on pressure (old path for h(T), cp(T), etc.)
+            auto idealGas = std::dynamic_pointer_cast<IdealGasFluid>(fluid);
+            double dummyP = idealGas ? idealGas->getDummyPressureSI() : 101325.0;
+            inputs["p"] = ADValue::constant(UnitConverter::fromSI(dummyP, UnitType::Pressure, units.pressure), numVariables_);
+        } else {
             throw std::runtime_error("Ideal gas property '" + funcName + "' requires pressure input");
         }
-        inputs["p"] = ADValue::constant(UnitConverter::fromSI(101325.0, UnitType::Pressure, units.pressure), numVariables_);
     }
     
     // Handle saturation functions (T_sat, P_sat, etc.) which take only 1 property input

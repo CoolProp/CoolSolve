@@ -239,10 +239,27 @@ public:
                             body.push_back(stmt);
                         } else if (auto stmt = tryParseDirective(bodyLine, lineNumber)) {
                             body.push_back(stmt);
-                        } else if (auto stmt = tryParseEquationOrAssignment(bodyLine, lineNumber)) {
-                            body.push_back(stmt);
-                        } else if (auto stmt = tryParseProcedureCall(bodyLine, lineNumber)) {
-                            body.push_back(stmt);
+                        } else {
+                            // Split on semicolons within function body
+                            auto segments = splitOnSemicolons(bodyLine);
+                            bool handled = false;
+                            if (segments.size() > 1) {
+                                for (const auto& seg : segments) {
+                                    if (auto s = tryParseEquationOrAssignment(seg, lineNumber)) {
+                                        body.push_back(s);
+                                    } else if (auto s = tryParseProcedureCall(seg, lineNumber)) {
+                                        body.push_back(s);
+                                    }
+                                }
+                                handled = true;
+                            }
+                            if (!handled) {
+                                if (auto stmt = tryParseEquationOrAssignment(bodyLine, lineNumber)) {
+                                    body.push_back(stmt);
+                                } else if (auto stmt = tryParseProcedureCall(bodyLine, lineNumber)) {
+                                    body.push_back(stmt);
+                                }
+                            }
                         }
                     }
                     if (!foundEnd) {
@@ -276,10 +293,27 @@ public:
                             body.push_back(stmt);
                         } else if (auto stmt = tryParseDirective(bodyLine, lineNumber)) {
                             body.push_back(stmt);
-                        } else if (auto stmt = tryParseEquationOrAssignment(bodyLine, lineNumber)) {
-                            body.push_back(stmt);
-                        } else if (auto stmt = tryParseProcedureCall(bodyLine, lineNumber)) {
-                            body.push_back(stmt);
+                        } else {
+                            // Split on semicolons within procedure body
+                            auto segments = splitOnSemicolons(bodyLine);
+                            bool handled = false;
+                            if (segments.size() > 1) {
+                                for (const auto& seg : segments) {
+                                    if (auto s = tryParseEquationOrAssignment(seg, lineNumber)) {
+                                        body.push_back(s);
+                                    } else if (auto s = tryParseProcedureCall(seg, lineNumber)) {
+                                        body.push_back(s);
+                                    }
+                                }
+                                handled = true;
+                            }
+                            if (!handled) {
+                                if (auto stmt = tryParseEquationOrAssignment(bodyLine, lineNumber)) {
+                                    body.push_back(stmt);
+                                } else if (auto stmt = tryParseProcedureCall(bodyLine, lineNumber)) {
+                                    body.push_back(stmt);
+                                }
+                            }
                         }
                     }
                     if (!foundEnd) {
@@ -313,7 +347,29 @@ public:
                 continue;
             }
             
-            // Handle equations
+            // Handle equations — split on semicolons first (EES uses ; as
+            // a statement separator, e.g. `a = 1 ; b = 2 ; c = 3`).
+            {
+                auto segments = splitOnSemicolons(line);
+                if (segments.size() > 1) {
+                    // Multiple statements on one line
+                    bool allOk = true;
+                    for (const auto& seg : segments) {
+                        if (auto stmt = tryParseEquationOrAssignment(seg, lineNumber)) {
+                            result.program.statements.push_back(stmt);
+                            result.equationCount++;
+                        } else {
+                            allOk = false;
+                            result.errors.push_back({lineNumber, 0, "Could not parse segment: " + seg, line});
+                        }
+                    }
+                    if (allOk) continue;
+                    // Even if some segments failed, we already pushed the
+                    // successful ones; skip the fallback single-parse path.
+                    continue;
+                }
+            }
+
             if (auto stmt = tryParseEquationOrAssignment(line, lineNumber)) {
                 result.program.statements.push_back(stmt);
                 result.equationCount++;
@@ -712,7 +768,70 @@ private:
         stmt->sourceLineNumber = lineNum;
         return stmt;
     }
-    
+
+    // Split a line on semicolons that are outside of strings, comments, and
+    // parentheses.  EES uses `;` as a statement separator on a single line,
+    // e.g.  `m = 86/12 ; n = 14/1 ; f = 0.07`.
+    // Returns a vector of sub-strings (trimmed); empty segments are dropped.
+    std::vector<std::string> splitOnSemicolons(const std::string& line) {
+        std::vector<std::string> parts;
+        std::string current;
+        bool inSingleQuote = false;   // '...'  string literal
+        bool inDoubleQuote = false;   // "..." comment / units
+        int  parenDepth    = 0;
+        int  bracketDepth  = 0;
+
+        for (size_t i = 0; i < line.size(); ++i) {
+            char c = line[i];
+
+            // Toggle single-quote string
+            if (c == '\'' && !inDoubleQuote) {
+                inSingleQuote = !inSingleQuote;
+                current += c;
+                continue;
+            }
+            if (inSingleQuote) { current += c; continue; }
+
+            // Toggle double-quote comment/units
+            if (c == '"' && !inSingleQuote) {
+                inDoubleQuote = !inDoubleQuote;
+                current += c;
+                continue;
+            }
+            if (inDoubleQuote) { current += c; continue; }
+
+            // Track parentheses and brackets
+            if (c == '(' || c == '[') { parenDepth++; current += c; continue; }
+            if (c == ')' || c == ']') { if (parenDepth > 0) parenDepth--; current += c; continue; }
+
+            // Brace comment (skip entire block on this line)
+            if (c == '{') { bracketDepth++; current += c; continue; }
+            if (c == '}') { if (bracketDepth > 0) bracketDepth--; current += c; continue; }
+            if (bracketDepth > 0) { current += c; continue; }
+
+            // C-style line comment — rest of line is consumed
+            if (c == '/' && i + 1 < line.size() && line[i + 1] == '/') {
+                // Keep the rest as part of the current segment (so that
+                // removeInlineComments can strip it later).
+                current += line.substr(i);
+                break;
+            }
+
+            // Semicolon at top level → split here
+            if (c == ';' && parenDepth == 0) {
+                std::string t = trim(current);
+                if (!t.empty()) parts.push_back(t);
+                current.clear();
+                continue;
+            }
+
+            current += c;
+        }
+        std::string t = trim(current);
+        if (!t.empty()) parts.push_back(t);
+        return parts;
+    }
+
     std::string removeInlineComments(const std::string& line) {
         std::string result;
         bool inString = false;

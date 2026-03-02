@@ -1,0 +1,49 @@
+"MSTh - SB - R5 - Exercice 3"
+
+"paramètres supposés constants:"
+"epsilon_c=1 [-]"
+"M_dot_a=0.7398 
+NTU_f=0.532 [-]
+C_dot_a_f=3322 "
+
+ 
+"données"
+Q_dot_cd=35000
+T_a_su=25
+P_su=101325
+RH_su=0.6
+T_a_ex=30
+RH_ex=1
+T_cd=45
+
+Q_dot_cd=C_dot_a_f*(T_wb_ex-T_wb_su)
+T_wb_ex=WETBULB(AirH2O,T=T_a_ex,P=P_su,R=RH_ex)
+T_wb_su=WETBULB(AirH2O,T=T_a_su,P=P_su,R=RH_su)
+
+Q_dot_cd=epsilon_cd_f*C_dot_a_f*(T_cd-T_wb_su)
+epsilon_cd_f=1-exp(-NTU_f)
+NTU_f=AU_f/C_dot_a_f
+
+"calcul du débit d'air:"
+Q_dot_cd=M_dot_a*(h_a_ex-h_a_su)-M_dot_cd*cp_w*T_w_cd
+T_w_cd=T_cd
+cp_w=4187
+M_dot_cd=M_dot_a*(w_su-w_ex)
+w_su=HUMRAT(AIRH2O,T=T_a_su,P=P_su,R=RH_su)
+w_ex=HUMRAT(AIRH2O,T=T_a_ex,P=P_su,R=RH_ex)
+h_a_su=ENTHALPY(AirH2O,T=T_a_su,P=P_su,R=RH_su)
+h_a_ex=ENTHALPY(AirH2O,T=T_a_ex,P=P_su,R=RH_ex)
+
+{h_a_su-h_a_ex=epsilon_c*(h_a_su-h_c)
+w_su-w_ex=epsilon_c*(w_su-w_c)
+w_c=HUMRAT(AIRH2O,T=T_c,P=P_su,R=1)
+T_c=TEMPERATURE(AIRH2O,h=h_c,P=P_su,R=1)}
+"epsilon_c=1-exp(-NTU_f)"
+
+
+
+"Rmq:"
+{Q_dot_cd=AU_f*DELTAT_log
+DELTAT_log=(DELTAT_g-DELTAT_d)/ln(DELTAT_g/DELTAT_d)
+DELTAT_g=T_cd-T_wb_su
+DELTAT_d=T_cd-T_wb_ex}
