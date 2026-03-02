@@ -178,7 +178,41 @@ These are the highest-leverage changes. CoolProp calls dominate solve time, and 
 
 **Expected impact**: Eliminates the warmup for cold starts. With `--no-superancillary`, the warmup is significantly decreased, so this becomes less critical — but it still matters for interactive use (GUI) where the user expects fast response.
 
-#### 3.2.3 Trust Region Improvements
+#### 3.2.3 Non-Monotone Line Search
+
+**Background**: The SNEES solver (based on Rod Bain's NNES, available at netlib.org/opt/nnes) uses a *non-monotone* line search strategy, originally proposed by Grippo, Lampariello, and Lucidi (1986). This was chosen for its superior convergence in "difficult solution landscapes" and reportedly achieves performance comparable to EES's internal solvers on nonlinear equation systems. The technique is coupled with a sparse equation solver in SNEES for additional speed on larger systems.
+
+**Current state**: CoolSolve's Newton solver uses a standard **monotone Armijo** backtracking line search: the merit function `φ(x) = ½‖F(x)‖²` must decrease at every step. This can cause the solver to stall in narrow curved valleys or near saddle points, where every descent direction leads to an increase before reaching the next valley floor.
+
+**What to do**: Replace the monotone Armijo condition with a non-monotone variant. Instead of requiring:
+
+```
+φ(x + λd) ≤ φ(x) - c₁ λ |∇φ·d|
+```
+
+require:
+
+```
+φ(x + λd) ≤ max(φ(x_{k-M}), ..., φ(x_k)) - c₁ λ |∇φ·d|
+```
+
+where M is a memory parameter (typically 5–15 recent function values). The implementation change is small: maintain a circular buffer of the last M merit function values and compare against the maximum rather than the current value.
+
+This can be applied to all three gradient-based solvers (Newton, Trust Region, Levenberg-Marquardt). For TR, the non-monotone condition governs the trust region acceptance ratio; for LM, it governs the step acceptance criterion.
+
+**Expected impact**: Better convergence on the hardest models (scroll_compressor, humidair2, orc_co2) which have near-singular Jacobians and highly nonlinear CoolProp evaluations near phase boundaries. Non-monotone methods:
+- Navigate narrow curved valleys that trap monotone line search
+- Accept unit step lengths more often, reducing backtracking overhead
+- Achieve global convergence under weaker conditions than monotone methods
+- Maintain the same worst-case complexity guarantees
+
+**References**:
+- Grippo, Lampariello, Lucidi (1986): original non-monotone line search
+- Zhang, Hager (2004): improved variant requiring *average* decrease rather than *max* reference
+- NNES (Rod Bain): Fortran implementation at netlib.org/opt/nnes
+- SNEES: engineering equation solver using NNES + sparse linear algebra
+
+#### 3.2.4 Trust Region Improvements
 
 **Current state**: The TR solver underperforms Newton in practice (53% without initials vs 82% for Newton). Known issues:
 - Overly aggressive delta shrinking (oscillation between too-small and reset)
@@ -191,7 +225,7 @@ These are the highest-leverage changes. CoolProp calls dominate solve time, and 
 - Fix the shrink/reset oscillation with a more gradual radius adaptation
 - Target: TR should match Newton's success rate with initials
 
-#### 3.2.4 Levenberg-Marquardt Improvements
+#### 3.2.5 Levenberg-Marquardt Improvements
 
 **Current state**: LM solves 83% with initials (vs 94% for Newton). It fails on cases Newton handles.
 
@@ -241,20 +275,21 @@ Items 1–3 are independent and attack the core bottleneck: CoolProp is called 5
 
 | # | Improvement | Primary benefit | Estimated effort |
 |---|-------------|----------------|-----------------|
-| 5 | **Lazy fluid initialization** (§3.2.2) | Efficiency: eliminate 32 s cold-start warmup | 1 day |
-| 6 | **Trust Region fixes** (§3.2.3) | Robustness: raise TR from 53% to ~80%+ without initials | 2–3 days |
-| 7 | **LM improvements** (§3.2.4) | Robustness: raise LM from 83% to ~94%+ with initials | 1–2 days |
-| 8 | **Superancillary fast evaluation** for BisectionND (§3.1.2) | Efficiency: orders of magnitude faster bisection | 2–3 days |
-| 9 | **Symbolic equation substitution** (§3.2.1) | Robustness: further block size reduction | 3–5 days |
+| 5 | **Non-monotone line search** (§3.2.3) | Robustness: better convergence on difficult landscapes | 0.5–1 day |
+| 6 | **Lazy fluid initialization** (§3.2.2) | Efficiency: eliminate 32 s cold-start warmup | 1 day |
+| 7 | **Trust Region fixes** (§3.2.4) | Robustness: raise TR from 53% to ~80%+ without initials | 2–3 days |
+| 8 | **LM improvements** (§3.2.5) | Robustness: raise LM from 83% to ~94%+ with initials | 1–2 days |
+| 9 | **Superancillary fast evaluation** for BisectionND (§3.1.2) | Efficiency: orders of magnitude faster bisection | 2–3 days |
+| 10 | **Symbolic equation substitution** (§3.2.1) | Robustness: further block size reduction | 3–5 days |
 
 ### Tier 3 — Nice to Have
 
 | # | Improvement | Primary benefit | Estimated effort |
 |---|-------------|----------------|-----------------|
-| 10 | **Newton1D extraction** (§3.3.1) | Code quality | 0.5 day |
-| 11 | **Regression test baseline** (§3.3.2) | CI quality | 0.5 day |
-| 12 | **Pseudo-arclength continuation** | Robustness: handle turning points in homotopy | 2–3 days |
-| 13 | **KINSOL (SUNDIALS) integration** | Robustness: for very large blocks (>30 vars) | 1–2 weeks |
+| 11 | **Newton1D extraction** (§3.3.1) | Code quality | 0.5 day |
+| 12 | **Regression test baseline** (§3.3.2) | CI quality | 0.5 day |
+| 13 | **Pseudo-arclength continuation** | Robustness: handle turning points in homotopy | 2–3 days |
+| 14 | **KINSOL (SUNDIALS) integration** | Robustness: for very large blocks (>30 vars) | 1–2 weeks |
 
 ### Not Recommended
 
