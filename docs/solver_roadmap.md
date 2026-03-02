@@ -175,15 +175,7 @@ Used during line search backtracking in all gradient-based solvers (Newton, Trus
 
 **Caveat**: This requires parsing and manipulating the equation IR, which adds complexity. Start with CoolProp inversion (high value, bounded effort), then algebraic substitution.
 
-#### 3.2.2 Lazy Fluid Initialization
-
-**Current state**: The first `CoolProp::PropsSI` call for any fluid triggers expensive one-time initialization (~32 s for R22 in debug mode and a few hundreds of ms in release mode). This happens during variable inference, before solving starts.
-
-**What to do**: Defer the first PropsSI call by using heuristic-based default values in `initializeVariables()`. Only call CoolProp when the solver actually needs property evaluations. Alternatively, start fluid initialization in a background thread during parsing so it completes by the time solving begins.
-
-**Expected impact**: Eliminates the warmup for cold starts. With `--no-superancillary`, the warmup is significantly decreased, so this becomes less critical — but it still matters for interactive use (GUI) where the user expects fast response.
-
-#### 3.2.3 Non-Monotone Line Search
+#### 3.2.2 Non-Monotone Line Search
 
 **Background**: The SNEES solver (based on Rod Bain's NNES, available at netlib.org/opt/nnes) uses a *non-monotone* line search strategy, originally proposed by Grippo, Lampariello, and Lucidi (1986). This was chosen for its superior convergence in "difficult solution landscapes" and reportedly achieves performance comparable to EES's internal solvers on nonlinear equation systems. The technique is coupled with a sparse equation solver in SNEES for additional speed on larger systems.
 
@@ -217,7 +209,7 @@ This can be applied to all three gradient-based solvers (Newton, Trust Region, L
 - NNES (Rod Bain): Fortran implementation at netlib.org/opt/nnes
 - SNEES: engineering equation solver using NNES + sparse linear algebra
 
-#### 3.2.4 Trust Region Improvements
+#### 3.2.3 Trust Region Improvements
 
 **Current state**: The TR solver underperforms Newton in practice (53% without initials vs 82% for Newton). Known issues:
 - Overly aggressive delta shrinking (oscillation between too-small and reset)
@@ -230,7 +222,7 @@ This can be applied to all three gradient-based solvers (Newton, Trust Region, L
 - Fix the shrink/reset oscillation with a more gradual radius adaptation
 - Target: TR should match Newton's success rate with initials
 
-#### 3.2.5 Levenberg-Marquardt Improvements
+#### 3.2.4 Levenberg-Marquardt Improvements
 
 **Current state**: LM solves 83% with initials (vs 94% for Newton). It fails on cases Newton handles.
 
@@ -281,20 +273,19 @@ Items 1–3 are independent and attack the core bottleneck: CoolProp is called 5
 | # | Improvement | Primary benefit | Estimated effort |
 |---|-------------|----------------|-----------------|
 | 5 | **Non-monotone line search** (§3.2.3) | Robustness: better convergence on difficult landscapes | 0.5–1 day |
-| 6 | **Lazy fluid initialization** (§3.2.2) | Efficiency: eliminate 32 s cold-start warmup | 1 day |
-| 7 | **Trust Region fixes** (§3.2.4) | Robustness: raise TR from 53% to ~80%+ without initials | 2–3 days |
-| 8 | **LM improvements** (§3.2.5) | Robustness: raise LM from 83% to ~94%+ with initials | 1–2 days |
-| 9 | **Superancillary fast evaluation** for BisectionND (§3.1.2) | Efficiency: orders of magnitude faster bisection | 2–3 days (superancillary config done, fast eval backend remaining) |
-| 10 | **Symbolic equation substitution** (§3.2.1) | Robustness: further block size reduction | 3–5 days |
+| 6 | **Trust Region fixes** (§3.2.4) | Robustness: raise TR from 53% to ~80%+ without initials | 2–3 days |
+| 7 | **LM improvements** (§3.2.5) | Robustness: raise LM from 83% to ~94%+ with initials | 1–2 days |
+| 8 | **Superancillary fast evaluation** for BisectionND (§3.1.2) | Efficiency: orders of magnitude faster bisection | 2–3 days (superancillary config done, fast eval backend remaining) |
+| 9 | **Symbolic equation substitution** (§3.2.1) | Robustness: further block size reduction | 3–5 days |
 
 ### Tier 3 — Nice to Have
 
 | # | Improvement | Primary benefit | Estimated effort |
 |---|-------------|----------------|-----------------|
-| 11 | **Newton1D extraction** (§3.3.1) | Code quality | 0.5 day |
-| 12 | **Regression test baseline** (§3.3.2) | CI quality | 0.5 day |
-| 13 | **Pseudo-arclength continuation** | Robustness: handle turning points in homotopy | 2–3 days |
-| 14 | **KINSOL (SUNDIALS) integration** | Robustness: for very large blocks (>30 vars) | 1–2 weeks |
+| 10 | **Newton1D extraction** (§3.3.1) | Code quality | 0.5 day |
+| 11 | **Regression test baseline** (§3.3.2) | CI quality | 0.5 day |
+| 12 | **Pseudo-arclength continuation** | Robustness: handle turning points in homotopy | 2–3 days |
+| 13 | **KINSOL (SUNDIALS) integration** | Robustness: for very large blocks (>30 vars) | 1–2 weeks |
 
 ### Not Recommended
 
