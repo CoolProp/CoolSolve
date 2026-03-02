@@ -157,23 +157,27 @@ Used during line search backtracking in all gradient-based solvers (Newton, Trus
 
 **Files changed**: `evaluator.h` (`residualOnly_`, `setResidualOnly()`, `isResidualOnly()`), `evaluator.cpp`, `solver.cpp` (lambdas pass `computeJacobian`).
 
-### 3.2 Medium Impact — Solver Improvements (Not Yet Implemented)
+### 3.2 Medium Impact — Solver Improvements
 
-#### 3.2.1 Symbolic Block Reduction
+#### 3.2.1 Symbolic Block Reduction ✅ Done
 
-**Current state**: Blocks are determined by structural analysis (finding strongly connected components in the dependency graph). Once formed, a block is solved as-is.
+**Status**: Implemented in `src/solver_symbolic.cpp` + `include/coolsolve/symbolic_reduction.h`.  
+Controlled by `enableSymbolicReduction` (default: `false`).
 
-**What to do**: Before solving, attempt to symbolically reduce block size:
+**What was done**: Before solving, the solver attempts to symbolically reduce block size via three techniques applied iteratively until a fixed point:
 
-1. **Equation substitution**: If a block equation is `x = f(known_vars, y)` and `x` only appears in one other equation, substitute `f(known_vars, y)` for `x` in that equation and remove `x` from the block. This directly reduces block size.
+1. **CoolProp call inversion**: If the model has `h = enthalpy(water, T=T, P=P)` and `h` is the matched output but one named-arg input is an unknown block variable while the other is external, reformulate as `T = temperature(water, H=h, P=P)`. CoolProp supports all standard input pairs (`HmassP_INPUTS`, `PSmass_INPUTS`, etc.).
 
-2. **CoolProp call inversion**: If the model has `h = enthalpy(water, T=T, P=P)` and `h` is known but `T` is unknown, reformulate as `T = temperature(water, H=h, P=P)`. CoolProp supports all standard input pairs (`HmassP_INPUTS`, `PSmass_INPUTS`, etc.), so many thermodynamic equations can be inverted to solve directly for the unknown. This can turn a 3-variable block (h, T, P) into three size-1 blocks.
+2. **Explicit extraction**: Equations where all RHS variables are external or already-reduced are directly evaluated, removing their output variable from the block.
 
-3. **Algebraic simplification**: For purely algebraic equations (no CoolProp), recognize patterns like `a*x + b = 0` and solve analytically.
+3. **Equation substitution**: Variables that appear in zero other block equations after extraction are removed along with their defining equation.
 
-**Expected impact**: Could reduce the hardest blocks (28–62 variables) significantly. Fewer variables means better conditioning, faster convergence, and potentially eliminating the need for heavyweight solvers on those blocks.
+**Robustness results** (from `examples/solver_robustness_report.md`):
+- With initials, default pipeline: 35/38 (92.1%) — **same success rate** as without, with similar timing
+- Without initials, default pipeline + SymbolicReduction: 27/37 (73.0%) — **same success rate** as the baseline
+- Feature has zero overhead when disabled (verified by unit tests)
 
-**Caveat**: This requires parsing and manipulating the equation IR, which adds complexity. Start with CoolProp inversion (high value, bounded effort), then algebraic substitution.
+The feature is **optional and disabled by default**; it adds no overhead to the main pipeline when turned off. It can be enabled via `coolsolve.conf` or the GUI.
 
 #### 3.2.2 Non-Monotone Line Search
 

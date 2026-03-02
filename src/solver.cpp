@@ -1,4 +1,5 @@
 #include "coolsolve/solver.h"
+#include "coolsolve/symbolic_reduction.h"
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -245,6 +246,8 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             else if (key == "partitionedMinDiagonal") options.partitionedMinDiagonal = std::stod(val);
             else if (key == "partitionedMinBlockSize") options.partitionedMinBlockSize = std::stoi(val);
             else if (key == "enableTearing") options.enableTearing = parseBool(val);
+            else if (key == "enableSymbolicReduction") options.enableSymbolicReduction = parseBool(val);
+            else if (key == "debugReductionPath") options.debugReductionPath = val;
             else if (key == "tearingMaxIterations") options.tearingMaxIterations = std::stoi(val);
             else if (key == "tearingMinBlockSize") options.tearingMinBlockSize = std::stoi(val);
             else if (key == "tearingInnerIterations") options.tearingInnerIterations = std::stoi(val);
@@ -854,6 +857,338 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         }
     }
 
+    // ========================================================================
+    // Symbolic Block Reduction (optional pre-processing)
+    // ========================================================================
+    // When enabled, attempt to reduce the block size before iterative solving.
+    // This can turn e.g. a 3-variable CoolProp block into three size-1 blocks.
+    if (options.enableSymbolicReduction && n > 1) {
+        const Block& block = analysis_.blocks[blockIndex];
+        BlockReductionResult reduction = analyseBlockReduction(block, ir_, analysis_);
+
+        if (reduction.reduced && reduction.reducedVariables.size() < n) {
+            if (options.verbose) {
+                std::cout << "Block " << blockIndex << ": symbolic reduction "
+                          << n << " → " << reduction.reducedVariables.size()
+                          << " vars (inversions=" << reduction.inversionsApplied
+                          << " extractions=" << reduction.extractionsApplied
+                          << " substitutions=" << reduction.substitutionsApplied
+                          << ")" << std::endl;
+            }
+
+            // Record reduction info in the trace (for reporting)
+            if (trace) {
+                trace->symbolicReductionApplied = true;
+                trace->originalBlockSize = static_cast<int>(n);
+                trace->reducedBlockSize = static_cast<int>(reduction.reducedVariables.size());
+                trace->symInversions = reduction.inversionsApplied;
+                trace->symExtractions = reduction.extractionsApplied;
+                trace->symSubstitutions = reduction.substitutionsApplied;
+
+                // Record original equations
+                for (int eqId : block.equationIds) {
+                    if (eqId >= 0 && eqId < static_cast<int>(ir_.getEquations().size())) {
+                        trace->originalEquations.push_back(
+                            ir_.getEquations()[eqId].originalText);
+                    }
+                }
+
+                // Record reduction step descriptions
+                for (const auto& step : reduction.preSolveSteps) {
+                    std::string desc = "PRE: " + step.variable + " = ";
+                    if (step.inverted) {
+                        desc += step.invertedFuncName + "(" + step.fluidName + ", ...)";
+                        desc += "  [CoolProp inversion]";
+                    } else {
+                        int eqIdx = step.equationId;
+                        if (eqIdx >= 0 && eqIdx < static_cast<int>(ir_.getEquations().size())) {
+                            desc += ir_.getEquations()[eqIdx].originalText;
+                        }
+                        desc += "  [explicit extraction]";
+                    }
+                    trace->reductionStepDescriptions.push_back(desc);
+                }
+                for (const auto& step : reduction.postSolveSteps) {
+                    std::string desc = "POST: " + step.variable + " = ";
+                    if (step.inverted) {
+                        desc += step.invertedFuncName + "(" + step.fluidName + ", ...)";
+                        desc += "  [CoolProp inversion]";
+                    } else {
+                        int eqIdx = step.equationId;
+                        if (eqIdx >= 0 && eqIdx < static_cast<int>(ir_.getEquations().size())) {
+                            desc += ir_.getEquations()[eqIdx].originalText;
+                        }
+                        desc += "  [explicit extraction]";
+                    }
+                    trace->reductionStepDescriptions.push_back(desc);
+                }
+
+                // Record remaining (reduced) equations
+                for (int eqId : reduction.reducedEquationIds) {
+                    if (eqId >= 0 && eqId < static_cast<int>(ir_.getEquations().size())) {
+                        trace->reducedEquations.push_back(
+                            ir_.getEquations()[eqId].originalText);
+                    }
+                }
+            }
+
+            // Helper: evaluate an expression in the current evaluator state
+            auto evalExpr = [&](const ExprPtr& expr) -> double {
+                ExpressionEvaluator exprEval(0, options.coolpropConfig);
+                // Load all current variable values
+                for (const auto& [name, val] : evaluator_.getAllVariables()) {
+                    exprEval.setVariable(name, ADValue::constant(val, 0));
+                }
+                for (const auto& [name, val] : evaluator_.getAllStringVariables()) {
+                    exprEval.setStringVariable(name, val);
+                }
+                // Register user functions and procedures
+                for (const auto& func : ir_.getFunctions()) {
+                    exprEval.registerFunction(func);
+                }
+                for (const auto& proc : ir_.getProcedures()) {
+                    exprEval.registerProcedure(proc);
+                }
+                return exprEval.evaluate(expr).value;
+            };
+
+            // Helper: evaluate a CoolProp inversion step
+            auto evalInvertedStep = [&](const ReductionStep& step) -> double {
+                // Build a FunctionCall AST node for the inverted call
+                FunctionCall invCall;
+                invCall.name = step.invertedFuncName;
+                invCall.args = {step.fluidExpr};
+                invCall.namedArgs = step.newNamedArgs;
+
+                auto expr = std::make_shared<Expression>();
+                expr->node = invCall;
+                return evalExpr(expr);
+            };
+
+            bool reductionFailed = false;
+
+            // Execute pre-solve steps
+            for (const auto& step : reduction.preSolveSteps) {
+                try {
+                    double value;
+                    if (step.inverted) {
+                        value = evalInvertedStep(step);
+                    } else {
+                        // Evaluate RHS of the original equation
+                        const auto& eq = ir_.getEquations()[step.equationId];
+                        value = evalExpr(eq.rhs);
+                    }
+                    evaluator_.setVariableValue(step.variable, value);
+                    externalVars[step.variable] = value;
+                    if (options.verbose) {
+                        std::cout << "  Pre-solve " << step.variable << " = " << value
+                                  << (step.inverted ? " (CoolProp inversion)" : " (explicit)")
+                                  << std::endl;
+                    }
+                } catch (const std::exception& e) {
+                    if (options.verbose) {
+                        std::cerr << "  Symbolic pre-solve failed for " << step.variable
+                                  << ": " << e.what() << std::endl;
+                    }
+                    reductionFailed = true;
+                    break;
+                }
+            }
+
+            if (!reductionFailed && !reduction.reducedVariables.empty()) {
+                // Build reduced block and solve it
+                Block reducedBlock;
+                reducedBlock.id = block.id;
+                reducedBlock.equationIds = reduction.reducedEquationIds;
+                reducedBlock.variables = reduction.reducedVariables;
+
+                size_t nReduced = reducedBlock.variables.size();
+
+                // Build reduced external vars (include pre-solved variables)
+                std::map<std::string, double> reducedExternalVars;
+                for (const auto& [name, value] : evaluator_.getAllVariables()) {
+                    bool inReducedBlock = false;
+                    for (const auto& rv : reducedBlock.variables) {
+                        if (caseInsensitiveEqual(name, rv)) {
+                            inReducedBlock = true;
+                            break;
+                        }
+                    }
+                    if (!inReducedBlock) {
+                        reducedExternalVars[name] = value;
+                    }
+                }
+
+                if (nReduced == 0) {
+                    // All variables were extracted — nothing to solve
+                    if (options.verbose) {
+                        std::cout << "  Block fully reduced (no iterative solve needed)" << std::endl;
+                    }
+                } else if (nReduced == 1) {
+                    // Reduced to size 1 — try explicit solve or Newton1D
+                    BlockEvaluator reducedEval(reducedBlock, ir_, options.coolpropConfig);
+
+                    // Try explicit solve first
+                    bool explicitOk = false;
+                    const auto& eq = ir_.getEquations()[reducedBlock.equationIds[0]];
+                    if (eq.lhs && eq.lhs->is<Variable>()) {
+                        const std::string& lhsVar = eq.lhs->as<Variable>().flattenedName();
+                        if (caseInsensitiveEqual(lhsVar, reducedBlock.variables[0])) {
+                            try {
+                                double val = evalExpr(eq.rhs);
+                                evaluator_.setVariableValue(reducedBlock.variables[0], val);
+                                explicitOk = true;
+                                if (options.verbose) {
+                                    std::cout << "  Reduced explicit: " << reducedBlock.variables[0]
+                                              << " = " << val << std::endl;
+                                }
+                            } catch (...) {}
+                        }
+                    }
+
+                    if (!explicitOk) {
+                        // 1D Newton solver on the reduced block
+                        double xCur = evaluator_.getVariableValue(reducedBlock.variables[0]);
+                        auto eval1D = [&](double xval) -> std::pair<double, double> {
+                            std::vector<double> x_std = {xval};
+                            auto er = reducedEval.evaluate(x_std, reducedExternalVars, externalStringVars);
+                            double f = er.residuals[0];
+                            double j = (er.jacobian.size() > 0 && er.jacobian[0].size() > 0) ? er.jacobian[0][0] : 0.0;
+                            return {f, j};
+                        };
+
+                        bool converged = false;
+                        for (int iter = 0; iter < options.maxIterations && !converged; ++iter) {
+                            try {
+                                auto [f, j] = eval1D(xCur);
+                                if (std::abs(f) < options.tolerance) { converged = true; break; }
+                                if (std::abs(j) < 1e-30) break;
+                                double dx = -f / j;
+                                double maxStep = std::max(std::abs(xCur) * 2.0, 1e6);
+                                if (std::abs(dx) > maxStep) dx = (dx > 0 ? 1.0 : -1.0) * maxStep;
+                                xCur += dx;
+                            } catch (...) { break; }
+                        }
+
+                        if (converged) {
+                            evaluator_.setVariableValue(reducedBlock.variables[0], xCur);
+                            if (options.verbose) {
+                                std::cout << "  Reduced Newton1D: " << reducedBlock.variables[0]
+                                          << " = " << xCur << std::endl;
+                            }
+                        } else {
+                            reductionFailed = true;
+                        }
+                    }
+                } else {
+                    // Reduced block still size > 1 — use normal pipeline
+                    BlockEvaluator reducedEval(reducedBlock, ir_, options.coolpropConfig);
+
+                    Eigen::VectorXd xr(nReduced);
+                    for (size_t i = 0; i < nReduced; ++i) {
+                        xr[i] = evaluator_.getVariableValue(reducedBlock.variables[i]);
+                    }
+
+                    NonLinearSolver::Problem reducedProblem;
+                    reducedProblem.size = static_cast<int>(nReduced);
+                    reducedProblem.evaluate = [&reducedEval, &reducedExternalVars, &externalStringVars]
+                                              (const Eigen::VectorXd& xv,
+                                               Eigen::VectorXd& F,
+                                               Eigen::MatrixXd& J,
+                                               bool computeJacobian) {
+                        std::vector<double> x_std(xv.data(), xv.data() + xv.size());
+                        auto result = reducedEval.evaluate(x_std, reducedExternalVars, externalStringVars, computeJacobian);
+                        const size_t nEqs = result.residuals.size();
+                        F.resize(nEqs);
+                        for (size_t i = 0; i < nEqs; ++i) F[i] = result.residuals[i];
+                        if (computeJacobian) {
+                            J.resize(nEqs, xv.size());
+                            for (size_t i = 0; i < nEqs; ++i) {
+                                for (size_t j = 0; j < result.jacobian[i].size(); ++j) {
+                                    J(i, j) = result.jacobian[i][j];
+                                }
+                            }
+                        }
+                    };
+
+                    SolverStatus rStatus;
+                    if (options.pipelineMode == SolverPipelineMode::Parallel && options.solverPipeline.size() > 1) {
+                        rStatus = solveBlockParallel(blockIndex, reducedProblem, reducedEval,
+                                                     reducedBlock.variables, reducedExternalVars,
+                                                     externalStringVars, xr, options, trace, outErrorMessage);
+                    } else {
+                        rStatus = solveBlockSequential(blockIndex, reducedProblem, reducedEval,
+                                                       reducedBlock.variables, reducedExternalVars,
+                                                       externalStringVars, xr, options, trace, outErrorMessage);
+                    }
+
+                    if (rStatus == SolverStatus::Success) {
+                        for (size_t i = 0; i < nReduced; ++i) {
+                            evaluator_.setVariableValue(reducedBlock.variables[i], xr[i]);
+                        }
+                    } else {
+                        reductionFailed = true;
+                    }
+                }
+            } else if (!reductionFailed && reduction.reducedVariables.empty()) {
+                // All variables extracted in pre-solve — nothing to solve iteratively
+            }
+
+            // Execute post-solve steps
+            if (!reductionFailed) {
+                for (const auto& step : reduction.postSolveSteps) {
+                    try {
+                        double value;
+                        if (step.inverted) {
+                            value = evalInvertedStep(step);
+                        } else {
+                            const auto& eq = ir_.getEquations()[step.equationId];
+                            value = evalExpr(eq.rhs);
+                        }
+                        evaluator_.setVariableValue(step.variable, value);
+                        if (options.verbose) {
+                            std::cout << "  Post-solve " << step.variable << " = " << value
+                                      << (step.inverted ? " (CoolProp inversion)" : " (explicit)")
+                                      << std::endl;
+                        }
+                    } catch (const std::exception& e) {
+                        if (options.verbose) {
+                            std::cerr << "  Symbolic post-solve failed for " << step.variable
+                                      << ": " << e.what() << std::endl;
+                        }
+                        reductionFailed = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!reductionFailed) {
+                // Update the x vector for the original block variables
+                for (size_t i = 0; i < n; ++i) {
+                    x[i] = evaluator_.getVariableValue(varNames[i]);
+                }
+                if (trace) {
+                    std::string desc = "SymbolicReduction(" + std::to_string(n) + "→"
+                                     + std::to_string(reduction.reducedVariables.size()) + ")";
+                    if (!trace->solverType.empty()) trace->solverType += " -> ";
+                    trace->solverType += desc;
+                    trace->finalStatus = SolverStatus::Success;
+                }
+                return SolverStatus::Success;
+            }
+
+            // Reduction failed: restore original state and fall through
+            if (options.verbose) {
+                std::cout << "Block " << blockIndex << ": Symbolic reduction failed, "
+                          << "falling through to standard solvers" << std::endl;
+            }
+            // Restore any pre-solve values that may have been set
+            for (size_t i = 0; i < n; ++i) {
+                evaluator_.setVariableValue(varNames[i], x[i]);
+            }
+        }
+    }
+
     if (options.enableTearing && n >= static_cast<size_t>(options.tearingMinBlockSize) && n > 1) {
         Eigen::VectorXd x_saved = x;  // Save initial guess for fallback
         SolverStatus tearStatus = solveBlockTearing(blockIndex, blockEval, varNames,
@@ -1108,9 +1443,33 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
         }
 
         std::string solverError;
+        auto attemptStart = std::chrono::high_resolution_clock::now();
         status = runSolverStrategy(strategy, blockIndex, problem, blockEval,
                                    varNames, externalVars, externalStringVars,
                                    x, options, trace, &solverError);
+        auto attemptEnd = std::chrono::high_resolution_clock::now();
+        double attemptMs = std::chrono::duration<double, std::milli>(attemptEnd - attemptStart).count();
+
+        // Record this attempt in the trace (if tracing is enabled)
+        if (trace) {
+            SolverAttempt attempt;
+            attempt.strategy = strategy;
+            attempt.status = status;
+            attempt.elapsedMs = attemptMs;
+            // Evaluate residual at current x for the attempt record
+            try {
+                Eigen::VectorXd F_att(n);
+                Eigen::MatrixXd J_att;
+                problem.evaluate(x, F_att, J_att, false);
+                attempt.finalResidual = F_att.lpNorm<Eigen::Infinity>();
+            } catch (...) {
+                attempt.finalResidual = std::numeric_limits<double>::max();
+            }
+            if (trace && !trace->iterations.empty()) {
+                attempt.iterations = static_cast<int>(trace->iterations.size());
+            }
+            trace->solverAttempts.push_back(attempt);
+        }
 
         if (status == SolverStatus::Success) {
             return status;
@@ -1870,6 +2229,25 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
             br.maxResidual = trace->iterations.back().residualNorm;
         }
         br.errorMessage = blockError;
+
+        // Block size info (always recorded)
+        const auto& blkVars = evaluator_.getBlock(blockIdx).getVariables();
+        br.originalSize = static_cast<int>(blkVars.size());
+        br.reducedSize = br.originalSize;
+
+        // Copy symbolic reduction info & solver attempts from trace
+        if (trace) {
+            if (trace->symbolicReductionApplied) {
+                br.symbolicReductionApplied = true;
+                br.originalSize = trace->originalBlockSize;
+                br.reducedSize = trace->reducedBlockSize;
+                br.inversionsApplied = trace->symInversions;
+                br.extractionsApplied = trace->symExtractions;
+                br.substitutionsApplied = trace->symSubstitutions;
+            }
+            br.solverAttempts = trace->solverAttempts;
+        }
+
         result.blockResults.push_back(br);
         
         if (trace) {
@@ -1908,7 +2286,12 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
             result.variables = evaluator_.getAllVariables();
             result.stringVariables = evaluator_.getAllStringVariables();
             result.totalTime = std::chrono::high_resolution_clock::now() - startTime;
-            
+
+            // Write debug reduction .md file if requested (even on failure)
+            if (!options.debugReductionPath.empty() && enableTracing) {
+                writeDebugReductionReport(options.debugReductionPath, result);
+            }
+
             return result;
         }
         
@@ -1925,8 +2308,113 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
     result.variables = evaluator_.getAllVariables();
     result.stringVariables = evaluator_.getAllStringVariables();
     result.totalTime = std::chrono::high_resolution_clock::now() - startTime;
-    
+
+    // Write debug reduction .md file if requested
+    if (!options.debugReductionPath.empty() && enableTracing) {
+        writeDebugReductionReport(options.debugReductionPath, result);
+    }
+
     return result;
+}
+
+// ============================================================================
+// Debug Reduction Report
+// ============================================================================
+
+void Solver::writeDebugReductionReport(const std::string& path,
+                                       const SolveResult& result) {
+    std::ofstream out(path);
+    if (!out.is_open()) return;
+
+    out << "# CoolSolve — Symbolic Reduction Debug Report\n\n";
+    out << "**Status:** " << (result.success ? "SUCCESS" : "FAILED") << "\n\n";
+
+    // Summary table
+    out << "## Block Summary\n\n";
+    out << "| Block | Original Size | Reduced Size | Inversions | Extractions | Substitutions | Status |\n";
+    out << "|---:|---:|---:|---:|---:|---:|---|\n";
+
+    for (size_t bi = 0; bi < result.blockResults.size(); ++bi) {
+        const auto& br = result.blockResults[bi];
+        out << "| " << bi
+            << " | " << br.originalSize
+            << " | " << (br.symbolicReductionApplied ? std::to_string(br.reducedSize) : "—")
+            << " | " << (br.symbolicReductionApplied ? std::to_string(br.inversionsApplied) : "—")
+            << " | " << (br.symbolicReductionApplied ? std::to_string(br.extractionsApplied) : "—")
+            << " | " << (br.symbolicReductionApplied ? std::to_string(br.substitutionsApplied) : "—")
+            << " | " << (br.success ? "OK" : statusToString(br.status))
+            << " |\n";
+    }
+
+    // Per-block details for blocks where reduction was applied
+    out << "\n## Detailed Reduction Steps\n\n";
+    for (size_t bi = 0; bi < result.blockTraces.size(); ++bi) {
+        const auto& tr = result.blockTraces[bi];
+        if (!tr.symbolicReductionApplied) continue;
+
+        out << "### Block " << bi << " (" << tr.originalBlockSize
+            << " → " << tr.reducedBlockSize << " variables)\n\n";
+
+        // Original equations
+        out << "**Original equations (" << tr.originalEquations.size() << "):**\n\n";
+        for (size_t i = 0; i < tr.originalEquations.size(); ++i) {
+            out << (i + 1) << ". `" << tr.originalEquations[i] << "`\n";
+        }
+
+        // Reduction steps
+        if (!tr.reductionStepDescriptions.empty()) {
+            out << "\n**Reduction steps:**\n\n";
+            for (size_t i = 0; i < tr.reductionStepDescriptions.size(); ++i) {
+                out << (i + 1) << ". " << tr.reductionStepDescriptions[i] << "\n";
+            }
+        }
+
+        // Remaining equations
+        if (!tr.reducedEquations.empty()) {
+            out << "\n**Remaining equations (" << tr.reducedEquations.size()
+                << ", solved iteratively):**\n\n";
+            for (size_t i = 0; i < tr.reducedEquations.size(); ++i) {
+                out << (i + 1) << ". `" << tr.reducedEquations[i] << "`\n";
+            }
+        } else if (tr.reducedBlockSize == 0) {
+            out << "\n*Block fully reduced — no iterative solve needed.*\n";
+        }
+
+        out << "\n";
+    }
+
+    // Per-block solver pipeline results
+    out << "## Solver Pipeline Results\n\n";
+    for (size_t bi = 0; bi < result.blockResults.size(); ++bi) {
+        const auto& br = result.blockResults[bi];
+        if (br.originalSize <= 1 && br.solverAttempts.empty()) continue;
+
+        out << "### Block " << bi << " (size "
+            << (br.symbolicReductionApplied ? std::to_string(br.reducedSize) : std::to_string(br.originalSize))
+            << ")\n\n";
+
+        if (br.solverAttempts.empty()) {
+            out << "- " << (br.success ? "Solved" : "Failed")
+                << " (" << statusToString(br.status) << ")\n\n";
+            continue;
+        }
+
+        out << "| # | Solver | Status | Iterations | Residual | Time (ms) |\n";
+        out << "|---:|---|---|---:|---:|---:|\n";
+        for (size_t si = 0; si < br.solverAttempts.size(); ++si) {
+            const auto& sa = br.solverAttempts[si];
+            out << "| " << (si + 1)
+                << " | " << strategyToString(sa.strategy)
+                << " | " << statusToString(sa.status)
+                << " | " << sa.iterations
+                << " | " << std::scientific << std::setprecision(2) << sa.finalResidual
+                << " | " << std::fixed << std::setprecision(1) << sa.elapsedMs
+                << " |\n";
+        }
+        out << "\n";
+    }
+
+    out.close();
 }
 
 // ============================================================================

@@ -53,6 +53,17 @@ struct RobustnessResult {
     double initialResidualNorm = -1.0;
     double finalResidualNorm = -1.0;
 
+    // Block count statistics
+    int totalBlocks = 0;              ///< Total blocks from structural analysis
+    int originalMultiVarBlocks = 0;   ///< Blocks with size > 1 before reduction
+    int effectiveMultiVarBlocks = 0;  ///< Blocks with size > 1 after reduction
+    int reductionAppliedCount = 0;    ///< Number of blocks where reduction was applied
+    int totalOriginalVars = 0;        ///< Sum of original block sizes (multi-var blocks only)
+    int totalReducedVars = 0;         ///< Sum of reduced block sizes (multi-var blocks only)
+
+    // Pipeline summary (per-solver attempt results for the first failed block, or overall winner)
+    std::string pipelineSummary;      ///< e.g. "Newton:FAIL→TR:OK" or "Newton:OK"
+
     /// Short status string for compact table display
     std::string compactStatus() const {
         if (!parseOk) return "PARSE";
@@ -81,6 +92,7 @@ struct SolverConfig {
     std::vector<coolsolve::SolverStrategy> pipeline;
     bool useInitials;
     bool enableTearing;
+    bool enableSymbolicReduction = false;
 };
 
 static bool shouldSkipFile(const fs::path& filepath) {
@@ -112,6 +124,56 @@ static std::vector<fs::path> findFiles(const fs::path& directory) {
     return files;
 }
 
+/// Extract block-count and pipeline stats from a SolveResult into a RobustnessResult.
+static void extractBlockAndPipelineInfo(
+        RobustnessResult& res,
+        const coolsolve::SolveResult& solveResult,
+        const coolsolve::StructuralAnalysisResult& analysis) {
+    res.totalBlocks = static_cast<int>(analysis.blocks.size());
+
+    // Count multi-var blocks and reduction stats
+    for (const auto& br : solveResult.blockResults) {
+        if (br.originalSize > 1) {
+            res.originalMultiVarBlocks++;
+            res.totalOriginalVars += br.originalSize;
+            if (br.symbolicReductionApplied) {
+                res.reductionAppliedCount++;
+                res.totalReducedVars += br.reducedSize;
+                if (br.reducedSize > 1) res.effectiveMultiVarBlocks++;
+            } else {
+                res.totalReducedVars += br.originalSize;
+                res.effectiveMultiVarBlocks++;
+            }
+        }
+    }
+
+    // Build pipeline summary from the first interesting block
+    // (either the failed block, or the most-recently-attempted multi-var block)
+    for (const auto& br : solveResult.blockResults) {
+        if (!br.solverAttempts.empty()) {
+            std::ostringstream ps;
+            for (size_t si = 0; si < br.solverAttempts.size(); ++si) {
+                if (si > 0) ps << "→";
+                std::string sn = coolsolve::strategyToString(br.solverAttempts[si].strategy);
+                if (sn == "LevenbergMarquardt") sn = "LM";
+                else if (sn == "TrustRegion") sn = "TR";
+                else if (sn == "Partitioned") sn = "Part";
+                ps << sn << ":"
+                   << coolsolve::statusToString(br.solverAttempts[si].status);
+            }
+            if (!br.success) {
+                // This is the block that failed — use it
+                res.pipelineSummary = ps.str();
+                break;
+            }
+            // Keep updating with the latest multi-var block's summary
+            if (br.originalSize > 1) {
+                res.pipelineSummary = ps.str();
+            }
+        }
+    }
+}
+
 static RobustnessResult testFile(const fs::path& filepath, const SolverConfig& cfg) {
     RobustnessResult res;
     res.filename = filepath.filename().string();
@@ -123,6 +185,7 @@ static RobustnessResult testFile(const fs::path& filepath, const SolverConfig& c
     opts.solverPipeline = cfg.pipeline;
     opts.pipelineMode = coolsolve::SolverPipelineMode::Sequential;
     opts.enableTearing = cfg.enableTearing;
+    opts.enableSymbolicReduction = cfg.enableSymbolicReduction;
 
     // If we want to skip initials, we need to run the pipeline stages manually
     // to avoid auto-loading from .initials file
@@ -156,15 +219,18 @@ static RobustnessResult testFile(const fs::path& filepath, const SolverConfig& c
             if (!analysis.success) { res.errorMsg = "Analysis failed"; return res; }
         } catch (...) { res.errorMsg = "Analysis exception"; return res; }
 
-        // 5. Solve (NO initials loaded)
+        // 5. Solve (NO initials loaded) — enable tracing
         try {
             auto t1 = std::chrono::high_resolution_clock::now();
             coolsolve::Solver solver(*ir, analysis);
-            auto solveResult = solver.solve(opts, false);
+            auto solveResult = solver.solve(opts, /*enableTracing=*/true);
             auto t2 = std::chrono::high_resolution_clock::now();
             res.totalTimeMs = std::chrono::duration<double, std::milli>(t2 - t1).count();
             res.solveOk = solveResult.success;
             res.totalIterations = solveResult.totalIterations;
+
+            extractBlockAndPipelineInfo(res, solveResult, analysis);
+
             if (!solveResult.success) {
                 res.errorMsg = solveResult.errorMessage;
                 res.errorCategory = coolsolve::categorizeError(res.errorMsg);
@@ -172,18 +238,9 @@ static RobustnessResult testFile(const fs::path& filepath, const SolverConfig& c
                 for (const auto& br : solveResult.blockResults) {
                     if (!br.success) {
                         res.failedBlockIndex = static_cast<int>(br.id);
-                        res.failedBlockSize = 0; // populated below from analysis
+                        res.failedBlockSize = br.originalSize;
                         res.finalResidualNorm = br.maxResidual;
                         break;
-                    }
-                }
-                // Get block size from analysis
-                if (res.failedBlockIndex >= 0) {
-                    for (const auto& blk : analysis.blocks) {
-                        if (static_cast<int>(blk.id) == res.failedBlockIndex) {
-                            res.failedBlockSize = static_cast<int>(blk.variables.size());
-                            break;
-                        }
                     }
                 }
             }
@@ -191,8 +248,8 @@ static RobustnessResult testFile(const fs::path& filepath, const SolverConfig& c
             res.errorMsg = std::string("Exception: ") + e.what();
         }
     } else {
-        // Normal run with initials
-        bool ok = runner.run(opts, false);
+        // Normal run with initials — enable tracing
+        bool ok = runner.run(opts, /*enableTracing=*/true);
         res.totalTimeMs = runner.getTiming().total_time_ms;
         res.parseOk = runner.isParseSuccess();
         res.irOk = runner.isIRSuccess();
@@ -200,6 +257,9 @@ static RobustnessResult testFile(const fs::path& filepath, const SolverConfig& c
         res.solveOk = ok;
         if (runner.isAnalysisSuccess()) {
             res.totalIterations = runner.getSolveResult().totalIterations;
+
+            extractBlockAndPipelineInfo(res, runner.getSolveResult(), runner.getAnalysisResult());
+
             if (!ok) {
                 res.errorMsg = runner.getSolveResult().errorMessage;
                 res.errorCategory = coolsolve::categorizeError(res.errorMsg);
@@ -207,16 +267,9 @@ static RobustnessResult testFile(const fs::path& filepath, const SolverConfig& c
                 for (const auto& br : runner.getSolveResult().blockResults) {
                     if (!br.success) {
                         res.failedBlockIndex = static_cast<int>(br.id);
+                        res.failedBlockSize = br.originalSize;
                         res.finalResidualNorm = br.maxResidual;
                         break;
-                    }
-                }
-                if (res.failedBlockIndex >= 0) {
-                    for (const auto& blk : runner.getAnalysisResult().blocks) {
-                        if (static_cast<int>(blk.id) == res.failedBlockIndex) {
-                            res.failedBlockSize = static_cast<int>(blk.variables.size());
-                            break;
-                        }
                     }
                 }
             }
@@ -286,7 +339,25 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
           coolsolve::SolverStrategy::BisectionND,
           coolsolve::SolverStrategy::Homotopy,
           coolsolve::SolverStrategy::Partitioned},
-         true, true},
+         true, true, false},
+
+        {"Default + SymbolicReduction (with initials)",
+         {coolsolve::SolverStrategy::Newton,
+          coolsolve::SolverStrategy::TrustRegion,
+          coolsolve::SolverStrategy::LevenbergMarquardt,
+          coolsolve::SolverStrategy::BisectionND,
+          coolsolve::SolverStrategy::Homotopy,
+          coolsolve::SolverStrategy::Partitioned},
+         true, false, true},
+
+        {"Default + Tearing + SymbolicReduction (with initials)",
+         {coolsolve::SolverStrategy::Newton,
+          coolsolve::SolverStrategy::TrustRegion,
+          coolsolve::SolverStrategy::LevenbergMarquardt,
+          coolsolve::SolverStrategy::BisectionND,
+          coolsolve::SolverStrategy::Homotopy,
+          coolsolve::SolverStrategy::Partitioned},
+         true, true, true},
 
         // -- Without initials --
         {"Default pipeline (NO initials)",
@@ -329,7 +400,25 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
           coolsolve::SolverStrategy::BisectionND,
           coolsolve::SolverStrategy::Homotopy,
           coolsolve::SolverStrategy::Partitioned},
-         false, true},
+         false, true, false},
+
+        {"Default + SymbolicReduction (NO initials)",
+         {coolsolve::SolverStrategy::Newton,
+          coolsolve::SolverStrategy::TrustRegion,
+          coolsolve::SolverStrategy::LevenbergMarquardt,
+          coolsolve::SolverStrategy::BisectionND,
+          coolsolve::SolverStrategy::Homotopy,
+          coolsolve::SolverStrategy::Partitioned},
+         false, false, true},
+
+        {"Default + Tearing + SymbolicReduction (NO initials)",
+         {coolsolve::SolverStrategy::Newton,
+          coolsolve::SolverStrategy::TrustRegion,
+          coolsolve::SolverStrategy::LevenbergMarquardt,
+          coolsolve::SolverStrategy::BisectionND,
+          coolsolve::SolverStrategy::Homotopy,
+          coolsolve::SolverStrategy::Partitioned},
+         false, true, true},
     };
 
     // Collect results: configs x files
@@ -374,8 +463,8 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
 
     // ---- Summary table ----
     report << "## Summary: Solve Success Rate by Configuration\n\n";
-    report << "| # | Configuration | Initials | Tearing | Solved | Total | Rate | Avg time (s) |\n";
-    report << "|---:|---|:---:|:---:|---:|---:|---:|---:|\n";
+    report << "| # | Configuration | Initials | Tearing | SymReduc | Solved | Total | Rate | Avg time (s) |\n";
+    report << "|---:|---|:---:|:---:|:---:|---:|---:|---:|---:|\n";
     for (size_t ci = 0; ci < configs.size(); ++ci) {
         int solved = 0, total = 0;
         double totalTime = 0;
@@ -391,11 +480,42 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
                << " | " << configs[ci].label
                << " | " << (configs[ci].useInitials ? "Yes" : "No")
                << " | " << (configs[ci].enableTearing ? "Yes" : "No")
+               << " | " << (configs[ci].enableSymbolicReduction ? "Yes" : "No")
                << " | " << solved
                << " | " << total
                << " | " << std::fixed << std::setprecision(1) << rate << "%"
                << " | " << std::setprecision(3) << avgTime
                << " |\n";
+    }
+
+    // ---- Symbolic Reduction Impact ----
+    // Show block count changes for configs that have symbolic reduction enabled
+    bool anyReductionConfig = false;
+    for (const auto& cfg : configs) {
+        if (cfg.enableSymbolicReduction) { anyReductionConfig = true; break; }
+    }
+    if (anyReductionConfig) {
+        report << "\n## Symbolic Reduction Impact\n\n";
+        report << "For configurations with symbolic reduction enabled, shows how multi-variable blocks were reduced.\n\n";
+        report << "| File | Config | Blocks | MultiVar Blocks (orig→eff) | Variables (orig→reduced) | Reductions Applied |\n";
+        report << "|---|---|---:|---|---|---:|\n";
+
+        for (size_t ci = 0; ci < configs.size(); ++ci) {
+            if (!configs[ci].enableSymbolicReduction) continue;
+            for (size_t fi = 0; fi < files.size(); ++fi) {
+                if (fi >= allResults[ci].size()) continue;
+                const auto& r = allResults[ci][fi];
+                if (!r.analysisOk) continue;
+                if (r.reductionAppliedCount == 0 && r.originalMultiVarBlocks == 0) continue;
+                report << "| " << r.filename
+                       << " | " << configs[ci].label
+                       << " | " << r.totalBlocks
+                       << " | " << r.originalMultiVarBlocks << " → " << r.effectiveMultiVarBlocks
+                       << " | " << r.totalOriginalVars << " → " << r.totalReducedVars
+                       << " | " << r.reductionAppliedCount
+                       << " |\n";
+            }
+        }
     }
 
     // ---- Helper lambda for compact cell content ----
@@ -545,6 +665,31 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
         report << "| " << cat << " | " << count << " | "
                << std::fixed << std::setprecision(1) << (100.0 * count / std::max(1, totalFailures))
                << "% |\n";
+    }
+
+    // ---- Solver Pipeline Results ----
+    report << "\n## Solver Pipeline Results\n\n";
+    report << "Shows which solver(s) were tried and their outcome for each model/config combination.\n\n";
+
+    for (size_t ci = 0; ci < configs.size(); ++ci) {
+        // Check if any files have pipeline info for this config
+        bool anyPipeline = false;
+        for (const auto& r : allResults[ci]) {
+            if (!r.pipelineSummary.empty()) { anyPipeline = true; break; }
+        }
+        if (!anyPipeline) continue;
+
+        report << "### " << configs[ci].label << "\n\n";
+        report << "| File | Status | Pipeline (solver:result) |\n";
+        report << "|---|:---:|---|\n";
+        for (const auto& r : allResults[ci]) {
+            if (!r.analysisOk) continue;
+            report << "| " << r.filename
+                   << " | " << (r.solveOk ? "**OK**" : "FAIL")
+                   << " | " << (r.pipelineSummary.empty() ? "—" : r.pipelineSummary)
+                   << " |\n";
+        }
+        report << "\n";
     }
 
     // ---- Detailed error messages for failures ----

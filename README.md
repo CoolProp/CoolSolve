@@ -323,6 +323,7 @@ CoolSolve/
 │   ├── parser.h                # Parser interface
 │   ├── ir.h                    # Intermediate Representation
 │   ├── structural_analysis.h   # Analysis algorithms
+│   ├── symbolic_reduction.h    # Symbolic block reduction analysis
 │   ├── autodiff_node.h         # Forward-mode AD types and operations
 │   ├── evaluator.h             # Block and system evaluators
 │   └── solver.h                # Solver pipeline, all SolverOptions declarations
@@ -337,6 +338,7 @@ CoolSolve/
 │   ├── solver_homotopy.cpp     # Homotopy continuation solver
 │   ├── solver_lm.cpp           # Levenberg-Marquardt solver
 │   ├── solver_newton.cpp       # Newton + line search solver
+│   ├── solver_symbolic.cpp     # Symbolic block reduction preprocessing
 │   └── solver_trust_region.cpp # Trust-region dogleg solver
 ├── tests/
 │   ├── test_parser.cpp         # Parser/IR unit tests (Catch2)
@@ -346,6 +348,7 @@ CoolSolve/
 │   ├── test_solver_integration.cpp # Full-system solver integration tests
 │   ├── test_new_solvers.cpp    # BisectionND, Homotopy, advantage tests
 │   ├── test_solver_robustness.cpp  # Robustness tests (stiff/near-singular blocks)
+│   ├── test_symbolic_reduction.cpp # Symbolic block reduction tests
 │   ├── test_tearing.cpp        # Structural tearing unit tests
 │   ├── test_config.cpp         # coolsolve.conf loading tests
 │   ├── test_fluids.cpp         # CoolProp fluid property tests
@@ -513,6 +516,28 @@ through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
    - Config: `enableTearing = true`, `tearingMaxIterations`, `tearingMinBlockSize`,
      `tearingInnerIterations`. In debug mode (`-d`), a `tearing.md` file lists
      tear sets and acyclic order per block.
+
+8. **Symbolic Block Reduction** (option `enableSymbolicReduction`)
+   - When enabled, blocks of size ≥ 2 are **pre-processed** before the
+     iterative solver to reduce their size.  Three techniques are applied
+     iteratively until a fixed point:
+     1. **Explicit extraction**: equations where the output variable's RHS
+        only references known (external) values are extracted from the block
+        and evaluated directly.
+     2. **CoolProp call inversion**: equations like
+        `h = enthalpy(Water, T=T, P=P)` are reformulated so that an unknown
+        input becomes the output, e.g. `T = temperature(Water, H=h, P=P)`,
+        when the original output and the other input are known.  All standard
+        CoolProp input pairs (PT, HP, PS, HS, DP, DT, QT, PQ, …) are checked.
+     3. **Equation substitution**: if a variable appears only in its own
+        defining equation (no other block equation references it), it is
+        extracted as a post-solve step.
+   - **Advantage**: Can dramatically reduce block sizes — e.g. turning a
+     3-variable CoolProp block into three size-1 direct evaluations, avoiding
+     Newton iterations entirely.  Fewer variables mean better Jacobian
+     conditioning and faster convergence for the remaining block.
+   - Config: `enableSymbolicReduction = true` (default: `false`).
+     When disabled, zero overhead is added to the solving pipeline.
 
 #### CoolProp Robustness
 
@@ -709,7 +734,6 @@ The next steps in the implementation plan include:
 - **CoolProp call inversion**: Detect which variables are known vs unknown in a block and choose the best CoolProp input pair, reducing block sizes
 - **Non-monotone line search**: Better convergence on difficult landscapes (narrow valleys, saddle points)
 - **Trust Region / LM improvements**: Raise solver success rates for stiff/near-singular blocks
-- **Lazy fluid initialization**: Defer CoolProp warmup to reduce cold-start time
 - **Superancillary fast evaluation** for BisectionND: Use polynomial saturation fits for cheap intermediate evaluations
 - **KINSOL (SUNDIALS) integration**: For large-scale nonlinear systems requiring robust preconditioning
 

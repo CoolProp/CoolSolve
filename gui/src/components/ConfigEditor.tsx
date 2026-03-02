@@ -268,6 +268,20 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
     ],
   },
   {
+    title: 'Symbolic Reduction',
+    fields: [
+      { key: 'enableSymbolicReduction', label: 'Enable reduction', type: 'boolean', defaultVal: 'false',
+        description:
+          'Pre-process blocks of size ≥ 2 to reduce their size before the iterative solver. '
+          + 'Techniques: (1) extract explicit equations where the output is computable from known values, '
+          + '(2) invert CoolProp calls so that an unknown input becomes the output '
+          + '(e.g. T = temperature(Water, H=h, P=P) instead of h = enthalpy(Water, T=T, P=P)), '
+          + '(3) substitute variables that appear only in their own defining equation. '
+          + 'Can dramatically reduce block sizes for CoolProp-heavy models (refrigeration, ORC, heat exchangers). '
+          + 'Off by default; when disabled, zero overhead is added.' },
+    ],
+  },
+  {
     title: 'Solver Pipeline',
     fields: [],
     custom: 'pipeline',

@@ -154,6 +154,24 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     stats << "| System square | " << (ir_->isSquare() ? "Yes" : "No") << " |\n";
     stats << "| Total blocks | " << analysisResult_.totalBlocks << " |\n";
     stats << "| Largest block | " << analysisResult_.largestBlockSize << " |\n";
+    // Symbolic reduction stats
+    {
+        int blocksReduced = 0, varsEliminated = 0, maxReduced = 0;
+        for (const auto& br : solveResult_.blockResults) {
+            if (br.symbolicReductionApplied) {
+                ++blocksReduced;
+                varsEliminated += (br.originalSize - br.reducedSize);
+                maxReduced = std::max(maxReduced, br.reducedSize);
+            } else {
+                maxReduced = std::max(maxReduced, br.originalSize);
+            }
+        }
+        if (blocksReduced > 0) {
+            stats << "| Blocks reduced (symbolic) | " << blocksReduced << " |\n";
+            stats << "| Variables eliminated | " << varsEliminated << " |\n";
+            stats << "| Largest block after reduction | " << maxReduced << " |\n";
+        }
+    }
     stats << "| Explicit equations | " << analysisResult_.explicitEquationCount << " |\n";
     if (!solveResult_.blockTraces.empty()) {
         int explicitSolveCount = 0;

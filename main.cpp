@@ -167,6 +167,17 @@ int main(int argc, char* argv[]) {
     
     // Use CoolSolveRunner to handle the execution pipeline
     coolsolve::CoolSolveRunner runner(inputFile);
+
+    // Determine the debug output path early so we can pass it to the solver options
+    fs::path debugPath;
+    if (debugMode) {
+        if (debugDir.empty()) {
+            fs::path inputPath(inputFile);
+            debugPath = inputPath.parent_path() / (inputPath.stem().string() + "_coolsolve");
+        } else {
+            debugPath = debugDir;
+        }
+    }
     
     // Clean up previous solve outputs before starting a new solve
     {
@@ -177,16 +188,19 @@ int main(int argc, char* argv[]) {
             fs::remove(solPath);
         }
         // Delete existing debug directory
-        fs::path defDebugPath;
-        if (debugDir.empty()) {
-            defDebugPath = inputPath.parent_path() / (inputPath.stem().string() + "_coolsolve");
-        } else {
-            defDebugPath = debugDir;
-        }
-        if (fs::exists(defDebugPath)) {
+        if (!debugPath.empty() && fs::exists(debugPath)) {
             std::error_code ec;
-            fs::remove_all(defDebugPath, ec);
+            fs::remove_all(debugPath, ec);
         }
+    }
+
+    // If debug mode and symbolic reduction enabled, write the reduction debug report
+    // into the debug directory (the directory is created by runner.generateDebugOutput later,
+    // but writeDebugReductionReport will create it on its own if needed)
+    if (debugMode && options.enableSymbolicReduction) {
+        std::error_code ec;
+        fs::create_directories(debugPath, ec);
+        options.debugReductionPath = (debugPath / "symbolic_reduction.md").string();
     }
     
     // Run the pipeline (Parse -> IR -> Infer -> Analyze -> Solve)
@@ -232,15 +246,6 @@ int main(int argc, char* argv[]) {
     
     // Handle Debug Output generation
     if (debugMode) {
-        // Determine debug directory name
-        fs::path debugPath;
-        if (debugDir.empty()) {
-            // Default: <input_basename>_coolsolve/
-            fs::path inputPath(inputFile);
-            debugPath = inputPath.parent_path() / (inputPath.stem().string() + "_coolsolve");
-        } else {
-            debugPath = debugDir;
-        }
         std::cout << "Debug output: " << fs::weakly_canonical(debugPath) << "\n";
         
         // Read source code for inclusion in debug output
@@ -258,6 +263,25 @@ int main(int argc, char* argv[]) {
     // Print structural analysis results
     std::cout << "Total blocks: " << analysisResult.totalBlocks << "\n";
     std::cout << "Largest block: " << analysisResult.largestBlockSize << "\n";
+    if (options.enableSymbolicReduction && !solveResult.blockResults.empty()) {
+        int maxReducedSize = 0;
+        int totalBlocksReduced = 0;
+        int totalVarsReduced = 0;
+        for (const auto& br : solveResult.blockResults) {
+            if (br.symbolicReductionApplied) {
+                ++totalBlocksReduced;
+                totalVarsReduced += (br.originalSize - br.reducedSize);
+                maxReducedSize = std::max(maxReducedSize, br.reducedSize);
+            } else {
+                maxReducedSize = std::max(maxReducedSize, br.originalSize);
+            }
+        }
+        if (totalBlocksReduced > 0) {
+            std::cout << "Largest block after reduction: " << maxReducedSize
+                      << " (" << totalBlocksReduced << " block(s) reduced, "
+                      << totalVarsReduced << " variable(s) eliminated)\n";
+        }
+    }
     
     // Report Solver Result
     if (!solveResult.success && solveResult.status != coolsolve::SolverStatus::InvalidInput) {

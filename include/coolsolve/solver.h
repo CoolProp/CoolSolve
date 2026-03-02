@@ -129,6 +129,12 @@ struct SolverOptions {
     int tearingMinBlockSize = 3;         // Only apply tearing to blocks of this size or larger
     int tearingInnerIterations = 5;      // Max 1D iterations per equation in acyclic solve
 
+    // --- Symbolic Block Reduction ---
+    // When enabled, blocks are pre-processed to reduce their size before the
+    // iterative solver runs.  Techniques: explicit extraction, CoolProp call
+    // inversion, and equation substitution.  Off by default (zero overhead).
+    bool enableSymbolicReduction = false;
+
     // --- BisectionND options ---
     // BisectionND is a derivative-free sign-change bisection solver.
     // It is only feasible for small blocks because it requires 2^n function evaluations
@@ -178,6 +184,12 @@ struct SolverOptions {
     
     // CoolProp integration options
     CoolPropConfig coolpropConfig;
+
+    // --- Debug output ---
+    // When non-empty, the solver writes a Markdown file (one per solve) showing
+    // original vs reduced equations for every block where symbolic reduction
+    // was applied.  Useful for inspecting what the reduction pass did.
+    std::string debugReductionPath;
 };
 
 /**
@@ -217,12 +229,24 @@ ErrorCategory categorizeError(const std::string& errorMsg);
 std::string categoryToString(ErrorCategory category);
 
 // ============================================================================
-// Solver Trace (Debug Information)
+// Solver Attempt (Per-Solver Result in Pipeline)
 // ============================================================================
 
 /**
- * @brief Records the iteration history for debugging.
+ * @brief Result of a single solver strategy attempt on one block.
  */
+struct SolverAttempt {
+    SolverStrategy strategy;
+    SolverStatus status;
+    int iterations = 0;
+    double finalResidual = 0.0;
+    double elapsedMs = 0.0;
+};
+
+// ============================================================================
+// Solver Trace (Debug Information)
+// ============================================================================
+
 /**
  * @brief Records the iteration history for debugging.
  */
@@ -250,6 +274,23 @@ struct SolverTrace {
     // Singular Jacobian diagnostics (only populated when finalStatus == SingularJacobian)
     std::vector<double> singularJacobianF;           // Residual vector F at failure
     std::vector<std::vector<double>> singularJacobianJ;  // Jacobian matrix J at failure
+
+    // Per-solver attempt results recorded during sequential pipeline execution
+    std::vector<SolverAttempt> solverAttempts;
+
+    // Symbolic reduction info recorded by solveBlock when reduction was applied
+    bool symbolicReductionApplied = false;
+    int originalBlockSize = 0;
+    int reducedBlockSize = 0;
+    int symInversions = 0;
+    int symExtractions = 0;
+    int symSubstitutions = 0;
+    /// Original equation texts (before reduction)
+    std::vector<std::string> originalEquations;
+    /// Descriptions of reduction steps applied
+    std::vector<std::string> reductionStepDescriptions;
+    /// Remaining equation texts (after reduction)
+    std::vector<std::string> reducedEquations;
     
     std::string toString() const;
 };
@@ -551,6 +592,17 @@ struct SolveResult {
         int iterations;
         double maxResidual;
         std::string errorMessage;
+
+        // Symbolic reduction info
+        int originalSize = 0;             ///< Original block size (number of variables)
+        int reducedSize = 0;              ///< Size after symbolic reduction (== originalSize if not applied)
+        bool symbolicReductionApplied = false;
+        int inversionsApplied = 0;
+        int extractionsApplied = 0;
+        int substitutionsApplied = 0;
+
+        // Per-solver attempt results (only populated when tracing is enabled)
+        std::vector<SolverAttempt> solverAttempts;
     };
     std::vector<BlockResult> blockResults;
     
@@ -727,6 +779,13 @@ private:
                                    const SolverOptions& options,
                                    SolverTrace* trace,
                                    std::string* outErrorMessage = nullptr);
+
+    /**
+     * @brief Write a Markdown debug report showing original vs reduced equations
+     *        for every block where symbolic reduction was applied.
+     */
+    static void writeDebugReductionReport(const std::string& path,
+                                          const SolveResult& result);
 };
 
 // ============================================================================
