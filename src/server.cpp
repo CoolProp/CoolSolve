@@ -933,9 +933,8 @@ int startServer(const ServerOptions& options) {
                         session.addProgressEvent(evt.dump());
                     };
                     
-                    // Apply CoolProp config
-                    CoolPropConfig cpConfig;
-                    applyCoolPropConfig(cpConfig);
+                    // Apply CoolProp config from solver options
+                    applyCoolPropConfig(solverOpts.coolpropConfig);
                     
                     session.addProgressEvent("{\"type\":\"progress\",\"message\":\"Parsing...\"}");
                     

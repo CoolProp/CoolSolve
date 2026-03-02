@@ -273,6 +273,34 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
     custom: 'pipeline',
   },
   {
+    title: 'CoolProp Integration',
+    fields: [
+      { key: 'coolpropBackend', label: 'Backend', type: 'string', defaultVal: 'HEOS',
+        description:
+          'CoolProp AbstractState backend. HEOS = full Helmholtz EOS (default). '
+          + 'TTSE&HEOS or BICUBIC&HEOS = tabular interpolation backends that build lookup '
+          + 'tables on first use (slower startup, much faster evaluations for large models).' },
+      { key: 'coolpropUseAbstractState', label: 'Use AbstractState', type: 'boolean', defaultVal: 'true',
+        description:
+          'Use the low-level AbstractState API instead of the high-level PropsSI function. '
+          + 'Eliminates string parsing and fluid lookup overhead on every call. '
+          + 'When false, the legacy PropsSI path is used with zero additional overhead.' },
+      { key: 'coolpropEnableAnalyticalDerivatives', label: 'Analytical derivatives', type: 'boolean', defaultVal: 'true',
+        description:
+          'Compute CoolProp derivatives via first_partial_deriv() instead of 4 central '
+          + 'finite-difference calls per property evaluation. Much faster and more accurate. '
+          + 'Requires Use AbstractState = true. When false, finite differences are used.' },
+      { key: 'coolpropCacheEnabled', label: 'Cache enabled', type: 'boolean', defaultVal: 'true',
+        description:
+          'Cache AbstractState instances across evaluations (thread-local). '
+          + 'Avoids re-creating the state object for every CoolProp call.' },
+      { key: 'coolpropEnableSuperancillaries', label: 'Superancillaries', type: 'boolean', defaultVal: 'true',
+        description:
+          'Enable CoolProp superancillary functions for faster VLE initialisation. '
+          + 'Adds a small startup cost but accelerates two-phase lookups.' },
+    ],
+  },
+  {
     title: 'Safety',
     fields: [
       { key: 'timeoutSeconds', label: 'Timeout (s)', type: 'number', defaultVal: '0',

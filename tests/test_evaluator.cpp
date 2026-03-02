@@ -1472,3 +1472,177 @@ TEST_CASE("Variable inference for ORC-like model with air_ha", "[inference][orc]
         INFO("h_hf_0 = " << *h_hf_0->guessValue);
     }
 }
+
+// ============================================================================
+// AbstractState, Analytical Derivatives & Residual-Only Mode Tests (§3.1)
+// ============================================================================
+
+#include "AbstractState.h"
+#include "CoolProp.h"
+
+TEST_CASE("AbstractState path matches PropsSI path", "[coolprop][abstractstate]") {
+    coolsolve::EESParser parser;
+    
+    // Parse the same model twice: once with AbstractState (default), once with PropsSI fallback
+    auto parseResult = parser.parse("h = enthalpy(Water, T=80, P=200000)");
+    REQUIRE(parseResult.success);
+    
+    auto ir_as = coolsolve::IR::fromAST(parseResult.program);
+    auto analysis_as = coolsolve::StructuralAnalyzer::analyze(ir_as);
+    coolsolve::CoolPropConfig cfgAS;
+    cfgAS.useAbstractState = true;
+    cfgAS.enableAnalyticalDerivatives = true;
+    coolsolve::BlockEvaluator blockAS(analysis_as.blocks[0], ir_as, cfgAS);
+    
+    auto ir_ps = coolsolve::IR::fromAST(parseResult.program);
+    auto analysis_ps = coolsolve::StructuralAnalyzer::analyze(ir_ps);
+    coolsolve::CoolPropConfig cfgPS;
+    cfgPS.useAbstractState = false;
+    cfgPS.enableAnalyticalDerivatives = false;
+    coolsolve::BlockEvaluator blockPS(analysis_ps.blocks[0], ir_ps, cfgPS);
+    
+    double expected_h = CoolProp::PropsSI("H", "T", 80.0 + 273.15, "P", 200000.0, "Water");
+    
+    auto resultAS = blockAS.evaluate({expected_h});
+    auto resultPS = blockPS.evaluate({expected_h});
+    
+    // Values must agree closely
+    REQUIRE_THAT(resultAS.residuals[0], WithinAbs(resultPS.residuals[0], 1.0));
+    
+    // Jacobians must agree (analytical vs FD — allow wider tolerance)
+    REQUIRE(resultAS.jacobian.size() == resultPS.jacobian.size());
+    if (!resultAS.jacobian.empty() && !resultAS.jacobian[0].empty()) {
+        for (size_t i = 0; i < resultAS.jacobian.size(); ++i) {
+            for (size_t j = 0; j < resultAS.jacobian[i].size(); ++j) {
+                double diff = std::abs(resultAS.jacobian[i][j] - resultPS.jacobian[i][j]);
+                double denom = std::max(1.0, std::abs(resultPS.jacobian[i][j]));
+                REQUIRE(diff / denom < 0.05);  // 5% relative tolerance
+            }
+        }
+    }
+}
+
+TEST_CASE("Analytical derivatives consistency", "[coolprop][abstractstate][derivatives]") {
+    coolsolve::EESParser parser;
+    
+    // Use R134a at a typical refrigeration state
+    auto parseResult = parser.parse("h = enthalpy(R134a, T=25, P=500000)");
+    REQUIRE(parseResult.success);
+    
+    auto ir_analytic = coolsolve::IR::fromAST(parseResult.program);
+    auto analysis_a = coolsolve::StructuralAnalyzer::analyze(ir_analytic);
+    coolsolve::CoolPropConfig cfgA;
+    cfgA.useAbstractState = true;
+    cfgA.enableAnalyticalDerivatives = true;
+    coolsolve::BlockEvaluator blockA(analysis_a.blocks[0], ir_analytic, cfgA);
+    
+    auto ir_fd = coolsolve::IR::fromAST(parseResult.program);
+    auto analysis_f = coolsolve::StructuralAnalyzer::analyze(ir_fd);
+    coolsolve::CoolPropConfig cfgF;
+    cfgF.useAbstractState = true;
+    cfgF.enableAnalyticalDerivatives = false;
+    coolsolve::BlockEvaluator blockF(analysis_f.blocks[0], ir_fd, cfgF);
+    
+    double expected_h = CoolProp::PropsSI("H", "T", 25.0 + 273.15, "P", 500000.0, "R134a");
+    
+    auto resultA = blockA.evaluate({expected_h});
+    auto resultF = blockF.evaluate({expected_h});
+    
+    // Residuals must match exactly (same code path for value computation)
+    REQUIRE_THAT(resultA.residuals[0], WithinAbs(resultF.residuals[0], 1.0));
+    
+    // Jacobians should be close (analytical vs FD via AbstractState)
+    if (!resultA.jacobian.empty() && !resultA.jacobian[0].empty()
+        && !resultF.jacobian.empty() && !resultF.jacobian[0].empty()) {
+        for (size_t j = 0; j < resultA.jacobian[0].size(); ++j) {
+            double diff = std::abs(resultA.jacobian[0][j] - resultF.jacobian[0][j]);
+            double denom = std::max(1.0, std::abs(resultF.jacobian[0][j]));
+            INFO("J[0][" << j << "]: analytical=" << resultA.jacobian[0][j]
+                 << " FD=" << resultF.jacobian[0][j] << " relDiff=" << diff/denom);
+            REQUIRE(diff / denom < 0.05);
+        }
+    }
+}
+
+TEST_CASE("Residual-only mode (computeJacobian=false)", "[coolprop][abstractstate][residual-only]") {
+    coolsolve::EESParser parser;
+    
+    auto parseResult = parser.parse("h = enthalpy(Water, T=80, P=200000)");
+    REQUIRE(parseResult.success);
+    
+    auto ir = coolsolve::IR::fromAST(parseResult.program);
+    auto analysis = coolsolve::StructuralAnalyzer::analyze(ir);
+    coolsolve::BlockEvaluator blockEval(analysis.blocks[0], ir);
+    
+    double expected_h = CoolProp::PropsSI("H", "T", 80.0 + 273.15, "P", 200000.0, "Water");
+    
+    // Full evaluation (with Jacobian)
+    auto resultFull = blockEval.evaluate({expected_h}, {}, {}, true);
+    
+    // Residual-only evaluation (no Jacobian)
+    auto resultResOnly = blockEval.evaluate({expected_h}, {}, {}, false);
+    
+    // Residuals must be identical
+    REQUIRE(resultFull.residuals.size() == resultResOnly.residuals.size());
+    for (size_t i = 0; i < resultFull.residuals.size(); ++i) {
+        REQUIRE_THAT(resultFull.residuals[i], WithinAbs(resultResOnly.residuals[i], 1e-12));
+    }
+    
+    // Residual-only must NOT produce a Jacobian
+    REQUIRE(resultResOnly.jacobian.empty());
+    
+    // Full must produce a Jacobian
+    REQUIRE(!resultFull.jacobian.empty());
+}
+
+TEST_CASE("AbstractState caching: multiple evaluations same fluid", "[coolprop][abstractstate][cache]") {
+    coolsolve::EESParser parser;
+    
+    auto parseResult = parser.parse("h = enthalpy(Water, T=80, P=200000)");
+    REQUIRE(parseResult.success);
+    
+    auto ir = coolsolve::IR::fromAST(parseResult.program);
+    auto analysis = coolsolve::StructuralAnalyzer::analyze(ir);
+    coolsolve::CoolPropConfig cfg;
+    cfg.useAbstractState = true;
+    cfg.cacheEnabled = true;
+    coolsolve::BlockEvaluator blockEval(analysis.blocks[0], ir, cfg);
+    
+    double expected_h = CoolProp::PropsSI("H", "T", 80.0 + 273.15, "P", 200000.0, "Water");
+    
+    // Multiple evaluations should work correctly and benefit from caching
+    for (int i = 0; i < 5; ++i) {
+        auto result = blockEval.evaluate({expected_h + i * 100.0});
+        REQUIRE(std::isfinite(result.residuals[0]));
+    }
+}
+
+TEST_CASE("Multiple fluids with AbstractState", "[coolprop][abstractstate]") {
+    coolsolve::EESParser parser;
+    
+    // Model with two different fluids
+    auto parseResult = parser.parse(
+        "h_w = enthalpy(Water, T=80, P=200000)\n"
+        "h_r = enthalpy(R134a, T=25, P=500000)\n");
+    REQUIRE(parseResult.success);
+    
+    auto ir = coolsolve::IR::fromAST(parseResult.program);
+    auto analysis = coolsolve::StructuralAnalyzer::analyze(ir);
+    
+    coolsolve::CoolPropConfig cfg;
+    cfg.useAbstractState = true;
+    coolsolve::SystemEvaluator sysEval(ir, analysis, cfg);
+    
+    double expected_hw = CoolProp::PropsSI("H", "T", 80.0 + 273.15, "P", 200000.0, "Water");
+    double expected_hr = CoolProp::PropsSI("H", "T", 25.0 + 273.15, "P", 500000.0, "R134a");
+    
+    sysEval.setVariableValue("h_w", expected_hw);
+    sysEval.setVariableValue("h_r", expected_hr);
+    
+    for (size_t i = 0; i < sysEval.getNumBlocks(); ++i) {
+        auto result = sysEval.evaluateBlock(i);
+        for (double r : result.residuals) {
+            REQUIRE(std::abs(r) < 10.0);
+        }
+    }
+}

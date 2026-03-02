@@ -283,6 +283,12 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             // BisectionND options
             else if (key == "bisectionNDMaxBlockSize") options.bisectionNDMaxBlockSize = std::stoi(val);
             else if (key == "bisectionNDIterFactor")   options.bisectionNDIterFactor   = std::stod(val);
+            // CoolProp integration options
+            else if (key == "coolpropBackend") options.coolpropConfig.backend = val;
+            else if (key == "coolpropUseAbstractState") options.coolpropConfig.useAbstractState = parseBool(val);
+            else if (key == "coolpropEnableAnalyticalDerivatives") options.coolpropConfig.enableAnalyticalDerivatives = parseBool(val);
+            else if (key == "coolpropCacheEnabled") options.coolpropConfig.cacheEnabled = parseBool(val);
+            else if (key == "coolpropEnableSuperancillaries") options.coolpropConfig.enableSuperancillaries = parseBool(val);
         } catch (...) {
             // Ignore malformed values
         }
@@ -888,8 +894,8 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         // Convert Eigen vector to std::vector
         std::vector<double> x_std(xv.data(), xv.data() + xv.size());
         
-        // Evaluate block
-        auto result = blockEval.evaluate(x_std, externalVars, externalStringVars);
+        // Evaluate block (pass computeJacobian to skip CoolProp derivatives)
+        auto result = blockEval.evaluate(x_std, externalVars, externalStringVars, computeJacobian);
         
         // Copy residuals
         const size_t nEqs = result.residuals.size();
@@ -1277,7 +1283,7 @@ SolverStatus Solver::solveBlockParallel(size_t blockIndex,
                                          Eigen::MatrixXd& J,
                                          bool computeJacobian) {
                     std::vector<double> x_std(xv.data(), xv.data() + xv.size());
-                    auto evalResult = blockEval.evaluate(x_std, externalVars, externalStringVars);
+                    auto evalResult = blockEval.evaluate(x_std, externalVars, externalStringVars, computeJacobian);
                     const size_t nEqs = evalResult.residuals.size();
                     F.resize(nEqs);
                     for (size_t i = 0; i < nEqs; ++i) F[i] = evalResult.residuals[i];

@@ -15,7 +15,56 @@
 #include "DataStructures.h"
 #include "HumidAirProp.h"
 
+#include <memory>
+#include <mutex>
+
 namespace coolsolve {
+
+// ============================================================================
+// AbstractState Cache (thread-local for thread safety)
+// ============================================================================
+
+/// Per-thread cache of AbstractState objects keyed by "backend::fluidName".
+/// Avoids repeated string parsing, fluid lookup, and EOS initialisation that
+/// PropsSI performs on every call.
+struct AbstractStateCache {
+    std::map<std::string, std::shared_ptr<CoolProp::AbstractState>> states;
+    size_t hits = 0;
+    size_t misses = 0;
+
+    std::shared_ptr<CoolProp::AbstractState> getOrCreate(
+        const std::string& backend, const std::string& fluidName) {
+        std::string key = backend + "::" + fluidName;
+        auto it = states.find(key);
+        if (it != states.end()) {
+            ++hits;
+            return it->second;
+        }
+        ++misses;
+        auto state = std::shared_ptr<CoolProp::AbstractState>(
+            CoolProp::AbstractState::factory(backend, fluidName));
+        states[key] = state;
+        return state;
+    }
+
+    void clear() { states.clear(); hits = misses = 0; }
+};
+
+static thread_local AbstractStateCache g_abstractStateCache;
+
+/// Map two CoolProp parameter enums to the correct input_pairs enum.
+static CoolProp::input_pairs getInputPair(CoolProp::parameters p1,
+                                           CoolProp::parameters p2) {
+    // Use CoolProp's generate_update_pair to determine the canonical ordering
+    double out1, out2;
+    return CoolProp::generate_update_pair(p1, 0.0, p2, 0.0, out1, out2);
+}
+
+/// Get a property value from an already-updated AbstractState.
+static double getOutputValue(CoolProp::AbstractState& state,
+                             CoolProp::parameters param) {
+    return state.keyed_output(param);
+}
 
 // ============================================================================
 // Simple Profiling Instrumentation
@@ -23,10 +72,13 @@ namespace coolsolve {
 struct ProfilingStats {
     size_t propsSI_calls = 0;
     size_t hapropsSI_calls = 0;
+    size_t abstractState_calls = 0;
+    size_t analyticalDeriv_calls = 0;
     size_t block_evaluations = 0;
     size_t expression_evaluations = 0;
     double propsSI_time_ms = 0.0;
     double hapropsSI_time_ms = 0.0;
+    double abstractState_time_ms = 0.0;
     double block_eval_time_ms = 0.0;
     double expr_eval_time_ms = 0.0;
     double coolprop_warmup_time_ms = 0.0;
@@ -35,19 +87,31 @@ struct ProfilingStats {
     void reset() {
         propsSI_calls = 0;
         hapropsSI_calls = 0;
+        abstractState_calls = 0;
+        analyticalDeriv_calls = 0;
         block_evaluations = 0;
         expression_evaluations = 0;
         propsSI_time_ms = 0.0;
         hapropsSI_time_ms = 0.0;
+        abstractState_time_ms = 0.0;
         block_eval_time_ms = 0.0;
         expr_eval_time_ms = 0.0;
         coolprop_warmup_time_ms = 0.0;
         coolprop_warmup_performed = false;
+        g_abstractStateCache.clear();
     }
     
     std::string toString() const {
         std::ostringstream oss;
         oss << "\n=== CoolSolve Profiling Statistics ===\n";
+        if (abstractState_calls > 0) {
+            oss << "AbstractState calls: " << abstractState_calls
+                << " (total: " << abstractState_time_ms << " ms, avg: "
+                << (abstractState_time_ms / abstractState_calls) << " ms/call)\n";
+            oss << "  Analytical derivative calls: " << analyticalDeriv_calls << "\n";
+            oss << "  Cache hits/misses: " << g_abstractStateCache.hits
+                << "/" << g_abstractStateCache.misses << "\n";
+        }
         oss << "PropsSI calls: " << propsSI_calls 
             << " (total: " << propsSI_time_ms << " ms, avg: " 
             << (propsSI_calls > 0 ? propsSI_time_ms / propsSI_calls : 0.0) << " ms/call)\n";
@@ -58,8 +122,8 @@ struct ProfilingStats {
             << " (total: " << block_eval_time_ms << " ms, avg: "
             << (block_evaluations > 0 ? block_eval_time_ms / block_evaluations : 0.0) << " ms/eval)\n";
         oss << "Expression evaluations: " << expression_evaluations << "\n";
-        oss << "Total CoolProp time: " << (propsSI_time_ms + hapropsSI_time_ms) << " ms\n";
-        oss << "Non-CoolProp block eval time: " << (block_eval_time_ms - propsSI_time_ms - hapropsSI_time_ms) << " ms\n";
+        oss << "Total CoolProp time: " << (propsSI_time_ms + hapropsSI_time_ms + abstractState_time_ms) << " ms\n";
+        oss << "Non-CoolProp block eval time: " << (block_eval_time_ms - propsSI_time_ms - hapropsSI_time_ms - abstractState_time_ms) << " ms\n";
         if (coolprop_warmup_performed) {
             oss << "CoolProp warmup (first PropsSI) time: " << coolprop_warmup_time_ms << " ms\n";
         }
@@ -1004,118 +1068,244 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     clampInput(input2Param, val2, inputValues[1].gradient);
     // ─────────────────────────────────────────────────────────────────
     
-    try {
-        double result = timedPropsSI(outputStr, input1Str, val1, input2Str, val2, cpFluidName);
-        
-        if (!std::isfinite(result)) {
-            std::ostringstream oss;
-            oss << "CoolProp returned invalid result (NaN or Inf) for " << outputStr 
-                << "(" << cpFluidName << ") with inputs: " 
-                << input1Str << "=" << val1 << ", "
-                << input2Str << "=" << val2;
-            throw std::runtime_error(oss.str());
-        }
-        
-        // Clamp quality output: CoolProp returns -1 for subcooled, values > 1 for superheated.
-        // Clamp to [0, 1] so downstream equations using quality as input get valid values.
+    // Helper for unit scale factors (reused by both paths)
+    auto getScale = [&](UnitType t, const std::string& u, bool toSI) {
+        if (t == UnitType::Dimensionless) return 1.0;
+        if (toSI) return UnitConverter::toSI(1.0, t, u) - UnitConverter::toSI(0.0, t, u);
+        return UnitConverter::fromSI(1.0, t, u) - UnitConverter::fromSI(0.0, t, u);
+    };
+    auto unitStringFor = [&](UnitType t) -> std::string {
+        if (t == UnitType::Temperature) return units.temperature;
+        if (t == UnitType::Pressure) return units.pressure;
+        if (t == UnitType::SpecificEnergy) return units.specific_energy;
+        if (t == UnitType::SpecificEntropy) return units.specific_entropy;
+        if (t == UnitType::Density) return units.density;
+        if (t == UnitType::Viscosity) return units.viscosity;
+        if (t == UnitType::Conductivity) return units.conductivity;
+        if (t == UnitType::SpecificHeat) return units.specific_heat;
+        return "";
+    };
+    
+    // Common post-processing: unit conversion, volume inversion, gradient assembly
+    auto postProcess = [&](double result, double dResult_dInput1, double dResult_dInput2) -> ADValue {
+        // Clamp quality output
         if (outputInfo.param == CoolProp::iQ) {
-            if (result < 0.0) {
-                std::cerr << "Warning: quality output clamped from " << result << " to 0 (subcooled state) for " << cpFluidName
-                          << " with inputs " << input1Str << "=" << val1 << ", " << input2Str << "=" << val2 << std::endl;
-                result = 0.0;
-            } else if (result > 1.0) {
-                std::cerr << "Warning: quality output clamped from " << result << " to 1 (superheated state) for " << cpFluidName
-                          << " with inputs " << input1Str << "=" << val1 << ", " << input2Str << "=" << val2 << std::endl;
-                result = 1.0;
-            }
+            if (result < 0.0) result = 0.0;
+            else if (result > 1.0) result = 1.0;
         }
         
-        if (outputInfo.unitType == UnitType::Temperature) result = UnitConverter::fromSI(result, outputInfo.unitType, units.temperature);
-        else if (outputInfo.unitType == UnitType::Pressure) result = UnitConverter::fromSI(result, outputInfo.unitType, units.pressure);
-        else if (outputInfo.unitType == UnitType::SpecificEnergy) {
-            result = UnitConverter::fromSI(result, outputInfo.unitType, units.specific_energy);
-            // Apply reference state offset for enthalpy/internal energy
+        // Unit conversion for result
+        if (outputInfo.unitType != UnitType::Dimensionless) {
+            result = UnitConverter::fromSI(result, outputInfo.unitType, unitStringFor(outputInfo.unitType));
+        }
+        // Reference state offsets
+        if (outputInfo.unitType == UnitType::SpecificEnergy)
             result += UnitConverter::fromSI(fluid->getReferenceState().h_offset, outputInfo.unitType, units.specific_energy);
-        }
-        else if (outputInfo.unitType == UnitType::SpecificEntropy) {
-            result = UnitConverter::fromSI(result, outputInfo.unitType, units.specific_entropy);
-            // Apply reference state offset for entropy
+        else if (outputInfo.unitType == UnitType::SpecificEntropy)
             result += UnitConverter::fromSI(fluid->getReferenceState().s_offset, outputInfo.unitType, units.specific_entropy);
-        }
-        else if (outputInfo.unitType == UnitType::Density) result = UnitConverter::fromSI(result, outputInfo.unitType, units.density);
-        else if (outputInfo.unitType == UnitType::Viscosity) result = UnitConverter::fromSI(result, outputInfo.unitType, units.viscosity);
-        else if (outputInfo.unitType == UnitType::Conductivity) result = UnitConverter::fromSI(result, outputInfo.unitType, units.conductivity);
-        else if (outputInfo.unitType == UnitType::SpecificHeat) result = UnitConverter::fromSI(result, outputInfo.unitType, units.specific_heat);
         
-        const double relEps = 1e-6;
-        const double absEps = 1e-8;
-        double step1 = std::max(relEps * std::abs(val1), absEps);
-        double step2 = std::max(relEps * std::abs(val2), absEps);
-        
-        double resultPlus1 = timedPropsSI(outputStr, input1Str, val1 + step1, input2Str, val2, cpFluidName);
-        double resultMinus1 = timedPropsSI(outputStr, input1Str, val1 - step1, input2Str, val2, cpFluidName);
-        double dResult_dInput1 = (std::isfinite(resultPlus1) && std::isfinite(resultMinus1)) ? (resultPlus1 - resultMinus1) / (2.0 * step1) : 0.0;
-        
-        double resultPlus2 = timedPropsSI(outputStr, input1Str, val1, input2Str, val2 + step2, cpFluidName);
-        double resultMinus2 = timedPropsSI(outputStr, input1Str, val1, input2Str, val2 - step2, cpFluidName);
-        double dResult_dInput2 = (std::isfinite(resultPlus2) && std::isfinite(resultMinus2)) ? (resultPlus2 - resultMinus2) / (2.0 * step2) : 0.0;
-        
-        // If the function was volume(), we got density from CoolProp and need to invert
-        // to get specific volume: v = 1/ρ, so dv/dX = -1/ρ² * dρ/dX
-        // Note: "v" alone maps to viscosity (line 125), so we only check for "volume"
+        // Volume inversion (density→specific volume)
         std::string lowerFuncName = func.name;
         std::transform(lowerFuncName.begin(), lowerFuncName.end(), lowerFuncName.begin(), ::tolower);
         if (lowerFuncName == "volume") {
-            // Get the density value in SI units for gradient calculation
             double densitySI = UnitConverter::toSI(result, UnitType::Density, units.density);
             double invDensity2 = 1.0 / (densitySI * densitySI);
-            // Invert result: v = 1/ρ
             result = 1.0 / result;
-            // Apply chain rule to gradients: dv/dX = -1/ρ² * dρ/dX
             dResult_dInput1 *= -invDensity2;
             dResult_dInput2 *= -invDensity2;
         }
         
-        auto getScale = [&](UnitType t, const std::string& u, bool toSI) {
-            if (t == UnitType::Dimensionless) return 1.0;
-            if (toSI) return UnitConverter::toSI(1.0, t, u) - UnitConverter::toSI(0.0, t, u);
-            return UnitConverter::fromSI(1.0, t, u) - UnitConverter::fromSI(0.0, t, u);
-        };
-        
-        double outScale = getScale(outputInfo.unitType, 
-            outputInfo.unitType == UnitType::Temperature ? units.temperature : 
-            outputInfo.unitType == UnitType::Pressure ? units.pressure :
-            outputInfo.unitType == UnitType::SpecificEnergy ? units.specific_energy :
-            outputInfo.unitType == UnitType::SpecificEntropy ? units.specific_entropy :
-            outputInfo.unitType == UnitType::Density ? units.density :
-            outputInfo.unitType == UnitType::Viscosity ? units.viscosity :
-            outputInfo.unitType == UnitType::Conductivity ? units.conductivity :
-            outputInfo.unitType == UnitType::SpecificHeat ? units.specific_heat : "", false);
-            
-        double in1Scale = getScale(type1, 
-            type1 == UnitType::Temperature ? units.temperature : 
-            type1 == UnitType::Pressure ? units.pressure :
-            type1 == UnitType::SpecificEnergy ? units.specific_energy :
-            type1 == UnitType::SpecificEntropy ? units.specific_entropy :
-            type1 == UnitType::Density ? units.density : "", true);
-            
-        double in2Scale = getScale(type2, 
-            type2 == UnitType::Temperature ? units.temperature : 
-            type2 == UnitType::Pressure ? units.pressure :
-            type2 == UnitType::SpecificEnergy ? units.specific_energy :
-            type2 == UnitType::SpecificEntropy ? units.specific_entropy :
-            type2 == UnitType::Density ? units.density : "", true);
-            
+        // Apply unit scale factors to derivatives
+        double outScale = getScale(outputInfo.unitType, unitStringFor(outputInfo.unitType), false);
+        double in1Scale = getScale(type1, unitStringFor(type1), true);
+        double in2Scale = getScale(type2, unitStringFor(type2), true);
         dResult_dInput1 *= outScale * in1Scale;
         dResult_dInput2 *= outScale * in2Scale;
         
+        // Assemble ADValue
         ADValue output(result, numVariables_);
         for (size_t i = 0; i < numVariables_; ++i) {
             output.gradient[i] = dResult_dInput1 * inputValues[0].gradient[i] + 
                                  dResult_dInput2 * inputValues[1].gradient[i];
         }
-        
         return output;
+    };
+    
+    try {
+        double result = 0.0;
+        double dResult_dInput1 = 0.0;
+        double dResult_dInput2 = 0.0;
+        
+        // ── AbstractState path (low-level API) ──────────────────────
+        bool usedAbstractState = false;
+        if (coolpropConfig_.useAbstractState) {
+            try {
+                auto startAS = std::chrono::high_resolution_clock::now();
+                
+                auto state = g_abstractStateCache.getOrCreate(
+                    coolpropConfig_.getBackendString(), cpFluidName);
+                
+                // Determine input pair and canonical ordering
+                double iv1 = 0, iv2 = 0;
+                CoolProp::input_pairs ipair = CoolProp::generate_update_pair(
+                    input1Param, val1, input2Param, val2, iv1, iv2);
+                
+                state->update(ipair, iv1, iv2);
+                result = getOutputValue(*state, outputInfo.param);
+                
+                auto endAS = std::chrono::high_resolution_clock::now();
+                g_profilingStats.abstractState_calls++;
+                g_profilingStats.abstractState_time_ms +=
+                    std::chrono::duration<double, std::milli>(endAS - startAS).count();
+                
+                if (!std::isfinite(result)) {
+                    throw std::runtime_error("AbstractState returned non-finite result");
+                }
+                
+                // ── Derivatives ──────────────────────────────────────
+                if (!residualOnly_) {
+                    bool derivOk = false;
+                    
+                    if (coolpropConfig_.enableAnalyticalDerivatives) {
+                        // Analytical derivatives via first_partial_deriv() with
+                        // forward-FD consistency check.  CoolProp's analytical
+                        // derivatives can be wildly wrong near phase boundaries
+                        // for pseudo-pure / mixture fluids (e.g. Air).  We
+                        // validate by comparing against a quick forward-FD and
+                        // fall back to the forward-FD values when they disagree.
+                        try {
+                            auto dStart = std::chrono::high_resolution_clock::now();
+                            double ad1 = state->first_partial_deriv(
+                                outputInfo.param, input1Param, input2Param);
+                            double ad2 = state->first_partial_deriv(
+                                outputInfo.param, input2Param, input1Param);
+                            auto dEnd = std::chrono::high_resolution_clock::now();
+                            g_profilingStats.analyticalDeriv_calls++;
+                            g_profilingStats.abstractState_time_ms +=
+                                std::chrono::duration<double, std::milli>(dEnd - dStart).count();
+                            
+                            if (!std::isfinite(ad1) || !std::isfinite(ad2)) {
+                                throw std::runtime_error("Non-finite analytical derivative");
+                            }
+                            
+                            // Forward-FD consistency check (2 extra state evaluations)
+                            const double relEps = 1e-6;
+                            const double absEps = 1e-8;
+                            const double consistencyTol = 0.05; // 5% relative tolerance
+                            
+                            double step1 = std::max(relEps * std::abs(val1), absEps);
+                            double step2 = std::max(relEps * std::abs(val2), absEps);
+                            
+                            double p1v1, p1v2, p2v1, p2v2;
+                            CoolProp::generate_update_pair(
+                                input1Param, val1 + step1, input2Param, val2, p1v1, p1v2);
+                            state->update(ipair, p1v1, p1v2);
+                            double fd1 = (getOutputValue(*state, outputInfo.param) - result) / step1;
+                            
+                            CoolProp::generate_update_pair(
+                                input1Param, val1, input2Param, val2 + step2, p2v1, p2v2);
+                            state->update(ipair, p2v1, p2v2);
+                            double fd2 = (getOutputValue(*state, outputInfo.param) - result) / step2;
+                            
+                            // Check consistency for both inputs
+                            bool consistent = true;
+                            double maxAbs1 = std::max(std::abs(ad1), std::abs(fd1));
+                            if (maxAbs1 > 1e-15 &&
+                                std::abs(ad1 - fd1) / maxAbs1 > consistencyTol)
+                                consistent = false;
+                            double maxAbs2 = std::max(std::abs(ad2), std::abs(fd2));
+                            if (maxAbs2 > 1e-15 &&
+                                std::abs(ad2 - fd2) / maxAbs2 > consistencyTol)
+                                consistent = false;
+                            
+                            if (consistent) {
+                                // Analytical derivatives are accurate — use them
+                                dResult_dInput1 = ad1;
+                                dResult_dInput2 = ad2;
+                            } else {
+                                // Analytical derivatives inaccurate (likely near
+                                // phase boundary) — use forward-FD instead
+                                dResult_dInput1 = std::isfinite(fd1) ? fd1 : 0.0;
+                                dResult_dInput2 = std::isfinite(fd2) ? fd2 : 0.0;
+                            }
+                            derivOk = true;
+                        } catch (...) {
+                            // first_partial_deriv threw — fall through to FD
+                        }
+                    }
+                    
+                    if (!derivOk) {
+                        // FD derivatives via AbstractState (central differences)
+                        const double relEps = 1e-6;
+                        const double absEps = 1e-8;
+                        double step1 = std::max(relEps * std::abs(val1), absEps);
+                        double step2 = std::max(relEps * std::abs(val2), absEps);
+                        
+                        try {
+                            double p1v1, p1v2, m1v1, m1v2;
+                            CoolProp::generate_update_pair(input1Param, val1 + step1, input2Param, val2, p1v1, p1v2);
+                            state->update(ipair, p1v1, p1v2);
+                            double rp1 = getOutputValue(*state, outputInfo.param);
+                            CoolProp::generate_update_pair(input1Param, val1 - step1, input2Param, val2, m1v1, m1v2);
+                            state->update(ipair, m1v1, m1v2);
+                            double rm1 = getOutputValue(*state, outputInfo.param);
+                            dResult_dInput1 = (std::isfinite(rp1) && std::isfinite(rm1)) ? (rp1 - rm1) / (2.0 * step1) : 0.0;
+                        } catch (...) {
+                            dResult_dInput1 = 0.0;
+                        }
+                        try {
+                            double p2v1, p2v2, m2v1, m2v2;
+                            CoolProp::generate_update_pair(input1Param, val1, input2Param, val2 + step2, p2v1, p2v2);
+                            state->update(ipair, p2v1, p2v2);
+                            double rp2 = getOutputValue(*state, outputInfo.param);
+                            CoolProp::generate_update_pair(input1Param, val1, input2Param, val2 - step2, m2v1, m2v2);
+                            state->update(ipair, m2v1, m2v2);
+                            double rm2 = getOutputValue(*state, outputInfo.param);
+                            dResult_dInput2 = (std::isfinite(rp2) && std::isfinite(rm2)) ? (rp2 - rm2) / (2.0 * step2) : 0.0;
+                        } catch (...) {
+                            dResult_dInput2 = 0.0;
+                        }
+                    }
+                }
+                // else: residualOnly_ → derivatives stay 0
+                
+                usedAbstractState = true;
+            } catch (...) {
+                // AbstractState failed — fall through to PropsSI below
+                usedAbstractState = false;
+            }
+        }
+        
+        // ── PropsSI fallback path ────────────────────────────────────
+        if (!usedAbstractState) {
+            result = timedPropsSI(outputStr, input1Str, val1, input2Str, val2, cpFluidName);
+            
+            if (!std::isfinite(result)) {
+                std::ostringstream oss;
+                oss << "CoolProp returned invalid result (NaN or Inf) for " << outputStr 
+                    << "(" << cpFluidName << ") with inputs: " 
+                    << input1Str << "=" << val1 << ", "
+                    << input2Str << "=" << val2;
+                throw std::runtime_error(oss.str());
+            }
+            
+            if (!residualOnly_) {
+                const double relEps = 1e-6;
+                const double absEps = 1e-8;
+                double step1 = std::max(relEps * std::abs(val1), absEps);
+                double step2 = std::max(relEps * std::abs(val2), absEps);
+                
+                double resultPlus1 = timedPropsSI(outputStr, input1Str, val1 + step1, input2Str, val2, cpFluidName);
+                double resultMinus1 = timedPropsSI(outputStr, input1Str, val1 - step1, input2Str, val2, cpFluidName);
+                dResult_dInput1 = (std::isfinite(resultPlus1) && std::isfinite(resultMinus1)) ? (resultPlus1 - resultMinus1) / (2.0 * step1) : 0.0;
+                
+                double resultPlus2 = timedPropsSI(outputStr, input1Str, val1, input2Str, val2 + step2, cpFluidName);
+                double resultMinus2 = timedPropsSI(outputStr, input1Str, val1, input2Str, val2 - step2, cpFluidName);
+                dResult_dInput2 = (std::isfinite(resultPlus2) && std::isfinite(resultMinus2)) ? (resultPlus2 - resultMinus2) / (2.0 * step2) : 0.0;
+            }
+        }
+        
+        return postProcess(result, dResult_dInput1, dResult_dInput2);
     } catch (const std::exception& e) {
         // ── Penalty-based CoolProp error handling ────────────────────
         // Return a large penalty value with zero gradient rather than
@@ -1148,7 +1338,8 @@ BlockEvaluator::BlockEvaluator(const Block& block, const IR& ir, const CoolPropC
 
 EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
                                            const std::map<std::string, double>& externalVars,
-                                           const std::map<std::string, std::string>& externalStringVars) {
+                                           const std::map<std::string, std::string>& externalStringVars,
+                                           bool computeJacobian) {
     auto eval_start = std::chrono::high_resolution_clock::now();
     g_profilingStats.block_evaluations++;
     
@@ -1158,9 +1349,12 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     
     EvaluationResult result;
     result.residuals.resize(equations_.size());
-    result.jacobian.resize(equations_.size(), std::vector<double>(variables_.size(), 0.0));
+    if (computeJacobian) {
+        result.jacobian.resize(equations_.size(), std::vector<double>(variables_.size(), 0.0));
+    }
     
     ExpressionEvaluator exprEval(variables_.size(), config_);
+    exprEval.setResidualOnly(!computeJacobian);
     for (const auto& [name, func] : functions_) exprEval.registerFunction(func);
     for (const auto& [name, proc] : procedures_) exprEval.registerProcedure(proc);
     
@@ -1200,8 +1394,10 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
                 ADValue newValue = exprEval.getVariable(name);
                 ADValue residual = oldOutputs[name] - newValue;
                 result.residuals[eq + i] = residual.value;
-                for (size_t var = 0; var < variables_.size(); ++var) {
-                    result.jacobian[eq + i][var] = residual.gradient[var];
+                if (computeJacobian) {
+                    for (size_t var = 0; var < variables_.size(); ++var) {
+                        result.jacobian[eq + i][var] = residual.gradient[var];
+                    }
                 }
             }
             // Skip the next N-1 residuals in the loop, where N is the number of outputs
@@ -1215,8 +1411,10 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
         ADValue rhs = exprEval.evaluate(eqInfo->rhs);
         ADValue residual = lhs - rhs;
         result.residuals[eq] = residual.value;
-        for (size_t var = 0; var < variables_.size(); ++var) {
-            result.jacobian[eq][var] = residual.gradient[var];
+        if (computeJacobian) {
+            for (size_t var = 0; var < variables_.size(); ++var) {
+                result.jacobian[eq][var] = residual.gradient[var];
+            }
         }
     }
     

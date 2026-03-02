@@ -86,7 +86,7 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
         }
 
         t1 = std::chrono::high_resolution_clock::now();
-        Solver solver(*ir_, analysisResult_);
+        Solver solver(*ir_, analysisResult_, options.coolpropConfig);
         solveResult_ = solver.solve(options, enableTracing);
         t2 = std::chrono::high_resolution_clock::now();
         timing_.solve_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();

@@ -30,7 +30,9 @@ CoolSolve is a parser, structural analyzer, and equation evaluator for the EES (
 - **Equation Evaluator**: Evaluates residuals and Jacobians for each block
   - Block-level evaluation with external variable support
   - System-level orchestration for sequential block solving
-  - **CoolProp integration** for thermodynamic property calculations
+  - **CoolProp integration** for thermodynamic property calculations via the low-level `AbstractState` API (with thread-local caching and `PropsSI` fallback)
+  - **Analytical derivatives** from CoolProp's `first_partial_deriv()` with automatic forward-FD consistency check (falls back to FD near phase boundaries)
+  - **Residual-only evaluation mode**: skips Jacobian computation during line search backtracking
   - Automatic temperature conversion (Celsius ↔ Kelvin)
   - **Configurable Solver Pipeline** with multiple algorithms and execution modes
   - **Explicit solve for size-1 blocks**: Bypasses Newton entirely for structurally explicit assignments (one residual evaluation, no Jacobian)
@@ -62,12 +64,19 @@ CoolSolve uses several file formats for input and verification:
 
 - **.eescode**: The EES source code to be parsed and solved.
 - **.initials**: Initial values for variables, used to seed the solver or evaluator. Format: `variable=value` (one per line).
-- **coolsolve.conf**: Optional solver configuration. Place in the **same folder** as your .eescode file (not in subfolders). Format: `key = value` per line; lines starting with `#` are comments. Only the options you set override the defaults (see `include/coolsolve/solver.h` for `SolverOptions`). An example with all keys and comments is in `examples/coolsolve.conf`. In debug mode (`-d`), this file is copied into the debug folder. Key pipeline options:
-  - `solverPipeline`: Comma-separated list of solvers to try (e.g. `Newton, LM, TrustRegion, BisectionND, Homotopy, Partitioned`). Available solvers: `Newton`, `TrustRegion`, `LM` (or `LevenbergMarquardt`), `BisectionND`, `Homotopy`, `Partitioned`.
-  - `pipelineMode`: `sequential` (default) or `parallel` (first-to-converge wins)
-  - `enableTearing`: When `true`, use structural tearing for blocks of size ≥ `tearingMinBlockSize`: a greedy feedback-vertex-set breaks the block into tear variables (solved with Newton) and an acyclic part (solved sequentially). If tearing succeeds, the pipeline solvers are not called. Can help on stiff or ill-conditioned algebraic loops. See also `tearingMaxIterations`, `tearingMinBlockSize`, `tearingInnerIterations`.
-  - `bisectionNDMaxBlockSize`: Maximum block size (number of unknowns) for which BisectionND is attempted. Blocks larger than this return `InvalidInput` and are transparently skipped by the pipeline. Default: `8`. Increase this if you want BisectionND to try larger blocks (warning: cost is O(2ⁿ) function evaluations per iteration).
-  - `bisectionNDIterFactor`: Multiplier applied to `maxIterations` to compute BisectionND's iteration budget. Default: `1.0` (same budget as other solvers). Increase (e.g. `5.0`) if BisectionND hits `MaxIterations` on near-convergent problems.
+- **coolsolve.conf**: Optional solver configuration. Place in the **same folder** as your .eescode file (not in subfolders). Format: `key = value` per line; lines starting with `#` are comments. Only the options you set override the defaults (see `include/coolsolve/solver.h` for `SolverOptions`). An example with all keys and comments is in `examples/coolsolve.conf`. In debug mode (`-d`), this file is copied into the debug folder. Key options:
+  - **Pipeline options**:
+    - `solverPipeline`: Comma-separated list of solvers to try (e.g. `Newton, LM, TrustRegion, BisectionND, Homotopy, Partitioned`). Available solvers: `Newton`, `TrustRegion`, `LM` (or `LevenbergMarquardt`), `BisectionND`, `Homotopy`, `Partitioned`.
+    - `pipelineMode`: `sequential` (default) or `parallel` (first-to-converge wins)
+    - `enableTearing`: When `true`, use structural tearing for blocks of size ≥ `tearingMinBlockSize`.
+    - `bisectionNDMaxBlockSize`: Maximum block size for BisectionND (default: `8`).
+    - `bisectionNDIterFactor`: Multiplier for BisectionND iteration budget (default: `1.0`).
+  - **CoolProp Integration options**:
+    - `coolpropBackend`: CoolProp backend string (default: `HEOS`). Options: `HEOS`, `INCOMP`, `TTSE&HEOS`, `BICUBIC&HEOS`.
+    - `coolpropUseAbstractState`: Use the low-level `AbstractState` API instead of `PropsSI` (default: `true`). Provides 2–5× speedup by caching fluid objects and avoiding string parsing.
+    - `coolpropEnableAnalyticalDerivatives`: Use `first_partial_deriv()` for exact gradients with a forward-FD consistency check (default: `true`). Falls back to finite differences near phase boundaries where analytical derivatives are inaccurate.
+    - `coolpropCacheEnabled`: Enable thread-local `AbstractState` caching (default: `true`).
+    - `coolpropEnableSuperancillaries`: Enable CoolProp superancillary equations (default: `true`).
 
 ## Building
 
@@ -600,13 +609,44 @@ CoolSolve will:
 
 ## CoolProp Integration
 
-CoolSolve integrates with CoolProp for thermodynamic property calculations:
+CoolSolve integrates with CoolProp for thermodynamic property calculations, using the **low-level `AbstractState` API** for performance:
 
-- **Supported functions**: `enthalpy`, `entropy`, `density`, `pressure`, `temperature`, `quality`, `cp`, `cv`
-- **Supported input pairs**: `T,P`, `T,x`, `P,h`, `P,s`, `H,P`, and others
+### Evaluation Pipeline
+
+1. **AbstractState path** (default, fast): Creates and caches `AbstractState` objects per fluid per thread. Property evaluation via `state->update(input_pair, v1, v2)` + `state->hmass()` etc. Eliminates string parsing, fluid lookup, and backend selection overhead on every call.
+2. **Analytical derivatives** (default, when enabled): Uses `first_partial_deriv()` for exact gradients, validated by a forward-FD consistency check. Falls back to FD when derivatives disagree by >5% (near phase boundaries for pseudo-pure/mixture fluids like Air).
+3. **PropsSI fallback**: If `AbstractState` throws, falls back to the high-level `PropsSI()` function with central finite differences.
+
+### Supported Functions and Fluids
+
+- **Supported functions**: `enthalpy`, `entropy`, `density`, `volume`, `pressure`, `temperature`, `quality`, `cp`, `cv`, `viscosity`, `conductivity`, `prandtl`, `soundspeed`, `molarmass`, `t_sat`, `p_sat`
+- **Supported input pairs**: `T,P`, `T,x`, `P,h`, `P,s`, `H,P`, `D,P`, and others
 - **Temperature units**: Automatically converts Celsius (EES convention) to Kelvin (CoolProp)
-- **Derivatives**: Computed using finite differences from CoolProp's `PropsSI` function
-- **Fluids**: All CoolProp fluids are supported (Water, R134a, Nitrogen, etc.)
+- **Derivatives**: Analytical via `first_partial_deriv()` with FD consistency check; central FD fallback
+- **Fluids**: All CoolProp fluids are supported (Water, R134a, Air, CO2, etc.)
+
+### Configuration
+
+CoolProp behavior is configured via `coolsolve.conf`:
+
+```ini
+# Use the low-level AbstractState API (default: true, 2-5x faster than PropsSI)
+coolpropUseAbstractState = true
+
+# Use analytical derivatives with consistency check (default: true)
+coolpropEnableAnalyticalDerivatives = true
+
+# CoolProp backend (default: HEOS). Options: HEOS, INCOMP, TTSE&HEOS, BICUBIC&HEOS
+coolpropBackend = HEOS
+
+# Enable thread-local AbstractState caching (default: true)
+coolpropCacheEnabled = true
+
+# Enable superancillary equations (default: true)
+coolpropEnableSuperancillaries = true
+```
+
+All CoolProp settings are also editable in the GUI via the "CoolProp Integration" section of the Config Editor.
 
 ### Default Units
 
@@ -666,7 +706,11 @@ For new equation systems, use CoolProp-computed values for initial guesses to en
 ## Future Work
 
 The next steps in the implementation plan include:
+- **CoolProp call inversion**: Detect which variables are known vs unknown in a block and choose the best CoolProp input pair, reducing block sizes
+- **Non-monotone line search**: Better convergence on difficult landscapes (narrow valleys, saddle points)
+- **Trust Region / LM improvements**: Raise solver success rates for stiff/near-singular blocks
+- **Lazy fluid initialization**: Defer CoolProp warmup to reduce cold-start time
+- **Superancillary fast evaluation** for BisectionND: Use polynomial saturation fits for cheap intermediate evaluations
 - **KINSOL (SUNDIALS) integration**: For large-scale nonlinear systems requiring robust preconditioning
-- **alternative solvers**: https://www.osti.gov/servlets/purl/876345
-- **Analytical Derivatives**: Use CoolProp's `AbstractState::first_partial_deriv` for exact derivatives
-- **Profiling and optimization**: Improve the solving time
+
+See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.

@@ -71,3 +71,44 @@ TEST_CASE("Tearing options are loaded from config", "[config][solver][tearing]")
     REQUIRE(options.tearingMinBlockSize == 2);
     REQUIRE(options.tearingInnerIterations == 8);
 }
+
+TEST_CASE("CoolProp integration options are loaded from config", "[config][solver][coolprop]") {
+    fs::path tmpDir = fs::temp_directory_path();
+    fs::path configPath = tmpDir / "coolsolve_test_coolprop.conf";
+    std::ofstream f(configPath);
+    REQUIRE(f.is_open());
+    f << "coolpropBackend = TTSE&HEOS\n";
+    f << "coolpropUseAbstractState = true\n";
+    f << "coolpropEnableAnalyticalDerivatives = false\n";
+    f << "coolpropCacheEnabled = true\n";
+    f << "coolpropEnableSuperancillaries = false\n";
+    f.close();
+    coolsolve::SolverOptions options;
+    bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    fs::remove(configPath);
+    REQUIRE(loaded);
+    REQUIRE(options.coolpropConfig.backend == "TTSE&HEOS");
+    REQUIRE(options.coolpropConfig.useAbstractState == true);
+    REQUIRE(options.coolpropConfig.enableAnalyticalDerivatives == false);
+    REQUIRE(options.coolpropConfig.cacheEnabled == true);
+    REQUIRE(options.coolpropConfig.enableSuperancillaries == false);
+}
+
+TEST_CASE("CoolProp config defaults from file with no CoolProp keys", "[config][solver][coolprop]") {
+    fs::path tmpDir = fs::temp_directory_path();
+    fs::path configPath = tmpDir / "coolsolve_test_cpdefault.conf";
+    std::ofstream f(configPath);
+    REQUIRE(f.is_open());
+    f << "maxIterations = 50\n";
+    f.close();
+    coolsolve::SolverOptions options;
+    bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    fs::remove(configPath);
+    REQUIRE(loaded);
+    // CoolProp defaults should be unchanged
+    REQUIRE(options.coolpropConfig.backend == "HEOS");
+    REQUIRE(options.coolpropConfig.useAbstractState == true);
+    REQUIRE(options.coolpropConfig.enableAnalyticalDerivatives == true);
+    REQUIRE(options.coolpropConfig.cacheEnabled == true);
+    REQUIRE(options.coolpropConfig.enableSuperancillaries == true);
+}

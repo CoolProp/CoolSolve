@@ -151,23 +151,22 @@ int main(int argc, char* argv[]) {
     }
 #endif
     
-    // Apply CoolProp configuration before any CoolProp calls
-    coolsolve::CoolPropConfig cpConfig;
-    cpConfig.enableSuperancillaries = enableSuperancillary;
-    coolsolve::applyCoolPropConfig(cpConfig);
-    
-    // Use CoolSolveRunner to handle the execution pipeline
-    coolsolve::CoolSolveRunner runner(inputFile);
-    
     // Configure solver options (defaults from solver.h)
     coolsolve::SolverOptions options;
     options.verbose = false; // Disable stdout/stderr verbosity
+    options.coolpropConfig.enableSuperancillaries = enableSuperancillary;
 
     // Override from coolsolve.conf in the same folder as the input file (not subfolders)
     fs::path configPath = fs::path(inputFile).parent_path() / "coolsolve.conf";
     if (fs::exists(configPath)) {
         coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
     }
+    
+    // Apply CoolProp configuration before any CoolProp calls
+    coolsolve::applyCoolPropConfig(options.coolpropConfig);
+    
+    // Use CoolSolveRunner to handle the execution pipeline
+    coolsolve::CoolSolveRunner runner(inputFile);
     
     // Clean up previous solve outputs before starting a new solve
     {

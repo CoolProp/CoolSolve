@@ -175,6 +175,9 @@ struct SolverOptions {
     // Cancellation token (optional, for GUI stop button)
     // When set, the solver checks this between blocks and aborts if cancelled.
     std::atomic<bool>* cancelToken = nullptr;
+    
+    // CoolProp integration options
+    CoolPropConfig coolpropConfig;
 };
 
 /**

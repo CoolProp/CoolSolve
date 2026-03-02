@@ -73,6 +73,18 @@ struct CoolPropConfig {
     double cacheTolerance = 1e-10;  // Re-use cached state if inputs change less than this
     bool enableSuperancillaries = true;  // Enable CoolProp superancillary functions (faster VLE but more init time)
     
+    // Low-level API: use AbstractState instead of PropsSI
+    // When true, property evaluations go through cached AbstractState objects,
+    // eliminating string parsing and fluid lookup overhead on every call.
+    // When false, falls back to the high-level PropsSI interface (zero overhead).
+    bool useAbstractState = true;
+    
+    // Analytical derivatives: use CoolProp's first_partial_deriv() instead of FD
+    // Requires useAbstractState=true. When true, each property evaluation uses
+    // exact analytical derivatives (1 call instead of 5). When false, central
+    // finite differences are used (the legacy behaviour; zero overhead).
+    bool enableAnalyticalDerivatives = true;
+    
     // Factory function string for creating AbstractState
     std::string getBackendString() const {
         return backend;
@@ -186,8 +198,15 @@ public:
      */
     size_t getNumVariables() const { return numVariables_; }
     
+    /**
+     * @brief Set residual-only mode (skip CoolProp derivative computations).
+     */
+    void setResidualOnly(bool residualOnly) { residualOnly_ = residualOnly; }
+    bool isResidualOnly() const { return residualOnly_; }
+    
 private:
     size_t numVariables_;
+    bool residualOnly_ = false;
     std::map<std::string, ADValue, CaseInsensitiveLess> variables_;
     std::map<std::string, std::string, CaseInsensitiveLess> stringVariables_;
     std::map<std::string, FunctionDefinition, CaseInsensitiveLess> userFunctions_;
@@ -240,9 +259,14 @@ public:
      * @param externalStringVars Values for string variables external to this block
      * @return Residuals and Jacobian
      */
+    /**
+     * @param computeJacobian When false, skip derivative computation
+     *        (saves CoolProp calls during line search; residuals only).
+     */
     EvaluationResult evaluate(const std::vector<double>& x,
                               const std::map<std::string, double>& externalVars = {},
-                              const std::map<std::string, std::string>& externalStringVars = {});
+                              const std::map<std::string, std::string>& externalStringVars = {},
+                              bool computeJacobian = true);
     
     /**
      * @brief Get the variable names in this block.
