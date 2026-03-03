@@ -66,6 +66,17 @@ public:
     static StructuralAnalysisResult::ComparisonResult compareWithEES(
         const StructuralAnalysisResult& result,
         const std::string& residualsFilePath);
+
+    /// Re-decompose a reduced block into sub-SCCs after symbolic reduction.
+    /// Builds a local dependency graph on the reduced equations/variables,
+    /// runs Tarjan's SCC algorithm, and returns the sub-blocks in
+    /// topological solve order.  If the reduced block is still a single
+    /// SCC, returns a vector of size 1.
+    static std::vector<Block> redecomposeBlock(
+        const std::vector<int>& reducedEquationIds,
+        const std::vector<std::string>& reducedVariables,
+        const IR& ir,
+        const StructuralAnalysisResult& analysis);
     
 private:
     // Hopcroft-Karp algorithm for maximum bipartite matching

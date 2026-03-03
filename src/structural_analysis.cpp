@@ -369,6 +369,91 @@ BlockTearSetResult computeBlockTearSet(const Block& block, const IR& ir) {
 }
 
 // ============================================================================
+// Re-Decompose a Reduced Block into Sub-SCCs
+// ============================================================================
+
+std::vector<Block> StructuralAnalyzer::redecomposeBlock(
+    const std::vector<int>& reducedEquationIds,
+    const std::vector<std::string>& reducedVariables,
+    const IR& ir,
+    const StructuralAnalysisResult& analysis)
+{
+    const size_t k = reducedEquationIds.size();
+    if (k <= 1) {
+        // Trivial: size 0 or 1 — return a single block
+        Block b;
+        b.id = 0;
+        b.equationIds = reducedEquationIds;
+        b.variables = reducedVariables;
+        return {b};
+    }
+
+    const auto& equations = ir.getEquations();
+
+    // Build local output mapping: localIndex → output variable name
+    // using the global matching from the original structural analysis.
+    std::vector<std::string> localOutput(k);
+    for (size_t i = 0; i < k; ++i) {
+        int gid = reducedEquationIds[i];
+        if (gid >= 0 && gid < static_cast<int>(analysis.matching.size())) {
+            localOutput[i] = analysis.matching[gid];
+        }
+    }
+
+    // Build reverse map: variable name → local equation index
+    std::map<std::string, int, CaseInsensitiveLess> varToLocalIdx;
+    for (size_t i = 0; i < k; ++i) {
+        if (!localOutput[i].empty()) {
+            varToLocalIdx[localOutput[i]] = static_cast<int>(i);
+        }
+    }
+
+    // Build set of reduced variables for fast lookup
+    std::set<std::string, CaseInsensitiveLess> reducedVarSet(
+        reducedVariables.begin(), reducedVariables.end());
+
+    // Build local adjacency list: localEq i → localEq j
+    // if equation i references the output variable of equation j
+    std::vector<std::vector<int>> adj(k);
+    for (size_t i = 0; i < k; ++i) {
+        int gid = reducedEquationIds[i];
+        if (gid < 0 || gid >= static_cast<int>(equations.size())) continue;
+        const auto& vars = equations[gid].variables;
+        for (const auto& v : vars) {
+            // Skip if variable is not in the reduced block
+            if (!reducedVarSet.count(v)) continue;
+            // Skip if v is the output of equation i itself
+            if (CaseInsensitiveLess()(v, localOutput[i]) == false &&
+                CaseInsensitiveLess()(localOutput[i], v) == false) continue;
+            // Find which local equation produces v
+            auto it = varToLocalIdx.find(v);
+            if (it != varToLocalIdx.end() && it->second != static_cast<int>(i)) {
+                adj[i].push_back(it->second);
+            }
+        }
+    }
+
+    // Run Tarjan's SCC algorithm on the local graph
+    auto sccs = tarjanSCC(static_cast<int>(k), adj);
+
+    // Build sub-blocks in topological order
+    // tarjanSCC already returns SCCs in topological order (dependencies first)
+    std::vector<Block> subBlocks;
+    subBlocks.reserve(sccs.size());
+    for (size_t si = 0; si < sccs.size(); ++si) {
+        Block b;
+        b.id = static_cast<int>(si);
+        for (int localIdx : sccs[si]) {
+            b.equationIds.push_back(reducedEquationIds[localIdx]);
+            b.variables.push_back(localOutput[localIdx]);
+        }
+        subBlocks.push_back(std::move(b));
+    }
+
+    return subBlocks;
+}
+
+// ============================================================================
 // Main Analysis Function
 // ============================================================================
 

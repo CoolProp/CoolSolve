@@ -291,6 +291,11 @@ struct SolverTrace {
     std::vector<std::string> reductionStepDescriptions;
     /// Remaining equation texts (after reduction)
     std::vector<std::string> reducedEquations;
+
+    // Re-decomposition info (when reduced block splits into sub-SCCs)
+    bool redecompositionApplied = false;
+    int numSubBlocks = 0;
+    std::vector<int> subBlockSizes;   // size of each sub-block after re-decomposition
     
     std::string toString() const;
 };
@@ -603,6 +608,11 @@ struct SolveResult {
 
         // Per-solver attempt results (only populated when tracing is enabled)
         std::vector<SolverAttempt> solverAttempts;
+
+        // Re-decomposition info
+        bool redecompositionApplied = false;
+        int numSubBlocks = 0;
+        std::vector<int> subBlockSizes;
     };
     std::vector<BlockResult> blockResults;
     

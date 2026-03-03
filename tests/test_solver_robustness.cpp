@@ -64,6 +64,11 @@ struct RobustnessResult {
     // Pipeline summary (per-solver attempt results for the first failed block, or overall winner)
     std::string pipelineSummary;      ///< e.g. "Newton:FAIL→TR:OK" or "Newton:OK"
 
+    // Re-decomposition stats
+    int redecompositionCount = 0;     ///< Number of blocks where re-decomposition was applied
+    int totalSubBlocks = 0;           ///< Total sub-blocks created by re-decomposition
+    std::string redecompDetail;       ///< e.g. "56→13[15,1,1,...,1]"
+
     /// Short status string for compact table display
     std::string compactStatus() const {
         if (!parseOk) return "PARSE";
@@ -139,7 +144,27 @@ static void extractBlockAndPipelineInfo(
             if (br.symbolicReductionApplied) {
                 res.reductionAppliedCount++;
                 res.totalReducedVars += br.reducedSize;
-                if (br.reducedSize > 1) res.effectiveMultiVarBlocks++;
+                if (br.redecompositionApplied && br.numSubBlocks > 1) {
+                    // Re-decomposition splits the reduced block into sub-blocks
+                    res.redecompositionCount++;
+                    res.totalSubBlocks += br.numSubBlocks;
+                    // Count effective multi-var sub-blocks
+                    for (int sz : br.subBlockSizes) {
+                        if (sz > 1) res.effectiveMultiVarBlocks++;
+                    }
+                    // Build detail string: "56→13[15,1,1,...,1]"
+                    std::ostringstream ds;
+                    ds << br.reducedSize << "→" << br.numSubBlocks << "[";
+                    for (size_t si = 0; si < br.subBlockSizes.size(); ++si) {
+                        if (si > 0) ds << ",";
+                        ds << br.subBlockSizes[si];
+                    }
+                    ds << "]";
+                    if (!res.redecompDetail.empty()) res.redecompDetail += " ";
+                    res.redecompDetail += ds.str();
+                } else {
+                    if (br.reducedSize > 1) res.effectiveMultiVarBlocks++;
+                }
             } else {
                 res.totalReducedVars += br.originalSize;
                 res.effectiveMultiVarBlocks++;
@@ -497,8 +522,8 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
     if (anyReductionConfig) {
         report << "\n## Symbolic Reduction Impact\n\n";
         report << "For configurations with symbolic reduction enabled, shows how multi-variable blocks were reduced.\n\n";
-        report << "| File | Config | Blocks | MultiVar Blocks (orig→eff) | Variables (orig→reduced) | Reductions Applied |\n";
-        report << "|---|---|---:|---|---|---:|\n";
+        report << "| File | Config | Blocks | MultiVar Blocks (orig→eff) | Variables (orig→reduced) | Reductions Applied | Re-decomposition |\n";
+        report << "|---|---|---:|---|---|---:|---|\n";
 
         for (size_t ci = 0; ci < configs.size(); ++ci) {
             if (!configs[ci].enableSymbolicReduction) continue;
@@ -513,6 +538,7 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
                        << " | " << r.originalMultiVarBlocks << " → " << r.effectiveMultiVarBlocks
                        << " | " << r.totalOriginalVars << " → " << r.totalReducedVars
                        << " | " << r.reductionAppliedCount
+                       << " | " << (r.redecompositionCount > 0 ? r.redecompDetail : "—")
                        << " |\n";
             }
         }

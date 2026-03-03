@@ -43,6 +43,7 @@ CoolSolve is a parser, structural analyzer, and equation evaluator for the EES (
   - **Multi-dimensional Bisection (BisectionND)** for small blocks (configurable size limit, default n ≤ 8 via `bisectionNDMaxBlockSize`): derivative-free sign-change bisection that works even when the Jacobian is singular or zero
   - **Homotopy continuation** for convergence from distant or difficult starting points where gradient methods fail
   - **Partitioned Block Updates** as a fallback for ill-conditioned algebraic loops
+  - **Symbolic Block Reduction**: optional pre-processing that shrinks blocks via explicit extraction, CoolProp call inversion, and equation substitution — with automatic re-decomposition of the reduced block into independent sub-blocks
   - **Parallel solver execution** (multithreaded, first-to-converge wins)
 
 - **Output Formats**:
@@ -69,6 +70,7 @@ CoolSolve uses several file formats for input and verification:
     - `solverPipeline`: Comma-separated list of solvers to try (e.g. `Newton, LM, TrustRegion, BisectionND, Homotopy, Partitioned`). Available solvers: `Newton`, `TrustRegion`, `LM` (or `LevenbergMarquardt`), `BisectionND`, `Homotopy`, `Partitioned`.
     - `pipelineMode`: `sequential` (default) or `parallel` (first-to-converge wins)
     - `enableTearing`: When `true`, use structural tearing for blocks of size ≥ `tearingMinBlockSize`.
+    - `enableSymbolicReduction`: When `true`, pre-process blocks to reduce their size via explicit extraction, CoolProp call inversion, and equation substitution, with automatic re-decomposition of the reduced block.
     - `bisectionNDMaxBlockSize`: Maximum block size for BisectionND (default: `8`).
     - `bisectionNDIterFactor`: Multiplier for BisectionND iteration budget (default: `1.0`).
   - **CoolProp Integration options**:
@@ -199,6 +201,7 @@ The debug folder contains:
 | `equations.tex` | LaTeX formatted equations |
 | `incidence.md` | Variable-equation incidence matrix |
 | `evaluator.md` | Evaluator structure and block evaluation tests |
+| `symbolic_reduction.md` | Symbolic reduction debug report (when `enableSymbolicReduction` is on) |
 | `original.eescode` | Copy of the original input |
 
 ### Compare with EES
@@ -532,6 +535,12 @@ through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
      3. **Equation substitution**: if a variable appears only in its own
         defining equation (no other block equation references it), it is
         extracted as a post-solve step.
+   - **Post-reduction re-decomposition**: after reduction, the remaining
+     equations are automatically re-analysed (local Tarjan SCC) to detect
+     if they split into independent sub-blocks. Each sub-block is then
+     solved separately in topological order.  For example, a 62-variable
+     condenser block can be reduced to 56 variables and further split into
+     13 sub-blocks (sizes 15, 30, and eleven 1×1).
    - **Advantage**: Can dramatically reduce block sizes — e.g. turning a
      3-variable CoolProp block into three size-1 direct evaluations, avoiding
      Newton iterations entirely.  Fewer variables mean better Jacobian

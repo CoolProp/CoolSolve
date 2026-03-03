@@ -1081,53 +1081,207 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                         }
                     }
                 } else {
-                    // Reduced block still size > 1 — use normal pipeline
-                    BlockEvaluator reducedEval(reducedBlock, ir_, options.coolpropConfig);
+                    // Reduced block still size > 1.
+                    // --------------------------------------------------------
+                    // Re-decomposition: check if the reduced block can be split
+                    // into smaller independent sub-SCCs.
+                    // --------------------------------------------------------
+                    bool solvedViaSubBlocks = false;
 
-                    Eigen::VectorXd xr(nReduced);
-                    for (size_t i = 0; i < nReduced; ++i) {
-                        xr[i] = evaluator_.getVariableValue(reducedBlock.variables[i]);
-                    }
+                    auto subBlocks = StructuralAnalyzer::redecomposeBlock(
+                        reduction.reducedEquationIds,
+                        reduction.reducedVariables,
+                        ir_, analysis_);
 
-                    NonLinearSolver::Problem reducedProblem;
-                    reducedProblem.size = static_cast<int>(nReduced);
-                    reducedProblem.evaluate = [&reducedEval, &reducedExternalVars, &externalStringVars]
-                                              (const Eigen::VectorXd& xv,
-                                               Eigen::VectorXd& F,
-                                               Eigen::MatrixXd& J,
-                                               bool computeJacobian) {
-                        std::vector<double> x_std(xv.data(), xv.data() + xv.size());
-                        auto result = reducedEval.evaluate(x_std, reducedExternalVars, externalStringVars, computeJacobian);
-                        const size_t nEqs = result.residuals.size();
-                        F.resize(nEqs);
-                        for (size_t i = 0; i < nEqs; ++i) F[i] = result.residuals[i];
-                        if (computeJacobian) {
-                            J.resize(nEqs, xv.size());
-                            for (size_t i = 0; i < nEqs; ++i) {
-                                for (size_t j = 0; j < result.jacobian[i].size(); ++j) {
-                                    J(i, j) = result.jacobian[i][j];
+                    if (subBlocks.size() > 1) {
+                            // The reduced block splits!
+                            if (options.verbose) {
+                                std::cout << "  Re-decomposition: " << nReduced
+                                          << "-var block → " << subBlocks.size()
+                                          << " sub-blocks [";
+                                for (size_t si = 0; si < subBlocks.size(); ++si) {
+                                    if (si > 0) std::cout << ", ";
+                                    std::cout << subBlocks[si].variables.size();
+                                }
+                                std::cout << "]" << std::endl;
+                            }
+
+                            // Record in trace
+                            if (trace) {
+                                trace->redecompositionApplied = true;
+                                trace->numSubBlocks = static_cast<int>(subBlocks.size());
+                                for (const auto& sb : subBlocks) {
+                                    trace->subBlockSizes.push_back(static_cast<int>(sb.variables.size()));
+                                }
+                            }
+
+                            // Solve sub-blocks sequentially in topological order
+                            bool subBlockFailed = false;
+                            for (size_t si = 0; si < subBlocks.size() && !subBlockFailed; ++si) {
+                                const auto& sb = subBlocks[si];
+                                size_t subN = sb.variables.size();
+
+                                // Build external vars for this sub-block
+                                // (everything not in this sub-block)
+                                std::map<std::string, double> subExternal;
+                                for (const auto& [name, value] : evaluator_.getAllVariables()) {
+                                    bool inSub = false;
+                                    for (const auto& sv : sb.variables) {
+                                        if (caseInsensitiveEqual(name, sv)) { inSub = true; break; }
+                                    }
+                                    if (!inSub) subExternal[name] = value;
+                                }
+
+                                if (subN == 0) {
+                                    continue;
+                                } else if (subN == 1) {
+                                    // Try explicit or Newton1D on sub-block
+                                    BlockEvaluator subEval(sb, ir_, options.coolpropConfig);
+                                    bool explOk = false;
+                                    const auto& eq = ir_.getEquations()[sb.equationIds[0]];
+                                    if (eq.lhs && eq.lhs->is<Variable>()) {
+                                        const std::string& lhsVar = eq.lhs->as<Variable>().flattenedName();
+                                        if (caseInsensitiveEqual(lhsVar, sb.variables[0])) {
+                                            try {
+                                                double val = evalExpr(eq.rhs);
+                                                evaluator_.setVariableValue(sb.variables[0], val);
+                                                explOk = true;
+                                            } catch (...) {}
+                                        }
+                                    }
+                                    if (!explOk) {
+                                        // Newton1D
+                                        double xCur = evaluator_.getVariableValue(sb.variables[0]);
+                                        auto eval1D = [&](double xval) -> std::pair<double, double> {
+                                            std::vector<double> x_std = {xval};
+                                            auto er = subEval.evaluate(x_std, subExternal, externalStringVars);
+                                            double f = er.residuals[0];
+                                            double j = (er.jacobian.size() > 0 && er.jacobian[0].size() > 0)
+                                                       ? er.jacobian[0][0] : 0.0;
+                                            return {f, j};
+                                        };
+                                        bool conv = false;
+                                        for (int it = 0; it < options.maxIterations && !conv; ++it) {
+                                            try {
+                                                auto [f, j] = eval1D(xCur);
+                                                if (std::abs(f) < options.tolerance) { conv = true; break; }
+                                                if (std::abs(j) < 1e-30) break;
+                                                double dx = -f / j;
+                                                double maxStep = std::max(std::abs(xCur) * 2.0, 1e6);
+                                                if (std::abs(dx) > maxStep) dx = (dx > 0 ? 1 : -1) * maxStep;
+                                                xCur += dx;
+                                            } catch (...) { break; }
+                                        }
+                                        if (conv) {
+                                            evaluator_.setVariableValue(sb.variables[0], xCur);
+                                        } else {
+                                            subBlockFailed = true;
+                                        }
+                                    }
+                                } else {
+                                    // Multi-variable sub-block — use solver pipeline
+                                    BlockEvaluator subEval(sb, ir_, options.coolpropConfig);
+                                    Eigen::VectorXd xs(subN);
+                                    for (size_t vi = 0; vi < subN; ++vi) {
+                                        xs[vi] = evaluator_.getVariableValue(sb.variables[vi]);
+                                    }
+
+                                    NonLinearSolver::Problem subProblem;
+                                    subProblem.size = static_cast<int>(subN);
+                                    subProblem.evaluate = [&subEval, &subExternal, &externalStringVars]
+                                        (const Eigen::VectorXd& xv, Eigen::VectorXd& F,
+                                         Eigen::MatrixXd& J, bool computeJ) {
+                                        std::vector<double> x_std(xv.data(), xv.data() + xv.size());
+                                        auto res = subEval.evaluate(x_std, subExternal,
+                                                                     externalStringVars, computeJ);
+                                        const size_t ne = res.residuals.size();
+                                        F.resize(ne);
+                                        for (size_t i = 0; i < ne; ++i) F[i] = res.residuals[i];
+                                        if (computeJ) {
+                                            J.resize(ne, xv.size());
+                                            for (size_t i = 0; i < ne; ++i)
+                                                for (size_t j = 0; j < res.jacobian[i].size(); ++j)
+                                                    J(i, j) = res.jacobian[i][j];
+                                        }
+                                    };
+
+                                    std::string subErr;
+                                    SolverStatus sStatus = solveBlockSequential(
+                                        blockIndex, subProblem, subEval,
+                                        sb.variables, subExternal, externalStringVars,
+                                        xs, options, nullptr, &subErr);
+
+                                    if (sStatus == SolverStatus::Success) {
+                                        for (size_t vi = 0; vi < subN; ++vi) {
+                                            evaluator_.setVariableValue(sb.variables[vi], xs[vi]);
+                                        }
+                                    } else {
+                                        subBlockFailed = true;
+                                    }
+                                }
+
+                                // Propagate solved variables by updating evaluator
+                                // (already done above via setVariableValue)
+                            }
+
+                            if (!subBlockFailed) {
+                                solvedViaSubBlocks = true;
+                                // Update reducedExternalVars with all solved values
+                                for (const auto& rv : reducedBlock.variables) {
+                                    reducedExternalVars[rv] = evaluator_.getVariableValue(rv);
                                 }
                             }
                         }
-                    };
 
-                    SolverStatus rStatus;
-                    if (options.pipelineMode == SolverPipelineMode::Parallel && options.solverPipeline.size() > 1) {
-                        rStatus = solveBlockParallel(blockIndex, reducedProblem, reducedEval,
-                                                     reducedBlock.variables, reducedExternalVars,
-                                                     externalStringVars, xr, options, trace, outErrorMessage);
-                    } else {
-                        rStatus = solveBlockSequential(blockIndex, reducedProblem, reducedEval,
-                                                       reducedBlock.variables, reducedExternalVars,
-                                                       externalStringVars, xr, options, trace, outErrorMessage);
-                    }
+                    if (!solvedViaSubBlocks) {
+                        // Fallback: solve reduced block as single monolithic system
+                        BlockEvaluator reducedEval(reducedBlock, ir_, options.coolpropConfig);
 
-                    if (rStatus == SolverStatus::Success) {
+                        Eigen::VectorXd xr(nReduced);
                         for (size_t i = 0; i < nReduced; ++i) {
-                            evaluator_.setVariableValue(reducedBlock.variables[i], xr[i]);
+                            xr[i] = evaluator_.getVariableValue(reducedBlock.variables[i]);
                         }
-                    } else {
-                        reductionFailed = true;
+
+                        NonLinearSolver::Problem reducedProblem;
+                        reducedProblem.size = static_cast<int>(nReduced);
+                        reducedProblem.evaluate = [&reducedEval, &reducedExternalVars, &externalStringVars]
+                                                  (const Eigen::VectorXd& xv,
+                                                   Eigen::VectorXd& F,
+                                                   Eigen::MatrixXd& J,
+                                                   bool computeJacobian) {
+                            std::vector<double> x_std(xv.data(), xv.data() + xv.size());
+                            auto result = reducedEval.evaluate(x_std, reducedExternalVars, externalStringVars, computeJacobian);
+                            const size_t nEqs = result.residuals.size();
+                            F.resize(nEqs);
+                            for (size_t i = 0; i < nEqs; ++i) F[i] = result.residuals[i];
+                            if (computeJacobian) {
+                                J.resize(nEqs, xv.size());
+                                for (size_t i = 0; i < nEqs; ++i) {
+                                    for (size_t j = 0; j < result.jacobian[i].size(); ++j) {
+                                        J(i, j) = result.jacobian[i][j];
+                                    }
+                                }
+                            }
+                        };
+
+                        SolverStatus rStatus;
+                        if (options.pipelineMode == SolverPipelineMode::Parallel && options.solverPipeline.size() > 1) {
+                            rStatus = solveBlockParallel(blockIndex, reducedProblem, reducedEval,
+                                                         reducedBlock.variables, reducedExternalVars,
+                                                         externalStringVars, xr, options, trace, outErrorMessage);
+                        } else {
+                            rStatus = solveBlockSequential(blockIndex, reducedProblem, reducedEval,
+                                                           reducedBlock.variables, reducedExternalVars,
+                                                           externalStringVars, xr, options, trace, outErrorMessage);
+                        }
+
+                        if (rStatus == SolverStatus::Success) {
+                            for (size_t i = 0; i < nReduced; ++i) {
+                                evaluator_.setVariableValue(reducedBlock.variables[i], xr[i]);
+                            }
+                        } else {
+                            reductionFailed = true;
+                        }
                     }
                 }
             } else if (!reductionFailed && reduction.reducedVariables.empty()) {
@@ -2245,6 +2399,11 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
                 br.extractionsApplied = trace->symExtractions;
                 br.substitutionsApplied = trace->symSubstitutions;
             }
+            if (trace->redecompositionApplied) {
+                br.redecompositionApplied = true;
+                br.numSubBlocks = trace->numSubBlocks;
+                br.subBlockSizes = trace->subBlockSizes;
+            }
             br.solverAttempts = trace->solverAttempts;
         }
 
@@ -2331,14 +2490,24 @@ void Solver::writeDebugReductionReport(const std::string& path,
 
     // Summary table
     out << "## Block Summary\n\n";
-    out << "| Block | Original Size | Reduced Size | Inversions | Extractions | Substitutions | Status |\n";
-    out << "|---:|---:|---:|---:|---:|---:|---|\n";
+    out << "| Block | Original Size | Reduced Size | Sub-Blocks | Inversions | Extractions | Substitutions | Status |\n";
+    out << "|---:|---:|---:|---:|---:|---:|---:|---|\n";
 
     for (size_t bi = 0; bi < result.blockResults.size(); ++bi) {
         const auto& br = result.blockResults[bi];
+        std::string subBlockInfo = "—";
+        if (br.redecompositionApplied) {
+            subBlockInfo = std::to_string(br.numSubBlocks) + " [";
+            for (size_t si = 0; si < br.subBlockSizes.size(); ++si) {
+                if (si > 0) subBlockInfo += ",";
+                subBlockInfo += std::to_string(br.subBlockSizes[si]);
+            }
+            subBlockInfo += "]";
+        }
         out << "| " << bi
             << " | " << br.originalSize
             << " | " << (br.symbolicReductionApplied ? std::to_string(br.reducedSize) : "—")
+            << " | " << subBlockInfo
             << " | " << (br.symbolicReductionApplied ? std::to_string(br.inversionsApplied) : "—")
             << " | " << (br.symbolicReductionApplied ? std::to_string(br.extractionsApplied) : "—")
             << " | " << (br.symbolicReductionApplied ? std::to_string(br.substitutionsApplied) : "—")
@@ -2378,6 +2547,17 @@ void Solver::writeDebugReductionReport(const std::string& path,
             }
         } else if (tr.reducedBlockSize == 0) {
             out << "\n*Block fully reduced — no iterative solve needed.*\n";
+        }
+
+        // Re-decomposition info
+        if (bi < result.blockResults.size() && result.blockResults[bi].redecompositionApplied) {
+            const auto& br = result.blockResults[bi];
+            out << "\n**Re-decomposition:** " << br.numSubBlocks << " sub-blocks [";
+            for (size_t si = 0; si < br.subBlockSizes.size(); ++si) {
+                if (si > 0) out << ", ";
+                out << br.subBlockSizes[si];
+            }
+            out << "]\n";
         }
 
         out << "\n";
