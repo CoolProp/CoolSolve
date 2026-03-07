@@ -73,6 +73,7 @@ CoolSolve uses several file formats for input and verification:
     - `enableSymbolicReduction`: When `true`, pre-process blocks to reduce their size via explicit extraction, CoolProp call inversion, and equation substitution, with automatic re-decomposition of the reduced block.
     - `bisectionNDMaxBlockSize`: Maximum block size for BisectionND (default: `8`).
     - `bisectionNDIterFactor`: Multiplier for BisectionND iteration budget (default: `1.0`).
+    - `lsNonMonotoneMemory`: Number of recent merit values kept for non-monotone acceptance (default: `10`). Set to `1` for classic monotone line search.
   - **CoolProp Integration options**:
     - `coolpropBackend`: CoolProp backend string (default: `HEOS`). Options: `HEOS`, `INCOMP`, `TTSE&HEOS`, `BICUBIC&HEOS`.
     - `coolpropUseAbstractState`: Use the low-level `AbstractState` API instead of `PropsSI` (default: `true`). Provides 2–5× speedup by caching fluid objects and avoiding string parsing.
@@ -449,8 +450,12 @@ through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
      point found, with relaxed tolerance acceptance.
    - Falls through to the standard pipeline if all phases fail.
 
-1. **Newton + Line Search** (`Newton`)
-   - Solves `J(x) * dx = -F(x)` and applies backtracking to ensure descent.
+1. **Newton + Non-Monotone Line Search** (`Newton`)
+   - Solves `J(x) * dx = -F(x)` and applies backtracking with a non-monotone
+     Armijo condition (Grippo, Lampariello, Lucidi 1986): instead of requiring
+     strict decrease at every step, the merit function is compared against the
+     maximum over the last M iterations (`lsNonMonotoneMemory`, default 10).
+     This helps escape narrow curved valleys and saddle points.
    - Efficient when the Jacobian is well-conditioned and the model is smooth.
 
 2. **Trust-Region Dogleg** (`TrustRegion`)
@@ -740,8 +745,7 @@ For new equation systems, use CoolProp-computed values for initial guesses to en
 ## Future Work
 
 The next steps in the implementation plan include:
-- **CoolProp call inversion**: Detect which variables are known vs unknown in a block and choose the best CoolProp input pair, reducing block sizes
-- **Non-monotone line search**: Better convergence on difficult landscapes (narrow valleys, saddle points)
+- **Broyden quasi-Newton updates**: Fewer CoolProp calls per solve via Jacobian reuse
 - **Trust Region / LM improvements**: Raise solver success rates for stiff/near-singular blocks
 - **Superancillary fast evaluation** for BisectionND: Use polynomial saturation fits for cheap intermediate evaluations
 - **KINSOL (SUNDIALS) integration**: For large-scale nonlinear systems requiring robust preconditioning

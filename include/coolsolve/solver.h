@@ -98,6 +98,14 @@ struct SolverOptions {
     double lsMinStep = 1e-10;         // Minimum step size in line search
     double lsRelaxedTolerance = 1e-2; // Accept as converged when ||F|| < this (line search fail or max iter)
 
+    // Non-monotone line search (Grippo, Lampariello, Lucidi 1986).
+    // Instead of requiring strict decrease at every step (monotone Armijo),
+    // compare against the maximum merit value over the last M iterations.
+    // This helps escape narrow curved valleys and saddle points that trap
+    // monotone methods.  M=1 gives standard monotone behavior.
+    // Applied to Newton (Armijo), TrustRegion (acceptance), and LM (acceptance).
+    int lsNonMonotoneMemory = 10;     // Non-monotone memory M (default 10; 1 = monotone)
+
     // Variable scaling
     bool enableScaling = true;        // Enable automatic variable scaling for improved conditioning
 
@@ -384,23 +392,26 @@ private:
     Eigen::VectorXd computeScalingFactors(const Eigen::VectorXd& x) const;
     
     /**
-     * @brief Perform backtracking line search.
+     * @brief Perform backtracking line search with non-monotone Armijo condition.
      *
-     * Finds lambda such that phi(lambda) = ||F(x + lambda*dx)||^2 < phi(0)
-     * using the Armijo condition.
+     * Finds lambda such that φ(x + λ dx) ≤ refPhi + α λ ∇φ·dx,
+     * where refPhi is the non-monotone reference (max of recent merit values).
+     * When refPhi == φ(x), this is the standard monotone Armijo condition.
      *
      * @param problem Problem definition
      * @param x Current point
      * @param dx Newton direction
      * @param F Current residuals F(x)
      * @param options Solver options
+     * @param refPhi Non-monotone reference merit value (max of recent history)
      * @return Step size lambda, or 0 if line search failed
      */
     double lineSearch(Problem& problem,
                       const Eigen::VectorXd& x,
                       const Eigen::VectorXd& dx,
                       const Eigen::VectorXd& F,
-                      const SolverOptions& options);
+                      const SolverOptions& options,
+                      double refPhi);
 };
 
 // ============================================================================

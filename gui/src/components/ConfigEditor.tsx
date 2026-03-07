@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { useModelStore } from '../stores/modelStore';
 import { api } from '../api/client';
-import { RotateCcw } from 'lucide-react';
+import { RotateCcw, Info } from 'lucide-react';
 
 interface ConfigField {
   key: string;
@@ -177,6 +177,16 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
         description: 'Minimum step size in line search; smaller steps are rejected.' },
       { key: 'lsRelaxedTolerance', label: 'Relaxed tolerance', type: 'number', defaultVal: '1e-2',
         description: 'Accept as converged if line search fails but ‖F‖ is below this. Prevents discarding near-converged solutions.' },
+      { key: 'lsNonMonotoneMemory', label: 'Non-monotone memory M', type: 'number', defaultVal: '10',
+        description:
+          'Non-monotone line search memory (Grippo et al. 1986). '
+          + 'Instead of requiring the merit function to decrease at every step (monotone Armijo), '
+          + 'the solver compares against the maximum merit over the last M iterations, '
+          + 'bounded at 10× the current merit to prevent catastrophic step acceptance. '
+          + 'This helps escape narrow curved valleys and saddle points that trap monotone methods. '
+          + 'Applied to Newton (Armijo condition), TrustRegion and LM (step acceptance). '
+          + 'M=1 = classic monotone behavior. M=10 = default non-monotone (recommended). '
+          + 'Increase M if the solver oscillates near a valley; decrease toward 1 if it accepts bad steps too aggressively.' },
     ],
   },
   {
@@ -493,8 +503,16 @@ export default function ConfigEditor() {
                   const isSet = confMap.has(field.key);
                   return (
                     <div key={field.key} className="config-field">
-                      <label title={field.description}>
-                        <span className="config-field-label">{field.label}</span>
+                      <label>
+                        <span className="config-field-label">
+                          {field.label}
+                          {field.description && (
+                            <span className="config-tooltip-wrap">
+                              <Info size={12} className="config-info-icon" />
+                              <span className="config-tooltip">{field.description}</span>
+                            </span>
+                          )}
+                        </span>
                         <span className="config-field-default">default: {field.defaultVal}</span>
                       </label>
                       {field.type === 'boolean' ? (

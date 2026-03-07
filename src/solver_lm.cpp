@@ -1,6 +1,11 @@
 /**
  * @file solver_lm.cpp
- * @brief Levenberg-Marquardt solver (damped least-squares).
+ * @brief Levenberg-Marquardt solver (damped least-squares) with non-monotone acceptance.
+ *
+ * Uses a non-monotone criterion (Grippo et al. 1986) for step acceptance:
+ * a step is accepted if φ(x_new) < max(recent φ values), rather than
+ * requiring strict decrease.  The damping parameter λ management still
+ * uses the standard gain ratio based on the current iterate.
  */
 #include "coolsolve/solver.h"
 #include "coolsolve/solver_common.h"
@@ -45,6 +50,9 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
     double lambda = options.lmInitialLambda;
     double initialResidualNorm = 0.0;
 
+    // Non-monotone merit history (Grippo et al. 1986)
+    NonMonotoneHistory meritHistory(options.lsNonMonotoneMemory);
+
     for (int iter = 0; iter < options.maxIterations; ++iter) {
         if (TimeoutGuard::hasTimedOut()) {
             if (detailedError) *detailedError = "LM solver timed out";
@@ -68,7 +76,18 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
 
         if (options.verbose)
             std::cout << "LM iter " << iter << ": ||F||=" << residualNorm
-                      << ", lambda=" << lambda << std::endl;
+                      << ", lambda=" << lambda;
+
+        // Track merit for non-monotone acceptance
+        double phi_track = 0.5 * F.squaredNorm();
+        meritHistory.push(phi_track);
+        double refPhi = meritHistory.boundedRef(phi_track);
+
+        if (options.verbose) {
+            if (options.lsNonMonotoneMemory > 1)
+                std::cout << " (refPhi=" << refPhi << ", M=" << meritHistory.size() << ")";
+            std::cout << std::endl;
+        }
 
         if (trace) {
             SolverTrace::Iteration ti;
@@ -133,13 +152,14 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
             continue;
         }
 
-        // Gain ratio
+        // Gain ratio (based on current phi for lambda management)
         Eigen::VectorXd D = diag_JtJ.cwiseMax(1e-6);
         double predicted = 0.5 * dy.dot(lambda * D.cwiseProduct(dy) - JtF);
         double actual = phi_old - phi_new;
         double rho = (std::abs(predicted) > 1e-30) ? actual / predicted : 0.0;
 
-        if (actual > 0) {
+        // Non-monotone acceptance: accept if φ_new < max(recent history)
+        if (phi_new < refPhi) {
             // Accept
             y = y_new;
             double stepNorm = dy.lpNorm<Eigen::Infinity>();

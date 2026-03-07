@@ -235,6 +235,7 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             else if (key == "lsMaxIterations") options.lsMaxIterations = std::stoi(val);
             else if (key == "lsMinStep") options.lsMinStep = std::stod(val);
             else if (key == "lsRelaxedTolerance") options.lsRelaxedTolerance = std::stod(val);
+            else if (key == "lsNonMonotoneMemory") options.lsNonMonotoneMemory = std::stoi(val);
             else if (key == "enableScaling") options.enableScaling = parseBool(val);
             else if (key == "trInitialRadius") options.trInitialRadius = std::stod(val);
             else if (key == "trMaxRadius") options.trMaxRadius = std::stod(val);

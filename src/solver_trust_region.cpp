@@ -1,6 +1,11 @@
 /**
  * @file solver_trust_region.cpp
- * @brief Trust-region dogleg solver.
+ * @brief Trust-region dogleg solver with non-monotone step acceptance.
+ *
+ * Uses a non-monotone criterion (Grippo et al. 1986) for step acceptance:
+ * a step is accepted if φ(x_new) < max(recent φ values), rather than
+ * requiring φ(x_new) < φ(x_current).  The trust region radius management
+ * still uses the standard gain ratio based on the current iterate.
  */
 #include "coolsolve/solver.h"
 #include "coolsolve/solver_common.h"
@@ -72,6 +77,9 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
     double delta = options.trInitialRadius;
     int consecutiveRejects = 0;  // track consecutive rejections for adaptive reset
 
+    // Non-monotone merit history (Grippo et al. 1986)
+    NonMonotoneHistory meritHistory(options.lsNonMonotoneMemory);
+
     for (int iter = 0; iter < options.maxIterations; ++iter) {
         if (TimeoutGuard::hasTimedOut()) {
             if (detailedError) *detailedError = "Solver timed out";
@@ -98,7 +106,18 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
 
         if (options.verbose)
             std::cout << "TrustRegion iter " << iter << ": ||F||=" << residualNorm
-                      << ", delta=" << delta << std::endl;
+                      << ", delta=" << delta;
+
+        // Track merit for non-monotone acceptance
+        double phi_current = 0.5 * F.squaredNorm();
+        meritHistory.push(phi_current);
+        double refPhi = meritHistory.boundedRef(phi_current);
+
+        if (options.verbose) {
+            if (options.lsNonMonotoneMemory > 1)
+                std::cout << " (refPhi=" << refPhi << ", M=" << meritHistory.size() << ")";
+            std::cout << std::endl;
+        }
 
         if (trace) {
             SolverTrace::Iteration ti;
@@ -189,7 +208,9 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
         double predicted = model_old - model_new;
         double rho = (std::abs(predicted) > 1e-30) ? actual / predicted : 0.0;
 
-        if (actual > 0) {
+        // Non-monotone acceptance: accept if φ_new < max(recent history)
+        // The gain ratio rho is still based on the current phi for radius management.
+        if (phi_new < refPhi) {
             // Accept step
             y = y_new;
             consecutiveRejects = 0;

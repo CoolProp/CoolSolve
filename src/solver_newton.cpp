@@ -1,6 +1,13 @@
 /**
  * @file solver_newton.cpp
- * @brief Newton solver with backtracking line search.
+ * @brief Newton solver with non-monotone backtracking line search.
+ *
+ * Uses the Grippo-Lampariello-Lucidi (1986) non-monotone line search:
+ * instead of requiring strict decrease at every step (standard Armijo),
+ * the merit function is compared against the maximum over the last M
+ * iterations.  This helps escape narrow curved valleys and saddle points
+ * that trap monotone methods.  When M=1, behaviour is identical to the
+ * classic monotone Armijo line search.
  */
 #include "coolsolve/solver.h"
 #include "coolsolve/solver_common.h"
@@ -23,8 +30,10 @@ double NewtonSolver::lineSearch(Problem& problem,
                                 const Eigen::VectorXd& x,
                                 const Eigen::VectorXd& dx,
                                 const Eigen::VectorXd& F,
-                                const SolverOptions& options) {
+                                const SolverOptions& options,
+                                double refPhi) {
     double phi0 = 0.5 * F.squaredNorm();
+    // Directional derivative: ∇φ·dx = -||F||² = -2φ₀ for the full Newton step
     double dphi0 = -2.0 * phi0;
 
     double lambda = 1.0;
@@ -43,8 +52,11 @@ double NewtonSolver::lineSearch(Problem& problem,
 
         double phi_new = 0.5 * F_new.squaredNorm();
 
-        // Armijo condition
-        if (phi_new <= phi0 + options.lsAlpha * lambda * dphi0) return lambda;
+        // Non-monotone Armijo condition (Grippo et al. 1986):
+        //   φ(x + λd) ≤ refPhi + α λ ∇φ·d
+        // where refPhi = max(φ_{k-M+1}, ..., φ_k) from the outer iteration.
+        // When M=1, refPhi = φ₀ and this reduces to the standard monotone Armijo.
+        if (phi_new <= refPhi + options.lsAlpha * lambda * dphi0) return lambda;
         // Near-minimum relaxation
         if (phi0 < 0.05 && phi_new < phi0 * 2.0) return lambda;
         if (lambda < 0.01 && phi0 < 0.1 && phi_new <= phi0 * 1.5) return lambda;
@@ -85,6 +97,9 @@ SolverStatus NewtonSolver::solve(Problem& problem,
     Eigen::MatrixXd J(n, n), J_unscaled(n, n);
     double initialResidualNorm = 0.0;
 
+    // Non-monotone merit history (Grippo et al. 1986)
+    NonMonotoneHistory meritHistory(options.lsNonMonotoneMemory);
+
     for (int iter = 0; iter < options.maxIterations; ++iter) {
         if (TimeoutGuard::hasTimedOut()) {
             if (detailedError) *detailedError = "Solver timed out";
@@ -107,8 +122,17 @@ SolverStatus NewtonSolver::solve(Problem& problem,
         double residualNorm = F.lpNorm<Eigen::Infinity>();
         if (iter == 0) initialResidualNorm = residualNorm;
 
-        if (options.verbose)
-            std::cout << "Newton iter " << iter << ": ||F||_inf = " << residualNorm << std::endl;
+        // Track merit for non-monotone line search
+        double phi = 0.5 * F.squaredNorm();
+        meritHistory.push(phi);
+        double refPhi = meritHistory.boundedRef(phi);
+
+        if (options.verbose) {
+            std::cout << "Newton iter " << iter << ": ||F||_inf = " << residualNorm;
+            if (options.lsNonMonotoneMemory > 1)
+                std::cout << " (refPhi=" << refPhi << ", M=" << meritHistory.size() << ")";
+            std::cout << std::endl;
+        }
 
         // Record trace
         if (trace) {
@@ -152,13 +176,13 @@ SolverStatus NewtonSolver::solve(Problem& problem,
             return SolverStatus::SingularJacobian;
         }
 
-        // Line search in scaled coordinates
+        // Line search in scaled coordinates with non-monotone reference
         Problem lsProblem;
         lsProblem.size = n;
         lsProblem.evaluate = [&](const Eigen::VectorXd& yt, Eigen::VectorXd& Fo, Eigen::MatrixXd& Jdummy, bool) {
             problem.evaluate(yt.cwiseProduct(scale), Fo, Jdummy, false);
         };
-        double lambda = lineSearch(lsProblem, y, dy, F, options);
+        double lambda = lineSearch(lsProblem, y, dy, F, options, refPhi);
 
         if (lambda == 0.0) {
             if (residualNorm < options.lsRelaxedTolerance) {

@@ -8,6 +8,8 @@
  */
 
 #include <Eigen/Dense>
+#include <vector>
+#include <algorithm>
 
 namespace coolsolve {
 
@@ -36,6 +38,80 @@ inline Eigen::VectorXd computeScalingFactors(const Eigen::VectorXd& x) {
     }
     return scale;
 }
+
+// ============================================================================
+// Non-Monotone Merit History
+// ============================================================================
+
+/**
+ * @brief Tracks recent merit function values for non-monotone line search.
+ *
+ * Standard (monotone) line search requires φ(x_{k+1}) < φ(x_k) at every step.
+ * This can trap solvers in narrow curved valleys or near saddle points.
+ *
+ * Non-monotone line search (Grippo, Lampariello, Lucidi 1986) relaxes this
+ * to: φ(x_{k+1}) < max(φ(x_{k-M+1}), ..., φ(x_k)) + sufficient decrease.
+ * The solver can temporarily accept larger merit values to escape local traps,
+ * while still guaranteeing global convergence.
+ *
+ * **Bounded reference** (`boundedRef`): the raw max can be arbitrarily larger
+ * than the current merit when a single early bad iterate inflates the window.
+ * This makes the Armijo condition trivially satisfied, allowing steps that
+ * destroy recent progress.  `boundedRef(phi, R)` caps the reference at
+ * `R × phi`, preventing the reference from exceeding `R` times the current
+ * merit.  Default ratio R = 10.
+ *
+ * Usage in solver iteration loop:
+ *   NonMonotoneHistory history(options.lsNonMonotoneMemory);
+ *   // each iteration:
+ *   double phi = 0.5 * F.squaredNorm();
+ *   history.push(phi);
+ *   double refPhi = history.boundedRef(phi);  // bounded non-monotone reference
+ *
+ * When memory == 1, this degenerates to monotone line search (maxValue = current phi).
+ */
+struct NonMonotoneHistory {
+    explicit NonMonotoneHistory(int memory) : memory_(std::max(memory, 1)) {}
+
+    /// Record a new merit function value.
+    void push(double phi) {
+        values_.push_back(phi);
+        if (static_cast<int>(values_.size()) > memory_)
+            values_.erase(values_.begin());
+    }
+
+    /// Maximum of the stored merit values (the non-monotone reference).
+    double maxValue() const {
+        if (values_.empty()) return 0.0;
+        return *std::max_element(values_.begin(), values_.end());
+    }
+
+    /**
+     * @brief Bounded non-monotone reference value.
+     *
+     * Returns min(max(history), currentPhi * maxRatio).  This prevents
+     * the reference from being arbitrarily larger than the current merit,
+     * which can cause the Armijo condition to admit steps that destroy
+     * recent progress (observed when a single early bad iterate inflates
+     * the history window far above the current merit).
+     *
+     * @param currentPhi  Current merit value φ(x_k)
+     * @param maxRatio    Maximum allowed ratio refPhi / currentPhi (e.g. 10)
+     * @return Bounded reference value for the non-monotone Armijo condition
+     */
+    double boundedRef(double currentPhi, double maxRatio = 10.0) const {
+        double mv = maxValue();
+        double cap = currentPhi * maxRatio;
+        return std::min(mv, cap);
+    }
+
+    bool empty() const { return values_.empty(); }
+    int size() const { return static_cast<int>(values_.size()); }
+
+private:
+    int memory_;
+    std::vector<double> values_;
+};
 
 /**
  * @brief Record one iteration in a SolverTrace.

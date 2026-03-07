@@ -205,6 +205,12 @@ static RobustnessResult testFile(const fs::path& filepath, const SolverConfig& c
 
     coolsolve::CoolSolveRunner runner(filepath.string());
     coolsolve::SolverOptions opts;
+
+    // Load coolsolve.conf from the same directory as the model (same as CLI)
+    auto configPath = filepath.parent_path() / "coolsolve.conf";
+    if (fs::exists(configPath))
+        coolsolve::loadSolverOptionsFromFile(configPath.string(), opts);
+
     opts.tolerance = 1e-6;
     opts.timeoutSeconds = 30;
     opts.solverPipeline = cfg.pipeline;

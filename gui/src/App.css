@@ -540,6 +540,51 @@ body {
   outline: none;
 }
 
+/* Info-icon tooltip for config fields */
+.config-tooltip-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  cursor: help;
+}
+
+.config-info-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.config-tooltip-wrap:hover .config-info-icon {
+  opacity: 1;
+  color: var(--accent-color);
+}
+
+.config-tooltip {
+  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  width: 280px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  z-index: 100;
+  pointer-events: none;
+  white-space: normal;
+}
+
+.config-tooltip-wrap:hover .config-tooltip {
+  display: block;
+}
+
 /* Debug Viewer */
 .debug-viewer {
   display: flex;
