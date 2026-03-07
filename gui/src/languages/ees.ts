@@ -45,7 +45,7 @@ export function registerEESLanguage(monaco: typeof Monaco) {
         // Comments
         [/\/\/.*$/, 'comment'],
         [/\{/, 'comment', '@bracketComment'],
-        [/"[^"]*"/, 'string'],
+        [/"/, 'string', '@quoteComment'],
 
         // Directives
         [/\$\w+/, 'keyword.directive'],
@@ -85,6 +85,11 @@ export function registerEESLanguage(monaco: typeof Monaco) {
       bracketComment: [
         [/[^}]+/, 'comment'],
         [/\}/, 'comment', '@pop'],
+      ],
+
+      quoteComment: [
+        [/[^"]+/, 'string'],
+        [/"/, 'string', '@pop'],
       ],
 
       array: [

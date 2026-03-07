@@ -154,6 +154,31 @@ z = 3
         REQUIRE(res_braces.equationCount == 2);
     }
 
+    SECTION("Multi-line quote and brace comments with descriptive text") {
+        // Mirrors a real-world pattern: brace comment block followed by
+        // quote comment block with identical descriptive text, then equations.
+        const std::string code = R"(
+{2. Second step: heating from su1 to su2:
+==================================
+In general, the different heat transfers in a compressor include
+the one to the suction gas and the heat transfer to the ambiant.}
+
+h_su2_cp - h_su1_cp = Q_dot_su1_cp / M_dot
+
+"2. Second step: heating from su1 to su2:
+==================================
+In general, the different heat transfers in a compressor include
+the one to the suction gas and the heat transfer to the ambiant."
+
+Q_dot_su1_cp = epsilon_su1_cp * C_dot_su1_cp * (t_w_cp - t_su1_cp)
+)";
+
+        auto result = parser.parse(code);
+        REQUIRE(result.success);
+        // Only the two equations outside the comment blocks should be counted.
+        REQUIRE(result.equationCount == 2);
+    }
+
     SECTION("Nested brace block comments spanning multiple lines") {
         const std::string code = R"(
 a = 1
