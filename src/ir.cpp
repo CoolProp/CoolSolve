@@ -227,6 +227,11 @@ const VariableInfo* IR::getVariable(const std::string& name) const {
     return (it != variables_.end()) ? &it->second : nullptr;
 }
 
+VariableInfo* IR::getVariableMutable(const std::string& name) {
+    auto it = variables_.find(name);
+    return (it != variables_.end()) ? &it->second : nullptr;
+}
+
 int IR::getAlgebraicVariableCount() const {
     int count = 0;
     for (const auto& [name, info] : variables_) {

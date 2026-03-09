@@ -1447,16 +1447,6 @@ int startServer(const ServerOptions& options) {
                 
                 auto baseInitials = parseInitialsStr(initials);
                 
-                // Helper: build initials string from map
-                auto buildInitials = [](const std::map<std::string, double>& map) {
-                    std::ostringstream oss;
-                    oss << std::scientific << std::setprecision(12);
-                    for (const auto& [name, val] : map) {
-                        oss << name << " = " << val << "\n";
-                    }
-                    return oss.str();
-                };
-                
                 // Helper: replace imposed value in eescode
                 // Uses case-insensitive regex matching for variable name.
                 // We use regex_search + manual string surgery instead of
@@ -1496,6 +1486,58 @@ int startServer(const ServerOptions& options) {
                     result.append(it, source.cend());
                     return result;
                 };
+                
+                // ============================================================
+                // Performance optimisation: factor out invariant pipeline
+                // stages so they run *once* rather than per-point.
+                //
+                //  1. Parse the original eescode → AST
+                //  2. Build IR from AST
+                //  3. inferVariables + initializeVariables  (~10 ms saved/pt)
+                //  4. Structural analysis                   (~0.5 ms saved/pt)
+                //
+                // Per-point we only re-parse (constants change), re-build
+                // the IR, load initials (which provides all solutionValues),
+                // and solve using the *cached* analysis result.
+                // ============================================================
+                
+                // Prepare solver options once (invariant across points)
+                SolverOptions solverOpts;
+                solverOpts.verbose = false;
+                if (!confContent.empty() && fs::exists(tmpConf)) {
+                    loadSolverOptionsFromFile(tmpConf.string(), solverOpts);
+                }
+                solverOpts.cancelToken = &session.cancelRequested;
+                if (timeoutPerPoint > 0) {
+                    solverOpts.timeoutSeconds = timeoutPerPoint;
+                }
+                applyCoolPropConfig(solverOpts.coolpropConfig);
+                
+                // One-time CoolProp warmup (first call pays library init cost)
+                warmupCoolProp();
+                
+                // Run the full pipeline once on the original eescode to
+                // obtain the structural analysis result.
+                StructuralAnalysisResult cachedAnalysis;
+                {
+                    writeStringToFile(tmpEes.string(), eescode);
+                    EESParser parser;
+                    auto parseResult = parser.parseFile(tmpEes.string());
+                    if (parseResult.success) {
+                        try {
+                            auto templateIR = IR::fromAST(parseResult.program);
+                            inferVariables(templateIR);
+                            initializeVariables(templateIR);
+                            cachedAnalysis = StructuralAnalyzer::analyze(templateIR);
+                        } catch (...) {
+                            // Fall through — cachedAnalysis.success stays false
+                        }
+                    }
+                    if (!cachedAnalysis.success) {
+                        std::cerr << "[Parametric] WARNING: pre-analysis failed, "
+                                     "falling back to full pipeline per point\n";
+                    }
+                }
                 
                 for (int i = 0; i < totalPoints; ++i) {
                     if (session.cancelRequested.load()) {
@@ -1541,31 +1583,91 @@ int startServer(const ServerOptions& options) {
                         currentInitials[varName] = newVal;
                     }
                     
-                    // Build initials string (skip string variables ending with $)
-                    std::ostringstream initOss;
-                    initOss << std::scientific << std::setprecision(12);
-                    for (const auto& [name, val] : currentInitials) {
-                        if (!name.empty() && name.back() == '$') continue;
-                        initOss << name << " = " << val << "\n";
-                    }
-                    std::string initialsStr = initOss.str();
-                    auto tmpInit = tmpDir / "model.initials";
-                    writeStringToFile(tmpInit.string(), initialsStr);
+                    auto tPointStart = std::chrono::high_resolution_clock::now();
+                    bool success = false;
+                    SolveResult pointSolveResult;
+                    double parseMs = 0, irMs = 0, inferMs = 0, analysisMs = 0, solveMs = 0;
                     
-                    // Run solver
-                    CoolSolveRunner runner(tmpEes.string());
-                    SolverOptions solverOpts;
-                    solverOpts.verbose = false;
-                    if (!confContent.empty() && fs::exists(tmpConf)) {
-                        loadSolverOptionsFromFile(tmpConf.string(), solverOpts);
+                    if (cachedAnalysis.success) {
+                        // ---- Fast path: reuse cached structural analysis ----
+                        try {
+                            auto t1 = std::chrono::high_resolution_clock::now();
+                            EESParser parser;
+                            auto parseResult = parser.parseFile(tmpEes.string());
+                            auto t2 = std::chrono::high_resolution_clock::now();
+                            parseMs = std::chrono::duration<double, std::milli>(t2 - t1).count();
+                            
+                            if (!parseResult.success) throw std::runtime_error("parse failed");
+                            
+                            t1 = std::chrono::high_resolution_clock::now();
+                            IR ir = IR::fromAST(parseResult.program);
+                            t2 = std::chrono::high_resolution_clock::now();
+                            irMs = std::chrono::duration<double, std::milli>(t2 - t1).count();
+                            
+                            // Skip inferVariables + initializeVariables (the big win).
+                            // The initials provide solutionValue for all variables,
+                            // which the Solver uses in preference to guessValue.
+                            inferMs = 0;
+                            analysisMs = 0;
+                            
+                            // Load initials directly into the IR
+                            for (const auto& [name, val] : currentInitials) {
+                                if (!name.empty() && name.back() == '$') continue;
+                                auto* vinfo = ir.getVariableMutable(name);
+                                if (vinfo) {
+                                    vinfo->solutionValue = val;
+                                }
+                            }
+                            
+                            t1 = std::chrono::high_resolution_clock::now();
+                            Solver solver(ir, cachedAnalysis, solverOpts.coolpropConfig);
+                            pointSolveResult = solver.solve(solverOpts, false);
+                            t2 = std::chrono::high_resolution_clock::now();
+                            solveMs = std::chrono::duration<double, std::milli>(t2 - t1).count();
+                            
+                            success = pointSolveResult.success;
+                        } catch (...) {
+                            success = false;
+                            pointSolveResult.errorMessage = "Exception in fast-path solve";
+                        }
+                    } else {
+                        // ---- Fallback: full pipeline via CoolSolveRunner ----
+                        // Build initials string and write file
+                        std::ostringstream initOss;
+                        initOss << std::scientific << std::setprecision(12);
+                        for (const auto& [name, val] : currentInitials) {
+                            if (!name.empty() && name.back() == '$') continue;
+                            initOss << name << " = " << val << "\n";
+                        }
+                        auto tmpInit = tmpDir / "model.initials";
+                        writeStringToFile(tmpInit.string(), initOss.str());
+                        
+                        CoolSolveRunner runner(tmpEes.string());
+                        success = runner.run(solverOpts, false);
+                        pointSolveResult = runner.getSolveResult();
+                        
+                        auto& t = runner.getTiming();
+                        parseMs = t.parse_time_ms;
+                        irMs = t.ir_time_ms;
+                        inferMs = t.infer_time_ms;
+                        analysisMs = t.analysis_time_ms;
+                        solveMs = t.solve_time_ms;
                     }
-                    solverOpts.cancelToken = &session.cancelRequested;
-                    if (timeoutPerPoint > 0) {
-                        solverOpts.timeoutSeconds = timeoutPerPoint;
-                    }
-                    applyCoolPropConfig(solverOpts.coolpropConfig);
                     
-                    bool success = runner.run(solverOpts, false);
+                    auto tPointEnd = std::chrono::high_resolution_clock::now();
+                    
+                    // Profiling: log per-phase timing to stderr
+                    {
+                        double totalMs = std::chrono::duration<double, std::milli>(tPointEnd - tPointStart).count();
+                        std::cerr << "[Parametric] Point " << (i+1) << "/" << totalPoints
+                                  << " total=" << std::fixed << std::setprecision(1) << totalMs << "ms"
+                                  << " parse=" << parseMs
+                                  << " ir=" << irMs
+                                  << " infer=" << inferMs
+                                  << " analysis=" << analysisMs
+                                  << " solve=" << solveMs
+                                  << (success ? " OK" : " FAIL") << "\n";
+                    }
                     
                     json pointResult;
                     pointResult["index"] = i;
@@ -1581,14 +1683,14 @@ int startServer(const ServerOptions& options) {
                     if (success) {
                         successCount++;
                         json vars = json::object();
-                        for (const auto& [name, val] : runner.getSolveResult().variables) {
+                        for (const auto& [name, val] : pointSolveResult.variables) {
                             vars[name] = val;
                         }
                         pointResult["variables"] = vars;
-                        lastSolution = runner.getSolveResult().variables;
+                        lastSolution = pointSolveResult.variables;
                     } else {
                         failCount++;
-                        pointResult["errorMessage"] = runner.getSolveResult().errorMessage;
+                        pointResult["errorMessage"] = pointSolveResult.errorMessage;
                         // Do NOT update lastSolution from failed runs — keep the
                         // last successful solution so the next point has good guesses.
                     }

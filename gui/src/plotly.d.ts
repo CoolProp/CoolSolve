@@ -1,1 +1,1 @@
-declare module 'plotly.js-basic-dist-min';
+declare module 'plotly.js-cartesian-dist-min';

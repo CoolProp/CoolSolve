@@ -1,6 +1,6 @@
-// Use the minimal plotly.js distribution (scatter charts only, ~800KB vs ~5MB)
-// This avoids the massive full plotly.js bundle.
-import Plotly from 'plotly.js-basic-dist-min';
+// Use the cartesian plotly.js distribution (scatter, bar, heatmap, contour, etc.)
+// This avoids the massive full plotly.js bundle while supporting 2D plots.
+import Plotly from 'plotly.js-cartesian-dist-min';
 import createPlotlyComponent from 'react-plotly.js/factory';
 
 const Plot = createPlotlyComponent(Plotly);

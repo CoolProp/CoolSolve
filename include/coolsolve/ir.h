@@ -97,6 +97,7 @@ public:
     // Access variables
     const std::map<std::string, VariableInfo, CaseInsensitiveLess>& getVariables() const { return variables_; }
     const VariableInfo* getVariable(const std::string& name) const;
+    VariableInfo* getVariableMutable(const std::string& name);
     int getVariableCount() const { return static_cast<int>(variables_.size()); }
     
     // Access equations

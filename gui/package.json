@@ -12,7 +12,7 @@
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "lucide-react": "^0.564.0",
-    "plotly.js-basic-dist-min": "^3.3.1",
+    "plotly.js-cartesian-dist-min": "^3.4.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-plotly.js": "^2.6.0",

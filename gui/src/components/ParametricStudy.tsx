@@ -171,6 +171,19 @@ export default function ParametricStudy() {
     return activeResult.sweepVariables.length;
   }, [activeResult]);
 
+  // Results sorted by sweep variable values (for table display and 1D plots)
+  const sortedResults = useMemo(() => {
+    if (!activeResult || activeResult.results.length === 0) return [];
+    const sweepNames = activeResult.sweepVariables.map((s) => s.name);
+    return [...activeResult.results].sort((a, b) => {
+      for (const name of sweepNames) {
+        const diff = (a.overrides[name] ?? 0) - (b.overrides[name] ?? 0);
+        if (diff !== 0) return diff;
+      }
+      return 0;
+    });
+  }, [activeResult]);
+
   // Reset plotYVar when result changes
   useEffect(() => {
     if (outputVarNames.length > 0 && !outputVarNames.includes(plotYVar)) {
@@ -350,7 +363,7 @@ export default function ParametricStudy() {
       const yVals: number[] = [];
       const markers: string[] = [];
 
-      for (const pt of activeResult.results) {
+      for (const pt of sortedResults) {
         if (!pt.success || !pt.variables) continue;
         const xVal = pt.overrides[sweep.name];
         const yVal = pt.variables[plotYVar];
@@ -628,7 +641,7 @@ export default function ParametricStudy() {
                 </tr>
               </thead>
               <tbody>
-                {activeResult.results.map((pt, idx) => (
+                {sortedResults.map((pt, idx) => (
                   <tr key={idx} className={pt.success ? '' : 'failed-row'}>
                     <td>{idx + 1}</td>
                     {activeResult.sweepVariables.map((s) => (
