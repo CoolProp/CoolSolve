@@ -6,6 +6,7 @@ import ArrayTable from './components/ArrayTable';
 import ConfigEditor from './components/ConfigEditor';
 import DebugViewer from './components/DebugViewer';
 import ThermoDiagram from './components/ThermoDiagram';
+import ParametricStudy from './components/ParametricStudy';
 import Console from './components/Console';
 import SplitPane from './components/SplitPane';
 import { useModelStore } from './stores/modelStore';
@@ -19,6 +20,8 @@ export default function App() {
   const setRightTab = useUIStore((s) => s.setRightTab);
   const bottomPanelOpen = useUIStore((s) => s.bottomPanelOpen);
   const toggleBottomPanel = useUIStore((s) => s.toggleBottomPanel);
+  const bottomTab = useUIStore((s) => s.bottomTab);
+  const setBottomTab = useUIStore((s) => s.setBottomTab);
   const equationCount = useModelStore((s) => s.equationCount);
   const variableCount = useModelStore((s) => s.variableCount);
   const isSquare = useModelStore((s) => s.isSquare);
@@ -115,12 +118,28 @@ export default function App() {
           </div>
         </SplitPane>
 
-        {/* Bottom panel: Console */}
+        {/* Bottom panel: Console + Parametric Study */}
         <div className="bottom-panel">
-          <div className="tab-bar bottom-panel-header" onClick={toggleBottomPanel}>
-            <button className="tab-btn active">Console</button>
+          <div className="tab-bar bottom-panel-header">
+            <button
+              className={`tab-btn ${bottomTab === 'console' ? 'active' : ''}`}
+              onClick={() => { if (bottomTab === 'console' && bottomPanelOpen) toggleBottomPanel(); else setBottomTab('console'); }}
+            >
+              Console
+            </button>
+            <button
+              className={`tab-btn ${bottomTab === 'sensitivity' ? 'active' : ''}`}
+              onClick={() => { if (bottomTab === 'sensitivity' && bottomPanelOpen) toggleBottomPanel(); else setBottomTab('sensitivity'); }}
+            >
+              Parametric
+            </button>
           </div>
-          {bottomPanelOpen && <Console />}
+          {bottomPanelOpen && (
+            <>
+              {bottomTab === 'console' && <Console />}
+              {bottomTab === 'sensitivity' && <ParametricStudy />}
+            </>
+          )}
         </div>
       </SplitPane>
 

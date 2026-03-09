@@ -670,3 +670,301 @@ body {
 .array-table th {
   white-space: nowrap;
 }
+
+/* ============================================================================
+   Units column colors (VariableTable)
+   ============================================================================ */
+.unit-cell {
+  font-size: 10px;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+.unit-cell.unit-code     { color: #3b82f6; }   /* Blue: explicitly annotated in code */
+.unit-cell.unit-inferred { color: #22c55e; }   /* Green: inferred from CoolProp */
+.unit-cell.unit-user     { color: #f59e0b; }   /* Orange: user-specified in GUI */
+
+.unit-col {
+  min-width: 60px;
+  max-width: 120px;
+}
+
+/* Imposed variable indicator */
+.imposed-badge {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 10px;
+  color: #a855f7;
+  vertical-align: super;
+}
+.imposed-row {
+  background: rgba(168, 85, 247, 0.04);
+}
+
+/* Filter mode buttons */
+.filter-mode-bar {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+.filter-mode-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.filter-mode-btn:hover {
+  background: var(--bg-tertiary);
+}
+.filter-mode-btn.active {
+  background: var(--accent-color);
+  color: white;
+  border-color: var(--accent-color);
+}
+.badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  background: rgba(255,255,255,0.25);
+  border-radius: 8px;
+}
+
+/* ============================================================================
+   Parametric Study
+   ============================================================================ */
+.parametric-study {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 12px;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.parametric-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.parametric-notice {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px;
+  border: 1px dashed var(--border-color);
+  border-radius: 4px;
+}
+.parametric-notice code {
+  background: var(--bg-tertiary);
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-size: 11px;
+}
+
+/* Sweep input rows */
+.sweep-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.sweep-label {
+  font-size: 11px;
+  font-weight: 600;
+  min-width: 56px;
+  color: var(--text-secondary);
+}
+.sweep-select {
+  flex: 1;
+  min-width: 120px;
+  max-width: 200px;
+  padding: 3px 6px;
+  font-size: 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+.sweep-num {
+  width: 70px;
+  padding: 3px 6px;
+  font-size: 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  text-align: right;
+}
+.sweep-steps {
+  width: 50px;
+}
+
+/* Actions & progress */
+.parametric-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+.parametric-run-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  border-radius: 4px;
+  background: var(--accent-color);
+  color: white;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.parametric-run-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.parametric-run-btn:not(:disabled):hover {
+  opacity: 0.85;
+}
+.parametric-progress {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.parametric-options-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 4px;
+  font-size: 11px;
+}
+.parametric-option {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+  cursor: default;
+}
+.parametric-option input[type="checkbox"] {
+  margin: 0;
+}
+.sweep-timeout {
+  width: 44px !important;
+}
+.parametric-stop-btn {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--error-color);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--error-color);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.parametric-stop-btn:hover {
+  background: var(--error-color);
+  color: white;
+}
+.parametric-error {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: var(--error-color);
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 4px;
+}
+
+/* Saved studies */
+.parametric-saved {
+  border-top: 1px solid var(--border-color);
+  padding-top: 8px;
+}
+.parametric-study-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.parametric-study-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+.parametric-study-item:hover {
+  background: var(--bg-secondary);
+}
+.parametric-study-item.active {
+  background: var(--accent-color);
+  color: white;
+}
+.study-name {
+  font-weight: 500;
+  flex: 1;
+}
+.study-meta {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.parametric-study-item.active .study-meta {
+  color: rgba(255,255,255,0.7);
+}
+.study-delete {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.study-delete:hover {
+  color: var(--error-color);
+}
+
+/* Plot controls */
+.parametric-plot-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.parametric-plot-controls label {
+  font-weight: 500;
+}
+.parametric-plot {
+  min-height: 320px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+/* Results table */
+.parametric-table-container {
+  overflow: auto;
+  max-height: 300px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+}
+.parametric-table .sweep-col {
+  background: rgba(168, 85, 247, 0.06);
+  font-weight: 600;
+  color: #a855f7;
+}
+.parametric-table .status-ok { color: var(--success-color); }
+.parametric-table .status-fail { color: var(--error-color); }
+.parametric-table .failed-row {
+  background: rgba(248, 113, 113, 0.06);
+}

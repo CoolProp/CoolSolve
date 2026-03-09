@@ -185,6 +185,31 @@ equations.tex, etc.) in a session-isolated temp directory.
 | `GET` | `/api/v1/coolprop/fluids` | List all registered fluids with `name`, `type`, `hasDome`, and `modelFluids` from the current session |
 | `POST` | `/api/v1/coolprop/saturation` | Compute saturation dome for a fluid; body: `{"fluid":"R134a","nPoints":200}`; returns liquid+vapor arrays for T, P, H, S, D and critical/triple-point data |
 
+### 4.8 Parametric Study
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/v1/parametric` | Start an async parametric sweep; body: `{"sweepVariables":[{"name":"T_in","values":[20,25,30]}]}`; supports 1D (1 variable) and 2D (2 variables, Cartesian product) |
+| `GET` | `/api/v1/parametric/result` | Get the result of the last parametric study |
+
+The parametric study runs in a background thread with **warm-starting**:
+each grid point uses the nearest previously-converged solution as initial
+guesses. For the first point, the current `.initials` file is used. Progress
+events are streamed via the existing SSE channel (`/api/v1/solve/stream`).
+
+The sweep works by modifying the EES source code at each grid point: imposed
+variable assignments (e.g. `T_in = 25`) are replaced with the sweep value
+using regex substitution. Each point runs a full `CoolSolveRunner::solve()`.
+
+**Parse endpoint enhancement**: `POST /api/v1/parse` now returns additional
+fields per variable:
+- `isImposed` (boolean): `true` if the variable appears as `var = constant`
+- `imposedValue` (number): the constant value (for imposed variables)
+- `unitSource` (string): `"code"`, `"inferred"`, or `""` indicating unit origin
+
+**Bundle persistence**: ZIP bundles now include `parametric_studies.json`
+containing saved parametric study results for load/restore round-trips.
+
 ---
 
 ## 5. Session Management
@@ -563,21 +588,22 @@ gui/
     ├── vite-env.d.ts
     ├── api/
     │   ├── client.ts              # Typed fetch wrappers for all API endpoints
-    │   └── types.ts               # TypeScript interfaces for all API responses
+    │   └── types.ts               # TypeScript interfaces for all API responses (incl. parametric types)
     ├── stores/
-    │   ├── modelStore.ts          # Zustand: eescode, initials, sol, conf, parse errors, solve result, console log
+    │   ├── modelStore.ts          # Zustand: eescode, initials, sol, conf, parse errors, solve result, parametric studies, user unit overrides
     │   └── uiStore.ts             # Zustand: theme, active tabs, panel visibility (persisted to localStorage)
     ├── languages/
     │   └── ees.ts                 # Monaco Monarch language definition for EES
     └── components/
         ├── Toolbar.tsx            # Top toolbar with all actions + keyboard shortcuts
         ├── CodeEditor.tsx         # Monaco editor wrapper with EES language + debounced parse
-        ├── VariableTable.tsx      # Variable table with search filter + editable Initial column
+        ├── VariableTable.tsx      # Variable table with units column (color-coded), imposed badges, filter modes
         ├── ArrayTable.tsx         # Spreadsheet view for array variables (var[i])
         ├── ConfigEditor.tsx       # Form-based coolsolve.conf editor (9 groups, 30+ fields)
         ├── DebugViewer.tsx        # Debug output file list + content viewer
         ├── Console.tsx            # Auto-scrolling console with color-coded log lines
         ├── ThermoDiagram.tsx      # Plotly thermo diagrams (T-s, P-h, h-s, T-h) with overlays + export
+        ├── ParametricStudy.tsx    # Parametric sweep: variable selector, range inputs, 1D/2D plots, results table
         ├── SplitPane.tsx          # Reusable resizable split-pane (horizontal/vertical)
         └── PlotlyChart.tsx        # Thin Plotly wrapper component
 ```
@@ -741,19 +767,33 @@ priority order.
 | nginx config | Reference reverse-proxy config with TLS, rate limiting, max body size |
 | Authentication | OAuth (GitHub/Google) for a multi-user hosted service; cookie sessions are sufficient for a public demo |
 
-### 14.3 Sensitivity Analysis (Phase 3)
+### 14.3 Sensitivity Analysis — Remaining Work
 
-A sweep facility that identifies imposed variables (variables appearing alone
-on one side of an equation, e.g. `T_in = 25`), allows defining a sweep range,
-and batch-solves the system:
+The core parametric sensitivity analysis feature is now implemented (see
+sections below). Remaining enhancements:
 
 | Item | Description |
 |------|-------------|
-| Sweep API | `POST /api/v1/sweep` — define input variable, range [min, max, steps], output variables; returns table of results |
-| Frontend form | Swept-variable selector, range inputs, output-variable checkboxes |
-| Plotly chart | Output variables vs. swept input; one line per output variable |
 | CSV export | Download sweep results as CSV |
-| 2D sweeps | Two swept variables → heatmap (future extension of Phase 3) |
+| Multi-output plots | Multiple output variables on the same 1D chart |
+| 3D surface plots | `plotly.js-basic-dist-min` → `plotly.js-dist-min` for 3D surfaces (currently using heatmap/contour) |
+| Progress bar | Visual progress bar during parametric study (currently shows text status) |
+| Cancel button | Abort a running parametric study via `POST /api/v1/parametric/cancel` |
+
+#### Implemented Features
+
+- **Imposed variable detection**: Parse endpoint detects `var = constant`
+  patterns and reports `isImposed`, `imposedValue` per variable
+- **Units column**: Variable table shows units with color coding — blue
+  (code-specified), green (inferred from CoolProp), orange (user-specified)
+- **Parametric sweep API**: `POST /api/v1/parametric` accepts 1 or 2 sweep
+  variables, runs grid with warm-starting in background thread, sends progress
+  via SSE, results via `GET /api/v1/parametric/result`
+- **Parametric UI**: Bottom panel "Parametric" tab with sweep variable
+  selectors, range inputs, 1D line plots and 2D contour/heatmap plots (Plotly),
+  results table with swept variables highlighted
+- **Bundle persistence**: Parametric study results are saved/loaded in ZIP
+  bundles (`parametric_studies.json`)
 
 ### 14.4 Thermodynamic Diagram Enhancements
 

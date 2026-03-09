@@ -29,6 +29,8 @@
 #include <condition_variable>
 #include <random>
 #include <set>
+#include <numeric>
+#include <algorithm>
 
 #ifdef COOLSOLVE_EMBEDDED_ASSETS
 #include "embedded_assets.h"
@@ -135,6 +137,10 @@ struct Session {
     std::mutex progressMutex;
     std::condition_variable progressCV;
     std::vector<std::string> progressEvents;
+    
+    // Last parametric study result (JSON string, protected by mutex)
+    std::mutex parametricMutex;
+    std::string lastParametricResult;
     
     // Save current state as snapshot (for Back button)
     void saveSnapshot() {
@@ -780,6 +786,36 @@ int startServer(const ServerOptions& options) {
                     // Non-fatal: inference failure shouldn't block parse results
                 }
                 
+                // Detect imposed variables: equations of the form `var = number`
+                // These are candidates for parametric sensitivity analysis.
+                std::set<std::string, CaseInsensitiveLess> imposedVars;
+                std::map<std::string, double, CaseInsensitiveLess> imposedValues;
+                for (const auto& eq : ir.getEquations()) {
+                    if (!eq.lhs || !eq.rhs) continue;
+                    // Check: LHS is a plain variable, RHS is a number (or -number)
+                    if (eq.lhs->is<Variable>()) {
+                        const auto& var = eq.lhs->as<Variable>();
+                        if (var.indices.empty()) {  // scalar only
+                            double val = 0.0;
+                            bool isImposed = false;
+                            if (eq.rhs->is<NumberLiteral>()) {
+                                val = eq.rhs->as<NumberLiteral>().value;
+                                isImposed = true;
+                            } else if (eq.rhs->is<UnaryOp>()) {
+                                const auto& uop = eq.rhs->as<UnaryOp>();
+                                if (uop.op == "-" && uop.operand && uop.operand->is<NumberLiteral>()) {
+                                    val = -uop.operand->as<NumberLiteral>().value;
+                                    isImposed = true;
+                                }
+                            }
+                            if (isImposed) {
+                                imposedVars.insert(var.name);
+                                imposedValues[var.name] = val;
+                            }
+                        }
+                    }
+                }
+                
                 // Extract model fluids from inference
                 std::set<std::string> fluidSet;
                 
@@ -790,6 +826,36 @@ int startServer(const ServerOptions& options) {
                         varObj["name"] = name;
                         varObj["units"] = info.units;
                         varObj["isArray"] = (name.find('[') != std::string::npos);
+                        // Unit source: "code" if from EES source, "inferred" if from
+                        // thermodynamic inference, empty otherwise
+                        if (!info.units.empty()) {
+                            varObj["unitSource"] = "code";
+                        } else if (!info.inferredProperty.empty()) {
+                            // Infer units from thermodynamic property type
+                            std::string inferred;
+                            if (info.inferredProperty == "T") inferred = "[°C]";
+                            else if (info.inferredProperty == "P") inferred = "[Pa]";
+                            else if (info.inferredProperty == "H") inferred = "[J/kg]";
+                            else if (info.inferredProperty == "S") inferred = "[J/(kg·K)]";
+                            else if (info.inferredProperty == "D") inferred = "[kg/m³]";
+                            else if (info.inferredProperty == "Q") inferred = "[-]";
+                            else if (info.inferredProperty == "V") inferred = "[m³/kg]";
+                            else if (info.inferredProperty == "C") inferred = "[J/(kg·K)]";
+                            else if (info.inferredProperty == "L") inferred = "[W/(m·K)]";
+                            if (!inferred.empty()) {
+                                varObj["units"] = inferred;
+                                varObj["unitSource"] = "inferred";
+                            } else {
+                                varObj["unitSource"] = "";
+                            }
+                        } else {
+                            varObj["unitSource"] = "";
+                        }
+                        // Is this variable directly imposed (var = constant)?
+                        varObj["isImposed"] = imposedVars.count(name) > 0;
+                        if (imposedVars.count(name) > 0) {
+                            varObj["imposedValue"] = imposedValues[name];
+                        }
                         variables.push_back(varObj);
                         if (!info.inferredFluid.empty()) {
                             fluidSet.insert(info.inferredFluid);
@@ -1147,6 +1213,455 @@ int startServer(const ServerOptions& options) {
     });
     
     // ================================================================
+    // Parametric study endpoint (synchronous — runs all grid points)
+    // ================================================================
+    svr.Post("/api/v1/parametric", [&](const httplib::Request& req, httplib::Response& res) {
+        auto sessionPtr = getSession(req, res);
+        auto& session = *sessionPtr;
+        
+        if (session.solving.load()) {
+            res.status = 409;
+            json j = {{"error", "A solve is already in progress"}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        
+        try {
+            auto body = json::parse(req.body);
+            
+            // Required parameters
+            std::string eescode = body.value("eescode", session.eescodeContent);
+            std::string initials = body.value("initials", session.initialsContent);
+            std::string confContent = body.value("conf", session.confContent);
+            
+            // Options
+            int timeoutPerPoint = body.value("timeout", 0); // seconds, 0 = no timeout
+            bool updateGuesses = body.value("updateGuesses", false);
+
+            // Swept variable(s): array of {name, values[]}
+            auto sweepVars = body.at("sweepVariables");
+            if (sweepVars.size() < 1 || sweepVars.size() > 2) {
+                res.status = 400;
+                json j = {{"error", "Provide 1 or 2 sweep variables"}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+            
+            struct SweepVar {
+                std::string name;
+                std::vector<double> values;
+            };
+            std::vector<SweepVar> sweeps;
+            for (const auto& sv : sweepVars) {
+                SweepVar s;
+                s.name = sv.at("name").get<std::string>();
+                s.values = sv.at("values").get<std::vector<double>>();
+                if (s.values.empty()) {
+                    res.status = 400;
+                    json j = {{"error", "Sweep variable '" + s.name + "' has no values"}};
+                    res.set_content(j.dump(), "application/json");
+                    return;
+                }
+                sweeps.push_back(s);
+            }
+            
+            // Build grid: for 1D just the values, for 2D cartesian product
+            struct GridPoint {
+                std::vector<std::pair<std::string, double>> overrides;
+            };
+            std::vector<GridPoint> grid;
+            
+            if (sweeps.size() == 1) {
+                for (double v : sweeps[0].values) {
+                    GridPoint gp;
+                    gp.overrides.push_back({sweeps[0].name, v});
+                    grid.push_back(gp);
+                }
+            } else {
+                // 2D: iterate var1 as outer, var2 as inner
+                for (double v1 : sweeps[0].values) {
+                    for (double v2 : sweeps[1].values) {
+                        GridPoint gp;
+                        gp.overrides.push_back({sweeps[0].name, v1});
+                        gp.overrides.push_back({sweeps[1].name, v2});
+                        grid.push_back(gp);
+                    }
+                }
+            }
+            
+            // For each grid point, we modify the eescode by replacing the
+            // imposed equation "var = old_value" with "var = new_value".
+            // This is done via regex replacement in the source text.
+            
+            // ---- Spiral reordering when updateGuesses is enabled ----
+            // Strategy: start from the grid point closest to the original
+            // imposed values, then expand outward (alternating sides for 1D,
+            // BFS-by-distance for 2D).  This ensures each successive point
+            // is close to an already-solved neighbour, so warm-starting from
+            // the previous solution is effective.
+            if (updateGuesses) {
+                // Parse the original initials to find centre values
+                auto parseInit = [](const std::string& text) {
+                    std::map<std::string, double> m;
+                    std::istringstream iss(text);
+                    std::string line;
+                    while (std::getline(iss, line)) {
+                        auto eq = line.find('=');
+                        if (eq == std::string::npos) continue;
+                        std::string name = line.substr(0, eq);
+                        name.erase(0, name.find_first_not_of(" \t"));
+                        name.erase(name.find_last_not_of(" \t") + 1);
+                        if (!name.empty() && name.back() == '$') continue;
+                        std::string vs = line.substr(eq + 1);
+                        auto hash = vs.find('#'); if (hash != std::string::npos) vs = vs.substr(0, hash);
+                        auto sq = vs.find('\''); if (sq != std::string::npos) continue;
+                        vs.erase(0, vs.find_first_not_of(" \t"));
+                        vs.erase(vs.find_last_not_of(" \t") + 1);
+                        try { m[name] = std::stod(vs); } catch (...) {}
+                    }
+                    return m;
+                };
+                auto initMap = parseInit(initials);
+
+                if (sweeps.size() == 1) {
+                    // 1D spiral: find index closest to initial value, then alternate L/R
+                    double centre = 0.0;
+                    auto it = initMap.find(sweeps[0].name);
+                    if (it != initMap.end()) centre = it->second;
+                    else centre = (sweeps[0].values.front() + sweeps[0].values.back()) / 2.0;
+
+                    // grid is already sorted (linspace).  Find closest index.
+                    int bestIdx = 0;
+                    double bestDist = std::abs(grid[0].overrides[0].second - centre);
+                    for (int k = 1; k < (int)grid.size(); ++k) {
+                        double d = std::abs(grid[k].overrides[0].second - centre);
+                        if (d < bestDist) { bestDist = d; bestIdx = k; }
+                    }
+                    std::vector<GridPoint> reordered;
+                    reordered.push_back(grid[bestIdx]);
+                    int lo = bestIdx - 1, hi = bestIdx + 1;
+                    while (lo >= 0 || hi < (int)grid.size()) {
+                        if (lo >= 0) reordered.push_back(grid[lo--]);
+                        if (hi < (int)grid.size()) reordered.push_back(grid[hi++]);
+                    }
+                    grid = std::move(reordered);
+                } else {
+                    // 2D spiral: BFS ordered by Euclidean distance from centre
+                    double c0 = 0.0, c1 = 0.0;
+                    auto it0 = initMap.find(sweeps[0].name);
+                    if (it0 != initMap.end()) c0 = it0->second;
+                    else c0 = (sweeps[0].values.front() + sweeps[0].values.back()) / 2.0;
+                    auto it1 = initMap.find(sweeps[1].name);
+                    if (it1 != initMap.end()) c1 = it1->second;
+                    else c1 = (sweeps[1].values.front() + sweeps[1].values.back()) / 2.0;
+
+                    // Normalise axes so range spans [0,1] for distance calc
+                    double range0 = sweeps[0].values.back() - sweeps[0].values.front();
+                    double range1 = sweeps[1].values.back() - sweeps[1].values.front();
+                    if (range0 == 0.0) range0 = 1.0;
+                    if (range1 == 0.0) range1 = 1.0;
+
+                    // Build index list sorted by distance to centre
+                    std::vector<int> indices(grid.size());
+                    std::iota(indices.begin(), indices.end(), 0);
+                    std::sort(indices.begin(), indices.end(), [&](int a, int b) {
+                        double da0 = (grid[a].overrides[0].second - c0) / range0;
+                        double da1 = (grid[a].overrides[1].second - c1) / range1;
+                        double db0 = (grid[b].overrides[0].second - c0) / range0;
+                        double db1 = (grid[b].overrides[1].second - c1) / range1;
+                        return (da0*da0 + da1*da1) < (db0*db0 + db1*db1);
+                    });
+                    std::vector<GridPoint> reordered;
+                    reordered.reserve(grid.size());
+                    for (int idx : indices) reordered.push_back(grid[idx]);
+                    grid = std::move(reordered);
+                }
+            }
+            
+            // Set up temp dir and solver options
+            auto tmpDir = session.tempDir / "parametric";
+            fs::create_directories(tmpDir);
+            
+            auto tmpEes = tmpDir / "model.eescode";
+            auto tmpConf = tmpDir / "coolsolve.conf";
+            
+            if (!confContent.empty()) {
+                writeStringToFile(tmpConf.string(), confContent);
+            }
+            
+            // Set solving flag so UI shows progress
+            session.solving.store(true);
+            session.solveFinished.store(false);
+            session.cancelRequested.store(false);
+            {
+                std::lock_guard<std::mutex> lock(session.progressMutex);
+                session.progressEvents.clear();
+            }
+            
+            // Launch parametric study in background thread
+            std::thread([sessionPtr, eescode, initials, confContent, 
+                         grid, sweeps, tmpDir, tmpEes, tmpConf,
+                         timeoutPerPoint, updateGuesses]() {
+                auto& session = *sessionPtr;
+                
+                session.addProgressEvent("{\"type\":\"start\",\"message\":\"Parametric study started\"}");
+                
+                int totalPoints = static_cast<int>(grid.size());
+                json allResults = json::array();
+                int successCount = 0;
+                int failCount = 0;
+                
+                // Store the last successful solution to warm-start next point
+                std::map<std::string, double, CaseInsensitiveLess> lastSolution;
+                
+                // Parse initials into a map for warm-starting
+                auto parseInitialsStr = [](const std::string& text) {
+                    std::map<std::string, double> map;
+                    std::istringstream iss(text);
+                    std::string line;
+                    while (std::getline(iss, line)) {
+                        auto eq = line.find('=');
+                        if (eq == std::string::npos) continue;
+                        std::string name = line.substr(0, eq);
+                        // Trim
+                        name.erase(0, name.find_first_not_of(" \t"));
+                        name.erase(name.find_last_not_of(" \t") + 1);
+                        // Skip string variables (names ending with $)
+                        if (!name.empty() && name.back() == '$') continue;
+                        std::string valStr = line.substr(eq + 1);
+                        auto hash = valStr.find('#');
+                        if (hash != std::string::npos) valStr = valStr.substr(0, hash);
+                        // Remove units annotation like "[kJ/kg]" or quotes
+                        auto quote = valStr.find('"');
+                        if (quote != std::string::npos) valStr = valStr.substr(0, quote);
+                        auto sq = valStr.find('\'');
+                        if (sq != std::string::npos) continue; // skip string vars
+                        valStr.erase(0, valStr.find_first_not_of(" \t"));
+                        valStr.erase(valStr.find_last_not_of(" \t") + 1);
+                        try {
+                            map[name] = std::stod(valStr);
+                        } catch (...) {}
+                    }
+                    return map;
+                };
+                
+                auto baseInitials = parseInitialsStr(initials);
+                
+                // Helper: build initials string from map
+                auto buildInitials = [](const std::map<std::string, double>& map) {
+                    std::ostringstream oss;
+                    oss << std::scientific << std::setprecision(12);
+                    for (const auto& [name, val] : map) {
+                        oss << name << " = " << val << "\n";
+                    }
+                    return oss.str();
+                };
+                
+                // Helper: replace imposed value in eescode
+                // Uses case-insensitive regex matching for variable name.
+                // We use regex_search + manual string surgery instead of
+                // regex_replace to avoid backreference ambiguity (e.g. "$31"
+                // would be interpreted as group 31 instead of group 3 + "1").
+                auto replaceImposedValue = [](const std::string& source, 
+                                              const std::string& varName, 
+                                              double newValue) -> std::string {
+                    std::string escapedName;
+                    for (char c : varName) {
+                        if (c == '[' || c == ']' || c == '(' || c == ')' || 
+                            c == '.' || c == '+' || c == '*' || c == '?') {
+                            escapedName += '\\';
+                        }
+                        escapedName += c;
+                    }
+                    std::string pattern = "(^|\\n)(\\s*)" + escapedName + 
+                                          "(\\s*=\\s*)-?[0-9]+\\.?[0-9]*([eE][+-]?[0-9]+)?";
+                    std::regex re(pattern, std::regex_constants::icase);
+                    
+                    std::ostringstream valOss;
+                    valOss << std::setprecision(15) << newValue;
+                    std::string valStr = valOss.str();
+                    
+                    // Manual match-and-replace to avoid $N ambiguity
+                    std::string result;
+                    auto it = source.cbegin();
+                    std::smatch m;
+                    while (std::regex_search(it, source.cend(), m, re)) {
+                        // Append text before match
+                        result.append(it, it + m.position(0));
+                        // Rebuild the matched region with the new value
+                        result += m[1].str() + m[2].str() + varName + m[3].str() + valStr;
+                        it += m.position(0) + m[0].length();
+                    }
+                    // Append remainder
+                    result.append(it, source.cend());
+                    return result;
+                };
+                
+                for (int i = 0; i < totalPoints; ++i) {
+                    if (session.cancelRequested.load()) {
+                        session.addProgressEvent("{\"type\":\"progress\",\"message\":\"Parametric study cancelled\"}");
+                        break;
+                    }
+                    
+                    const auto& gp = grid[i];
+                    
+                    // Progress event
+                    {
+                        json evt;
+                        evt["type"] = "progress";
+                        std::ostringstream msg;
+                        msg << "Point " << (i+1) << "/" << totalPoints << ": ";
+                        for (size_t j = 0; j < gp.overrides.size(); ++j) {
+                            if (j > 0) msg << ", ";
+                            msg << gp.overrides[j].first << " = " << gp.overrides[j].second;
+                        }
+                        evt["message"] = msg.str();
+                        session.addProgressEvent(evt.dump());
+                    }
+                    
+                    // Modify the eescode: replace each imposed value
+                    std::string modifiedEescode = eescode;
+                    for (const auto& [varName, newVal] : gp.overrides) {
+                        modifiedEescode = replaceImposedValue(modifiedEescode, varName, newVal);
+                    }
+                    
+                    // Write modified eescode
+                    writeStringToFile(tmpEes.string(), modifiedEescode);
+                    
+                    // Build initial guesses
+                    std::map<std::string, double, CaseInsensitiveLess> currentInitials(baseInitials.begin(), baseInitials.end());
+                    if (updateGuesses && !lastSolution.empty()) {
+                        // Warm-start from last solution (only when updateGuesses is on)
+                        for (const auto& [name, val] : lastSolution) {
+                            currentInitials[name] = val;
+                        }
+                    }
+                    // Override sweep variables in initials too
+                    for (const auto& [varName, newVal] : gp.overrides) {
+                        currentInitials[varName] = newVal;
+                    }
+                    
+                    // Build initials string (skip string variables ending with $)
+                    std::ostringstream initOss;
+                    initOss << std::scientific << std::setprecision(12);
+                    for (const auto& [name, val] : currentInitials) {
+                        if (!name.empty() && name.back() == '$') continue;
+                        initOss << name << " = " << val << "\n";
+                    }
+                    std::string initialsStr = initOss.str();
+                    auto tmpInit = tmpDir / "model.initials";
+                    writeStringToFile(tmpInit.string(), initialsStr);
+                    
+                    // Run solver
+                    CoolSolveRunner runner(tmpEes.string());
+                    SolverOptions solverOpts;
+                    solverOpts.verbose = false;
+                    if (!confContent.empty() && fs::exists(tmpConf)) {
+                        loadSolverOptionsFromFile(tmpConf.string(), solverOpts);
+                    }
+                    solverOpts.cancelToken = &session.cancelRequested;
+                    if (timeoutPerPoint > 0) {
+                        solverOpts.timeoutSeconds = timeoutPerPoint;
+                    }
+                    applyCoolPropConfig(solverOpts.coolpropConfig);
+                    
+                    bool success = runner.run(solverOpts, false);
+                    
+                    json pointResult;
+                    pointResult["index"] = i;
+                    pointResult["success"] = success;
+                    
+                    // Store override values
+                    json overrides = json::object();
+                    for (const auto& [varName, newVal] : gp.overrides) {
+                        overrides[varName] = newVal;
+                    }
+                    pointResult["overrides"] = overrides;
+                    
+                    if (success) {
+                        successCount++;
+                        json vars = json::object();
+                        for (const auto& [name, val] : runner.getSolveResult().variables) {
+                            vars[name] = val;
+                        }
+                        pointResult["variables"] = vars;
+                        lastSolution = runner.getSolveResult().variables;
+                    } else {
+                        failCount++;
+                        pointResult["errorMessage"] = runner.getSolveResult().errorMessage;
+                        // Do NOT update lastSolution from failed runs — keep the
+                        // last successful solution so the next point has good guesses.
+                    }
+                    
+                    allResults.push_back(pointResult);
+                }
+                
+                // Build final response
+                json response;
+                response["success"] = (failCount == 0);
+                response["totalPoints"] = totalPoints;
+                response["successCount"] = successCount;
+                response["failCount"] = failCount;
+                response["results"] = allResults;
+                
+                // Sweep variable metadata
+                json sweepMeta = json::array();
+                for (const auto& s : sweeps) {
+                    json sm;
+                    sm["name"] = s.name;
+                    sm["values"] = s.values;
+                    sweepMeta.push_back(sm);
+                }
+                response["sweepVariables"] = sweepMeta;
+                
+                // Send final event
+                json finalEvt;
+                finalEvt["type"] = failCount == 0 ? "done" : "error";
+                finalEvt["message"] = "Parametric study completed: " + 
+                    std::to_string(successCount) + "/" + std::to_string(totalPoints) + " points solved";
+                finalEvt["result"] = response;
+                session.addProgressEvent(finalEvt.dump());
+                
+                // Store parametric result in session
+                {
+                    std::lock_guard<std::mutex> lock(session.parametricMutex);
+                    session.lastParametricResult = response.dump();
+                }
+                
+                session.solving.store(false);
+                session.solveFinished.store(true);
+                session.progressCV.notify_all();
+                
+            }).detach();
+            
+            json j = {{"status", "started"}, {"totalPoints", static_cast<int>(grid.size())}};
+            res.set_content(j.dump(), "application/json");
+            
+        } catch (const std::exception& e) {
+            session.solving.store(false);
+            session.solveFinished.store(true);
+            res.status = 400;
+            json j = {{"error", e.what()}};
+            res.set_content(j.dump(), "application/json");
+        }
+    });
+    
+    // ================================================================
+    // Get last parametric study result
+    // ================================================================
+    svr.Get("/api/v1/parametric/result", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        std::lock_guard<std::mutex> lock(session.parametricMutex);
+        if (session.lastParametricResult.empty()) {
+            res.status = 404;
+            json j = {{"error", "No parametric study result available"}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        res.set_content(session.lastParametricResult, "application/json");
+    });
+    
+    // ================================================================
     // Update guesses: copy .sol -> .initials
     // ================================================================
     svr.Post("/api/v1/update-guesses", [&](const httplib::Request& req, httplib::Response& res) {
@@ -1466,6 +1981,14 @@ int startServer(const ServerOptions& options) {
             }
         }
         
+        // Include parametric study results if present
+        {
+            std::lock_guard<std::mutex> lock(session.parametricMutex);
+            if (!session.lastParametricResult.empty()) {
+                files.push_back({"parametric_studies.json", session.lastParametricResult});
+            }
+        }
+        
         if (files.empty()) {
             res.status = 400;
             json j = {{"error", "No files to bundle"}};
@@ -1565,6 +2088,10 @@ int startServer(const ServerOptions& options) {
                 fileList.push_back(zname);
             } else if (zname == "coolsolve.conf" || endsWith(zname, ".conf")) {
                 session.confContent = zcontent;
+                fileList.push_back(zname);
+            } else if (zname == "parametric_studies.json") {
+                std::lock_guard<std::mutex> lock(session.parametricMutex);
+                session.lastParametricResult = zcontent;
                 fileList.push_back(zname);
             }
         }

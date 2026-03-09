@@ -15,7 +15,10 @@ export interface ParseError {
 export interface VariableInfo {
   name: string;
   units: string;
+  unitSource: 'code' | 'inferred' | '';  // Source of unit annotation
   isArray: boolean;
+  isImposed: boolean;        // True if variable = constant in the code
+  imposedValue?: number;     // The imposed constant value (if isImposed)
 }
 
 export interface ParseResponse {
@@ -187,4 +190,48 @@ export interface SaturationResponse {
   vapor: SaturationData;
   nPoints: number;
   computeTime_ms: number;
+}
+
+// ============================================================================
+// Parametric Study Types
+// ============================================================================
+
+/** A sweep variable definition for parametric study */
+export interface SweepVariable {
+  name: string;
+  values: number[];
+}
+
+/** One grid point result from a parametric study */
+export interface ParametricGridPoint {
+  index: number;
+  success: boolean;
+  overrides: Record<string, number>;
+  variables?: Record<string, number>;
+  errorMessage?: string;
+}
+
+/** Full parametric study response */
+export interface ParametricStudyResult {
+  success: boolean;
+  totalPoints: number;
+  successCount: number;
+  failCount: number;
+  sweepVariables: SweepVariable[];
+  results: ParametricGridPoint[];
+}
+
+/** Saved parametric study (for persistence in bundle and UI state) */
+export interface SavedParametricStudy {
+  id: string;
+  name: string;
+  sweepVariables: SweepVariable[];
+  result: ParametricStudyResult;
+  timestamp: number;
+}
+
+/** User-defined unit override */
+export interface UserUnitOverride {
+  variableName: string;
+  units: string;
 }

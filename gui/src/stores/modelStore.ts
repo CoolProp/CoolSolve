@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { SolveResponse, ParseError, SolvedVariable } from '../api/types';
+import type { SolveResponse, ParseError, SolvedVariable, VariableInfo, SavedParametricStudy, UserUnitOverride } from '../api/types';
 
 interface ModelState {
   // File state
@@ -17,11 +17,18 @@ interface ModelState {
   equationCount: number;
   variableCount: number;
   isSquare: boolean;
+  parsedVariables: VariableInfo[];  // Variable info from last parse (units, imposed, etc.)
 
   // Solve state
   solving: boolean;
   lastResult: SolveResponse | null;
   solvedVariables: SolvedVariable[];
+
+  // Parametric studies (saved results)
+  parametricStudies: SavedParametricStudy[];
+
+  // User unit overrides (GUI-specified units)
+  userUnitOverrides: UserUnitOverride[];
 
   // Console log
   consoleLines: string[];
@@ -33,6 +40,7 @@ interface ModelState {
   setFilePath: (path: string) => void;
   setModelName: (name: string) => void;
   setParseResult: (errors: ParseError[], eqCount: number, varCount: number, isSquare: boolean) => void;
+  setParsedVariables: (vars: VariableInfo[]) => void;
   setSolving: (solving: boolean) => void;
   setSolveResult: (result: SolveResponse) => void;
   setSolvedVariables: (vars: SolvedVariable[]) => void;
@@ -42,6 +50,11 @@ interface ModelState {
   clearConsole: () => void;
   loadFile: (path: string, eescode: string, initials: string, sol: string, conf: string, modelName?: string) => void;
   clearModel: () => void;
+  addParametricStudy: (study: SavedParametricStudy) => void;
+  removeParametricStudy: (id: string) => void;
+  setParametricStudies: (studies: SavedParametricStudy[]) => void;
+  setUserUnitOverrides: (overrides: UserUnitOverride[]) => void;
+  setUserUnit: (variableName: string, units: string) => void;
 }
 
 export const useModelStore = create<ModelState>((set) => ({
@@ -58,10 +71,14 @@ export const useModelStore = create<ModelState>((set) => ({
   equationCount: 0,
   variableCount: 0,
   isSquare: true,
+  parsedVariables: [],
 
   solving: false,
   lastResult: null,
   solvedVariables: [],
+
+  parametricStudies: [],
+  userUnitOverrides: [],
 
   consoleLines: [],
 
@@ -72,6 +89,7 @@ export const useModelStore = create<ModelState>((set) => ({
   setModelName: (name) => set({ modelName: name }),
   setParseResult: (errors, eqCount, varCount, isSquare) =>
     set({ parseErrors: errors, equationCount: eqCount, variableCount: varCount, isSquare }),
+  setParsedVariables: (vars) => set({ parsedVariables: vars }),
   setSolving: (solving) => set({ solving }),
   setSolveResult: (result) => set({ lastResult: result }),
   setSolvedVariables: (vars) => set({ solvedVariables: vars }),
@@ -81,7 +99,19 @@ export const useModelStore = create<ModelState>((set) => ({
     set((state) => ({ consoleLines: [...state.consoleLines, line] })),
   clearConsole: () => set({ consoleLines: [] }),
   loadFile: (path, eescode, initials, sol, conf, modelName) =>
-    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '' }),
+    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', parametricStudies: [], parsedVariables: [] }),
   clearModel: () =>
-    set({ filePath: '', modelName: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true }),
+    set({ filePath: '', modelName: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], userUnitOverrides: [] }),
+  addParametricStudy: (study) =>
+    set((state) => ({ parametricStudies: [...state.parametricStudies, study] })),
+  removeParametricStudy: (id) =>
+    set((state) => ({ parametricStudies: state.parametricStudies.filter((s) => s.id !== id) })),
+  setParametricStudies: (studies) => set({ parametricStudies: studies }),
+  setUserUnitOverrides: (overrides) => set({ userUnitOverrides: overrides }),
+  setUserUnit: (variableName, units) =>
+    set((state) => {
+      const existing = state.userUnitOverrides.filter((o) => o.variableName !== variableName);
+      if (units) existing.push({ variableName, units });
+      return { userUnitOverrides: existing };
+    }),
 }));

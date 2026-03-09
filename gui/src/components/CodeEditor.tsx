@@ -137,17 +137,14 @@ export default function CodeEditor() {
     editor.focus();
   };
 
-  // Debounced parse on change
-  const handleChange = useCallback(
-    (value: string | undefined) => {
-      const code = value || '';
-      setEescode(code);
-
-      // Debounced parse
+  // Debounced parse (does not call setEescode — call separately when needed)
+  const doParse = useCallback(
+    (code: string) => {
       if (parseTimeoutRef.current) clearTimeout(parseTimeoutRef.current);
       parseTimeoutRef.current = setTimeout(async () => {
         if (!code.trim()) {
           setParseResult([], 0, 0, true);
+          useModelStore.getState().setParsedVariables([]);
           return;
         }
         try {
@@ -158,6 +155,11 @@ export default function CodeEditor() {
             result.variableCount || 0,
             result.isSquare ?? true
           );
+
+          // Store parsed variable info (units, imposed flags) for the VariableTable
+          if (result.variables) {
+            useModelStore.getState().setParsedVariables(result.variables);
+          }
 
           // Set Monaco markers for errors
           if (editorRef.current) {
@@ -182,16 +184,27 @@ export default function CodeEditor() {
         }
       }, 500);
     },
-    [setEescode, setParseResult]
+    [setParseResult]
   );
 
-  // Initial parse when eescode changes externally (e.g., file load)
+  // Monaco onChange handler — user typing
+  const handleChange = useCallback(
+    (value: string | undefined) => {
+      const code = value || '';
+      setEescode(code);
+      doParse(code);
+    },
+    [setEescode, doParse]
+  );
+
+  // Re-parse when eescode changes externally (file load, examples, back button, etc.)
+  // This also handles the initial mount.  The debounce in doParse prevents double-work
+  // when the change originates from handleChange (same code → same debounced timer).
   useEffect(() => {
     if (eescode) {
-      handleChange(eescode);
+      doParse(eescode);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [eescode, doParse]);
 
   return (
     <div className="editor-pane">

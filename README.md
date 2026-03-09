@@ -768,9 +768,6 @@ For new equation systems, use CoolProp-computed values for initial guesses to en
 ## Future Work
 
 The next steps in the implementation plan include:
-- **Broyden quasi-Newton updates**: Fewer CoolProp calls per solve via Jacobian reuse
-- **Trust Region / LM improvements**: Raise solver success rates for stiff/near-singular blocks
-- **Superancillary fast evaluation** for BisectionND: Use polynomial saturation fits for cheap intermediate evaluations
 - **KINSOL (SUNDIALS) integration**: For large-scale nonlinear systems requiring robust preconditioning
 
 See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.

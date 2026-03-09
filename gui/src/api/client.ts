@@ -12,6 +12,8 @@ import type {
   InferredVariablesResponse,
   CoolPropFluidsResponse,
   SaturationResponse,
+  ParametricStudyResult,
+  SweepVariable,
 } from './types';
 
 const API_BASE = '/api/v1';
@@ -155,4 +157,22 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ fluid, nPoints: nPoints || 200 }),
     }),
+
+  // Parametric study (async — returns immediately, results come via SSE)
+  runParametricStudy: (
+    sweepVariables: SweepVariable[],
+    options?: { timeout?: number; updateGuesses?: boolean },
+  ) =>
+    request<{ status: string; totalPoints: number }>('/parametric', {
+      method: 'POST',
+      body: JSON.stringify({
+        sweepVariables,
+        timeout: options?.timeout ?? 0,
+        updateGuesses: options?.updateGuesses ?? false,
+      }),
+    }),
+
+  // Get last parametric study result
+  getParametricResult: () =>
+    request<ParametricStudyResult>('/parametric/result'),
 };
