@@ -237,11 +237,13 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             else if (key == "lsRelaxedTolerance") options.lsRelaxedTolerance = std::stod(val);
             else if (key == "lsNonMonotoneMemory") options.lsNonMonotoneMemory = std::stoi(val);
             else if (key == "enableScaling") options.enableScaling = parseBool(val);
+            else if (key == "broydenRecomputeInterval") options.broydenRecomputeInterval = std::stoi(val);
             else if (key == "trInitialRadius") options.trInitialRadius = std::stod(val);
             else if (key == "trMaxRadius") options.trMaxRadius = std::stod(val);
             else if (key == "trEta") options.trEta = std::stod(val);
             else if (key == "trShrinkFactor") options.trShrinkFactor = std::stod(val);
             else if (key == "trGrowFactor") options.trGrowFactor = std::stod(val);
+            else if (key == "trAdaptiveRadius") options.trAdaptiveRadius = parseBool(val);
             else if (key == "partitionedMaxIterations") options.partitionedMaxIterations = std::stoi(val);
             else if (key == "partitionedRelaxation") options.partitionedRelaxation = std::stod(val);
             else if (key == "partitionedMinDiagonal") options.partitionedMinDiagonal = std::stod(val);
@@ -259,6 +261,8 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             else if (key == "lmLambdaDecrease") options.lmLambdaDecrease = std::stod(val);
             else if (key == "lmMinLambda") options.lmMinLambda = std::stod(val);
             else if (key == "lmMaxLambda") options.lmMaxLambda = std::stod(val);
+            else if (key == "lmNielsenUpdate") options.lmNielsenUpdate = parseBool(val);
+            else if (key == "lmGeodesicAcceleration") options.lmGeodesicAcceleration = parseBool(val);
             // Solver pipeline configuration
             else if (key == "solverPipeline") {
                 // Parse comma-separated list of solver names

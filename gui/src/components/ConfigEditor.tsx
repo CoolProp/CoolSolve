@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback } from 'react';
 import { useModelStore } from '../stores/modelStore';
 import { api } from '../api/client';
 import { RotateCcw, Info } from 'lucide-react';
+import Tooltip from './Tooltip';
 
 interface ConfigField {
   key: string;
@@ -194,6 +195,14 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
     fields: [
       { key: 'enableScaling', label: 'Enable scaling', type: 'boolean', defaultVal: 'true',
         description: 'Automatic variable scaling for better Jacobian conditioning. Recommended for models mixing variables of very different magnitudes (e.g. Pa and m³/kg).' },
+      { key: 'broydenRecomputeInterval', label: 'Broyden interval', type: 'number', defaultVal: '0',
+        description:
+          'Broyden quasi-Newton enhancement for the Newton solver. '
+          + 'When > 0, the Newton solver computes a full Jacobian every K iterations '
+          + 'and uses Broyden rank-1 updates in between, saving expensive Jacobian evaluations. '
+          + 'If the Broyden approximation fails line search, a full Jacobian is recomputed automatically. '
+          + '0 = disabled (classic full-Jacobian Newton, default). '
+          + '5 = recompute every 5 iterations (good starting point for large CoolProp models).' },
     ],
   },
   {
@@ -209,6 +218,12 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
         description: 'Multiply trust radius by this factor when a step is rejected.' },
       { key: 'trGrowFactor', label: 'Grow factor', type: 'number', defaultVal: '2.0',
         description: 'Multiply trust radius by this factor when a step is accepted with ρ ≥ 0.9.' },
+      { key: 'trAdaptiveRadius', label: 'Adaptive radius', type: 'boolean', defaultVal: 'true',
+        description:
+          'When true, the initial trust radius is set from the Cauchy step norm on the first iteration '
+          + 'instead of using the fixed trInitialRadius. This scales the trust region to the problem '
+          + 'geometry automatically. Also enables smoother rho-based radius adaptation '
+          + 'and gradient-based recovery after consecutive rejections. Recommended for most models.' },
     ],
   },
   {
@@ -224,6 +239,18 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
         description: 'Floor for the damping parameter.' },
       { key: 'lmMaxLambda', label: 'Max λ', type: 'number', defaultVal: '1e8',
         description: 'Ceiling for the damping parameter. If λ exceeds this, the solver gives up.' },
+      { key: 'lmNielsenUpdate', label: 'Nielsen update', type: 'boolean', defaultVal: 'true',
+        description:
+          'Nielsen\'s smooth lambda adaptation (Madsen et al. 2004). '
+          + 'Uses λ = λ × max(1/3, 1 − (2ρ−1)³) on acceptance and λ = λ × ν with ν doubling '
+          + 'on consecutive rejections. Provides smoother, faster-converging lambda transitions '
+          + 'than the legacy step-wise increase/decrease. Recommended.' },
+      { key: 'lmGeodesicAcceleration', label: 'Geodesic accel.', type: 'boolean', defaultVal: 'true',
+        description:
+          'Geodesic acceleration (Transtrum & Sethna 2012). Adds a second-order correction '
+          + 'to the LM step by evaluating the directional second derivative of F along the velocity step. '
+          + 'Costs 1 extra residual evaluation per iteration but can halve iterations on curved problems. '
+          + 'Automatically disabled when the acceleration term dominates the velocity.' },
     ],
   },
   {
@@ -507,10 +534,9 @@ export default function ConfigEditor() {
                         <span className="config-field-label">
                           {field.label}
                           {field.description && (
-                            <span className="config-tooltip-wrap">
+                            <Tooltip content={field.description}>
                               <Info size={12} className="config-info-icon" />
-                              <span className="config-tooltip">{field.description}</span>
-                            </span>
+                            </Tooltip>
                           )}
                         </span>
                         <span className="config-field-default">default: {field.defaultVal}</span>

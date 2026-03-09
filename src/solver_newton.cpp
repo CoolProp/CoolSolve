@@ -1,6 +1,7 @@
 /**
  * @file solver_newton.cpp
- * @brief Newton solver with non-monotone backtracking line search.
+ * @brief Newton solver with non-monotone backtracking line search and optional
+ *        Broyden quasi-Newton Jacobian reuse.
  *
  * Uses the Grippo-Lampariello-Lucidi (1986) non-monotone line search:
  * instead of requiring strict decrease at every step (standard Armijo),
@@ -8,6 +9,12 @@
  * iterations.  This helps escape narrow curved valleys and saddle points
  * that trap monotone methods.  When M=1, behaviour is identical to the
  * classic monotone Armijo line search.
+ *
+ * When broydenRecomputeInterval > 0, the full Jacobian is computed only
+ * every K iterations; intermediate iterations use a Broyden Type-I rank-1
+ * update (Broyden 1965), saving O(n) CoolProp evaluations per iteration.
+ * If a Broyden step fails the line search, the full Jacobian is
+ * automatically recomputed and the step retried.
  */
 #include "coolsolve/solver.h"
 #include "coolsolve/solver_common.h"
@@ -100,6 +107,19 @@ SolverStatus NewtonSolver::solve(Problem& problem,
     // Non-monotone merit history (Grippo et al. 1986)
     NonMonotoneHistory meritHistory(options.lsNonMonotoneMemory);
 
+    // --- Broyden quasi-Newton state ---
+    const int broydenK = options.broydenRecomputeInterval;
+    const bool useBroyden = (broydenK > 0 && n > 1);
+    Eigen::MatrixXd B;            // Broyden Jacobian approximation (scaled coords)
+    Eigen::VectorXd F_prev;       // Previous residual (for rank-1 update)
+    Eigen::VectorXd y_prev;       // Previous iterate in scaled coords
+    int itersSinceFullJ = 0;      // Count iterations since last full Jacobian
+    bool forceFullJacobian = false; // Retry flag when Broyden step fails
+
+    if (useBroyden && options.verbose) {
+        std::cout << "Newton: Broyden recompute interval K=" << broydenK << std::endl;
+    }
+
     for (int iter = 0; iter < options.maxIterations; ++iter) {
         if (TimeoutGuard::hasTimedOut()) {
             if (detailedError) *detailedError = "Solver timed out";
@@ -110,13 +130,45 @@ SolverStatus NewtonSolver::solve(Problem& problem,
             return SolverStatus::MaxIterations;
         }
 
-        // Evaluate F(x), J(x) in original coordinates, then scale Jacobian
+        // --- Evaluate F and J (full or Broyden update) ---
+        bool fullJacobianThisIter = !useBroyden || iter == 0 ||
+                                    itersSinceFullJ >= broydenK ||
+                                    forceFullJacobian;
+
         try {
             x_unscaled = y.cwiseProduct(scale);
-            problem.evaluate(x_unscaled, F, J_unscaled, true);
-            J = J_unscaled * scale.asDiagonal();
+            if (fullJacobianThisIter) {
+                // Full Jacobian evaluation
+                problem.evaluate(x_unscaled, F, J_unscaled, true);
+                J = J_unscaled * scale.asDiagonal();
+                if (useBroyden) {
+                    B = J;
+                    itersSinceFullJ = 0;
+                    forceFullJacobian = false;
+                }
+            } else {
+                // Residual-only evaluation + Broyden rank-1 update
+                Eigen::MatrixXd J_dummy;
+                problem.evaluate(x_unscaled, F, J_dummy, false);
+
+                // Broyden Type-I update: B += (dF - B*dy) * dy^T / (dy^T * dy)
+                Eigen::VectorXd dF = F - F_prev;
+                Eigen::VectorXd dy_actual = y - y_prev;
+                double dy2 = dy_actual.squaredNorm();
+                if (dy2 > 1e-30) {
+                    B += ((dF - B * dy_actual) * dy_actual.transpose()) / dy2;
+                }
+                J = B;
+                itersSinceFullJ++;
+            }
         } catch (const std::exception&) {
             throw;
+        }
+
+        // Save state for Broyden update on next iteration
+        if (useBroyden) {
+            F_prev = F;
+            y_prev = y;
         }
 
         double residualNorm = F.lpNorm<Eigen::Infinity>();
@@ -129,6 +181,8 @@ SolverStatus NewtonSolver::solve(Problem& problem,
 
         if (options.verbose) {
             std::cout << "Newton iter " << iter << ": ||F||_inf = " << residualNorm;
+            if (useBroyden)
+                std::cout << (fullJacobianThisIter ? " [full J]" : " [Broyden]");
             if (options.lsNonMonotoneMemory > 1)
                 std::cout << " (refPhi=" << refPhi << ", M=" << meritHistory.size() << ")";
             std::cout << std::endl;
@@ -165,6 +219,11 @@ SolverStatus NewtonSolver::solve(Problem& problem,
         dy = qr.solve(-F);
 
         if (!dy.allFinite()) {
+            // If using Broyden approximation, retry with full Jacobian
+            if (useBroyden && !fullJacobianThisIter) {
+                forceFullJacobian = true;
+                continue;
+            }
             if (trace) {
                 trace->finalStatus = SolverStatus::SingularJacobian;
                 trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
@@ -185,6 +244,14 @@ SolverStatus NewtonSolver::solve(Problem& problem,
         double lambda = lineSearch(lsProblem, y, dy, F, options, refPhi);
 
         if (lambda == 0.0) {
+            // If Broyden step failed line search, retry with full Jacobian
+            if (useBroyden && !fullJacobianThisIter) {
+                forceFullJacobian = true;
+                // Restore F_prev/y_prev so next Broyden update is correct
+                if (!F_prev.size()) { F_prev = F; y_prev = y; }
+                continue;
+            }
+
             if (residualNorm < options.lsRelaxedTolerance) {
                 if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 x = y.cwiseProduct(scale);

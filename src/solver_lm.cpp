@@ -1,11 +1,23 @@
 /**
  * @file solver_lm.cpp
- * @brief Levenberg-Marquardt solver (damped least-squares) with non-monotone acceptance.
+ * @brief Levenberg-Marquardt solver with Nielsen's lambda adaptation,
+ *        cumulative diagonal scaling, and optional geodesic acceleration.
  *
  * Uses a non-monotone criterion (Grippo et al. 1986) for step acceptance:
  * a step is accepted if φ(x_new) < max(recent φ values), rather than
- * requiring strict decrease.  The damping parameter λ management still
- * uses the standard gain ratio based on the current iterate.
+ * requiring strict decrease.
+ *
+ * Improvements over the basic LM:
+ * - **Nielsen's lambda adaptation**: Smoother lambda transitions using
+ *   λ = λ * max(1/3, 1 - (2ρ-1)³) on acceptance, λ = λ*ν with ν doubling
+ *   on consecutive rejections (Nielsen 1999, Madsen et al. 2004).
+ * - **Cumulative diagonal scaling**: D_k = max(D_{k-1}, diag(J^T J)),
+ *   preventing scale collapse when the Jacobian changes dramatically.
+ * - **Geodesic acceleration** (Transtrum & Sethna 2012): Adds a second-order
+ *   correction to the LM step by evaluating the directional second derivative
+ *   of F along the velocity step.  Costs 1 extra residual evaluation per
+ *   iteration but can halve the number of iterations on curved problems.
+ *   Controlled by `lmGeodesicAcceleration` (default: true).
  */
 #include "coolsolve/solver.h"
 #include "coolsolve/solver_common.h"
@@ -48,7 +60,11 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
     Eigen::VectorXd F(n), x_unscaled(n);
     Eigen::MatrixXd J(n, n), J_unscaled(n, n);
     double lambda = options.lmInitialLambda;
+    double nu = 2.0;   // Nielsen's rejection multiplier (doubles on consecutive rejects)
     double initialResidualNorm = 0.0;
+
+    // Cumulative diagonal scaling (Nielsen): D never decreases across iterations
+    Eigen::VectorXd D_cumulative = Eigen::VectorXd::Constant(n, 1e-6);
 
     // Non-monotone merit history (Grippo et al. 1986)
     NonMonotoneHistory meritHistory(options.lsNonMonotoneMemory);
@@ -76,7 +92,7 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
 
         if (options.verbose)
             std::cout << "LM iter " << iter << ": ||F||=" << residualNorm
-                      << ", lambda=" << lambda;
+                      << ", lambda=" << lambda << ", nu=" << nu;
 
         // Track merit for non-monotone acceptance
         double phi_track = 0.5 * F.squaredNorm();
@@ -113,24 +129,62 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
             return SolverStatus::Success;
         }
 
-        // Solve (J^T J + lambda * D) dy = -J^T F  (Marquardt diagonal scaling)
+        // Normal equations: (J^T J + lambda * D) dy = -J^T F
         Eigen::MatrixXd JtJ = J.transpose() * J;
         Eigen::VectorXd JtF = J.transpose() * F;
-        Eigen::VectorXd diag_JtJ = JtJ.diagonal();
+
+        // Cumulative Marquardt diagonal scaling (Nielsen): D_k = max(D_{k-1}, diag(J^T J))
         for (int i = 0; i < n; ++i)
-            JtJ(i, i) += lambda * std::max(diag_JtJ(i), 1e-6);
+            D_cumulative(i) = std::max(D_cumulative(i), JtJ(i, i));
 
-        Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(JtJ);
-        Eigen::VectorXd dy = qr.solve(-JtF);
+        // Build damped system
+        Eigen::MatrixXd A = JtJ;
+        for (int i = 0; i < n; ++i)
+            A(i, i) += lambda * std::max(D_cumulative(i), 1e-6);
 
-        if (!dy.allFinite()) {
+        Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(A);
+        Eigen::VectorXd v = qr.solve(-JtF);  // "velocity" step
+
+        if (!v.allFinite()) {
             lambda *= options.lmLambdaIncrease;
+            nu = 2.0;
             if (lambda > options.lmMaxLambda) {
                 if (trace) { trace->finalStatus = SolverStatus::SingularJacobian; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 x = y.cwiseProduct(scale);
                 return SolverStatus::SingularJacobian;
             }
             continue;
+        }
+
+        // --- Geodesic acceleration (Transtrum & Sethna 2012) ---
+        // Compute second-order correction: a = -(J^TJ + λD)^{-1} J^T fvv
+        // where fvv ≈ (F(x+hv) - F(x) - h*J*v) / (h²/2) is the directional
+        // second derivative of F along v.
+        Eigen::VectorXd dy = v;  // total step = v + 0.5*a
+        if (options.lmGeodesicAcceleration && v.norm() > 1e-15) {
+            double h = std::sqrt(std::numeric_limits<double>::epsilon()) * std::max(1.0, y.norm()) /
+                       std::max(1e-15, v.norm());
+            Eigen::VectorXd y_pert = y + h * v;
+            Eigen::VectorXd F_pert(n);
+            Eigen::MatrixXd J_dummy;
+            try {
+                problem.evaluate(y_pert.cwiseProduct(scale), F_pert, J_dummy, false);
+                // fvv = (F_pert - F - h*J*v) / (0.5*h*h)
+                Eigen::VectorXd fvv = (F_pert - F - h * (J * v)) / (0.5 * h * h);
+                Eigen::VectorXd a = qr.solve(-J.transpose() * fvv);
+                if (a.allFinite()) {
+                    // Only apply acceleration if it doesn't dominate the velocity step
+                    // (avoids instability when the second-order term is unreliable)
+                    double accelRatio = (0.5 * a).norm() / v.norm();
+                    if (accelRatio < 1.0) {
+                        dy = v + 0.5 * a;
+                        if (options.verbose)
+                            std::cout << "  LM geodesic: |a|/|v| = " << accelRatio << std::endl;
+                    }
+                }
+            } catch (...) {
+                // Perturbation failed — fall back to velocity-only step
+            }
         }
 
         // Trial point
@@ -144,6 +198,7 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
             phi_new = 0.5 * F_new.squaredNorm();
         } catch (...) {
             lambda *= options.lmLambdaIncrease;
+            nu = 2.0;
             if (lambda > options.lmMaxLambda) {
                 if (trace) { trace->finalStatus = SolverStatus::EvaluationError; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 x = y.cwiseProduct(scale);
@@ -153,23 +208,33 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
         }
 
         // Gain ratio (based on current phi for lambda management)
-        Eigen::VectorXd D = diag_JtJ.cwiseMax(1e-6);
+        Eigen::VectorXd D = D_cumulative.cwiseMax(1e-6);
         double predicted = 0.5 * dy.dot(lambda * D.cwiseProduct(dy) - JtF);
         double actual = phi_old - phi_new;
         double rho = (std::abs(predicted) > 1e-30) ? actual / predicted : 0.0;
 
         // Non-monotone acceptance: accept if φ_new < max(recent history)
         if (phi_new < refPhi) {
-            // Accept
+            // Accept step
             y = y_new;
             double stepNorm = dy.lpNorm<Eigen::Infinity>();
             if (trace && !trace->iterations.empty())
                 trace->iterations.back().stepNorm = stepNorm;
 
-            if (rho > 0.75)
-                lambda = std::max(lambda * options.lmLambdaDecrease, options.lmMinLambda);
-            else if (rho < 0.25)
-                lambda = std::min(lambda * options.lmLambdaIncrease, options.lmMaxLambda);
+            // Nielsen's smooth lambda adaptation (Madsen et al. 2004):
+            //   λ = λ * max(1/3, 1 - (2ρ - 1)³), ν = 2
+            if (options.lmNielsenUpdate) {
+                double tmp = 2.0 * rho - 1.0;
+                double factor = std::max(1.0 / 3.0, 1.0 - tmp * tmp * tmp);
+                lambda = std::max(lambda * factor, options.lmMinLambda);
+                nu = 2.0;
+            } else {
+                // Legacy behavior
+                if (rho > 0.75)
+                    lambda = std::max(lambda * options.lmLambdaDecrease, options.lmMinLambda);
+                else if (rho < 0.25)
+                    lambda = std::min(lambda * options.lmLambdaIncrease, options.lmMaxLambda);
+            }
 
             if (stepNorm < options.stepTolerance) {
                 double nn = F_new.lpNorm<Eigen::Infinity>();
@@ -180,7 +245,13 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
                 }
             }
         } else {
-            lambda = std::min(lambda * options.lmLambdaIncrease, options.lmMaxLambda);
+            // Reject step — Nielsen's exponential increase: λ *= ν, ν *= 2
+            if (options.lmNielsenUpdate) {
+                lambda = std::min(lambda * nu, options.lmMaxLambda);
+                nu *= 2.0;
+            } else {
+                lambda = std::min(lambda * options.lmLambdaIncrease, options.lmMaxLambda);
+            }
         }
     }
 

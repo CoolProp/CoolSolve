@@ -456,11 +456,22 @@ through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
      strict decrease at every step, the merit function is compared against the
      maximum over the last M iterations (`lsNonMonotoneMemory`, default 10).
      This helps escape narrow curved valleys and saddle points.
+   - **Broyden quasi-Newton** (option `broydenRecomputeInterval`, default 0 =
+     disabled): when set to K > 0, the solver computes a full Jacobian every K
+     iterations and uses Broyden rank-1 updates in between.  This saves
+     expensive Jacobian evaluations while retaining superlinear convergence.
+     If a Broyden step fails line search the full Jacobian is recomputed
+     automatically.  Good starting point: K = 5.
    - Efficient when the Jacobian is well-conditioned and the model is smooth.
 
 2. **Trust-Region Dogleg** (`TrustRegion`)
    - Uses a dogleg step that blends steepest descent with the Newton step to
      keep updates inside a safe radius.
+   - **Adaptive initial radius** (option `trAdaptiveRadius`, default true):
+     sets the initial trust radius from the Cauchy step norm on the first
+     iteration rather than using a fixed value, automatically scaling to the
+     problem geometry.  Includes smoother rho-based radius adaptation and
+     gradient-based recovery after consecutive rejections.
    - Helps avoid oversized steps that drive thermodynamic calls into invalid
      regions (e.g., non-physical pressure/temperature).
 
@@ -468,6 +479,18 @@ through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
    - Solves `(J^T J + λ D) dx = -J^T F` with adaptive damping parameter λ.
    - When λ is large → gradient descent (safe, slow); when λ is small →
      Gauss-Newton (fast, quadratic convergence near solution).
+   - **Nielsen's λ adaptation** (option `lmNielsenUpdate`, default true):
+     uses λ = λ × max(1/3, 1 − (2ρ−1)³) on acceptance and exponential increase
+     (λ × ν with ν doubling) on consecutive rejections (Madsen et al. 2004).
+     Provides smoother, faster-converging λ transitions than legacy step-wise
+     adjustments.  Also uses cumulative Marquardt diagonal scaling:
+     D_k = max(D_{k-1}, diag(J^T J)), preventing scale collapse when the
+     Jacobian changes dramatically.
+   - **Geodesic acceleration** (option `lmGeodesicAcceleration`, default true):
+     adds a second-order correction to the LM step by evaluating the
+     directional second derivative of F along the velocity step (Transtrum &
+     Sethna 2012).  Costs 1 extra residual evaluation per iteration but can
+     halve the number of iterations on curved problems.
    - Particularly effective when the initial guess is far from the solution,
      because the damping prevents oversized steps that would cause divergence.
 

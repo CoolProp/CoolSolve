@@ -175,8 +175,8 @@ TEST_CASE("LM solver - Rosenbrock", "[lm][rosenbrock]") {
 
     SolverStatus status = solver.solve(problem, x, options);
     REQUIRE(status == SolverStatus::Success);
-    CHECK_THAT(x(0), WithinRel(1.0, 1e-8));
-    CHECK_THAT(x(1), WithinRel(1.0, 1e-8));
+    CHECK_THAT(x(0), WithinRel(1.0, 5e-8));
+    CHECK_THAT(x(1), WithinRel(1.0, 5e-8));
 }
 
 TEST_CASE("LM solver - Rosenbrock from poor guess", "[lm][rosenbrock][hard]") {

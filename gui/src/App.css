@@ -562,11 +562,7 @@ body {
 }
 
 .config-tooltip {
-  display: none;
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 6px);
-  transform: translateX(-50%);
+  position: fixed;
   width: 280px;
   padding: 8px 10px;
   border-radius: 4px;
@@ -579,10 +575,6 @@ body {
   z-index: 100;
   pointer-events: none;
   white-space: normal;
-}
-
-.config-tooltip-wrap:hover .config-tooltip {
-  display: block;
 }
 
 /* Debug Viewer */

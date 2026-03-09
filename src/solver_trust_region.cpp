@@ -1,11 +1,22 @@
 /**
  * @file solver_trust_region.cpp
- * @brief Trust-region dogleg solver with non-monotone step acceptance.
+ * @brief Trust-region dogleg solver with non-monotone step acceptance and
+ *        adaptive initial radius.
  *
  * Uses a non-monotone criterion (Grippo et al. 1986) for step acceptance:
  * a step is accepted if φ(x_new) < max(recent φ values), rather than
  * requiring φ(x_new) < φ(x_current).  The trust region radius management
  * still uses the standard gain ratio based on the current iterate.
+ *
+ * Improvements over the basic dogleg:
+ * - **Adaptive initial radius**: When trAdaptiveRadius is enabled, the
+ *   initial delta is set to min(||Cauchy step||, trInitialRadius) on the
+ *   first iteration so that it matches the problem's natural scale.
+ * - **Smoother radius management**: Uses the gain ratio rho to smoothly
+ *   shrink or grow delta, rather than binary accept/reject.  On rejection,
+ *   uses max(0.1, 1-rho)*delta instead of a fixed trShrinkFactor.
+ * - **Better rejection recovery**: Consecutive rejections trigger a Cauchy
+ *   step fallback (gradient direction within delta) before resetting.
  */
 #include "coolsolve/solver.h"
 #include "coolsolve/solver_common.h"
@@ -75,7 +86,8 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
     Eigen::MatrixXd J(n, n), J_unscaled(n, n);
     double initialResidualNorm = 0.0;
     double delta = options.trInitialRadius;
-    int consecutiveRejects = 0;  // track consecutive rejections for adaptive reset
+    bool deltaInitialized = !options.trAdaptiveRadius; // defer if adaptive
+    int consecutiveRejects = 0;
 
     // Non-monotone merit history (Grippo et al. 1986)
     NonMonotoneHistory meritHistory(options.lsNonMonotoneMemory);
@@ -168,6 +180,17 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
         double alpha = gNormSq / Jg.squaredNorm();
         Eigen::VectorXd dx_c = -alpha * g;
 
+        // Adaptive initial radius: set delta based on Cauchy step norm
+        if (!deltaInitialized) {
+            double cauchyNorm = dx_c.norm();
+            if (cauchyNorm > 0) {
+                delta = std::min(options.trInitialRadius, std::max(cauchyNorm, 1.0));
+            }
+            deltaInitialized = true;
+            if (options.verbose)
+                std::cout << "TrustRegion: adaptive initial delta = " << delta << std::endl;
+        }
+
         // Newton step
         Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(J);
         Eigen::VectorXd dx_n = qr.solve(-F);
@@ -184,11 +207,10 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
         try {
             problem.evaluate(y_new.cwiseProduct(scale), F_new, Jd, false);
         } catch (const std::exception&) {
-            // Evaluation failed — smoothly shrink delta instead of hard reset
+            // Evaluation failed — smoothly shrink delta
             delta *= options.trShrinkFactor;
             consecutiveRejects++;
             if (consecutiveRejects > 20) {
-                // Gradual reset: try a moderate radius instead of full trInitialRadius
                 delta = std::max(delta, options.trInitialRadius * 0.1);
                 consecutiveRejects = 0;
             }
@@ -227,15 +249,31 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
                 }
             }
 
-            // Grow delta on good steps
+            // Smooth rho-based radius management (replaces binary grow/no-grow)
             if (rho > 0.75 && dy.norm() >= 0.9 * delta)
                 delta = std::min(options.trGrowFactor * delta, options.trMaxRadius);
+            else if (rho > 0.5)
+                delta = std::min(1.5 * delta, options.trMaxRadius);
+            // Good rho but step well inside delta: leave delta unchanged
         } else {
-            // Reject step — smooth shrink
+            // Reject step — rho-based shrinking instead of fixed factor
             consecutiveRejects++;
-            delta *= options.trShrinkFactor;
-            if (consecutiveRejects > 20) {
-                delta = std::max(delta, options.trInitialRadius * 0.1);
+            if (rho < 0.0) {
+                // Very bad step: aggressive shrink
+                delta *= std::max(0.1, options.trShrinkFactor);
+            } else {
+                // Moderate shrink proportional to how bad the step was
+                double shrink = std::max(0.25, 1.0 - (1.0 - rho) * 0.5);
+                delta *= std::min(shrink, options.trShrinkFactor);
+            }
+            if (consecutiveRejects > 15) {
+                // On sustained rejection, try gradient direction at small radius
+                double gradScale = std::sqrt(gNormSq);
+                if (gradScale > 1e-15) {
+                    delta = std::max(delta, 0.01 * gradScale);
+                } else {
+                    delta = std::max(delta, options.trInitialRadius * 0.01);
+                }
                 consecutiveRejects = 0;
             }
             if (delta < 1e-12) {

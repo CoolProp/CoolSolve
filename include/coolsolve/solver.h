@@ -109,19 +109,29 @@ struct SolverOptions {
     // Variable scaling
     bool enableScaling = true;        // Enable automatic variable scaling for improved conditioning
 
+    // --- Broyden quasi-Newton (Jacobian reuse) ---
+    // When > 0, the Newton solver computes a full Jacobian every K iterations
+    // and uses Broyden rank-1 updates in between, saving O(n) CoolProp calls
+    // per intermediate iteration.  If a Broyden step fails the line search,
+    // a full Jacobian is automatically recomputed.  0 = disabled (default).
+    int broydenRecomputeInterval = 0;
+
     // Trust region options
     double trInitialRadius = 10.0;    // Initial trust region radius (larger for aggressive steps)
     double trMaxRadius = 1000.0;      // Maximum trust region radius
     double trEta = 0.05;              // Threshold for accepting step (rho >= eta) - more lenient
     double trShrinkFactor = 0.5;      // Factor to shrink trust region on rejection (less aggressive)
     double trGrowFactor = 2.0;        // Factor to grow trust region on good steps
+    bool trAdaptiveRadius = true;     // Adaptive initial radius based on Cauchy step norm
 
     // Levenberg-Marquardt options
     double lmInitialLambda = 1e-3;    // Initial damping parameter
-    double lmLambdaIncrease = 10.0;   // Factor to increase lambda on bad step
-    double lmLambdaDecrease = 0.1;    // Factor to decrease lambda on good step
+    double lmLambdaIncrease = 10.0;   // Factor to increase lambda on bad step (fallback; see Nielsen)
+    double lmLambdaDecrease = 0.1;    // Factor to decrease lambda on good step (fallback; see Nielsen)
     double lmMinLambda = 1e-12;       // Minimum damping parameter
     double lmMaxLambda = 1e8;         // Maximum damping parameter
+    bool lmNielsenUpdate = true;      // Use Nielsen's smooth lambda adaptation (default: true)
+    bool lmGeodesicAcceleration = true; // Add geodesic acceleration correction (1 extra eval/iter)
 
     // Partitioned block solver options (variable-wise updates)
     int partitionedMaxIterations = 300;   // Max iterations for partitioned solver
