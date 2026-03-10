@@ -121,4 +121,20 @@ private:
  */
 struct SolverTrace;  // forward — full definition in solver.h
 
+// ============================================================================
+// Fatal error detection
+// ============================================================================
+
+/**
+ * @brief Check if an exception message indicates a fatal evaluation error
+ *        that no solver strategy can recover from.
+ *
+ * Fatal errors include unsupported functions or unknown fluids, where
+ * iterating with different values won't help.
+ */
+inline bool isFatalEvaluationError(const std::string& what) {
+    return what.find("Unknown or unsupported function") != std::string::npos
+        || what.find("Unknown fluid") != std::string::npos;
+}
+
 }  // namespace coolsolve

@@ -22,10 +22,11 @@ When `enableSymbolicReduction` is enabled, each multi-variable block is first sy
 
 | File | Lines | Content |
 |------|------:|---------|
-| `solver.h` | 822 | All solver class declarations, `SolverOptions`, enums |
-| `solver_common.h` | ~100 | Shared `computeScalingFactors()` utility + `NonMonotoneHistory` helper |
-| `solver.cpp` | ~2640 | Orchestrator, Newton1D, tearing, partitioned, pipeline, symbolic reduction integration |
-| `solver_newton.cpp` | ~217 | Newton + non-monotone Armijo backtracking line search |
+| `solver.h` | ~906 | All solver class declarations, `SolverOptions`, enums, `Newton1DSolver` |
+| `solver_common.h` | ~140 | Shared utilities: `computeScalingFactors()`, `NonMonotoneHistory`, `isFatalEvaluationError()` |
+| `solver.cpp` | ~2378 | Orchestrator, tearing, partitioned, pipeline, symbolic reduction integration |
+| `solver_newton.cpp` | ~270 | Newton + non-monotone Armijo backtracking line search + Broyden quasi-Newton |
+| `solver_newton1d.cpp` | 355 | Specialized 1D root-finding: 4-phase Newton + probing + bisection hybrid |
 | `solver_trust_region.cpp` | 238 | Trust Region Dogleg |
 | `solver_lm.cpp` | 177 | Levenberg-Marquardt |
 | `solver_bisection_nd.cpp` | 450 | N-dimensional bisection (sign-pattern simplex) |
@@ -37,7 +38,7 @@ When `enableSymbolicReduction` is enabled, each multi-variable block is first sy
 
 ### 1.3 Test Results (current baseline)
 
-149 unit tests (1111 assertions), all passing. Models include:
+195 unit tests (1291 assertions), all passing. Models include:
 
 | Model | Eqs | Blocks | Solve time | Status |
 |-------|----:|-------:|-----------:|--------|
@@ -83,13 +84,13 @@ When `enableSymbolicReduction` is enabled, each multi-variable block is first sy
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Newton + non-monotone line search | **Done** | Default workhorse; Grippo et al. 1986 non-monotone Armijo (M=10) |
-| Trust Region Dogleg | **Done** | Full implementation with configurable radius, eta, shrink/grow factors |
-| Levenberg-Marquardt | **Done** | Damped least-squares with diagonal scaling |
+| Newton + non-monotone line search | **Done** | Default workhorse; Grippo et al. 1986 non-monotone Armijo (M=10); Broyden quasi-Newton rank-1 updates (§3.2.5) |
+| Trust Region Dogleg | **Done** | Adaptive initial radius (Cauchy step norm), smoother rho-based radius adaptation, gradient-based rejection recovery (§3.2.3) |
+| Levenberg-Marquardt | **Done** | Nielsen's λ adaptation, cumulative Marquardt diagonal scaling, geodesic acceleration (Transtrum & Sethna 2012) (§3.2.4) |
 | BisectionND (simplex bisection) | **Done** | Sign-pattern simplex; `bisectionNDMaxBlockSize` (default 8), `bisectionNDIterFactor` |
 | Homotopy continuation | **Done** | Predictor-corrector with adaptive step, Newton+LM corrector fallback, final polish |
 | Partitioned solver | **Done** | Per-variable diagonal updates; gracefully returns `MaxIterations` for small blocks |
-| Newton1D | **Done** | Specialized for size-1 blocks: multi-probe + bisection + Newton hybrid |
+| Newton1D | **Done** | Specialized for size-1 blocks: multi-probe + bisection + Newton hybrid (extracted to `solver_newton1d.cpp`) |
 | Tearing | **Done** | Greedy FVS + acyclic sequential solve + Newton on tear residuals |
 | Explicit solve (size-1 blocks) | **Done** | `tryExplicitSolve()` detects `x = expr(known)` pattern, evaluates RHS directly |
 | Symbolic block reduction | **Done** | CoolProp call inversion + explicit extraction + equation substitution; auto re-decomposition into sub-blocks |
@@ -228,84 +229,52 @@ Controlled by `lsNonMonotoneMemory` (default: `10`; set to `1` for classic monot
 - Zhang, Hager (2004): improved variant requiring *average* decrease rather than *max* reference
 - NNES (Rod Bain): Fortran implementation at netlib.org/opt/nnes
 
-#### 3.2.3 Trust Region Improvements
+#### 3.2.3 Trust Region Improvements ✅ Done
 
-**Current state**: The TR solver underperforms Newton in practice (49% without initials vs 57% for Newton). Known issues:
-- Overly aggressive delta shrinking (oscillation between too-small and reset)
-- No smooth Cauchy-Newton transition (hard boundary)
-- Always starts with `trInitialRadius=10` regardless of prior solver attempts
+**Status**: Fully implemented in `src/solver_trust_region.cpp`.
 
-**What to do**: 
-- Implement quadratic interpolation between Cauchy and Newton steps
-- Warm-start delta from previous solver in the pipeline
-- Fix the shrink/reset oscillation with a more gradual radius adaptation
-- Target: TR should match Newton's success rate with initials
+**What was done**:
+- **Adaptive initial radius** (`trAdaptiveRadius`, default `true`): Sets the initial trust radius from the Cauchy step norm on the first iteration (`delta = min(trInitialRadius, max(cauchyNorm, 1.0))`), automatically scaling to the problem geometry.
+- **Smoother rho-based radius adaptation**: Replaces binary grow/no-grow with graduated rho thresholds (grow at ρ > 0.75, hold at ρ > 0.5, shrink proportionally otherwise using `max(0.1, 1−ρ) × delta`).
+- **Gradient-based recovery**: After many consecutive rejections (>15), the solver resets to a gradient-direction step with a small radius, escaping degenerate trust regions.
 
-#### 3.2.4 Levenberg-Marquardt Improvements
+**Files changed**: `solver_trust_region.cpp`, `solver.h` (`trAdaptiveRadius` option).
 
-**Current state**: LM solves 76% with initials (vs 82% for Newton). It fails on cases Newton handles.
+#### 3.2.4 Levenberg-Marquardt Improvements ✅ Done
 
-**What to do**:
-- Use Marquardt diagonal scaling more aggressively
-- Add geodesic acceleration (Nielsen improvement) — small code change (~30 lines) that improves convergence speed significantly
-- Implement delayed gratification: accept temporarily larger residuals if the step direction improves conditioning
+**Status**: Fully implemented in `src/solver_lm.cpp`.
 
-#### 3.2.5 Broyden Quasi-Newton Updates (Jacobian Reuse)
+**What was done**:
+- **Nielsen's λ adaptation** (`lmNielsenUpdate`, default `true`): Uses `λ = λ × max(1/3, 1 − (2ρ−1)³)` on acceptance and exponential increase (`λ × ν` with `ν` doubling) on consecutive rejections (Madsen et al. 2004). Provides smoother, faster-converging λ transitions.
+- **Cumulative Marquardt diagonal scaling**: `D_k = max(D_{k−1}, diag(J^T J))`, preventing scale collapse when the Jacobian changes dramatically between iterations.
+- **Geodesic acceleration** (`lmGeodesicAcceleration`, default `true`): Adds a second-order correction to the LM step by evaluating the directional second derivative of F along the velocity step (Transtrum & Sethna 2012). Costs 1 extra residual evaluation per iteration but can halve iteration count on curved problems. Includes acceleration/velocity ratio guard to avoid oversized corrections.
+- **"Delayed gratification"** is effectively provided by the non-monotone acceptance criterion (§3.2.2).
 
-**Background**: Broyden's method is a quasi-Newton method for solving F(x) = 0 that avoids recomputing the full Jacobian at every iteration. Instead, it starts with an initial Jacobian J₀ (e.g., from the first Newton iteration) and maintains it via rank-1 updates:
+**Files changed**: `solver_lm.cpp`, `solver.h` (`lmNielsenUpdate`, `lmGeodesicAcceleration` options).
+
+#### 3.2.5 Broyden Quasi-Newton Updates (Jacobian Reuse) ✅ Done
+
+**Status**: Fully implemented as a hybrid Newton-Broyden mode in `src/solver_newton.cpp`.
+
+**What was done**: Broyden's method is a quasi-Newton approach that avoids recomputing the full Jacobian at every iteration by maintaining rank-1 updates:
 
 ```
-B_{k+1} = B_k + (ΔF - B_k Δx) Δx^T / (Δx^T Δx)     [Broyden "good" / Type I]
+B_{k+1} = B_k + (ΔF - B_k Δx) Δx^T / (Δx^T Δx)     [Broyden Type I]
 ```
 
-There are two main variants:
-- **Broyden Type I ("good")**: Updates the Jacobian approximation B. More robust; solves B·dx = -F each iteration (cheap for moderate block sizes using pre-factored LU with rank-1 update via Sherman-Morrison).
-- **Broyden Type II ("bad")**: Updates the *inverse* Jacobian approximation H directly, avoiding the linear solve entirely. Less stable but faster per iteration.
+- **`broydenRecomputeInterval`** option (default `0` = always full Jacobian; `K > 0` = recompute every K iterations). Recommended starting point: K = 5.
+- Computes true Jacobian on iteration 0, then uses Broyden Type-I rank-1 updates for intermediate iterations.
+- **Automatic fallback**: Forces full Jacobian recomputation when (a) Broyden step fails line search, (b) residual stalls for ≥3 iterations, or (c) scheduled recompute interval reached.
+- Primarily an **efficiency** improvement (fewer CoolProp calls on large blocks) rather than robustness.
 
-The broader quasi-Newton family includes BFGS (for optimization) and Anderson mixing/acceleration (for fixed-point iterations). Anderson acceleration is already listed as "not recommended" in this roadmap because it doesn't leverage the Jacobian structure. Broyden is fundamentally different: it *starts* from a true Jacobian and makes small corrections, preserving first-order accuracy near the solution.
+**Cost savings example**: For a 30-var block, full Newton costs ~31 CoolProp calls/iteration (30 for Jacobian + 1 for residual). With Broyden (K=5), on average only ~7 calls/iteration (1 full Jacobian every 5 iters + 4 residual-only iters).
 
-**Relevance to CoolSolve**: In CoolSolve, each Jacobian column requires O(1) CoolProp evaluations (via forward-FD or analytical derivatives + consistency check). For a block of size n, the full Jacobian costs O(n) CoolProp calls. Broyden updates cost O(n²) arithmetic operations but **zero CoolProp calls** — only one residual evaluation per iteration is needed.
-
-**Cost savings example**: For `condenser_3zones` (30-var sub-block after re-decomposition), a full Newton iteration costs ~30 CoolProp evaluations for the Jacobian + 1 for the residual = 31 calls. A Broyden iteration costs 1 call. If Newton takes 8 iterations and Broyden takes 12 (typical 1.5× factor), the total is Newton: 8 × 31 = 248 calls vs. Broyden: 1 × 31 (initial) + 11 × 1 = 42 calls — a **6× reduction** in CoolProp calls.
-
-**Practical approach — Hybrid Newton-Broyden**:
-1. Compute true Jacobian on iteration 0 (and optionally every K iterations)
-2. Use Broyden rank-1 updates for intermediate iterations
-3. Recompute true Jacobian when: (a) residual stalls for 3+ iterations, (b) Broyden step is rejected by line search, or (c) `B` becomes ill-conditioned
-4. Implement as an enhancement to `NewtonSolver` rather than a separate solver class
-
-**What to do**:
-- Add a `broydenRecomputeInterval` option (0 = always full Jacobian = current behavior, default; K > 0 = recompute every K iterations)
-- Store `B` (or `H` for Type II) between iterations; apply Sherman-Morrison for efficient rank-1 updates
-- Add a condition-number check to trigger Jacobian refresh when approximation degrades
-- Estimated effort: 1–2 days
-
-**Expected impact**: Primarily **efficiency** (fewer CoolProp calls, faster convergence time) rather than robustness. Won't help models that fail due to singular Jacobians or phase boundaries, but will significantly speed up convergence on already-solvable large blocks. Best combined with non-monotone line search.
+**Files changed**: `solver_newton.cpp` (Broyden state, rank-1 updates, fallback logic), `solver.h` (`broydenRecomputeInterval`), `solver.cpp` (config loading).
 
 **References**:
 - Broyden (1965): "A class of methods for solving nonlinear simultaneous equations"
-- Dennis & Moré (1977): "Quasi-Newton methods, motivation and theory" (comprehensive survey)
-- Kelley (2003): *Solving Nonlinear Equations with Newton's Method* (SIAM), Chapter 4 — practical Broyden implementation guidance
-
-### 3.3 Lower Impact — Architecture & Testing (Not Yet Implemented)
-
-#### 3.3.1 Newton1D Extraction
-
-**Current state**: Newton1D is ~490 lines inlined in `Solver::solveBlock()` in solver.cpp. It's a self-contained algorithm (multi-probe + bisection + Newton for size-1 blocks).
-
-**What to do**: Extract into `solver_newton1d.cpp` as a standalone class. This is purely a code quality improvement — it doesn't change behavior.
-
-#### 3.3.2 Dedicated Regression Test Baseline
-
-**Current state**: `test_solver_robustness.cpp` runs all models with various configs (tagged `[.][solver-robustness]`, slow). `test_solver_pipeline.cpp` and `test_new_solvers.cpp` cover specific solver behaviors. But there's no fast regression test that codifies "these models must solve with the default pipeline."
-
-**What to do**: Add a lightweight `[solver-regression]` test that asserts the default pipeline solves all expected models. Update the pass-list when a solver improvement expands coverage. This gives instant CI feedback on regressions.
-
-#### 3.3.3 Code Complexity Monitor
-
-**What it was**: A script to track total LOC over time.
-
-**Assessment**: Low value. The codebase is manageable (~4000 lines of solver code) and well-structured after the file split. LOC tracking doesn't provide actionable information. **Skip this.**
+- Dennis & Moré (1977): "Quasi-Newton methods, motivation and theory"
+- Kelley (2003): *Solving Nonlinear Equations with Newton's Method* (SIAM), Chapter 4
 
 ---
 
@@ -313,32 +282,11 @@ The broader quasi-Newton family includes BFGS (for optimization) and Anderson mi
 
 Ranked by impact on the two main objectives: **solver robustness** and **computational efficiency**.
 
-### Tier 1 — High Impact, Bounded Effort (All Done)
-
-| # | Improvement | Primary benefit | Status |
-|---|-------------|----------------|--------|
-| 1 | ~~**AbstractState caching** (§3.1.1)~~ | ~~Efficiency: 2–5× faster property evals~~ | **Done** |
-| 2 | ~~**Analytical derivatives** (§3.1.3)~~ | ~~Efficiency + robustness: 5× fewer CoolProp calls, exact gradients~~ | **Done** |
-| 3 | ~~**Residual-only mode** (§3.1.4)~~ | ~~Efficiency: halve CoolProp calls in line search~~ | **Done** |
-| 4 | ~~**Symbolic block reduction + re-decomposition** (§3.2.1)~~ | ~~Robustness: reduce block sizes by reformulation + sub-block splitting~~ | **Done** |
-
-All Tier 1 items are complete. The biggest remaining gap is **without-initials robustness** (73% → target ≥92%).
-
-### Tier 2 — Medium Impact (Current Focus)
-
-| # | Improvement | Primary benefit | Estimated effort | Priority |
-|---|-------------|----------------|-----------------|----------|
-| 5 | ~~**Non-monotone line search** (§3.2.2)~~ | ~~Robustness: escape narrow valleys~~ | ~~0.5–1 day~~ | **Done** |
-| 6 | ⭐ **Broyden quasi-Newton updates** (§3.2.5) | Efficiency: 3–6× fewer CoolProp calls on large blocks | 1–2 days | **Next** |
-| 7 | **Trust Region fixes** (§3.2.3) | Robustness: raise TR from 49% to ~80%+ without initials | 2–3 days | |
-| 8 | **LM improvements** (§3.2.4) | Robustness: raise LM from 76% to ~87%+ with initials | 1–2 days | |
-| 9 | **Superancillary fast evaluation** for BisectionND (§3.1.2) | Efficiency: orders of magnitude faster bisection | 2–3 days | |
 
 ### Tier 3 — Nice to Have
 
 | # | Improvement | Primary benefit | Estimated effort |
 |---|-------------|----------------|-----------------|
-| 10 | **Newton1D extraction** (§3.3.1) | Code quality | 0.5 day |
 | 11 | **Regression test baseline** (§3.3.2) | CI quality | 0.5 day |
 | 12 | **Pseudo-arclength continuation** | Robustness: handle turning points in homotopy | 2–3 days |
 | 13 | **KINSOL (SUNDIALS) integration** | Robustness: for very large blocks (>30 vars) | 1–2 weeks |

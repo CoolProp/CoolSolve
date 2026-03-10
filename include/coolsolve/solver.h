@@ -556,6 +556,66 @@ public:
 };
 
 // ============================================================================
+// Specialized 1D Root-Finding Solver
+// ============================================================================
+
+/**
+ * @brief Multi-phase 1D root-finding solver for size-1 implicit blocks.
+ *
+ * Unlike the n-dimensional NonLinearSolver hierarchy, this solver works
+ * directly on a scalar evaluation function (residual + derivative).
+ * It uses a four-phase approach:
+ *   - Phase 1: Trust-region Newton with bracket detection
+ *   - Phase 2: Multi-probe sign-change exploration (~900 probes)
+ *   - Phase 3: Bisection + Newton hybrid within bracket
+ *   - Phase 4: Final Newton polish with relaxed tolerance
+ *
+ * A simplified solver (solveSimple) is also provided for use in symbolic
+ * reduction where the problem is already well-conditioned.
+ */
+class Newton1DSolver {
+public:
+    /// 1D evaluation function: given x, returns (residual, derivative).
+    using Eval1D = std::function<std::pair<double, double>(double)>;
+
+    /**
+     * @brief Full multi-phase solve with probing and bracket detection.
+     *
+     * @param eval            Evaluation function f(x) → (residual, df/dx)
+     * @param x               [in/out] Initial guess → converged solution
+     * @param externalVars    External variable values (used for probe generation)
+     * @param options         Solver options (tolerance, maxIterations, etc.)
+     * @param trace           Optional trace for iteration recording
+     * @param outErrorMessage Optional detailed error message on failure
+     * @return SolverStatus::Success if converged, MaxIterations or EvaluationError otherwise
+     */
+    static SolverStatus solve(
+        Eval1D& eval,
+        double& x,
+        const std::map<std::string, double>& externalVars,
+        const SolverOptions& options,
+        SolverTrace* trace = nullptr,
+        std::string* outErrorMessage = nullptr);
+
+    /**
+     * @brief Simplified Newton solver for well-conditioned 1D problems.
+     *
+     * Basic Newton iteration without probing or bracket detection.
+     * Used inside symbolic reduction where the reduced block is already
+     * close to the solution.
+     *
+     * @param eval    Evaluation function f(x) → (residual, df/dx)
+     * @param x       [in/out] Initial guess → converged solution
+     * @param options Solver options (tolerance, maxIterations)
+     * @return SolverStatus::Success if converged
+     */
+    static SolverStatus solveSimple(
+        Eval1D& eval,
+        double& x,
+        const SolverOptions& options);
+};
+
+// ============================================================================
 // Solver Factory
 // ============================================================================
 

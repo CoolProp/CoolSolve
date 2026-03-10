@@ -1,4 +1,5 @@
 #include "coolsolve/solver.h"
+#include "coolsolve/solver_common.h"
 #include "coolsolve/symbolic_reduction.h"
 #include <iostream>
 #include <iomanip>
@@ -119,17 +120,6 @@ std::string categoryToString(ErrorCategory category) {
         case ErrorCategory::Other: return "Other";
         default: return "Unknown";
     }
-}
-
-// ============================================================================
-// Fatal error detection
-// ============================================================================
-
-/// Check if an exception message indicates a fatal evaluation error that
-/// no solver strategy can recover from (e.g. unsupported functions, unknown fluids).
-static bool isFatalEvaluationError(const std::string& what) {
-    return what.find("Unknown or unsupported function") != std::string::npos
-        || what.find("Unknown fluid") != std::string::npos;
 }
 
 // ============================================================================
@@ -559,7 +549,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         }
         
         // Lambda for evaluating the 1D residual+derivative
-        auto eval1D = [&](double xval) -> std::pair<double, double> {
+        Newton1DSolver::Eval1D eval1D = [&](double xval) -> std::pair<double, double> {
             std::vector<double> x_std = {xval};
             auto er = blockEval.evaluate(x_std, externalVars, externalStringVars);
             double f = er.residuals[0];
@@ -567,280 +557,12 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
             return {f, j};
         };
         
-        // Phase 1: Try Newton with trust-region limiting
         double xCur = x[0];
-        double radius = std::max(std::abs(xCur) * 2.0, 100.0);
-        bool converged = false;
+        std::string errorMsg;
+        SolverStatus status1D = Newton1DSolver::solve(
+            eval1D, xCur, externalVars, options, trace, &errorMsg);
         
-        // Track bracket for bisection fallback
-        bool hasBracket = false;
-        double xLo = 0, xHi = 0, fLo = 0, fHi = 0;
-        
-        // Phase 1 uses fewer iterations since Phase 2 probing is more effective
-        // for problems where the initial guess is far from the solution
-        int phase1MaxIter = std::min(options.maxIterations, 50);
-        for (int iter = 0; iter < phase1MaxIter && !converged; ++iter) {
-            double f, j;
-            try {
-                auto [fv, jv] = eval1D(xCur);
-                f = fv; j = jv;
-            } catch (const std::exception& e) {
-                if (isFatalEvaluationError(e.what())) {
-                    // Unsupported function/fluid — no point iterating
-                    if (outErrorMessage) *outErrorMessage = e.what();
-                    return SolverStatus::EvaluationError;
-                }
-                // Recoverable evaluation failure — try reducing x toward zero
-                xCur *= 0.5;
-                continue;
-            } catch (...) {
-                xCur *= 0.5;
-                continue;
-            }
-            
-            if (trace) {
-                SolverTrace::Iteration traceIter;
-                traceIter.iter = iter;
-                traceIter.residualNorm = std::abs(f);
-                traceIter.stepNorm = 0.0;
-                traceIter.lambda = 1.0;
-                traceIter.x = {xCur};
-                traceIter.residuals = {f};
-                trace->iterations.push_back(traceIter);
-            }
-            
-            if (std::abs(f) < options.tolerance) {
-                converged = true;
-                break;
-            }
-            
-            // Update bracket
-            if (!hasBracket) {
-                if (iter == 0) {
-                    xLo = xCur; fLo = f;
-                } else {
-                    if (f * fLo < 0) {
-                        hasBracket = true;
-                        xHi = xCur; fHi = f;
-                        if (xLo > xHi) { std::swap(xLo, xHi); std::swap(fLo, fHi); }
-                    } else {
-                        xLo = xCur; fLo = f;
-                    }
-                }
-            } else {
-                // Keep bracket tight
-                if (f * fLo < 0) { xHi = xCur; fHi = f; }
-                else { xLo = xCur; fLo = f; }
-                if (xLo > xHi) { std::swap(xLo, xHi); std::swap(fLo, fHi); }
-            }
-            
-            double dx;
-            if (hasBracket) {
-                // Use bisection-Newton hybrid (Illinois/Dekker-style)
-                double xNewton = (std::abs(j) > 1e-30) ? xCur - f / j : (xLo + xHi) / 2.0;
-                // If Newton step is within bracket, use it; otherwise bisect
-                if (xNewton > xLo && xNewton < xHi) {
-                    dx = xNewton - xCur;
-                } else {
-                    dx = (xLo + xHi) / 2.0 - xCur;
-                }
-            } else if (std::abs(j) > 1e-30) {
-                // Newton step with trust-region clamping
-                dx = -f / j;
-                if (std::abs(dx) > radius) {
-                    dx = (dx > 0 ? 1.0 : -1.0) * radius;
-                }
-                // Grow trust region on each step
-                radius = std::max(radius, std::abs(dx) * 2.0);
-            } else {
-                // Zero derivative — explore by stepping
-                dx = radius;
-                radius *= 2.0;
-            }
-            
-            xCur += dx;
-            if (trace && !trace->iterations.empty()) {
-                trace->iterations.back().stepNorm = std::abs(dx);
-            }
-        }
-        
-        // Phase 2: If Newton didn't converge and no bracket found,
-        // try multiple starting points to find a sign change.
-        // Scan both positive and negative ranges on a log scale, plus
-        // intermediate values that may cross sign near poles.
-        if (!converged && !hasBracket) {
-            // Build comprehensive probe list
-            std::vector<double> probes;
-            // Dense scan around zero
-            for (double v : {0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0}) {
-                probes.push_back(v);
-                probes.push_back(-v);
-            }
-            // Log-spaced scan
-            for (double scale = 100; scale <= 1e8; scale *= 2.0) {
-                probes.push_back(scale);
-                probes.push_back(-scale);
-            }
-            // KEY STRATEGY: Probe near external variable values.
-            // Solutions of equations are typically at scales related to their inputs.
-            // Without this, narrow sign-change regions near poles are missed.
-            for (const auto& [name, val] : externalVars) {
-                if (!std::isfinite(val) || val == 0.0) continue;
-                double absVal = std::abs(val);
-                // Probe at, near, and around the external variable value
-                for (double frac : {0.5, 0.9, 0.95, 0.99, 1.0, 1.01, 1.05, 1.1, 1.5, 2.0}) {
-                    probes.push_back(val * frac);
-                    if (val > 0) probes.push_back(-val * frac); // Also try negative
-                }
-            }
-            
-            // Record all evaluated points with their residuals for bracket detection
-            struct ProbeResult { double x; double f; bool valid; };
-            std::vector<ProbeResult> results;
-            
-            double bestF = 1e30;
-            double bestX = xCur;
-
-            for (double probe : probes) {
-                try {
-                    auto [f, j] = eval1D(probe);
-                    if (!std::isfinite(f)) continue;
-                    results.push_back({probe, f, true});
-                    if (std::abs(f) < bestF) {
-                        bestF = std::abs(f);
-                        bestX = probe;
-                    }
-                    if (std::abs(f) < options.tolerance) {
-                        xCur = probe;
-                        converged = true;
-                        break;
-                    }
-                } catch (...) {
-                    results.push_back({probe, 0.0, false});
-                    continue;
-                }
-            }
-            
-            // Look for sign changes between any pair of valid probe results.
-            // Collect ALL sign changes, then pick the best one (smallest midpoint |f|)  
-            // to avoid locking onto poles instead of roots.
-            if (!converged) {
-                // Sort by x value
-                std::sort(results.begin(), results.end(), 
-                          [](const ProbeResult& a, const ProbeResult& b) { return a.x < b.x; });
-                
-                struct Bracket { double lo, flo, hi, fhi, midF; };
-                std::vector<Bracket> brackets;
-                
-                for (size_t i = 0; i + 1 < results.size(); ++i) {
-                    if (!results[i].valid || !results[i+1].valid) continue;
-                    if (results[i].f * results[i+1].f < 0) {
-                        // Found a sign change — evaluate midpoint to score it
-                        double lo = results[i].x, hi = results[i+1].x;
-                        double flo = results[i].f, fhi = results[i+1].f;
-                        double mid = (lo + hi) / 2.0;
-                        double fmid = 1e30;
-                        try {
-                            auto [fm, jm] = eval1D(mid);
-                            fmid = std::abs(fm);
-                        } catch (...) {
-                            fmid = 1e30; // Evaluation failed at midpoint — likely a pole
-                        }
-                        brackets.push_back({lo, flo, hi, fhi, fmid});
-                    }
-                }
-                
-                if (!brackets.empty()) {
-                    // Pick bracket with smallest midpoint |f| (most likely a root, not a pole)
-                    auto& best = *std::min_element(brackets.begin(), brackets.end(),
-                        [](const Bracket& a, const Bracket& b) { return a.midF < b.midF; });
-                    hasBracket = true;
-                    xLo = best.lo; fLo = best.flo;
-                    xHi = best.hi; fHi = best.fhi;
-                    if (xLo > xHi) { std::swap(xLo, xHi); std::swap(fLo, fHi); }
-                }
-            }
-            
-            if (!converged && !hasBracket) {
-                // Use the best point found as starting point for another Newton attempt
-                xCur = bestX;
-            }
-        }
-        
-        // Phase 3: If we have a bracket, use bisection + Newton
-        if (!converged && hasBracket) {
-            for (int iter = 0; iter < options.maxIterations && !converged; ++iter) {
-                double xMid = (xLo + xHi) / 2.0;
-                try {
-                    auto [f, j] = eval1D(xMid);
-                    
-                    if (trace) {
-                        SolverTrace::Iteration traceIter;
-                        traceIter.iter = 1000 + iter; // Distinguish bisection iterations
-                        traceIter.residualNorm = std::abs(f);
-                        traceIter.stepNorm = (xHi - xLo) / 2.0;
-                        traceIter.lambda = 1.0;
-                        traceIter.x = {xMid};
-                        traceIter.residuals = {f};
-                        traceIter.detail = "       [bisection] bracket: [" + std::to_string(xLo) + ", " + std::to_string(xHi) + "]\n";
-                        trace->iterations.push_back(traceIter);
-                    }
-                    
-                    if (std::abs(f) < options.tolerance) {
-                        xCur = xMid;
-                        converged = true;
-                        break;
-                    }
-                    
-                    // Try Newton step within bracket
-                    if (std::abs(j) > 1e-30) {
-                        double xNewton = xMid - f / j;
-                        if (xNewton > xLo && xNewton < xHi) {
-                            try {
-                                auto [fn, jn] = eval1D(xNewton);
-                                if (std::abs(fn) < std::abs(f)) {
-                                    if (fn * fLo < 0) { xHi = xNewton; fHi = fn; }
-                                    else { xLo = xNewton; fLo = fn; }
-                                    continue;
-                                }
-                            } catch (...) {}
-                        }
-                    }
-                    
-                    // Fall back to bisection
-                    if (f * fLo < 0) { xHi = xMid; fHi = f; }
-                    else { xLo = xMid; fLo = f; }
-                    
-                    if (xHi - xLo < options.stepTolerance) {
-                        xCur = (xLo + xHi) / 2.0;
-                        converged = true;
-                    }
-                } catch (...) {
-                    // Evaluation failed at midpoint — narrow bracket from the other side
-                    xHi = xMid;
-                }
-            }
-        }
-        
-        // Phase 4: If still not converged, try one more round of Newton from best position
-        if (!converged) {
-            for (int iter = 0; iter < 50 && !converged; ++iter) {
-                try {
-                    auto [f, j] = eval1D(xCur);
-                    if (std::abs(f) < options.tolerance) { converged = true; break; }
-                    if (std::abs(f) < options.lsRelaxedTolerance) { converged = true; break; }
-                    if (std::abs(j) < 1e-30) break;
-                    double dx = -f / j;
-                    double maxStep = std::max(std::abs(xCur) * 2.0, 1e6);
-                    if (std::abs(dx) > maxStep) dx = (dx > 0 ? 1.0 : -1.0) * maxStep;
-                    xCur += dx;
-                } catch (...) {
-                    break;
-                }
-            }
-        }
-        
-        if (converged) {
+        if (status1D == SolverStatus::Success) {
             x[0] = xCur;
             evaluator_.setVariableValue(varNames[0], xCur);
             if (trace) {
@@ -848,6 +570,12 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                 trace->totalTime = std::chrono::high_resolution_clock::now() - startTime1D;
             }
             return SolverStatus::Success;
+        }
+        
+        if (status1D == SolverStatus::EvaluationError) {
+            // Fatal evaluation error — propagate immediately
+            if (outErrorMessage) *outErrorMessage = errorMsg;
+            return SolverStatus::EvaluationError;
         }
         
         // Newton1D failed — reset x and fall through to standard pipeline
@@ -1049,7 +777,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                     if (!explicitOk) {
                         // 1D Newton solver on the reduced block
                         double xCur = evaluator_.getVariableValue(reducedBlock.variables[0]);
-                        auto eval1D = [&](double xval) -> std::pair<double, double> {
+                        Newton1DSolver::Eval1D eval1D = [&](double xval) -> std::pair<double, double> {
                             std::vector<double> x_std = {xval};
                             auto er = reducedEval.evaluate(x_std, reducedExternalVars, externalStringVars);
                             double f = er.residuals[0];
@@ -1057,20 +785,9 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                             return {f, j};
                         };
 
-                        bool converged = false;
-                        for (int iter = 0; iter < options.maxIterations && !converged; ++iter) {
-                            try {
-                                auto [f, j] = eval1D(xCur);
-                                if (std::abs(f) < options.tolerance) { converged = true; break; }
-                                if (std::abs(j) < 1e-30) break;
-                                double dx = -f / j;
-                                double maxStep = std::max(std::abs(xCur) * 2.0, 1e6);
-                                if (std::abs(dx) > maxStep) dx = (dx > 0 ? 1.0 : -1.0) * maxStep;
-                                xCur += dx;
-                            } catch (...) { break; }
-                        }
+                        SolverStatus st = Newton1DSolver::solveSimple(eval1D, xCur, options);
 
-                        if (converged) {
+                        if (st == SolverStatus::Success) {
                             evaluator_.setVariableValue(reducedBlock.variables[0], xCur);
                             if (options.verbose) {
                                 std::cout << "  Reduced Newton1D: " << reducedBlock.variables[0]
@@ -1150,9 +867,9 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                                         }
                                     }
                                     if (!explOk) {
-                                        // Newton1D
+                                        // Newton1D on sub-block
                                         double xCur = evaluator_.getVariableValue(sb.variables[0]);
-                                        auto eval1D = [&](double xval) -> std::pair<double, double> {
+                                        Newton1DSolver::Eval1D eval1D = [&](double xval) -> std::pair<double, double> {
                                             std::vector<double> x_std = {xval};
                                             auto er = subEval.evaluate(x_std, subExternal, externalStringVars);
                                             double f = er.residuals[0];
@@ -1160,19 +877,10 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                                                        ? er.jacobian[0][0] : 0.0;
                                             return {f, j};
                                         };
-                                        bool conv = false;
-                                        for (int it = 0; it < options.maxIterations && !conv; ++it) {
-                                            try {
-                                                auto [f, j] = eval1D(xCur);
-                                                if (std::abs(f) < options.tolerance) { conv = true; break; }
-                                                if (std::abs(j) < 1e-30) break;
-                                                double dx = -f / j;
-                                                double maxStep = std::max(std::abs(xCur) * 2.0, 1e6);
-                                                if (std::abs(dx) > maxStep) dx = (dx > 0 ? 1 : -1) * maxStep;
-                                                xCur += dx;
-                                            } catch (...) { break; }
-                                        }
-                                        if (conv) {
+
+                                        SolverStatus st = Newton1DSolver::solveSimple(eval1D, xCur, options);
+
+                                        if (st == SolverStatus::Success) {
                                             evaluator_.setVariableValue(sb.variables[0], xCur);
                                         } else {
                                             subBlockFailed = true;
