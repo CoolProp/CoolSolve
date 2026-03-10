@@ -3,6 +3,7 @@
 #include "coolsolve/runner.h"
 #include "coolsolve/structural_analysis.h"
 #include "coolsolve/evaluator.h"  // For profiling stats
+#include "coolsolve/solution_checker.h"
 #ifdef COOLSOLVE_GUI
 #include "coolsolve/server.h"
 #endif
@@ -292,6 +293,14 @@ int main(int argc, char* argv[]) {
         std::cout << "\nSolver: SUCCESS (" << solveResult.totalIterations << " iterations)\n";
     }
     
+    // In debug mode, verify the solution satisfies all equations
+    if (debugMode && solveResult.success) {
+        auto checkResult = coolsolve::checkSolution(
+            ir, solveResult.variables, solveResult.stringVariables,
+            options.coolpropConfig);
+        coolsolve::printSolutionCheckReport(checkResult);
+    }
+    
     // Write .sol file if successful
     if (solveResult.success && writeSolFile) {
         fs::path inputPath(inputFile);
@@ -376,28 +385,6 @@ int main(int argc, char* argv[]) {
         }
         file << output;
     } 
-    // If no output file specified, do we print to stdout?
-    // User complaint was "too much output to stdout".
-    // Usually stdout is used for piping. If -o is not specified, piping JSON is standard behavior.
-    // But previous code only printed if verbose was on OR output file was empty.
-    // "Only print full output to stdout if verbose is on and no output file specified" -> NO, logic was:
-    // } else if (verbose) { std::cout << output; }
-    // So if NOT verbose and NO output file, it didn't print the huge output?
-    // Wait, let's check original code.
-    // Line 266: } else if (verbose) { ... print output ... }
-    // So previously, by default (no -v, no -o), it printed NOTHING of the JSON/residuals?
-    // That seems odd for a CLI tool.
-    // But lines 141-161 print Model Statistics to cout.
-    // And 187-197 print solver result.
-    // So by default it just prints summary.
-    // I will preserve this behavior. No verbose -> no huge dump to stdout unless specifically asked via -o (to file) or maybe we should support dumping to stdout if user wants?
-    // Usually CLI tools print to stdout if no file.
-    // But "options.verbose" controlled it.
-    // The user said "-v option has too much output to stdout".
-    // So removing -v means we shouldn't have that output.
-    // If they want the output, they use -o.
-    // Or maybe I should allow dumping if format is specified?
-    // Let's stick to: only print summary to stdout. If they want the full JSON/Report, use -o or -d (which creates files).
-    
+
     return solveResult.success ? 0 : 1;
 }

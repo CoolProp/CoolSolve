@@ -1370,51 +1370,68 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
         exprEval.setStringVariable(name, value);
     }
     
+    // Case-insensitive string comparison
+    auto ciEqual = [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t k = 0; k < a.size(); ++k)
+            if (std::tolower(static_cast<unsigned char>(a[k])) !=
+                std::tolower(static_cast<unsigned char>(b[k]))) return false;
+        return true;
+    };
+
+    // Track CALL source lines already processed (to skip sibling equations)
+    std::set<int> processedCallLines;
+    
     for (size_t eq = 0; eq < equations_.size(); ++eq) {
         const EquationInfo* eqInfo = equations_[eq];
         
         if (eqInfo->procedureCall) {
-            // Store the initial state of the outputs to compute residuals
+            // Skip sibling CALL equations already handled by their primary
+            if (processedCallLines.count(eqInfo->sourceLine)) {
+                continue;
+            }
+            processedCallLines.insert(eqInfo->sourceLine);
+
+            const auto& call = *eqInfo->procedureCall;
+            const size_t nOutputs = call.outputVars.size();
+
+            // Find ALL sibling CALL equations in this block (same sourceLine),
+            // sorted by global equation ID.  The IR creates sibling equations
+            // with consecutive IDs in output order, so sorting by GID gives the
+            // correct output-index-to-equation mapping regardless of the SCC
+            // ordering within the block.
+            std::vector<std::pair<int, size_t>> siblingGidAndLocal; // (globalId, localIdx)
+            for (size_t j = 0; j < equations_.size(); ++j) {
+                if (equations_[j]->procedureCall &&
+                    equations_[j]->sourceLine == eqInfo->sourceLine) {
+                    siblingGidAndLocal.push_back({equationIds_[j], j});
+                }
+            }
+            std::sort(siblingGidAndLocal.begin(), siblingGidAndLocal.end());
+
+            // Store the initial state of the outputs to compute residuals.
+            // These "old" values come from x[] (via the AD-seeded variables
+            // set up above), so residuals carry correct AD gradients.
             std::map<std::string, ADValue> oldOutputs;
-            for (const auto& var : eqInfo->procedureCall->outputVars) {
+            for (const auto& var : call.outputVars) {
                 std::string name = exprEval.resolveVariableName(var);
                 oldOutputs[name] = exprEval.getVariable(name);
             }
             
-            // Evaluate procedure call - this updates exprEval's variable state
-            exprEval.evaluateProcedureCall(*eqInfo->procedureCall);
+            // Evaluate procedure call ONCE — this updates exprEval's state
+            // for all output variables with the procedure-computed values.
+            exprEval.evaluateProcedureCall(call);
             
-            // Build a map from output variable name (case-insensitive) to the
-            // local equation index that is paired with that variable.  The
-            // structural analysis may place CALL output equations
-            // non-consecutively, so we must map each output to its correct
-            // residual slot instead of assuming residuals[eq+0..eq+N-1].
-            auto ciEqual = [](const std::string& a, const std::string& b) {
-                if (a.size() != b.size()) return false;
-                for (size_t k = 0; k < a.size(); ++k)
-                    if (std::tolower(static_cast<unsigned char>(a[k])) !=
-                        std::tolower(static_cast<unsigned char>(b[k]))) return false;
-                return true;
-            };
-
-            size_t nOutputs = eqInfo->procedureCall->outputVars.size();
+            // Write one residual per output to its corresponding sibling
+            // CALL equation's slot.  siblingGidAndLocal[i] maps to the i-th
+            // output because the IR creates equations in output order.
             for (size_t i = 0; i < nOutputs; ++i) {
-                std::string outName = exprEval.resolveVariableName(
-                    eqInfo->procedureCall->outputVars[i]);
+                std::string outName = exprEval.resolveVariableName(call.outputVars[i]);
                 ADValue newValue = exprEval.getVariable(outName);
                 ADValue residual = oldOutputs[outName] - newValue;
 
-                // Find the matched equation index for this output variable.
-                // The block's variables_[j] is paired with equations_[j].
-                size_t targetIdx = eq + i;  // fallback: consecutive
-                for (size_t j = 0; j < variables_.size(); ++j) {
-                    if (ciEqual(variables_[j], outName)) {
-                        targetIdx = j;
-                        break;
-                    }
-                }
-
-                if (targetIdx < result.residuals.size()) {
+                if (i < siblingGidAndLocal.size()) {
+                    size_t targetIdx = siblingGidAndLocal[i].second;
                     result.residuals[targetIdx] = residual.value;
                     if (computeJacobian) {
                         for (size_t var = 0; var < variables_.size(); ++var) {
@@ -1423,19 +1440,47 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
                     }
                 }
             }
-            // Don't advance eq — the secondary output equations (with null
-            // LHS/RHS) will be skipped individually by the `continue` below.
-            // This is safe even when CALL outputs are non-consecutive in
-            // equationIds, because each secondary output equation either:
-            // (a) has null LHS/RHS and is skipped, or
-            // (b) is a real equation that needs its own residual evaluation.
-            // Only advance past CONSECUTIVE secondary outputs (those
-            // immediately following this CALL that have null lhs/rhs).
-            while (eq + 1 < equations_.size() &&
-                   !equations_[eq + 1]->procedureCall &&
-                   !equations_[eq + 1]->lhs && !equations_[eq + 1]->rhs) {
-                eq++;
+
+            // Restore evaluator state for outputs that are NOT matched to
+            // one of this CALL's sibling equations.  If a CALL output is
+            // matched to a different equation (e.g. constraint "DELTAT_pp =
+            // DT_min"), leaving the CALL-computed value in the evaluator
+            // would corrupt that equation's residual and Jacobian, because
+            // the AD gradient w.r.t. x[varIdx] would be lost.
+            for (size_t i = 0; i < nOutputs; ++i) {
+                std::string outName = exprEval.resolveVariableName(call.outputVars[i]);
+
+                // Find this output in the block's variable list
+                bool isBlockVar = false;
+                size_t blockVarIdx = 0;
+                for (size_t j = 0; j < variables_.size(); ++j) {
+                    if (ciEqual(variables_[j], outName)) {
+                        isBlockVar = true;
+                        blockVarIdx = j;
+                        break;
+                    }
+                }
+
+                bool restore = false;
+                if (!isBlockVar) {
+                    // External variable (solved by another block) — restore
+                    restore = true;
+                } else {
+                    // Check whether the equation matched to this variable is
+                    // a sibling CALL equation (same source line).  If not,
+                    // the output is "foreign" and must be restored.
+                    const EquationInfo* matchedEq = equations_[blockVarIdx];
+                    if (!(matchedEq->procedureCall &&
+                          matchedEq->sourceLine == eqInfo->sourceLine)) {
+                        restore = true;
+                    }
+                }
+
+                if (restore) {
+                    exprEval.setVariable(outName, oldOutputs[outName]);
+                }
             }
+
             continue;
         }
 

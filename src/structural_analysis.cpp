@@ -202,6 +202,52 @@ std::vector<std::vector<int>> StructuralAnalyzer::buildDependencyGraph(
         }
     }
     
+    // ---- CALL output consistency edges ----
+    // When a procedure CALL has an output variable that is matched to a
+    // different equation (e.g. CALL output DT_min is matched to the
+    // constraint equation "DELTAT_pp = DT_min" rather than to the CALL
+    // equation itself), the two equations must be in the same SCC so the
+    // solver can enforce that the CALL-computed output equals the
+    // constrained value.  Add an artificial back-edge from the non-CALL
+    // equation to the primary CALL equation to create this cycle.
+    for (int eq = 0; eq < numEq; ++eq) {
+        if (!equations[eq].procedureCall) continue;
+        
+        const auto& call = *equations[eq].procedureCall;
+        // Only process the primary CALL equation (the first one for this
+        // source line — all sibling output equations share the same
+        // procedureCall, so deduplicate by checking if the previous
+        // equation is the same CALL).
+        if (eq > 0 && equations[eq - 1].procedureCall &&
+            equations[eq - 1].sourceLine == equations[eq].sourceLine) {
+            continue;  // Skip sibling CALL equations; only process the first
+        }
+        
+        // For each output variable of this CALL
+        for (const auto& outVar : call.outputVars) {
+            std::string outName = outVar.flattenedName();
+            auto it = varToEq.find(outName);
+            if (it == varToEq.end()) continue;
+            
+            int otherEq = it->second;
+            // If this output is matched to a different equation (not one of
+            // the sibling CALL equations for this same source line), add a
+            // back-edge from that equation to this CALL equation.
+            if (otherEq != eq) {
+                bool isSiblingCall = false;
+                // Check if otherEq is a sibling CALL equation (same source line)
+                if (equations[otherEq].procedureCall &&
+                    equations[otherEq].sourceLine == equations[eq].sourceLine) {
+                    isSiblingCall = true;
+                }
+                if (!isSiblingCall) {
+                    // Add back-edge: otherEq depends on this CALL
+                    adj[otherEq].push_back(eq);
+                }
+            }
+        }
+    }
+    
     return adj;
 }
 

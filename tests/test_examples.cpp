@@ -11,6 +11,7 @@
 #include <catch2/reporters/catch_reporter_registrars.hpp>
 #include "coolsolve/runner.h"
 #include <filesystem>
+#include "coolsolve/solution_checker.h"
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -101,7 +102,7 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"heat_pump_MSTh_SB_R10.eescode",           {"COP", 3.311}},
     {"refrigeration_compressor.eescode",        {"epsilon_v_1", 0.4729}},
     {"simple_centrifugal_compressor.eescode",   {"U", 354.8}},
-    {"zorlu_heat_pump.eescode",                 {"COP_HP", 6.226}},
+    {"zorlu_heat_pump.eescode",                 {"COP_HP", 6.4167}},
 };
 
 // Test result structure for reporting
@@ -122,6 +123,15 @@ struct ExampleTestResult {
     double expectedValue = 0.0;
     double actualValue = 0.0;
     double percentError = 0.0;
+    
+    // Full equation verification
+    bool equationCheckDone = false;
+    bool allEquationsSatisfied = false;
+    size_t equationsChecked = 0;
+    size_t equationsViolated = 0;
+    double maxResidual = 0.0;
+    double maxRelativeError = 0.0;
+    std::string worstEquationText;
     
     size_t equationCount = 0;
     size_t blockCount = 0;
@@ -241,6 +251,18 @@ ExampleTestResult testExampleFile(const fs::path& filepath) {
                             result.solutionValueCorrect = (result.percentError <= it->second.tolerancePercent);
                         }
                     }
+                    
+                    // Full equation verification: check all equations are satisfied
+                    auto checkRes = coolsolve::checkSolution(
+                        runner.getIR(), solveRes.variables, solveRes.stringVariables,
+                        options.coolpropConfig);
+                    result.equationCheckDone = true;
+                    result.allEquationsSatisfied = checkRes.allSatisfied;
+                    result.equationsChecked = checkRes.satisfiedCount + checkRes.violatedCount;
+                    result.equationsViolated = checkRes.violatedCount;
+                    result.maxResidual = checkRes.maxResidual;
+                    result.maxRelativeError = checkRes.maxRelativeError;
+                    result.worstEquationText = checkRes.worstEquationText;
                 }
             } else {
                 result.errorMsg = "Structural analysis failed";
@@ -332,8 +354,8 @@ void writeDetailedReport(const fs::path& reportPath, const std::vector<ExampleTe
     }
 
     report << "## Results by File\n\n";
-    report << "| File | Parse | IR | Analysis | Solve | Value Check | Eqs | Blocks | Time (s) |\n";
-    report << "|------|-------|----|---------|-------|-------------|----:|-------:|--------:|\n";
+    report << "| File | Parse | IR | Analysis | Solve | Value Check | Eq Check | Eqs | Blocks | Time (s) |\n";
+    report << "|------|-------|----|---------|-------|-------------|----------|----:|-------:|--------:|\n";
     for (const auto& r : results) {
         std::string valueCheck = "-";
         if (r.hasExpectedSolution) {
@@ -343,12 +365,21 @@ void writeDetailedReport(const fs::path& reportPath, const std::vector<ExampleTe
                 valueCheck = "N/A";
             }
         }
+        std::string eqCheck = "-";
+        if (r.equationCheckDone) {
+            if (r.allEquationsSatisfied) {
+                eqCheck = "ALL OK";
+            } else {
+                eqCheck = std::to_string(r.equationsViolated) + " FAIL";
+            }
+        }
         report << "| " << r.filename
                << " | " << (r.parseSuccess ? "OK" : "FAIL")
                << " | " << (r.irSuccess ? "OK" : "FAIL")
                << " | " << (r.analysisSuccess ? "OK" : "FAIL")
                << " | " << (r.solveSuccess ? "OK" : "FAIL")
                << " | " << valueCheck
+               << " | " << eqCheck
                << " | " << r.equationCount
                << " | " << r.blockCount
                << " | " << std::fixed << std::setprecision(2) << (r.totalTimeMs / 1000.0) << " |\n";
@@ -383,6 +414,15 @@ void writeDetailedReport(const fs::path& reportPath, const std::vector<ExampleTe
                    << " | " << std::setprecision(6) << r.expectedValue
                    << " | " << std::setprecision(6) << r.actualValue
                    << " | " << std::setprecision(2) << r.percentError << "% |\n\n";
+        }
+        // Report equation check failures
+        if (r.equationCheckDone && !r.allEquationsSatisfied) {
+            report << "### " << r.filename << " - Equation Check\n\n";
+            report << "**" << r.equationsViolated << " equation(s) violated** out of "
+                   << r.equationsChecked << " checked\n\n";
+            report << "- Max |residual|: " << std::scientific << std::setprecision(4) << r.maxResidual << "\n";
+            report << "- Max relative error: " << r.maxRelativeError << "\n";
+            report << "- Worst equation: " << r.worstEquationText << "\n\n";
         }
     }
     
@@ -430,6 +470,15 @@ TEST_CASE("Comprehensive example file testing", "[.][examples-comprehensive]") {
                               << std::setprecision(4) << result.actualValue 
                               << " EXPECTED " << result.expectedValue 
                               << " ERROR " << std::setprecision(2) << result.percentError << "%]";
+                }
+            }
+            if (result.equationCheckDone) {
+                if (result.allEquationsSatisfied) {
+                    std::cout << " [EqCheck: ALL OK]";
+                } else {
+                    std::cout << " [EqCheck: " << result.equationsViolated << " VIOLATED"
+                              << " maxRel=" << std::scientific << std::setprecision(2)
+                              << result.maxRelativeError << "]";
                 }
             }
         }

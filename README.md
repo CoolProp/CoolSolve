@@ -53,6 +53,8 @@ CoolSolve is a parser, structural analyzer, and equation evaluator for the EES (
   - Evaluator report (block summary and state)
   - **Solution/Initials files**: Support for loading initial values and comparing solutions
 
+- **Solution Verification**: After a successful solve, CoolSolve independently re-evaluates every equation (including procedure CALLs) using the proposed solution and checks that LHS ≈ RHS within a configurable tolerance (default: 0.1%). This catches structural bugs, numerical drift, and procedure output inconsistencies that the solver's own convergence check may miss. Enabled automatically in debug mode (`-d`) and in the comprehensive test suite.
+
 - **Debug Mode**: Creates a comprehensive output folder with all analysis information
 
 ## Performance and Roadmap
@@ -249,11 +251,16 @@ COOLPROP_ENABLE_SUPERANCILLARIES=false ./coolsolve model.eescode
 ```bash
 cd build
 
-# Run all unit tests
+# Run all unit tests (parser, evaluator, Newton, tearing, config, etc.)
 ./coolsolve_tests
 
-# Run comprehensive example file tests
+# Run comprehensive example file tests (solves all 40 .eescode examples,
+# checks expected values, and runs solution verification on each)
 ./coolsolve_tests "[examples-comprehensive]"
+
+# Run solver robustness tests (stress-tests every example with multiple
+# solver configurations: Newton-only, LM-only, tearing, symbolic reduction, etc.)
+./coolsolve_tests "[solver-robustness]"
 ```
 
 Or using CTest:
@@ -262,7 +269,9 @@ cd build
 ctest --output-on-failure
 ```
 
-The comprehensive test runs all `.eescode` files in the `examples/` folder and validates solutions against known expected values (with 1% tolerance). A detailed report is written to `examples/test_examples.md`.
+The comprehensive test runs all `.eescode` files in the `examples/` folder, validates solutions against known expected values (with 1% tolerance), and performs **solution verification** — independently re-evaluating every equation to confirm LHS ≈ RHS. A detailed report is written to `examples/test_examples.md`.
+
+The robustness test runs every solvable example under multiple solver configurations and reports a summary table of successes, failures, and iteration counts per configuration. A detailed report is written to `examples/solver_robustness_report.md`.
 
 ## GUI (Web Interface)
 
@@ -330,6 +339,7 @@ CoolSolve/
 │   ├── symbolic_reduction.h    # Symbolic block reduction analysis
 │   ├── autodiff_node.h         # Forward-mode AD types and operations
 │   ├── evaluator.h             # Block and system evaluators
+│   ├── solution_checker.h      # Post-solve solution verification
 │   └── solver.h                # Solver pipeline, all SolverOptions declarations
 ├── src/
 │   ├── parser.cpp              # EES parser implementation
@@ -343,7 +353,8 @@ CoolSolve/
 │   ├── solver_lm.cpp           # Levenberg-Marquardt solver
 │   ├── solver_newton.cpp       # Newton + line search solver
 │   ├── solver_symbolic.cpp     # Symbolic block reduction preprocessing
-│   └── solver_trust_region.cpp # Trust-region dogleg solver
+│   ├── solver_trust_region.cpp # Trust-region dogleg solver
+│   └── solution_checker.cpp    # Post-solve equation-by-equation verification
 ├── tests/
 │   ├── test_parser.cpp         # Parser/IR unit tests (Catch2)
 │   ├── test_evaluator.cpp      # AD/Evaluator unit tests (Catch2)
