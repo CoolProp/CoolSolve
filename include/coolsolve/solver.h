@@ -829,7 +829,10 @@ private:
 std::string generateSolveReport(const SolveResult& result);
 
 /**
- * @brief RAII class to handle timeouts using SIGALRM.
+ * @brief RAII class to handle timeouts.
+ *
+ * Uses a thread-local chrono deadline so that multiple threads can each
+ * have independent timeouts (needed for parallel robustness testing).
  */
 class TimeoutGuard {
 public:

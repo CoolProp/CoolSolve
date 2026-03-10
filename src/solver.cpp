@@ -308,35 +308,30 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
 // Timeout Handling
 // ============================================================================
 
-static std::atomic<bool> g_timed_out{false};
-
-#ifdef __unix__
-void handle_sigalrm(int) {
-    g_timed_out = true;
-}
-#endif
+// Thread-local chrono-based timeout: each thread maintains its own deadline.
+// This allows parallel solver invocations (e.g. robustness testing) where
+// each thread has an independent timeout.
+static thread_local std::chrono::steady_clock::time_point tl_deadline{};
+static thread_local bool tl_has_deadline{false};
 
 TimeoutGuard::TimeoutGuard(int seconds) : seconds_(seconds) {
-    g_timed_out = false;
     if (seconds > 0) {
-#ifdef __unix__
-        signal(SIGALRM, handle_sigalrm);
-        alarm(seconds);
-#endif
+        tl_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+        tl_has_deadline = true;
+    } else {
+        tl_has_deadline = false;
     }
 }
 
 TimeoutGuard::~TimeoutGuard() {
-    if (seconds_ > 0) {
-#ifdef __unix__
-        alarm(0);
-        signal(SIGALRM, SIG_DFL);
-#endif
-    }
+    tl_has_deadline = false;
 }
 
 bool TimeoutGuard::hasTimedOut() {
-    return g_timed_out;
+    if (tl_has_deadline) {
+        return std::chrono::steady_clock::now() >= tl_deadline;
+    }
+    return false;
 }
 
 // Newton, TrustRegion, and LM solver implementations are in separate files:
@@ -1554,8 +1549,14 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
     for (int round = 0; round < MAX_ROUNDS; ++round) {
         double roundStartResidual = bestResidualNorm;
 
+        // Check timeout before each pipeline round
+        if (TimeoutGuard::hasTimedOut()) break;
+
     for (size_t idx = 0; idx < options.solverPipeline.size(); ++idx) {
         SolverStrategy strategy = options.solverPipeline[idx];
+
+        // Check timeout before each solver attempt
+        if (TimeoutGuard::hasTimedOut()) break;
 
         // Skip Partitioned if it previously worsened the solution
         if (strategy == SolverStrategy::Partitioned && skipPartitioned) {
@@ -2153,6 +2154,16 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
     }
 
     for (int outer = 0; outer < maxOuter; ++outer) {
+        // Check timeout at each outer iteration
+        if (TimeoutGuard::hasTimedOut()) {
+            if (outErrorMessage) *outErrorMessage = "Tearing: TIMEOUT";
+            if (trace) {
+                trace->finalStatus = SolverStatus::MaxIterations;
+                trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+            }
+            return SolverStatus::MaxIterations;
+        }
+
         std::vector<double> x_std(x.data(), x.data() + x.size());
         EvaluationResult evalResult;
         try {
@@ -2175,31 +2186,30 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
             }
         }
 
+        // Acyclic forward sweep: use the Jacobian from the initial evaluation
+        // for a linearized forward substitution.  Each acyclic equation's
+        // matched variable is updated with a single Newton step using the
+        // diagonal Jacobian entry.  After each update, downstream residuals
+        // are corrected via the Jacobian (off-diagonal entries), avoiding
+        // re-evaluation of the entire block.  This replaces the previous
+        // inner Newton loop that called blockEval.evaluate() for every
+        // acyclic equation × up to maxInner iterations — the dominant cost
+        // for blocks with expensive CoolProp or procedure-call evaluations.
         for (size_t k = 0; k < nonTearEqLocalIndices.size(); ++k) {
             size_t eq = nonTearEqLocalIndices[k];
-            size_t varIdx = eq;
-            for (int inner = 0; inner < maxInner; ++inner) {
-                x_std.assign(x.data(), x.data() + x.size());
-                EvaluationResult er;
-                try {
-                    er = blockEval.evaluate(x_std, externalVars, externalStringVars);
-                } catch (const std::exception& e) {
-                    if (options.verbose)
-                        std::cerr << "Tearing: evaluation failed for acyclic eq " << eq << ": " << e.what() << std::endl;
-                    break;
-                } catch (...) {
-                    if (options.verbose)
-                        std::cerr << "Tearing: unknown evaluation failure for acyclic eq " << eq << std::endl;
-                    break;
-                }
-                double fEq = er.residuals[eq];
-                double jEq = (eq < er.jacobian.size() && varIdx < er.jacobian[eq].size())
-                             ? er.jacobian[eq][varIdx] : 0.0;
-                if (std::abs(jEq) < 1e-14) break;
-                double step = -fEq / jEq;
-                if (!std::isfinite(step)) break;
-                x[varIdx] += step;
-                if (std::abs(fEq) < options.tolerance) break;
+            double fEq = F(static_cast<int>(eq));
+            double jEq = J(static_cast<int>(eq), static_cast<int>(eq));
+            if (std::abs(jEq) < 1e-14) continue;
+            double step = -fEq / jEq;
+            if (!std::isfinite(step)) continue;
+            x[eq] += step;
+
+            // Propagate update to downstream acyclic equations (linearized).
+            // For an acyclic (lower-triangular) system this is exact for
+            // linear equations and first-order accurate for nonlinear ones.
+            for (size_t m = k + 1; m < nonTearEqLocalIndices.size(); ++m) {
+                size_t nextEq = nonTearEqLocalIndices[m];
+                F(static_cast<int>(nextEq)) += J(static_cast<int>(nextEq), static_cast<int>(eq)) * step;
             }
         }
 

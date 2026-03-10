@@ -23,6 +23,7 @@
 #include <atomic>
 #include <chrono>
 
+
 namespace fs = std::filesystem;
 
 static std::atomic<bool> g_rob_interrupted{false};
@@ -455,26 +456,34 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
     // Collect results: configs x files
     // results[configIdx][fileIdx]
     std::vector<std::vector<RobustnessResult>> allResults(configs.size());
+    for (auto& v : allResults) v.resize(files.size());
 
+    const size_t totalWork = configs.size() * files.size();
+    size_t doneCount = 0;
+
+    auto wallStart = std::chrono::steady_clock::now();
     for (size_t ci = 0; ci < configs.size(); ++ci) {
-        if (robShouldStop()) break;
-        const auto& cfg = configs[ci];
-        std::cout << "\n=== " << cfg.label << " ===\n";
-        allResults[ci].reserve(files.size());
-
-        for (const auto& file : files) {
+        for (size_t fi = 0; fi < files.size(); ++fi) {
             if (robShouldStop()) break;
-            std::cout << "  " << file.filename().string() << "... " << std::flush;
-            auto r = testFile(file, cfg);
-            allResults[ci].push_back(r);
+            auto r = testFile(files[fi], configs[ci]);
+            allResults[ci][fi] = r;
+            ++doneCount;
 
+            std::cout << "[" << doneCount << "/" << totalWork << "] "
+                      << configs[ci].label << " | "
+                      << files[fi].filename().string() << " ... ";
             if (!r.parseOk)          std::cout << "PARSE FAIL";
             else if (!r.analysisOk)  std::cout << "ANALYSIS FAIL";
             else if (r.solveOk)      std::cout << "OK (" << std::fixed << std::setprecision(2) << (r.totalTimeMs/1000.0) << "s)";
             else                     std::cout << "FAIL";
             std::cout << "\n";
         }
+        if (robShouldStop()) break;
     }
+    auto wallEnd = std::chrono::steady_clock::now();
+    double wallSec = std::chrono::duration<double>(wallEnd - wallStart).count();
+    std::cout << "\nAll tasks done in " << std::fixed << std::setprecision(1)
+              << wallSec << "s wall time\n";
 
     // ========================================================================
     // Write combined report
