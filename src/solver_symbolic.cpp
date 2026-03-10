@@ -278,6 +278,11 @@ BlockReductionResult analyseBlockReduction(
     std::set<int> extractedEqs;
     std::set<std::string, CaseInsensitiveLess> extractedVars;
 
+    // Track variables whose values are only available AFTER the reduced block
+    // is solved (post-solve).  Any pre-solve extraction that depends on a
+    // post-solve variable must itself become a post-solve step.
+    std::set<std::string, CaseInsensitiveLess> postSolveVars;
+
     // Collect pre-solve and post-solve steps
     std::vector<ReductionStep> preSolve;
     std::vector<ReductionStep> postSolve;
@@ -416,8 +421,41 @@ BlockReductionResult analyseBlockReduction(
                 step.newNamedArgs.push_back({outputPropName, lhsExpr});
                 step.newNamedArgs.push_back({otherName, otherExpr});
 
+                // Additionally, if any dependency (the "other" named arg)
+                // is a post-solve variable, this step must also be post-solve.
+                if (!isPostSolve) {
+                    for (const auto& v : otherArgVars) {
+                        if (ciContains(postSolveVars, v)) {
+                            isPostSolve = true;
+                            break;
+                        }
+                    }
+                }
+
+                // For post-solve inversions, the target variable is extracted
+                // from the block and its value is only computed after the
+                // reduced block is solved.  If the target variable is
+                // referenced by OTHER remaining (non-extracted) equations in
+                // the block, those equations would use a stale initial value
+                // during the sub-block solve.  Reject the inversion to keep
+                // the variable (and its defining equation) in the block.
+                if (isPostSolve) {
+                    bool targetReferencedElsewhere = false;
+                    for (int otherEqId : block.equationIds) {
+                        if (otherEqId == eqId || extractedEqs.count(otherEqId)) continue;
+                        if (otherEqId < 0 || otherEqId >= static_cast<int>(equations.size())) continue;
+                        const auto& otherEq = equations[otherEqId];
+                        if (ciContains(otherEq.variables, targetBlockVar)) {
+                            targetReferencedElsewhere = true;
+                            break;
+                        }
+                    }
+                    if (targetReferencedElsewhere) continue;
+                }
+
                 if (isPostSolve) {
                     postSolve.push_back(std::move(step));
+                    postSolveVars.insert(targetBlockVar);
                 } else {
                     preSolve.push_back(std::move(step));
                 }
@@ -473,6 +511,21 @@ BlockReductionResult analyseBlockReduction(
                 }
             }
             if (!allKnown) continue;
+
+            // Check if any RHS dependency is a post-solve variable.
+            // If so, we CANNOT safely extract this variable in pre-solve
+            // (the dependent value isn't available yet) and placing it in
+            // post-solve would deprive the sub-block of a needed value.
+            // Instead, skip the extraction entirely — keep the variable in
+            // the reduced block so the iterative solver handles it.
+            bool hasPostSolveDep = false;
+            for (const auto& v : rhsVars) {
+                if (ciContains(postSolveVars, v)) {
+                    hasPostSolveDep = true;
+                    break;
+                }
+            }
+            if (hasPostSolveDep) continue;
 
             // --- Extract this equation ---
             ReductionStep step;
@@ -554,23 +607,38 @@ BlockReductionResult analyseBlockReduction(
                     }
                 }
 
-                ReductionStep step;
-                step.variable = outVar;
-                step.equationId = eqId;
-                step.inverted = false;
+                // Check if any RHS dependency is a post-solve variable.
+                // If so, skip this extraction entirely (same rationale as
+                // Phase 2 — keep variable in the reduced block).
+                bool hasPostSolveDep = false;
+                for (const auto& v : rhsVars) {
+                    if (ciContains(postSolveVars, v)) {
+                        hasPostSolveDep = true;
+                        break;
+                    }
+                }
+                if (hasPostSolveDep) continue;
 
-                if (allKnownNow) {
-                    preSolve.push_back(std::move(step));
-                } else {
+                if (!allKnownNow) {
+                    // Depends on remaining block var → post-solve
+                    ReductionStep step;
+                    step.variable = outVar;
+                    step.equationId = eqId;
+                    step.inverted = false;
                     postSolve.push_back(std::move(step));
+                    postSolveVars.insert(outVar);
+                } else {
+                    // All dependencies are known → pre-solve
+                    ReductionStep step;
+                    step.variable = outVar;
+                    step.equationId = eqId;
+                    step.inverted = false;
+                    preSolve.push_back(std::move(step));
+                    knownVars.insert(outVar);
                 }
 
                 extractedEqs.insert(eqId);
                 extractedVars.insert(outVar);
-
-                if (allKnownNow) {
-                    knownVars.insert(outVar);
-                }
 
                 result.substitutionsApplied++;
                 changed = true;

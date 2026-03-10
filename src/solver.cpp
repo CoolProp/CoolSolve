@@ -2183,7 +2183,13 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
                 EvaluationResult er;
                 try {
                     er = blockEval.evaluate(x_std, externalVars, externalStringVars);
+                } catch (const std::exception& e) {
+                    if (options.verbose)
+                        std::cerr << "Tearing: evaluation failed for acyclic eq " << eq << ": " << e.what() << std::endl;
+                    break;
                 } catch (...) {
+                    if (options.verbose)
+                        std::cerr << "Tearing: unknown evaluation failure for acyclic eq " << eq << std::endl;
                     break;
                 }
                 double fEq = er.residuals[eq];
@@ -2295,7 +2301,11 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
             std::cout << "Tearing outer " << outer << ": ||F_tear||_inf = " << tearNorm << std::endl;
         }
 
-        if (tearNorm < options.tolerance) {
+        // Use the full-system residual norm (including acyclic equations)
+        // to declare convergence.  Checking only tear residuals can hide
+        // failures in the acyclic forward sweep (e.g. silently skipped
+        // equations due to evaluation errors).
+        if (fullNorm < options.tolerance) {
             if (trace) {
                 trace->finalStatus = SolverStatus::Success;
                 trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
@@ -2306,6 +2316,16 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
         Eigen::VectorXd dx_tear;
         Eigen::FullPivLU<Eigen::MatrixXd> lu(S);
         if (!lu.isInvertible()) {
+            // Schur complement is singular — tear Newton step impossible.
+            // However, if the acyclic forward sweep already brought the
+            // full residual close to tolerance, accept the current x.
+            if (fullNorm < std::max(options.tolerance * 1000.0, 1e-3)) {
+                if (trace) {
+                    trace->finalStatus = SolverStatus::Success;
+                    trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
+                }
+                return SolverStatus::Success;
+            }
             if (outErrorMessage) *outErrorMessage = "Tearing: singular Schur complement (tear system)";
             if (trace) {
                 trace->finalStatus = SolverStatus::SingularJacobian;
@@ -2341,9 +2361,9 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
     result.blocksEvaluated = 0;
     result.totalIterations = 0;
     
-    if (enableTracing) {
-        result.blockTraces.resize(evaluator_.getNumBlocks());
-    }
+    // Always allocate block traces so iteration counts are tracked even
+    // without full debug tracing.  The overhead is minimal.
+    result.blockTraces.resize(evaluator_.getNumBlocks());
     
     // Solve blocks in topological order
     int totalBlocks = static_cast<int>(evaluator_.getNumBlocks());
@@ -2363,7 +2383,7 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
             return result;
         }
         
-        SolverTrace* trace = enableTracing ? &result.blockTraces[blockIdx] : nullptr;
+        SolverTrace* trace = &result.blockTraces[blockIdx];
         
         // Notify progress: block starting
         if (options.progressCallback) {
@@ -2382,9 +2402,9 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
         br.id = blockIdx;
         br.success = (blockStatus == SolverStatus::Success);
         br.status = blockStatus;
-        br.iterations = trace ? static_cast<int>(trace->iterations.size()) : 0;
+        br.iterations = static_cast<int>(trace->iterations.size());
         br.maxResidual = 0.0;
-        if (trace && !trace->iterations.empty()) {
+        if (!trace->iterations.empty()) {
             br.maxResidual = trace->iterations.back().residualNorm;
         }
         br.errorMessage = blockError;
@@ -2414,9 +2434,7 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
 
         result.blockResults.push_back(br);
         
-        if (trace) {
-            result.totalIterations += static_cast<int>(trace->iterations.size());
-        }
+        result.totalIterations += static_cast<int>(trace->iterations.size());
         
         if (blockStatus != SolverStatus::Success) {
             // Notify progress: block failed

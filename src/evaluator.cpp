@@ -1384,24 +1384,58 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
             // Evaluate procedure call - this updates exprEval's variable state
             exprEval.evaluateProcedureCall(*eqInfo->procedureCall);
             
-            // The residuals are (old_value - new_value) for each output variable
-            // We need to fill as many residuals as there are outputs in the CALL.
-            // These should map to the equations in the block.
-            for (size_t i = 0; i < eqInfo->procedureCall->outputVars.size(); ++i) {
-                if (eq + i >= result.residuals.size()) break;
-                
-                std::string name = exprEval.resolveVariableName(eqInfo->procedureCall->outputVars[i]);
-                ADValue newValue = exprEval.getVariable(name);
-                ADValue residual = oldOutputs[name] - newValue;
-                result.residuals[eq + i] = residual.value;
-                if (computeJacobian) {
-                    for (size_t var = 0; var < variables_.size(); ++var) {
-                        result.jacobian[eq + i][var] = residual.gradient[var];
+            // Build a map from output variable name (case-insensitive) to the
+            // local equation index that is paired with that variable.  The
+            // structural analysis may place CALL output equations
+            // non-consecutively, so we must map each output to its correct
+            // residual slot instead of assuming residuals[eq+0..eq+N-1].
+            auto ciEqual = [](const std::string& a, const std::string& b) {
+                if (a.size() != b.size()) return false;
+                for (size_t k = 0; k < a.size(); ++k)
+                    if (std::tolower(static_cast<unsigned char>(a[k])) !=
+                        std::tolower(static_cast<unsigned char>(b[k]))) return false;
+                return true;
+            };
+
+            size_t nOutputs = eqInfo->procedureCall->outputVars.size();
+            for (size_t i = 0; i < nOutputs; ++i) {
+                std::string outName = exprEval.resolveVariableName(
+                    eqInfo->procedureCall->outputVars[i]);
+                ADValue newValue = exprEval.getVariable(outName);
+                ADValue residual = oldOutputs[outName] - newValue;
+
+                // Find the matched equation index for this output variable.
+                // The block's variables_[j] is paired with equations_[j].
+                size_t targetIdx = eq + i;  // fallback: consecutive
+                for (size_t j = 0; j < variables_.size(); ++j) {
+                    if (ciEqual(variables_[j], outName)) {
+                        targetIdx = j;
+                        break;
+                    }
+                }
+
+                if (targetIdx < result.residuals.size()) {
+                    result.residuals[targetIdx] = residual.value;
+                    if (computeJacobian) {
+                        for (size_t var = 0; var < variables_.size(); ++var) {
+                            result.jacobian[targetIdx][var] = residual.gradient[var];
+                        }
                     }
                 }
             }
-            // Skip the next N-1 residuals in the loop, where N is the number of outputs
-            eq += eqInfo->procedureCall->outputVars.size() - 1;
+            // Don't advance eq — the secondary output equations (with null
+            // LHS/RHS) will be skipped individually by the `continue` below.
+            // This is safe even when CALL outputs are non-consecutive in
+            // equationIds, because each secondary output equation either:
+            // (a) has null LHS/RHS and is skipped, or
+            // (b) is a real equation that needs its own residual evaluation.
+            // Only advance past CONSECUTIVE secondary outputs (those
+            // immediately following this CALL that have null lhs/rhs).
+            while (eq + 1 < equations_.size() &&
+                   !equations_[eq + 1]->procedureCall &&
+                   !equations_[eq + 1]->lhs && !equations_[eq + 1]->rhs) {
+                eq++;
+            }
             continue;
         }
 
