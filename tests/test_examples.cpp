@@ -101,6 +101,7 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"heat_pump_MSTh_SB_R10.eescode",           {"COP", 3.311}},
     {"refrigeration_compressor.eescode",        {"epsilon_v_1", 0.4729}},
     {"simple_centrifugal_compressor.eescode",   {"U", 354.8}},
+    {"zorlu_heat_pump.eescode",                 {"COP_HP", 5.893}},
 };
 
 // Test result structure for reporting

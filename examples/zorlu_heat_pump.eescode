@@ -1,0 +1,276 @@
+"==========================================================="
+"  Zorlu Geothermal Power Plant - Heat Pump with PCM Storage "
+"  Translated from EES to CoolSolve format                   "
+"  Units: T[C], P[Pa], h[J/kg], s[J/(kg*K)], m_dot[kg/s]   "
+"==========================================================="
+
+"==========================================================="
+"  Pinch point procedure for condenser (needs IF-THEN-ELSE) "
+"==========================================================="
+Procedure q_dot_pinch_fun_cd(m_dot_h, h_h_in, h_h_x0, h_h_x1, h_h_out, T_h_in, T_h_x0, T_h_x1, T_h_out, T_c_in, T_c_x0, T_c_x1, T_c_out:Q_dot_sc, Q_dot_tp, Q_dot_sh, DT_min)
+
+If h_h_in > h_h_x1 Then
+  Q_dot_sh := m_dot_h*(h_h_in - h_h_x1)
+  Q_dot_tp := m_dot_h*(h_h_x1 - h_h_x0)
+  Q_dot_sc := m_dot_h*(h_h_x0 - h_h_out)
+  DT_h_in := T_h_in - T_c_out
+  DT_h_x0 := T_h_x0 - T_c_x0
+  DT_h_x1 := T_h_x1 - T_c_x1
+  DT_h_out := T_h_out - T_c_in
+  DT_min := min(DT_h_out, DT_h_x0, DT_h_x1, DT_h_in)
+Else
+  If h_h_in > h_h_x0 Then
+    Q_dot_sh := 0
+    Q_dot_tp := m_dot_h*(h_h_in - h_h_x0)
+    Q_dot_sc := m_dot_h*(h_h_x0 - h_h_out)
+    DT_h_in := T_h_in - T_c_out
+    DT_h_x1 := T_h_x1 - T_c_x1
+    DT_h_out := T_h_out - T_c_in
+    DT_min := min(DT_h_out, DT_h_x1, DT_h_in)
+  Else
+    Q_dot_sh := 0
+    Q_dot_tp := 0
+    Q_dot_sc := m_dot_h*(h_h_in - h_h_out)
+    DT_h_in := T_h_in - T_c_out
+    DT_h_out := T_h_out - T_c_in
+    DT_min := min(DT_h_out, DT_h_in)
+  Endif
+Endif
+
+End
+
+"==========================================================="
+"  Pinch point procedure for evaporator (needs IF-THEN-ELSE) "
+"==========================================================="
+Procedure q_dot_pinch_fun_ev(m_dot_c, h_c_in, h_c_x0, h_c_x1, h_c_out, T_c_in, T_c_x0, T_c_x1, T_c_out, T_h_in, T_h_x0, T_h_x1, T_h_out:Q_dot_sc, Q_dot_tp, Q_dot_sh, DT_min)
+
+If h_c_in < h_c_x0 Then
+  Q_dot_sc := m_dot_c*(h_c_x0 - h_c_in)
+  Q_dot_tp := m_dot_c*(h_c_x1 - h_c_x0)
+  Q_dot_sh := m_dot_c*(h_c_out - h_c_x1)
+  DT_c_out := T_h_in - T_c_out
+  DT_c_x0 := T_h_x0 - T_c_x0
+  DT_c_x1 := T_h_x1 - T_c_x1
+  DT_c_in := T_h_out - T_c_in
+  DT_min := min(DT_c_out, DT_c_x0, DT_c_x1, DT_c_in)
+Else
+  If h_c_in < h_c_x1 Then
+    Q_dot_sc := 0
+    Q_dot_tp := m_dot_c*(h_c_x1 - h_c_in)
+    Q_dot_sh := m_dot_c*(h_c_out - h_c_x1)
+    DT_c_out := T_h_in - T_c_out
+    DT_c_x1 := T_h_x1 - T_c_x1
+    DT_c_in := T_h_out - T_c_in
+    DT_min := min(DT_c_out, DT_c_x1, DT_c_in)
+  Else
+    Q_dot_sc := 0
+    Q_dot_tp := 0
+    Q_dot_sh := m_dot_c*(h_c_out - h_c_in)
+    DT_c_out := T_h_in - T_c_out
+    DT_c_in := T_h_out - T_c_in
+    DT_min := min(DT_c_out, DT_c_in)
+  Endif
+Endif
+
+End
+
+"==========================================================="
+"            Global Parameters                               "
+"==========================================================="
+E_density_PCM = 90000
+T_PCM = 141
+fluid$ = 'CycloPentane'
+
+"==========================================================="
+"            Zorlu Requirements                              "
+"==========================================================="
+Q_dot_cd_HP = 7000000
+W_dot_exp_orc = 2000000
+PCM_cap = 29000000
+t_charge = 4
+t_discharge = 2
+
+"==========================================================="
+"  1. High Temperature Heat Pump                             "
+"==========================================================="
+
+"--- Parameters ---"
+DELTAT_sh = 1
+DELTAT_sc = 3
+epsilon_ihx_hp = 0.8
+epsilon_s_cp = 0.8
+m_dot = 19.99
+DP_c_ev_HP = 0
+DP_h_ihx = 0
+DP_c_ihx = 0
+DP_h_cd_HP = 0
+
+"--- Pressures determined by pinch constraints ---"
+DELTAT_pp_cd = 10
+DELTAT_pp_ev = 3
+
+"==========================================================="
+"  Secondary fluid - Evaporator side (pump)                  "
+"==========================================================="
+sf_fluid_ev$ = 'Water'
+T_sf_su_pp = 113.1
+p_sf_su_pp = 159000
+sf_use = 0.58
+DP_sf_ev = 50000
+
+m_dot_sf_su_ev_max = 3088.6*1000/3600
+m_dot_sf_su_ev = m_dot_sf_su_ev_max*sf_use
+
+h_sf_su_pp = enthalpy(sf_fluid_ev$, T=T_sf_su_pp, P=p_sf_su_pp)
+s_sf_su_pp = entropy(sf_fluid_ev$, T=T_sf_su_pp, P=p_sf_su_pp)
+eta_is_sf_pp = 0.7
+p_sf_ex_pp = p_sf_su_pp + DP_sf_ev
+h_is_sf_ex_pp = enthalpy(sf_fluid_ev$, s=s_sf_su_pp, P=p_sf_ex_pp)
+h_sf_ex_pp = h_sf_su_pp + (h_is_sf_ex_pp - h_sf_su_pp)/eta_is_sf_pp
+T_sf_ex_pp = temperature(sf_fluid_ev$, h=h_sf_ex_pp, P=p_sf_ex_pp)
+W_dot_sf_pp = m_dot_sf_su_ev*(h_sf_ex_pp - h_sf_su_pp)
+
+T_sf_su_ev = T_sf_ex_pp
+p_sf_su_ev = p_sf_ex_pp
+h_sf_su_ev = h_sf_ex_pp
+
+"==========================================================="
+"  Secondary fluid - Condenser side                          "
+"==========================================================="
+sf_fluid_cd$ = 'Water'
+T_sf_su_cd = 141
+p_sf_su_cd = 159000
+h_sf_su_cd = enthalpy(sf_fluid_cd$, T=T_sf_su_cd, P=p_sf_su_cd)
+m_dot_sf_su_cd = 10000
+
+"==========================================================="
+"  Evaporator - saturation properties                        "
+"==========================================================="
+T_c_x0_ev = temperature(fluid$, x=0, P=p_su_ev)
+T_c_x1_ev = temperature(fluid$, x=1, P=p_su_ev)
+T_ex_ev = T_c_x1_ev + DELTAT_sh
+p_ex_ev = p_su_ev
+h_ex_ev = enthalpy(fluid$, T=T_ex_ev, P=p_ex_ev)
+h_c_x1_ev = enthalpy(fluid$, x=1, P=p_ex_ev)
+h_c_x0_ev = enthalpy(fluid$, x=0, P=p_ex_ev)
+T_sat_ev = (T_c_x1_ev + T_c_x0_ev)/2
+
+"==========================================================="
+"  Condenser - saturation properties                         "
+"==========================================================="
+T_h_cd_x1 = temperature(fluid$, x=1, P=p_su_cd)
+T_h_cd_x0 = temperature(fluid$, x=0, P=p_su_cd)
+T_ex_cd = T_h_cd_x0 - DELTAT_sc
+p_ex_cd = p_su_cd
+h_ex_cd = enthalpy(fluid$, T=T_ex_cd, P=p_su_cd)
+h_h_cd_x1 = enthalpy(fluid$, P=p_su_cd, x=1)
+h_h_cd_x0 = enthalpy(fluid$, P=p_su_cd, x=0)
+T_sat_cd = (T_h_cd_x1 + T_h_cd_x0)/2
+
+"--- Condenser secondary fluid zone enthalpies ---"
+h_sf_x0_cd = h_sf_su_cd + Q_dot_sc_cd/m_dot_sf_su_cd
+h_sf_x1_cd = h_sf_x0_cd + Q_dot_tp_cd/m_dot_sf_su_cd
+h_sf_ex_cd = h_sf_x1_cd + Q_dot_sh_cd/m_dot_sf_su_cd
+
+"--- Condenser secondary fluid zone temperatures ---"
+T_sf_x0_cd = temperature(sf_fluid_cd$, h=h_sf_x0_cd, P=p_sf_su_cd)
+T_sf_x1_cd = temperature(sf_fluid_cd$, h=h_sf_x1_cd, P=p_sf_su_cd)
+T_sf_ex_cd = temperature(sf_fluid_cd$, h=h_sf_ex_cd, P=p_sf_su_cd)
+
+"--- Condenser pinch point ---"
+Call q_dot_pinch_fun_cd(m_dot, h_su_cd, h_h_cd_x0, h_h_cd_x1, h_ex_cd, T_su_cd, T_h_cd_x0, T_h_cd_x1, T_ex_cd, T_sf_su_cd, T_sf_x0_cd, T_sf_x1_cd, T_sf_ex_cd:Q_dot_sc_cd, Q_dot_tp_cd, Q_dot_sh_cd, DT_min_cd)
+DELTAT_pp_cd = DT_min_cd
+p_sf_ex_cd = p_sf_su_cd
+
+"==========================================================="
+"  Recuperator (inlined from sens_hx procedure)              "
+"==========================================================="
+h_su_rec_c = h_ex_ev
+p_su_rec_c = p_ex_ev
+h_su_rec_h = h_ex_cd
+p_su_rec_h = p_ex_cd
+
+T_su_rec_c = temperature(fluid$, h=h_su_rec_c, P=p_su_rec_c)
+T_su_rec_h = temperature(fluid$, h=h_su_rec_h, P=p_su_rec_h)
+h_rec_c_ideal = enthalpy(fluid$, T=T_su_rec_h, P=p_su_rec_c)
+h_rec_h_ideal = enthalpy(fluid$, T=T_su_rec_c, P=p_su_rec_h)
+Q_dot_max_rec_c = m_dot*(h_rec_c_ideal - h_su_rec_c)
+Q_dot_max_rec_h = m_dot*(h_su_rec_h - h_rec_h_ideal)
+Q_dot_max_rec = min(Q_dot_max_rec_c, Q_dot_max_rec_h)
+Q_dot_rec = Q_dot_max_rec*epsilon_ihx_hp
+h_rec_c_out = h_su_rec_c + Q_dot_rec/m_dot
+h_rec_h_out = h_su_rec_h - Q_dot_rec/m_dot
+p_rec_c_out = p_su_rec_c - DP_c_ihx
+p_rec_h_out = p_su_rec_h - DP_h_ihx
+
+"==========================================================="
+"  Compressor (inlined from compressor procedure)            "
+"==========================================================="
+p_su_cp = p_rec_c_out
+h_su_cp = h_rec_c_out
+p_out_cp = p_su_cd
+
+s_su_cp = entropy(fluid$, h=h_su_cp, P=p_su_cp)
+h_is_out_cp = enthalpy(fluid$, s=s_su_cp, P=p_out_cp)
+h_out_cp = h_su_cp + (h_is_out_cp - h_su_cp)/epsilon_s_cp
+T_out_cp = temperature(fluid$, h=h_out_cp, P=p_out_cp)
+W_dot_cp = m_dot*(h_out_cp - h_su_cp)
+
+"==========================================================="
+"  Condenser inlet                                           "
+"==========================================================="
+h_su_cd = h_out_cp
+T_su_cd = temperature(fluid$, h=h_su_cd, P=p_su_cd)
+
+"==========================================================="
+"  Valve (isenthalpic expansion)                             "
+"==========================================================="
+h_su_valve = h_rec_h_out
+p_su_valve = p_rec_h_out
+T_su_valve = temperature(fluid$, h=h_su_valve, P=p_su_valve)
+h_ex_valve = h_su_valve
+p_ex_valve = p_su_ev
+T_ex_valve = temperature(fluid$, h=h_ex_valve, P=p_ex_valve)
+
+"==========================================================="
+"  Evaporator inlet                                          "
+"==========================================================="
+h_su_ev = h_ex_valve
+T_su_ev = temperature(fluid$, h=h_su_ev, P=p_su_ev)
+
+"--- Evaporator pinch point ---"
+Call q_dot_pinch_fun_ev(m_dot, h_su_ev, h_c_x0_ev, h_c_x1_ev, h_ex_ev, T_su_ev, T_c_x0_ev, T_c_x1_ev, T_ex_ev, T_sf_su_ev, T_sf_x0_ev, T_sf_x1_ev, T_sf_ex_ev:Q_dot_sc_ev, Q_dot_tp_ev, Q_dot_sh_ev, DT_min_ev)
+DELTAT_pp_ev = DT_min_ev
+
+"--- Evaporator secondary fluid zone enthalpies ---"
+h_sf_x1_ev = h_sf_su_ev - Q_dot_sh_ev/m_dot_sf_su_ev
+h_sf_x0_ev = h_sf_x1_ev - Q_dot_tp_ev/m_dot_sf_su_ev
+h_sf_out_ev = h_sf_x0_ev - Q_dot_sc_ev/m_dot_sf_su_ev
+
+"--- Evaporator secondary fluid zone temperatures ---"
+T_sf_x1_ev = temperature(sf_fluid_ev$, h=h_sf_x1_ev, P=p_sf_su_ev)
+T_sf_x0_ev = temperature(sf_fluid_ev$, h=h_sf_x0_ev, P=p_sf_su_ev)
+T_sf_ex_ev = temperature(sf_fluid_ev$, h=h_sf_out_ev, P=p_sf_su_ev)
+p_sf_ex_ev = p_sf_su_ev
+
+"==========================================================="
+"  Energy balances                                           "
+"==========================================================="
+Q_dot_ev = Q_dot_sh_ev + Q_dot_tp_ev + Q_dot_sc_ev
+Q_dot_cd = Q_dot_sh_cd + Q_dot_tp_cd + Q_dot_sc_cd
+
+"==========================================================="
+"  COP                                                       "
+"==========================================================="
+COP_HP = Q_dot_cd/(W_dot_cp + W_dot_sf_pp)
+
+"==========================================================="
+"  2. Phase Change Storage                                   "
+"==========================================================="
+Q_PCM = Q_dot_cd_HP
+E_PCM = Q_PCM*t_charge
+E_loss = 0.05*E_PCM
+E_PCM_f = E_PCM - E_loss
+Vol_PCM = E_PCM/E_density_PCM
+Q_loss_PCM = (E_PCM*0.05)/(t_charge + t_discharge)
+Q_dis_PCM = E_PCM_f/t_discharge
