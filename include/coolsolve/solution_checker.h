@@ -79,4 +79,15 @@ SolutionCheckResult checkSolution(
  */
 void printSolutionCheckReport(const SolutionCheckResult& result, bool verbose = false);
 
+/**
+ * @brief Write a Markdown report of the solution check to a file.
+ *
+ * Writes a table of all checked equations with LHS, RHS, residual, and
+ * relative error.  Violated equations are highlighted.
+ *
+ * @param path    Output file path (e.g. debugDir / "solution_check.md")
+ * @param result  The solution check result
+ */
+void writeSolutionCheckReport(const std::string& path, const SolutionCheckResult& result);
+
 } // namespace coolsolve

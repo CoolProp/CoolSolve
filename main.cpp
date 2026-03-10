@@ -299,6 +299,8 @@ int main(int argc, char* argv[]) {
             ir, solveResult.variables, solveResult.stringVariables,
             options.coolpropConfig);
         coolsolve::printSolutionCheckReport(checkResult);
+        coolsolve::writeSolutionCheckReport(
+            (debugPath / "solution_check.md").string(), checkResult);
     }
     
     // Write .sol file if successful

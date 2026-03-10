@@ -514,6 +514,9 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     if (!solveResult_.success && fs::exists(debugDir / "solver_singular_diagnostics.md")) {
         index << "| [solver_singular_diagnostics.md](solver_singular_diagnostics.md) | Jacobian diagnostics when singular |\n";
     }
+    if (solveResult_.success) {
+        index << "| [solution_check.md](solution_check.md) | Post-solve equation verification |\n";
+    }
     writeFile(debugDir / "README.md", index.str());
 }
 

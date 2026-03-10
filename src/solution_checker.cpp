@@ -1,5 +1,6 @@
 #include "coolsolve/solution_checker.h"
 #include <iostream>
+#include <fstream>
 #include <iomanip>
 #include <cmath>
 #include <algorithm>
@@ -194,6 +195,58 @@ SolutionCheckResult checkSolution(
     }
 
     return result;
+}
+
+void writeSolutionCheckReport(const std::string& path, const SolutionCheckResult& result) {
+    std::ofstream f(path);
+    if (!f.is_open()) return;
+
+    f << "# Solution Verification\n\n";
+    f << "| Metric | Value |\n";
+    f << "|--------|-------|\n";
+    f << "| Total equations | " << result.totalEquations << " |\n";
+    f << "| Checked | " << (result.satisfiedCount + result.violatedCount) << " |\n";
+    f << "| Satisfied | " << result.satisfiedCount << " |\n";
+    f << "| Violated | " << result.violatedCount << " |\n";
+    f << "| Skipped | " << result.skippedCount << " |\n";
+    f << std::scientific << std::setprecision(4);
+    f << "| Max |residual| | " << result.maxResidual << " |\n";
+    f << "| Max relative error | " << result.maxRelativeError << " |\n";
+    f << "| Result | " << (result.allSatisfied ? "ALL EQUATIONS SATISFIED" :
+        std::to_string(result.violatedCount) + " EQUATION(S) VIOLATED") << " |\n";
+    f << "\n";
+
+    // Violated equations (if any)
+    if (!result.allSatisfied) {
+        f << "## Violated Equations\n\n";
+        f << "| Eq | Equation | LHS | RHS | |Residual| | Rel Error |\n";
+        f << "|---:|----------|----:|----:|----------:|----------:|\n";
+        for (const auto& c : result.checks) {
+            if (!c.satisfied) {
+                f << "| " << c.equationId
+                  << " | " << c.originalText
+                  << " | " << std::setprecision(10) << c.lhsValue
+                  << " | " << c.rhsValue
+                  << " | " << std::setprecision(4) << c.residual
+                  << " | " << c.relativeError << " |\n";
+            }
+        }
+        f << "\n";
+    }
+
+    // Full table
+    f << "## All Equations\n\n";
+    f << "| | Eq | LHS | RHS | |Residual| | Rel Error | Equation |\n";
+    f << "|---|---:|----:|----:|----------:|----------:|----------|\n";
+    for (const auto& c : result.checks) {
+        f << "| " << (c.satisfied ? "OK" : "**FAIL**")
+          << " | " << c.equationId
+          << " | " << std::setprecision(8) << c.lhsValue
+          << " | " << c.rhsValue
+          << " | " << std::setprecision(3) << c.residual
+          << " | " << c.relativeError
+          << " | " << c.originalText << " |\n";
+    }
 }
 
 void printSolutionCheckReport(const SolutionCheckResult& result, bool verbose) {
