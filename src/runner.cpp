@@ -1,4 +1,5 @@
 #include "coolsolve/runner.h"
+#include "coolsolve/latex_report.h"
 #include "coolsolve/variable_inference.h"
 #include "coolsolve/evaluator.h" // For getProfilingStatsString
 #include <fstream>
@@ -346,8 +347,17 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     }
     writeFile(debugDir / "coolsolve_residuals.md", csRes.str());
     
-    // 9. LaTeX
+    // 9. LaTeX — write both the minimal equations-only .tex and the comprehensive report
     writeFile(debugDir / "equations.tex", ir_->toLatex());
+
+    // Generate and cache the comprehensive LaTeX report (debug mode always enables it)
+    {
+        std::string stem = fs::path(inputFile_).stem().string();
+        generateLatexReportContent(stem);
+        if (!latexReportContent_.empty()) {
+            writeFile(debugDir / "report.tex", latexReportContent_);
+        }
+    }
     
     // 10. Incidence
     std::ostringstream incidence;
@@ -504,6 +514,9 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     index << "| [equations.md](equations.md) | Equations grouped by block |\n";
     index << "| [incidence.md](incidence.md) | Variable-equation incidence matrix |\n";
     index << "| [equations.tex](equations.tex) | LaTeX formatted equations |\n";
+    if (fs::exists(debugDir / "report.tex")) {
+        index << "| [report.tex](report.tex) | Comprehensive LaTeX report |\n";
+    }
     index << "| [profiling.md](profiling.md) | Performance profiling and stats |\n";
     if (!solveResult_.blockTraces.empty()) {
         index << "| [solver_trace.md](solver_trace.md) | Detailed solver iteration trace |\n";
@@ -518,6 +531,13 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         index << "| [solution_check.md](solution_check.md) | Post-solve equation verification |\n";
     }
     writeFile(debugDir / "README.md", index.str());
+}
+
+std::string CoolSolveRunner::generateLatexReportContent(const std::string& modelName) const {
+    if (!ir_ || !analysisResult_.success) return {};
+    latexReportContent_ = coolsolve::generateLatexReport(
+        *ir_, analysisResult_, solveResult_, timing_, modelName, inputFile_);
+    return latexReportContent_;
 }
 
 } // namespace coolsolve

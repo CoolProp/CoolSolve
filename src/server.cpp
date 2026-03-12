@@ -11,6 +11,7 @@
 #include "coolsolve/fluids.h"
 #include "coolsolve/variable_inference.h"
 #include "coolsolve/units.h"
+#include "coolsolve/latex_report.h"
 
 #include <httplib.h>
 #include "CoolProp.h"
@@ -49,6 +50,44 @@ static bool endsWith(const std::string& s, const std::string& suffix) {
 }
 static bool startsWith(const std::string& s, const std::string& prefix) {
     return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+}
+
+// ============================================================================
+// Base64 decoder (for plot images uploaded as data-URIs)
+// ============================================================================
+static std::string base64Decode(const std::string& encoded) {
+    static constexpr unsigned char T[256] = {
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,62,64,64,64,63,
+        52,53,54,55,56,57,58,59,60,61,64,64,64,64,64,64,
+        64, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,
+        15,16,17,18,19,20,21,22,23,24,25,64,64,64,64,64,
+        64,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,
+        41,42,43,44,45,46,47,48,49,50,51,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,
+        64,64,64,64,64,64,64,64,64,64,64,64,64,64,64,64
+    };
+    std::string out;
+    out.reserve(encoded.size() * 3 / 4);
+    unsigned int buf = 0;
+    int bits = 0;
+    for (unsigned char c : encoded) {
+        if (T[c] >= 64) continue;  // skip whitespace, padding, illegal
+        buf = (buf << 6) | T[c];
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<char>((buf >> bits) & 0xFF));
+        }
+    }
+    return out;
 }
 
 // ============================================================================
@@ -98,6 +137,8 @@ struct SessionSnapshot {
     CoolSolveRunner::PipelineTiming lastTiming;
     std::vector<InferredVariable> inferredVariables;
     std::vector<std::string> modelFluids;
+    std::string latexReportContent;
+    bool latexReportAvailable = false;
 };
 
 // ============================================================================
@@ -142,6 +183,10 @@ struct Session {
     std::mutex parametricMutex;
     std::string lastParametricResult;
     
+    // LaTeX report content (generated after solve when enableLatexReport is true)
+    std::string latexReportContent;
+    bool latexReportAvailable = false;  // true when a LaTeX report was generated for the current solve
+    
     // Save current state as snapshot (for Back button)
     void saveSnapshot() {
         auto snap = std::make_unique<SessionSnapshot>();
@@ -154,6 +199,8 @@ struct Session {
         snap->debugDir = debugDir;
         snap->inferredVariables = inferredVariables;
         snap->modelFluids = modelFluids;
+        snap->latexReportContent = latexReportContent;
+        snap->latexReportAvailable = latexReportAvailable;
         {
             std::lock_guard<std::mutex> lock(resultMutex);
             snap->hasResult = hasResult;
@@ -177,6 +224,8 @@ struct Session {
         debugDir = previousState->debugDir;
         inferredVariables = previousState->inferredVariables;
         modelFluids = previousState->modelFluids;
+        latexReportContent = previousState->latexReportContent;
+        latexReportAvailable = previousState->latexReportAvailable;
         {
             std::lock_guard<std::mutex> lock(resultMutex);
             hasResult = previousState->hasResult;
@@ -704,6 +753,10 @@ int startServer(const ServerOptions& options) {
         session.inferredVariables.clear();
         session.modelFluids.clear();
         
+        // Clear LaTeX report
+        session.latexReportContent.clear();
+        session.latexReportAvailable = false;
+        
         json j = {{"success", true}, {"hadContent", hadContent}};
         res.set_content(j.dump(), "application/json");
     });
@@ -913,6 +966,8 @@ int startServer(const ServerOptions& options) {
             
             // Clear previous debug output and .sol before new solve
             session.solContent.clear();
+            session.latexReportContent.clear();
+            session.latexReportAvailable = false;
             if (!session.debugDir.empty()) {
                 std::error_code ec;
                 fs::remove_all(session.debugDir, ec);
@@ -1096,6 +1151,18 @@ int startServer(const ServerOptions& options) {
                         session.solContent = solStream.str();
                     }
                     
+                    // Generate LaTeX report if enabled (lightweight string generation only)
+                    if (runner.isSolveSuccess() && solverOpts.enableLatexReport) {
+                        try {
+                            session.latexReportContent = runner.generateLatexReportContent(session.modelName);
+                            session.latexReportAvailable = !session.latexReportContent.empty();
+                        } catch (const std::exception& ex) {
+                            // Non-fatal: log but don't fail the solve
+                            session.latexReportContent.clear();
+                            session.latexReportAvailable = false;
+                        }
+                    }
+                    
                     // Build final result JSON for the done event
                     json resultJson = solveResultToJSON(runner.getSolveResult(), runner.getTiming());
                     if (runner.isParseSuccess()) {
@@ -1109,6 +1176,7 @@ int startServer(const ServerOptions& options) {
                         resultJson["totalBlocks"] = analysis.totalBlocks;
                         resultJson["largestBlock"] = analysis.largestBlockSize;
                     }
+                    resultJson["latexReportAvailable"] = session.latexReportAvailable;
                     
                     // Send final event with embedded result
                     json finalEvt;
@@ -2073,6 +2141,10 @@ int startServer(const ServerOptions& options) {
         if (!session.confContent.empty())
             files.push_back({"coolsolve.conf", session.confContent});
         
+        // Include LaTeX report if generated
+        if (session.latexReportAvailable && !session.latexReportContent.empty())
+            files.push_back({stem + "_report.tex", session.latexReportContent});
+        
         // Include debug files if they exist
         if (!session.debugDir.empty() && fs::exists(session.debugDir)) {
             for (const auto& entry : fs::directory_iterator(session.debugDir)) {
@@ -2195,6 +2267,10 @@ int startServer(const ServerOptions& options) {
                 std::lock_guard<std::mutex> lock(session.parametricMutex);
                 session.lastParametricResult = zcontent;
                 fileList.push_back(zname);
+            } else if (endsWith(zname, "_report.tex")) {
+                session.latexReportContent = zcontent;
+                session.latexReportAvailable = true;
+                fileList.push_back(zname);
             }
         }
         if (hasDebug) fileList.push_back("debug_output/");
@@ -2252,6 +2328,185 @@ int startServer(const ServerOptions& options) {
         std::string content = readFileToString(filePath.string());
         json j = {{"name", name}, {"content", content}};
         res.set_content(j.dump(), "application/json");
+    });
+    
+    // ================================================================
+    // LaTeX report
+    // ================================================================
+    
+    // GET /api/v1/latex/report – return the generated LaTeX source
+    svr.Get("/api/v1/latex/report", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        json j;
+        j["available"] = session.latexReportAvailable;
+        j["content"] = session.latexReportAvailable ? session.latexReportContent : "";
+        res.set_content(j.dump(), "application/json");
+    });
+    
+    // POST /api/v1/latex/compile – compile the report to PDF and return it.
+    // Body JSON: { compiler?: string, plots?: [{name: string, data: string}] }
+    //   compiler  – LaTeX command (default: pdflatex, or from coolsolve.conf)
+    //   plots     – array of {name, data} where data is base64-encoded PNG
+    //              (the data URI prefix "data:image/png;base64," is stripped automatically)
+    svr.Post("/api/v1/latex/compile", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        std::cerr << "[latex/compile] Request received, latexReportAvailable=" 
+                  << session.latexReportAvailable 
+                  << ", contentLen=" << session.latexReportContent.size() << std::endl;
+        
+        if (!session.latexReportAvailable || session.latexReportContent.empty()) {
+            res.status = 400;
+            json j = {{"error", "No LaTeX report available. Solve with enableLatexReport = true first."}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        
+        // Parse request body
+        std::string compiler = "pdflatex";
+        std::vector<std::pair<std::string, std::string>> plots; // name → decoded PNG bytes
+        
+        if (!req.body.empty()) {
+            try {
+                auto body = json::parse(req.body);
+                if (body.contains("compiler") && body["compiler"].is_string()) {
+                    std::string c = body["compiler"].get<std::string>();
+                    if (!c.empty()) compiler = c;
+                }
+                if (body.contains("plots") && body["plots"].is_array()) {
+                    for (const auto& p : body["plots"]) {
+                        if (!p.contains("name") || !p.contains("data")) continue;
+                        std::string name = p["name"].get<std::string>();
+                        std::string data = p["data"].get<std::string>();
+                        // Strip data URI prefix if present
+                        const std::string prefix = "data:image/png;base64,";
+                        if (data.size() > prefix.size() &&
+                            data.compare(0, prefix.size(), prefix) == 0) {
+                            data = data.substr(prefix.size());
+                        }
+                        std::string decoded = base64Decode(data);
+                        if (!decoded.empty()) {
+                            plots.push_back({name, std::move(decoded)});
+                        }
+                    }
+                }
+            } catch (...) {
+                // Proceed with defaults if parsing fails
+            }
+        }
+        
+        // Also try to read latexCompiler from the session's conf
+        if (!session.confContent.empty() && compiler == "pdflatex") {
+            // Quick grep for latexCompiler in the conf text
+            std::istringstream confStream(session.confContent);
+            std::string line;
+            while (std::getline(confStream, line)) {
+                auto trimmed = line;
+                while (!trimmed.empty() && (trimmed[0] == ' ' || trimmed[0] == '\t'))
+                    trimmed.erase(trimmed.begin());
+                if (trimmed.empty() || trimmed[0] == '#') continue;
+                auto eq = trimmed.find('=');
+                if (eq == std::string::npos) continue;
+                std::string key = trimmed.substr(0, eq);
+                std::string val = trimmed.substr(eq + 1);
+                // Trim
+                while (!key.empty() && key.back() == ' ') key.pop_back();
+                while (!val.empty() && val.front() == ' ') val.erase(val.begin());
+                if (key == "latexCompiler" && !val.empty()) {
+                    compiler = val;
+                }
+            }
+        }
+        
+        // Create temporary build directory
+        auto buildDir = session.tempDir / "latex_build";
+        std::error_code ec;
+        fs::create_directories(buildDir, ec);
+        
+        // Write .tex source
+        std::string texName = "report.tex";
+        {
+            std::ofstream f(buildDir / texName, std::ios::binary);
+            if (!f.is_open()) {
+                res.status = 500;
+                json j = {{"error", "Failed to write .tex file"}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+            f << session.latexReportContent;
+        }
+        
+        // Write plot images
+        for (const auto& [name, data] : plots) {
+            // Sanitise filename: only allow alphanumeric, underscore, dot
+            std::string safeName;
+            for (char c : name) {
+                if (std::isalnum(c) || c == '_' || c == '.') safeName += c;
+            }
+            if (safeName.empty()) continue;
+            std::ofstream f(buildDir / safeName, std::ios::binary);
+            if (f.is_open()) {
+                f.write(data.data(), static_cast<std::streamsize>(data.size()));
+            }
+        }
+        
+        // Run LaTeX compiler (two passes for TOC / cross-references)
+        std::string cmd = compiler + " -interaction=nonstopmode -halt-on-error"
+            " -output-directory=\"" + buildDir.string() + "\""
+            " \"" + (buildDir / texName).string() + "\""
+            " 2>&1";
+        
+        std::string compilerOutput;
+        for (int pass = 0; pass < 2; ++pass) {
+            FILE* pipe = popen(cmd.c_str(), "r");
+            if (!pipe) {
+                res.status = 500;
+                json j = {{"error", "Failed to run " + compiler}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+            compilerOutput.clear();
+            char buf[4096];
+            while (fgets(buf, sizeof(buf), pipe)) {
+                compilerOutput += buf;
+            }
+            int status = pclose(pipe);
+            // Only fail on the second pass (first pass may have unresolved refs)
+            if (pass == 1 && status != 0) {
+                // Try to extract a meaningful error from the log
+                std::string errMsg = "LaTeX compilation failed";
+                auto excl = compilerOutput.find('!');
+                if (excl != std::string::npos) {
+                    auto eol = compilerOutput.find('\n', excl);
+                    errMsg = compilerOutput.substr(excl, std::min(eol - excl, size_t(200)));
+                }
+                res.status = 422;
+                json j = {{"error", errMsg}, {"log", compilerOutput.substr(0, 4000)}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+        }
+        
+        // Read the resulting PDF
+        fs::path pdfPath = buildDir / "report.pdf";
+        if (!fs::exists(pdfPath)) {
+            res.status = 500;
+            json j = {{"error", "PDF was not generated"}, {"log", compilerOutput.substr(0, 4000)}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        
+        std::ifstream pdfFile(pdfPath, std::ios::binary);
+        std::ostringstream pdfStream;
+        pdfStream << pdfFile.rdbuf();
+        std::string pdfContent = pdfStream.str();
+        
+        // Clean up build directory (keep it small)
+        // We leave it — it's in the session temp dir, cleaned on session destruction.
+        
+        std::string downloadName = (session.modelName.empty() ? "model" : session.modelName) + "_report.pdf";
+        std::cerr << "[latex/compile] PDF generated: " << pdfContent.size() << " bytes → " << downloadName << std::endl;
+        res.set_header("Content-Disposition", "attachment; filename=\"" + downloadName + "\"");
+        res.set_content(pdfContent, "application/pdf");
     });
     
     // ================================================================

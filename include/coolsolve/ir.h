@@ -83,6 +83,10 @@ struct EquationInfo {
     
     // Block assignment after SCC analysis
     int blockId = -1;
+
+    // Comments
+    std::vector<std::string> precedingComments;  // Standalone "" comments before this equation
+    std::string inlineComment;                    // Inline "" comment on this equation
 };
 
 // ============================================================================

@@ -17,8 +17,18 @@ namespace coolsolve {
 IR IR::fromAST(const Program& program) {
     IR ir;
     int eqId = 0;
+    std::vector<std::string> pendingComments;  // Accumulate "" display comments
     
     for (const auto& stmt : program.statements) {
+        // Collect standalone "" display comments and attach to next equation
+        if (stmt->is<Comment>()) {
+            const auto& cmt = stmt->as<Comment>();
+            if (cmt.isDisplay) {
+                pendingComments.push_back(cmt.text);
+            }
+            continue;
+        }
+
         if (stmt->is<Equation>()) {
             const auto& eq = stmt->as<Equation>();
             
@@ -28,6 +38,9 @@ IR IR::fromAST(const Program& program) {
             eqInfo.lhs = eq.lhs;
             eqInfo.rhs = eq.rhs;
             eqInfo.originalText = astToString(eq.lhs) + " = " + astToString(eq.rhs);
+            eqInfo.inlineComment = eq.comment;
+            eqInfo.precedingComments = std::move(pendingComments);
+            pendingComments.clear();
             
             // Extract variables from both sides
             ir.extractVariables(eq.lhs, eqInfo.variables);
@@ -374,63 +387,155 @@ int IR::loadSolutionFromFile(const std::string& filePath) {
 // ============================================================================
 
 std::string variableToLatex(const std::string& name) {
-    std::string result;
-    
-    // Handle common patterns
-    // M_dot -> \dot{M}
-    // T_oil_su -> T_{oil,su}
-    // P[1] -> P_{1}
-    
-    std::regex dotPattern("(.+)_dot$");
-    std::smatch match;
-    
-    if (std::regex_match(name, match, dotPattern)) {
-        return "\\dot{" + variableToLatex(match[1].str()) + "}";
+    // ---------------------------------------------------------------
+    // EES-to-LaTeX variable-name translation.
+    //
+    // Rules (applied in this order):
+    //   1. Array brackets:  P[1] → P_{1}  (recursive on base)
+    //   2. Split name on underscores into segments.
+    //   3. Detect a Greek-letter prefix in the first segment:
+    //        - Uppercase (DELTA, OMEGA …) matched as a *prefix* inside
+    //          the segment, so "DELTAW" → (\Delta, W).
+    //        - Lowercase (eta, alpha …) matched only when the *entire*
+    //          first segment equals the Greek word, to avoid false
+    //          positives like "pipe" matching "pi".
+    //   4. Segments equal to "bar" or "dot" become \bar{} / \dot{}
+    //      decorators applied to the core symbol.
+    //   5. All remaining segments form the subscript (comma-separated).
+    //
+    // Examples:
+    //   eta_bar_boil_1   → \bar{\eta}_{boil,1}
+    //   DELTAW_dot_cp    → \Delta \dot{W}_{cp}
+    //   M_dot            → \dot{M}
+    //   T_oil_su         → T_{oil,su}
+    //   P[1]             → P_{1}
+    //   omega            → \omega
+    // ---------------------------------------------------------------
+
+    // 0. Strip trailing $ (EES string-variable marker) — not valid in LaTeX math
+    std::string cleanName = name;
+    if (!cleanName.empty() && cleanName.back() == '$') {
+        cleanName.pop_back();
     }
-    
-    // Handle array brackets [ ]
-    size_t bracketPos = name.find('[');
-    if (bracketPos != std::string::npos) {
-        std::string base = name.substr(0, bracketPos);
-        std::string indices = name.substr(bracketPos + 1);
-        if (!indices.empty() && indices.back() == ']') {
-            indices.pop_back();
+    if (cleanName.empty()) return "\\text{" + name + "}";
+
+    // 1. Array brackets: extract index and fold into the base name
+    //    so that T_hf[2] becomes segments ["T","hf","2"] (avoiding
+    //    double subscripts like T_{hf}_{2}).
+    std::string arrayIndex;
+    size_t bk = cleanName.find('[');
+    if (bk != std::string::npos) {
+        arrayIndex = cleanName.substr(bk + 1);
+        if (!arrayIndex.empty() && arrayIndex.back() == ']') arrayIndex.pop_back();
+        cleanName = cleanName.substr(0, bk);
+    }
+
+    // 2. Split on underscores
+    std::vector<std::string> segs;
+    {
+        std::string seg;
+        for (char c : cleanName) {
+            if (c == '_') {
+                if (!seg.empty()) { segs.push_back(seg); seg.clear(); }
+            } else {
+                seg += c;
+            }
         }
-        
-        // Replace commas in indices with commas (already commas)
-        // But we might want to recursively format indices if they are variables
-        // For now, just put them in subscript
-        return variableToLatex(base) + "_{" + indices + "}";
+        if (!seg.empty()) segs.push_back(seg);
     }
-    
-    // Handle underscores as subscripts (for non-array variables)
-    size_t underscorePos = name.find('_');
-    if (underscorePos != std::string::npos && underscorePos > 0) {
-        std::string base = name.substr(0, underscorePos);
-        std::string subscript = name.substr(underscorePos + 1);
-        
-        // Replace underscores in subscript with commas
-        std::replace(subscript.begin(), subscript.end(), '_', ',');
-        
-        return base + "_{" + subscript + "}";
-    }
-    
-    // Handle special Greek letters
-    static const std::map<std::string, std::string> greekLetters = {
-        {"alpha", "\\alpha"}, {"beta", "\\beta"}, {"gamma", "\\gamma"},
-        {"delta", "\\delta"}, {"epsilon", "\\epsilon"}, {"eta", "\\eta"},
-        {"theta", "\\theta"}, {"lambda", "\\lambda"}, {"mu", "\\mu"},
-        {"nu", "\\nu"}, {"pi", "\\pi"}, {"rho", "\\rho"},
-        {"sigma", "\\sigma"}, {"tau", "\\tau"}, {"phi", "\\phi"},
-        {"omega", "\\omega"}, {"DELTA", "\\Delta"}
+    if (segs.empty()) return name;
+
+    // 3. Greek-letter prefix detection on the first segment
+    //    Uppercase prefixes are sorted longest-first to avoid partial clashes.
+    static const std::vector<std::pair<std::string, std::string>> greekMap = {
+        // Uppercase (prefix match inside first segment)
+        {"LAMBDA", "\\Lambda"}, {"DELTA",  "\\Delta"},
+        {"GAMMA",  "\\Gamma"},  {"OMEGA",  "\\Omega"},
+        {"SIGMA",  "\\Sigma"},  {"THETA",  "\\Theta"},
+        // Lowercase (exact first-segment match only)
+        {"epsilon","\\epsilon"},{"lambda", "\\lambda"},
+        {"alpha",  "\\alpha"},  {"beta",   "\\beta"},
+        {"gamma",  "\\gamma"},  {"delta",  "\\delta"},
+        {"theta",  "\\theta"},  {"sigma",  "\\sigma"},
+        {"omega",  "\\omega"},  {"eta",    "\\eta"},
+        {"mu",     "\\mu"},     {"nu",     "\\nu"},
+        {"pi",     "\\pi"},     {"rho",    "\\rho"},
+        {"tau",    "\\tau"},    {"phi",    "\\phi"},
     };
-    
-    auto it = greekLetters.find(name);
-    if (it != greekLetters.end()) {
-        return it->second;
+
+    std::string greekLatex;   // e.g. "\\eta"
+    std::string baseSymbol;   // e.g. "" or "W"
+    bool foundGreek = false;
+
+    const std::string& first = segs[0];
+    for (const auto& [gk, gl] : greekMap) {
+        bool isUpper = (gk[0] >= 'A' && gk[0] <= 'Z');
+        if (isUpper) {
+            // Uppercase: prefix match inside first segment
+            if (first.size() >= gk.size() &&
+                first.substr(0, gk.size()) == gk) {
+                greekLatex = gl;
+                baseSymbol = first.substr(gk.size());
+                foundGreek = true;
+                break;
+            }
+        } else {
+            // Lowercase: entire first segment must equal the Greek word
+            if (first == gk) {
+                greekLatex = gl;
+                baseSymbol = "";
+                foundGreek = true;
+                break;
+            }
+        }
     }
-    
-    return name;
+
+    if (!foundGreek) {
+        baseSymbol = first;
+    }
+
+    // 4. Classify remaining segments as modifiers or subscripts
+    std::vector<std::string> modifiers;   // "bar", "dot"
+    std::vector<std::string> subscripts;
+    for (size_t i = 1; i < segs.size(); ++i) {
+        if (segs[i] == "bar" || segs[i] == "dot") {
+            modifiers.push_back(segs[i]);
+        } else {
+            subscripts.push_back(segs[i]);
+        }
+    }
+    // Append array index as the last subscript element
+    if (!arrayIndex.empty()) {
+        subscripts.push_back(arrayIndex);
+    }
+
+    // 5. Build the core symbol
+    //    Modifiers wrap only the base (or the Greek letter when there is no
+    //    additional base), so that  DELTAW_dot → \Delta \dot{W}  rather than
+    //    \dot{\Delta W}.
+    std::string core = baseSymbol.empty() ? greekLatex : baseSymbol;
+
+    for (const auto& mod : modifiers) {
+        if (mod == "bar") core = "\\bar{" + core + "}";
+        else if (mod == "dot") core = "\\dot{" + core + "}";
+    }
+
+    // Prepend Greek prefix when there is also a separate base symbol
+    if (!greekLatex.empty() && !baseSymbol.empty()) {
+        core = greekLatex + " " + core;
+    }
+
+    // 6. Append subscript
+    if (!subscripts.empty()) {
+        std::string sub;
+        for (size_t i = 0; i < subscripts.size(); ++i) {
+            if (i > 0) sub += ",";
+            sub += subscripts[i];
+        }
+        core += "_{" + sub + "}";
+    }
+
+    return core;
 }
 
 std::string IR::expressionToLatex(const ExprPtr& expr) const {

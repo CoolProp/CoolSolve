@@ -67,6 +67,7 @@ export interface SolveResponse {
   isSquare?: boolean;
   totalBlocks?: number;
   largestBlock?: number;
+  latexReportAvailable?: boolean;
 }
 
 export interface SolvedVariable {
@@ -234,4 +235,28 @@ export interface SavedParametricStudy {
 export interface UserUnitOverride {
   variableName: string;
   units: string;
+}
+
+// ============================================================================
+// LaTeX Report Types
+// ============================================================================
+
+/** Response from GET /api/v1/latex/report */
+export interface LatexReportResponse {
+  available: boolean;
+  content: string;
+}
+
+/** A plot image to embed in the LaTeX report */
+export interface LatexPlotImage {
+  /** Filename to use in the .tex (e.g. "thermo_diagrams.png") */
+  name: string;
+  /** Base64-encoded PNG data (data URI prefix is stripped automatically) */
+  data: string;
+}
+
+/** Request body for POST /api/v1/latex/compile */
+export interface LatexCompileRequest {
+  compiler?: string;
+  plots?: LatexPlotImage[];
 }

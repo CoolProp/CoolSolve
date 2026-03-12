@@ -203,6 +203,18 @@ struct SolverOptions {
     // CoolProp integration options
     CoolPropConfig coolpropConfig;
 
+    // --- LaTeX Report ---
+    // When true, a comprehensive LaTeX report is generated after a successful
+    // solve.  The report includes model equations, variable solutions, block
+    // structure, and solver statistics.  In debug mode (-d) this is always
+    // enabled.  In non-debug mode the .tex file is written next to the model.
+    // Configurable via coolsolve.conf: enableLatexReport = true/false
+    bool enableLatexReport = true;
+
+    // LaTeX compiler command (default: pdflatex).  Used by the GUI to compile
+    // the generated .tex file into a PDF report.
+    std::string latexCompiler = "pdflatex";
+
     // --- Debug output ---
     // When non-empty, the solver writes a Markdown file (one per solve) showing
     // original vs reduced equations for every block where symbolic reduction

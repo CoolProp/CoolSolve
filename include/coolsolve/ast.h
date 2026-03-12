@@ -89,7 +89,8 @@ struct Equation {
 
 struct Comment {
     std::string text;
-    bool isBlock;  // true for {} or "" comments, false for // comments
+    bool isBlock;   // true for {} or "" comments, false for // comments
+    bool isDisplay; // true for "" display comments, false for {} hidden comments
 };
 
 struct Directive {
@@ -220,9 +221,9 @@ inline StmtPtr makeEquation(ExprPtr lhs, ExprPtr rhs, int line = 0) {
     return stmt;
 }
 
-inline StmtPtr makeComment(const std::string& text, bool isBlock = true, int line = 0) {
+inline StmtPtr makeComment(const std::string& text, bool isBlock = true, bool isDisplay = false, int line = 0) {
     auto stmt = std::make_shared<Statement>();
-    stmt->node = Comment{text, isBlock};
+    stmt->node = Comment{text, isBlock, isDisplay};
     stmt->sourceLineNumber = line;
     return stmt;
 }

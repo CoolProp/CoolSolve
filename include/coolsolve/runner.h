@@ -45,6 +45,17 @@ public:
     // Helper to load initials (not solution)
     int loadInitials(const std::string& initialsPath);
 
+    // LaTeX report generation.
+    // Call after a successful solve.  Returns the LaTeX source; also stores
+    // it internally so the server can serve it without regenerating.
+    std::string generateLatexReportContent(const std::string& modelName) const;
+
+    // Cached LaTeX source from the last generateLatexReportContent() call.
+    const std::string& getLatexReportContent() const { return latexReportContent_; }
+
+    // Whether a LaTeX report has been generated for the current solve.
+    bool hasLatexReport() const { return !latexReportContent_.empty(); }
+
 private:
     std::string inputFile_;
     ParseResult parseResult_;
@@ -52,6 +63,7 @@ private:
     StructuralAnalysisResult analysisResult_;
     SolveResult solveResult_;
     PipelineTiming timing_;
+    mutable std::string latexReportContent_;  // cached LaTeX source
 };
 
 } // namespace coolsolve

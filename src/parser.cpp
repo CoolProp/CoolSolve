@@ -495,14 +495,14 @@ private:
     StmtPtr tryParseComment(const std::string& line, int lineNum) {
         std::string trimmed = trim(line);
         
-        // Check for quote-delimited comment
+        // Check for quote-delimited comment ("..." display comments)
         if (trimmed.size() >= 2 && trimmed.front() == '"' && trimmed.back() == '"') {
             // Find the position of the second quote (end of first comment)
             size_t firstQuoteEnd = trimmed.find('"', 1);
             if (firstQuoteEnd == trimmed.size() - 1) {
                 // Only one pair of quotes - this is a pure comment
                 std::string content = trimmed.substr(1, trimmed.size() - 2);
-                return makeComment(content, true, lineNum);
+                return makeComment(content, true, /*isDisplay=*/true, lineNum);
             }
             // Multiple quote pairs - check if there's code between them
             // If there's an '=' outside of quotes, it's likely an equation with inline comments
@@ -514,7 +514,7 @@ private:
             }
             // No equation found, treat as comment
             std::string content = trimmed.substr(1, trimmed.size() - 2);
-            return makeComment(content, true, lineNum);
+            return makeComment(content, true, /*isDisplay=*/true, lineNum);
         }
         
         // Check for brace-delimited comment (only if it starts with { and is a whole line)
@@ -522,14 +522,14 @@ private:
             // Make sure it's just a comment, not embedded in an equation
             if (trimmed.find('=') == std::string::npos) {
                 std::string content = trimmed.substr(1, trimmed.size() - 2);
-                return makeComment(content, true, lineNum);
+                return makeComment(content, true, /*isDisplay=*/false, lineNum);
             }
         }
         
         // Check for C-style comment
         if (trimmed.size() >= 2 && trimmed[0] == '/' && trimmed[1] == '/') {
             std::string content = trimmed.substr(2);
-            return makeComment(content, false, lineNum);
+            return makeComment(content, false, /*isDisplay=*/false, lineNum);
         }
         
         return nullptr;
@@ -700,8 +700,9 @@ private:
     }
 
     StmtPtr tryParseEquationOrAssignment(const std::string& line, int lineNum) {
-        // Remove inline comments first
-        std::string cleaned = removeInlineComments(line);
+        // Remove inline comments first, extracting any "" comment
+        std::string inlineComment;
+        std::string cleaned = removeInlineComments(line, &inlineComment);
         cleaned = trim(cleaned);
         
         if (cleaned.empty()) return nullptr;
@@ -763,7 +764,7 @@ private:
         if (op == ":=") {
             stmt->node = Assignment{lhs, rhs};
         } else {
-            stmt->node = Equation{lhs, rhs, units, ""};
+            stmt->node = Equation{lhs, rhs, units, inlineComment};
         }
         stmt->sourceLineNumber = lineNum;
         return stmt;
@@ -832,7 +833,7 @@ private:
         return parts;
     }
 
-    std::string removeInlineComments(const std::string& line) {
+    std::string removeInlineComments(const std::string& line, std::string* extractedQuoteComment = nullptr) {
         std::string result;
         bool inString = false;
         bool inQuoteComment = false;
@@ -872,6 +873,10 @@ private:
                 // Skip quote comment to end of line or next quote
                 size_t end = line.find('"', i + 1);
                 if (end != std::string::npos) {
+                    // Extract the first "" comment if requested
+                    if (extractedQuoteComment && extractedQuoteComment->empty()) {
+                        *extractedQuoteComment = line.substr(i + 1, end - i - 1);
+                    }
                     i = end;
                 }
                 continue;

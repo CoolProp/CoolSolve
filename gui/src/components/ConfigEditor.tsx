@@ -352,6 +352,20 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
     ],
   },
   {
+    title: 'LaTeX Report',
+    fields: [
+      { key: 'enableLatexReport', label: 'Enable LaTeX report', type: 'boolean', defaultVal: 'true',
+        description:
+          'Generate a LaTeX (.tex) report after every successful solve. '
+          + 'The report contains model equations, variable solutions, and plots. '
+          + 'The backend only produces the LaTeX source — no LaTeX installation is required on the solver side.' },
+      { key: 'latexCompiler', label: 'LaTeX compiler', type: 'string', defaultVal: 'pdflatex',
+        description:
+          'LaTeX compiler command used for PDF compilation. '
+          + 'Common alternatives: xelatex, lualatex.' },
+    ],
+  },
+  {
     title: 'Safety',
     fields: [
       { key: 'timeoutSeconds', label: 'Timeout (s)', type: 'number', defaultVal: '0',

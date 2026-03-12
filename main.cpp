@@ -4,6 +4,7 @@
 #include "coolsolve/structural_analysis.h"
 #include "coolsolve/evaluator.h"  // For profiling stats
 #include "coolsolve/solution_checker.h"
+#include "coolsolve/latex_report.h"
 #ifdef COOLSOLVE_GUI
 #include "coolsolve/server.h"
 #endif
@@ -301,6 +302,21 @@ int main(int argc, char* argv[]) {
         coolsolve::printSolutionCheckReport(checkResult);
         coolsolve::writeSolutionCheckReport(
             (debugPath / "solution_check.md").string(), checkResult);
+    }
+    
+    // Generate standalone LaTeX report if enableLatexReport is set (non-debug mode)
+    // In debug mode the report is already generated inside generateDebugOutput().
+    if (solveResult.success && options.enableLatexReport && !debugMode) {
+        fs::path inputPath(inputFile);
+        std::string stem = inputPath.stem().string();
+        fs::path texPath = inputPath.parent_path() / (stem + "_report.tex");
+        if (coolsolve::writeLatexReport(
+                texPath.string(), ir, analysisResult, solveResult,
+                runner.getTiming(), stem, inputFile)) {
+            std::cout << "LaTeX report: " << fs::weakly_canonical(texPath) << "\n";
+        } else {
+            std::cerr << "Warning: Could not write LaTeX report: " << texPath << "\n";
+        }
     }
     
     // Write .sol file if successful

@@ -14,6 +14,8 @@ import type {
   SaturationResponse,
   ParametricStudyResult,
   SweepVariable,
+  LatexReportResponse,
+  LatexCompileRequest,
 } from './types';
 
 const API_BASE = '/api/v1';
@@ -175,4 +177,29 @@ export const api = {
   // Get last parametric study result
   getParametricResult: () =>
     request<ParametricStudyResult>('/parametric/result'),
+
+  // LaTeX report
+  getLatexReport: () =>
+    request<LatexReportResponse>('/latex/report'),
+
+  // Compile LaTeX report to PDF (returns binary PDF blob)
+  compileLatexReport: async (body: LatexCompileRequest): Promise<Blob> => {
+    const res = await fetch(`${API_BASE}/latex/compile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let errMsg = `HTTP ${res.status}`;
+      try {
+        const errBody = await res.json();
+        if (errBody.error) errMsg = errBody.error;
+        if (errBody.log) console.warn('LaTeX log:', errBody.log);
+      } catch {
+        errMsg += ` ${res.statusText}`;
+      }
+      throw new Error(errMsg);
+    }
+    return res.blob();
+  },
 };

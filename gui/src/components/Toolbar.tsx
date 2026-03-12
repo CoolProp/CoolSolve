@@ -2,12 +2,13 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Play, FolderOpen, Save, RefreshCw, Bug, Sun, Moon,
   ChevronDown, ChevronUp, BookOpen, Square,
-  Braces, Quote, FilePlus, Undo, Pencil,
+  Braces, Quote, FilePlus, Undo, Pencil, FileText,
 } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
 import { api } from '../api/client';
 import { editorInstance, toggleBraceComment, toggleQuoteComment } from './CodeEditor';
+import { exportAllPlots } from '../utils/exportPlots';
 import type { ExampleFile, SSEEvent, SolveResponse } from '../api/types';
 
 export default function Toolbar() {
@@ -28,6 +29,7 @@ export default function Toolbar() {
   const setCanGoBack = useModelStore((s) => s.setCanGoBack);
   const loadFile = useModelStore((s) => s.loadFile);
   const clearModel = useModelStore((s) => s.clearModel);
+  const lastResult = useModelStore((s) => s.lastResult);
 
   const theme = useUIStore((s) => s.theme);
   const toggleTheme = useUIStore((s) => s.toggleTheme);
@@ -313,6 +315,65 @@ export default function Toolbar() {
     toggleQuoteComment(editorInstance);
   }, []);
 
+  // Helper: trigger a file download from a Blob
+  const downloadBlob = useCallback((blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    // Small delay before cleanup so the download starts
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 100);
+  }, []);
+
+  // Compile LaTeX report to PDF (with embedded plot images)
+  const handleLatexReport = useCallback(async () => {
+    try {
+      addConsoleLine('>>> Exporting plots...');
+      let plots: { name: string; data: string }[] = [];
+      try {
+        plots = await exportAllPlots();
+      } catch (plotErr: any) {
+        addConsoleLine(`    Plot export error: ${plotErr.message} (continuing without plots)`);
+      }
+      if (plots.length > 0) {
+        addConsoleLine(`    Captured ${plots.length} plot(s): ${plots.map((p) => p.name).join(', ')}`);
+      } else {
+        addConsoleLine('    No visible plots to embed');
+      }
+
+      addConsoleLine('>>> Compiling LaTeX report to PDF...');
+      const pdfBlob = await api.compileLatexReport({ plots });
+      addConsoleLine(`    Received ${pdfBlob.size} bytes (type: ${pdfBlob.type})`);
+
+      const filename = (modelName || 'model') + '_report.pdf';
+      downloadBlob(pdfBlob, filename);
+      addConsoleLine(`>>> PDF report downloaded: ${filename}`);
+    } catch (err: any) {
+      // If compilation fails (e.g. pdflatex not installed), offer the .tex file
+      addConsoleLine(`>>> PDF compilation failed: ${err.message || err}`);
+      addConsoleLine('>>> Falling back to .tex download...');
+      try {
+        const res = await api.getLatexReport();
+        if (res.available && res.content) {
+          const blob = new Blob([res.content], { type: 'application/x-tex' });
+          const filename = (modelName || 'model') + '_report.tex';
+          downloadBlob(blob, filename);
+          addConsoleLine(`>>> LaTeX source downloaded: ${filename}`);
+        } else {
+          addConsoleLine('>>> No LaTeX report available');
+        }
+      } catch {
+        addConsoleLine('>>> Could not download .tex fallback either');
+      }
+    }
+  }, [modelName, addConsoleLine, downloadBlob]);
+
   // Open example
   const handleOpenExample = useCallback(
     async (ex: ExampleFile) => {
@@ -439,6 +500,26 @@ export default function Toolbar() {
         </button>
         <button className="toolbar-btn" onClick={handleQuoteComment} title='Toggle &quot; &quot; comment (Ctrl+Shift+/)'>
           <Quote size={16} /> &quot;&quot;
+        </button>
+      </div>
+
+      <div className="toolbar-separator" />
+
+      {/* LaTeX report */}
+      <div className="toolbar-group">
+        <button
+          className="toolbar-btn"
+          onClick={handleLatexReport}
+          disabled={!lastResult?.success || !lastResult?.latexReportAvailable}
+          title={
+            !lastResult?.success
+              ? 'Solve a model first to generate a LaTeX report'
+              : !lastResult?.latexReportAvailable
+                ? 'Enable enableLatexReport in coolsolve.conf to generate LaTeX reports'
+                : 'Compile and download PDF report (with plots)'
+          }
+        >
+          <FileText size={16} /> LaTeX
         </button>
       </div>
 
