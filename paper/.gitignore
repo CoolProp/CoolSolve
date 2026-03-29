@@ -1,0 +1,26 @@
+# LaTeX auxiliary files
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.synctex(busy)
+*.nlo
+*.nls
+*.ilg
+*.ind
+*.idx
+
+# PDF output (regenerated from source)
+*.pdf
+
+# Editor backup files
+*~
+*.swp
+*.bak
