@@ -41,6 +41,45 @@ ADValue evaluateStandardFunction(const std::string& funcName,
         }
         return result;
     }
+    
+    // Aggregation functions (variadic)
+    if (name == "sum" || name == "sum2d") {
+        ADValue result = args[0];
+        for (size_t i = 1; i < args.size(); ++i) {
+            result = result + args[i];
+        }
+        return result;
+    }
+    if (name == "average") {
+        ADValue result = args[0];
+        for (size_t i = 1; i < args.size(); ++i) {
+            result = result + args[i];
+        }
+        return result / ADValue::constant(static_cast<double>(args.size()), result.gradient.size());
+    }
+    if (name == "product") {
+        ADValue result = args[0];
+        for (size_t i = 1; i < args.size(); ++i) {
+            result = result * args[i];
+        }
+        return result;
+    }
+    if (name == "stddev") {
+        // Standard deviation: sqrt(sum((x_i - mean)^2) / N)
+        double n = static_cast<double>(args.size());
+        size_t nVars = args[0].gradient.size();
+        // Compute mean
+        ADValue mean = args[0];
+        for (size_t i = 1; i < args.size(); ++i) mean = mean + args[i];
+        mean = mean / ADValue::constant(n, nVars);
+        // Compute sum of squared deviations
+        ADValue sumSq = ADValue::constant(0.0, nVars);
+        for (size_t i = 0; i < args.size(); ++i) {
+            ADValue diff = args[i] - mean;
+            sumSq = sumSq + diff * diff;
+        }
+        return sqrt(sumSq / ADValue::constant(n, nVars));
+    }
 
     // Single argument functions
     if (args.size() == 1) {
@@ -64,6 +103,19 @@ ADValue evaluateStandardFunction(const std::string& funcName,
         if (name == "sinh") return sinh(x);
         if (name == "cosh") return cosh(x);
         if (name == "tanh") return tanh(x);
+        if (name == "arcsinh" || name == "asinh") return asinh(x);
+        if (name == "arccosh" || name == "acosh") return acosh(x);
+        if (name == "arctanh" || name == "atanh") return atanh(x);
+        
+        // Rounding functions (gradient = 0, not differentiable at integers)
+        if (name == "ceil") return ADValue::constant(std::ceil(x.value), x.gradient.size());
+        if (name == "floor") return ADValue::constant(std::floor(x.value), x.gradient.size());
+        if (name == "round") return ADValue::constant(std::round(x.value), x.gradient.size());
+        if (name == "trunc") return ADValue::constant(std::trunc(x.value), x.gradient.size());
+        if (name == "sign") {
+            double s = (x.value > 0.0) ? 1.0 : (x.value < 0.0) ? -1.0 : 0.0;
+            return ADValue::constant(s, x.gradient.size());
+        }
     }
     
     // Two argument functions
@@ -72,6 +124,11 @@ ADValue evaluateStandardFunction(const std::string& funcName,
         const ADValue& y = args[1];
         
         if (name == "pow") return pow(x, y);
+        if (name == "mod") {
+            // mod(x, y) = x - floor(x/y) * y; gradient passes through (not differentiable at multiples)
+            double val = std::fmod(x.value, y.value);
+            return ADValue::constant(val, x.gradient.size());
+        }
         if (name == "atan2") {
             // atan2(y, x) = atan(y/x) with proper quadrant handling
             // Returns result in degrees (EES convention)
@@ -83,6 +140,15 @@ ADValue evaluateStandardFunction(const std::string& funcName,
                 z.gradient[i] = rad2deg * (y.value * x.gradient[i] - x.value * y.gradient[i]) / denom;
             }
             return z;
+        }
+    }
+    
+    // Three argument functions
+    if (args.size() == 3) {
+        // IF(condition, true_value, false_value)
+        if (name == "if") {
+            const ADValue& cond = args[0];
+            return (cond.value > 0.0) ? args[1] : args[2];
         }
     }
     

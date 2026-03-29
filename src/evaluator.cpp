@@ -541,6 +541,14 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
         return left / right;
     } else if (op.op == "^") {
         return pow(left, right);
+    } else if (op.op == ">") {
+        return ADValue::constant(left.value > right.value ? 1.0 : -1.0, left.gradient.size());
+    } else if (op.op == "<") {
+        return ADValue::constant(left.value < right.value ? 1.0 : -1.0, left.gradient.size());
+    } else if (op.op == ">=") {
+        return ADValue::constant(left.value >= right.value ? 1.0 : -1.0, left.gradient.size());
+    } else if (op.op == "<=") {
+        return ADValue::constant(left.value <= right.value ? 1.0 : -1.0, left.gradient.size());
     }
     
     throw std::runtime_error("Unknown binary operator: " + op.op);
@@ -592,6 +600,44 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
     
     if (!func.namedArgs.empty() || isThermo) {
         return evaluateCoolPropFunction(func);
+    }
+    
+    // CONVERT('from', 'to') — returns conversion factor so that 1 [from] = factor [to]
+    if (name == "convert" && func.args.size() == 2) {
+        std::string fromUnit = evaluateString(func.args[0]);
+        std::string toUnit = evaluateString(func.args[1]);
+        // Find which UnitType these units belong to, then compute factor
+        auto tryConvert = [&](UnitType type) -> double {
+            double fromSI = UnitConverter::toSI(1.0, type, fromUnit);
+            double toVal = UnitConverter::fromSI(fromSI, type, toUnit);
+            return toVal;
+        };
+        // Try all unit types to find a matching pair
+        static const UnitType types[] = {
+            UnitType::Energy, UnitType::Pressure, UnitType::Mass, UnitType::Length,
+            UnitType::Time, UnitType::Power, UnitType::SpecificHeat, UnitType::SpecificEnergy,
+            UnitType::SpecificEntropy, UnitType::Conductivity, UnitType::Viscosity,
+            UnitType::Density, UnitType::Dimensionless
+        };
+        for (auto type : types) {
+            double factor = tryConvert(type);
+            // If the factor differs from 1.0, we found a real conversion
+            if (std::abs(factor - 1.0) > 1e-15) {
+                return ADValue::constant(factor, numVariables_);
+            }
+        }
+        // If no conversion found, return 1.0 (same units)
+        return ADValue::constant(1.0, numVariables_);
+    }
+    
+    // CONVERTTEMP('from', 'to', value) — converts a temperature value between scales
+    if (name == "converttemp" && func.args.size() == 3) {
+        std::string fromUnit = evaluateString(func.args[0]);
+        std::string toUnit = evaluateString(func.args[1]);
+        ADValue val = evaluate(func.args[2]);
+        double inSI = UnitConverter::toSI(val.value, UnitType::Temperature, fromUnit);
+        double result = UnitConverter::fromSI(inSI, UnitType::Temperature, toUnit);
+        return ADValue::constant(result, numVariables_);
     }
     
     std::vector<ADValue> args;
@@ -1729,6 +1775,22 @@ void ProceduralEvaluator::evaluate(ExpressionEvaluator& eval, const StmtPtr& stm
     } else if (stmt->is<ProcedureCall>()) {
         const auto& call = stmt->as<ProcedureCall>();
         eval.evaluateProcedureCall(call);
+    } else if (stmt->is<Duplicate>()) {
+        const auto& dup = stmt->as<Duplicate>();
+        int startVal = static_cast<int>(std::round(eval.evaluate(dup.start).value));
+        int endVal = static_cast<int>(std::round(eval.evaluate(dup.end).value));
+        for (int i = startVal; i <= endVal; ++i) {
+            eval.setVariable(dup.iteratorVar, ADValue::constant(static_cast<double>(i), eval.getNumVariables()));
+            for (const auto& s : dup.body) evaluate(eval, s);
+        }
+    } else if (stmt->is<RepeatUntil>()) {
+        const auto& ru = stmt->as<RepeatUntil>();
+        const int maxIter = 10000;
+        for (int iter = 0; iter < maxIter; ++iter) {
+            for (const auto& s : ru.body) evaluate(eval, s);
+            ADValue cond = eval.evaluate(ru.condition);
+            if (cond.value > 0.5) break;
+        }
     }
 }
 

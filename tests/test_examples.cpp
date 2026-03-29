@@ -103,6 +103,8 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"refrigeration_compressor.eescode",        {"epsilon_v_1", 0.4729}},
     {"simple_centrifugal_compressor.eescode",   {"U", 354.8}},
     {"zorlu_heat_pump.eescode",                 {"COP_HP", 6.4167}},
+    // Advanced features showcase (exercises all CoolSolve features)
+    {"advanced_features.eescode",               {"verification", 2083.5}},
 };
 
 // Test result structure for reporting

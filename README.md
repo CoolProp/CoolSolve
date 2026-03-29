@@ -7,10 +7,14 @@ CoolSolve is a parser, structural analyzer, and equation evaluator for the EES (
 - **EES Parser**: Parses EES source code (.eescode files) into an Abstract Syntax Tree
   - Variables (scalars and arrays like `P[1]`)
   - Equations with operators (`+`, `-`, `*`, `/`, `^`)
+  - Comparison operators (`<`, `>`, `<=`, `>=`)
   - **Procedural Statements**: Support for `=` and `:=` in procedural blocks
   - **Functions and Procedures**: `FUNCTION` and `PROCEDURE` blocks with local scoping
   - **Procedure Calls**: `CALL name(inputs : outputs)` syntax
   - **Conditional Logic**: `IF-THEN-ELSE` support within procedural blocks
+  - **Inline IF**: `IF(condition, true_value, false_value)` expression-level conditional
+  - **DUPLICATE loops**: `DUPLICATE i=1,N ... END` for array iteration in procedural blocks
+  - **REPEAT-UNTIL loops**: `REPEAT ... UNTIL(condition)` for iterative procedural logic
   - Comments (`"..."`, `{...}`, `//...`)
   - Directives (`$ifnot`, `$endif`, etc.)
   - Units annotations (`"[Pa]"`, `"[kJ/kg]"`)
@@ -24,6 +28,10 @@ CoolSolve is a parser, structural analyzer, and equation evaluator for the EES (
 - **Automatic Differentiation**: Forward-mode AD for efficient Jacobian computation
   - Full support for arithmetic operators (`+`, `-`, `*`, `/`, `^`)
   - Transcendental functions (`sin`, `cos`, `exp`, `log`, `sqrt`, etc.)
+  - Inverse hyperbolic functions (`arcsinh`, `arccosh`, `arctanh`)
+  - Rounding functions (`ceil`, `floor`, `round`, `trunc`, `sign`, `mod`)
+  - Aggregation functions (`sum`, `average`, `product`, `stddev`)
+  - Unit conversion functions (`convert`, `converttemp`)
   - Exact analytical derivatives (no finite differences)
   - Prepares for Newton-based numerical solvers
 

@@ -128,6 +128,18 @@ struct ProcedureDefinition {
     std::vector<StmtPtr> body;
 };
 
+struct Duplicate {
+    std::string iteratorVar;     // e.g., "i"
+    ExprPtr start;               // start value expression
+    ExprPtr end;                 // end value expression
+    std::vector<StmtPtr> body;   // loop body statements
+};
+
+struct RepeatUntil {
+    std::vector<StmtPtr> body;   // loop body statements
+    ExprPtr condition;           // condition checked after each iteration
+};
+
 struct Statement {
     std::variant<
         Equation,
@@ -137,7 +149,9 @@ struct Statement {
         IfThenElse,
         ProcedureCall,
         FunctionDefinition,
-        ProcedureDefinition
+        ProcedureDefinition,
+        Duplicate,
+        RepeatUntil
     > node;
     
     int sourceLineNumber = 0;
@@ -259,6 +273,20 @@ inline StmtPtr makeFunctionDefinition(const std::string& name, std::vector<std::
 inline StmtPtr makeProcedureDefinition(const std::string& name, std::vector<std::string> inputs, std::vector<std::string> outputs, std::vector<StmtPtr> body, int line = 0) {
     auto stmt = std::make_shared<Statement>();
     stmt->node = ProcedureDefinition{name, std::move(inputs), std::move(outputs), std::move(body)};
+    stmt->sourceLineNumber = line;
+    return stmt;
+}
+
+inline StmtPtr makeDuplicate(const std::string& iteratorVar, ExprPtr start, ExprPtr end, std::vector<StmtPtr> body, int line = 0) {
+    auto stmt = std::make_shared<Statement>();
+    stmt->node = Duplicate{iteratorVar, std::move(start), std::move(end), std::move(body)};
+    stmt->sourceLineNumber = line;
+    return stmt;
+}
+
+inline StmtPtr makeRepeatUntil(std::vector<StmtPtr> body, ExprPtr condition, int line = 0) {
+    auto stmt = std::make_shared<Statement>();
+    stmt->node = RepeatUntil{std::move(body), std::move(condition)};
     stmt->sourceLineNumber = line;
     return stmt;
 }

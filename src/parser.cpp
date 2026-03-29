@@ -223,46 +223,9 @@ public:
                 std::vector<std::string> params;
                 if (tryParseFunctionHeader(line, name, params)) {
                     std::vector<StmtPtr> body;
-                    std::string bodyLine;
                     int startLine = lineNumber;
-                    bool foundEnd = false;
-                    while (std::getline(stream, bodyLine)) {
-                        lineNumber++;
-                        std::string trimmedBody = trim(bodyLine);
-                        std::string upperBody = trimmedBody;
-                        std::transform(upperBody.begin(), upperBody.end(), upperBody.begin(), ::toupper);
-                        if (upperBody == "END") {
-                            foundEnd = true;
-                            break;
-                        }
-                        if (auto stmt = tryParseComment(bodyLine, lineNumber)) {
-                            body.push_back(stmt);
-                        } else if (auto stmt = tryParseDirective(bodyLine, lineNumber)) {
-                            body.push_back(stmt);
-                        } else {
-                            // Split on semicolons within function body
-                            auto segments = splitOnSemicolons(bodyLine);
-                            bool handled = false;
-                            if (segments.size() > 1) {
-                                for (const auto& seg : segments) {
-                                    if (auto s = tryParseEquationOrAssignment(seg, lineNumber)) {
-                                        body.push_back(s);
-                                    } else if (auto s = tryParseProcedureCall(seg, lineNumber)) {
-                                        body.push_back(s);
-                                    }
-                                }
-                                handled = true;
-                            }
-                            if (!handled) {
-                                if (auto stmt = tryParseEquationOrAssignment(bodyLine, lineNumber)) {
-                                    body.push_back(stmt);
-                                } else if (auto stmt = tryParseProcedureCall(bodyLine, lineNumber)) {
-                                    body.push_back(stmt);
-                                }
-                            }
-                        }
-                    }
-                    if (!foundEnd) {
+                    std::string term = parseBodyLines(stream, lineNumber, body, result);
+                    if (term != "END") {
                         result.errors.push_back({startLine, 0, "Function '" + name + "' missing END", line});
                     } else {
                         result.program.statements.push_back(makeFunctionDefinition(name, params, body, startLine));
@@ -277,46 +240,9 @@ public:
                 std::vector<std::string> inputs, outputs;
                 if (tryParseProcedureHeader(line, name, inputs, outputs)) {
                     std::vector<StmtPtr> body;
-                    std::string bodyLine;
                     int startLine = lineNumber;
-                    bool foundEnd = false;
-                    while (std::getline(stream, bodyLine)) {
-                        lineNumber++;
-                        std::string trimmedBody = trim(bodyLine);
-                        std::string upperBody = trimmedBody;
-                        std::transform(upperBody.begin(), upperBody.end(), upperBody.begin(), ::toupper);
-                        if (upperBody == "END") {
-                            foundEnd = true;
-                            break;
-                        }
-                        if (auto stmt = tryParseComment(bodyLine, lineNumber)) {
-                            body.push_back(stmt);
-                        } else if (auto stmt = tryParseDirective(bodyLine, lineNumber)) {
-                            body.push_back(stmt);
-                        } else {
-                            // Split on semicolons within procedure body
-                            auto segments = splitOnSemicolons(bodyLine);
-                            bool handled = false;
-                            if (segments.size() > 1) {
-                                for (const auto& seg : segments) {
-                                    if (auto s = tryParseEquationOrAssignment(seg, lineNumber)) {
-                                        body.push_back(s);
-                                    } else if (auto s = tryParseProcedureCall(seg, lineNumber)) {
-                                        body.push_back(s);
-                                    }
-                                }
-                                handled = true;
-                            }
-                            if (!handled) {
-                                if (auto stmt = tryParseEquationOrAssignment(bodyLine, lineNumber)) {
-                                    body.push_back(stmt);
-                                } else if (auto stmt = tryParseProcedureCall(bodyLine, lineNumber)) {
-                                    body.push_back(stmt);
-                                }
-                            }
-                        }
-                    }
-                    if (!foundEnd) {
+                    std::string term = parseBodyLines(stream, lineNumber, body, result);
+                    if (term != "END") {
                         result.errors.push_back({startLine, 0, "Procedure '" + name + "' missing END", line});
                     } else {
                         result.program.statements.push_back(makeProcedureDefinition(name, inputs, outputs, body, startLine));
@@ -331,6 +257,58 @@ public:
                     result.program.statements.push_back(stmt);
                     continue;
                 }
+            }
+
+            // Handle DUPLICATE loop: DUPLICATE i = start, end
+            if (isKeyword("DUPLICATE")) {
+                int startLine = lineNumber;
+                // Parse header: DUPLICATE varName = startExpr, endExpr
+                std::string header = trim(trimmed.substr(9));  // skip "DUPLICATE"
+                // Find '=' to get iterator variable
+                auto eqPos = header.find('=');
+                if (eqPos == std::string::npos) {
+                    result.errors.push_back({lineNumber, 0, "DUPLICATE missing '=' in header", line});
+                    continue;
+                }
+                std::string iterVar = trim(header.substr(0, eqPos));
+                std::string rangeStr = trim(header.substr(eqPos + 1));
+                // Find comma separating start and end
+                auto commaPos = rangeStr.find(',');
+                if (commaPos == std::string::npos) {
+                    result.errors.push_back({lineNumber, 0, "DUPLICATE missing ',' between start and end", line});
+                    continue;
+                }
+                std::string startStr = trim(rangeStr.substr(0, commaPos));
+                std::string endStr = trim(rangeStr.substr(commaPos + 1));
+                auto startExpr = parseExpression(startStr, lineNumber);
+                auto endExpr = parseExpression(endStr, lineNumber);
+                if (!startExpr || !endExpr) {
+                    result.errors.push_back({lineNumber, 0, "DUPLICATE could not parse range expressions", line});
+                    continue;
+                }
+                // Parse body until END
+                std::vector<StmtPtr> body;
+                std::string term = parseBodyLines(stream, lineNumber, body, result);
+                if (term != "END") {
+                    result.errors.push_back({startLine, 0, "DUPLICATE missing END", line});
+                } else {
+                    result.program.statements.push_back(makeDuplicate(iterVar, startExpr, endExpr, body, startLine));
+                }
+                continue;
+            }
+
+            // Handle REPEAT-UNTIL loop
+            if (isKeyword("REPEAT")) {
+                int startLine = lineNumber;
+                std::vector<StmtPtr> body;
+                ExprPtr condition;
+                std::string term = parseBodyLines(stream, lineNumber, body, result, &condition);
+                if (term != "UNTIL" || !condition) {
+                    result.errors.push_back({startLine, 0, "REPEAT missing UNTIL(condition)", line});
+                } else {
+                    result.program.statements.push_back(makeRepeatUntil(body, condition, startLine));
+                }
+                continue;
             }
             
             // Handle comments
@@ -491,7 +469,114 @@ private:
         return std::all_of(line.begin(), line.end(), 
             [](char c) { return std::isspace(static_cast<unsigned char>(c)); });
     }
-    
+
+    // ========================================================================
+    // Unified body parser for function/procedure/DUPLICATE/REPEAT bodies.
+    // Reads lines from 'stream', parsing comments, directives, DUPLICATE,
+    // REPEAT-UNTIL, equations/assignments, and procedure calls.
+    // Returns "END" if END keyword terminates, "UNTIL" if UNTIL(condition)
+    // terminates (conditionOut set), or "" on EOF.
+    // ========================================================================
+    std::string parseBodyLines(std::istream& stream, int& lineNumber,
+                               std::vector<StmtPtr>& body, ParseResult& result,
+                               ExprPtr* conditionOut = nullptr) {
+        std::string bodyLine;
+        while (std::getline(stream, bodyLine)) {
+            lineNumber++;
+            std::string trimmedBody = trim(bodyLine);
+            std::string upperBody = trimmedBody;
+            std::transform(upperBody.begin(), upperBody.end(), upperBody.begin(), ::toupper);
+
+            auto isBodyKeyword = [&](const std::string& kw) {
+                if (upperBody.find(kw) != 0) return false;
+                if (upperBody.size() == kw.size()) return true;
+                char next = upperBody[kw.size()];
+                return !std::isalnum(static_cast<unsigned char>(next)) && next != '_';
+            };
+
+            if (upperBody == "END") return "END";
+
+            // Check for UNTIL(condition)
+            if (isBodyKeyword("UNTIL")) {
+                if (conditionOut) {
+                    size_t parenOpen = trimmedBody.find('(');
+                    size_t parenClose = trimmedBody.rfind(')');
+                    if (parenOpen != std::string::npos && parenClose != std::string::npos && parenClose > parenOpen) {
+                        std::string condStr = trim(trimmedBody.substr(parenOpen + 1, parenClose - parenOpen - 1));
+                        *conditionOut = parseExpression(condStr, lineNumber);
+                    }
+                }
+                return "UNTIL";
+            }
+
+            if (auto stmt = tryParseComment(bodyLine, lineNumber)) {
+                body.push_back(stmt);
+            } else if (auto stmt = tryParseDirective(bodyLine, lineNumber)) {
+                body.push_back(stmt);
+            } else if (isBodyKeyword("DUPLICATE")) {
+                // Parse nested DUPLICATE: DUPLICATE varName = startExpr, endExpr
+                std::string header = trim(trimmedBody.substr(9));
+                auto eqPos = header.find('=');
+                if (eqPos == std::string::npos) {
+                    result.errors.push_back({lineNumber, 0, "DUPLICATE missing '=' in header", bodyLine});
+                    continue;
+                }
+                std::string iterVar = trim(header.substr(0, eqPos));
+                std::string rangeStr = trim(header.substr(eqPos + 1));
+                auto commaPos = rangeStr.find(',');
+                if (commaPos == std::string::npos) {
+                    result.errors.push_back({lineNumber, 0, "DUPLICATE missing ',' between start and end", bodyLine});
+                    continue;
+                }
+                std::string startStr = trim(rangeStr.substr(0, commaPos));
+                std::string endStr = trim(rangeStr.substr(commaPos + 1));
+                auto startExpr = parseExpression(startStr, lineNumber);
+                auto endExpr = parseExpression(endStr, lineNumber);
+                if (!startExpr || !endExpr) {
+                    result.errors.push_back({lineNumber, 0, "DUPLICATE could not parse range expressions", bodyLine});
+                    continue;
+                }
+                int dupStartLine = lineNumber;
+                std::vector<StmtPtr> dupBody;
+                std::string term = parseBodyLines(stream, lineNumber, dupBody, result);
+                if (term == "END") {
+                    body.push_back(makeDuplicate(iterVar, startExpr, endExpr, dupBody, dupStartLine));
+                } else {
+                    result.errors.push_back({dupStartLine, 0, "DUPLICATE missing END", bodyLine});
+                }
+            } else if (isBodyKeyword("REPEAT")) {
+                int repStartLine = lineNumber;
+                std::vector<StmtPtr> repBody;
+                ExprPtr condition;
+                std::string term = parseBodyLines(stream, lineNumber, repBody, result, &condition);
+                if (term == "UNTIL" && condition) {
+                    body.push_back(makeRepeatUntil(repBody, condition, repStartLine));
+                } else {
+                    result.errors.push_back({repStartLine, 0, "REPEAT missing UNTIL(condition)", bodyLine});
+                }
+            } else {
+                auto segments = splitOnSemicolons(bodyLine);
+                bool handled = false;
+                if (segments.size() > 1) {
+                    for (const auto& seg : segments) {
+                        if (auto s = tryParseEquationOrAssignment(seg, lineNumber))
+                            body.push_back(s);
+                        else if (auto s = tryParseProcedureCall(seg, lineNumber))
+                            body.push_back(s);
+                    }
+                    handled = true;
+                }
+                if (!handled) {
+                    if (auto stmt = tryParseEquationOrAssignment(bodyLine, lineNumber))
+                        body.push_back(stmt);
+                    else if (auto stmt = tryParseProcedureCall(bodyLine, lineNumber))
+                        body.push_back(stmt);
+                }
+            }
+        }
+        return "";  // EOF
+    }
+
     StmtPtr tryParseComment(const std::string& line, int lineNum) {
         std::string trimmed = trim(line);
         
@@ -935,7 +1020,43 @@ private:
         std::string trimmed = trim(expr);
         if (trimmed.empty()) return nullptr;
         
-        // Parse as additive expression
+        // Parse as comparison expression (lowest precedence)
+        return parseComparison(trimmed, lineNum);
+    }
+    
+    ExprPtr parseComparison(const std::string& expr, int lineNum) {
+        std::string trimmed = trim(expr);
+        
+        // Look for comparison operators at depth 0: >=, <=, >, <
+        // Scan left-to-right (left associative)
+        int depth = 0;
+        bool inString = false;
+        for (size_t i = 0; i < trimmed.size(); ++i) {
+            if (trimmed[i] == '\'') inString = !inString;
+            if (inString) continue;
+            if (trimmed[i] == '(' || trimmed[i] == '[') depth++;
+            if (trimmed[i] == ')' || trimmed[i] == ']') depth--;
+            if (depth != 0) continue;
+            
+            std::string op;
+            if (i + 1 < trimmed.size() && trimmed[i] == '>' && trimmed[i+1] == '=') op = ">=";
+            else if (i + 1 < trimmed.size() && trimmed[i] == '<' && trimmed[i+1] == '=') op = "<=";
+            else if (trimmed[i] == '>' && (i == 0 || trimmed[i-1] != '<')) op = ">";
+            else if (trimmed[i] == '<' && (i + 1 >= trimmed.size() || trimmed[i+1] != '=')) op = "<";
+            
+            if (!op.empty()) {
+                std::string left = trim(trimmed.substr(0, i));
+                std::string right = trim(trimmed.substr(i + op.size()));
+                if (!left.empty() && !right.empty()) {
+                    auto leftExpr = parseAdditive(left, lineNum);
+                    auto rightExpr = parseAdditive(right, lineNum);
+                    if (leftExpr && rightExpr) {
+                        return makeBinaryOp(op, leftExpr, rightExpr, lineNum);
+                    }
+                }
+            }
+        }
+        
         return parseAdditive(trimmed, lineNum);
     }
     
@@ -1477,6 +1598,10 @@ std::string astToString(const StmtPtr& stmt) {
             return "$" + node.name + " " + node.content;
         } else if constexpr (std::is_same_v<T, IfThenElse>) {
             return "IF " + astToString(node.condition) + " THEN ...";
+        } else if constexpr (std::is_same_v<T, Duplicate>) {
+            return "DUPLICATE " + node.iteratorVar + " = " + astToString(node.start) + ", " + astToString(node.end);
+        } else if constexpr (std::is_same_v<T, RepeatUntil>) {
+            return "REPEAT ... UNTIL " + astToString(node.condition);
         }
         return "<unknown>";
     }, stmt->node);

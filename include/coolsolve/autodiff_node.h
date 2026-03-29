@@ -281,6 +281,39 @@ inline ADValue tanh(const ADValue& x) {
     return z;
 }
 
+// asinh(x) - inverse hyperbolic sine
+// d(asinh(x))/dx = 1/sqrt(x^2 + 1)
+inline ADValue asinh(const ADValue& x) {
+    ADValue z(std::asinh(x.value), x.gradient.size());
+    double dval = 1.0 / std::sqrt(x.value * x.value + 1.0);
+    for (size_t i = 0; i < z.gradient.size(); ++i) {
+        z.gradient[i] = dval * x.gradient[i];
+    }
+    return z;
+}
+
+// acosh(x) - inverse hyperbolic cosine (x >= 1)
+// d(acosh(x))/dx = 1/sqrt(x^2 - 1)
+inline ADValue acosh(const ADValue& x) {
+    ADValue z(std::acosh(x.value), x.gradient.size());
+    double dval = 1.0 / std::sqrt(x.value * x.value - 1.0);
+    for (size_t i = 0; i < z.gradient.size(); ++i) {
+        z.gradient[i] = dval * x.gradient[i];
+    }
+    return z;
+}
+
+// atanh(x) - inverse hyperbolic tangent (|x| < 1)
+// d(atanh(x))/dx = 1/(1 - x^2)
+inline ADValue atanh(const ADValue& x) {
+    ADValue z(std::atanh(x.value), x.gradient.size());
+    double dval = 1.0 / (1.0 - x.value * x.value);
+    for (size_t i = 0; i < z.gradient.size(); ++i) {
+        z.gradient[i] = dval * x.gradient[i];
+    }
+    return z;
+}
+
 // min(x, y) - note: not differentiable at x == y
 inline ADValue min(const ADValue& x, const ADValue& y) {
     if (x.value <= y.value) {

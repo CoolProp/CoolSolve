@@ -1,0 +1,198 @@
+"Advanced Features Showcase"
+"This model exercises all major CoolSolve features."
+"It does not represent a physical system — it is a comprehensive test."
+
+{============================================================================}
+{  1. USER-DEFINED FUNCTION with assignment operator                          }
+{  Demonstrates: FUNCTION, :=, arithmetic in function body                    }
+{============================================================================}
+
+FUNCTION triangle_area(base, height)
+    triangle_area := 0.5 * base * height
+END
+
+{============================================================================}
+{  2. USER-DEFINED PROCEDURE with REPEAT-UNTIL loop                           }
+{  Demonstrates: PROCEDURE, CALL, REPEAT/UNTIL, :=, loop logic               }
+{  Computes integer square root (first k such that k^2 >= N)                  }
+{============================================================================}
+
+PROCEDURE isqrt(N : root)
+    root := 0
+    REPEAT
+        root := root + 1
+    UNTIL(root * root >= N)
+END
+
+{============================================================================}
+{  3. FUNCTION using inline IF                                                }
+{  Demonstrates: IF(cond, true_val, false_val) inside function                }
+{============================================================================}
+
+FUNCTION safe_inverse(x)
+    safe_inverse := IF(abs(x) - 0.0001, 1/x, 0)
+END
+
+{============================================================================}
+{  4. PROCEDURE with multiple outputs                                         }
+{  Demonstrates: multiple output variables from a single CALL                 }
+{============================================================================}
+
+PROCEDURE stats2(a, b : total, diff)
+    total := a + b
+    diff := a - b
+END
+
+{============================================================================}
+{  5. FUNCTION with inline IF for conditional logic                           }
+{  Demonstrates: inline IF(cond, true_val, false_val) inside function         }
+{  Returns x when x > 0, otherwise 0                                         }
+{============================================================================}
+
+FUNCTION pos_part(x)
+    pos_part := IF(x, x, 0)
+END
+
+{============================================================================}
+{  6. BASIC EQUATIONS — arithmetic, constants, unit annotations               }
+{  Demonstrates: +, -, *, /, ^, pi, physical constants, [units]               }
+{============================================================================}
+
+"Physical constants and basic arithmetic"
+area_circle = pi * radius^2                        "[m^2]"
+radius = 1.5                                       "[m]"
+F_gravity = mass * g#                              "[N]"
+mass = 10                                          "[kg]"
+
+{============================================================================}
+{  7. MATHEMATICAL FUNCTIONS — trig, hyperbolic, log, rounding                }
+{  Demonstrates: sin, cos, tan, arctan, sinh, cosh, exp, ln, sqrt,           }
+{                log10, abs, ceil, floor, round, trunc, sign, mod, pow        }
+{============================================================================}
+
+"Trigonometric functions (arguments in degrees)"
+trig_val = sin(30) + cos(60) + tan(45)
+
+"Inverse trigonometric functions (results in degrees)"
+inv_trig = arcsin(0.5) + arccos(0.5) + arctan(1)
+
+"Hyperbolic functions"
+hyp_val = sinh(1) + cosh(1) + tanh(0.5)
+
+"Logarithmic and exponential"
+log_val = ln(exp(2)) + log10(1000) + sqrt(16)
+
+"Rounding and sign functions"
+round_val = ceil(2.3) + floor(2.7) + round(2.5) + trunc(2.9) + sign(-5) + abs(-7)
+mod_val = mod(17, 5)
+
+"Power function"
+pow_val = pow(2, 10)
+
+{============================================================================}
+{  8. INLINE IF FUNCTION                                                      }
+{  Demonstrates: IF(condition, true_val, false_val) — ternary operator        }
+{  Returns true_val when condition > 0, else false_val                        }
+{============================================================================}
+
+"Inline conditional"
+inline_if_result = IF(5, 100, 200)
+
+{============================================================================}
+{  9. AGGREGATION FUNCTIONS                                                   }
+{  Demonstrates: min, max, SUM, AVERAGE, PRODUCT, STDDEV                     }
+{============================================================================}
+
+"Min and max (variadic)"
+min_val = min(3, 7, 1, 9, 2)
+max_val = max(3, 7, 1, 9, 2)
+
+"Sum, average, product, standard deviation"
+sum_val = SUM(10, 20, 30, 40, 50)
+avg_val = AVERAGE(10, 20, 30, 40, 50)
+prod_val = PRODUCT(1, 2, 3, 4, 5)
+std_val = STDDEV(2, 4, 4, 4, 5, 5, 7, 9)
+
+{============================================================================}
+{  10. TOP-LEVEL DUPLICATE — equation expansion                               }
+{  Demonstrates: DUPLICATE loop at top level generating individual equations  }
+{  In the main program, DUPLICATE literally expands into separate equations   }
+{============================================================================}
+
+"DUPLICATE loop generating array equations"
+DUPLICATE i = 1, 5
+    arr[i] = i^2
+END
+
+"Sum of generated array values"
+arr_total = arr[1] + arr[2] + arr[3] + arr[4] + arr[5]
+
+{============================================================================}
+{  11. NESTED DUPLICATE                                                       }
+{  Demonstrates: nested DUPLICATE loops for 2D array initialization           }
+{============================================================================}
+
+"Nested DUPLICATE for 2D pattern"
+DUPLICATE i = 1, 3
+    DUPLICATE j = 1, 3
+        B[i,j] = i * 10 + j
+    END
+END
+
+"Trace of the matrix (sum of diagonal elements)"
+B_trace = B[1,1] + B[2,2] + B[3,3]
+
+{============================================================================}
+{  12. UNIT CONVERSION FUNCTIONS                                              }
+{  Demonstrates: CONVERT('from','to'), CONVERTTEMP('from','to',value)        }
+{============================================================================}
+
+"Unit conversions"
+kj_to_btu = CONVERT('kJ', 'BTU')
+temp_F = CONVERTTEMP('C', 'F', 100)
+
+{============================================================================}
+{  13. STRING VARIABLES                                                       }
+{  Demonstrates: string$ variable with single-quoted string literal           }
+{============================================================================}
+
+fluid$ = 'Water'
+
+{============================================================================}
+{  14. THERMOPHYSICAL PROPERTY LOOKUPS (CoolProp)                            }
+{  Demonstrates: thermodynamic functions with named property arguments        }
+{  Note: CoolSolve uses CoolProp backend with SI units (K, Pa, J/kg, etc.)   }
+{============================================================================}
+
+"Thermodynamic properties of water at 300 K, 101325 Pa"
+h_water = ENTHALPY(Water, T=300, P=101.325)
+rho_water = DENSITY(Water, T=300, P=101.325)
+
+{============================================================================}
+{  15. CALLING USER FUNCTIONS AND PROCEDURES                                  }
+{============================================================================}
+
+"User-defined function calls"
+tri_area = triangle_area(6, 4)
+inv_result = safe_inverse(4)
+pos_result = pos_part(7)
+
+"User-defined procedure calls"
+CALL isqrt(17 : sqrt_17)
+CALL stats2(8, 3 : st_total, st_diff)
+
+{============================================================================}
+{  16. SEMICOLON MULTI-STATEMENT                                              }
+{  Demonstrates: multiple equations on one line separated by semicolons       }
+{============================================================================}
+
+alpha = 0.25 ; beta = 0.75 ; gamma = alpha + beta
+
+{============================================================================}
+{  17. VERIFICATION — combine all results into a single check number          }
+{  The verification number aggregates outputs from every feature section.     }
+{  This allows the test harness to validate all features with one value.      }
+{============================================================================}
+
+"Verification checksum"
+verification = area_circle + F_gravity + trig_val + inv_trig + hyp_val + log_val + round_val + mod_val + pow_val + inline_if_result + min_val + max_val + sum_val + avg_val + prod_val + std_val + arr_total + B_trace + kj_to_btu + temp_F + tri_area + inv_result + pos_result + sqrt_17 + st_total + st_diff + gamma

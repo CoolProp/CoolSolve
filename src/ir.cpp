@@ -11,6 +11,160 @@
 namespace coolsolve {
 
 // ============================================================================
+// Expression/Statement deep-copy with iterator substitution
+// ============================================================================
+
+// Deep-copy an expression, replacing occurrences of iteratorVar with the given value.
+// - In Variable names: if name matches iteratorVar (case-insensitive), replace with NumberLiteral
+// - In Variable indices: recursively substitute
+// - In all sub-expressions: recursively substitute
+static ExprPtr cloneExprWithSubstitution(const ExprPtr& expr, const std::string& iteratorVar, double value) {
+    if (!expr) return nullptr;
+    auto result = std::make_shared<Expression>();
+    result->sourceLineNumber = expr->sourceLineNumber;
+
+    if (expr->is<NumberLiteral>()) {
+        result->node = expr->as<NumberLiteral>();
+    } else if (expr->is<StringLiteral>()) {
+        result->node = expr->as<StringLiteral>();
+    } else if (expr->is<Variable>()) {
+        const auto& var = expr->as<Variable>();
+        // Check if this variable IS the iterator variable (bare reference, no indices)
+        std::string upperName = var.name;
+        std::transform(upperName.begin(), upperName.end(), upperName.begin(), ::toupper);
+        std::string upperIter = iteratorVar;
+        std::transform(upperIter.begin(), upperIter.end(), upperIter.begin(), ::toupper);
+        if (upperName == upperIter && var.indices.empty()) {
+            result->node = NumberLiteral{value};
+        } else {
+            Variable newVar;
+            newVar.name = var.name;
+            for (const auto& idx : var.indices) {
+                newVar.indices.push_back(cloneExprWithSubstitution(idx, iteratorVar, value));
+            }
+            result->node = std::move(newVar);
+        }
+    } else if (expr->is<UnaryOp>()) {
+        const auto& op = expr->as<UnaryOp>();
+        UnaryOp newOp;
+        newOp.op = op.op;
+        newOp.operand = cloneExprWithSubstitution(op.operand, iteratorVar, value);
+        result->node = std::move(newOp);
+    } else if (expr->is<BinaryOp>()) {
+        const auto& op = expr->as<BinaryOp>();
+        BinaryOp newOp;
+        newOp.op = op.op;
+        newOp.left = cloneExprWithSubstitution(op.left, iteratorVar, value);
+        newOp.right = cloneExprWithSubstitution(op.right, iteratorVar, value);
+        result->node = std::move(newOp);
+    } else if (expr->is<FunctionCall>()) {
+        const auto& fc = expr->as<FunctionCall>();
+        FunctionCall newFc;
+        newFc.name = fc.name;
+        for (const auto& arg : fc.args) {
+            newFc.args.push_back(cloneExprWithSubstitution(arg, iteratorVar, value));
+        }
+        for (const auto& [key, val] : fc.namedArgs) {
+            newFc.namedArgs.push_back({key, cloneExprWithSubstitution(val, iteratorVar, value)});
+        }
+        result->node = std::move(newFc);
+    }
+    return result;
+}
+
+// Deep-copy a statement, applying iterator substitution to all contained expressions
+static StmtPtr cloneStmtWithSubstitution(const StmtPtr& stmt, const std::string& iteratorVar, double value) {
+    if (!stmt) return nullptr;
+    auto result = std::make_shared<Statement>();
+    result->sourceLineNumber = stmt->sourceLineNumber;
+
+    if (stmt->is<Equation>()) {
+        const auto& eq = stmt->as<Equation>();
+        Equation newEq;
+        newEq.lhs = cloneExprWithSubstitution(eq.lhs, iteratorVar, value);
+        newEq.rhs = cloneExprWithSubstitution(eq.rhs, iteratorVar, value);
+        newEq.units = eq.units;
+        newEq.comment = eq.comment;
+        result->node = std::move(newEq);
+    } else if (stmt->is<Assignment>()) {
+        const auto& asgn = stmt->as<Assignment>();
+        Assignment newAsgn;
+        newAsgn.lhs = cloneExprWithSubstitution(asgn.lhs, iteratorVar, value);
+        newAsgn.rhs = cloneExprWithSubstitution(asgn.rhs, iteratorVar, value);
+        result->node = std::move(newAsgn);
+    } else if (stmt->is<ProcedureCall>()) {
+        const auto& call = stmt->as<ProcedureCall>();
+        ProcedureCall newCall;
+        newCall.name = call.name;
+        for (const auto& arg : call.inputArgs) {
+            newCall.inputArgs.push_back(cloneExprWithSubstitution(arg, iteratorVar, value));
+        }
+        for (const auto& outVar : call.outputVars) {
+            Variable newVar;
+            newVar.name = outVar.name;
+            for (const auto& idx : outVar.indices) {
+                newVar.indices.push_back(cloneExprWithSubstitution(idx, iteratorVar, value));
+            }
+            newCall.outputVars.push_back(std::move(newVar));
+        }
+        result->node = std::move(newCall);
+    } else if (stmt->is<Comment>()) {
+        result->node = stmt->as<Comment>();
+    } else if (stmt->is<Directive>()) {
+        result->node = stmt->as<Directive>();
+    } else if (stmt->is<Duplicate>()) {
+        // Nested DUPLICATE: clone with substitution in start/end expressions and body
+        const auto& dup = stmt->as<Duplicate>();
+        Duplicate newDup;
+        newDup.iteratorVar = dup.iteratorVar;
+        newDup.start = cloneExprWithSubstitution(dup.start, iteratorVar, value);
+        newDup.end = cloneExprWithSubstitution(dup.end, iteratorVar, value);
+        for (const auto& bodyStmt : dup.body) {
+            newDup.body.push_back(cloneStmtWithSubstitution(bodyStmt, iteratorVar, value));
+        }
+        result->node = std::move(newDup);
+    }
+    return result;
+}
+
+// Recursively expand a single Duplicate statement into a flat list of expanded statements.
+// Handles nested DUPLICATE by recursively expanding inner DUPLICATE loops.
+static void expandDuplicate(const Duplicate& dup, std::vector<StmtPtr>& out) {
+    // Evaluate start and end — they must be integer literals (possibly after substitution)
+    auto evalIntExpr = [](const ExprPtr& expr) -> std::optional<int> {
+        if (!expr) return std::nullopt;
+        if (expr->is<NumberLiteral>()) {
+            return static_cast<int>(expr->as<NumberLiteral>().value);
+        }
+        // Could also handle UnaryOp("-", NumberLiteral) for negative numbers
+        if (expr->is<UnaryOp>()) {
+            const auto& op = expr->as<UnaryOp>();
+            if (op.op == "-" && op.operand && op.operand->is<NumberLiteral>()) {
+                return static_cast<int>(-op.operand->as<NumberLiteral>().value);
+            }
+        }
+        return std::nullopt;
+    };
+
+    auto startVal = evalIntExpr(dup.start);
+    auto endVal = evalIntExpr(dup.end);
+    if (!startVal || !endVal) return;  // Cannot expand non-literal bounds
+
+    int step = (*startVal <= *endVal) ? 1 : -1;
+    for (int i = *startVal; step > 0 ? i <= *endVal : i >= *endVal; i += step) {
+        for (const auto& bodyStmt : dup.body) {
+            auto cloned = cloneStmtWithSubstitution(bodyStmt, dup.iteratorVar, static_cast<double>(i));
+            if (cloned && cloned->is<Duplicate>()) {
+                // Recursively expand nested DUPLICATE
+                expandDuplicate(cloned->as<Duplicate>(), out);
+            } else if (cloned) {
+                out.push_back(std::move(cloned));
+            }
+        }
+    }
+}
+
+// ============================================================================
 // IR Building from AST
 // ============================================================================
 
@@ -18,8 +172,18 @@ IR IR::fromAST(const Program& program) {
     IR ir;
     int eqId = 0;
     std::vector<std::string> pendingComments;  // Accumulate "" display comments
-    
+
+    // Expand all top-level DUPLICATE statements into flat statement list
+    std::vector<StmtPtr> expandedStatements;
     for (const auto& stmt : program.statements) {
+        if (stmt->is<Duplicate>()) {
+            expandDuplicate(stmt->as<Duplicate>(), expandedStatements);
+        } else {
+            expandedStatements.push_back(stmt);
+        }
+    }
+    
+    for (const auto& stmt : expandedStatements) {
         // Collect standalone "" display comments and attach to next equation
         if (stmt->is<Comment>()) {
             const auto& cmt = stmt->as<Comment>();
