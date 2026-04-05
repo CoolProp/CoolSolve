@@ -5,6 +5,7 @@
 #include "structural_analysis.h"
 #include "autodiff_node.h"
 #include "units.h"
+#include "diagnostic.h"
 #include <map>
 #include <string>
 #include <vector>
@@ -204,9 +205,19 @@ public:
     void setResidualOnly(bool residualOnly) { residualOnly_ = residualOnly; }
     bool isResidualOnly() const { return residualOnly_; }
     
+    void setDiagnostics(DiagnosticCollector* diag) { diagnostics_ = diag; }
+    
+    /// When true, skip input clamping (P >= 1000 Pa, T >= 50 K, etc.).
+    /// Used for final solution verification so that out-of-range inputs
+    /// are caught as errors rather than silently corrected.
+    void setDisableClamping(bool disable) { disableClamping_ = disable; }
+    bool isClampingDisabled() const { return disableClamping_; }
+    
 private:
     size_t numVariables_;
     bool residualOnly_ = false;
+    bool disableClamping_ = false;
+    DiagnosticCollector* diagnostics_ = nullptr;
     std::map<std::string, ADValue, CaseInsensitiveLess> variables_;
     std::map<std::string, std::string, CaseInsensitiveLess> stringVariables_;
     std::map<std::string, FunctionDefinition, CaseInsensitiveLess> userFunctions_;
@@ -298,9 +309,12 @@ public:
      */
     void registerProcedure(const ProcedureDefinition& proc) { procedures_[proc.name] = proc; }
     
+    void setDiagnostics(DiagnosticCollector* diag) { diagnostics_ = diag; }
+    
 private:
     std::vector<std::string> variables_;
     std::vector<int> equationIds_;
+    DiagnosticCollector* diagnostics_ = nullptr;
     std::vector<const EquationInfo*> equations_;
     std::map<std::string, FunctionDefinition, CaseInsensitiveLess> functions_;
     std::map<std::string, ProcedureDefinition, CaseInsensitiveLess> procedures_;

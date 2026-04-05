@@ -115,6 +115,14 @@ export default function Toolbar() {
                 addConsoleLine(`    Total iterations: ${result.totalIterations}`);
                 addConsoleLine(`    Time: ${result.timing.total_ms.toFixed(0)} ms (solve: ${result.timing.solve_ms.toFixed(0)} ms)`);
                 addConsoleLine(`    Variables solved: ${Object.keys(result.variables).length}`);
+                // Display diagnostics (warnings/info)
+                if (result.diagnostics && result.diagnostics.length > 0) {
+                  addConsoleLine(`--- Diagnostics (${result.diagnostics.length}) ---`);
+                  for (const d of result.diagnostics) {
+                    const loc = d.line ? ` (line ${d.line})` : '';
+                    addConsoleLine(`    [${d.severity}]${loc}: ${d.message}`);
+                  }
+                }
                 // Fetch .sol content
                 api.getSol().then((s) => setSol(s.content)).catch(() => {});
               }
@@ -126,14 +134,31 @@ export default function Toolbar() {
               const result = event.result as SolveResponse | undefined;
               if (result) {
                 setSolveResult(result);
-                addConsoleLine(`>>> Solve FAILED: ${result.status}`);
-                if (result.errorMessage) addConsoleLine(`    ${result.errorMessage}`);
+                // Provide user-friendly failure messages
+                if (result.isSquare === false) {
+                  addConsoleLine(`>>> Solve FAILED: System is not square (${result.equationCount} equations, ${result.variableCount} variables)`);
+                } else if (result.status === 'ParseFailed') {
+                  addConsoleLine(`>>> Solve FAILED: Parse error`);
+                } else {
+                  addConsoleLine(`>>> Solve FAILED: ${result.errorMessage || result.status}`);
+                }
                 if (result.detailedError) addConsoleLine(`    ${result.detailedError}`);
-                for (const block of result.blockResults) {
-                  if (!block.success) {
-                    addConsoleLine(
-                      `    Block ${block.id}: ${block.status} (res=${block.maxResidual.toExponential(2)}) ${block.errorMessage}`
-                    );
+                // Show failed blocks (but not for parse/structural failures)
+                if (result.status !== 'ParseFailed' && result.status !== 'InvalidInput') {
+                  for (const block of result.blockResults) {
+                    if (!block.success) {
+                      addConsoleLine(
+                        `    Block ${block.id}: ${block.status} (res=${block.maxResidual.toExponential(2)}) ${block.errorMessage}`
+                      );
+                    }
+                  }
+                }
+                // Display diagnostics
+                if (result.diagnostics && result.diagnostics.length > 0) {
+                  addConsoleLine(`--- Diagnostics (${result.diagnostics.length}) ---`);
+                  for (const d of result.diagnostics) {
+                    const loc = d.line ? ` (line ${d.line})` : '';
+                    addConsoleLine(`    [${d.severity}]${loc}: ${d.message}`);
                   }
                 }
               } else {

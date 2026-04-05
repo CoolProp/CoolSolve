@@ -1,6 +1,7 @@
 #include "coolsolve/parser.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/runner.h"
+#include "coolsolve/diagnostic.h"
 #include "coolsolve/structural_analysis.h"
 #include "coolsolve/evaluator.h"  // For profiling stats
 #include "coolsolve/solution_checker.h"
@@ -294,19 +295,43 @@ int main(int argc, char* argv[]) {
         std::cout << "\nSolver: SUCCESS (" << solveResult.totalIterations << " iterations)\n";
     }
     
-    // In debug mode, verify the solution satisfies all equations
-    if (debugMode && solveResult.success) {
+    // Always verify the solution when the solver converges.
+    // This catches CoolProp evaluation failures in the final solution
+    // (e.g. unphysical inputs that were clamped during iteration).
+    bool solutionValid = solveResult.success;
+    if (solveResult.success) {
         auto checkResult = coolsolve::checkSolution(
             ir, solveResult.variables, solveResult.stringVariables,
             options.coolpropConfig);
-        coolsolve::printSolutionCheckReport(checkResult);
-        coolsolve::writeSolutionCheckReport(
-            (debugPath / "solution_check.md").string(), checkResult);
+        
+        if (!checkResult.allSatisfied) {
+            solutionValid = false;
+            std::cerr << "\n=== Solution Verification Failed ===\n";
+            // Show CoolProp errors from the checker
+            for (const auto& d : checkResult.diagnostics.items()) {
+                if (d.severity == coolsolve::DiagnosticSeverity::Error) {
+                    std::cerr << "error: " << d.message << "\n";
+                }
+            }
+            // Show violated equations
+            for (const auto& chk : checkResult.checks) {
+                if (!chk.satisfied) {
+                    std::cerr << "  equation: " << chk.originalText
+                              << " (residual=" << std::scientific << std::setprecision(2) << chk.residual << ")\n";
+                }
+            }
+        }
+        
+        if (debugMode) {
+            coolsolve::printSolutionCheckReport(checkResult);
+            coolsolve::writeSolutionCheckReport(
+                (debugPath / "solution_check.md").string(), checkResult);
+        }
     }
     
     // Generate standalone LaTeX report if enableLatexReport is set (non-debug mode)
     // In debug mode the report is already generated inside generateDebugOutput().
-    if (solveResult.success && options.enableLatexReport && !debugMode) {
+    if (solutionValid && options.enableLatexReport && !debugMode) {
         fs::path inputPath(inputFile);
         std::string stem = inputPath.stem().string();
         fs::path texPath = inputPath.parent_path() / (stem + "_report.tex");
@@ -320,7 +345,7 @@ int main(int argc, char* argv[]) {
     }
     
     // Write .sol file if successful
-    if (solveResult.success && writeSolFile) {
+    if (solutionValid && writeSolFile) {
         fs::path inputPath(inputFile);
         fs::path solPath = inputPath.parent_path() / (inputPath.stem().string() + ".sol");
         std::ofstream solFile(solPath);
@@ -344,7 +369,7 @@ int main(int argc, char* argv[]) {
     }
     
     // Write .initials file if successful and requested
-    if (solveResult.success && updateGuessFile) {
+    if (solutionValid && updateGuessFile) {
         fs::path inputPath(inputFile);
         fs::path initialsPath = inputPath.parent_path() / (inputPath.stem().string() + ".initials");
         std::ofstream initialsFile(initialsPath);
@@ -404,5 +429,45 @@ int main(int argc, char* argv[]) {
         file << output;
     } 
 
-    return solveResult.success ? 0 : 1;
+    // Print diagnostics (warnings, info messages) if any
+    const auto& diagnostics = runner.getDiagnostics();
+    if (diagnostics.size() > 0) {
+        // Separate C001 CoolProp warnings (can be very numerous) from other diagnostics
+        std::map<std::string, int> c001Counts;  // unique message -> count
+        std::vector<coolsolve::Diagnostic> otherDiag;
+        int totalC001 = 0;
+        for (const auto& d : diagnostics.items()) {
+            if (d.code == "C001") {
+                c001Counts[d.message]++;
+                totalC001++;
+            } else {
+                otherDiag.push_back(d);
+            }
+        }
+        
+        // Print non-C001 diagnostics (errors, info, other warnings)
+        for (const auto& d : otherDiag) {
+            const char* prefix = "";
+            switch (d.severity) {
+                case coolsolve::DiagnosticSeverity::Error:   prefix = "\033[31merror\033[0m"; break;
+                case coolsolve::DiagnosticSeverity::Warning: prefix = "\033[33mwarning\033[0m"; break;
+                case coolsolve::DiagnosticSeverity::Info:    prefix = "\033[36minfo\033[0m"; break;
+            }
+            std::cerr << prefix;
+            if (d.line > 0) std::cerr << " (line " << d.line << ")";
+            std::cerr << ": " << d.message << "\n";
+        }
+        
+        // Print C001 summary instead of flooding the terminal
+        if (totalC001 > 0) {
+            std::cerr << "\033[33mwarning\033[0m: " << totalC001 << " CoolProp warning(s) during solving ("
+                      << c001Counts.size() << " unique)";
+            if (!debugMode) {
+                std::cerr << ". Use -d for details";
+            }
+            std::cerr << "\n";
+        }
+    }
+
+    return solutionValid ? 0 : 1;
 }

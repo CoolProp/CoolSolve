@@ -156,7 +156,12 @@ export default function App() {
           </span>
         )}
         {parseErrors.length > 0 && (
-          <span style={{ color: '#f87171' }}>{parseErrors.length} error(s)</span>
+          <span
+            style={{ color: '#f87171', cursor: 'help' }}
+            title={parseErrors.map(e => `Line ${e.line}: ${e.message}`).join('\n')}
+          >
+            {parseErrors.length} error(s): Line {parseErrors[0].line}: {parseErrors[0].message}
+          </span>
         )}
         {solving && <span style={{ color: '#facc15' }}>Solving...</span>}
         {lastResult && !solving && (

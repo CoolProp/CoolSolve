@@ -1,4 +1,6 @@
 #include "coolsolve/parser.h"
+#include "coolsolve/diagnostic.h"
+#include "coolsolve/ir.h"
 #include <peglib.h>
 #include <fstream>
 #include <sstream>
@@ -6,6 +8,7 @@
 #include <cctype>
 #include <iostream>
 #include <set>
+#include <unordered_set>
 
 namespace coolsolve {
 
@@ -319,7 +322,7 @@ public:
             }
             
             // Handle directives
-            if (auto stmt = tryParseDirective(line, lineNumber)) {
+            if (auto stmt = tryParseDirective(line, lineNumber, &result.diagnostics)) {
                 result.program.statements.push_back(stmt);
                 result.directiveCount++;
                 continue;
@@ -363,6 +366,10 @@ public:
         // Success if no unsupported constructs AND we found something valid
         bool somethingParsed = result.equationCount > 0 || result.commentCount > 0 || result.directiveCount > 0 || !result.program.statements.empty();
         result.success = !unsupportedFound && somethingParsed;
+        
+        // Post-parse validation: check function names against known builtins
+        validateFunctionNames(result);
+        
         return result;
     }
     
@@ -372,6 +379,116 @@ private:
     peg::parser parser_;
     bool grammarValid_ = false;
     std::string lastError_;
+    
+    // Known built-in math/utility functions (case-insensitive)
+    static const std::unordered_set<std::string>& knownBuiltinFunctions() {
+        static const std::unordered_set<std::string> fns = {
+            "sin", "cos", "tan", "exp", "ln", "log", "log10", "sqrt", "abs",
+            "asin", "arcsin", "acos", "arccos", "atan", "arctan", "atan2",
+            "sinh", "cosh", "tanh", "arcsinh", "asinh", "arccosh", "acosh",
+            "arctanh", "atanh",
+            "ceil", "floor", "round", "trunc", "sign", "mod", "pow",
+            "min", "max", "sum", "sum2d", "average", "product", "stddev",
+            "if", "convert", "converttemp", "pi",
+            "tablevalue", "tablevalue#", "tablerun#", "lookup", "lookup$",
+            "interpolate", "interpolate1", "interpolate2",
+            "ntumethod", "effectivenessntu",
+            "lmtd",
+        };
+        return fns;
+    }
+    
+    // Post-parse validation: check that all function calls reference either a
+    // built-in, a CoolProp thermo function, or a user-defined function/procedure.
+    void validateFunctionNames(ParseResult& result) {
+        // Collect user-defined function and procedure names
+        std::set<std::string, CaseInsensitiveLess> userDefined;
+        for (const auto& stmt : result.program.statements) {
+            if (stmt->is<FunctionDefinition>()) {
+                userDefined.insert(stmt->as<FunctionDefinition>().name);
+            } else if (stmt->is<ProcedureDefinition>()) {
+                userDefined.insert(stmt->as<ProcedureDefinition>().name);
+            }
+        }
+        
+        // Collect all function call names from the AST
+        struct FuncCallInfo { std::string name; int line; };
+        std::vector<FuncCallInfo> callsFound;
+        
+        auto collectFromExpr = [&](const ExprPtr& expr, auto& self) -> void {
+            if (!expr) return;
+            std::visit([&](const auto& node) {
+                using T = std::decay_t<decltype(node)>;
+                if constexpr (std::is_same_v<T, FunctionCall>) {
+                    callsFound.push_back({node.name, expr->sourceLineNumber});
+                    for (const auto& arg : node.args) self(arg, self);
+                    for (const auto& [k, v] : node.namedArgs) self(v, self);
+                } else if constexpr (std::is_same_v<T, UnaryOp>) {
+                    self(node.operand, self);
+                } else if constexpr (std::is_same_v<T, BinaryOp>) {
+                    self(node.left, self); self(node.right, self);
+                } else if constexpr (std::is_same_v<T, Variable>) {
+                    for (const auto& idx : node.indices) self(idx, self);
+                }
+            }, expr->node);
+        };
+        
+        auto collectFromStmt = [&](const StmtPtr& stmt, auto& self) -> void {
+            if (!stmt) return;
+            std::visit([&](const auto& node) {
+                using T = std::decay_t<decltype(node)>;
+                if constexpr (std::is_same_v<T, Equation>) {
+                    collectFromExpr(node.lhs, collectFromExpr);
+                    collectFromExpr(node.rhs, collectFromExpr);
+                } else if constexpr (std::is_same_v<T, Assignment>) {
+                    collectFromExpr(node.lhs, collectFromExpr);
+                    collectFromExpr(node.rhs, collectFromExpr);
+                } else if constexpr (std::is_same_v<T, IfThenElse>) {
+                    collectFromExpr(node.condition, collectFromExpr);
+                    for (const auto& s : node.thenBranch) self(s, self);
+                    for (const auto& s : node.elseBranch) self(s, self);
+                } else if constexpr (std::is_same_v<T, Duplicate>) {
+                    collectFromExpr(node.start, collectFromExpr);
+                    collectFromExpr(node.end, collectFromExpr);
+                    for (const auto& s : node.body) self(s, self);
+                } else if constexpr (std::is_same_v<T, RepeatUntil>) {
+                    collectFromExpr(node.condition, collectFromExpr);
+                    for (const auto& s : node.body) self(s, self);
+                } else if constexpr (std::is_same_v<T, ProcedureCall>) {
+                    // Also track procedure calls as function-like calls to validate
+                    callsFound.push_back({node.name, stmt->sourceLineNumber});
+                    for (const auto& arg : node.inputArgs) collectFromExpr(arg, collectFromExpr);
+                } else if constexpr (std::is_same_v<T, FunctionDefinition>) {
+                    for (const auto& s : node.body) self(s, self);
+                } else if constexpr (std::is_same_v<T, ProcedureDefinition>) {
+                    for (const auto& s : node.body) self(s, self);
+                }
+            }, stmt->node);
+        };
+        
+        for (const auto& stmt : result.program.statements) {
+            collectFromStmt(stmt, collectFromStmt);
+        }
+        
+        // Check each function call
+        const auto& builtins = knownBuiltinFunctions();
+        std::set<std::string, CaseInsensitiveLess> alreadyWarned;
+        for (const auto& call : callsFound) {
+            if (alreadyWarned.count(call.name)) continue;
+            
+            std::string lower = call.name;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            
+            if (builtins.count(lower)) continue;
+            if (isEESThermophysicalFunction(call.name)) continue;
+            if (userDefined.count(call.name)) continue;
+            
+            result.diagnostics.push(DiagnosticSeverity::Warning, "P003",
+                "Unknown function '" + call.name + "'",
+                "parser", call.line, 0);
+            alreadyWarned.insert(call.name);
+        }
+    }
     
     void initializeGrammar() {
         // Use a simpler grammar approach - parse expressions directly
@@ -620,7 +737,7 @@ private:
         return nullptr;
     }
     
-    StmtPtr tryParseDirective(const std::string& line, int lineNum) {
+    StmtPtr tryParseDirective(const std::string& line, int lineNum, DiagnosticCollector* diag = nullptr) {
         std::string trimmed = trim(line);
         
         if (trimmed.empty() || trimmed[0] != '$') return nullptr;
@@ -635,6 +752,26 @@ private:
         std::string name = trimmed.substr(1, nameEnd - 1);
         std::string content = trimmed.substr(nameEnd);
         content = trim(content);
+        
+        // Validate directive name against known EES directives
+        if (diag) {
+            std::string lower = name;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            static const std::unordered_set<std::string> knownDirectives = {
+                "if", "ifnot", "else", "endif",
+                "include", "export", "import",
+                "tabstops", "unitsystem", "opentable",
+                "arrays", "common", "integraltable",
+                "diagrams", "bookmark", "hiddenvariables",
+                "checkunits", "warnings", "complex",
+                "reference", "savelookup",
+            };
+            if (knownDirectives.find(lower) == knownDirectives.end()) {
+                diag->push(DiagnosticSeverity::Warning, "P002",
+                           "Unknown directive '$" + name + "'",
+                           "parser", lineNum, 1);
+            }
+        }
         
         return makeDirective(name, content, lineNum);
     }

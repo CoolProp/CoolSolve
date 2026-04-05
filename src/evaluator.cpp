@@ -908,6 +908,11 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             return output;
         } catch (const std::exception& e) {
             // Penalty-based HumidAir error handling (consistent with PropsSI)
+            if (diagnostics_) {
+                diagnostics_->push(DiagnosticSeverity::Warning, "C001",
+                    "HumidAir error in " + func.name + "(): " + e.what(),
+                    "evaluator");
+            }
             constexpr double PENALTY = 1e4;
             ADValue output(PENALTY, numVariables_);
             return output;
@@ -1002,6 +1007,8 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     // Clamp quality inputs to [0, 1]: CoolProp returns -1 for subcooled and values >1 for
     // superheated states, but when quality is used as *input* to another CoolProp call
     // (e.g. enthalpy(Water, P=P, x=Q)), out-of-range values cause NaN results.
+    // Clamping is disabled during final solution verification.
+    if (!disableClamping_) {
     if (input1Param == CoolProp::iQ) {
         if (val1 < 0.0) {
             std::cerr << "Warning: quality input clamped from " << val1 << " to 0 (subcooled state) for " << outputStr << "(" << cpFluidName << ")" << std::endl;
@@ -1025,6 +1032,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             for (size_t i = 0; i < numVariables_; ++i) inputValues[1].gradient[i] = 0.0;
         }
     }
+    } // end of quality clamping
     
     UnitType type1 = UnitType::Dimensionless;
     UnitType type2 = UnitType::Dimensionless;
@@ -1093,6 +1101,9 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     // step direction), we clamp the inputs to physically valid ranges and
     // let the solver see a finite (but poor) residual, keeping the
     // optimization landscape smooth and allowing it to navigate back.
+    // Clamping is disabled during final solution verification so that
+    // out-of-range inputs are caught as errors.
+    if (!disableClamping_) {
     constexpr double P_MIN_SI  = 1000.0;   // 1000 Pa (0.01 bar) — low but CoolProp-safe
     constexpr double T_MIN_SI  = 50.0;     // 50 K   — below triple point of most fluids
     constexpr double RHO_MIN_SI = 1e-4;    // near-vacuum density floor
@@ -1113,6 +1124,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     clampInput(input1Param, val1, inputValues[0].gradient);
     clampInput(input2Param, val2, inputValues[1].gradient);
     // ─────────────────────────────────────────────────────────────────
+    } // end of clamping block
     
     // Helper for unit scale factors (reused by both paths)
     auto getScale = [&](UnitType t, const std::string& u, bool toSI) {
@@ -1130,6 +1142,19 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         if (t == UnitType::Conductivity) return units.conductivity;
         if (t == UnitType::SpecificHeat) return units.specific_heat;
         return "";
+    };
+    
+    // SI unit label for CoolProp parameters (used in error messages)
+    auto siUnitLabel = [](CoolProp::parameters param) -> std::string {
+        switch (param) {
+            case CoolProp::iT: return " K";
+            case CoolProp::iP: return " Pa";
+            case CoolProp::iHmass: return " J/kg";
+            case CoolProp::iSmass: return " J/(kg·K)";
+            case CoolProp::iDmass: return " kg/m³";
+            case CoolProp::iQ: return "";
+            default: return "";
+        }
     };
     
     // Common post-processing: unit conversion, volume inversion, gradient assembly
@@ -1205,7 +1230,12 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                     std::chrono::duration<double, std::milli>(endAS - startAS).count();
                 
                 if (!std::isfinite(result)) {
-                    throw std::runtime_error("AbstractState returned non-finite result");
+                    std::ostringstream oss;
+                    oss << "CoolProp returned invalid result (NaN or Inf) for " << outputStr 
+                        << "(" << cpFluidName << ") with inputs: " 
+                        << input1Str << "=" << val1 << siUnitLabel(input1Param) << ", "
+                        << input2Str << "=" << val2 << siUnitLabel(input2Param);
+                    throw std::runtime_error(oss.str());
                 }
                 
                 // ── Derivatives ──────────────────────────────────────
@@ -1330,8 +1360,8 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 std::ostringstream oss;
                 oss << "CoolProp returned invalid result (NaN or Inf) for " << outputStr 
                     << "(" << cpFluidName << ") with inputs: " 
-                    << input1Str << "=" << val1 << ", "
-                    << input2Str << "=" << val2;
+                    << input1Str << "=" << val1 << siUnitLabel(input1Param) << ", "
+                    << input2Str << "=" << val2 << siUnitLabel(input2Param);
                 throw std::runtime_error(oss.str());
             }
             
@@ -1359,6 +1389,11 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         // trust-region and LM solvers can shrink their step / increase
         // damping smoothly rather than losing the trial evaluation
         // entirely.
+        if (diagnostics_) {
+            diagnostics_->push(DiagnosticSeverity::Warning, "C001",
+                "CoolProp error in " + func.name + "(): " + e.what(),
+                "evaluator");
+        }
         constexpr double PENALTY = 1e4;
         ADValue output(PENALTY, numVariables_);
         return output;
@@ -1401,6 +1436,7 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     
     ExpressionEvaluator exprEval(variables_.size(), config_);
     exprEval.setResidualOnly(!computeJacobian);
+    if (diagnostics_) exprEval.setDiagnostics(diagnostics_);
     for (const auto& [name, func] : functions_) exprEval.registerFunction(func);
     for (const auto& [name, proc] : procedures_) exprEval.registerProcedure(proc);
     

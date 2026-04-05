@@ -13,8 +13,10 @@ export default function Console() {
   }, [consoleLines]);
 
   const getLineClass = (line: string) => {
-    if (line.includes('ERROR') || line.includes('FAIL') || line.includes('Error'))
+    if (line.includes('ERROR') || line.includes('FAIL') || line.includes('Error') || line.includes('[Error]'))
       return 'console-line error';
+    if (line.includes('[Warning]'))
+      return 'console-line warning';
     if (line.includes('SUCCESS') || line.includes('converged'))
       return 'console-line success';
     if (line.startsWith('>>>') || line.startsWith('---'))

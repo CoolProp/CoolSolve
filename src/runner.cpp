@@ -98,6 +98,14 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
     auto pipeline_end = std::chrono::high_resolution_clock::now();
     timing_.total_time_ms = std::chrono::duration<double, std::milli>(pipeline_end - pipeline_start).count();
     
+    // Aggregate diagnostics from all phases
+    diagnostics_.merge(parseResult_.diagnostics);
+    diagnostics_.merge(analysisResult_.diagnostics);
+    diagnostics_.merge(solveResult_.diagnostics);
+    for (const auto& br : solveResult_.blockResults) {
+        diagnostics_.merge(br.diagnostics);
+    }
+    
     return solveResult_.success;
 }
 
@@ -530,6 +538,32 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     if (solveResult_.success) {
         index << "| [solution_check.md](solution_check.md) | Post-solve equation verification |\n";
     }
+    
+    // Write diagnostics.md with all CoolProp warnings (detailed log for debugging)
+    {
+        int totalC001 = 0;
+        std::map<std::string, int> c001Counts;
+        for (const auto& d : diagnostics_.items()) {
+            if (d.code == "C001") {
+                c001Counts[d.message]++;
+                totalC001++;
+            }
+        }
+        if (totalC001 > 0) {
+            std::ostringstream diagOut;
+            diagOut << "# CoolProp Diagnostics\n\n";
+            diagOut << "Total CoolProp warnings: " << totalC001 << " (" << c001Counts.size() << " unique)\n\n";
+            diagOut << "## Unique Warnings\n\n";
+            diagOut << "| Count | Message |\n";
+            diagOut << "|-------|---------|\n";
+            for (const auto& [msg, count] : c001Counts) {
+                diagOut << "| " << count << " | " << msg << " |\n";
+            }
+            writeFile(debugDir / "diagnostics.md", diagOut.str());
+            index << "| [diagnostics.md](diagnostics.md) | CoolProp warnings during solving |\n";
+        }
+    }
+    
     writeFile(debugDir / "README.md", index.str());
 }
 

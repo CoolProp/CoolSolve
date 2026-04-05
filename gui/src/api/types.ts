@@ -29,6 +29,7 @@ export interface ParseResponse {
   isSquare?: boolean;
   errors: ParseError[];
   variables?: VariableInfo[];
+  diagnostics?: Diagnostic[];
 }
 
 export interface BlockResult {
@@ -38,6 +39,15 @@ export interface BlockResult {
   iterations: number;
   maxResidual: number;
   errorMessage: string;
+}
+
+export interface Diagnostic {
+  severity: 'Error' | 'Warning' | 'Info';
+  code: string;
+  message: string;
+  source: string;
+  line?: number;
+  column?: number;
 }
 
 export interface TimingInfo {
@@ -68,6 +78,7 @@ export interface SolveResponse {
   totalBlocks?: number;
   largestBlock?: number;
   latexReportAvailable?: boolean;
+  diagnostics?: Diagnostic[];
 }
 
 export interface SolvedVariable {

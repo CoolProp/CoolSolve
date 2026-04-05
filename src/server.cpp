@@ -7,6 +7,7 @@
 #include "coolsolve/structural_analysis.h"
 #include "coolsolve/evaluator.h"
 #include "coolsolve/solver.h"
+#include "coolsolve/solution_checker.h"
 #include "coolsolve/constants.h"
 #include "coolsolve/fluids.h"
 #include "coolsolve/variable_inference.h"
@@ -168,6 +169,7 @@ struct Session {
     std::mutex resultMutex;
     SolveResult lastResult;
     CoolSolveRunner::PipelineTiming lastTiming;
+    DiagnosticCollector lastDiagnostics;
     bool hasResult = false;
     
     // Inferred variable data (for thermodynamic diagrams)
@@ -452,7 +454,8 @@ static void discoverCompanionFiles(Session& session) {
 // ============================================================================
 // Helper: Build JSON from solve result
 // ============================================================================
-static json solveResultToJSON(const SolveResult& result, const CoolSolveRunner::PipelineTiming& timing) {
+static json solveResultToJSON(const SolveResult& result, const CoolSolveRunner::PipelineTiming& timing,
+                              const DiagnosticCollector* runnerDiag = nullptr) {
     json j;
     j["success"] = result.success;
     j["status"] = statusToString(result.status);
@@ -502,6 +505,40 @@ static json solveResultToJSON(const SolveResult& result, const CoolSolveRunner::
     
     if (!result.detailedError.empty()) {
         j["detailedError"] = result.detailedError;
+    }
+    
+    // Diagnostics from all phases
+    if (runnerDiag && runnerDiag->size() > 0) {
+        json diagArray = json::array();
+        // Summarize C001 CoolProp warnings instead of listing each one
+        std::map<std::string, int> c001Counts;
+        int totalC001 = 0;
+        for (const auto& d : runnerDiag->items()) {
+            if (d.code == "C001") {
+                c001Counts[d.message]++;
+                totalC001++;
+                continue;  // Don't add individually
+            }
+            json dj;
+            dj["severity"] = severityToString(d.severity);
+            dj["code"] = d.code;
+            dj["message"] = d.message;
+            dj["source"] = d.source;
+            if (d.line > 0) dj["line"] = d.line;
+            if (d.column > 0) dj["column"] = d.column;
+            diagArray.push_back(dj);
+        }
+        // Add a single summary diagnostic for C001 warnings
+        if (totalC001 > 0) {
+            json dj;
+            dj["severity"] = "warning";
+            dj["code"] = "C001";
+            dj["message"] = std::to_string(totalC001) + " CoolProp warning(s) during solving (" 
+                          + std::to_string(c001Counts.size()) + " unique)";
+            dj["source"] = "evaluator";
+            diagArray.push_back(dj);
+        }
+        j["diagnostics"] = diagArray;
     }
     
     return j;
@@ -923,6 +960,22 @@ int startServer(const ServerOptions& options) {
                 j["isSquare"] = ir.isSquare();
             }
             
+            // Include parse-time diagnostics (P002, P003 warnings)
+            if (parseResult.diagnostics.size() > 0) {
+                json diagArray = json::array();
+                for (const auto& d : parseResult.diagnostics.items()) {
+                    json dj;
+                    dj["severity"] = severityToString(d.severity);
+                    dj["code"] = d.code;
+                    dj["message"] = d.message;
+                    dj["source"] = d.source;
+                    if (d.line > 0) dj["line"] = d.line;
+                    if (d.column > 0) dj["column"] = d.column;
+                    diagArray.push_back(dj);
+                }
+                j["diagnostics"] = diagArray;
+            }
+            
             res.set_content(j.dump(), "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
@@ -1068,6 +1121,9 @@ int startServer(const ServerOptions& options) {
                         errMsg << "Parse failed:";
                         for (const auto& err : parseResult.errors) {
                             errMsg << "\n  Line " << err.line << ": " << err.message;
+                            if (!err.context.empty()) {
+                                errMsg << "\n    > " << err.context;
+                            }
                         }
                         
                         // Store a minimal result
@@ -1075,10 +1131,12 @@ int startServer(const ServerOptions& options) {
                             std::lock_guard<std::mutex> lock(session.resultMutex);
                             session.lastResult = runner.getSolveResult();
                             session.lastTiming = runner.getTiming();
+                            session.lastDiagnostics = runner.getDiagnostics();
                             session.hasResult = true;
                         }
                         
-                        json resultJson = solveResultToJSON(runner.getSolveResult(), runner.getTiming());
+                        json resultJson = solveResultToJSON(runner.getSolveResult(), runner.getTiming(),
+                                                        &runner.getDiagnostics());
                         json finalEvt;
                         finalEvt["type"] = "error";
                         finalEvt["message"] = errMsg.str();
@@ -1104,6 +1162,7 @@ int startServer(const ServerOptions& options) {
                         std::lock_guard<std::mutex> lock(session.resultMutex);
                         session.lastResult = runner.getSolveResult();
                         session.lastTiming = runner.getTiming();
+                        session.lastDiagnostics = runner.getDiagnostics();
                         session.hasResult = true;
                     }
                     
@@ -1163,8 +1222,46 @@ int startServer(const ServerOptions& options) {
                         }
                     }
                     
+                    // Verify solution: check for CoolProp errors in final values
+                    // (catches unphysical inputs that were clamped during iteration)
+                    bool solutionValid = success;
+                    if (runner.isSolveSuccess() && runner.isIRSuccess()) {
+                        auto checkResult = checkSolution(
+                            runner.getIR(),
+                            runner.getSolveResult().variables,
+                            runner.getSolveResult().stringVariables,
+                            solverOpts.coolpropConfig);
+                        if (!checkResult.allSatisfied) {
+                            solutionValid = false;
+                            // Merge checker diagnostics into runner diagnostics
+                            // so they appear in the response
+                            {
+                                std::lock_guard<std::mutex> lock(session.resultMutex);
+                                session.lastDiagnostics.merge(checkResult.diagnostics);
+                            }
+                        }
+                    }
+                    
                     // Build final result JSON for the done event
-                    json resultJson = solveResultToJSON(runner.getSolveResult(), runner.getTiming());
+                    // Use session diagnostics (which may include checker diagnostics)
+                    const DiagnosticCollector* diagSource = &runner.getDiagnostics();
+                    DiagnosticCollector mergedDiag;
+                    {
+                        std::lock_guard<std::mutex> lock(session.resultMutex);
+                        if (session.lastDiagnostics.size() > 0) {
+                            mergedDiag = runner.getDiagnostics();
+                            mergedDiag.merge(session.lastDiagnostics);
+                            diagSource = &mergedDiag;
+                        }
+                    }
+                    json resultJson = solveResultToJSON(runner.getSolveResult(), runner.getTiming(),
+                                                       diagSource);
+                    if (!solutionValid && runner.isSolveSuccess()) {
+                        // Override success to false if solution verification failed
+                        resultJson["success"] = false;
+                        resultJson["status"] = "SolutionCheckFailed";
+                        resultJson["errorMessage"] = "Solution verification failed: CoolProp evaluation errors in final solution";
+                    }
                     if (runner.isParseSuccess()) {
                         const auto& ir = runner.getIR();
                         resultJson["equationCount"] = ir.getEquationCount();
@@ -1175,13 +1272,19 @@ int startServer(const ServerOptions& options) {
                         const auto& analysis = runner.getAnalysisResult();
                         resultJson["totalBlocks"] = analysis.totalBlocks;
                         resultJson["largestBlock"] = analysis.largestBlockSize;
+                    } else if (runner.isParseSuccess()) {
+                        // Analysis failed (e.g. non-square system) — include analysis error
+                        const auto& analysis = runner.getAnalysisResult();
+                        if (!analysis.errorMessage.empty()) {
+                            resultJson["errorMessage"] = analysis.errorMessage;
+                        }
                     }
                     resultJson["latexReportAvailable"] = session.latexReportAvailable;
                     
                     // Send final event with embedded result
                     json finalEvt;
-                    finalEvt["type"] = success ? "done" : "error";
-                    finalEvt["message"] = success ? "Solve completed successfully" : "Solve failed";
+                    finalEvt["type"] = solutionValid ? "done" : "error";
+                    finalEvt["message"] = solutionValid ? "Solve completed successfully" : "Solve failed";
                     finalEvt["result"] = resultJson;
                     session.addProgressEvent(finalEvt.dump());
                     
@@ -1260,7 +1363,7 @@ int startServer(const ServerOptions& options) {
             res.set_content(j.dump(), "application/json");
             return;
         }
-        json j = solveResultToJSON(session.lastResult, session.lastTiming);
+        json j = solveResultToJSON(session.lastResult, session.lastTiming, &session.lastDiagnostics);
         res.set_content(j.dump(), "application/json");
     });
     

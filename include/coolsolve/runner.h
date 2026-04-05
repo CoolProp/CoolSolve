@@ -4,6 +4,7 @@
 #include "coolsolve/ir.h"
 #include "coolsolve/structural_analysis.h"
 #include "coolsolve/solver.h"
+#include "coolsolve/diagnostic.h"
 #include <string>
 #include <memory>
 
@@ -56,6 +57,9 @@ public:
     // Whether a LaTeX report has been generated for the current solve.
     bool hasLatexReport() const { return !latexReportContent_.empty(); }
 
+    // Aggregated diagnostics from all pipeline phases
+    const DiagnosticCollector& getDiagnostics() const { return diagnostics_; }
+
 private:
     std::string inputFile_;
     ParseResult parseResult_;
@@ -64,6 +68,7 @@ private:
     SolveResult solveResult_;
     PipelineTiming timing_;
     mutable std::string latexReportContent_;  // cached LaTeX source
+    DiagnosticCollector diagnostics_;
 };
 
 } // namespace coolsolve

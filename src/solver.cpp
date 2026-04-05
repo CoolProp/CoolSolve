@@ -2114,8 +2114,16 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
         // Setup timeout protection
         TimeoutGuard timeout(options.timeoutSeconds);
         
+        // Set up per-block diagnostic collection for CoolProp errors
+        DiagnosticCollector blockDiag;
+        evaluator_.getBlock(blockIdx).setDiagnostics(&blockDiag);
+        
         std::string blockError;
         SolverStatus blockStatus = solveBlock(blockIdx, options, trace, &blockError);
+        
+        // Detach diagnostics pointer (blockDiag goes out of scope later)
+        evaluator_.getBlock(blockIdx).setDiagnostics(nullptr);
+        
         result.blocksEvaluated++;
         
         // Record per-block result
@@ -2154,6 +2162,30 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
         }
 
         result.blockResults.push_back(br);
+        
+        // Emit solver diagnostics for this block
+        auto& blkDiag = result.blockResults.back().diagnostics;
+        blkDiag.merge(blockDiag);  // Merge CoolProp diagnostics collected during evaluation
+        if (br.solverAttempts.size() > 1) {
+            // V004: pipeline fallthrough
+            std::string attemptList;
+            for (size_t i = 0; i < br.solverAttempts.size(); ++i) {
+                if (i > 0) attemptList += " -> ";
+                attemptList += strategyToString(br.solverAttempts[i].strategy);
+                attemptList += "(" + statusToString(br.solverAttempts[i].status) + ")";
+            }
+            blkDiag.push(DiagnosticSeverity::Info, "V004",
+                "Block " + std::to_string(br.id) + ": solver pipeline fallthrough: " + attemptList,
+                "solver");
+        }
+        if (!br.success) {
+            // V005: per-block convergence failure
+            blkDiag.push(DiagnosticSeverity::Error, "V005",
+                "Block " + std::to_string(br.id) + " (" + std::to_string(br.originalSize) +
+                " vars) failed to converge: " + statusToString(br.status) +
+                " (residual=" + std::to_string(br.maxResidual) + ")",
+                "solver");
+        }
         
         result.totalIterations += static_cast<int>(trace->iterations.size());
         

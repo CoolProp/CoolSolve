@@ -161,7 +161,7 @@ export default function CodeEditor() {
             useModelStore.getState().setParsedVariables(result.variables);
           }
 
-          // Set Monaco markers for errors
+          // Set Monaco markers for errors and diagnostics
           if (editorRef.current) {
             const monaco = (window as any).monaco;
             if (monaco) {
@@ -175,6 +175,22 @@ export default function CodeEditor() {
                   endColumn: (err.column || 1) + 10,
                   message: err.message,
                 }));
+                // Add diagnostic markers (warnings/info from P002, P003, etc.)
+                if (result.diagnostics) {
+                  for (const d of result.diagnostics) {
+                    const sev = d.severity === 'Error' ? monaco.MarkerSeverity.Error
+                              : d.severity === 'Warning' ? monaco.MarkerSeverity.Warning
+                              : monaco.MarkerSeverity.Info;
+                    markers.push({
+                      severity: sev,
+                      startLineNumber: d.line || 1,
+                      startColumn: d.column || 1,
+                      endLineNumber: d.line || 1,
+                      endColumn: (d.column || 1) + 10,
+                      message: `[${d.code}] ${d.message}`,
+                    });
+                  }
+                }
                 monaco.editor.setModelMarkers(model, 'ees', markers);
               }
             }

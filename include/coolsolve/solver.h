@@ -2,6 +2,7 @@
 
 #include "evaluator.h"
 #include "structural_analysis.h"
+#include "diagnostic.h"
 #include <Eigen/Dense>
 #include <functional>
 #include <map>
@@ -706,6 +707,9 @@ struct SolveResult {
         bool redecompositionApplied = false;
         int numSubBlocks = 0;
         std::vector<int> subBlockSizes;
+
+        // Diagnostics for this block (warnings, info)
+        DiagnosticCollector diagnostics;
     };
     std::vector<BlockResult> blockResults;
     
@@ -714,6 +718,9 @@ struct SolveResult {
     
     // Detailed error from evaluation or solver
     std::string detailedError;
+
+    // Aggregated diagnostics from all phases
+    DiagnosticCollector diagnostics;
 };
 
 /**

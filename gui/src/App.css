@@ -295,6 +295,7 @@ body {
 }
 
 .console-line.error { color: var(--error-color); }
+.console-line.warning { color: #e6a817; }
 .console-line.success { color: var(--success-color); }
 .console-line.info { color: var(--accent-color); }
 

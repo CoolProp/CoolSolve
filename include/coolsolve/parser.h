@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ast.h"
+#include "diagnostic.h"
 #include <string>
 #include <optional>
 #include <vector>
@@ -26,6 +27,7 @@ struct ParseResult {
     bool success;
     Program program;
     std::vector<ParseError> errors;
+    DiagnosticCollector diagnostics;
     
     // Statistics
     int totalLines = 0;

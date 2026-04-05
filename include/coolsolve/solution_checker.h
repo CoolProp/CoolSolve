@@ -2,6 +2,7 @@
 
 #include "ir.h"
 #include "evaluator.h"
+#include "diagnostic.h"
 #include <map>
 #include <string>
 #include <vector>
@@ -36,6 +37,7 @@ struct SolutionCheckResult {
     std::string worstEquationText;
     int worstEquationId = -1;
     std::vector<EquationCheckResult> checks;
+    DiagnosticCollector diagnostics;
 };
 
 /**

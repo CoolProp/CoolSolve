@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ir.h"
+#include "diagnostic.h"
 #include <vector>
 #include <optional>
 
@@ -51,6 +52,9 @@ struct StructuralAnalysisResult {
         std::vector<std::string> differences;
     };
     std::optional<ComparisonResult> eesComparison;
+
+    // Diagnostics (unmatched variables, block info, etc.)
+    DiagnosticCollector diagnostics;
 };
 
 // ============================================================================

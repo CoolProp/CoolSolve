@@ -19,8 +19,11 @@ SolutionCheckResult checkSolution(
     result.totalEquations = equations.size();
 
     // Set up a residual-only expression evaluator (no derivatives needed)
+    // Disable clamping so that out-of-range CoolProp inputs are caught as errors
     ExpressionEvaluator exprEval(0, config);
     exprEval.setResidualOnly(true);
+    exprEval.setDisableClamping(true);
+    exprEval.setDiagnostics(&result.diagnostics);
 
     // Register user-defined functions and procedures
     for (const auto& func : ir.getFunctions()) {
@@ -191,6 +194,22 @@ SolutionCheckResult checkSolution(
         }
         if (relError > result.maxRelativeError) {
             result.maxRelativeError = relError;
+        }
+    }
+
+    // If CoolProp reported any errors (C001) during final verification,
+    // the solution contains invalid thermodynamic evaluations.
+    // Mark these as violations so the solve is flagged as failed.
+    if (result.diagnostics.hasWarnings() || result.diagnostics.hasErrors()) {
+        for (const auto& d : result.diagnostics.items()) {
+            if (d.code == "C001") {
+                result.allSatisfied = false;
+                // Promote C001 warnings to errors in the final solution
+                result.diagnostics.push(DiagnosticSeverity::Error, "C002",
+                    "CoolProp evaluation failed in final solution: " + d.message,
+                    "checker");
+                break;  // one error is enough to fail
+            }
         }
     }
 
