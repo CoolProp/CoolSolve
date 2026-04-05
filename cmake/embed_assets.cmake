@@ -120,7 +120,7 @@ endforeach()
 # A prefix of "." means files are embedded at "/<filename>" (root level).
 # ----------------------------------------------------------------
 set(EXTRA_INDEX 1)
-while(TRUE)
+while(1)
     set(EKEY "EXTRA_DIR${EXTRA_INDEX}")
     set(PKEY "EXTRA_PREFIX${EXTRA_INDEX}")
     if(NOT DEFINED ${EKEY})
