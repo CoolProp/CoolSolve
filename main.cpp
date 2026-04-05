@@ -21,8 +21,7 @@ void printUsage(const char* programName) {
     std::cerr << "Usage: " << programName << " [options] <input.eescode>\n\n";
     std::cerr << "Options:\n";
     std::cerr << "  -o, --output <file>     Output file (default: stdout)\n";
-    std::cerr << "  -f, --format <format>   Output format: json, residuals, latex (default: json)\n";
-    std::cerr << "  -c, --compare <file>    Compare with EES .residuals file\n";
+    std::cerr << "  -f, --format <format>   Output format: json, latex (default: json)\n";
     std::cerr << "  -d, --debug [dir]       Debug mode: create output folder with all analysis files\n";
     std::cerr << "                          If dir not specified, creates <input_dir>/<input_name>_coolsolve/\n";
     std::cerr << "  --no-sol                Disable generation of .sol file\n";
@@ -47,7 +46,6 @@ std::optional<std::string> readFileContent(const std::string& path) {
 int main(int argc, char* argv[]) {
     std::string inputFile;
     std::string outputFile;
-    std::string compareFile;
     std::string debugDir;
     std::string format = "json";
     bool debugMode = false;
@@ -111,13 +109,6 @@ int main(int argc, char* argv[]) {
                 format = argv[++i];
             } else {
                 std::cerr << "Error: -f requires an argument\n";
-                return 1;
-            }
-        } else if (arg == "-c" || arg == "--compare") {
-            if (i + 1 < argc) {
-                compareFile = argv[++i];
-            } else {
-                std::cerr << "Error: -c requires an argument\n";
                 return 1;
             }
         } else if (arg[0] != '-') {
@@ -391,27 +382,10 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // Compare with EES reference if requested
-    if (!compareFile.empty()) {
-        auto comparison = coolsolve::StructuralAnalyzer::compareWithEES(analysisResult, compareFile);
-        // Maybe print to stdout if requested, but we don't have verbose mode anymore for stdout.
-        // Let's print it always if -c is provided? Or only if fails?
-        // User asked to remove verbose output.
-        // Assuming comparison result is important if requested.
-        std::cout << "EES comparison: " << (comparison.matches ? "PASS" : "FAIL") << "\n";
-        if (!comparison.matches) {
-            for (const auto& diff : comparison.differences) {
-                std::cout << "  - " << diff << "\n";
-            }
-        }
-    }
-    
     // Generate output based on format
     std::string output;
     if (format == "json") {
         output = coolsolve::generateAnalysisJSON(ir, analysisResult);
-    } else if (format == "residuals") {
-        output = coolsolve::generateResidualsReport(ir, analysisResult);
     } else if (format == "latex") {
         output = ir.toLatex();
     } else {

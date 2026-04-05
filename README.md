@@ -1,10 +1,10 @@
 # CoolSolve
 
-CoolSolve is a parser, structural analyzer, and equation evaluator for the EES (Engineering Equation Solver) language, designed to be the foundation of an open-source equation solver that integrates with CoolProp for thermodynamic property calculations.
+CoolSolve is a parser, structural analyzer, and equation solver using a language compatible with EES (Engineering Equation Solver), designed as an open-source alternative that integrates with CoolProp for thermodynamic property calculations.
 
 ## Features
 
-- **EES Parser**: Parses EES source code (.eescode files) into an Abstract Syntax Tree
+- **Parser**: Parses CoolSolve source code (.eescode files) into an Abstract Syntax Tree
   - Variables (scalars and arrays like `P[1]`)
   - Equations with operators (`+`, `-`, `*`, `/`, `^`)
   - Comparison operators (`<`, `>`, `<=`, `>=`)
@@ -56,7 +56,6 @@ CoolSolve is a parser, structural analyzer, and equation evaluator for the EES (
 
 - **Output Formats**:
   - JSON (for automated testing and integration)
-  - EES-compatible residuals format
   - LaTeX equations
   - Evaluator report (block summary and state)
   - **Solution/Initials files**: Support for loading initial values and comparing solutions
@@ -173,11 +172,8 @@ rm -rf build .fetchcontent_cache
 ### Basic Usage
 
 ```bash
-# Parse an EES file and output JSON analysis
+# Parse a .eescode file and output JSON analysis
 ./coolsolve input.eescode
-
-# Output in EES residuals format
-./coolsolve -f residuals input.eescode
 
 # Output LaTeX equations
 ./coolsolve -f latex input.eescode
@@ -208,7 +204,7 @@ The debug folder contains:
 | `variables.csv` | Variable mapping (CSV for external tools) |
 | `equations.md` | Equations grouped by solution block |
 | `analysis.json` | Full JSON analysis data |
-| `residuals.txt` | EES-compatible residuals format |
+| `residuals.txt` | CoolSolve residuals report |
 | `equations.tex` | LaTeX formatted equations |
 | `incidence.md` | Variable-equation incidence matrix |
 | `evaluator.md` | Evaluator structure and block evaluation tests |
@@ -216,25 +212,15 @@ The debug folder contains:
 | `solution_check.md` | Post-solve equation verification (LHS vs RHS for every equation) |
 | `original.eescode` | Copy of the original input |
 
-### Compare with EES
-
-To validate the structural analysis against EES output:
-
-```bash
-./coolsolve -c reference.residuals input.eescode
-```
-
 ### Command Line Options
 
 | Option | Description |
-|--------|-------------|
+|--------|--------------|
 | `-o, --output <file>` | Output file (default: stdout) |
-| `-f, --format <fmt>` | Output format: `json`, `residuals`, `latex` (default: json) |
-| `-c, --compare <file>` | Compare with EES .residuals file |
+| `-f, --format <fmt>` | Output format: `json`, `latex` (default: json) |
 | `-d, --debug [dir]` | Create debug output folder |
-| `-v, --verbose` | Verbose progress output |
-| `--no-sol` | Disable generation of .sol file |
 | `-g, --guess` | Update .initials file with solution on success |
+| `--no-sol` | Disable generation of .sol file |
 | `--no-superancillary` | Disable CoolProp superancillary functions (faster VLE solving) |
 | `-h, --help` | Show help message |
 
@@ -351,7 +337,7 @@ CoolSolve/
 │   ├── solution_checker.h      # Post-solve solution verification
 │   └── solver.h                # Solver pipeline, all SolverOptions declarations
 ├── src/
-│   ├── parser.cpp              # EES parser implementation
+    ├── parser.cpp              # CoolSolve language parser
 │   ├── ir.cpp                  # IR building and LaTeX generation
 │   ├── structural_analysis.cpp # Matching and SCC algorithms
 │   ├── autodiff_node.cpp       # AD function implementations
@@ -384,7 +370,7 @@ CoolSolve/
 
 ### 1. Parsing
 
-The parser reads EES source code and builds an Abstract Syntax Tree (AST). It handles EES-specific syntax including:
+The parser reads CoolSolve source code and builds an Abstract Syntax Tree (AST). It handles the language syntax including:
 - Case-insensitive keywords
 - Multiple comment styles
 - Thermodynamic function calls with named parameters
@@ -674,7 +660,7 @@ The analysis results can be exported in various formats for:
 
 ## Example
 
-Given this EES code:
+Given this CoolSolve code:
 ```
 T_in = 25            // Temperature in Celsius
 P = 101325           // Pressure in Pa
@@ -703,7 +689,7 @@ CoolSolve integrates with CoolProp for thermodynamic property calculations, usin
 
 - **Supported functions**: `enthalpy`, `entropy`, `density`, `volume`, `pressure`, `temperature`, `quality`, `cp`, `cv`, `viscosity`, `conductivity`, `prandtl`, `soundspeed`, `molarmass`, `t_sat`, `p_sat`
 - **Supported input pairs**: `T,P`, `T,x`, `P,h`, `P,s`, `H,P`, `D,P`, and others
-- **Temperature units**: Automatically converts Celsius (EES convention) to Kelvin (CoolProp)
+- **Temperature units**: Automatically converts Celsius (as used by CoolSolve) to Kelvin (CoolProp)
 - **Derivatives**: Analytical via `first_partial_deriv()` with FD consistency check; central FD fallback
 - **Fluids**: All CoolProp fluids are supported (Water, R134a, Air, CO2, etc.)
 
@@ -768,23 +754,6 @@ CALL single_phase_HX('Air_ha', 'Water', 20 : Q_total)
 - **Control Flow**: `IF-THEN-ELSE` statements are supported within these blocks.
 - **Automatic Differentiation**: CoolSolve automatically propagates derivatives through procedural calls, ensuring accurate Jacobians.
 
-### Reference State Warning
-
-**Important**: EES and CoolProp use different reference states for thermodynamic properties:
-
-| Property | EES (IIR Reference) | CoolProp (ASHRAE Reference) |
-|----------|---------------------|----------------------------|
-| Enthalpy | h = 200 kJ/kg at 0°C sat. liquid | h = 0 at -40°C |
-| Entropy  | s = 1 kJ/kg/K at 0°C sat. liquid | s varies |
-
-This means:
-- Enthalpy values from EES may differ from CoolProp by ~100-200 kJ/kg
-- Entropy values from EES may differ from CoolProp by ~0.8-1 kJ/kg/K
-- **Differences** (e.g., h2 - h1) are the same in both reference states
-- When loading initial values from `.initials` files, some CoolProp function calls may fail if the enthalpy/entropy is outside the expected range for the given pressure
-
-For new equation systems, use CoolProp-computed values for initial guesses to ensure consistency.
-
 ## Future Work
 
 The next steps in the implementation plan include:
@@ -796,7 +765,7 @@ See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized ro
 
 CoolSolve is released under the [MIT License](LICENSE).
 
-**Main contributor**: [Sylvain Quoilin](https://www.montefiore.uliege.be/~squoilin/) — [ISES Research Group](https://www.ises.uliege.be/), Université de Liège.
+**Main contributor**: [Sylvain Quoilin](https://www.uliege.be/cms/c_9054334/en/directory?uid=U203754) — [ISES Research Group](https://www.ises.uliege.be/), Université de Liège.
 
 This work is part of the broader development of [CoolProp](https://github.com/CoolProp/CoolProp), an open-source thermophysical property library.
 

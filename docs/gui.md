@@ -122,8 +122,8 @@ before each destructive operation to support the "Back" button.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/files/eescode` | Get current EES source code |
-| `PUT` | `/api/v1/files/eescode` | Set EES source code; body: `{"content":"..."}` |
+| `GET` | `/api/v1/files/eescode` | Get current source code |
+| `PUT` | `/api/v1/files/eescode` | Set source code; body: `{"content":"..."}` |
 | `GET` | `/api/v1/files/initials` | Get initial guesses text |
 | `PUT` | `/api/v1/files/initials` | Set initial guesses text |
 | `GET` | `/api/v1/files/sol` | Get last solution file content |
@@ -157,7 +157,7 @@ browser's native `EventSource` API to consume these events.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/v1/parse` | Parse EES code (no solve); returns equation/variable counts and parse errors |
+| `POST` | `/api/v1/parse` | Parse source code (no solve); returns equation/variable counts and parse errors |
 | `GET` | `/api/v1/variables` | Get solved variable values (name, value, isArray) |
 | `GET` | `/api/v1/variables/inferred` | Get solved variables enriched with inferred property and fluid metadata |
 
@@ -197,7 +197,7 @@ each grid point uses the nearest previously-converged solution as initial
 guesses. For the first point, the current `.initials` file is used. Progress
 events are streamed via the existing SSE channel (`/api/v1/solve/stream`).
 
-The sweep works by modifying the EES source code at each grid point: imposed
+The sweep works by modifying the source code at each grid point: imposed
 variable assignments (e.g. `T_in = 25`) are replaced with the sweep value
 using regex substitution. Each point runs a full `CoolSolveRunner::solve()`.
 
@@ -285,7 +285,7 @@ Implemented in `Toolbar.tsx`.  All actions include keyboard shortcuts:
 
 ### 6.3 Code Editor (Left Pane) — `CodeEditor.tsx`
 
-Monaco Editor with a custom `ees` language definition (`languages/ees.ts`):
+Monaco Editor with a custom language definition (`languages/ees.ts`):
 - **Keywords**: `FUNCTION`, `PROCEDURE`, `END`, `CALL`, `IF`, `THEN`, `ELSE`,
   `ENDIF`, `REPEAT`, `UNTIL`, `GOTO`, `$ifnot`, `$endif`, `$common`, `$include`
 - **Built-in functions** (highlighted as `support.function`): `enthalpy`,
@@ -593,10 +593,10 @@ gui/
     │   ├── modelStore.ts          # Zustand: eescode, initials, sol, conf, parse errors, solve result, parametric studies, user unit overrides
     │   └── uiStore.ts             # Zustand: theme, active tabs, panel visibility (persisted to localStorage)
     ├── languages/
-    │   └── ees.ts                 # Monaco Monarch language definition for EES
+    │   └── ees.ts                 # Monaco Monarch language definition for CoolSolve syntax
     └── components/
         ├── Toolbar.tsx            # Top toolbar with all actions + keyboard shortcuts
-        ├── CodeEditor.tsx         # Monaco editor wrapper with EES language + debounced parse
+        ├── CodeEditor.tsx         # Monaco editor wrapper with syntax highlighting + debounced parse
         ├── VariableTable.tsx      # Variable table with units column (color-coded), imposed badges, filter modes
         ├── ArrayTable.tsx         # Spreadsheet view for array variables (var[i])
         ├── ConfigEditor.tsx       # Form-based coolsolve.conf editor (9 groups, 30+ fields)
@@ -621,7 +621,7 @@ All the following tests pass against the current codebase:
 | Backend compilation (C++17) | ✅ Pass |
 | All C++ unit tests (708 assertions, 94 cases) | ✅ Pass |
 | `GET /api/v1/health` | ✅ `{"status":"ok","coolpropReady":true}` |
-| `POST /api/v1/parse` with EES code | ✅ Returns equation/variable counts |
+| `POST /api/v1/parse` with source code | ✅ Returns equation/variable counts |
 | `POST /api/v1/files/open` with example file | ✅ Loads file + discovers companion files |
 | `POST /api/v1/solve` with rankine1 example | ✅ Full solve result with block details |
 | `GET /api/v1/variables` | ✅ Returns solved variable values |
@@ -844,7 +844,7 @@ Community for:
 
 For future sensitivity and plotting features, a richer `.coolsolve` project
 format (JSON) could bundle:
-- EES source code
+- CoolSolve source code
 - Initial guesses and solver configuration
 - A list of "analysis cells" (sensitivity sweeps, diagram configs)
 - Cached results (last solution, sweep data)

@@ -71,7 +71,7 @@ From `equations.md`:
 
 - Variables without values in `.initials` default to 1.0, which is often wrong (e.g. enthalpies, mass fractions).
 - Compare `evaluator.md` “Current State” with physically reasonable values.
-- If you have an EES solution or reference, use those values in `.initials`.
+- If you have a reference solution, use those values in `.initials`.
 
 ## Step 5: Break the Loop (Simplified Model)
 
@@ -80,7 +80,7 @@ For large algebraic loops that fail to converge, a practical approach is to **fi
 ### 5.1 Create a Simplified Model
 
 1. Copy the original model to `model_simple.eescode`.
-2. Pick a variable that strongly couples the loop (e.g. a pressure, temperature, or mass fraction) and **fix it** to a known value from `.initials` or EES.
+2. Pick a variable that strongly couples the loop (e.g. a pressure, temperature, or mass fraction) and **fix it** to a known value from `.initials`.
 3. Replace the equation that originally determined it with an explicit assignment.
 
 Example (condenser-style model):
@@ -124,7 +124,7 @@ Use `equations.md` and `report.md` to see which variables appear in the largest 
 ### Unit Mismatches (CoolProp)
 
 - CoolProp expects **Pa** for pressure. If the model uses bar or kPa, convert (e.g. `P=101325` for 1 atm).
-- Example: `specheat(cf$, T=t_bar_cf, P=1)` may mean 1 bar in EES but 1 Pa in CoolProp → use `P=101325`.
+- Example: `specheat(cf$, T=t_bar_cf, P=1)` may mean 1 bar in some contexts but 1 Pa in CoolProp → use `P=101325`.
 
 ### Procedure Fixes
 
@@ -155,7 +155,7 @@ This example shows how to diagnose and fix a failing model when you do **not** h
 
 2. Inspect `coolsolve_residuals.md`: equations like `h_cf_su_cd_sc = h_cf_su_cd` show LHS = 1.0 instead of ~4e5. Variables without values in `.initials` default to 1.0; enthalpies should be ~4e5 J/kg for air.
 
-3. Inspect the `two_phase_CD` procedure: `specheat(cf$, T=t_bar_cf, P=1)` uses P=1. CoolProp expects Pa; 1 Pa is unphysical for air. EES may treat 1 as 1 bar; CoolProp does not.
+3. Inspect the `two_phase_CD` procedure: `specheat(cf$, T=t_bar_cf, P=1)` uses P=1. CoolProp expects Pa; 1 Pa is unphysical for air. Some solvers may treat 1 as 1 bar; CoolProp does not.
 
 ### Fixes
 ```
@@ -169,7 +169,7 @@ The 62-equation block is a tight algebraic loop. Create a **temporary** simplifi
    ```ees
    P_r_su_cd=949215
    ```
-   (Use a value from `.initials` or EES if available.) Ensure the system stays square.
+   (Use a value from `.initials` if available.) Ensure the system stays square.
 3. Use existing initials for the simplified model (even partial ones may work once the loop is broken): `cp condenser_3zones.initials condenser_3zones_simple.initials`, or copy from `.initialsnotok` if that is all you have.
 4. Solve and update initials:
    ```bash

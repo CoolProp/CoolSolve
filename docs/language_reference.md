@@ -2,7 +2,7 @@
 
 [← Back to overview](../README.md)
 
-*This page is a work in progress. It will document the full CoolSolve / EES language syntax, built-in functions, fluid names, and modelling conventions.*
+*This page is a work in progress. It will document the full CoolSolve language syntax, built-in functions, fluid names, and modelling conventions.*
 
 ---
 

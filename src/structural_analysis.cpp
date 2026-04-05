@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <queue>
 #include <stack>
-#include <regex>
 #include <limits>
 
 namespace coolsolve {
@@ -623,134 +622,8 @@ StructuralAnalysisResult StructuralAnalyzer::analyze(IR& ir) {
 }
 
 // ============================================================================
-// Comparison with EES Residuals
-// ============================================================================
-
-StructuralAnalysisResult::ComparisonResult StructuralAnalyzer::compareWithEES(
-    const StructuralAnalysisResult& result,
-    const std::string& residualsFilePath)
-{
-    StructuralAnalysisResult::ComparisonResult comparison;
-    
-    auto eesInfo = parseResidualsFile(residualsFilePath);
-    if (!eesInfo) {
-        comparison.differences.push_back("Could not parse EES residuals file");
-        return comparison;
-    }
-    
-    comparison.eesBlockCount = static_cast<int>(eesInfo->blockToEquations.size());
-    comparison.ourBlockCount = result.totalBlocks;
-    
-    // Compare total equations
-    if (eesInfo->totalEquations != result.totalEquations) {
-        comparison.differences.push_back(
-            "Equation count mismatch: EES=" + std::to_string(eesInfo->totalEquations) +
-            ", ours=" + std::to_string(result.totalEquations));
-    }
-    
-    // Check if we have at least as many blocks as EES (more is better - more decomposition)
-    if (comparison.ourBlockCount < comparison.eesBlockCount) {
-        comparison.differences.push_back(
-            "Fewer blocks than EES: EES=" + std::to_string(comparison.eesBlockCount) +
-            ", ours=" + std::to_string(comparison.ourBlockCount));
-    }
-    
-    comparison.matches = comparison.differences.empty();
-    return comparison;
-}
-
-// ============================================================================
-// Residuals File Parser
-// ============================================================================
-
-std::optional<EESResidualsInfo> parseResidualsFile(const std::string& filepath) {
-    std::ifstream file(filepath);
-    if (!file.is_open()) {
-        return std::nullopt;
-    }
-    
-    EESResidualsInfo info;
-    std::string line;
-    
-    // First line: "There are a total of N equations..."
-    if (!std::getline(file, line)) {
-        return std::nullopt;
-    }
-    
-    std::regex totalRegex(R"(There are a total of (\d+) equations)");
-    std::smatch match;
-    if (std::regex_search(line, match, totalRegex)) {
-        info.totalEquations = std::stoi(match[1].str());
-    }
-    
-    // Skip header line
-    std::getline(file, line);
-    
-    // Parse equation entries
-    // Format: " Block\tRel. Res.\tAbs. Res.\tUnits\tCalls\tTime(ms)\tEquations"
-    std::regex entryRegex(R"(^\s*(\d+)\s+[\d.E+-]+\s+[\d.E+-]+\s+\S+\s+\d+\s+\d+\s+(.+)$)");
-    
-    while (std::getline(file, line)) {
-        if (line.find("Variables shown in bold") != std::string::npos) {
-            break;
-        }
-        
-        if (std::regex_search(line, match, entryRegex)) {
-            EESResidualsInfo::EquationEntry entry;
-            entry.blockId = std::stoi(match[1].str());
-            entry.equationText = match[2].str();
-            
-            // Try to extract the "bold" output variable from the equation
-            // In EES, the output variable is shown in bold, but in text it's typically
-            // the variable that appears alone on one side of the equation
-            size_t eqPos = entry.equationText.find('=');
-            if (eqPos != std::string::npos) {
-                std::string lhs = entry.equationText.substr(0, eqPos);
-                // Remove spaces
-                lhs.erase(std::remove_if(lhs.begin(), lhs.end(), ::isspace), lhs.end());
-                entry.outputVariable = lhs;
-            }
-            
-            info.entries.push_back(entry);
-            info.blockToEquations[entry.blockId].push_back(
-                static_cast<int>(info.entries.size()) - 1);
-        }
-    }
-    
-    return info;
-}
-
-// ============================================================================
 // Output Generation
 // ============================================================================
-
-std::string generateResidualsReport(const IR& ir, const StructuralAnalysisResult& result) {
-    std::ostringstream oss;
-    
-    oss << "There are a total of " << result.totalEquations << " equations in the Main program.\n";
-    oss << "Block\tRel. Res.\tAbs. Res.\tUnits\tCalls\tTime(ms)\tEquations\n";
-    
-    // Group equations by block
-    std::map<int, std::vector<const EquationInfo*>> blockEquations;
-    for (const auto& eq : ir.getEquations()) {
-        blockEquations[eq.blockId].push_back(&eq);
-    }
-    
-    for (const auto& [blockId, eqs] : blockEquations) {
-        for (const auto* eq : eqs) {
-            oss << " " << blockId;
-            oss << "\t 0.000E+00";
-            oss << "\t 0.000E+00";
-            oss << "\t OK";
-            oss << "\t1\t0\t";
-            oss << eq->originalText << "\n";
-        }
-    }
-    
-    oss << "\nVariables shown in bold font are determined by the equation(s) in each block.\n";
-    
-    return oss.str();
-}
 
 std::string generateAnalysisJSON(const IR& ir, const StructuralAnalysisResult& result) {
     nlohmann::json j;
@@ -792,16 +665,6 @@ std::string generateAnalysisJSON(const IR& ir, const StructuralAnalysisResult& r
         matchingJson.push_back(m);
     }
     j["matching"] = matchingJson;
-    
-    // EES Comparison (if available)
-    if (result.eesComparison) {
-        nlohmann::json compJson;
-        compJson["matches"] = result.eesComparison->matches;
-        compJson["eesBlockCount"] = result.eesComparison->eesBlockCount;
-        compJson["ourBlockCount"] = result.eesComparison->ourBlockCount;
-        compJson["differences"] = result.eesComparison->differences;
-        j["eesComparison"] = compJson;
-    }
     
     return j.dump(2);
 }

@@ -294,13 +294,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     // 6. JSON
     writeFile(debugDir / "analysis.json", coolsolve::generateAnalysisJSON(*ir_, analysisResult_));
     
-    // 7. Residuals (Text)
-    std::string eesResiduals = coolsolve::generateResidualsReport(*ir_, analysisResult_);
-    writeFile(debugDir / "ees_residuals.txt", 
-        "NOTE: This file is formatted for compatibility with EES residuals reports.\n"
-        "It does NOT contain actual coolsolve residuals.\n\n" + eesResiduals);
-    
-    // 8. Residuals (Markdown) & Evaluator
+    // 7. Residuals (Markdown) & Evaluator
     std::ostringstream csRes;
     csRes << "# CoolSolve Residuals Report\n\n";
     csRes << "| Block | Equation | LHS | RHS | Residual |\n";
