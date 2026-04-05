@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CoolSolve Documentation</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #212121;
+    --link: #1565c0;
+    --link-visited: #6a1b9a;
+    --code-bg: #f5f5f5;
+    --border: #e0e0e0;
+    --nav-bg: #f8f8f8;
+    --nav-active: #1565c0;
+    --nav-active-fg: #ffffff;
+    --sidebar-w: 240px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1e1e1e;
+      --fg: #d4d4d4;
+      --link: #82b1ff;
+      --link-visited: #ce93d8;
+      --code-bg: #2d2d2d;
+      --border: #444;
+      --nav-bg: #252525;
+      --nav-active: #1565c0;
+      --nav-active-fg: #ffffff;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.65;
+    color: var(--fg);
+    background: var(--bg);
+    display: flex;
+    min-height: 100vh;
+  }
+  /* Sidebar nav */
+  nav {
+    width: var(--sidebar-w);
+    min-width: var(--sidebar-w);
+    background: var(--nav-bg);
+    border-right: 1px solid var(--border);
+    padding: 1rem 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  nav .nav-title {
+    font-size: 0.85rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--fg);
+    opacity: 0.55;
+    padding: 0 1rem 0.5rem;
+  }
+  nav a {
+    display: block;
+    padding: 0.4rem 1rem;
+    color: var(--fg);
+    text-decoration: none;
+    font-size: 0.9rem;
+    border-left: 3px solid transparent;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  nav a:hover { background: var(--border); }
+  nav a.active {
+    border-left-color: var(--nav-active);
+    color: var(--nav-active);
+    font-weight: 600;
+    background: var(--border);
+  }
+  nav .nav-logo {
+    margin-top: auto;
+    padding: 1rem;
+    border-top: 1px solid var(--border);
+  }
+  nav .nav-logo img {
+    width: 100%;
+    max-width: 180px;
+    opacity: 0.85;
+    display: block;
+  }
+  nav .nav-logo img:hover { opacity: 1; }
+  /* Main content */
+  main {
+    flex: 1;
+    max-width: 860px;
+    padding: 2.5rem 2.5rem;
+    overflow-x: hidden;
+  }
+  /* Markdown typography */
+  #content h1 { font-size: 2rem; margin: 0 0 1rem; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+  #content h2 { font-size: 1.45rem; margin: 2rem 0 0.75rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+  #content h3 { font-size: 1.15rem; margin: 1.5rem 0 0.5rem; }
+  #content h4 { font-size: 1rem; margin: 1.25rem 0 0.4rem; }
+  #content p  { margin: 0.6rem 0; }
+  #content ul, #content ol { padding-left: 1.6rem; margin: 0.6rem 0; }
+  #content li { margin: 0.25rem 0; }
+  #content a  { color: var(--link); }
+  #content a:visited { color: var(--link-visited); }
+  #content code {
+    background: var(--code-bg);
+    border-radius: 3px;
+    padding: 0.15em 0.35em;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.88em;
+  }
+  #content pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 1rem;
+    overflow-x: auto;
+    margin: 0.75rem 0;
+  }
+  #content pre code { background: none; padding: 0; font-size: 0.86em; }
+  #content blockquote {
+    border-left: 4px solid var(--border);
+    padding: 0.5rem 1rem;
+    color: var(--fg);
+    opacity: 0.75;
+    margin: 0.75rem 0;
+  }
+  #content table {
+    border-collapse: collapse;
+    margin: 1rem 0;
+    width: 100%;
+    font-size: 0.9em;
+  }
+  #content th, #content td {
+    border: 1px solid var(--border);
+    padding: 0.45rem 0.75rem;
+    text-align: left;
+  }
+  #content th { background: var(--code-bg); font-weight: 600; }
+  #content tr:nth-child(even) { background: var(--code-bg); }
+  #content img { max-width: 100%; }
+  #content hr { border: none; border-top: 1px solid var(--border); margin: 1.5rem 0; }
+  /* Loading/error state */
+  #content .doc-message { opacity: 0.55; font-style: italic; padding: 2rem 0; }
+</style>
+</head>
+<body>
+
+<nav id="sidebar">
+  <div class="nav-title">CoolSolve Docs</div>
+  <a href="#" data-page="README.md">Overview</a>
+  <a href="#" data-page="docs/language_reference.md">Language Reference</a>
+  <a href="#" data-page="docs/debugging_models.md">Debugging Models</a>
+  <a href="#" data-page="docs/deployment_ubuntu_apache.md">Deployment</a>
+  <a href="#" data-page="docs/gui.md">GUI Architecture</a>
+  <a href="#" data-page="docs/solver_roadmap.md">Solver Roadmap</a>
+  <a href="#" data-page="docs/symbolic_redecomposition.md">Symbolic Reduction</a>
+  <div class="nav-logo">
+    <a href="https://www.ises.uliege.be/" target="_blank" rel="noopener noreferrer">
+      <img src="/docs/uliege_ISES.png" alt="ISES Research Group – Université de Liège">
+    </a>
+  </div>
+</nav>
+
+<main>
+  <div id="content"><p class="doc-message">Loading…</p></div>
+</main>
+
+<script src="/docs/marked.min.js"></script>
+<script>
+// ----------------------------------------------------------------
+// Rewrite relative links so they navigate within the doc viewer
+// instead of pointing at raw markdown files.
+// ----------------------------------------------------------------
+function rewriteLinks(html) {
+  return html.replace(/href="([^"#][^"]*)\.md([^"]*)"/g, function(_, base, anchor) {
+    const page = base + '.md' + anchor;
+    return 'href="#" data-page="' + page + '"';
+  });
+}
+
+// ----------------------------------------------------------------
+// Load and render a markdown page
+// ----------------------------------------------------------------
+async function loadPage(page) {
+  const content = document.getElementById('content');
+  content.innerHTML = '<p class="doc-message">Loading…</p>';
+
+  // Update active nav link
+  document.querySelectorAll('#sidebar a').forEach(a => {
+    a.classList.toggle('active', a.dataset.page === page);
+  });
+
+  // Update URL fragment so the page is bookmarkable
+  const hash = '#' + encodeURIComponent(page);
+  if (location.hash !== hash) history.pushState(null, '', hash);
+
+  try {
+    // Server serves .md files under /docs/raw/{path}
+    const url = '/docs/raw/' + page;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status + ' for ' + url);
+    const text = await res.text();
+
+    // Render Markdown → HTML, then rewrite internal .md links
+    const html = rewriteLinks(marked.parse(text));
+    content.innerHTML = html;
+
+    // Scroll to top on page change
+    window.scrollTo(0, 0);
+  } catch (err) {
+    content.innerHTML = '<p class="doc-message">Could not load page: ' + err.message + '</p>';
+  }
+}
+
+// ----------------------------------------------------------------
+// Event delegation — handle clicks on nav links and in-doc links
+// ----------------------------------------------------------------
+document.addEventListener('click', function(e) {
+  const a = e.target.closest('a[data-page]');
+  if (a) {
+    e.preventDefault();
+    loadPage(a.dataset.page);
+  }
+});
+
+// ----------------------------------------------------------------
+// Initial load — use URL fragment if present, else README
+// ----------------------------------------------------------------
+function pageFromHash() {
+  const h = location.hash.slice(1);
+  return h ? decodeURIComponent(h) : 'README.md';
+}
+window.addEventListener('popstate', () => loadPage(pageFromHash()));
+loadPage(pageFromHash());
+</script>
+</body>
+</html>

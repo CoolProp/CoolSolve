@@ -166,12 +166,22 @@ if(COOLSOLVE_BUILD_GUI)
         set(EMBEDDED_ASSETS_CPP "${CMAKE_CURRENT_BINARY_DIR}/embedded_assets.cpp")
         set(EMBEDDED_ASSETS_H "${CMAKE_CURRENT_BINARY_DIR}/embedded_assets.h")
         
+        # Docs assets to embed alongside the GUI:
+        #   /docs/*.md, /docs/docs.html, /docs/marked.min.js  → under /docs/
+        #   /README.md                                          → under /  (root)
+        set(DOCS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/docs")
+        set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
+
         # Build the embedded assets at configure time
         execute_process(
             COMMAND ${CMAKE_COMMAND} 
                 -DGUI_DIST_DIR=${GUI_DIST_DIR}
                 -DOUTPUT_CPP=${EMBEDDED_ASSETS_CPP}
                 -DOUTPUT_H=${EMBEDDED_ASSETS_H}
+                -DEXTRA_DIR1=${DOCS_DIR}
+                -DEXTRA_PREFIX1=docs
+                -DEXTRA_DIR2=${REPO_ROOT}
+                -DEXTRA_PREFIX2=.
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_assets.cmake
         )
         

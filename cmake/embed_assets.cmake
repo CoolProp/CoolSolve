@@ -1,13 +1,21 @@
 # embed_assets.cmake
 # Generates C++ source files that embed the frontend GUI assets as binary data.
 # Usage (called from CMakeLists.txt at configure time):
-#   cmake -DGUI_DIST_DIR=<path> -DOUTPUT_CPP=<path> -DOUTPUT_H=<path> -P embed_assets.cmake
+#   cmake -DGUI_DIST_DIR=<path> -DOUTPUT_CPP=<path> -DOUTPUT_H=<path>
+#         [-DEXTRA_DIRS=<dir1>|<prefix1>;<dir2>|<prefix2>;...]
+#         -P embed_assets.cmake
+#
+# EXTRA_DIRS is a semicolon-separated list of "<absolute-dir>|<url-prefix>" pairs.
+# Files in <absolute-dir> are embedded under "/<url-prefix>/<relative-path>".
+# Example:
+#   -DEXTRA_DIRS="/repo/docs|docs;/repo|."
+# embeds /repo/docs/*.md under /docs/... and /repo/README.md under /README.md.
 
 if(NOT GUI_DIST_DIR OR NOT OUTPUT_CPP OR NOT OUTPUT_H)
     message(FATAL_ERROR "embed_assets.cmake requires GUI_DIST_DIR, OUTPUT_CPP, OUTPUT_H")
 endif()
 
-# Collect all files recursively
+# Collect all files recursively from GUI dist
 file(GLOB_RECURSE ASSET_FILES RELATIVE "${GUI_DIST_DIR}" "${GUI_DIST_DIR}/*")
 list(SORT ASSET_FILES)
 
@@ -38,7 +46,7 @@ set(SOURCE_CONTENT [=[
 
 # Helper: guess MIME type from extension
 function(guess_mime_type FILENAME OUT_VAR)
-    get_filename_component(EXT "${FILENAME}" EXT)
+    get_filename_component(EXT "${FILENAME}" LAST_EXT)
     string(TOLOWER "${EXT}" EXT)
     if(EXT STREQUAL ".html")
         set(${OUT_VAR} "text/html" PARENT_SCOPE)
@@ -104,6 +112,73 @@ foreach(ASSET_FILE ${ASSET_FILES})
     
     math(EXPR ASSET_INDEX "${ASSET_INDEX} + 1")
 endforeach()
+
+# ----------------------------------------------------------------
+# Embed extra directories passed as numbered pairs:
+#   EXTRA_DIR1 / EXTRA_PREFIX1, EXTRA_DIR2 / EXTRA_PREFIX2, …
+# Files in EXTRA_DIRn are embedded under "/<EXTRA_PREFIXn>/<filename>".
+# A prefix of "." means files are embedded at "/<filename>" (root level).
+# ----------------------------------------------------------------
+set(EXTRA_INDEX 1)
+while(TRUE)
+    set(EKEY "EXTRA_DIR${EXTRA_INDEX}")
+    set(PKEY "EXTRA_PREFIX${EXTRA_INDEX}")
+    if(NOT DEFINED ${EKEY})
+        break()
+    endif()
+    set(EXTRA_DIR "${${EKEY}}")
+    set(URL_PREFIX "${${PKEY}}")
+
+    if(NOT EXISTS "${EXTRA_DIR}")
+        message(WARNING "embed_assets.cmake: extra dir '${EXTRA_DIR}' does not exist, skipping")
+        math(EXPR EXTRA_INDEX "${EXTRA_INDEX} + 1")
+        continue()
+    endif()
+
+    file(GLOB EXTRA_FILES_FLAT "${EXTRA_DIR}/*")
+    list(SORT EXTRA_FILES_FLAT)
+
+    foreach(FULL_PATH ${EXTRA_FILES_FLAT})
+        if(IS_DIRECTORY "${FULL_PATH}")
+            continue()
+        endif()
+        get_filename_component(FNAME "${FULL_PATH}" NAME)
+        # Skip lock/temp files
+        if(FNAME MATCHES "^\.~")
+            continue()
+        endif()
+        # When embedding the repo root, only take README.md
+        if("${URL_PREFIX}" STREQUAL "." AND NOT FNAME STREQUAL "README.md")
+            continue()
+        endif()
+
+        # Build the URL path
+        if("${URL_PREFIX}" STREQUAL ".")
+            set(URL_PATH "/${FNAME}")
+        else()
+            set(URL_PATH "/${URL_PREFIX}/${FNAME}")
+        endif()
+
+        file(READ "${FULL_PATH}" FILE_HEX HEX)
+        file(SIZE "${FULL_PATH}" FILE_SIZE)
+        string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," FILE_HEX "${FILE_HEX}")
+        string(REGEX REPLACE ",$" "" FILE_HEX "${FILE_HEX}")
+        string(APPEND FILE_HEX ",0x00")
+
+        string(MAKE_C_IDENTIFIER "extraasset_${EXTRA_INDEX}_${FNAME}" VAR_NAME)
+        guess_mime_type("${FNAME}" MIME)
+        # Override MIME for markdown
+        if(FNAME MATCHES "\.md$")
+            set(MIME "text/plain; charset=utf-8")
+        endif()
+
+        string(APPEND SOURCE_CONTENT "static const unsigned char ${VAR_NAME}[] = {\n    ${FILE_HEX}\n};\n\n")
+        string(APPEND MAP_ENTRIES "    {\"${URL_PATH}\", {${VAR_NAME}, ${FILE_SIZE}, \"${MIME}\"}},\n")
+        math(EXPR ASSET_INDEX "${ASSET_INDEX} + 1")
+    endforeach()
+
+    math(EXPR EXTRA_INDEX "${EXTRA_INDEX} + 1")
+endwhile()
 
 # Build the lookup function
 string(APPEND SOURCE_CONTENT "static const std::unordered_map<std::string, EmbeddedAsset> embeddedAssets = {\n")

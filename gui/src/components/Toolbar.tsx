@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Play, FolderOpen, Save, RefreshCw, Bug, Sun, Moon,
   ChevronDown, ChevronUp, BookOpen, Square,
-  Braces, Quote, FilePlus, Undo, Pencil, FileText,
+  Braces, Quote, FilePlus, Undo, Pencil, FileText, Library,
 } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
@@ -546,6 +546,21 @@ export default function Toolbar() {
         >
           <FileText size={16} /> LaTeX
         </button>
+      </div>
+
+      <div className="toolbar-separator" />
+
+      {/* Language Reference */}
+      <div className="toolbar-group">
+        <a
+          className="toolbar-btn"
+          href="/docs/#docs%2Flanguage_reference.md"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="Open Language Reference (syntax, functions, fluids)"
+        >
+          <Library size={16} /> Language Reference
+        </a>
       </div>
 
       <div className="toolbar-spacer" />

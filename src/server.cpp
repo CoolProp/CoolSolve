@@ -2613,6 +2613,130 @@ int startServer(const ServerOptions& options) {
     });
     
     // ================================================================
+    // Documentation routes — serve embedded .md files + viewer shell
+    // Routes:
+    //   GET /docs/          → docs.html (Markdown viewer SPA shell)
+    //   GET /docs/raw/{path}→ raw Markdown/JS content for the viewer
+    // ================================================================
+
+    // Redirect /docs → /docs/
+    svr.Get("/docs", [](const httplib::Request&, httplib::Response& res) {
+        res.set_redirect("/docs/");
+    });
+
+    // Serve the viewer shell (docs.html)
+    svr.Get("/docs/", [&options](const httplib::Request&, httplib::Response& res) {
+#ifdef COOLSOLVE_EMBEDDED_ASSETS
+        const EmbeddedAsset* asset = getEmbeddedAsset("/docs/docs.html");
+        if (asset) {
+            res.set_content(reinterpret_cast<const char*>(asset->data), asset->size, "text/html");
+            return;
+        }
+#endif
+        // Filesystem fallback (dev mode or docs not embedded)
+        if (!options.docsDir.empty()) {
+            auto p = fs::path(options.docsDir) / "docs.html";
+            if (fs::exists(p)) {
+                res.set_content(readFileToString(p.string()), "text/html");
+                return;
+            }
+        }
+        res.status = 404;
+        res.set_content("Documentation not available", "text/plain");
+    });
+
+    // Serve static docs assets (marked.min.js, etc.)
+    svr.Get("/docs/marked.min.js", [&options](const httplib::Request&, httplib::Response& res) {
+#ifdef COOLSOLVE_EMBEDDED_ASSETS
+        const EmbeddedAsset* asset = getEmbeddedAsset("/docs/marked.min.js");
+        if (asset) {
+            res.set_content(reinterpret_cast<const char*>(asset->data), asset->size, "application/javascript");
+            res.set_header("Cache-Control", "public, max-age=86400");
+            return;
+        }
+#endif
+        if (!options.docsDir.empty()) {
+            auto p = fs::path(options.docsDir) / "marked.min.js";
+            if (fs::exists(p)) {
+                res.set_content(readFileToString(p.string()), "application/javascript");
+                return;
+            }
+        }
+        res.status = 404;
+        res.set_content("Not found", "text/plain");
+    });
+
+    // Serve raw .md file content for the viewer (docs/raw/<relative-path>)
+    svr.Get("/docs/raw/(.*)", [&options](const httplib::Request& req, httplib::Response& res) {
+        // req.matches[1] is the relative path, e.g. "README.md" or "docs/debugging_models.md"
+        std::string relPath = req.matches[1].str();
+        // Basic path sanitisation — reject any traversal attempts
+        if (relPath.find("..") != std::string::npos || relPath.empty()) {
+            res.status = 400;
+            res.set_content("Invalid path", "text/plain");
+            return;
+        }
+
+        // Allow only .md files through this route
+        auto ext = fs::path(relPath).extension().string();
+        if (ext != ".md") {
+            res.status = 403;
+            res.set_content("Only .md files may be served via this route", "text/plain");
+            return;
+        }
+
+#ifdef COOLSOLVE_EMBEDDED_ASSETS
+        // Embedded key: "/" + relPath (e.g. "/README.md" or "/docs/debugging_models.md")
+        const EmbeddedAsset* asset = getEmbeddedAsset("/" + relPath);
+        if (asset) {
+            res.set_content(reinterpret_cast<const char*>(asset->data), asset->size, "text/plain; charset=utf-8");
+            return;
+        }
+#endif
+        // Filesystem fallback: look relative to the docs dir
+        if (!options.docsDir.empty()) {
+            // relPath could be "README.md" (project root) or "docs/xxx.md"
+            // Try next to docsDir's parent first (the project root), then inside docsDir
+            auto parent = fs::path(options.docsDir).parent_path();
+            auto candidates = {parent / relPath, fs::path(options.docsDir) / relPath};
+            for (const auto& p : candidates) {
+                if (fs::exists(p)) {
+                    res.set_content(readFileToString(p.string()), "text/plain; charset=utf-8");
+                    return;
+                }
+            }
+        }
+        res.status = 404;
+        res.set_content("Page not found: " + relPath, "text/plain");
+    });
+
+    // Serve any other static asset under /docs/ (images, fonts, etc.)
+    svr.Get("/docs/(.*)", [&options](const httplib::Request& req, httplib::Response& res) {
+        std::string fname = req.matches[1].str();
+        if (fname.find("..") != std::string::npos || fname.empty()) {
+            res.status = 400;
+            res.set_content("Invalid path", "text/plain");
+            return;
+        }
+#ifdef COOLSOLVE_EMBEDDED_ASSETS
+        const EmbeddedAsset* asset = getEmbeddedAsset("/docs/" + fname);
+        if (asset) {
+            res.set_content(reinterpret_cast<const char*>(asset->data), asset->size, asset->mimeType);
+            return;
+        }
+#endif
+        if (!options.docsDir.empty()) {
+            auto p = fs::path(options.docsDir) / fname;
+            if (fs::exists(p) && !fs::is_directory(p)) {
+                res.set_content(readFileToString(p.string()), "application/octet-stream");
+                return;
+            }
+        }
+        res.status = 404;
+        res.set_content("Not found", "text/plain");
+    });
+
+    // ================================================================
     // Static file serving (SPA)
     // ================================================================
     
@@ -2622,6 +2746,7 @@ int startServer(const ServerOptions& options) {
     svr.Get("/.*", [](const httplib::Request& req, httplib::Response& res) {
         std::string path = req.path;
         if (startsWith(path, "/api/")) return; // Let API handlers deal with it
+        if (startsWith(path, "/docs")) return;  // Let docs handlers deal with it
         
         // Try exact path match
         const EmbeddedAsset* asset = getEmbeddedAsset(path);

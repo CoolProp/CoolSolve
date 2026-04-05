@@ -791,3 +791,13 @@ The next steps in the implementation plan include:
 - **KINSOL (SUNDIALS) integration**: For large-scale nonlinear systems requiring robust preconditioning
 
 See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
+
+## Acknowledgements & License
+
+CoolSolve is released under the [MIT License](LICENSE).
+
+**Main contributor**: [Sylvain Quoilin](https://www.montefiore.uliege.be/~squoilin/) — [ISES Research Group](https://www.ises.uliege.be/), Université de Liège.
+
+This work is part of the broader development of [CoolProp](https://github.com/CoolProp/CoolProp), an open-source thermophysical property library.
+
+
