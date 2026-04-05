@@ -336,12 +336,14 @@ public:
                     // Multiple statements on one line
                     bool allOk = true;
                     for (const auto& seg : segments) {
-                        if (auto stmt = tryParseEquationOrAssignment(seg, lineNumber)) {
+                        std::string segError;
+                        if (auto stmt = tryParseEquationOrAssignment(seg, lineNumber, &segError)) {
                             result.program.statements.push_back(stmt);
                             result.equationCount++;
                         } else {
                             allOk = false;
-                            result.errors.push_back({lineNumber, 0, "Could not parse segment: " + seg, line});
+                            std::string msg = segError.empty() ? ("Could not parse segment: " + seg) : segError;
+                            result.errors.push_back({lineNumber, 0, msg, line});
                         }
                     }
                     if (allOk) continue;
@@ -351,10 +353,17 @@ public:
                 }
             }
 
-            if (auto stmt = tryParseEquationOrAssignment(line, lineNumber)) {
-                result.program.statements.push_back(stmt);
-                result.equationCount++;
-                continue;
+            {
+                std::string parseError;
+                if (auto stmt = tryParseEquationOrAssignment(line, lineNumber, &parseError)) {
+                    result.program.statements.push_back(stmt);
+                    result.equationCount++;
+                    continue;
+                }
+                if (!parseError.empty()) {
+                    result.errors.push_back({lineNumber, 0, parseError, line});
+                    continue;
+                }
             }
             
             // If we couldn't parse the line, record an error but continue
@@ -363,9 +372,9 @@ public:
         }
         
         result.totalLines = lineNumber;
-        // Success if no unsupported constructs AND we found something valid
+        // Success if no errors AND we found something valid
         bool somethingParsed = result.equationCount > 0 || result.commentCount > 0 || result.directiveCount > 0 || !result.program.statements.empty();
-        result.success = !unsupportedFound && somethingParsed;
+        result.success = !unsupportedFound && result.errors.empty() && somethingParsed;
         
         // Post-parse validation: check function names against known builtins
         validateFunctionNames(result);
@@ -676,18 +685,24 @@ private:
                 bool handled = false;
                 if (segments.size() > 1) {
                     for (const auto& seg : segments) {
-                        if (auto s = tryParseEquationOrAssignment(seg, lineNumber))
+                        std::string segErr;
+                        if (auto s = tryParseEquationOrAssignment(seg, lineNumber, &segErr))
                             body.push_back(s);
                         else if (auto s = tryParseProcedureCall(seg, lineNumber))
                             body.push_back(s);
+                        else if (!segErr.empty())
+                            result.errors.push_back({lineNumber, 0, segErr, bodyLine});
                     }
                     handled = true;
                 }
                 if (!handled) {
-                    if (auto stmt = tryParseEquationOrAssignment(bodyLine, lineNumber))
+                    std::string bodyErr;
+                    if (auto stmt = tryParseEquationOrAssignment(bodyLine, lineNumber, &bodyErr))
                         body.push_back(stmt);
                     else if (auto stmt = tryParseProcedureCall(bodyLine, lineNumber))
                         body.push_back(stmt);
+                    else if (!bodyErr.empty())
+                        result.errors.push_back({lineNumber, 0, bodyErr, bodyLine});
                 }
             }
         }
@@ -921,7 +936,8 @@ private:
         return makeProcedureCall(name, std::move(inputArgs), std::move(outputVars), lineNum);
     }
 
-    StmtPtr tryParseEquationOrAssignment(const std::string& line, int lineNum) {
+    StmtPtr tryParseEquationOrAssignment(const std::string& line, int lineNum,
+                                        std::string* errorMsg = nullptr) {
         // Remove inline comments first, extracting any "" comment
         std::string inlineComment;
         std::string cleaned = removeInlineComments(line, &inlineComment);
@@ -940,6 +956,13 @@ private:
         // Find the main '=' or ':=' sign (not inside function calls or arrays)
         std::string op;
         int opPos = findMainOperator(cleaned, op);
+
+        // Reject '==' — EES uses only '=' for equations
+        if (op == "==") {
+            if (errorMsg) *errorMsg = "Invalid operator '=='. EES uses '=' for equations, not '=='";
+            return nullptr;
+        }
+
         if (opPos < 0) return nullptr;
         
         std::string lhsStr = trim(cleaned.substr(0, opPos));
@@ -957,6 +980,17 @@ private:
         }
         
         if (lhsStr.empty() || rhsStr.empty()) return nullptr;
+
+        // Validate expression syntax on both sides
+        std::string syntaxErr;
+        if (!validateExpressionSyntax(lhsStr, syntaxErr)) {
+            if (errorMsg) *errorMsg = syntaxErr;
+            return nullptr;
+        }
+        if (!validateExpressionSyntax(rhsStr, syntaxErr)) {
+            if (errorMsg) *errorMsg = syntaxErr;
+            return nullptr;
+        }
         
         auto lhs = parseExpression(lhsStr, lineNum);
         auto rhs = parseExpression(rhsStr, lineNum);
@@ -1145,12 +1179,77 @@ private:
                     return static_cast<int>(i);
                 }
                 if (c == '=' && (i == 0 || expr[i-1] != ':')) {
+                    // Reject '==' — EES does not have a comparison equality operator
+                    if (i + 1 < expr.size() && expr[i+1] == '=') {
+                        op = "==";
+                        return static_cast<int>(i);
+                    }
                     op = "=";
                     return static_cast<int>(i);
                 }
             }
         }
         return -1;
+    }
+
+    // Validate expression syntax before parsing.
+    // Returns true if valid; sets errorMsg on failure.
+    bool validateExpressionSyntax(const std::string& expr, std::string& errorMsg) {
+        bool inString = false;
+        int depth = 0;
+
+        for (size_t i = 0; i < expr.size(); ++i) {
+            char c = expr[i];
+            if (c == '\'') { inString = !inString; continue; }
+            if (inString) continue;
+            if (c == '(' || c == '[') { depth++; continue; }
+            if (c == ')' || c == ']') { depth--; continue; }
+
+            // Detect consecutive arithmetic operators: ++, --, +-, -+, +++, etc.
+            if ((c == '+' || c == '-') && depth == 0) {
+                // Look ahead past optional whitespace for another +/-
+                size_t j = i + 1;
+                while (j < expr.size() && (expr[j] == ' ' || expr[j] == '\t')) j++;
+                if (j < expr.size() && (expr[j] == '+' || expr[j] == '-')) {
+                    // Allow if the first operator follows a binary operator (* / ^ =)
+                    // which makes the +/- unary.  E.g. T * -2 is fine.
+                    // Scan backwards past whitespace to find preceding token.
+                    int k = static_cast<int>(i) - 1;
+                    while (k >= 0 && (expr[k] == ' ' || expr[k] == '\t')) k--;
+                    if (k >= 0) {
+                        char prev = expr[k];
+                        if (prev == '*' || prev == '/' || prev == '^' ||
+                            prev == '=' || prev == '(' || prev == '[' || prev == ',') {
+                            // First +/- is unary after a binary op — still reject
+                            // double sign: use parentheses instead.
+                        } else {
+                            // Two consecutive additive operators like T + -2 or T+++2
+                            errorMsg = "Consecutive operators '" + std::string(1, c)
+                                     + std::string(1, expr[j])
+                                     + "' are not allowed (use parentheses instead)";
+                            return false;
+                        }
+                    }
+                    // At the very start of the expression it could be unary too
+                    // e.g. +-2 — still reject.
+                    errorMsg = "Consecutive operators '" + std::string(1, c)
+                             + std::string(1, expr[j])
+                             + "' are not allowed (use parentheses instead)";
+                    return false;
+                }
+            }
+
+            // Detect consecutive multiplicative operators: **, //, */, /*
+            if ((c == '*' || c == '/') && depth == 0) {
+                size_t j = i + 1;
+                while (j < expr.size() && (expr[j] == ' ' || expr[j] == '\t')) j++;
+                if (j < expr.size() && (expr[j] == '*' || expr[j] == '/')) {
+                    errorMsg = "Invalid operator '" + std::string(1, c) + std::string(1, expr[j]) + "'";
+                    return false;
+                }
+            }
+        }
+        return true;
     }
     
     ExprPtr parseExpression(const std::string& expr, int lineNum) {
@@ -1527,7 +1626,7 @@ private:
         if (s.empty()) return false;
         
         size_t i = 0;
-        if (s[i] == '-' || s[i] == '+') i++;
+        // Leading +/- is handled by parseUnary, not here
         
         bool hasDigits = false;
         while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) {
@@ -1576,6 +1675,14 @@ private:
             // # is only allowed as the last character (for constants)
             else if (c == '#') {
                 if (i != s.size() - 1) return false;
+            }
+            // \ is an EES namespace separator (e.g. FF\V_s) — allowed in
+            // the middle but not at the end; the character after it must
+            // start a new identifier segment (letter or underscore).
+            else if (c == '\\') {
+                if (i == s.size() - 1) return false;  // not at end
+                char next = s[i + 1];
+                if (!std::isalpha(static_cast<unsigned char>(next)) && next != '_') return false;
             }
             else if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
                 return false;

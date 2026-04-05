@@ -553,3 +553,171 @@ CALL p(10 : res)
         REQUIRE(ir.getVariableCount() == 1); // res
     }
 }
+
+// ============================================================
+// Strict syntax validation tests
+// ============================================================
+
+TEST_CASE("Parser rejects invalid operators", "[parser]") {
+    coolsolve::EESParser parser;
+
+    SECTION("Double equals == is rejected") {
+        auto result = parser.parse("T_sat == 2");
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.errors.size() >= 1);
+        REQUIRE(result.errors[0].message.find("==") != std::string::npos);
+    }
+
+    SECTION("== on LHS is rejected") {
+        auto result = parser.parse("T == T_sat + 10");
+        REQUIRE_FALSE(result.success);
+    }
+
+    SECTION("== in multi-line model causes failure") {
+        auto result = parser.parse("T = T_sat + 10\nT_sat == 2");
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.errors.size() >= 1);
+    }
+
+    SECTION("== adjacent to variable (T==T_sat+10) is rejected") {
+        auto result = parser.parse("T==T_sat+10\nT_sat = 2");
+        REQUIRE_FALSE(result.success);
+    }
+}
+
+TEST_CASE("Parser rejects consecutive operators", "[parser]") {
+    coolsolve::EESParser parser;
+
+    SECTION("T+++2 = 1 is rejected") {
+        auto result = parser.parse("T+++2 = 1");
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.errors.size() >= 1);
+        REQUIRE(result.errors[0].message.find("Consecutive") != std::string::npos);
+    }
+
+    SECTION("T++2 = 1 is rejected") {
+        auto result = parser.parse("T++2 = 1");
+        REQUIRE_FALSE(result.success);
+    }
+
+    SECTION("T--2 = 1 is rejected") {
+        auto result = parser.parse("T--2 = 1");
+        REQUIRE_FALSE(result.success);
+    }
+
+    SECTION("T+-2 = 1 is rejected") {
+        auto result = parser.parse("T+-2 = 1");
+        REQUIRE_FALSE(result.success);
+    }
+
+    SECTION("T-+2 = 1 is rejected") {
+        auto result = parser.parse("T-+2 = 1");
+        REQUIRE_FALSE(result.success);
+    }
+
+    SECTION("** is rejected") {
+        auto result = parser.parse("x ** 2 = y");
+        REQUIRE_FALSE(result.success);
+    }
+
+    SECTION("// in expression is rejected (treated as comment)") {
+        // After comment stripping, this becomes just "x "
+        auto result = parser.parse("x // 2 = y");
+        // Should fail because it's not a valid equation
+        REQUIRE_FALSE(result.success);
+    }
+}
+
+TEST_CASE("Parser accepts valid operator usage", "[parser]") {
+    coolsolve::EESParser parser;
+
+    SECTION("Simple addition") {
+        auto result = parser.parse("T = T_sat + 10");
+        REQUIRE(result.success);
+        REQUIRE(result.equationCount == 1);
+    }
+
+    SECTION("Subtraction") {
+        auto result = parser.parse("T = T_sat - 10");
+        REQUIRE(result.success);
+    }
+
+    SECTION("Unary minus on RHS") {
+        auto result = parser.parse("T = -10");
+        REQUIRE(result.success);
+    }
+
+    SECTION("Unary minus in parentheses") {
+        auto result = parser.parse("T = a * (-2)");
+        REQUIRE(result.success);
+    }
+
+    SECTION("Scientific notation with sign") {
+        auto result = parser.parse("P = 1E+5");
+        REQUIRE(result.success);
+    }
+
+    SECTION("Scientific notation negative exponent") {
+        auto result = parser.parse("eps = 1E-6");
+        REQUIRE(result.success);
+    }
+
+    SECTION("Single = for equations") {
+        auto result = parser.parse("a + b = c");
+        REQUIRE(result.success);
+    }
+
+    SECTION(":= for assignments") {
+        auto result = parser.parse("x := 5");
+        REQUIRE(result.success);
+    }
+
+    SECTION("Power operator") {
+        auto result = parser.parse("y = x^2");
+        REQUIRE(result.success);
+    }
+
+    SECTION("Multiple equations on semicolons") {
+        auto result = parser.parse("a = 1 ; b = 2 ; c = 3");
+        REQUIRE(result.success);
+        REQUIRE(result.equationCount == 3);
+    }
+}
+
+TEST_CASE("Parser backslash namespace separator in variable names", "[parser]") {
+    coolsolve::EESParser parser;
+
+    SECTION("Simple namespaced variable on RHS") {
+        // V_dot = FF\V_s * N_rot — FF\V_s is one variable name
+        auto result = parser.parse("V_dot_su_exp = FF\\V_s * N_rot");
+        REQUIRE(result.success);
+        REQUIRE(result.equationCount == 1);
+    }
+
+    SECTION("Namespaced variable on LHS") {
+        auto result = parser.parse("FF\\V_s = 1.2e-4");
+        REQUIRE(result.success);
+        REQUIRE(result.equationCount == 1);
+    }
+
+    SECTION("Multiple backslash segments") {
+        auto result = parser.parse("y = A\\B\\C + 1");
+        REQUIRE(result.success);
+        REQUIRE(result.equationCount == 1);
+    }
+
+    SECTION("Backslash variable with underscore segments") {
+        auto result = parser.parse("x = my_ns\\my_var + 1");
+        REQUIRE(result.success);
+    }
+
+    SECTION("Backslash at end of identifier is rejected") {
+        auto result = parser.parse("x\\ = 5");
+        REQUIRE_FALSE(result.success);
+    }
+
+    SECTION("Backslash followed by digit is rejected") {
+        auto result = parser.parse("x = A\\2var + 1");
+        REQUIRE_FALSE(result.success);
+    }
+}
