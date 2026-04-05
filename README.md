@@ -64,9 +64,20 @@ CoolSolve is a parser, structural analyzer, and equation solver using a language
 
 - **Debug Mode**: Creates a comprehensive output folder with all analysis information
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Language Reference](docs/language_reference.md) | CoolSolve language syntax and built-in functions |
+| [Debugging Models](docs/debugging_models.md) | Diagnosing and fixing solver failures |
+| [Solver Roadmap](docs/solver_roadmap.md) | Performance roadmap and future architecture |
+| [Symbolic Block Reduction](docs/symbolic_redecomposition.md) | Symbolic block reduction algorithm |
+| [GUI & REST API](docs/gui.md) | Web interface, REST API, and parametric studies |
+| [Deployment Guide](docs/deployment_ubuntu_apache.md) | Deploying CoolSolve on Ubuntu with Apache |
+
 ## Performance and Roadmap
 
-For details on current performance optimizations and the future roadmap for solver integration, see the [Performance Improvement and Solver Integration Plan](performance_plan.md).
+For details on current performance optimizations and the future roadmap for solver integration, see the [Solver Roadmap](docs/solver_roadmap.md).
 
 ## File Formats
 

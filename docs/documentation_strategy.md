@@ -27,13 +27,12 @@ The goal is to surface this content as official, navigable documentation reachab
 
 Different options were considered:
 - Option A — GitHub Pages with MkDocs (static site, CI-generated)
-- 
-
 - Option B — GitHub Pages with Pandoc (no Python framework)
--Option C — GitHub Pages with no build step (plain Markdown rendering)
+- Option C — GitHub Pages with no build step (plain Markdown rendering)
 - Option D — Self-hosted: serve the `.md` files via the CoolSolve binary itself
 - Option E — Self-hosted dedicated server: Docusaurus / VitePress
 - Option F — Hybrid: GitHub Pages (Option A or C) + in-GUI deep link
+
 ## Selected Option: Self-hosted: serve the `.md` files via the CoolSolve binary itself
 
 The CoolSolve GUI binary already embeds and serves static assets (the React SPA). The same mechanism (`embed_assets.cmake`) can embed the `.md` files and serve them as HTML through a `/docs/` route, with the browser rendering them using a lightweight JS Markdown renderer (e.g. [marked.js](https://marked.js.org/), a ~50 kB single file, no npm dependency at runtime).
