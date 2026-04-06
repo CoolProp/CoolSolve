@@ -172,17 +172,26 @@ if(COOLSOLVE_BUILD_GUI)
         set(DOCS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/docs")
         set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 
+        # Normalize all paths to forward slashes (critical on Windows to avoid
+        # CMake misinterpreting backslashes as escape sequences in -D arguments)
+        file(TO_CMAKE_PATH "${GUI_DIST_DIR}"       GUI_DIST_DIR_NORM)
+        file(TO_CMAKE_PATH "${EMBEDDED_ASSETS_CPP}" EMBEDDED_ASSETS_CPP_NORM)
+        file(TO_CMAKE_PATH "${EMBEDDED_ASSETS_H}"   EMBEDDED_ASSETS_H_NORM)
+        file(TO_CMAKE_PATH "${DOCS_DIR}"            DOCS_DIR_NORM)
+        file(TO_CMAKE_PATH "${REPO_ROOT}"           REPO_ROOT_NORM)
+        file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_assets.cmake" EMBED_SCRIPT_NORM)
+
         # Build the embedded assets at configure time
         execute_process(
-            COMMAND ${CMAKE_COMMAND} 
-                -DGUI_DIST_DIR=${GUI_DIST_DIR}
-                -DOUTPUT_CPP=${EMBEDDED_ASSETS_CPP}
-                -DOUTPUT_H=${EMBEDDED_ASSETS_H}
-                -DEXTRA_DIR1=${DOCS_DIR}
+            COMMAND ${CMAKE_COMMAND}
+                "-DGUI_DIST_DIR=${GUI_DIST_DIR_NORM}"
+                "-DOUTPUT_CPP=${EMBEDDED_ASSETS_CPP_NORM}"
+                "-DOUTPUT_H=${EMBEDDED_ASSETS_H_NORM}"
+                "-DEXTRA_DIR1=${DOCS_DIR_NORM}"
                 -DEXTRA_PREFIX1=docs
-                -DEXTRA_DIR2=${REPO_ROOT}
+                "-DEXTRA_DIR2=${REPO_ROOT_NORM}"
                 -DEXTRA_PREFIX2=.
-                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_assets.cmake
+                -P "${EMBED_SCRIPT_NORM}"
         )
         
         target_sources(coolsolve_lib PRIVATE ${EMBEDDED_ASSETS_CPP})
@@ -196,6 +205,11 @@ endif()
 
 # Find threading library (needed for parallel solver pipeline)
 find_package(Threads REQUIRED)
+
+# MSVC-specific flags: /utf-8 (required by fmtlib), /Zc:__cplusplus (correct C++ version macro for peglib)
+if(MSVC)
+    target_compile_options(coolsolve_lib PRIVATE /utf-8 /Zc:__cplusplus)
+endif()
 
 # Link with nlohmann_json, Eigen, and Threads
 target_link_libraries(coolsolve_lib PUBLIC

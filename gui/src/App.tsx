@@ -28,13 +28,31 @@ export default function App() {
   const parseErrors = useModelStore((s) => s.parseErrors);
   const lastResult = useModelStore((s) => s.lastResult);
   const solving = useModelStore((s) => s.solving);
+  const loadFile = useModelStore((s) => s.loadFile);
 
   const [ready, setReady] = useState(false);
 
-  // Initialize: warmup CoolProp
+  // Initialize: warmup CoolProp, then check for a file passed on the command line
   useEffect(() => {
-    api.warmup().then(() => setReady(true)).catch(() => setReady(true));
-  }, []);
+    api.warmup()
+      .catch(() => {})
+      .finally(async () => {
+        try {
+          const initial = await api.getInitialFile();
+          if (initial?.path) {
+            const result = await api.openFile(initial.path);
+            const ees = await api.getEescode();
+            const init = await api.getInitials();
+            const solRes = await api.getSol();
+            const confRes = await api.getConf();
+            loadFile(initial.path, ees.content, init.content, solRes.content, confRes.content, result.modelName);
+          }
+        } catch {
+          // Not critical — user can open files manually
+        }
+        setReady(true);
+      });
+  }, [loadFile]);
 
   // Apply theme
   useEffect(() => {

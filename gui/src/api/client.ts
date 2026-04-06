@@ -32,12 +32,24 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+async function requestOptional<T>(path: string): Promise<T | null> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+  });
+  if (res.status === 204 || res.status === 404) return null;
+  if (!res.ok) return null;
+  return res.json();
+}
+
 export const api = {
   // Health
   health: () => request<HealthResponse>('/health'),
 
   // Warmup
   warmup: () => request<{ warmupMs: number }>('/warmup', { method: 'POST' }),
+
+  // Initial file (set by CLI when launched with a file argument)
+  getInitialFile: () => requestOptional<{ path: string }>('/initial-file'),
 
   // Files
   getEescode: () => request<{ content: string; filePath: string }>('/files/eescode'),

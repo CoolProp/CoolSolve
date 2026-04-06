@@ -14,6 +14,11 @@
 #include <string>
 #include <filesystem>
 #include <iomanip>
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -44,6 +49,10 @@ std::optional<std::string> readFileContent(const std::string& path) {
 }
 
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    // Enable UTF-8 output so box-drawing characters render correctly in any terminal
+    SetConsoleOutputCP(CP_UTF8);
+#endif
     std::string inputFile;
     std::string outputFile;
     std::string debugDir;
@@ -119,28 +128,41 @@ int main(int argc, char* argv[]) {
         }
     }
     
+    // Resolve binary directory for resource discovery (examples, etc.)
+    fs::path binaryDir;
+#ifdef _WIN32
+    {
+        wchar_t buf[MAX_PATH];
+        GetModuleFileNameW(nullptr, buf, MAX_PATH);
+        binaryDir = fs::path(buf).parent_path();
+    }
+#else
+    try { binaryDir = fs::canonical(argv[0]).parent_path(); } catch (...) {}
+#endif
+
     if (inputFile.empty()) {
 #ifdef COOLSOLVE_GUI
-        if (guiMode) {
-            coolsolve::ServerOptions serverOpts;
-            serverOpts.port = guiPort;
-            serverOpts.openBrowser = guiOpenBrowser;
-            return coolsolve::startServer(serverOpts);
-        }
-#endif
+        // No input file: default to GUI mode (e.g. launched from Start Menu with no args)
+        coolsolve::ServerOptions serverOpts;
+        serverOpts.port = guiPort;
+        serverOpts.openBrowser = guiOpenBrowser;
+        serverOpts.examplesDir = (binaryDir / "examples").string();
+        return coolsolve::startServer(serverOpts);
+#else
         std::cerr << "Error: No input file specified\n";
         printUsage(argv[0]);
         return 1;
+#endif
     }
-    
+
 #ifdef COOLSOLVE_GUI
     // GUI mode with input file: open it in the GUI
     if (guiMode) {
         coolsolve::ServerOptions serverOpts;
         serverOpts.port = guiPort;
         serverOpts.openBrowser = guiOpenBrowser;
-        // The server will be able to load this file via the /api/v1/files/open endpoint
-        // For now, pass via environment or we'll handle in the server startup
+        serverOpts.initialFile = fs::absolute(inputFile).string();
+        serverOpts.examplesDir = (binaryDir / "examples").string();
         return coolsolve::startServer(serverOpts);
     }
 #endif

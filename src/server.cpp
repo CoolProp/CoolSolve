@@ -38,6 +38,12 @@
 #include "embedded_assets.h"
 #endif
 
+// MSVC does not have popen/pclose; use the underscore variants
+#ifdef _MSC_VER
+#   define popen  _popen
+#   define pclose _pclose
+#endif
+
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
@@ -604,6 +610,21 @@ int startServer(const ServerOptions& options) {
             {"coolpropReady", coolpropReady.load()}
         };
         res.set_content(j.dump(), "application/json");
+    });
+
+    // ================================================================
+    // Initial file (for CLI-launched --gui <file.eescode>)
+    // Returns the initial file path once, then clears it.
+    // ================================================================
+    std::string initialFilePath = options.initialFile;
+    svr.Get("/api/v1/initial-file", [&initialFilePath](const httplib::Request&, httplib::Response& res) {
+        if (!initialFilePath.empty() && fs::exists(initialFilePath)) {
+            json j = {{"path", initialFilePath}};
+            res.set_content(j.dump(), "application/json");
+            initialFilePath.clear(); // serve once
+        } else {
+            res.status = 204; // No Content
+        }
     });
     
     // ================================================================
@@ -2201,13 +2222,12 @@ int startServer(const ServerOptions& options) {
     svr.Get("/api/v1/examples", [&](const httplib::Request&, httplib::Response& res) {
         json examples = json::array();
         
-        // Look for examples in the examples/ directory relative to the binary
-        // or from the source tree
-        std::vector<std::string> searchPaths = {
-            "examples",
-            "../examples",
-            fs::current_path().string() + "/examples"
-        };
+        // Look for examples: options.examplesDir first (installed path), then fallbacks
+        std::vector<std::string> searchPaths;
+        if (!options.examplesDir.empty()) searchPaths.push_back(options.examplesDir);
+        searchPaths.push_back("examples");
+        searchPaths.push_back("../examples");
+        searchPaths.push_back(fs::current_path().string() + "/examples");
         
         for (const auto& searchPath : searchPaths) {
             if (fs::exists(searchPath) && fs::is_directory(searchPath)) {

@@ -14,6 +14,8 @@ struct ServerOptions {
     bool onlineMode = false;            // Enable session sandboxing (future)
     std::string guiDevDir;              // If set, serve GUI from filesystem (dev mode)
     std::string docsDir;                // If set, serve docs from filesystem (dev/fallback)
+    std::string initialFile;            // If set, auto-open this file in the GUI on first load
+    std::string examplesDir;            // If set, search here first for example .eescode files
 };
 
 /// Start the embedded HTTP server (blocking).

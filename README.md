@@ -105,9 +105,11 @@ CoolSolve uses several file formats for input and verification:
 
 ### Prerequisites
 
-- C++17 compatible compiler (GCC 7+, Clang 5+)
+- C++17 compatible compiler (GCC 7+, Clang 5+, or MSVC 2019+)
 - CMake 3.14 or later
 - Git (for fetching dependencies)
+- Python 3 (required by CoolProp's CMake scripts at configure time)
+- Node.js 18+ and npm (required to build the React GUI frontend)
 
 ### How Dependencies Are Handled
 
@@ -134,6 +136,48 @@ make -j$(nproc)
 This will build:
 - `coolsolve` - The main executable
 - `coolsolve_tests` - The test suite
+
+### Building on Windows
+
+#### Prerequisites
+- **[Visual Studio 2022](https://visualstudio.microsoft.com/)** with the **"Desktop development with C++"** workload (includes MSVC, CMake, and Windows SDK)
+- **[Python 3](https://www.python.org/downloads/)** (or Anaconda) — required by CoolProp's CMake scripts; must be on `PATH`
+- **[Node.js](https://nodejs.org/)** (v18+) — required to build the embedded React GUI
+- **[NSIS](https://nsis.sourceforge.net/Download)** — to generate the single-file installer (optional, installer only)
+
+#### Building the GUI frontend
+The React frontend must be built before CMake can embed it into the binary:
+```bat
+cd gui
+npm ci
+npm run build
+cd ..
+```
+This produces `gui/dist/` which CMake will embed into the `.exe`.
+
+#### CMake build (Developer PowerShell for VS 2022)
+```bat
+mkdir build
+cd build
+cmake .. -G "Visual Studio 17 2022" -A x64 -DCOOLSOLVE_BUILD_GUI=ON -DCOOLSOLVE_BUILD_TESTS=OFF
+cmake --build . --config Release --target coolsolve
+```
+
+The compiled binary is at `build\Release\coolsolve.exe` and is fully self-contained (no external runtime or DLLs needed).
+
+#### Generating the installer
+After a successful build:
+```bat
+makensis coolsolve.nsi
+```
+This produces `CoolSolve_Installer.exe`, a single-file installer that:
+- Installs to `Program Files\CoolSolve`
+- Adds a Start Menu shortcut
+- Associates `.eescode` files with CoolSolve (double-click to open)
+- Includes an uninstaller
+
+#### One-click build script
+A convenience script `build_installer.bat` in the project root automates all steps above. Edit the paths at the top of the file if your Visual Studio, Anaconda, or NSIS installations are in non-default locations, then right-click → **Run as Administrator**.
 
 ### Build Type: Release vs Debug
 
