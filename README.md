@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo_coolsolve.png" alt="CoolSolve" width="200">
+</p>
+
 # CoolSolve
 
 CoolSolve is a parser, structural analyzer, and equation solver using a language compatible with EES (Engineering Equation Solver), designed as an open-source alternative that integrates with CoolProp for thermodynamic property calculations.

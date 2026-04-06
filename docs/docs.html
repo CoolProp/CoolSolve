@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/png" href="/docs/favicon_coolsolve_88x88.png">
 <title>CoolSolve Documentation</title>
 <style>
   :root {
@@ -63,6 +64,10 @@
     opacity: 0.55;
     padding: 0 1rem 0.5rem;
   }
+  nav .nav-header .nav-title {
+    padding: 0;
+    opacity: 0.7;
+  }
   nav a {
     display: block;
     padding: 0.4rem 1rem;
@@ -78,6 +83,17 @@
     color: var(--nav-active);
     font-weight: 600;
     background: var(--border);
+  }
+  nav .nav-header {
+    padding: 1rem 1rem 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  nav .nav-header img {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
   }
   nav .nav-logo {
     margin-top: auto;
@@ -153,7 +169,10 @@
 <body>
 
 <nav id="sidebar">
-  <div class="nav-title">CoolSolve Docs</div>
+  <div class="nav-header">
+    <img src="/docs/favicon_coolsolve_88x88.png" alt="CoolSolve">
+    <div class="nav-title">CoolSolve Docs</div>
+  </div>
   <a href="#" data-page="README.md">Overview</a>
   <a href="#" data-page="docs/language_reference.md">Language Reference</a>
   <a href="#" data-page="docs/debugging_models.md">Debugging Models</a>
