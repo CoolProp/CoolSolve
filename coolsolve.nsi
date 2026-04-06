@@ -8,6 +8,8 @@ InstallDirRegKey HKCU "Software\CoolSolve" ""
 RequestExecutionLevel admin
 
 !define MUI_ABORTWARNING
+!define MUI_ICON "docs\coolsolve.ico"
+!define MUI_UNICON "docs\coolsolve.ico"
 
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_LICENSE "LICENSE"

@@ -230,6 +230,15 @@ endif()
 add_executable(coolsolve ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp)
 target_link_libraries(coolsolve PRIVATE coolsolve_lib)
 
+# Embed version info and application icon on Windows
+if(MSVC)
+    target_sources(coolsolve PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/coolsolve.rc)
+    # Point the resource compiler to the project root so docs/coolsolve.ico resolves
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/coolsolve.rc PROPERTIES
+        COMPILE_FLAGS "/I \"${CMAKE_CURRENT_SOURCE_DIR}\""
+    )
+endif()
+
 # --- Tests ---
 option(COOLSOLVE_BUILD_TESTS "Build CoolSolve tests" ON)
 
