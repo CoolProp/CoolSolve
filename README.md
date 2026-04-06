@@ -6,6 +6,20 @@
 
 CoolSolve is a parser, structural analyzer, and equation solver using a language compatible with EES (Engineering Equation Solver), designed as an open-source alternative that integrates with CoolProp for thermodynamic property calculations.
 
+![CoolSolve GUI](docs/coolsolve_gui.png)
+
+## Try CoolSolve
+
+### Windows Desktop Application (v0.1)
+
+Download the Windows installer: **[CoolSolve v0.1 for Windows](https://dox.uliege.be/index.php/s/Iy6Tl0iDvKPCCve/download)**
+
+### Online Demo
+
+Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolsolve.squoilin.eu/)**
+
+> **⚠ Disclaimer**: The online demo runs on a private server and corresponds to the latest development version, which may not always be stable. Under high load, the server may respond slowly or be temporarily unavailable.
+
 ## Features
 
 - **Parser**: Parses CoolSolve source code (.eescode files) into an Abstract Syntax Tree
