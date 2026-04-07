@@ -33,18 +33,18 @@ const PIPELINE_PRESETS: Array<{
 }> = [
   {
     id: 'sequential',
-    label: 'Sequential',
+    label: 'All Solvers (Sequential)',
     pipeline: ALL_SOLVERS,
     mode: 'sequential',
     description:
       'Tries all solvers in order: Newton → TrustRegion → LM → BisectionND → Homotopy → Partitioned. '
       + 'Each solver warm-starts from the best result found so far. '
       + 'BisectionND is automatically skipped for blocks larger than bisectionNDMaxBlockSize. '
-      + 'Recommended for most models — robust and covers the widest range of problem types.',
+      + 'Robust and covers the widest range of problem types.',
   },
   {
     id: 'parallel',
-    label: 'Parallel',
+    label: 'All Solvers (Parallel)',
     pipeline: ALL_SOLVERS,
     mode: 'parallel',
     description:
@@ -54,7 +54,7 @@ const PIPELINE_PRESETS: Array<{
   },
   {
     id: 'newton-only',
-    label: 'Newton',
+    label: 'Newton (Default)',
     pipeline: 'Newton',
     mode: 'sequential',
     description:
@@ -126,8 +126,8 @@ const PIPELINE_PRESETS: Array<{
 
 /** Infer which preset matches the current conf entries, or "custom" if none match. */
 function detectPipelinePreset(confMap: Map<string, string>): string {
-  // Nothing set → sequential (default)
-  if (!confMap.has('solverPipeline') && !confMap.has('pipelineMode')) return 'sequential';
+  // Nothing set → Newton (default)
+  if (!confMap.has('solverPipeline') && !confMap.has('pipelineMode')) return 'newton-only';
   const pipeline = (confMap.get('solverPipeline') ?? '').trim().toLowerCase();
   const mode = (confMap.get('pipelineMode') ?? 'sequential').trim().toLowerCase();
 

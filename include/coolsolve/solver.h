@@ -169,16 +169,10 @@ struct SolverOptions {
 
     // --- Solver pipeline configuration ---
     // The pipeline defines which solvers to try and in what order.
-    // Default: Newton -> TrustRegion -> LM -> BisectionND (small blocks only)
-    //       -> Homotopy -> Partitioned.
+    // Default: Newton.
     // BisectionND automatically returns InvalidInput for blocks > bisectionNDMaxBlockSize and is skipped.
     std::vector<SolverStrategy> solverPipeline = {
-        SolverStrategy::Newton,
-        SolverStrategy::TrustRegion,
-        SolverStrategy::LevenbergMarquardt,
-        SolverStrategy::BisectionND,
-        SolverStrategy::Homotopy,
-        SolverStrategy::Partitioned
+        SolverStrategy::Newton
     };
 
     /// Execution mode: sequential fallback or parallel (first-to-solve wins)
