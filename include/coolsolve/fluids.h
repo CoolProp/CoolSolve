@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <sstream>
 #include <vector>
 #include <memory>
 #include <map>
@@ -96,14 +97,35 @@ public:
 
 class IncompressibleFluid : public Fluid {
 public:
-    IncompressibleFluid(const std::string& name) : name_(name) {}
+    // `isSolution` indicates whether the fluid requires a mass-fraction
+    // concentration (e.g. MEG, MPG, brines).  Pure incompressibles (water,
+    // aluminum, copper, LiBr pure) do not need one.
+    // `coolPropKey` optionally overrides the CoolProp key used for PropsSI.
+    IncompressibleFluid(const std::string& name,
+                        bool isSolution = false,
+                        const std::string& coolPropKey = "")
+        : name_(name),
+          coolPropKey_(coolPropKey.empty() ? name : coolPropKey),
+          isSolution_(isSolution) {}
     std::string getName() const override { return name_; }
-    std::string getCoolPropName() const override { return "INCOMP::" + name_; }
+    std::string getCoolPropName() const override { return "INCOMP::" + coolPropKey_; }
+    std::string getCoolPropKey() const { return coolPropKey_; }
+    bool isSolution() const { return isSolution_; }
     FluidType getType() const override { return FluidType::Incompressible; }
     int getMinInputs() const override { return 2; }
+    
+    /// Build a CoolProp fluid name for a given mass fraction (0..1).
+    /// Only meaningful when isSolution() is true.
+    std::string getCoolPropNameWithFraction(double massFraction) const {
+        std::ostringstream oss;
+        oss << "INCOMP::" << coolPropKey_ << "[" << massFraction << "]";
+        return oss.str();
+    }
 
 private:
     std::string name_;
+    std::string coolPropKey_;
+    bool isSolution_;
 };
 
 class MixtureFluid : public Fluid {

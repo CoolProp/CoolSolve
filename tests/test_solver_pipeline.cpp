@@ -330,17 +330,41 @@ TEST_CASE("TrustRegion-only pipeline solves circle", "[pipeline][tr-only]") {
 // Default pipeline backward compatibility
 // ============================================================================
 
-TEST_CASE("Default pipeline includes all solvers in order", "[pipeline][defaults]") {
+TEST_CASE("Default pipeline is Newton only", "[pipeline][defaults]") {
+    // Since commit b3c4bc0 ("switching to newton only as default pipeline"),
+    // SolverOptions defaults to a single-strategy pipeline. Users who want
+    // the classic multi-solver fallback must configure it explicitly (see
+    // the test below, or the examples/coolsolve.conf [solver] section).
     SolverOptions defaults;
-    // Newton, TrustRegion, LM, BisectionND, Homotopy, Partitioned
-    REQUIRE(defaults.solverPipeline.size() == 6);
+    REQUIRE(defaults.solverPipeline.size() == 1);
     CHECK(defaults.solverPipeline[0] == SolverStrategy::Newton);
-    CHECK(defaults.solverPipeline[1] == SolverStrategy::TrustRegion);
-    CHECK(defaults.solverPipeline[2] == SolverStrategy::LevenbergMarquardt);
-    CHECK(defaults.solverPipeline[3] == SolverStrategy::BisectionND);
-    CHECK(defaults.solverPipeline[4] == SolverStrategy::Homotopy);
-    CHECK(defaults.solverPipeline[5] == SolverStrategy::Partitioned);
     CHECK(defaults.pipelineMode == SolverPipelineMode::Sequential);
+}
+
+TEST_CASE("Full pipeline can be configured with all solvers in order",
+          "[pipeline][defaults]") {
+    // Users (and the coolsolve.conf [solver] pipeline option) may still opt
+    // into the full multi-solver fallback chain. This test locks in the
+    // canonical order expected by the documentation and config examples:
+    // Newton → TrustRegion → LM → BisectionND → Homotopy → Partitioned.
+    SolverOptions opts;
+    opts.solverPipeline = {
+        SolverStrategy::Newton,
+        SolverStrategy::TrustRegion,
+        SolverStrategy::LevenbergMarquardt,
+        SolverStrategy::BisectionND,
+        SolverStrategy::Homotopy,
+        SolverStrategy::Partitioned,
+    };
+
+    REQUIRE(opts.solverPipeline.size() == 6);
+    CHECK(opts.solverPipeline[0] == SolverStrategy::Newton);
+    CHECK(opts.solverPipeline[1] == SolverStrategy::TrustRegion);
+    CHECK(opts.solverPipeline[2] == SolverStrategy::LevenbergMarquardt);
+    CHECK(opts.solverPipeline[3] == SolverStrategy::BisectionND);
+    CHECK(opts.solverPipeline[4] == SolverStrategy::Homotopy);
+    CHECK(opts.solverPipeline[5] == SolverStrategy::Partitioned);
+    CHECK(opts.pipelineMode == SolverPipelineMode::Sequential);
 }
 
 // ============================================================================

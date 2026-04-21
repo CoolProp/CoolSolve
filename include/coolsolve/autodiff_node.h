@@ -314,6 +314,30 @@ inline ADValue atanh(const ADValue& x) {
     return z;
 }
 
+// erf(x) - Gauss error function
+// d(erf(x))/dx = (2/sqrt(pi)) * exp(-x^2)
+inline ADValue erf(const ADValue& x) {
+    static const double two_over_sqrt_pi = 2.0 / std::sqrt(3.14159265358979323846);
+    ADValue z(std::erf(x.value), x.gradient.size());
+    double dval = two_over_sqrt_pi * std::exp(-x.value * x.value);
+    for (size_t i = 0; i < z.gradient.size(); ++i) {
+        z.gradient[i] = dval * x.gradient[i];
+    }
+    return z;
+}
+
+// erfc(x) - complementary error function = 1 - erf(x)
+// d(erfc(x))/dx = -(2/sqrt(pi)) * exp(-x^2)
+inline ADValue erfc(const ADValue& x) {
+    static const double two_over_sqrt_pi = 2.0 / std::sqrt(3.14159265358979323846);
+    ADValue z(std::erfc(x.value), x.gradient.size());
+    double dval = -two_over_sqrt_pi * std::exp(-x.value * x.value);
+    for (size_t i = 0; i < z.gradient.size(); ++i) {
+        z.gradient[i] = dval * x.gradient[i];
+    }
+    return z;
+}
+
 // min(x, y) - note: not differentiable at x == y
 inline ADValue min(const ADValue& x, const ADValue& y) {
     if (x.value <= y.value) {

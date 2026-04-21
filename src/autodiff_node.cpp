@@ -106,6 +106,8 @@ ADValue evaluateStandardFunction(const std::string& funcName,
         if (name == "arcsinh" || name == "asinh") return asinh(x);
         if (name == "arccosh" || name == "acosh") return acosh(x);
         if (name == "arctanh" || name == "atanh") return atanh(x);
+        if (name == "erf") return erf(x);
+        if (name == "erfc") return erfc(x);
         
         // Rounding functions (gradient = 0, not differentiable at integers)
         if (name == "ceil") return ADValue::constant(std::ceil(x.value), x.gradient.size());
@@ -128,6 +130,27 @@ ADValue evaluateStandardFunction(const std::string& funcName,
             // mod(x, y) = x - floor(x/y) * y; gradient passes through (not differentiable at multiples)
             double val = std::fmod(x.value, y.value);
             return ADValue::constant(val, x.gradient.size());
+        }
+        // LMTD_f(DT1, DT2) = (DT1 - DT2) / ln(DT1/DT2)
+        // EES built-in log-mean temperature difference.  Handles the
+        // singular case DT1 ≈ DT2 with a smooth limit.
+        if (name == "lmtd_f" || name == "lmtd") {
+            double d1 = x.value;
+            double d2 = y.value;
+            // Both DTs must have the same sign and be non-zero
+            if (d1 * d2 <= 0.0) {
+                // Not physical — return the arithmetic mean as a penalty
+                return (x + y) / ADValue::constant(2.0, x.gradient.size());
+            }
+            // Smooth limit at d1 = d2: LMTD -> d1
+            // Relative closeness check
+            double ratio = d1 / d2;
+            if (std::abs(ratio - 1.0) < 1e-6) {
+                // Series: LMTD ≈ (d1+d2)/2 * [1 - ((d1-d2)^2)/(12*((d1+d2)/2)^2) + ...]
+                return (x + y) / ADValue::constant(2.0, x.gradient.size());
+            }
+            // General case — do it entirely in AD
+            return (x - y) / log(x / y);
         }
         if (name == "atan2") {
             // atan2(y, x) = atan(y/x) with proper quadrant handling

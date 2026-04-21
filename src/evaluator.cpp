@@ -228,6 +228,26 @@ static CoolPropParamInfo getCoolPropOutputParam(const std::string& funcName) {
     if (name == "volume" || name == "v") return {CoolProp::iDmass, UnitType::Density};  // Inverted to specific volume after PropsSI call
     if (name == "specheat" || name == "c") return {CoolProp::iCpmass, UnitType::SpecificHeat};
     if (name == "molarmass" || name == "mm") return {CoolProp::imolar_mass, UnitType::Dimensionless};
+    // Additional EES thermophysical properties (priority 2)
+    if (name == "prandtl") return {CoolProp::iPrandtl, UnitType::Dimensionless};
+    if (name == "surfacetension") return {CoolProp::isurface_tension, UnitType::Dimensionless}; // N/m (no config unit)
+    if (name == "compressibilityfactor") return {CoolProp::iZ, UnitType::Dimensionless};
+    if (name == "isentropicexponent") return {CoolProp::iisentropic_expansion_coefficient, UnitType::Dimensionless};
+    // Derived / composed properties (handled in evaluateCoolPropFunction before
+    // falling into the generic 2-input path).  Return a sentinel so that
+    // isThermo-detection still routes them through the CoolProp path.
+    if (name == "kinematicviscosity") return {CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
+    if (name == "thermaldiffusivity") return {CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
+    // Pure-fluid constants (dispatched before the 2-input path).
+    if (name == "t_crit" || name == "tcrit") return {CoolProp::iT_critical, UnitType::Temperature};
+    if (name == "p_crit" || name == "pcrit") return {CoolProp::iP_critical, UnitType::Pressure};
+    if (name == "v_crit" || name == "vcrit") return {CoolProp::irhomass_critical, UnitType::Dimensionless};
+    if (name == "t_triple" || name == "ttriple") return {CoolProp::iT_triple, UnitType::Temperature};
+    if (name == "p_triple" || name == "ptriple") return {CoolProp::INVALID_PARAMETER, UnitType::Pressure};
+    if (name == "acentricfactor") return {CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
+    // PHASE$ is string-valued, but we still register it to catch accidental
+    // numeric-context calls gracefully.
+    if (name == "phase$") return {CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
     
     // Humid Air specific outputs (mapped to dummy CoolProp params for type info)
     if (name == "humrat" || name == "w") return {CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
@@ -332,6 +352,10 @@ static std::string paramToString(CoolProp::parameters param) {
         case CoolProp::ispeed_sound: return "A";
         case CoolProp::iUmass: return "U";
         case CoolProp::imolar_mass: return "M";
+        case CoolProp::iPrandtl: return "Prandtl";
+        case CoolProp::isurface_tension: return "I";
+        case CoolProp::iZ: return "Z";
+        case CoolProp::iisentropic_expansion_coefficient: return "isentropic_expansion_coefficient";
         default: throw std::runtime_error("Cannot convert parameter to string");
     }
 }
@@ -417,6 +441,71 @@ std::string ExpressionEvaluator::resolveVariableName(const Variable& var) {
 }
 
 void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
+    // Built-in PSYCHPROPS procedure (EES compatibility).
+    // Signature:
+    //   CALL psychprops(T, P, RH : T, v, h, s, u, W, R, Twb, Tdp)
+    // where RH is the relative humidity (0..1).  Inputs are in the configured
+    // unit system; outputs are assembled in the configured unit system too.
+    {
+        std::string lowerCallName = call.name;
+        std::transform(lowerCallName.begin(), lowerCallName.end(),
+                       lowerCallName.begin(), ::tolower);
+        if (lowerCallName == "psychprops") {
+            if (call.inputArgs.size() != 3) {
+                throw std::runtime_error(
+                    "psychprops expects 3 inputs (T, P, R), got " +
+                    std::to_string(call.inputArgs.size()));
+            }
+            if (call.outputVars.size() < 1 || call.outputVars.size() > 9) {
+                throw std::runtime_error(
+                    "psychprops expects 1 to 9 outputs (T, v, h, s, u, W, R, Twb, Tdp), got " +
+                    std::to_string(call.outputVars.size()));
+            }
+            
+            ADValue tIn = evaluate(call.inputArgs[0]);
+            ADValue pIn = evaluate(call.inputArgs[1]);
+            ADValue rIn = evaluate(call.inputArgs[2]);
+            
+            const UnitSystem& units = coolpropConfig_.units;
+            double tSI = UnitConverter::toSI(tIn.value, UnitType::Temperature, units.temperature);
+            double pSI = UnitConverter::toSI(pIn.value, UnitType::Pressure, units.pressure);
+            double rVal = rIn.value;
+            
+            auto callHA = [&](const std::string& out) -> double {
+                return timedHAPropsSI(out, "T", tSI, "P", pSI, "R", rVal);
+            };
+            // Assemble all 9 outputs in SI then convert to configured units.
+            struct OutputSpec { std::string name; double valueSI; UnitType ut; std::string unit; };
+            std::vector<OutputSpec> outs;
+            outs.push_back({"T", tSI, UnitType::Temperature, units.temperature});
+            outs.push_back({"v", callHA("Vha"), UnitType::Dimensionless, ""});       // m^3/kg dry air
+            outs.push_back({"h", callHA("Hha"), UnitType::SpecificEnergy, units.specific_energy}); // J/kg dry air
+            outs.push_back({"s", callHA("Sha"), UnitType::SpecificEntropy, units.specific_entropy});
+            // Internal energy u = h - p*v (dry-basis); CoolProp has no direct "Uha"
+            double v_si = outs[1].valueSI;
+            double h_si = outs[2].valueSI;
+            outs.push_back({"u", h_si - pSI * v_si, UnitType::SpecificEnergy, units.specific_energy});
+            outs.push_back({"W", callHA("W"), UnitType::Dimensionless, ""});
+            outs.push_back({"R", rVal, UnitType::Dimensionless, ""});
+            outs.push_back({"Twb", callHA("Twb"), UnitType::Temperature, units.temperature});
+            outs.push_back({"Tdp", callHA("Tdp"), UnitType::Temperature, units.temperature});
+            
+            for (size_t i = 0; i < call.outputVars.size(); ++i) {
+                std::string outVarName = resolveVariableName(call.outputVars[i]);
+                double raw = outs[i].valueSI;
+                if (!std::isfinite(raw)) {
+                    throw std::runtime_error("psychprops: CoolProp returned non-finite for '" +
+                                             outs[i].name + "'");
+                }
+                double finalVal = (outs[i].ut == UnitType::Dimensionless)
+                    ? raw
+                    : UnitConverter::fromSI(raw, outs[i].ut, outs[i].unit);
+                setVariable(outVarName, ADValue::constant(finalVal, numVariables_));
+            }
+            return;
+        }
+    }
+    
     auto it = userProcedures_.find(call.name);
     if (it == userProcedures_.end()) {
         throw std::runtime_error("Unknown procedure: " + call.name);
@@ -492,6 +581,119 @@ std::string ExpressionEvaluator::evaluateString(const ExprPtr& expr) {
         return expr->as<StringLiteral>().value;
     } else if (expr->is<Variable>()) {
         return getStringVariable(resolveVariableName(expr->as<Variable>()));
+    } else if (expr->is<FunctionCall>()) {
+        const auto& call = expr->as<FunctionCall>();
+        std::string lname = call.name;
+        std::transform(lname.begin(), lname.end(), lname.begin(), ::tolower);
+        
+        // STRING$(value) — format a numeric value as a compact decimal string.
+        if (lname == "string$" && call.args.size() == 1 && call.namedArgs.empty()) {
+            ADValue v = evaluate(call.args[0]);
+            std::ostringstream oss;
+            // EES prints integer values without decimal, otherwise up to ~10
+            // significant digits, trimming trailing zeros.  Keep it simple and
+            // compatible.
+            if (std::isfinite(v.value) && v.value == std::trunc(v.value) &&
+                std::abs(v.value) < 1e16) {
+                oss << static_cast<long long>(v.value);
+            } else {
+                oss.setf(std::ios::fmtflags(0), std::ios::floatfield);
+                oss.precision(10);
+                oss << v.value;
+            }
+            return oss.str();
+        }
+        
+        // PHASE$(Fluid, T=..., P=...) — return the thermodynamic phase as a
+        // human-readable string.
+        if (lname == "phase$") {
+            std::string eesFluidName;
+            if (!call.args.empty() && call.args[0]->is<StringLiteral>()) {
+                eesFluidName = call.args[0]->as<StringLiteral>().value;
+            } else if (!call.args.empty() && call.args[0]->is<Variable>()) {
+                const auto& var = call.args[0]->as<Variable>();
+                std::string resolvedName = resolveVariableName(var);
+                if (hasStringVariable(resolvedName)) {
+                    eesFluidName = getStringVariable(resolvedName);
+                } else {
+                    eesFluidName = var.name;
+                    if (!eesFluidName.empty() && eesFluidName.back() == '$') {
+                        eesFluidName.pop_back();
+                    }
+                }
+            }
+            auto fluid = FluidRegistry::getFluid(eesFluidName);
+            if (!fluid) {
+                throw std::runtime_error("Unknown fluid: " + eesFluidName);
+            }
+            if (fluid->getType() == FluidType::HumidAir) {
+                return "gas";
+            }
+            if (fluid->getType() == FluidType::Unknown) {
+                auto unsupported = std::dynamic_pointer_cast<UnsupportedFluid>(fluid);
+                throw std::runtime_error("Fluid '" + eesFluidName + "' is not supported: " +
+                    (unsupported ? unsupported->getReason() : "Unknown reason"));
+            }
+            
+            // Evaluate named-arg state inputs in SI units
+            std::map<std::string, double> stateSI;
+            const UnitSystem& units = coolpropConfig_.units;
+            for (const auto& [argName, argExpr] : call.namedArgs) {
+                std::string lk = argName;
+                std::transform(lk.begin(), lk.end(), lk.begin(), ::tolower);
+                ADValue v = evaluate(argExpr);
+                double raw = v.value;
+                double siv = raw;
+                if (lk == "t") siv = UnitConverter::toSI(raw, UnitType::Temperature, units.temperature);
+                else if (lk == "p") siv = UnitConverter::toSI(raw, UnitType::Pressure, units.pressure);
+                else if (lk == "h") siv = UnitConverter::toSI(raw, UnitType::SpecificEnergy, units.specific_energy);
+                else if (lk == "s") siv = UnitConverter::toSI(raw, UnitType::SpecificEntropy, units.specific_entropy);
+                else if (lk == "d" || lk == "rho") siv = UnitConverter::toSI(raw, UnitType::Density, units.density);
+                stateSI[lk] = siv;
+            }
+            if (stateSI.size() != 2) {
+                throw std::runtime_error("phase$() requires exactly 2 state inputs (e.g. T=..., P=...)");
+            }
+            
+            try {
+                auto state = g_abstractStateCache.getOrCreate(
+                    coolpropConfig_.getBackendString(), fluid->getCoolPropName());
+                auto pairStr = [](const std::string& k) {
+                    if (k == "t") return CoolProp::iT;
+                    if (k == "p") return CoolProp::iP;
+                    if (k == "h") return CoolProp::iHmass;
+                    if (k == "s") return CoolProp::iSmass;
+                    if (k == "d" || k == "rho") return CoolProp::iDmass;
+                    if (k == "q" || k == "x") return CoolProp::iQ;
+                    return CoolProp::INVALID_PARAMETER;
+                };
+                auto it1 = stateSI.begin();
+                auto it2 = std::next(it1);
+                CoolProp::parameters p1 = pairStr(it1->first);
+                CoolProp::parameters p2 = pairStr(it2->first);
+                double iv1 = 0, iv2 = 0;
+                CoolProp::input_pairs ipair = CoolProp::generate_update_pair(
+                    p1, it1->second, p2, it2->second, iv1, iv2);
+                state->update(ipair, iv1, iv2);
+                int ph = static_cast<int>(state->phase());
+                switch (ph) {
+                    case CoolProp::iphase_liquid: return "liquid";
+                    case CoolProp::iphase_supercritical: return "supercritical";
+                    case CoolProp::iphase_supercritical_gas: return "supercritical_gas";
+                    case CoolProp::iphase_supercritical_liquid: return "supercritical_liquid";
+                    case CoolProp::iphase_critical_point: return "critical_point";
+                    case CoolProp::iphase_gas: return "gas";
+                    case CoolProp::iphase_twophase: return "twophase";
+                    case CoolProp::iphase_unknown: return "unknown";
+                    case CoolProp::iphase_not_imposed: return "not_imposed";
+                    default: return "unknown";
+                }
+            } catch (const std::exception& e) {
+                throw std::runtime_error("phase$() failed for fluid '" + eesFluidName + "': " + e.what());
+            }
+        }
+        
+        throw std::runtime_error("String-valued function not supported: " + call.name);
     }
     
     throw std::runtime_error("Expression is not a string literal or variable");
@@ -602,6 +804,28 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
         return evaluateCoolPropFunction(func);
     }
     
+    // STRINGVAL(s$) — parse a numeric string to a number.
+    if (name == "stringval" && func.args.size() == 1 && func.namedArgs.empty()) {
+        std::string s = evaluateString(func.args[0]);
+        // Trim whitespace
+        size_t a = s.find_first_not_of(" \t\r\n");
+        size_t b = s.find_last_not_of(" \t\r\n");
+        if (a == std::string::npos) {
+            throw std::runtime_error("stringval(): empty string");
+        }
+        std::string trimmed = s.substr(a, b - a + 1);
+        try {
+            size_t pos = 0;
+            double val = std::stod(trimmed, &pos);
+            if (pos != trimmed.size()) {
+                throw std::runtime_error("stringval(): trailing characters in '" + s + "'");
+            }
+            return ADValue::constant(val, numVariables_);
+        } catch (const std::exception& e) {
+            throw std::runtime_error("stringval() cannot parse '" + s + "': " + e.what());
+        }
+    }
+    
     // CONVERT('from', 'to') — returns conversion factor so that 1 [from] = factor [to]
     if (name == "convert" && func.args.size() == 2) {
         std::string fromUnit = evaluateString(func.args[0]);
@@ -708,6 +932,28 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         throw std::runtime_error("Unknown fluid: " + eesFluidName);
     }
     
+    // Derived thermophysical properties — compute by combining base CoolProp calls
+    // entirely in AD space so gradients are correct.
+    //   KINEMATICVISCOSITY = viscosity / density          (m^2/s)
+    //   THERMALDIFFUSIVITY = conductivity / (density*cp)  (m^2/s)
+    if (funcName == "kinematicviscosity" || funcName == "thermaldiffusivity") {
+        auto makeSubCall = [&](const std::string& name) {
+            FunctionCall sub = func;
+            sub.name = name;
+            return sub;
+        };
+        if (funcName == "kinematicviscosity") {
+            ADValue mu = evaluateCoolPropFunction(makeSubCall("viscosity"));
+            ADValue rho = evaluateCoolPropFunction(makeSubCall("density"));
+            return mu / rho;
+        } else {
+            ADValue k = evaluateCoolPropFunction(makeSubCall("conductivity"));
+            ADValue rho = evaluateCoolPropFunction(makeSubCall("density"));
+            ADValue cp = evaluateCoolPropFunction(makeSubCall("cp"));
+            return k / (rho * cp);
+        }
+    }
+    
     // Extract named argument values
     std::map<std::string, ADValue> inputs;
     for (const auto& [argName, argExpr] : func.namedArgs) {
@@ -734,6 +980,82 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 } catch (...) {
                     // Fallback or ignore if PropsSI fails
                 }
+            }
+        }
+    }
+    
+    // Pure-fluid constants that depend only on the fluid itself (no state):
+    //   T_CRIT, P_CRIT, V_CRIT, T_TRIPLE, P_TRIPLE, ACENTRICFACTOR
+    // These are called in EES with a single positional argument (the fluid)
+    // and no named arguments.
+    {
+        bool isConstant =
+            (funcName == "t_crit" || funcName == "tcrit" ||
+             funcName == "p_crit" || funcName == "pcrit" ||
+             funcName == "v_crit" || funcName == "vcrit" ||
+             funcName == "t_triple" || funcName == "ttriple" ||
+             funcName == "p_triple" || funcName == "ptriple" ||
+             funcName == "acentricfactor");
+        if (isConstant && inputs.empty()) {
+            if (fluid->getType() == FluidType::HumidAir) {
+                throw std::runtime_error("Fluid constant '" + func.name +
+                    "' is not defined for humid air (Air_ha / airH2O)");
+            }
+            if (fluid->getType() == FluidType::Unknown) {
+                auto unsupported = std::dynamic_pointer_cast<UnsupportedFluid>(fluid);
+                throw std::runtime_error("Fluid '" + eesFluidName + "' is not supported: " +
+                    (unsupported ? unsupported->getReason() : "Unknown reason"));
+            }
+            if (fluid->getType() == FluidType::Incompressible ||
+                fluid->getType() == FluidType::Mixture) {
+                throw std::runtime_error("Fluid constant '" + func.name +
+                    "' is not available for fluid '" + eesFluidName + "'");
+            }
+            
+            std::string cpFluidName = fluid->getCoolPropName();
+            try {
+                double valueSI = 0.0;
+                UnitType outType = UnitType::Dimensionless;
+                std::string outUnit;
+                
+                if (funcName == "t_crit" || funcName == "tcrit") {
+                    valueSI = CoolProp::Props1SI(cpFluidName, "Tcrit");
+                    outType = UnitType::Temperature;
+                    outUnit = coolpropConfig_.units.temperature;
+                } else if (funcName == "p_crit" || funcName == "pcrit") {
+                    valueSI = CoolProp::Props1SI(cpFluidName, "Pcrit");
+                    outType = UnitType::Pressure;
+                    outUnit = coolpropConfig_.units.pressure;
+                } else if (funcName == "v_crit" || funcName == "vcrit") {
+                    // v_crit = 1 / rhomass_critical
+                    double rhoCrit = CoolProp::Props1SI(cpFluidName, "rhomass_critical");
+                    valueSI = 1.0 / rhoCrit;
+                    // m^3/kg — no config unit, report in SI
+                    outType = UnitType::Dimensionless;
+                } else if (funcName == "t_triple" || funcName == "ttriple") {
+                    valueSI = CoolProp::Props1SI(cpFluidName, "Ttriple");
+                    outType = UnitType::Temperature;
+                    outUnit = coolpropConfig_.units.temperature;
+                } else if (funcName == "p_triple" || funcName == "ptriple") {
+                    valueSI = CoolProp::Props1SI(cpFluidName, "ptriple");
+                    outType = UnitType::Pressure;
+                    outUnit = coolpropConfig_.units.pressure;
+                } else if (funcName == "acentricfactor") {
+                    valueSI = CoolProp::Props1SI(cpFluidName, "acentric");
+                    outType = UnitType::Dimensionless;
+                }
+                
+                if (!std::isfinite(valueSI)) {
+                    throw std::runtime_error("CoolProp returned non-finite value");
+                }
+                
+                double result = (outType == UnitType::Dimensionless)
+                    ? valueSI
+                    : UnitConverter::fromSI(valueSI, outType, outUnit);
+                return ADValue::constant(result, numVariables_);
+            } catch (const std::exception& e) {
+                throw std::runtime_error("Cannot compute '" + func.name + "' for fluid '" +
+                    eesFluidName + "': " + e.what());
             }
         }
     }
@@ -920,16 +1242,62 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     }
     
     // --- Standard CoolProp Handling ---
-    if (fluid->getType() == FluidType::Incompressible) {
-        throw std::runtime_error("Incompressible fluids are not yet supported");
-    } else if (fluid->getType() == FluidType::Mixture) {
-        throw std::runtime_error("Mixtures are not yet supported");
+    if (fluid->getType() == FluidType::Mixture) {
+        throw std::runtime_error("Fluid '" + eesFluidName + "' (mixture) is not available. "
+            "Use REFPROP or an external correlation.");
     } else if (fluid->getType() == FluidType::Unknown) {
         auto unsupported = std::dynamic_pointer_cast<UnsupportedFluid>(fluid);
         throw std::runtime_error("Fluid '" + eesFluidName + "' is not supported: " + (unsupported ? unsupported->getReason() : "Unknown reason"));
     }
     
+    // Incompressible fluid: accept T,P inputs; reject saturation-style inputs.
+    // For solutions, resolve concentration from a second positional argument
+    // (mass fraction in %, e.g. density('MEG', 30, T=280, P=1e5)) or from a
+    // `C` named argument.
     std::string cpFluidName = fluid->getCoolPropName();
+    if (fluid->getType() == FluidType::Incompressible) {
+        auto incomp = std::dynamic_pointer_cast<IncompressibleFluid>(fluid);
+        if (incomp && incomp->isSolution()) {
+            double massFraction = -1.0;
+            // 2nd positional argument (numeric literal or any expression)
+            if (func.args.size() >= 2) {
+                try {
+                    ADValue v = evaluate(func.args[1]);
+                    // Interpret as mass percent 0..100 → fraction 0..1
+                    massFraction = v.value / 100.0;
+                } catch (...) {
+                    // Not an expression — ignore
+                }
+            }
+            // C or concentration named arg (mass percent)
+            for (auto it = inputs.begin(); it != inputs.end(); ) {
+                if (it->first == "c" || it->first == "conc" || it->first == "concentration") {
+                    massFraction = it->second.value / 100.0;
+                    it = inputs.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (massFraction < 0.0 || massFraction > 1.0) {
+                throw std::runtime_error("Incompressible solution '" + eesFluidName +
+                    "' requires a concentration (mass %, 0..100) as a second positional "
+                    "argument or a C=... named argument.");
+            }
+            cpFluidName = incomp->getCoolPropNameWithFraction(massFraction);
+        }
+        // Reject quality-based inputs — saturation is not defined for incompressibles.
+        for (const auto& [k, v] : inputs) {
+            if (k == "q" || k == "x" || k == "quality") {
+                throw std::runtime_error("Incompressible fluid '" + eesFluidName +
+                    "' does not support saturation (quality) inputs.");
+            }
+        }
+        // Reject request for quality output for incompressibles.
+        if (funcName == "quality" || funcName == "x") {
+            throw std::runtime_error("Incompressible fluid '" + eesFluidName +
+                "' has no vapor quality.");
+        }
+    }
     
     if (fluid->getType() == FluidType::IdealGas && inputs.size() == 1) {
         // For ideal gases, properties that depend only on temperature {T, h, u,

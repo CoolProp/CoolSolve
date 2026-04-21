@@ -184,27 +184,62 @@ void FluidRegistry::initialize() {
     // --- Humid Air (EES humid air) ---
     registry_["airh2o"] = std::make_shared<HumidAirFluid>();
     
-    // --- Incompressible Fluids (Examples) ---
-    auto addIncomp = [](const std::string& name) {
-        auto fluid = std::make_shared<IncompressibleFluid>(name);
+    // --- Incompressible Fluids ---
+    // Pure incompressibles (no concentration): solids, pure liquids
+    auto addIncomp = [](const std::string& name, const std::string& cpKey = "") {
+        auto fluid = std::make_shared<IncompressibleFluid>(name, /*isSolution=*/false, cpKey);
         registry_[name] = fluid;
         std::string lower = name;
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
         if (lower != name) registry_[lower] = fluid;
     };
+    // Solutions: glycols, brines, secondary refrigerants (need concentration)
+    auto addIncompSolution = [](const std::string& name, const std::string& cpKey) {
+        auto fluid = std::make_shared<IncompressibleFluid>(name, /*isSolution=*/true, cpKey);
+        registry_[name] = fluid;
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        if (lower != name) registry_[lower] = fluid;
+    };
+    
     addIncomp("Aluminum");
     addIncomp("Copper");
     
-    // --- Mixtures (Examples) ---
-    auto addMix = [](const std::string& name) {
-        auto fluid = std::make_shared<MixtureFluid>(name);
-        registry_[name] = fluid;
-        std::string lower = name;
-        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-        if (lower != name) registry_[lower] = fluid;
-    };
-    addMix("NH3H2O");
-    addMix("LiBrH2O");
+    // Glycols
+    addIncompSolution("EthyleneGlycol", "MEG");
+    addIncompSolution("EG", "MEG");
+    addIncompSolution("MEG", "MEG");
+    addIncompSolution("PropyleneGlycol", "MPG");
+    addIncompSolution("PG", "MPG");
+    addIncompSolution("MPG", "MPG");
+    
+    // Brines
+    addIncompSolution("CaCl2", "MCA");
+    addIncompSolution("MCA", "MCA");
+    addIncompSolution("NaCl", "MNA");
+    addIncompSolution("MNA", "MNA");
+    addIncompSolution("LiCl", "MLI");
+    addIncompSolution("MLI", "MLI");
+    
+    // Secondary refrigerants / solvents (solutions in water)
+    addIncompSolution("Methanol", "MMA");
+    addIncompSolution("MMA", "MMA");
+    addIncompSolution("EthanolSolution", "MEA");
+    addIncompSolution("MEA", "MEA");
+    addIncompSolution("Glycerol", "MGL");
+    addIncompSolution("MGL", "MGL");
+    
+    // Pure incompressible
+    addIncomp("LiBr", "LiBr");   // pure LiBr correlations
+    addIncomp("SeaWater", "MITSW");
+    
+    // --- Mixtures (unsupported in CoolProp with EES parameterization) ---
+    addUnsupported("NH3H2O",
+        "Ammonia-water mixture with EES correlation is not available in CoolProp. "
+        "Use REFPROP via \"REFPROP::Ammonia&Water\" backend or provide an external correlation.");
+    addUnsupported("LiBrH2O",
+        "Lithium-bromide-water solution with EES correlation is not available in CoolProp. "
+        "Use an external correlation or the incompressible 'LiBr' fluid for pure LiBr data.");
     
     initialized_ = true;
 }

@@ -35,14 +35,14 @@ IFNOT-THEN-ELSE,Control Flow,Negated conditional execution,Yes,1,Variation of IF
 "IF$(cond, true$, false$)",Control Flow,Inline conditional for string variables,No,3,String version of inline IF,
 REPEAT-UNTIL,Control Flow,Loop that repeats until condition is true,Yes,1,src/parser.cpp + evaluator.cpp — REPEAT body UNTIL(condition) with max 10000 iterations,
 DUPLICATE i=1:N,Control Flow,"Array loop construct DUPLICATE i=1,N ... END",Yes,1,src/parser.cpp + evaluator.cpp — parsed and executed in procedural blocks,
-GOTO,Control Flow,Jump to a labelled statement,No,2,Rarely needed, some legacy EES code uses it
-Statement labels,Control Flow,Numeric labels for GOTO targets (e.g. 100: ...),No,2,Used with GOTO,
-CASE,Control Flow,CASE/OF/ENDCASE multi-branch conditional,No,2,Occasionally used in EES procedures,
+GOTO,Control Flow,Jump to a labelled statement,No,3,Rarely needed, some legacy EES code uses it
+Statement labels,Control Flow,Numeric labels for GOTO targets (e.g. 100: ...),No,3,Used with GOTO,
+CASE,Control Flow,CASE/OF/ENDCASE multi-branch conditional,No,3,Occasionally used in EES procedures,
 # --- User Functions & Procedures ---,,,,,,
 FUNCTION...END,Functions & Procedures,User-defined function with RETURN value,Yes,1,src/parser.cpp — FunctionDefinition AST node,
 PROCEDURE...END,Functions & Procedures,User-defined procedure with multiple outputs (CALL name(in : out)),Yes,1,src/parser.cpp — ProcedureDefinition AST node,
 CALL,Functions & Procedures,Invoke a procedure: CALL name(inputs : outputs),Yes,1,src/parser.cpp — ProcedureCall AST node,
-RETURN,Functions & Procedures,Return value from FUNCTION/exit PROCEDURE,No,2,Implicit return at end of function body,
+RETURN,Functions & Procedures,Return value from FUNCTION/exit PROCEDURE,No,3,Implicit return at end of function body,
 ERROR procedure,Functions & Procedures,Raise a runtime error with message (ERROR 'msg'),No,2,EES built-in for error handling in procedures,
 WARNING procedure,Functions & Procedures,Display warning without halting (WARNING 'msg'),No,3,EES built-in for user warnings,
 MODULE...END,Functions & Procedures,Module definition (group of equations),No,3,"Parser detects keyword, raises 'not yet handled'",
@@ -93,8 +93,8 @@ AVERAGE,Math — Aggregation,Average of array elements,Yes,1,src/autodiff_node.c
 PRODUCT,Math — Aggregation,Product of array elements,Yes,1,src/autodiff_node.cpp — variadic product with AD support,
 STDDEV,Math — Aggregation,Standard deviation of array elements,Yes,1,src/autodiff_node.cpp — population stddev with AD support,
 # --- Mathematical Functions: Special ---,,,,,,
-ERF,Math — Special,Error function erf(x),No,2,Used in heat transfer / diffusion problems,
-ERFC,Math — Special,Complementary error function 1-erf(x),No,2,Used with ERF,
+ERF,Math — Special,Error function erf(x),Yes,2,src/autodiff_node.cpp — full AD support,
+ERFC,Math — Special,Complementary error function 1-erf(x),Yes,2,src/autodiff_node.cpp — full AD support,
 GAMMA_,Math — Special,Gamma function Γ(x),No,3,Rarely used in typical models,
 FACTORIAL,Math — Special,Factorial n!,No,3,Rarely used,
 PROBABILITY,Math — Special,Normal distribution probability P(x<z),No,3,Statistical function,
@@ -195,7 +195,7 @@ VectorUnit_k,Math — Vector,k-component of unit vector,No,4,,
 VectorZeros,Math — Vector,Zero vector,No,4,,
 # --- Mathematical Functions: Miscellaneous ---,,,,,,
 PI,Math — Misc,Pi constant (3.14159...),Yes,1,src/autodiff_node.cpp — returned as ADValue,
-LMTD_F,Math — Misc,"Log-mean temperature difference correction factor F(R,P,config)",No,2,Common in heat exchanger analysis,
+LMTD_F,Math — Misc,"Log-mean temperature difference LMTD = (DT1-DT2)/ln(DT1/DT2)",Yes,2,"src/autodiff_node.cpp — smooth limit at DT1=DT2, full AD",
 BAROMETRICPRESSURE,Math — Misc,Barometric pressure at given altitude,No,3,,
 LOOP#,Math — Misc,Current loop iteration number in Parametric table,No,3,,
 TABLERUN#,Math — Misc,Current table run number,No,3,,
@@ -220,7 +220,7 @@ RGB,Math — Plot,"RGB color value RGB(r,g,b)",No,5,EES GUI-specific,
 ERROR,Math — Error/Warning,Raise error and stop: ERROR 'message',No,2,Also listed under Procedures,
 WARNING,Math — Error/Warning,Display warning: WARNING 'message',No,3,Also listed under Procedures,
 # --- String Functions ---,,,,,,
-CONCAT$,String Functions,"Concatenate strings: CONCAT$('a','b')",No,2,,
+CONCAT$,String Functions,"Concatenate strings: CONCAT$('a','b')",No,3,,
 COPY$,String Functions,"Copy substring: COPY$(s$, start, count)",No,3,,
 DELETE$,String Functions,"Delete substring: DELETE$(s$, start, count)",No,3,,
 INSERT$,String Functions,"Insert string: INSERT$(source$, target$, pos)",No,3,,
@@ -228,8 +228,8 @@ REPLACE$,String Functions,"Replace substring: REPLACE$(s$, old$, new$)",No,3,,
 TRIM$,String Functions,Remove leading/trailing whitespace,No,3,,
 LOWERCASE$,String Functions,Convert to lowercase,No,3,,
 UPPERCASE$,String Functions,Convert to uppercase,No,3,,
-STRING$,String Functions,Convert number to string,No,2,,
-STRINGVAL,String Functions,Convert string to number,No,2,,
+STRING$,String Functions,Convert number to string,Yes,2,src/evaluator.cpp — string-valued function handler,
+STRINGVAL,String Functions,Convert string to number,Yes,2,src/evaluator.cpp — evaluateFunctionCall,
 STRINGLEN,String Functions,Length of a string,No,3,,
 STRINGPOS,String Functions,Position of substring in string,No,3,,
 CHR$,String Functions,Character from ASCII code,No,4,,
@@ -244,7 +244,7 @@ SHORTFILENAME$,String Functions,Short (8.3) file name,No,5,Windows-specific,
 UNITSOF$,String Functions,Get units string of a variable,No,3,,
 UNITSYSTEM$,String Functions,Current unit system as string,No,3,,
 FLUIDTYPE$,String Functions,Type of a fluid (real/ideal/incomp),No,3,,
-PHASE$,String Functions,"Phase of fluid at given state (liquid, vapor, two-phase, etc.)",Partial,2,Recognized in parser, partial CoolProp mapping
+PHASE$,String Functions,"Phase of fluid at given state (liquid, vapor, two-phase, etc.)",Yes,2,"src/evaluator.cpp — evaluateString handles PHASE$ via AbstractState::phase()"
 LOOKUP$,String Functions,Look up string from Lookup table,No,3,Requires Lookup table,
 LOOKUPCOLNAME$,String Functions,Get column name from Lookup table,No,3,,
 LOOKUPCOLUNITS$,String Functions,Get column units from Lookup table,No,3,,
@@ -274,15 +274,15 @@ VISCOSITY,Thermophysical,Dynamic viscosity [Pa·s],Yes,1,"src/evaluator.cpp, ali
 CONDUCTIVITY,Thermophysical,Thermal conductivity [W/(m·K)],Yes,1,"src/evaluator.cpp, aliases: k, l",
 PRANDTL,Thermophysical,Prandtl number (dimensionless),Yes,1,src/evaluator.cpp,
 SOUNDSPEED,Thermophysical,Speed of sound [m/s],Yes,1,"src/evaluator.cpp, aliases: speed_of_sound, a",
-KINEMATICVISCOSITY,Thermophysical,Kinematic viscosity ν = μ/ρ [m²/s],Partial,2,Recognized in parser, derivable from viscosity/density
-THERMALDIFFUSIVITY,Thermophysical,Thermal diffusivity α = k/(ρ·cp) [m²/s],Partial,2,Recognized in parser, derivable from k/rho/cp
+KINEMATICVISCOSITY,Thermophysical,Kinematic viscosity ν = μ/ρ [m²/s],Yes,2,"src/evaluator.cpp — derived from viscosity/density in AD space"
+THERMALDIFFUSIVITY,Thermophysical,Thermal diffusivity α = k/(ρ·cp) [m²/s],Yes,2,"src/evaluator.cpp — derived from k/(ρ·cp) in AD space"
 # --- Thermophysical Functions: Surface ---,,,,,,
-SURFACETENSION,Thermophysical,Surface tension [N/m],Yes,2,src/evaluator.cpp — CoolProp surface_tension,
+SURFACETENSION,Thermophysical,Surface tension [N/m],Yes,2,src/evaluator.cpp — CoolProp isurface_tension,
 # --- Thermophysical Functions: Critical & Triple ---,,,,,,
-T_CRIT,Thermophysical,Critical temperature [K],Partial,2,Recognized in parser, maps to CoolProp T_critical
-P_CRIT,Thermophysical,Critical pressure [Pa],Partial,2,Recognized in parser, maps to CoolProp p_critical
-V_CRIT,Thermophysical,Critical specific volume [m³/kg],Partial,2,Recognized in parser, derived from rhomass_critical
-T_TRIPLE,Thermophysical,Triple point temperature [K],Partial,2,Recognized in parser, maps to CoolProp Ttriple
+T_CRIT,Thermophysical,Critical temperature [K],Yes,2,"src/evaluator.cpp — Props1SI(fluid,'Tcrit')"
+P_CRIT,Thermophysical,Critical pressure [Pa],Yes,2,"src/evaluator.cpp — Props1SI(fluid,'Pcrit')"
+V_CRIT,Thermophysical,Critical specific volume [m³/kg],Yes,2,"src/evaluator.cpp — 1/rhomass_critical"
+T_TRIPLE,Thermophysical,Triple point temperature [K],Yes,2,"src/evaluator.cpp — Props1SI(fluid,'Ttriple')"
 # --- Thermophysical Functions: Saturation ---,,,,,,
 T_SAT,Thermophysical,Saturation temperature at given pressure,Yes,1,"src/evaluator.cpp, aliases: tsat",
 P_SAT,Thermophysical,Saturation pressure at given temperature,Yes,1,"src/evaluator.cpp, aliases: psat",
@@ -293,9 +293,9 @@ P_SUBLIMATION,Thermophysical,Sublimation pressure at given temperature,Partial,3
 MOLARMASS,Thermophysical,Molar mass of fluid [kg/mol or g/mol],Yes,1,"src/evaluator.cpp, aliases: mm",
 MOLARMASS_SOLN,Thermophysical,Molar mass of a solution,Partial,3,Recognized in parser,
 ACENTRICFACTOR,Thermophysical,Acentric factor (Pitzer) (dimensionless),Partial,3,Recognized in parser, maps to CoolProp acentric
-COMPRESSIBILITYFACTOR,Thermophysical,Compressibility factor Z = Pv/(RT),Partial,2,Recognized in parser,
+COMPRESSIBILITYFACTOR,Thermophysical,Compressibility factor Z = Pv/(RT),Yes,2,"src/evaluator.cpp — CoolProp iZ"
 FUGACITY,Thermophysical,Fugacity [Pa],Partial,3,Recognized in parser,
-ISENTROPICEXPONENT,Thermophysical,Isentropic exponent γ = Cp/Cv,Partial,2,Recognized in parser, derivable from Cp/Cv
+ISENTROPICEXPONENT,Thermophysical,Isentropic exponent γ,Yes,2,"src/evaluator.cpp — CoolProp iisentropic_expansion_coefficient"
 ISOTHERMALCOMPRESS,Thermophysical,Isothermal compressibility [1/Pa],Partial,3,Recognized in parser,
 JOULETHOMSONCOEF,Thermophysical,Joule-Thomson coefficient [K/Pa],Partial,3,Recognized in parser,
 VOLEXPCOEF,Thermophysical,Volume expansion coefficient [1/K],Partial,3,Recognized in parser,
@@ -321,7 +321,7 @@ HUMRAT,Thermophysical,"Humidity ratio [kg_w/kg_da], requires 3 inputs",Yes,1,"sr
 RELHUM,Thermophysical,"Relative humidity [0-1], requires 3 inputs",Yes,1,"src/evaluator.cpp, aliases: r",
 WETBULB,Thermophysical,"Wet bulb temperature, requires 3 inputs",Yes,1,"src/evaluator.cpp, aliases: b",
 DEWPOINT,Thermophysical,"Dew point temperature, requires 3 inputs",Yes,1,"src/evaluator.cpp, aliases: d",
-PSYCHPROPS,Thermophysical,General psychrometric property function,No,2,EES general psychrometric interface,
+PSYCHPROPS,Thermophysical,General psychrometric property function,Yes,2,"src/evaluator.cpp — built-in procedure (T,P,R inputs → 9 outputs)"
 # --- Thermophysical Functions: Lennard-Jones ---,,,,,,
 EK_LJ,Thermophysical,Lennard-Jones energy parameter ε/k [K],No,4,,
 SIGMA_LJ,Thermophysical,Lennard-Jones size parameter σ [nm],No,4,,
@@ -349,13 +349,13 @@ Ideal gas substances,Fluids,"Air, N2, O2, H2, He, Ar, CO2, CO, CH4, C2H6, C3H8, 
 Humid air (AirH2O),Fluids,Moist air psychrometrics via CoolProp HumidAir module,Yes,1,"src/evaluator.cpp — special 3-input handling (T,P,W/R/D/B)",
 Real air (Air_ha),Fluids,Dry air with real gas equation of state,Yes,2,src/fluids.cpp — CoolProp EOS for dry air,
 STEAM_NBS,Fluids,"NBS/NRC steam tables (legacy EES), includes Ice",No,5,EES legacy steam formulation,
-NH3H2O,Fluids,Ammonia-water mixture,Partial,2,Placeholder in fluids.cpp, limited implementation
-LiBrH2O,Fluids,Lithium bromide-water solution,Partial,2,Placeholder in fluids.cpp,
-"Incompressible substances (solids, brines)",Fluids,"Aluminum, Copper, brines, glycols (EthyleneGlycol, PropyleneGlycol, etc.)",Partial,2,"Placeholder in fluids.cpp (Al, Cu only); EES has extensive library",
+NH3H2O,Fluids,Ammonia-water mixture,Yes,2,"src/fluids.cpp — UnsupportedFluid with clear remediation (use REFPROP::Ammonia&Water)"
+LiBrH2O,Fluids,Lithium bromide-water solution,Yes,2,"src/fluids.cpp — UnsupportedFluid with clear remediation; pure LiBr available",
+"Incompressible substances (solids, brines)",Fluids,"Aluminum, Copper, brines, glycols (EthyleneGlycol, PropyleneGlycol, etc.)",Yes,2,"src/fluids.cpp — full incompressible fluid registry (pure + solutions)",
 Combustion gases,Fluids,"CombustionGas_100/200/400, Natural_Gas, Natural_Gas2",No,3,EES specialized combustion module,
 NASA thermodynamic data,Fluids,NASA CEA-format ideal gas and condensed species (hundreds),No,3,EES includes NASA Glenn database,
 Sea water,Fluids,Sea water properties,No,3,EES specialized fluid,
-"Solutions (glycols, brines)",Fluids,"EthyleneGlycol, PropyleneGlycol, CaCl2, LiCl-Water, etc.",No,2,EES has extensive solution database, CoolProp has some via incompressibles
+"Solutions (glycols, brines)",Fluids,"EthyleneGlycol, PropyleneGlycol, CaCl2, LiCl-Water, etc.",Yes,2,"src/fluids.cpp — MEG/MPG/MCA/MNA/MLI/MMA/MEA/MGL with concentration via 2nd positional arg or C=..."
 User-supplied property data,Fluids,"User-provided .idg, .mhe, .fld files",No,3,EES allows custom fluid data files,
 EES_REFPROP interface,Fluids,Direct REFPROP DLL integration for high-accuracy data,No,3,EES can call NIST REFPROP, CoolSolve uses CoolProp
 # --- $ Directives ---,,,,,,
@@ -363,8 +363,8 @@ $UnitSystem,Directives,"Set unit system: $UnitSystem SI C Pa J (or Eng, kJ, bar,
 $IF / $IFNOT / $ENDIF,Directives,Conditional compilation ($IF DirectiveFlag ... $ENDIF),Yes,1,src/parser.cpp — preprocessor-style conditional blocks,
 $ELSE,Directives,Else branch of $IF/$IFNOT conditional,Yes,1,src/parser.cpp,
 $Bookmark,Directives,Insert a bookmark marker (GUI navigation aid),Yes,2,src/parser.cpp — parsed and stored,
-$CheckUnits,Directives,Enable/disable automatic unit checking,No,2,to be implemented in the coolsolve config as well, ON/OFF/AutoOn/AutoOff
-$AutoSetUnits,Directives,Automatically assign units to variables,No,2,to be implemented in the coolsolve config as well,
+$CheckUnits,Directives,Enable/disable automatic unit checking,No,3,to be implemented in the coolsolve config as well, ON/OFF/AutoOn/AutoOff
+$AutoSetUnits,Directives,Automatically assign units to variables,No,3,to be implemented in the coolsolve config as well,
 $AUTOSETARRAYUNITS,Directives,Automatically assign units to array variables,No,3,,
 $DefineUnits,Directives,Define custom unit conversion,No,3,,
 $ConvertEESREFPROPUnits,Directives,Convert between EES and REFPROP unit conventions,No,4,,
