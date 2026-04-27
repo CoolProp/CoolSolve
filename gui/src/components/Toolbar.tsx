@@ -23,6 +23,7 @@ export default function Toolbar() {
   const conf = useModelStore((s) => s.conf);
   const modelName = useModelStore((s) => s.modelName);
   const setModelName = useModelStore((s) => s.setModelName);
+  const setLookupTables = useModelStore((s) => s.setLookupTables);
   const canGoBack = useModelStore((s) => s.canGoBack);
   const setSol = useModelStore((s) => s.setSol);
   const setInitials = useModelStore((s) => s.setInitials);
@@ -125,6 +126,8 @@ export default function Toolbar() {
                 }
                 // Fetch .sol content
                 api.getSol().then((s) => setSol(s.content)).catch(() => {});
+                // Refresh lookup table list (tables may have been created/loaded)
+                api.getTables().then((r) => setLookupTables(r.tables)).catch(() => {});
               }
               setSolving(false);
               es.close();
@@ -177,7 +180,7 @@ export default function Toolbar() {
         setSolving(false);
       }
     },
-    [eescode, initials, setSolving, clearConsole, addConsoleLine, setSolveResult, setSol, setBottomPanelOpen]
+    [eescode, initials, setSolving, clearConsole, addConsoleLine, setSolveResult, setSol, setBottomPanelOpen, setLookupTables]
   );
 
   // ================================================================

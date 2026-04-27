@@ -1,6 +1,7 @@
 #pragma once
 
 #include "evaluator.h"
+#include "lookup_table.h"
 #include "structural_analysis.h"
 #include "diagnostic.h"
 #include <Eigen/Dense>
@@ -767,11 +768,18 @@ public:
      */
     const SystemEvaluator& getEvaluator() const { return evaluator_; }
     SystemEvaluator& getEvaluator() { return evaluator_; }
+
+    /** @brief Provide lookup table access for INTERPOLATE / LOOKUP calls. */
+    void setLookupTableStore(const LookupTableStore* store) {
+        lookupTableStore_ = store;
+        evaluator_.setLookupTableStore(store);
+    }
     
 private:
     SystemEvaluator evaluator_;
     const IR& ir_;
     const StructuralAnalysisResult& analysis_;
+    const LookupTableStore* lookupTableStore_ = nullptr;
     
     /**
      * @brief Solve a single block using the configured solver pipeline.

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <regex>
 #include <cctype>
+#include <unordered_set>
 
 namespace coolsolve {
 
@@ -351,12 +352,31 @@ void IR::extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensi
         } else if constexpr (std::is_same_v<T, FunctionCall>) {
             // For thermodynamic functions, skip the first positional arg (fluid name)
             bool isThermo = isThermoFunction(node.name);
+
+            // For lookup/interpolate functions, all StringLiteral args (table
+            // name and column names) must not be treated as solver variables.
+            static const std::unordered_set<std::string> LOOKUP_FUNCTIONS = {
+                "lookup", "lookup$", "lookupcol", "lookupcol1", "lookupcellempty",
+                "tablevalue", "tablevalue#", "tablerun#",
+                "interpolate", "interpolate1", "interpolate2", "interpolate2dm",
+                "nlookuprows", "nlookupcolumns",
+                "sumlookup", "avglookup", "maxlookup", "minlookup", "stddevlookup",
+            };
+            std::string funcLower = node.name;
+            std::transform(funcLower.begin(), funcLower.end(), funcLower.begin(), ::tolower);
+            bool isLookup = LOOKUP_FUNCTIONS.count(funcLower) > 0;
+
             bool firstArg = true;
-            
+
             // Extract from positional args
             for (const auto& arg : node.args) {
                 if (isThermo && firstArg) {
                     // Skip first argument (fluid name) for thermo functions
+                    firstArg = false;
+                    continue;
+                }
+                // Skip string literals in lookup functions (they are table/column names)
+                if (isLookup && arg && arg->template is<StringLiteral>()) {
                     firstArg = false;
                     continue;
                 }

@@ -2,6 +2,7 @@
 
 #include "ast.h"
 #include "ir.h"
+#include "lookup_table.h"
 #include "structural_analysis.h"
 #include "autodiff_node.h"
 #include "units.h"
@@ -206,7 +207,11 @@ public:
     bool isResidualOnly() const { return residualOnly_; }
     
     void setDiagnostics(DiagnosticCollector* diag) { diagnostics_ = diag; }
-    
+
+    /** @brief Provide access to lookup tables for INTERPOLATE / LOOKUP calls. */
+    void setLookupTableStore(const LookupTableStore* store) { lookupTableStore_ = store; }
+    const LookupTableStore* getLookupTableStore() const { return lookupTableStore_; }
+
     /// When true, skip input clamping (P >= 1000 Pa, T >= 50 K, etc.).
     /// Used for final solution verification so that out-of-range inputs
     /// are caught as errors rather than silently corrected.
@@ -218,6 +223,7 @@ private:
     bool residualOnly_ = false;
     bool disableClamping_ = false;
     DiagnosticCollector* diagnostics_ = nullptr;
+    const LookupTableStore* lookupTableStore_ = nullptr;
     std::map<std::string, ADValue, CaseInsensitiveLess> variables_;
     std::map<std::string, std::string, CaseInsensitiveLess> stringVariables_;
     std::map<std::string, FunctionDefinition, CaseInsensitiveLess> userFunctions_;
@@ -237,6 +243,9 @@ private:
     
     // CoolProp function evaluation
     ADValue evaluateCoolPropFunction(const FunctionCall& func);
+
+    // Lookup table function evaluation (INTERPOLATE, LOOKUP, etc.)
+    ADValue evaluateLookupFunction(const FunctionCall& func);
 };
 
 // ============================================================================
@@ -310,11 +319,15 @@ public:
     void registerProcedure(const ProcedureDefinition& proc) { procedures_[proc.name] = proc; }
     
     void setDiagnostics(DiagnosticCollector* diag) { diagnostics_ = diag; }
+
+    /** @brief Provide lookup table access for INTERPOLATE / LOOKUP calls. */
+    void setLookupTableStore(const LookupTableStore* store) { lookupTableStore_ = store; }
     
 private:
     std::vector<std::string> variables_;
     std::vector<int> equationIds_;
     DiagnosticCollector* diagnostics_ = nullptr;
+    const LookupTableStore* lookupTableStore_ = nullptr;
     std::vector<const EquationInfo*> equations_;
     std::map<std::string, FunctionDefinition, CaseInsensitiveLess> functions_;
     std::map<std::string, ProcedureDefinition, CaseInsensitiveLess> procedures_;
@@ -392,6 +405,11 @@ public:
      * @brief Initialize all variables with guess values from the IR.
      */
     void initializeFromGuesses();
+
+    /** @brief Provide lookup table access to all block evaluators. */
+    void setLookupTableStore(const LookupTableStore* store) {
+        for (auto& be : blockEvaluators_) be.setLookupTableStore(store);
+    }
     
     /**
      * @brief Evaluate a specific block with current state.

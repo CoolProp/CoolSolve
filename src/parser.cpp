@@ -400,7 +400,10 @@ private:
             "min", "max", "sum", "sum2d", "average", "product", "stddev",
             "if", "convert", "converttemp", "pi",
             "tablevalue", "tablevalue#", "tablerun#", "lookup", "lookup$",
-            "interpolate", "interpolate1", "interpolate2",
+            "interpolate", "interpolate1", "interpolate2", "interpolate2dm",
+            "nlookuprows", "nlookupcolumns",
+            "sumlookup", "avglookup", "maxlookup", "minlookup", "stddevlookup",
+            "lookupcol", "lookupcol1", "lookupcellempty",
             "ntumethod", "effectivenessntu",
             "lmtd",
         };

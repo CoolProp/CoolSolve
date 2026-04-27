@@ -4,6 +4,7 @@
 #include "coolsolve/ir.h"
 #include "coolsolve/structural_analysis.h"
 #include "coolsolve/solver.h"
+#include "coolsolve/lookup_table.h"
 #include "coolsolve/diagnostic.h"
 #include <string>
 #include <memory>
@@ -60,6 +61,22 @@ public:
     // Aggregated diagnostics from all pipeline phases
     const DiagnosticCollector& getDiagnostics() const { return diagnostics_; }
 
+    // Lookup table store loaded for the current run
+    const LookupTableStore& getLookupTableStore() const { return lookupTableStore_; }
+
+    /**
+     * @brief Pre-supply a lookup table store before calling run().
+     *
+     * When set, run() skips disk-based CSV loading and uses this store
+     * directly.  This is used by the GUI server, which manages its own
+     * table store from the session's in-memory CSVs.  For CLI usage,
+     * leave unset so that run() auto-loads the companion CSV file.
+     */
+    void setLookupTableStore(LookupTableStore store) {
+        lookupTableStore_ = std::move(store);
+        lookupTableStorePreloaded_ = true;
+    }
+
 private:
     std::string inputFile_;
     ParseResult parseResult_;
@@ -69,6 +86,8 @@ private:
     PipelineTiming timing_;
     mutable std::string latexReportContent_;  // cached LaTeX source
     DiagnosticCollector diagnostics_;
+    LookupTableStore lookupTableStore_;
+    bool lookupTableStorePreloaded_ = false;
 };
 
 } // namespace coolsolve

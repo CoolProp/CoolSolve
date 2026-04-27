@@ -210,6 +210,20 @@ fields per variable:
 **Bundle persistence**: ZIP bundles now include `parametric_studies.json`
 containing saved parametric study results for load/restore round-trips.
 
+### 4.9 Lookup Tables
+
+| Method | Endpoint | Description |
+|--------|----------|--------------|
+| `GET` | `/api/v1/tables` | List all lookup tables in the current session; returns `[{name, columns, rows}]` |
+| `GET` | `/api/v1/tables/:name` | Get the raw CSV content of a named table |
+| `PUT` | `/api/v1/tables/:name` | Create or replace a table; body is plain `text/csv` |
+| `DELETE` | `/api/v1/tables/:name` | Remove a table from the session |
+
+Table names are restricted to `[A-Za-z0-9_-]+`.  Tables are stored in the
+session and written to the solver's working directory as `<name>.csv` before
+each solve or parametric run.  They are included in the ZIP bundle and
+restored on upload.
+
 ---
 
 ## 5. Session Management
@@ -226,6 +240,7 @@ Each `Session` holds:
 - `sessionSnapshot` — one-level undo snapshot
 - `debugDir` — temporary directory path for debug output files
 - `solveInProgress`, `cancelToken` — concurrency control for async solve
+- `lookupTableCSVs` — map from table name to raw CSV text (in-memory store for lookup tables)
 
 Session-scoped temp directories live at `/tmp/coolsolve_sessions/{id}/`.
 The "New" action clears all in-memory state while keeping the session alive.
@@ -244,6 +259,7 @@ The "New" action clears all in-memory state while keeping the session alive.
 │  CODE EDITOR (Monaco)      │  RIGHT PANEL (Tabs)                         │
 │                            │  ┌──────────────────────────────────────┐   │
 │  T_in = 25                 │  │Variables│Arrays│Config│Debug│Diagrams│   │
+│                            │  │ (right panel unchanged)               │   │
 │  P = 101325                │  ├──────────────────────────────────────┤   │
 │  h = enthalpy('Water',     │  │  Variable table (filtered, sortable) │   │
 │        T=T_in, P=P)        │  │  ┌──────┬──────┬───────┬──────┐      │   │
@@ -254,8 +270,8 @@ The "New" action clears all in-memory state while keeping the session alive.
 │                            │  │  │ h    │104929│  —    │      │      │   │
 │                            │  └──────────────────────────────────────┘   │
 ├────────────────────────────┴─────────────────────────────────────────────┤
-│  STATUS BAR / CONSOLE (collapsible bottom panel)                         │
-│  Solve log, errors, block progress, timing                               │
+│  BOTTOM PANEL (collapsible, tabbed)                                      │
+│  Console │ Parametric │ Lookup Tables                                    │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -421,6 +437,37 @@ Auto-scrolling log panel with color-coded lines:
 - Final result: SUCCESS / FAIL with timing breakdown
 - CoolProp warnings and errors
 
+### 6.10 Lookup Tables Tab — `LookupTableEditor.tsx`
+
+A spreadsheet-style manager for CSV lookup tables in the bottom panel.
+
+#### List view
+
+Displays a table of all tables in the current session (name, row count,
+column names).  Populated by `GET /api/v1/tables` automatically after each
+successful solve and when the tab is opened.
+
+- **Create**: enter a table name and press Enter or click *Create*; an empty
+  2-column template is written to the session via `PUT /api/v1/tables/:name`.
+- **Delete**: click the trash icon; prompts for confirmation.
+- **Open**: click any row to open the grid editor for that table.
+
+#### Grid editor
+
+An inline editable HTML table:
+- Header row cells are editable (rename columns).
+- Data cells are plain text inputs (numeric or empty for NaN).
+- **+ Row / + Col** buttons append rows and columns.
+- **× buttons** (per row/column) delete that row or column (header row
+  is protected; at least 1 data row and 1 column are always kept).
+- **Import CSV**: loads a `.csv` file from disk, replacing the current grid.
+- **Export CSV**: downloads the current grid as a `.csv` file.
+- **Save**: calls `PUT /api/v1/tables/:name` with the serialised CSV and
+  updates the in-memory store (`modelStore.lookupTableCSVs`).
+
+Tables saved here are automatically used in the next solve — no need to
+restart or re-upload files.
+
 ---
 
 ## 7. File Management
@@ -453,11 +500,12 @@ The ZIP uses a minimal uncompressed implementation (custom CRC32-based ZIP
 writer/reader in `server.cpp` — no external library):
 
 | Entry | Contents |
-|-------|---------|
+|-------|----------|
 | `<name>.eescode` | Current editor content |
 | `<name>.initials` | Current initial guesses |
 | `<name>.sol` | Last solution (if solve was successful) |
 | `coolsolve.conf` | Solver configuration |
+| `<tablename>.csv` | One entry per lookup table in the session |
 | `debug/*` | Debug output files (if present) |
 
 ### 7.3 Session Snapshot (Back Button)
@@ -590,8 +638,8 @@ gui/
     │   ├── client.ts              # Typed fetch wrappers for all API endpoints
     │   └── types.ts               # TypeScript interfaces for all API responses (incl. parametric types)
     ├── stores/
-    │   ├── modelStore.ts          # Zustand: eescode, initials, sol, conf, parse errors, solve result, parametric studies, user unit overrides
-    │   └── uiStore.ts             # Zustand: theme, active tabs, panel visibility (persisted to localStorage)
+    │   ├── modelStore.ts          # Zustand: eescode, initials, sol, conf, parse errors, solve result, parametric studies, lookup tables, user unit overrides
+    │   └── uiStore.ts             # Zustand: theme, active tabs (incl. 'lookuptables'), panel visibility (persisted to localStorage)
     ├── languages/
     │   └── ees.ts                 # Monaco Monarch language definition for CoolSolve syntax
     └── components/
@@ -604,6 +652,7 @@ gui/
         ├── Console.tsx            # Auto-scrolling console with color-coded log lines
         ├── ThermoDiagram.tsx      # Plotly thermo diagrams (T-s, P-h, h-s, T-h) with overlays + export
         ├── ParametricStudy.tsx    # Parametric sweep: variable selector, range inputs, 1D/2D plots, results table
+        ├── LookupTableEditor.tsx  # Lookup table manager: list view + inline editable grid + CSV import/export
         ├── SplitPane.tsx          # Reusable resizable split-pane (horizontal/vertical)
         └── PlotlyChart.tsx        # Thin Plotly wrapper component
 ```

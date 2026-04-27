@@ -2,6 +2,7 @@
 
 #include "ir.h"
 #include "evaluator.h"
+#include "lookup_table.h"
 #include "diagnostic.h"
 #include <map>
 #include <string>
@@ -69,7 +70,8 @@ SolutionCheckResult checkSolution(
     const std::map<std::string, double, CaseInsensitiveLess>& variables,
     const std::map<std::string, std::string, CaseInsensitiveLess>& stringVars,
     const CoolPropConfig& config = CoolPropConfig(),
-    double tolerance = 1e-3);
+    double tolerance = 1e-3,
+    const LookupTableStore* lookupStore = nullptr);
 
 /**
  * @brief Print a human-readable summary of the solution check to stdout.

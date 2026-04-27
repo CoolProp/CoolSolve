@@ -1,0 +1,32 @@
+"Lookup Table Demo"
+"Demonstrates INTERPOLATE, LOOKUP, NLOOKUPROWS, aggregate functions"
+"Table 1 (lookup_demo.csv): saturated steam properties"
+"Table 2 (lookup_demo_watercp.csv): liquid water specific heat"
+
+"Interpolate enthalpy from temperature"
+T_in = 150  "°C"
+h_interp = INTERPOLATE('lookup_demo', 'T_C', 'h_kJ_per_kg', T_in)
+
+"Number of rows in table"
+n_rows = NLOOKUPROWS('lookup_demo')
+
+"Number of columns in table"
+n_cols = NLOOKUPCOLUMNS('lookup_demo')
+
+"Direct cell access: pressure at row 3 (T=140°C)"
+P_row3 = LOOKUP('lookup_demo', 3, 2)
+
+"Column index for enthalpy column (should be 3)"
+col_h = LOOKUPCOL('lookup_demo', 'h_kJ_per_kg')
+
+"Second lookup: interpolate entropy from the same table"
+s_interp = INTERPOLATE('lookup_demo', 'T_C', 's_kJ_per_kgK', T_in)
+
+"Third lookup: from a second table — liquid water specific heat (lookup_demo_watercp.csv)"
+Cp_water = INTERPOLATE('lookup_demo_watercp', 'T_C', 'Cp_kJ_per_kgK', T_in)
+
+"Aggregate functions on enthalpy column"
+sum_h = SUMLOOKUP('lookup_demo', 3)
+avg_h = AVGLOOKUP('lookup_demo', 3)
+max_h = MAXLOOKUP('lookup_demo', 3)
+min_h = MINLOOKUP('lookup_demo', 3)

@@ -2,6 +2,7 @@
 #include "coolsolve/latex_report.h"
 #include "coolsolve/variable_inference.h"
 #include "coolsolve/evaluator.h" // For getProfilingStatsString
+#include "coolsolve/lookup_table.h"
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -88,6 +89,15 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
 
         t1 = std::chrono::high_resolution_clock::now();
         Solver solver(*ir_, analysisResult_, options.coolpropConfig);
+
+        // Load lookup tables: use a pre-supplied store (server mode) or
+        // auto-load the companion CSV named <modelStem>.csv (CLI mode).
+        fs::path inputDir = fs::path(inputFile_).parent_path();
+        if (!lookupTableStorePreloaded_) {
+            lookupTableStore_ = loadLookupTableForModel(inputFile_, &diagnostics_);
+        }
+        solver.setLookupTableStore(&lookupTableStore_);
+
         solveResult_ = solver.solve(options, enableTracing);
         t2 = std::chrono::high_resolution_clock::now();
         timing_.solve_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();

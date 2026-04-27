@@ -1,4 +1,5 @@
 #include "coolsolve/evaluator.h"
+#include "coolsolve/lookup_table.h"
 #include "coolsolve/units.h"
 #include "coolsolve/fluids.h"
 #include <algorithm>
@@ -8,6 +9,7 @@
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_set>
 
 #include "CoolProp.h"
 #include "CoolPropLib.h"  // For set_config_bool C-style API
@@ -874,6 +876,23 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
         return ADValue::constant(3.14159265358979323846, numVariables_);
     }
 
+    // ----------------------------------------------------------------
+    // Lookup table / interpolation functions
+    // ----------------------------------------------------------------
+    // These functions have mixed arguments: string literals (table name,
+    // column names) followed by numeric arguments.  We re-parse the
+    // function call directly rather than using the already-evaluated args.
+    static const std::unordered_set<std::string> LOOKUP_FUNC_NAMES = {
+        "lookup", "lookupcol", "lookupcol1", "lookupcellempty",
+        "tablevalue", "tablevalue#", "tablerun#",
+        "interpolate", "interpolate1", "interpolate2", "interpolate2dm",
+        "nlookuprows", "nlookupcolumns",
+        "sumlookup", "avglookup", "maxlookup", "minlookup", "stddevlookup",
+    };
+    if (LOOKUP_FUNC_NAMES.count(name)) {
+        return evaluateLookupFunction(func);
+    }
+
     return evaluateStandardFunction(func.name, args);
 }
 
@@ -887,6 +906,8 @@ ADValue ExpressionEvaluator::evaluateUserFunction(const FunctionDefinition& func
     // Inherit user functions and procedures
     localEval.userFunctions_ = userFunctions_;
     localEval.userProcedures_ = userProcedures_;
+    // Inherit lookup table store
+    localEval.lookupTableStore_ = lookupTableStore_;
     
     for (size_t i = 0; i < call.args.size(); ++i) {
         const std::string& paramName = func.parameters[i];
@@ -1805,6 +1826,7 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     ExpressionEvaluator exprEval(variables_.size(), config_);
     exprEval.setResidualOnly(!computeJacobian);
     if (diagnostics_) exprEval.setDiagnostics(diagnostics_);
+    if (lookupTableStore_) exprEval.setLookupTableStore(lookupTableStore_);
     for (const auto& [name, func] : functions_) exprEval.registerFunction(func);
     for (const auto& [name, proc] : procedures_) exprEval.registerProcedure(proc);
     
@@ -2248,6 +2270,192 @@ std::string generateEvaluatorReport(const SystemEvaluator& evaluator) {
         for (const auto& [name, value] : state) oss << "| " << name << " | " << value << " |\n";
     } else oss << "No variables set.\n";
     return oss.str();
+}
+
+// ============================================================================
+// Lookup table / interpolation function evaluation
+// ============================================================================
+
+ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
+    std::string name = func.name;
+    std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+
+    // Helper: extract a string literal argument (table name or column name)
+    auto getString = [&](size_t idx) -> std::string {
+        if (idx >= func.args.size()) {
+            throw std::runtime_error(func.name + "(): missing string argument at position " +
+                                     std::to_string(idx));
+        }
+        return evaluateString(func.args[idx]);
+    };
+
+    // Helper: evaluate a numeric argument
+    auto getNum = [&](size_t idx) -> ADValue {
+        if (idx >= func.args.size()) {
+            throw std::runtime_error(func.name + "(): missing numeric argument at position " +
+                                     std::to_string(idx));
+        }
+        return evaluate(func.args[idx]);
+    };
+
+    // Helper: resolve table — emits a diagnostic and throws if not found
+    auto getTable = [&](const std::string& tableName) -> const LookupTable& {
+        if (!lookupTableStore_) {
+            std::string msg = func.name + "(): lookup table '" + tableName +
+                "' not found (no table store is available in this context)";
+            if (diagnostics_) diagnostics_->push(DiagnosticSeverity::Error, "L002", msg, "lookup_table");
+            throw std::runtime_error(msg);
+        }
+        const LookupTable* tbl = lookupTableStore_->get(tableName);
+        if (!tbl) {
+            std::string msg = func.name + "(): lookup table '" + tableName +
+                "' not found. To fix: place '" + tableName +
+                ".csv' in the model directory, or load it via the Lookup Tables panel.";
+            if (diagnostics_) diagnostics_->push(DiagnosticSeverity::Error, "L002", msg, "lookup_table");
+            throw std::runtime_error(msg);
+        }
+        return *tbl;
+    };
+
+    // Helper: resolve a column by name or 1-based number (as double arg)
+    // EES allows both "T_K" and a numeric column index.
+    auto resolveCol = [&](const LookupTable& tbl, size_t argIdx) -> size_t {
+        if (argIdx >= func.args.size()) {
+            throw std::runtime_error(func.name + "(): missing column argument");
+        }
+        const auto& arg = func.args[argIdx];
+        if (arg->is<StringLiteral>()) {
+            std::string colName = arg->as<StringLiteral>().value;
+            size_t col = tbl.columnIndex(colName);
+            if (col == 0) {
+                throw std::runtime_error(func.name + "(): column '" + colName +
+                                         "' not found in table '" + tbl.name() + "'");
+            }
+            return col;
+        } else {
+            // Numeric column index
+            ADValue v = evaluate(arg);
+            return static_cast<size_t>(std::round(v.value));
+        }
+    };
+
+    // ------------------------------------------------------------------
+    // NLOOKUPROWS('table')
+    // ------------------------------------------------------------------
+    if (name == "nlookuprows") {
+        std::string tableName = getString(0);
+        const LookupTable& tbl = getTable(tableName);
+        return ADValue::constant(static_cast<double>(tbl.numRows()), numVariables_);
+    }
+
+    // ------------------------------------------------------------------
+    // NLOOKUPCOLUMNS('table')
+    // ------------------------------------------------------------------
+    if (name == "nlookupcolumns") {
+        std::string tableName = getString(0);
+        const LookupTable& tbl = getTable(tableName);
+        return ADValue::constant(static_cast<double>(tbl.numCols()), numVariables_);
+    }
+
+    // ------------------------------------------------------------------
+    // LOOKUPCOL('table', 'colname')
+    // LOOKUPCOL1('table', 'colname')  — identical to LOOKUPCOL in CoolSolve
+    // ------------------------------------------------------------------
+    if (name == "lookupcol" || name == "lookupcol1") {
+        std::string tableName = getString(0);
+        std::string colName   = getString(1);
+        const LookupTable& tbl = getTable(tableName);
+        size_t col = tbl.columnIndex(colName);
+        return ADValue::constant(static_cast<double>(col), numVariables_);
+    }
+
+    // ------------------------------------------------------------------
+    // LOOKUPCELLEMPTY('table', row, col)
+    // Returns 1 if the cell is NaN (empty), 0 otherwise.
+    // ------------------------------------------------------------------
+    if (name == "lookupcellempty") {
+        std::string tableName = getString(0);
+        const LookupTable& tbl = getTable(tableName);
+        ADValue rowV = getNum(1);
+        size_t col   = resolveCol(tbl, 2);
+        size_t row   = static_cast<size_t>(std::round(rowV.value));
+        double v     = tbl.value(row, col);
+        return ADValue::constant(std::isnan(v) ? 1.0 : 0.0, numVariables_);
+    }
+
+    // ------------------------------------------------------------------
+    // LOOKUP('table', row, col)
+    // TABLEVALUE('table', row, col)
+    // TABLEVALUE#('table', row, col)  — same as LOOKUP in CoolSolve
+    // ------------------------------------------------------------------
+    if (name == "lookup" || name == "tablevalue" || name == "tablevalue#" || name == "tablerun#") {
+        std::string tableName = getString(0);
+        const LookupTable& tbl = getTable(tableName);
+        ADValue rowV = getNum(1);
+        size_t  col  = resolveCol(tbl, 2);
+        size_t  row  = static_cast<size_t>(std::round(rowV.value));
+        double  v    = tbl.value(row, col);
+        return ADValue::constant(v, numVariables_);
+    }
+
+    // ------------------------------------------------------------------
+    // SUMLOOKUP / AVGLOOKUP / MAXLOOKUP / MINLOOKUP / STDDEVLOOKUP
+    //   ('table', col)
+    // ------------------------------------------------------------------
+    if (name == "sumlookup" || name == "avglookup" || name == "maxlookup" ||
+        name == "minlookup" || name == "stddevlookup") {
+        std::string tableName = getString(0);
+        const LookupTable& tbl = getTable(tableName);
+        size_t col = resolveCol(tbl, 1);
+
+        double result;
+        if      (name == "sumlookup")    result = tbl.sumCol(col);
+        else if (name == "avglookup")    result = tbl.avgCol(col);
+        else if (name == "maxlookup")    result = tbl.maxCol(col);
+        else if (name == "minlookup")    result = tbl.minCol(col);
+        else /* stddevlookup */          result = tbl.stddevCol(col);
+
+        return ADValue::constant(result, numVariables_);
+    }
+
+    // ------------------------------------------------------------------
+    // INTERPOLATE('table', 'xcol', 'ycol', xval)
+    // INTERPOLATE1 — same as INTERPOLATE
+    // ------------------------------------------------------------------
+    if (name == "interpolate" || name == "interpolate1") {
+        if (func.args.size() < 4) {
+            throw std::runtime_error(func.name + "(): expects 4 arguments: "
+                                     "(table, xcol, ycol, xval)");
+        }
+        std::string tableName = getString(0);
+        const LookupTable& tbl = getTable(tableName);
+        size_t xcol = resolveCol(tbl, 1);
+        size_t ycol = resolveCol(tbl, 2);
+        ADValue xval = getNum(3);
+        return tbl.interpolate1D(xcol, ycol, xval, diagnostics_);
+    }
+
+    // ------------------------------------------------------------------
+    // INTERPOLATE2('table', 'xcol', 'ycol', 'zcol', xval, yval)
+    // INTERPOLATE2DM — same as INTERPOLATE2 in CoolSolve
+    // ------------------------------------------------------------------
+    if (name == "interpolate2" || name == "interpolate2dm") {
+        if (func.args.size() < 6) {
+            throw std::runtime_error(func.name + "(): expects 6 arguments: "
+                                     "(table, xcol, ycol, zcol, xval, yval)");
+        }
+        std::string tableName = getString(0);
+        const LookupTable& tbl = getTable(tableName);
+        size_t xcol = resolveCol(tbl, 1);
+        size_t ycol = resolveCol(tbl, 2);
+        size_t zcol = resolveCol(tbl, 3);
+        ADValue xval = getNum(4);
+        ADValue yval = getNum(5);
+        return tbl.interpolate2D(xcol, ycol, zcol, xval, yval, diagnostics_);
+    }
+
+    // Should not reach here given the dispatch set check above
+    throw std::runtime_error("evaluateLookupFunction: unhandled function '" + func.name + "'");
 }
 
 }  // namespace coolsolve

@@ -143,6 +143,7 @@ struct SessionSnapshot {
     SolveResult lastResult;
     CoolSolveRunner::PipelineTiming lastTiming;
     std::vector<InferredVariable> inferredVariables;
+    std::map<std::string, std::string> lookupTableCSVs;  // name → CSV content
     std::vector<std::string> modelFluids;
     std::string latexReportContent;
     bool latexReportAvailable = false;
@@ -156,6 +157,9 @@ struct Session {
     std::string initialsContent;                // Current .initials content
     std::string solContent;                     // Last .sol output
     std::string confContent;                    // coolsolve.conf content
+
+    // Lookup tables: table name → CSV content (no path, pure data)
+    std::map<std::string, std::string> lookupTableCSVs;
     
     std::string openFilePath;                   // Path of currently open .eescode file
     std::string modelName;                      // User-facing model name (for ZIP filename and page title)
@@ -209,6 +213,7 @@ struct Session {
         snap->modelFluids = modelFluids;
         snap->latexReportContent = latexReportContent;
         snap->latexReportAvailable = latexReportAvailable;
+        snap->lookupTableCSVs = lookupTableCSVs;
         {
             std::lock_guard<std::mutex> lock(resultMutex);
             snap->hasResult = hasResult;
@@ -234,6 +239,7 @@ struct Session {
         modelFluids = previousState->modelFluids;
         latexReportContent = previousState->latexReportContent;
         latexReportAvailable = previousState->latexReportAvailable;
+        lookupTableCSVs = previousState->lookupTableCSVs;
         {
             std::lock_guard<std::mutex> lock(resultMutex);
             hasResult = previousState->hasResult;
@@ -454,6 +460,24 @@ static void discoverCompanionFiles(Session& session) {
     fs::path confPath = dir / "coolsolve.conf";
     if (fs::exists(confPath)) {
         session.confContent = readFileToString(confPath.string());
+    }
+
+    // Scan the model's directory for companion lookup CSVs.
+    // Loaded: <stem>.csv and <stem>_*.csv — table name = full file stem.
+    if (fs::exists(dir) && fs::is_directory(dir)) {
+        for (const auto& entry : fs::directory_iterator(dir)) {
+            if (!entry.is_regular_file()) continue;
+            auto p = entry.path();
+            if (p.extension() != ".csv") continue;
+            std::string fileStem = p.stem().string();
+            if (fileStem != stem &&
+                !(fileStem.size() > stem.size() + 1 &&
+                  fileStem.compare(0, stem.size(), stem) == 0 &&
+                  fileStem[stem.size()] == '_')) {
+                continue;
+            }
+            session.lookupTableCSVs[fileStem] = readFileToString(p.string());
+        }
     }
 }
 
@@ -1060,6 +1084,11 @@ int startServer(const ServerOptions& options) {
             auto tmpEes = tmpDir / "model.eescode";
             writeStringToFile(tmpEes.string(), eesSource);
             
+            // Write lookup table CSVs to the temp directory
+            for (const auto& [tblName, csvContent] : session.lookupTableCSVs) {
+                writeStringToFile((tmpDir / (tblName + ".csv")).string(), csvContent);
+            }
+            
             if (!initials.empty()) {
                 auto tmpInitials = tmpDir / "model.initials";
                 writeStringToFile(tmpInitials.string(), initials);
@@ -1082,14 +1111,29 @@ int startServer(const ServerOptions& options) {
             
             std::string confContent = session.confContent;
             
+            // Snapshot the lookup table CSVs for safe use in the background thread
+            auto lookupCSVs = session.lookupTableCSVs;
+
             // Launch solve in background thread
-            std::thread([sessionPtr, tmpEes, tmpDir, enableTracing, confContent, eesSource]() {
+            std::thread([sessionPtr, tmpEes, tmpDir, enableTracing, confContent, eesSource,
+                         lookupCSVs]() {
                 auto& session = *sessionPtr;
                 try {
                     session.addProgressEvent("{\"type\":\"start\",\"message\":\"Solve started\"}");
                     
                     CoolSolveRunner runner(tmpEes.string());
-                    
+
+                    // Pre-populate lookup table store from session CSVs so the
+                    // runner does not scan the filesystem for unrelated CSVs.
+                    {
+                        LookupTableStore store;
+                        for (const auto& [name, csv] : lookupCSVs) {
+                            try { store.add(LookupTable::fromCSV(name, csv)); }
+                            catch (...) {}
+                        }
+                        runner.setLookupTableStore(std::move(store));
+                    }
+
                     SolverOptions solverOpts;
                     solverOpts.verbose = false;
                     
@@ -1251,7 +1295,9 @@ int startServer(const ServerOptions& options) {
                             runner.getIR(),
                             runner.getSolveResult().variables,
                             runner.getSolveResult().stringVariables,
-                            solverOpts.coolpropConfig);
+                            solverOpts.coolpropConfig,
+                            1e-3,
+                            &runner.getLookupTableStore());
                         if (!checkResult.allSatisfied) {
                             solutionValid = false;
                             // Merge checker diagnostics into runner diagnostics
@@ -1580,6 +1626,11 @@ int startServer(const ServerOptions& options) {
             if (!confContent.empty()) {
                 writeStringToFile(tmpConf.string(), confContent);
             }
+
+            // Write lookup table CSVs for parametric runs
+            for (const auto& [tblName, csvContent] : session.lookupTableCSVs) {
+                writeStringToFile((tmpDir / (tblName + ".csv")).string(), csvContent);
+            }
             
             // Set solving flag so UI shows progress
             session.solving.store(true);
@@ -1590,10 +1641,13 @@ int startServer(const ServerOptions& options) {
                 session.progressEvents.clear();
             }
             
+            // Snapshot the lookup table CSVs for safe use in the background thread
+            auto parametricLookupCSVs = session.lookupTableCSVs;
+
             // Launch parametric study in background thread
             std::thread([sessionPtr, eescode, initials, confContent, 
                          grid, sweeps, tmpDir, tmpEes, tmpConf,
-                         timeoutPerPoint, updateGuesses]() {
+                         timeoutPerPoint, updateGuesses, parametricLookupCSVs]() {
                 auto& session = *sessionPtr;
                 
                 session.addProgressEvent("{\"type\":\"start\",\"message\":\"Parametric study started\"}");
@@ -1813,6 +1867,16 @@ int startServer(const ServerOptions& options) {
                             
                             t1 = std::chrono::high_resolution_clock::now();
                             Solver solver(ir, cachedAnalysis, solverOpts.coolpropConfig);
+                            // Supply lookup tables to the solver (fast path bypasses runner)
+                            {
+                                static thread_local LookupTableStore parametricStore;
+                                parametricStore = LookupTableStore{};
+                                for (const auto& [name, csv] : parametricLookupCSVs) {
+                                    try { parametricStore.add(LookupTable::fromCSV(name, csv)); }
+                                    catch (...) {}
+                                }
+                                solver.setLookupTableStore(&parametricStore);
+                            }
                             pointSolveResult = solver.solve(solverOpts, false);
                             t2 = std::chrono::high_resolution_clock::now();
                             solveMs = std::chrono::duration<double, std::milli>(t2 - t1).count();
@@ -1835,6 +1899,15 @@ int startServer(const ServerOptions& options) {
                         writeStringToFile(tmpInit.string(), initOss.str());
                         
                         CoolSolveRunner runner(tmpEes.string());
+                        // Pre-populate lookup table store from session CSVs
+                        {
+                            LookupTableStore store;
+                            for (const auto& [name, csv] : parametricLookupCSVs) {
+                                try { store.add(LookupTable::fromCSV(name, csv)); }
+                                catch (...) {}
+                            }
+                            runner.setLookupTableStore(std::move(store));
+                        }
                         success = runner.run(solverOpts, false);
                         pointSolveResult = runner.getSolveResult();
                         
@@ -2248,6 +2321,97 @@ int startServer(const ServerOptions& options) {
     });
     
     // ================================================================
+    // Lookup Tables REST API
+    // GET  /api/v1/tables          → list all tables (names + column headers)
+    // GET  /api/v1/tables/{name}   → full CSV content for one table
+    // PUT  /api/v1/tables/{name}   → create/replace a table (body = CSV text)
+    // DELETE /api/v1/tables/{name} → remove a table
+    // ================================================================
+    svr.Get("/api/v1/tables", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        json tables = json::array();
+        for (const auto& [name, csvContent] : session.lookupTableCSVs) {
+            json t;
+            t["name"] = name;
+            // Parse header row for column names
+            json cols = json::array();
+            if (!csvContent.empty()) {
+                std::istringstream ss(csvContent);
+                std::string headerLine;
+                if (std::getline(ss, headerLine)) {
+                    // Simple CSV split (no quote handling needed for headers)
+                    std::istringstream hs(headerLine);
+                    std::string col;
+                    while (std::getline(hs, col, ',')) {
+                        // Trim whitespace and quotes
+                        col.erase(0, col.find_first_not_of(" \t\r\""));
+                        col.erase(col.find_last_not_of(" \t\r\"") + 1);
+                        cols.push_back(col);
+                    }
+                }
+                // Count data rows
+                int rows = 0;
+                std::string line;
+                while (std::getline(ss, line)) {
+                    if (!line.empty()) ++rows;
+                }
+                t["rows"] = rows;
+            }
+            t["columns"] = cols;
+            tables.push_back(t);
+        }
+        json j = {{"tables", tables}};
+        res.set_content(j.dump(), "application/json");
+    });
+
+    svr.Get("/api/v1/tables/:name", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        std::string name = req.path_params.at("name");
+        auto it = session.lookupTableCSVs.find(name);
+        if (it == session.lookupTableCSVs.end()) {
+            res.status = 404;
+            json j = {{"error", "Table '" + name + "' not found"}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        res.set_content(it->second, "text/csv");
+        res.set_header("Content-Disposition", "attachment; filename=\"" + name + ".csv\"");
+    });
+
+    svr.Put("/api/v1/tables/:name", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        std::string name = req.path_params.at("name");
+        // Validate table name: alphanumeric, underscore, hyphen only
+        for (char c : name) {
+            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-') {
+                res.status = 400;
+                json j = {{"error", "Invalid table name. Use only letters, digits, underscores, hyphens."}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+        }
+        bool isNew = session.lookupTableCSVs.find(name) == session.lookupTableCSVs.end();
+        session.lookupTableCSVs[name] = req.body;
+        json j = {{"success", true}, {"name", name}, {"created", isNew}};
+        res.set_content(j.dump(), "application/json");
+    });
+
+    svr.Delete("/api/v1/tables/:name", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        std::string name = req.path_params.at("name");
+        auto it = session.lookupTableCSVs.find(name);
+        if (it == session.lookupTableCSVs.end()) {
+            res.status = 404;
+            json j = {{"error", "Table '" + name + "' not found"}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        session.lookupTableCSVs.erase(it);
+        json j = {{"success", true}, {"name", name}};
+        res.set_content(j.dump(), "application/json");
+    });
+
+    // ================================================================
     // Bundle download (ZIP of all model files + debug if present)
     // ================================================================
     svr.Get("/api/v1/files/bundle", [&](const httplib::Request& req, httplib::Response& res) {
@@ -2263,6 +2427,11 @@ int startServer(const ServerOptions& options) {
             files.push_back({stem + ".sol", session.solContent});
         if (!session.confContent.empty())
             files.push_back({"coolsolve.conf", session.confContent});
+
+        // Include lookup table CSVs
+        for (const auto& [tblName, csvContent] : session.lookupTableCSVs) {
+            files.push_back({tblName + ".csv", csvContent});
+        }
         
         // Include LaTeX report if generated
         if (session.latexReportAvailable && !session.latexReportContent.empty())
@@ -2347,6 +2516,7 @@ int startServer(const ServerOptions& options) {
         session.confContent.clear();
         session.openFilePath.clear();
         session.modelName.clear();
+        session.lookupTableCSVs.clear();
         // Set model name from ZIP filename
         if (!zipFilename.empty()) {
             session.modelName = fs::path(zipFilename).stem().string();
@@ -2393,6 +2563,11 @@ int startServer(const ServerOptions& options) {
             } else if (endsWith(zname, "_report.tex")) {
                 session.latexReportContent = zcontent;
                 session.latexReportAvailable = true;
+                fileList.push_back(zname);
+            } else if (endsWith(zname, ".csv") && !startsWith(zname, "debug_output/")) {
+                // Lookup table CSV: derive table name from filename stem
+                std::string stem = fs::path(zname).stem().string();
+                session.lookupTableCSVs[stem] = zcontent;
                 fileList.push_back(zname);
             }
         }

@@ -315,7 +315,7 @@ int main(int argc, char* argv[]) {
     if (solveResult.success) {
         auto checkResult = coolsolve::checkSolution(
             ir, solveResult.variables, solveResult.stringVariables,
-            options.coolpropConfig);
+            options.coolpropConfig, 1e-3, &runner.getLookupTableStore());
         
         if (!checkResult.allSatisfied) {
             solutionValid = false;

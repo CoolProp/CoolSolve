@@ -12,7 +12,8 @@ SolutionCheckResult checkSolution(
     const std::map<std::string, double, CaseInsensitiveLess>& variables,
     const std::map<std::string, std::string, CaseInsensitiveLess>& stringVars,
     const CoolPropConfig& config,
-    double tolerance)
+    double tolerance,
+    const LookupTableStore* lookupStore)
 {
     SolutionCheckResult result;
     const auto& equations = ir.getEquations();
@@ -24,6 +25,7 @@ SolutionCheckResult checkSolution(
     exprEval.setResidualOnly(true);
     exprEval.setDisableClamping(true);
     exprEval.setDiagnostics(&result.diagnostics);
+    if (lookupStore) exprEval.setLookupTableStore(lookupStore);
 
     // Register user-defined functions and procedures
     for (const auto& func : ir.getFunctions()) {

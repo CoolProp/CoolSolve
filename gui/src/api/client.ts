@@ -16,6 +16,7 @@ import type {
   SweepVariable,
   LatexReportResponse,
   LatexCompileRequest,
+  LookupTablesResponse,
 } from './types';
 
 const API_BASE = '/api/v1';
@@ -214,4 +215,35 @@ export const api = {
     }
     return res.blob();
   },
+
+  // Lookup Tables
+  getTables: () => request<LookupTablesResponse>('/tables'),
+
+  getTableCSV: async (name: string): Promise<string> => {
+    const res = await fetch(`${API_BASE}/tables/${encodeURIComponent(name)}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    return res.text();
+  },
+
+  putTable: async (name: string, csvContent: string): Promise<{ success: boolean; name: string; created: boolean }> => {
+    const res = await fetch(`${API_BASE}/tables/${encodeURIComponent(name)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/csv' },
+      body: csvContent,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  deleteTable: (name: string) =>
+    request<{ success: boolean; name: string }>(
+      `/tables/${encodeURIComponent(name)}`,
+      { method: 'DELETE' }
+    ),
 };

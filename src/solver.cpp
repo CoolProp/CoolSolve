@@ -666,6 +666,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
             // Helper: evaluate an expression in the current evaluator state
             auto evalExpr = [&](const ExprPtr& expr) -> double {
                 ExpressionEvaluator exprEval(0, options.coolpropConfig);
+                if (lookupTableStore_) exprEval.setLookupTableStore(lookupTableStore_);
                 // Load all current variable values
                 for (const auto& [name, val] : evaluator_.getAllVariables()) {
                     exprEval.setVariable(name, ADValue::constant(val, 0));

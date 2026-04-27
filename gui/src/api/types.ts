@@ -116,6 +116,17 @@ export interface UploadResponse {
   modelName: string;
 }
 
+// Lookup table types
+export interface LookupTableInfo {
+  name: string;
+  columns: string[];
+  rows: number;
+}
+
+export interface LookupTablesResponse {
+  tables: LookupTableInfo[];
+}
+
 // SSE progress events from /api/v1/solve/stream
 export interface SSEBlockEvent {
   type: 'block';

@@ -395,3 +395,120 @@ See `examples/coolsolve.conf` for the full list of options. Key sections:
 - `[solver]` — pipeline order (Newton, TrustRegion, LM, BisectionND,
   Homotopy, Partitioned), tolerances, iteration limits.
 - `[tearing]` — SCC-based block reduction options.
+
+---
+
+## 11. Lookup tables
+
+Lookup tables let you interpolate from external CSV data files directly inside
+equations.  CoolSolve loads companion tables for a model automatically by
+scanning the same directory for CSV files whose name matches the model stem:
+
+1. **`<modelname>.csv`** — main companion table; table name = `<modelname>`.
+2. **`<modelname>_<suffix>.csv`** — auxiliary tables; table name =
+   `<modelname>_<suffix>` (the full file stem).  Use this convention to
+   bundle multiple lookup tables alongside a model, e.g.
+   `steam_cycle_watercp.csv`, `steam_cycle_refprops.csv`.
+
+No other CSV files in the directory are loaded automatically.
+
+Additional tables can be loaded via:
+
+- **GUI Lookup Tables panel** — create, import, or edit tables directly in the
+  browser.
+- **ZIP bundle upload** — include any number of `.csv` files whose stems
+  become the table names.
+- **REST API** — `PUT /api/v1/tables/{name}` with CSV body.
+
+If a lookup function references a table name that has not been loaded,
+CoolSolve reports an error (`L002`) and the solve fails with a descriptive
+message.
+
+Each CSV must have a header row with column names (case-insensitive).
+
+### 11.1 1D interpolation
+
+```ees
+h = INTERPOLATE('mymodel', 'T_C', 'h_kJ_per_kg', T)
+```
+
+Performs linear interpolation of column `h_kJ_per_kg` as a function of
+column `T_C` at value `T`.  Values outside the range are clamped to the
+nearest endpoint (flat extrapolation, zero derivative).
+
+Equivalent aliases: `INTERPOLATE1('table', 'xcol', 'ycol', x)`.
+
+Analytical derivative (for Newton/AD): slope of the active interval;
+zero when clamped at an endpoint.
+
+### 11.2 2D bilinear interpolation
+
+```ees
+z = INTERPOLATE2('mytable', 'x_col', 'y_col', 'z_col', x, y)
+```
+
+Performs bilinear interpolation of `z_col` on a grid defined by the unique
+values of `x_col` and `y_col`.  The CSV rows may appear in any order;
+CoolSolve constructs the grid automatically.  Requires at least 2 distinct
+values in each axis.
+
+Alias: `INTERPOLATE2DM(...)`.
+
+Analytical partial derivatives for the Newton/AD engine.
+
+### 11.3 Table metadata
+
+| Function | Description |
+|---|---|
+| `NLOOKUPROWS('table')` | Number of data rows (excluding header) |
+| `NLOOKUPCOLUMNS('table')` | Number of columns |
+| `LOOKUPCOL('table', 'colname')` | 1-based column index of the named column |
+| `LOOKUPCOL1('table', 'colname')` | Same as `LOOKUPCOL` |
+| `LOOKUPCELLEMPTY('table', row, col)` | 1 if the cell is NaN/empty, 0 otherwise |
+
+### 11.4 Direct cell access
+
+```ees
+P_at_row3 = LOOKUP('mymodel', 3, 2)
+```
+
+Returns the value in the given row and column (both 1-based).  No
+interpolation — direct cell lookup.
+
+Aliases: `TABLEVALUE('table', row, col)`, `TABLEVALUE#(...)`,
+`TABLERUN#(...)`.
+
+### 11.5 Aggregate functions
+
+Each function takes a table name and a column index (1-based integer or
+column name string):
+
+| Function | Description |
+|---|---|
+| `SUMLOOKUP('table', col)` | Sum of all non-NaN values in the column |
+| `AVGLOOKUP('table', col)` | Arithmetic mean |
+| `MAXLOOKUP('table', col)` | Maximum value |
+| `MINLOOKUP('table', col)` | Minimum value |
+| `STDDEVLOOKUP('table', col)` | Population standard deviation |
+
+### 11.6 Example
+
+For a model file `steam_cycle.eescode` with companion `steam_cycle.csv`:
+
+```
+T_C,P_kPa,h_kJ_per_kg
+100,101.3,2675.6
+150,476.1,2745.9
+200,1554.9,2826.8
+```
+
+```ees
+T = 150  "°C"
+h = INTERPOLATE('steam_cycle', 'T_C', 'h_kJ_per_kg', T)  "h = 2745.9 kJ/kg"
+n = NLOOKUPROWS('steam_cycle')                             "n = 3"
+P_row2 = LOOKUP('steam_cycle', 2, 2)                      "P_row2 = 476.1 kPa"
+```
+
+The **Lookup Tables** tab in the GUI lets you create, view, and edit tables
+directly in the browser — no need to manage CSV files manually.
+

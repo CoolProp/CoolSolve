@@ -80,6 +80,14 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 - **Solution Verification**: After a successful solve, CoolSolve independently re-evaluates every equation (including procedure CALLs) using the proposed solution and checks that LHS ≈ RHS within a configurable tolerance (default: 0.1%). This catches structural bugs, numerical drift, and procedure output inconsistencies that the solver's own convergence check may miss. Enabled automatically in debug mode (`-d`) and in the comprehensive test suite.
 
+- **Lookup Tables**: External CSV data files are loaded automatically and callable from equations via built-in interpolation and lookup functions:
+  - `INTERPOLATE('table', 'xcol', 'ycol', x)` — 1D linear interpolation with analytical AD gradient
+  - `INTERPOLATE2('table', 'xcol', 'ycol', 'zcol', x, y)` — 2D bilinear interpolation with AD partial derivatives
+  - `LOOKUP('table', row, col)` / `TABLEVALUE(...)` — direct cell access
+  - `NLOOKUPROWS`, `NLOOKUPCOLUMNS`, `LOOKUPCOL`, `LOOKUPCELLEMPTY` — table metadata
+  - `SUMLOOKUP`, `AVGLOOKUP`, `MAXLOOKUP`, `MINLOOKUP`, `STDDEVLOOKUP` — column aggregates
+  - GUI **Lookup Tables** panel: create, view, and edit tables in-browser without managing CSV files manually
+
 - **Debug Mode**: Creates a comprehensive output folder with all analysis information
 
 ## Documentation
@@ -92,6 +100,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 | [Symbolic Block Reduction](docs/symbolic_redecomposition.md) | Symbolic block reduction algorithm |
 | [GUI & REST API](docs/gui.md) | Web interface, REST API, and parametric studies |
 | [Deployment Guide](docs/deployment_ubuntu_apache.md) | Deploying CoolSolve on Ubuntu with Apache |
+| [Contributing Guide](docs/contributing.md) | Workflow and integration checklist for new features and bug fixes |
 
 ## Performance and Roadmap
 

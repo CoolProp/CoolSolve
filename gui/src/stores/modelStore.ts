@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { SolveResponse, ParseError, SolvedVariable, VariableInfo, SavedParametricStudy, UserUnitOverride } from '../api/types';
+import type { SolveResponse, ParseError, SolvedVariable, VariableInfo, SavedParametricStudy, UserUnitOverride, LookupTableInfo } from '../api/types';
 
 interface ModelState {
   // File state
@@ -26,6 +26,10 @@ interface ModelState {
 
   // Parametric studies (saved results)
   parametricStudies: SavedParametricStudy[];
+
+  // Lookup tables
+  lookupTables: LookupTableInfo[];
+  lookupTableCSVs: Record<string, string>;  // name → raw CSV content
 
   // User unit overrides (GUI-specified units)
   userUnitOverrides: UserUnitOverride[];
@@ -55,6 +59,9 @@ interface ModelState {
   setParametricStudies: (studies: SavedParametricStudy[]) => void;
   setUserUnitOverrides: (overrides: UserUnitOverride[]) => void;
   setUserUnit: (variableName: string, units: string) => void;
+  setLookupTables: (tables: LookupTableInfo[]) => void;
+  setLookupTableCSV: (name: string, csv: string) => void;
+  removeLookupTable: (name: string) => void;
 }
 
 export const useModelStore = create<ModelState>((set) => ({
@@ -79,6 +86,8 @@ export const useModelStore = create<ModelState>((set) => ({
 
   parametricStudies: [],
   userUnitOverrides: [],
+  lookupTables: [],
+  lookupTableCSVs: {},
 
   consoleLines: [],
 
@@ -99,9 +108,9 @@ export const useModelStore = create<ModelState>((set) => ({
     set((state) => ({ consoleLines: [...state.consoleLines, line] })),
   clearConsole: () => set({ consoleLines: [] }),
   loadFile: (path, eescode, initials, sol, conf, modelName) =>
-    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', parametricStudies: [], parsedVariables: [] }),
+    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', parametricStudies: [], parsedVariables: [], lookupTables: [], lookupTableCSVs: {} }),
   clearModel: () =>
-    set({ filePath: '', modelName: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], userUnitOverrides: [] }),
+    set({ filePath: '', modelName: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], userUnitOverrides: [], lookupTables: [], lookupTableCSVs: {} }),
   addParametricStudy: (study) =>
     set((state) => ({ parametricStudies: [...state.parametricStudies, study] })),
   removeParametricStudy: (id) =>
@@ -113,5 +122,18 @@ export const useModelStore = create<ModelState>((set) => ({
       const existing = state.userUnitOverrides.filter((o) => o.variableName !== variableName);
       if (units) existing.push({ variableName, units });
       return { userUnitOverrides: existing };
+    }),
+  setLookupTables: (tables) => set({ lookupTables: tables }),
+  setLookupTableCSV: (name, csv) =>
+    set((state) => ({
+      lookupTableCSVs: { ...state.lookupTableCSVs, [name]: csv },
+      lookupTables: state.lookupTables.some((t) => t.name === name)
+        ? state.lookupTables
+        : [...state.lookupTables, { name, columns: [], rows: 0 }],
+    })),
+  removeLookupTable: (name) =>
+    set((state) => {
+      const { [name]: _removed, ...rest } = state.lookupTableCSVs;
+      return { lookupTableCSVs: rest, lookupTables: state.lookupTables.filter((t) => t.name !== name) };
     }),
 }));

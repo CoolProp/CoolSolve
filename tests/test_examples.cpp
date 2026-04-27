@@ -105,6 +105,8 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"zorlu_heat_pump.eescode",                 {"COP_HP", 6.4167}},
     // Advanced features showcase (exercises all CoolSolve features)
     {"advanced_features.eescode",               {"verification", 2083.5}},
+    // Lookup table demo (lookup_demo.csv + lookup_demo_watercp.csv loaded as companion tables)
+    {"lookup_demo.eescode",                     {"Cp_water", 4.2675}},
 };
 
 // Test result structure for reporting
@@ -257,7 +259,7 @@ ExampleTestResult testExampleFile(const fs::path& filepath) {
                     // Full equation verification: check all equations are satisfied
                     auto checkRes = coolsolve::checkSolution(
                         runner.getIR(), solveRes.variables, solveRes.stringVariables,
-                        options.coolpropConfig);
+                        options.coolpropConfig, 1e-3, &runner.getLookupTableStore());
                     result.equationCheckDone = true;
                     result.allEquationsSatisfied = checkRes.allSatisfied;
                     result.equationsChecked = checkRes.satisfiedCount + checkRes.violatedCount;

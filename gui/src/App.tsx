@@ -8,6 +8,7 @@ import DebugViewer from './components/DebugViewer';
 import ThermoDiagram from './components/ThermoDiagram';
 import ParametricStudy from './components/ParametricStudy';
 import Console from './components/Console';
+import LookupTableEditor from './components/LookupTableEditor';
 import SplitPane from './components/SplitPane';
 import { useModelStore } from './stores/modelStore';
 import { useUIStore } from './stores/uiStore';
@@ -151,11 +152,18 @@ export default function App() {
             >
               Parametric
             </button>
+            <button
+              className={`tab-btn ${bottomTab === 'lookuptables' ? 'active' : ''}`}
+              onClick={() => { if (bottomTab === 'lookuptables' && bottomPanelOpen) toggleBottomPanel(); else setBottomTab('lookuptables'); }}
+            >
+              Lookup Tables
+            </button>
           </div>
           {bottomPanelOpen && (
             <>
               {bottomTab === 'console' && <Console />}
               {bottomTab === 'sensitivity' && <ParametricStudy />}
+              {bottomTab === 'lookuptables' && <LookupTableEditor />}
             </>
           )}
         </div>
