@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import http.cookiejar
 
@@ -146,12 +147,57 @@ def test_tables_crud():
     except RuntimeError as e:
         check("GET deleted table returns 404", "404" in str(e), str(e))
 
-    # Invalid table name should be rejected
+    # Invalid table name should be rejected.  Percent-encode the path so the
+    # request actually reaches the server (urllib refuses raw spaces).
     try:
-        api("PUT", "/tables/bad name!", "a,b\n1,2\n", content_type="text/csv")
+        bad_path = "/tables/" + urllib.parse.quote("bad name!", safe="")
+        api("PUT", bad_path, "a,b\n1,2\n", content_type="text/csv")
         check("PUT with invalid name returns 400", False, "expected 400")
     except RuntimeError as e:
         check("PUT with invalid name returns 400", "400" in str(e), str(e))
+
+
+def test_tables_cleared_on_new():
+    """POST /new must clear lookup tables from the previous session.
+
+    Regression: previously the New endpoint cleared the .eescode source and
+    other model state but left session.lookupTableCSVs untouched, so tables
+    from a previously loaded model resurfaced as soon as the GUI refreshed
+    its table list (e.g. after creating a new table).
+    """
+    print("\n\u2500\u2500 Lookup Tables: cleared by POST /new \u2500\u2500")
+
+    # Start from a known empty session
+    api("POST", "/new")
+
+    # Pre-populate with two tables (mimicking what loading lookup_demo would do)
+    api("PUT", "/tables/data",    "T,h\n100,2675\n200,2826\n", content_type="text/csv")
+    api("PUT", "/tables/watercp", "T,Cp\n100,4.216\n",          content_type="text/csv")
+
+    result = api("GET", "/tables")
+    tables_list = result if isinstance(result, list) else result.get("tables", [])
+    check("2 tables loaded before New", len(tables_list) == 2,
+          f"got {len(tables_list)}")
+
+    # Click "New" — must drop both tables
+    api("POST", "/new")
+
+    result = api("GET", "/tables")
+    tables_list = result if isinstance(result, list) else result.get("tables", [])
+    check("0 tables after POST /new", len(tables_list) == 0,
+          f"got {len(tables_list)}: " +
+          ", ".join(t.get("name", "?") for t in tables_list))
+
+    # Creating a new table on the fresh session must NOT show stale tables
+    api("PUT", "/tables/fresh", "x,y\n0,0\n1,1\n", content_type="text/csv")
+    result = api("GET", "/tables")
+    tables_list = result if isinstance(result, list) else result.get("tables", [])
+    check("only the new table is listed", len(tables_list) == 1,
+          f"got {len(tables_list)}: " +
+          ", ".join(t.get("name", "?") for t in tables_list))
+    if tables_list:
+        check("listed table is 'fresh'",
+              tables_list[0].get("name", "").lower() == "fresh")
 
 
 def test_tables_solve():
@@ -228,6 +274,7 @@ def main():
         print(f"Connected to {BASE_URL} (status={health.get('status')})")
 
         test_tables_crud()
+        test_tables_cleared_on_new()
         test_tables_solve()
 
     except Exception as e:

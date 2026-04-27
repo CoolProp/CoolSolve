@@ -773,6 +773,9 @@ int startServer(const ServerOptions& options) {
             session.solContent.clear();
             session.confContent.clear();
             session.debugDir.clear();
+            // Drop lookup tables from the previously loaded model so they do
+            // not accumulate when the user opens a different example.
+            session.lookupTableCSVs.clear();
             {
                 std::lock_guard<std::mutex> lock(session.resultMutex);
                 session.hasResult = false;
@@ -817,7 +820,11 @@ int startServer(const ServerOptions& options) {
         session.confContent.clear();
         session.openFilePath.clear();
         session.modelName.clear();
-        
+        // Clear lookup tables — otherwise they leak from the previous model
+        // into the "new" empty session and reappear in the GUI as soon as
+        // the table list is refreshed (e.g. after creating a new table).
+        session.lookupTableCSVs.clear();
+
         // Clear debug
         if (!session.debugDir.empty()) {
             std::error_code ec;
