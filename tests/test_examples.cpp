@@ -105,8 +105,9 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"zorlu_heat_pump.eescode",                 {"COP_HP", 6.4167}},
     // Advanced features showcase (exercises all CoolSolve features)
     {"advanced_features.eescode",               {"verification", 2083.5}},
-    // Lookup table demo (lookup_demo.csv + lookup_demo_watercp.csv loaded as companion tables)
-    {"lookup_demo.eescode",                     {"Cp_water", 4.2675}},
+    // Lookup table demo (lookup_demo-data.csv + lookup_demo-watercp.csv loaded as companion tables)
+    // Tests non-integer row interpolation: P midway between rows 2 and 3 = (198480+361300)/2
+    {"lookup_demo.eescode",                     {"P_row2_5", 279890.0}},
 };
 
 // Test result structure for reporting

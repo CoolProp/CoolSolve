@@ -12,6 +12,8 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include "coolsolve/lookup_table.h"
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
 
 using Catch::Matchers::WithinAbs;
@@ -31,6 +33,11 @@ static ADValue independent(double v) {
 // Helper: build an ADValue with two gradient variables
 static ADValue indep2(double v, size_t idx) {
     return ADValue::independent(v, idx, 2);
+}
+
+// Helper: constant with explicit gradient size (for mixing with independent variables)
+static ADValue constant_n(double v, size_t n) {
+    return ADValue::constant(v, n);
 }
 
 // ============================================================================
@@ -253,4 +260,179 @@ TEST_CASE("LookupTableStore operations", "[lookup-table]") {
     SECTION("get nonexistent returns nullptr") {
         REQUIRE(store.get("nope") == nullptr);
     }
+}
+
+// ============================================================================
+// LOOKUP: EES-compatible row/col interpolation and clamping
+// ============================================================================
+
+TEST_CASE("LookupTable::lookup EES-compatible cell access", "[lookup-table]") {
+    // 3-row, 2-column table:  col1 = [10, 20, 30],  col2 = [100, 200, 300]
+    const std::string csv = "a,b\n10,100\n20,200\n30,300\n";
+    auto tbl = LookupTable::fromCSV("lk", csv);
+
+    SECTION("integer row and col returns exact cell value") {
+        REQUIRE_THAT(tbl.lookup(constant(1), constant(1), nullptr).value, WithinAbs(10.0,  1e-9));
+        REQUIRE_THAT(tbl.lookup(constant(2), constant(2), nullptr).value, WithinAbs(200.0, 1e-9));
+        REQUIRE_THAT(tbl.lookup(constant(3), constant(1), nullptr).value, WithinAbs(30.0,  1e-9));
+    }
+
+    SECTION("non-integer row interpolates between rows") {
+        // row=1.5, col=1: midpoint of rows 1 and 2 in col 1 = (10+20)/2 = 15
+        REQUIRE_THAT(tbl.lookup(constant(1.5), constant(1), nullptr).value, WithinAbs(15.0,  1e-9));
+        // row=2.5, col=2: midpoint of rows 2 and 3 in col 2 = (200+300)/2 = 250
+        REQUIRE_THAT(tbl.lookup(constant(2.5), constant(2), nullptr).value, WithinAbs(250.0, 1e-9));
+    }
+
+    SECTION("non-integer col interpolates between columns") {
+        // row=2, col=1.5: midpoint of cols 1 and 2 in row 2 = (20+200)/2 = 110
+        REQUIRE_THAT(tbl.lookup(constant(2), constant(1.5), nullptr).value, WithinAbs(110.0, 1e-9));
+    }
+
+    SECTION("non-integer row and col does bilinear interpolation") {
+        // row=1.5, col=1.5: bilinear of (10,100,20,200) corners at t=0.5,0.5
+        // = 0.25*10 + 0.25*100 + 0.25*20 + 0.25*200 = (10+100+20+200)/4 = 82.5
+        REQUIRE_THAT(tbl.lookup(constant(1.5), constant(1.5), nullptr).value, WithinAbs(82.5, 1e-9));
+    }
+
+    SECTION("row < 1 clamps to row 1") {
+        REQUIRE_THAT(tbl.lookup(constant(0),   constant(1), nullptr).value, WithinAbs(10.0, 1e-9));
+        REQUIRE_THAT(tbl.lookup(constant(-5),  constant(2), nullptr).value, WithinAbs(100.0, 1e-9));
+    }
+
+    SECTION("row > nRows clamps to last row") {
+        REQUIRE_THAT(tbl.lookup(constant(4),   constant(1), nullptr).value, WithinAbs(30.0,  1e-9));
+        REQUIRE_THAT(tbl.lookup(constant(100), constant(2), nullptr).value, WithinAbs(300.0, 1e-9));
+    }
+
+    SECTION("col < 1 clamps to col 1") {
+        REQUIRE_THAT(tbl.lookup(constant(2), constant(0),  nullptr).value, WithinAbs(20.0, 1e-9));
+        REQUIRE_THAT(tbl.lookup(constant(1), constant(-3), nullptr).value, WithinAbs(10.0, 1e-9));
+    }
+
+    SECTION("col > nCols clamps to last col") {
+        REQUIRE_THAT(tbl.lookup(constant(2), constant(3),  nullptr).value, WithinAbs(200.0, 1e-9));
+        REQUIRE_THAT(tbl.lookup(constant(3), constant(99), nullptr).value, WithinAbs(300.0, 1e-9));
+    }
+
+    SECTION("AD derivative w.r.t. row (non-integer, inside range)") {
+        // At row=1.5, col=1: slope w.r.t. row = v[row2][col1] - v[row1][col1] = 20 - 10 = 10
+        auto rowAD = independent(1.5);
+        auto colC  = constant_n(1.0, 1); // col fixed, same gradient size
+        auto res = tbl.lookup(rowAD, colC, nullptr);
+        REQUIRE_THAT(res.value,       WithinAbs(15.0, 1e-9));
+        REQUIRE_THAT(res.gradient[0], WithinAbs(10.0, 1e-9));
+    }
+
+    SECTION("AD derivative w.r.t. col (non-integer, inside range)") {
+        // At row=2, col=1.5: slope w.r.t. col = v[row2][col2] - v[row2][col1] = 200 - 20 = 180
+        auto rowC  = constant_n(2.0, 1); // row fixed, same gradient size
+        auto colAD = independent(1.5);
+        auto res = tbl.lookup(rowC, colAD, nullptr);
+        REQUIRE_THAT(res.value,       WithinAbs(110.0, 1e-9));
+        REQUIRE_THAT(res.gradient[0], WithinAbs(180.0, 1e-9));
+    }
+
+    SECTION("AD derivative is zero when clamped") {
+        auto rowAD = independent(0.0);  // below range
+        auto res = tbl.lookup(rowAD, constant_n(1.0, 1), nullptr);
+        REQUIRE_THAT(res.gradient[0], WithinAbs(0.0, 1e-9));
+
+        auto rowAD2 = independent(10.0);  // above range
+        auto res2 = tbl.lookup(rowAD2, constant_n(1.0, 1), nullptr);
+        REQUIRE_THAT(res2.gradient[0], WithinAbs(0.0, 1e-9));
+
+        auto colAD = independent(0.0);  // below range
+        auto res3 = tbl.lookup(constant_n(2.0, 1), colAD, nullptr);
+        REQUIRE_THAT(res3.gradient[0], WithinAbs(0.0, 1e-9));
+    }
+
+    SECTION("single-row table returns that row's value") {
+        auto tbl1 = LookupTable::fromCSV("one", "v\n42\n");
+        REQUIRE_THAT(tbl1.lookup(constant(1),  constant(1), nullptr).value, WithinAbs(42.0, 1e-9));
+        REQUIRE_THAT(tbl1.lookup(constant(0),  constant(1), nullptr).value, WithinAbs(42.0, 1e-9));
+        REQUIRE_THAT(tbl1.lookup(constant(99), constant(1), nullptr).value, WithinAbs(42.0, 1e-9));
+    }
+}
+
+// ============================================================================
+// loadLookupTableForModel: <modelStem>-<tableName>.csv naming convention
+// ============================================================================
+
+TEST_CASE("loadLookupTableForModel uses <modelStem>-<tableName>.csv convention",
+          "[lookup-table][lookup-naming]") {
+    namespace fs = std::filesystem;
+    auto tmpDir = fs::temp_directory_path() / "coolsolve_lookup_naming_test";
+    fs::remove_all(tmpDir);
+    fs::create_directories(tmpDir);
+
+    // Helper: write a tiny CSV file with a single header + value
+    auto writeCsv = [&](const std::string& filename, const std::string& content) {
+        std::ofstream f(tmpDir / filename);
+        f << content;
+    };
+
+    // The model file itself need not exist on disk for the loader, but its
+    // path is parsed for the parent directory and stem.  We still create it
+    // so the test mirrors a real model layout.
+    const std::string modelStem = "mymodel";
+    fs::path modelPath = tmpDir / (modelStem + ".eescode");
+    { std::ofstream f(modelPath); f << "x = 1\n"; }
+
+    SECTION("file <stem>-<tableName>.csv loads as table 'tableName'") {
+        writeCsv("mymodel-data.csv",    "v\n1\n2\n3\n");
+        writeCsv("mymodel-watercp.csv", "v\n10\n20\n");
+        auto store = loadLookupTableForModel(modelPath.string());
+        REQUIRE(store.size() == 2);
+        REQUIRE(store.has("data"));
+        REQUIRE(store.has("watercp"));
+        REQUIRE(store.get("data")->numRows()    == 3);
+        REQUIRE(store.get("watercp")->numRows() == 2);
+        // The old "full file stem" naming MUST NOT be used
+        REQUIRE(!store.has("mymodel-data"));
+        REQUIRE(!store.has("mymodel_data"));
+    }
+
+    SECTION("bare <stem>.csv is ignored (no table name after the hyphen)") {
+        writeCsv("mymodel.csv", "v\n1\n");
+        auto store = loadLookupTableForModel(modelPath.string());
+        REQUIRE(store.empty());
+    }
+
+    SECTION("legacy <stem>_<suffix>.csv naming is no longer accepted") {
+        writeCsv("mymodel_watercp.csv", "v\n1\n2\n");
+        auto store = loadLookupTableForModel(modelPath.string());
+        REQUIRE(store.empty());
+    }
+
+    SECTION("CSVs not starting with <stem>- are ignored") {
+        writeCsv("other-data.csv",  "v\n1\n");
+        writeCsv("variables.csv",    "v\n1\n");
+        writeCsv("mymodel-keep.csv", "v\n1\n2\n");
+        auto store = loadLookupTableForModel(modelPath.string());
+        REQUIRE(store.size() == 1);
+        REQUIRE(store.has("keep"));
+    }
+
+    SECTION("table name preserves additional hyphens after the first one") {
+        writeCsv("mymodel-air-cp.csv", "v\n1\n");
+        auto store = loadLookupTableForModel(modelPath.string());
+        REQUIRE(store.has("air-cp"));
+    }
+
+    SECTION("malformed CSV emits a diagnostic and is skipped") {
+        // Empty file → fromCSV throws; the loader must not throw out
+        writeCsv("mymodel-bad.csv", "");
+        DiagnosticCollector diags;
+        auto store = loadLookupTableForModel(modelPath.string(), &diags);
+        REQUIRE(!store.has("bad"));
+        // At least one warning about the failed parse
+        bool sawWarning = false;
+        for (const auto& d : diags.items()) {
+            if (d.code == "L001") { sawWarning = true; break; }
+        }
+        REQUIRE(sawWarning);
+    }
+
+    fs::remove_all(tmpDir);
 }

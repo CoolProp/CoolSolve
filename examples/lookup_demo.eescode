@@ -1,32 +1,45 @@
 "Lookup Table Demo"
 "Demonstrates INTERPOLATE, LOOKUP, NLOOKUPROWS, aggregate functions"
-"Table 1 (lookup_demo.csv): saturated steam properties"
-"Table 2 (lookup_demo_watercp.csv): liquid water specific heat"
+"Table 'data'    (lookup_demo-data.csv):    saturated steam properties"
+"Table 'watercp' (lookup_demo-watercp.csv): liquid water specific heat"
 
 "Interpolate enthalpy from temperature"
 T_in = 150  "°C"
-h_interp = INTERPOLATE('lookup_demo', 'T_C', 'h_kJ_per_kg', T_in)
+h_interp = INTERPOLATE('data', 'T_C', 'h_kJ_per_kg', T_in)
 
 "Number of rows in table"
-n_rows = NLOOKUPROWS('lookup_demo')
+n_rows = NLOOKUPROWS('data')
 
 "Number of columns in table"
-n_cols = NLOOKUPCOLUMNS('lookup_demo')
+n_cols = NLOOKUPCOLUMNS('data')
 
-"Direct cell access: pressure at row 3 (T=140°C)"
-P_row3 = LOOKUP('lookup_demo', 3, 2)
+"Direct cell access: pressure at row 3 (T=140°C) — integer row and col"
+P_row3 = LOOKUP('data', 3, 2)
+
+"Direct cell access by column name"
+P_row3_byname = LOOKUP('data', 3, 'P_Pa')
+
+"Non-integer row: pressure midway between rows 2 (T=120°C) and 3 (T=140°C)"
+"Expected: (198480 + 361300) / 2 = 279890 Pa"
+P_row2_5 = LOOKUP('data', 2.5, 2)
+
+"Clamping: row index below 1 returns first row value"
+P_clamp_low = LOOKUP('data', 0, 2)
+
+"Clamping: row index beyond last row returns last row value"
+P_clamp_high = LOOKUP('data', 99, 2)
 
 "Column index for enthalpy column (should be 3)"
-col_h = LOOKUPCOL('lookup_demo', 'h_kJ_per_kg')
+col_h = LOOKUPCOL('data', 'h_kJ_per_kg')
 
 "Second lookup: interpolate entropy from the same table"
-s_interp = INTERPOLATE('lookup_demo', 'T_C', 's_kJ_per_kgK', T_in)
+s_interp = INTERPOLATE('data', 'T_C', 's_kJ_per_kgK', T_in)
 
-"Third lookup: from a second table — liquid water specific heat (lookup_demo_watercp.csv)"
-Cp_water = INTERPOLATE('lookup_demo_watercp', 'T_C', 'Cp_kJ_per_kgK', T_in)
+"Third lookup: from a second table — liquid water specific heat (lookup_demo-watercp.csv)"
+Cp_water = INTERPOLATE('watercp', 'T_C', 'Cp_kJ_per_kgK', T_in)
 
 "Aggregate functions on enthalpy column"
-sum_h = SUMLOOKUP('lookup_demo', 3)
-avg_h = AVGLOOKUP('lookup_demo', 3)
-max_h = MAXLOOKUP('lookup_demo', 3)
-min_h = MINLOOKUP('lookup_demo', 3)
+sum_h = SUMLOOKUP('data', 3)
+avg_h = AVGLOOKUP('data', 3)
+max_h = MAXLOOKUP('data', 3)
+min_h = MINLOOKUP('data', 3)

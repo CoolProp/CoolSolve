@@ -125,6 +125,27 @@ public:
                           const ADValue& xval, const ADValue& yval,
                           DiagnosticCollector* diags = nullptr) const;
 
+    /**
+     * @brief EES-compatible LOOKUP: retrieve a value at a (possibly
+     * non-integer) row and column index, with linear interpolation and
+     * boundary clamping.
+     *
+     * Behaviour matches EES LOOKUP:
+     * - Row and column indices are 1-based.
+     * - Non-integer indices trigger linear interpolation between adjacent
+     *   rows/columns (bilinear when both are non-integer).
+     * - Indices below 1 clamp to the first row/column.
+     * - Indices above the last row/column clamp to the last row/column.
+     * - Analytical AD derivatives are propagated; the derivative is zero
+     *   when the index is outside [1, N] (flat extrapolation).
+     *
+     * @param rowVal  1-based row index (with AD gradient).
+     * @param colVal  1-based column index (with AD gradient).
+     * @param diags   Optional diagnostic collector for warnings.
+     */
+    ADValue lookup(const ADValue& rowVal, const ADValue& colVal,
+                   DiagnosticCollector* diags = nullptr) const;
+
     // ------------------------------------------------------------------
     // Aggregate functions (EES SUMLOOKUP etc.)
     // ------------------------------------------------------------------
@@ -207,16 +228,15 @@ LookupTableStore loadLookupTablesFromDirectory(const std::string& dir,
 /**
  * @brief Load the companion lookup tables for a model file.
  *
- * Scans the model's directory for companion CSV files and loads all that
- * match the model stem.  Two filename patterns are accepted:
+ * Scans the model's directory for CSV files following the convention
+ * **`<modelStem>-<tableName>.csv`**.  The part after the first hyphen is
+ * used as the table name, so `mymodel-watercp.csv` becomes the table
+ * `watercp` and is referenced from equations as `LOOKUP('watercp', ...)`,
+ * `INTERPOLATE('watercp', ...)`, etc.
  *
- *  1. **`<modelStem>.csv`** — main companion table; table name = `<modelStem>`.
- *  2. **`<modelStem>_<suffix>.csv`** — auxiliary tables; table name =
- *     `<modelStem>_<suffix>` (the full file stem).  Use this convention to
- *     bundle multiple lookup tables alongside a model, e.g.
- *     `mymodel_refprops.csv`, `mymodel_watercp.csv`.
- *
- * Files that fail to parse emit a warning to @p diags (if provided).
+ * Files that do not match this pattern are ignored, including a bare
+ * `<modelStem>.csv` (since it would imply an empty table name).  Files
+ * that fail to parse emit a warning to @p diags (if provided).
  */
 LookupTableStore loadLookupTableForModel(const std::string& modelFilePath,
                                           DiagnosticCollector* diags = nullptr);

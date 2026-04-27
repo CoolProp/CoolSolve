@@ -80,7 +80,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 - **Solution Verification**: After a successful solve, CoolSolve independently re-evaluates every equation (including procedure CALLs) using the proposed solution and checks that LHS ≈ RHS within a configurable tolerance (default: 0.1%). This catches structural bugs, numerical drift, and procedure output inconsistencies that the solver's own convergence check may miss. Enabled automatically in debug mode (`-d`) and in the comprehensive test suite.
 
-- **Lookup Tables**: External CSV data files are loaded automatically and callable from equations via built-in interpolation and lookup functions:
+- **Lookup Tables**: External CSV data files are loaded automatically and callable from equations via built-in interpolation and lookup functions. Companion CSVs follow the naming convention **`<modelname>-<tablename>.csv`** (e.g. `mymodel-data.csv` is callable as `LOOKUP('data', …)`). See [Language Reference §11](docs/language_reference.md#11-lookup-tables) for full details.
   - `INTERPOLATE('table', 'xcol', 'ycol', x)` — 1D linear interpolation with analytical AD gradient
   - `INTERPOLATE2('table', 'xcol', 'ycol', 'zcol', x, y)` — 2D bilinear interpolation with AD partial derivatives
   - `LOOKUP('table', row, col)` / `TABLEVALUE(...)` — direct cell access

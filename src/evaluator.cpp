@@ -2387,15 +2387,35 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     // LOOKUP('table', row, col)
     // TABLEVALUE('table', row, col)
     // TABLEVALUE#('table', row, col)  — same as LOOKUP in CoolSolve
+    //
+    // EES-compatible behaviour:
+    //  - Non-integer row/col: linear (bilinear) interpolation.
+    //  - row < 1 or row > nRows: clamp to first/last row (derivative = 0).
+    //  - col < 1 or col > nCols: clamp to first/last col (derivative = 0).
+    //  - col can be a string (column name → exact integer) or a numeric
+    //    value that may itself be non-integer.
     // ------------------------------------------------------------------
     if (name == "lookup" || name == "tablevalue" || name == "tablevalue#" || name == "tablerun#") {
         std::string tableName = getString(0);
         const LookupTable& tbl = getTable(tableName);
         ADValue rowV = getNum(1);
-        size_t  col  = resolveCol(tbl, 2);
-        size_t  row  = static_cast<size_t>(std::round(rowV.value));
-        double  v    = tbl.value(row, col);
-        return ADValue::constant(v, numVariables_);
+
+        // Column: string name → exact integer; numeric → possibly non-integer
+        ADValue colV;
+        const auto& colArg = func.args[2];
+        if (colArg->is<StringLiteral>()) {
+            std::string colName = colArg->as<StringLiteral>().value;
+            size_t col = tbl.columnIndex(colName);
+            if (col == 0) {
+                throw std::runtime_error(func.name + "(): column '" + colName +
+                                         "' not found in table '" + tbl.name() + "'");
+            }
+            colV = ADValue::constant(static_cast<double>(col), numVariables_);
+        } else {
+            colV = evaluate(colArg);
+        }
+
+        return tbl.lookup(rowV, colV, diagnostics_);
     }
 
     // ------------------------------------------------------------------

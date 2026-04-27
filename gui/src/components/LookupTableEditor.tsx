@@ -293,7 +293,8 @@ export default function LookupTableEditor() {
   return (
     <div style={{ padding: 8, display: 'flex', flexDirection: 'column', gap: 8, height: '100%', boxSizing: 'border-box' }}>
       <div style={{ fontSize: 12, color: '#a6adc8', flexShrink: 0 }}>
-        Lookup tables are CSV files loaded from the model's directory.{' '}
+        Lookup tables are CSV files loaded from the model's directory using the
+        naming convention <code style={{ color: '#cba6f7' }}>&lt;modelname&gt;-&lt;tablename&gt;.csv</code>.{' '}
         <code style={{ color: '#cba6f7' }}>LOOKUP('table', row, col)</code> — direct cell access;{' '}
         <code style={{ color: '#cba6f7' }}>INTERPOLATE('table', 'xcol', 'ycol', x)</code> — 1-D interpolation.
       </div>

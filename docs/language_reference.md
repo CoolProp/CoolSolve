@@ -402,15 +402,18 @@ See `examples/coolsolve.conf` for the full list of options. Key sections:
 
 Lookup tables let you interpolate from external CSV data files directly inside
 equations.  CoolSolve loads companion tables for a model automatically by
-scanning the same directory for CSV files whose name matches the model stem:
+scanning the same directory for CSV files whose name follows the convention:
 
-1. **`<modelname>.csv`** — main companion table; table name = `<modelname>`.
-2. **`<modelname>_<suffix>.csv`** — auxiliary tables; table name =
-   `<modelname>_<suffix>` (the full file stem).  Use this convention to
-   bundle multiple lookup tables alongside a model, e.g.
-   `steam_cycle_watercp.csv`, `steam_cycle_refprops.csv`.
+**`<modelname>-<tablename>.csv`**
 
-No other CSV files in the directory are loaded automatically.
+The part after the first hyphen is the **table name** that you reference in
+equations.  For example, alongside `steam_cycle.eescode`:
+
+- `steam_cycle-data.csv`    → callable as `LOOKUP('data', …)`
+- `steam_cycle-watercp.csv` → callable as `INTERPOLATE('watercp', …)`
+
+Files that do not match this pattern are ignored (including a bare
+`<modelname>.csv`, since it would imply an empty table name).
 
 Additional tables can be loaded via:
 
@@ -429,7 +432,7 @@ Each CSV must have a header row with column names (case-insensitive).
 ### 11.1 1D interpolation
 
 ```ees
-h = INTERPOLATE('mymodel', 'T_C', 'h_kJ_per_kg', T)
+h = INTERPOLATE('data', 'T_C', 'h_kJ_per_kg', T)
 ```
 
 Performs linear interpolation of column `h_kJ_per_kg` as a function of
@@ -469,11 +472,27 @@ Analytical partial derivatives for the Newton/AD engine.
 ### 11.4 Direct cell access
 
 ```ees
-P_at_row3 = LOOKUP('mymodel', 3, 2)
+P_at_row3 = LOOKUP('data', 3, 2)
 ```
 
-Returns the value in the given row and column (both 1-based).  No
-interpolation — direct cell lookup.
+Returns the value at the given row and column (both 1-based), matching EES
+behaviour:
+
+- **Non-integer row or column** — linear interpolation between the two
+  adjacent rows/columns.  When both are non-integer, bilinear interpolation
+  is applied across the four surrounding cells.
+- **Out-of-range clamping** — if the row is below 1 the first row is
+  returned; if it exceeds the number of rows the last row is returned.
+  The same rule applies to the column.  The analytical derivative is zero
+  in the clamped region (flat extrapolation).
+- **Column by name** — the column argument may be a quoted string (column
+  header name, case-insensitive) or a numeric index.
+
+```ees
+P_mid  = LOOKUP('data', 2.5, 2)             {midpoint between rows 2 and 3}
+P_last = LOOKUP('data', 99, 2)              {clamped to last row}
+h_r2   = LOOKUP('data', 2, 'h_kJ_per_kg')   {column by name}
+```
 
 Aliases: `TABLEVALUE('table', row, col)`, `TABLEVALUE#(...)`,
 `TABLERUN#(...)`.
@@ -493,20 +512,23 @@ column name string):
 
 ### 11.6 Example
 
-For a model file `steam_cycle.eescode` with companion `steam_cycle.csv`:
+For a model file `steam_cycle.eescode` with companion
+`steam_cycle-data.csv`:
 
 ```
-T_C,P_kPa,h_kJ_per_kg
-100,101.3,2675.6
-150,476.1,2745.9
-200,1554.9,2826.8
+T_C,P_Pa,h_kJ_per_kg
+100,101325,2675.6
+150,476100,2745.9
+200,1554900,2826.8
 ```
 
 ```ees
 T = 150  "°C"
-h = INTERPOLATE('steam_cycle', 'T_C', 'h_kJ_per_kg', T)  "h = 2745.9 kJ/kg"
-n = NLOOKUPROWS('steam_cycle')                             "n = 3"
-P_row2 = LOOKUP('steam_cycle', 2, 2)                      "P_row2 = 476.1 kPa"
+h = INTERPOLATE('data', 'T_C', 'h_kJ_per_kg', T)  "h = 2745.9 kJ/kg"
+n = NLOOKUPROWS('data')                            "n = 3"
+P_row2 = LOOKUP('data', 2, 2)                     "P_row2 = 476100 Pa (integer row)"
+P_mid  = LOOKUP('data', 1.5, 2)                   "P_mid  = 288712 Pa (interpolated)"
+P_last = LOOKUP('data', 99, 2)                    "P_last = 1554900 Pa (clamped)"
 ```
 
 The **Lookup Tables** tab in the GUI lets you create, view, and edit tables

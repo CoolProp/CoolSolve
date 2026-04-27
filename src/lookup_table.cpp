@@ -410,6 +410,83 @@ ADValue LookupTable::interpolate2D(size_t xcol1, size_t ycol1, size_t zcol1,
 }
 
 // ============================================================================
+// LookupTable::lookup
+// ============================================================================
+
+ADValue LookupTable::lookup(const ADValue& rowVal, const ADValue& colVal,
+                             DiagnosticCollector* /*diags*/) const {
+    size_t nRows = data_.size();
+    size_t nCols = columnNames_.size();
+
+    if (nRows == 0 || nCols == 0) {
+        throw std::runtime_error("LookupTable '" + name_ + "': table is empty");
+    }
+
+    double r = rowVal.value;
+    double c = colVal.value;
+
+    // Derivatives are zero when a coordinate is outside the valid range
+    // (flat extrapolation / clamping matches EES behaviour).
+    bool rInRange = (r >= 1.0 && r <= static_cast<double>(nRows));
+    bool cInRange = (c >= 1.0 && c <= static_cast<double>(nCols));
+
+    // Clamp to [1, N] in each direction
+    double rC = std::max(1.0, std::min(static_cast<double>(nRows),  r));
+    double cC = std::max(1.0, std::min(static_cast<double>(nCols), c));
+
+    // Row interval (0-based).  For rC in [1, nRows]:
+    //   rlo0 = floor(rC) - 1, clamped so that rhi0 = rlo0+1 stays in range.
+    size_t rlo0 = 0, rhi0 = 0;
+    double tr = 0.0;
+    if (nRows > 1) {
+        rlo0 = static_cast<size_t>(std::floor(rC)) - 1;
+        if (rlo0 >= nRows - 1) rlo0 = nRows - 2; // keep rhi0 in bounds
+        rhi0 = rlo0 + 1;
+        tr = rC - static_cast<double>(rlo0 + 1); // fractional part in row space
+        tr = std::max(0.0, std::min(1.0, tr));
+    }
+
+    // Column interval (0-based), same logic.
+    size_t clo0 = 0, chi0 = 0;
+    double tc = 0.0;
+    if (nCols > 1) {
+        clo0 = static_cast<size_t>(std::floor(cC)) - 1;
+        if (clo0 >= nCols - 1) clo0 = nCols - 2;
+        chi0 = clo0 + 1;
+        tc = cC - static_cast<double>(clo0 + 1);
+        tc = std::max(0.0, std::min(1.0, tc));
+    }
+
+    double v00 = data_[rlo0][clo0];
+    double v10 = data_[rhi0][clo0];
+    double v01 = data_[rlo0][chi0];
+    double v11 = data_[rhi0][chi0];
+
+    double result = (1.0 - tr) * (1.0 - tc) * v00
+                  + tr         * (1.0 - tc) * v10
+                  + (1.0 - tr) * tc          * v01
+                  + tr         * tc          * v11;
+
+    // Analytical partial derivatives w.r.t. the row and column indices.
+    // Zero when clamped outside the valid range (flat extrapolation).
+    double dvdr = 0.0;
+    double dvdc = 0.0;
+    if (rInRange && nRows > 1) {
+        dvdr = (1.0 - tc) * (v10 - v00) + tc * (v11 - v01);
+    }
+    if (cInRange && nCols > 1) {
+        dvdc = (1.0 - tr) * (v01 - v00) + tr * (v11 - v10);
+    }
+
+    size_t ng = rowVal.gradient.size();
+    ADValue res(result, ng);
+    for (size_t i = 0; i < ng; ++i) {
+        res.gradient[i] = dvdr * rowVal.gradient[i] + dvdc * colVal.gradient[i];
+    }
+    return res;
+}
+
+// ============================================================================
 // Aggregate functions
 // ============================================================================
 
@@ -544,23 +621,26 @@ LookupTableStore loadLookupTableForModel(const std::string& modelFilePath,
     fs::path dir = model.parent_path();
     std::string stem = model.stem().string();
 
-    // Scan the model's directory for every *.csv file whose stem either equals
-    // <stem> exactly or starts with "<stem>_".  The full file stem is used as
-    // the table name so that, e.g., "mymodel_watercp.csv" → table "mymodel_watercp".
+    // Scan the model's directory for every *.csv file whose stem starts with
+    // "<stem>-".  The part after the hyphen is the table name, so that
+    // "mymodel-watercp.csv" → table "watercp" and is callable as
+    // LOOKUP('watercp', ...).  Files that do not match this pattern are
+    // ignored, including a bare "<stem>.csv" (the table name would be empty).
     if (!fs::exists(dir) || !fs::is_directory(dir)) return store;
+
+    const std::string prefix = stem + "-";
 
     for (const auto& entry : fs::directory_iterator(dir)) {
         if (!entry.is_regular_file()) continue;
         auto p = entry.path();
         if (p.extension() != ".csv") continue;
         std::string fileStem = p.stem().string();
-        // Accept <stem>.csv and <stem>_*.csv only
-        if (fileStem != stem &&
-            !(fileStem.size() > stem.size() + 1 &&
-              fileStem.compare(0, stem.size(), stem) == 0 &&
-              fileStem[stem.size()] == '_')) {
+        // Require "<stem>-<tableName>.csv" with a non-empty table name
+        if (fileStem.size() <= prefix.size() ||
+            fileStem.compare(0, prefix.size(), prefix) != 0) {
             continue;
         }
+        std::string tableName = fileStem.substr(prefix.size());
         try {
             std::ifstream file(p);
             if (!file.is_open()) {
@@ -573,11 +653,11 @@ LookupTableStore loadLookupTableForModel(const std::string& modelFilePath,
             }
             std::string content((std::istreambuf_iterator<char>(file)),
                                  std::istreambuf_iterator<char>());
-            store.add(LookupTable::fromCSV(fileStem, content));
+            store.add(LookupTable::fromCSV(tableName, content));
         } catch (const std::exception& e) {
             if (diags) {
                 diags->push(DiagnosticSeverity::Warning, "L001",
-                    "Failed to parse lookup table '" + fileStem + "': " + e.what(),
+                    "Failed to parse lookup table '" + tableName + "': " + e.what(),
                     "lookup_table");
             }
         }

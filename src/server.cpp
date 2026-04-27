@@ -462,21 +462,23 @@ static void discoverCompanionFiles(Session& session) {
         session.confContent = readFileToString(confPath.string());
     }
 
-    // Scan the model's directory for companion lookup CSVs.
-    // Loaded: <stem>.csv and <stem>_*.csv — table name = full file stem.
+    // Scan the model's directory for companion lookup CSVs following the
+    // convention "<stem>-<tableName>.csv".  The part after the first hyphen
+    // is the table name (the key used in LOOKUP / INTERPOLATE).  Files that
+    // do not match this pattern are ignored.
     if (fs::exists(dir) && fs::is_directory(dir)) {
+        const std::string prefix = stem + "-";
         for (const auto& entry : fs::directory_iterator(dir)) {
             if (!entry.is_regular_file()) continue;
             auto p = entry.path();
             if (p.extension() != ".csv") continue;
             std::string fileStem = p.stem().string();
-            if (fileStem != stem &&
-                !(fileStem.size() > stem.size() + 1 &&
-                  fileStem.compare(0, stem.size(), stem) == 0 &&
-                  fileStem[stem.size()] == '_')) {
+            if (fileStem.size() <= prefix.size() ||
+                fileStem.compare(0, prefix.size(), prefix) != 0) {
                 continue;
             }
-            session.lookupTableCSVs[fileStem] = readFileToString(p.string());
+            std::string tableName = fileStem.substr(prefix.size());
+            session.lookupTableCSVs[tableName] = readFileToString(p.string());
         }
     }
 }
@@ -1084,9 +1086,10 @@ int startServer(const ServerOptions& options) {
             auto tmpEes = tmpDir / "model.eescode";
             writeStringToFile(tmpEes.string(), eesSource);
             
-            // Write lookup table CSVs to the temp directory
+            // Write lookup table CSVs to the temp directory using the
+            // "model-<tableName>.csv" naming convention (see lookup_table.h).
             for (const auto& [tblName, csvContent] : session.lookupTableCSVs) {
-                writeStringToFile((tmpDir / (tblName + ".csv")).string(), csvContent);
+                writeStringToFile((tmpDir / ("model-" + tblName + ".csv")).string(), csvContent);
             }
             
             if (!initials.empty()) {
@@ -1627,9 +1630,10 @@ int startServer(const ServerOptions& options) {
                 writeStringToFile(tmpConf.string(), confContent);
             }
 
-            // Write lookup table CSVs for parametric runs
+            // Write lookup table CSVs for parametric runs using the
+            // "model-<tableName>.csv" naming convention (see lookup_table.h).
             for (const auto& [tblName, csvContent] : session.lookupTableCSVs) {
-                writeStringToFile((tmpDir / (tblName + ".csv")).string(), csvContent);
+                writeStringToFile((tmpDir / ("model-" + tblName + ".csv")).string(), csvContent);
             }
             
             // Set solving flag so UI shows progress
@@ -2428,9 +2432,11 @@ int startServer(const ServerOptions& options) {
         if (!session.confContent.empty())
             files.push_back({"coolsolve.conf", session.confContent});
 
-        // Include lookup table CSVs
+        // Include lookup table CSVs using the "<modelStem>-<tableName>.csv"
+        // naming convention so the bundle round-trips through the on-disk
+        // loader (see lookup_table.h).
         for (const auto& [tblName, csvContent] : session.lookupTableCSVs) {
-            files.push_back({tblName + ".csv", csvContent});
+            files.push_back({stem + "-" + tblName + ".csv", csvContent});
         }
         
         // Include LaTeX report if generated
@@ -2566,8 +2572,20 @@ int startServer(const ServerOptions& options) {
                 fileList.push_back(zname);
             } else if (endsWith(zname, ".csv") && !startsWith(zname, "debug_output/")) {
                 // Lookup table CSV: derive table name from filename stem
+                // following the "<modelStem>-<tableName>.csv" convention.
+                // If the file does not match the model prefix, fall back to
+                // using the full stem as the table name so user-supplied
+                // CSVs are not silently dropped during ZIP round-trips.
                 std::string stem = fs::path(zname).stem().string();
-                session.lookupTableCSVs[stem] = zcontent;
+                std::string tableName = stem;
+                if (!session.modelName.empty()) {
+                    std::string prefix = session.modelName + "-";
+                    if (stem.size() > prefix.size() &&
+                        stem.compare(0, prefix.size(), prefix) == 0) {
+                        tableName = stem.substr(prefix.size());
+                    }
+                }
+                session.lookupTableCSVs[tableName] = zcontent;
                 fileList.push_back(zname);
             }
         }
