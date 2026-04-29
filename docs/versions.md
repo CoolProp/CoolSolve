@@ -12,7 +12,7 @@ changes introduced.
 
 | Item | Detail |
 |------|--------|
-| **Windows installer** | **[CoolSolve v0.2 for Windows](https://dox.uliege.be/index.php/s/XXXXXXXXXXXXXX/download)** |
+| **Windows installer** | **[CoolSolve v0.2 for Windows](https://dox.uliege.be/index.php/s/xCcllAEs4Y8hsnx/download)** |
 | **CoolProp** | master branch, commit `bc9341f` (7.2.1-dev, April 2026) |
 | **Online demo** | [https://coolsolve.squoilin.eu/](https://coolsolve.squoilin.eu/) |
 
@@ -51,7 +51,7 @@ changes introduced.
 | Item | Detail |
 |------|--------|
 | **Windows installer** | **[CoolSolve v0.1 for Windows](https://dox.uliege.be/index.php/s/Iy6Tl0iDvKPCCve/download)** |
-| **CoolProp** | master branch (version at time of release) |
+| **CoolProp** | master branch (8fa873a, March 2026) |
 | **Online demo** | [https://coolsolve.squoilin.eu/](https://coolsolve.squoilin.eu/) |
 
 ### What was in v0.1
