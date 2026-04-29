@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(CoolSolve CXX)
+project(CoolSolve VERSION 0.2.0 CXX)
 
 # --- Default to Release build for performance ---
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -145,6 +145,11 @@ list(FILTER SOURCES EXCLUDE REGEX ".*server\\.cpp$")
 
 # --- CoolSolve Library ---
 add_library(coolsolve_lib ${SOURCES})
+
+# Propagate version string to all translation units
+target_compile_definitions(coolsolve_lib PUBLIC
+    COOLSOLVE_VERSION="${CMAKE_PROJECT_VERSION}"
+)
 
 target_include_directories(coolsolve_lib PUBLIC 
     ${CMAKE_CURRENT_SOURCE_DIR}/include

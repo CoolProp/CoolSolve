@@ -491,3 +491,130 @@ For solver-convergence bugs, also attach the relevant section of
 
 Thanks again for contributing! Following this guide keeps CoolSolve fast,
 correct, and pleasant to maintain.
+
+---
+
+## 9. Release Process
+
+This section documents the steps to publish a new numbered release of
+CoolSolve (e.g. `v0.3`, `v1.0`, …). Follow them in order.
+
+### 9.1 Decide on the version number
+
+CoolSolve uses **semantic versioning** with two components: `MAJOR.MINOR`.
+- Increment **MINOR** for any release that adds new features without breaking
+  existing `.eescode` models or `coolsolve.conf` files.
+- Increment **MAJOR** only if the release breaks backward compatibility (e.g.
+  the language syntax changes in an incompatible way).
+
+### 9.2 Update version strings
+
+The version is declared in one authoritative place and propagated everywhere
+else at build time. Edit only the files below.
+
+**`CMakeLists.txt`** — change the `VERSION` field in `project()`:
+
+```cmake
+project(CoolSolve VERSION 0.3.0 CXX)
+```
+
+**`coolsolve.nsi`** — change the `!define VERSION` line:
+
+```nsis
+!define VERSION "0.3"
+!define COOLPROP_VERSION "<new-version>"
+```
+
+**`coolsolve.rc`** (Windows resource file) — change both the binary version
+fields and the string values (use four-component format):
+
+```rc
+FILEVERSION 0,3,0,0
+PRODUCTVERSION 0,3,0,0
+…
+VALUE "FileVersion", "0.3.0.0"
+VALUE "ProductVersion", "0.3.0.0"
+```
+
+All other places (`--help` output, Windows installer title, Add/Remove
+Programs entry) derive the version automatically from these three files.
+
+### 9.3 Verify the CoolProp version
+
+Check which CoolProp commit is included in this build:
+
+```bash
+cd .fetchcontent_cache/coolprop-src
+git log --oneline -1
+git describe --tags
+```
+
+Note the commit hash and version string — you will need them in §9.5.
+
+### 9.4 Run the full test suite
+
+```bash
+cd build
+cmake --build . -j$(nproc)
+
+./coolsolve_tests
+./coolsolve_tests "[examples-comprehensive]"
+./coolsolve_tests "[solver-robustness]"
+```
+
+All three must pass. Check `examples/solver_robustness_report.md` for
+unexpected changes in iteration counts or runtimes (see §5).
+
+### 9.5 Update the version history document
+
+Edit [`docs/versions.md`](versions.md):
+
+1. Add a new `## vX.Y — Month Year (current)` section at the top with:
+   - The Windows installer download link (fill in after uploading, see §9.7).
+   - The CoolProp commit hash and version string from §9.3.
+   - A bullet list of the main changes since the previous release.
+2. Remove the `(current)` label from the previous version's heading.
+
+Keep the v0.1 entry permanently at the bottom as the historical baseline.
+
+### 9.6 Create the Git tag
+
+```bash
+git add CMakeLists.txt coolsolve.nsi coolsolve.rc docs/versions.md README.md
+git commit -m "chore: release v0.3"
+git tag -a v0.3 -m "CoolSolve v0.3"
+git push origin v0.3
+```
+
+The tag is the single source of truth for the release on the repository
+server.
+
+### 9.7 Build and upload the Windows installer
+
+On a Windows machine with Visual Studio 2022, Python 3, Node.js, and NSIS:
+
+```bat
+build_installer.bat
+```
+
+This produces `CoolSolve_v0.3_Installer.exe`. Upload it to the file-sharing
+server (dox.uliege.be) and copy the public share link. Then replace the
+placeholder link in `docs/versions.md` and `README.md` with the real URL,
+and push the update:
+
+```bash
+git add docs/versions.md README.md
+git commit -m "docs: add v0.3 Windows installer link"
+git push
+```
+
+### 9.8 Checklist summary
+
+```markdown
+- [ ] Version bumped in CMakeLists.txt, coolsolve.nsi, coolsolve.rc
+- [ ] Full test suite passes (unit + examples-comprehensive + solver-robustness)
+- [ ] docs/versions.md updated (new section, CoolProp version, changelog)
+- [ ] README.md "Try CoolSolve" section updated to the new version
+- [ ] Git tag created and pushed
+- [ ] Windows installer built and uploaded; links updated and pushed
+```

@@ -1,7 +1,10 @@
 !include "MUI2.nsh"
 
-Name "CoolSolve"
-OutFile "CoolSolve_Installer.exe"
+!define VERSION "0.2"
+!define COOLPROP_VERSION "7.2.1-dev"
+
+Name "CoolSolve ${VERSION}"
+OutFile "CoolSolve_v${VERSION}_Installer.exe"
 InstallDir "$PROGRAMFILES64\CoolSolve"
 InstallDirRegKey HKCU "Software\CoolSolve" ""
 
@@ -47,7 +50,8 @@ Section "CoolSolve" Section_Main
     WriteRegStr HKCR "CoolSolve.EESCode\shell\open\command" "" '"$INSTDIR\coolsolve.exe" --gui "%1"'
     
     ; Add to Add/Remove Programs
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve" "DisplayName" "CoolSolve"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve" "DisplayName" "CoolSolve ${VERSION}"
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve" "DisplayVersion" "${VERSION}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve" "UninstallString" '"$INSTDIR\Uninstall.exe"'
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve" "DisplayIcon" "$INSTDIR\coolsolve.exe"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CoolSolve" "Publisher" "CoolSolve"

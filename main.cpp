@@ -23,6 +23,7 @@
 namespace fs = std::filesystem;
 
 void printUsage(const char* programName) {
+    std::cerr << "CoolSolve v" COOLSOLVE_VERSION "\n\n";
     std::cerr << "Usage: " << programName << " [options] <input.eescode>\n\n";
     std::cerr << "Options:\n";
     std::cerr << "  -o, --output <file>     Output file (default: stdout)\n";

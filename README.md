@@ -10,9 +10,12 @@ CoolSolve is a parser, structural analyzer, and equation solver using a language
 
 ## Try CoolSolve
 
-### Windows Desktop Application (v0.1)
+### Windows Desktop Application (v0.2)
 
-Download the Windows installer: **[CoolSolve v0.1 for Windows](https://dox.uliege.be/index.php/s/Iy6Tl0iDvKPCCve/download)**
+Download the Windows installer: **[CoolSolve v0.2 for Windows](https://dox.uliege.be/index.php/s/XXXXXXXXXXXXXX/download)**
+
+See [Version History](docs/versions.md) for all releases, changelogs, and
+the CoolProp version bundled in each release.
 
 ### Online Demo
 
@@ -101,6 +104,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 | [GUI & REST API](docs/gui.md) | Web interface, REST API, and parametric studies |
 | [Deployment Guide](docs/deployment_ubuntu_apache.md) | Deploying CoolSolve on Ubuntu with Apache |
 | [Contributing Guide](docs/contributing.md) | Workflow and integration checklist for new features and bug fixes |
+| [Version History](docs/versions.md) | Release notes, download links, and CoolProp version per release |
 
 ## Performance and Roadmap
 
