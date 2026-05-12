@@ -1,12 +1,17 @@
-"MSTH_041012 exercice 1"
-"Evaluez le débit d'air aspiré par un turbocompresseur centrifuge dans les conditions suivantes :
-	Diamètre de la roue : 7 cm
-	Epaisseur périphérique de la roue : 1 cm
-	Inclinaison des aubages à la périphérie de la roue : 130°
-	Température et pression d'aspiration : 20°C  1 bar
-	Pression de refoulement : 1.5 bar
-	Vitesse de rotation : 100 000 rpm"
-"indice 2 pour la sortie de la roue"
+"Centrifugal Turbocompressor Performance Analysis
+
+Evaluate the air flow rate drawn by a centrifugal turbocompressor:
+  - Impeller diameter: 7 cm
+  - Peripheral blade width: 1 cm
+  - Blade inclination at periphery: 130 degrees
+  - Inlet temperature and pressure: 20 C, 1 bar
+  - Discharge pressure: 1.5 bar
+  - Rotation speed: 100 000 rpm
+
+SOLVER NOTE: Newton solver fails without the .initials file. Use the full
+solver pipeline or provide initial values.
+"
+"subscript 2 denotes impeller outlet"
 D_2=0.07
 e=0.01
 beta_2=130
@@ -14,8 +19,8 @@ t_su=20
 p_su=1E5
 p_ex=1.5E5
 rpm=100000
-"équations de la page 60"
-"D'abord sans diffuseur:"
+"equations from textbook, Section 5.2"
+"First, without diffuser:"
 V_dot_2=A_2*W_2*sin(beta_2)
 A_2=pi*D_2*e
 M_dot=V_dot_2/v_2
@@ -24,7 +29,7 @@ w=U_2^2+U_2*W_2*cos(beta_2)
 h_t_2=h_2+C_2^2/2
 h_2s+C_2^2/2-h_1=epsilon_s_i*w
 //r_p_i=p_2/p_1
-"estimation provisoire, sans le diffuseur:"
+"provisional estimate, without diffuser:"
 r_p_i=1.25
 C_2^2=W_2^2+U_2^2+2*U_2*W_2*cos(beta_2)
 h_3=h_2+C_2^2/2

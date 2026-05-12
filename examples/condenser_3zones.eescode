@@ -10,6 +10,10 @@ Phone: 56-41-2203550, Fax: 56-41-2251142
 "
 "Contact: crcuevas@udec.cl"
 "website : www.udec.cl/~crcuevas"
+"SOLVER NOTE: This model contains a 62-variable coupled block and requires the
+initials file (.initials) for reliable convergence. Without initial values all
+solver configurations fail. Use: coolsolve -g condenser_3zones.eescode to update
+the initials file after a successful solve."
 "!Short Description :"
 "This model is able to predict the condenser performance by using a three zones model in a purely crossflow configuration"
 "!References :"

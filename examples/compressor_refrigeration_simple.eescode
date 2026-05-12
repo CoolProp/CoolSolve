@@ -1,18 +1,17 @@
-"VL050919
-Répétition 1, exercice 3
+"Refrigeration Compressor — Fluid Comparison (R22, R134a, Propane)
 
-3.	Soit un compresseur frigorifique, dont on connaît les caractéristiques suivantes :
-*	Pertes électromécaniques constantes : 3400 W
-*	Facteur de pertes :   = 0.30
-*	Débit volumique 'balayé' : 0.040 m3s-1
-*	Facteur d'espace mort : 6%
+A reciprocating refrigeration compressor with the following characteristics:
+  - Constant electromechanical losses: 3400 W
+  - Loss factor: alpha = 0.30
+  - Swept volumetric flow rate: 0.040 m3/s
+  - Clearance factor: 6%
 
-	Déterminez les puissances frigorifiques, les puissances consommées et les COP correspondants que pourrait fournir ce compresseur, lorsqu'il est alimenté respectivement en R22, en R134a et en propane, dans les conditions suivantes :
-*	température d'évaporation : 0 C
-*	température de condensation : 40 C
-*	sous-refroidissement en sortie de condenseur : 5 K
-*	surchauffe en sortie de l'évaporateur : 8 K.
-
+Determine the refrigerating capacity, power consumption and COP for this compressor
+when operated with R22, R134a and propane under the following conditions:
+  - Evaporation temperature: 0 C
+  - Condensation temperature: 40 C
+  - Subcooling at condenser outlet: 5 K
+  - Superheat at evaporator outlet: 8 K
 "
 
 W_dot_loss_0=3400
@@ -23,13 +22,13 @@ C=0.06
 fluid$='R22'
 fluid2$='R134a'
 
-"premier point"
+"First operating point (R22)" 
 T_cd_1=40
 T_ev_1=0
 {Q_dot_ev_1=64E3
 W_dot_1=16E3}
 
-"second point"
+"Second operating point (R134a)"
 T_cd_2=T_cd_1
 T_ev_2=T_ev_1
 {Q_dot_ev_2=70E3
@@ -38,7 +37,7 @@ W_dot_2=20E3}
 DELTAT_sc=5
 DELTAT_oh=8
 
-"premier point"
+"First operating point (R22) — equations"
 T_su_1=T_ev_1+DELTAT_oh
 P_su_1=P_ev_1
 P_ev_1=pressure(fluid$,x=0.5,T=T_ev_1)
@@ -56,13 +55,13 @@ w_s_1=h_ex_1_s-h_su_1 "[J/kg]"
 W_dot_s_1=M_dot_1*w_s_1
 W_dot_1=W_dot_loss_0+(1+alpha)*W_dot_s_1
 Q_dot_ev_1=M_dot_1*(h_su_1-h_su_ev_1)
-h_su_ev_1=h_ex_cd_1 "détente isenthalpique"
+h_su_ev_1=h_ex_cd_1 "isenthalpic expansion"
 h_ex_cd_1=enthalpy(fluid$,T=T_ex_cd_1,P=P_cd_1)
 T_ex_cd_1=T_cd_1-DELTAT_sc
 
 COP_1=Q_dot_ev_1/W_dot_1
 
-"second point"
+"Second operating point (R134a) — equations"
 T_su_2=T_ev_2+DELTAT_oh
 P_su_2=P_ev_2
 P_ev_2=pressure(fluid2$,x=0.5,T=T_ev_2)
@@ -80,7 +79,7 @@ w_s_2=h_ex_2_s-h_su_2 "[J/kg]"
 W_dot_s_2=M_dot_2*w_s_2
 W_dot_2=W_dot_loss_0+(1+alpha)*W_dot_s_2
 Q_dot_ev_2=M_dot_2*(h_su_2-h_su_ev_2)
-h_su_ev_2=h_ex_cd_2 "détente isenthalpique"
+h_su_ev_2=h_ex_cd_2 "isenthalpic expansion"
 h_ex_cd_2=enthalpy(fluid2$,T=T_ex_cd_2,P=P_cd_2)
 T_ex_cd_2=T_cd_2-DELTAT_sc
 

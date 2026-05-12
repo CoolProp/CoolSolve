@@ -1,26 +1,29 @@
-"MSTH051024 Exercice 4"
-"Pour stocker de l'énergie frigorifique, on utilise un réservoir contenant 120 m3 d'eau et un échangeur alimentée en eau glycolée.
-Le débit d'eau glycolée est fixé à 90 kg/s.
-Le coefficient d'échange en cours de décharge est évalué à 0.5 MW/K.
-Déterminez la courbe de puissance disponible en cours de décharge, sachant que la température de l'eau glycolée à l'entrée du réservoir est maintenue à +5°C.
-Supposez que la chaleur massique de l'eau glycolée est de 3.8 kJ /kgK.
-Supposez que la décharge commence alors que toute l'eau contenue dans le réservoir est à l'état de glace à 0°C (négligez le sous-refroidissement initial).
-Négligez les échanges de chaleur avec l'ambiance."
-"Données:"
+"ANALYSIS ERROR: This model uses the INTEGRAL() function which is not yet
+supported in CoolSolve. The model cannot be solved until integral table /
+ODE support is implemented."
+"Cold Storage Tank with Phase Change (Ice Storage)
+
+A cold energy storage tank containing 120 m3 of water, coupled to a glycol
+water heat exchanger. Glycol flow rate: 90 kg/s.
+Heat transfer coefficient during discharge: AU = 0.5 MW/K.
+Determine the available power curve during discharge, with glycol inlet T = 5 C.
+Initial state: all water is ice at 0 C.
+"
+"Given data:"
 V_res=120
 M_dot=90
 AU=1E6
 t_su=5
 c_p=3.8E3
-"Bilan du système à un instant donné:"
+"Energy balance of the system at a given instant:"
 H_dot=M*u_dot
-"(c'est l'équation différentielle que nous devrons intégrer)"
+"(this is the differential equation to be integrated)"
 M=V_res*1000
 H_dot=epsilon*C_dot*(t_su-t_w)
 C_dot=M_dot*c_p
 epsilon=1- exp(-NTU)
 NTU=AU/C_dot
-"Intégration:"
+"Integration:"
 DELTAu=INTEGRAL(u_dot,tau, tau_1, tau_2)
 DELTAu=u-u_1
 u_1=u_ice_0

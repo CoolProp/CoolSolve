@@ -1,9 +1,19 @@
-"MSTh - SB - R10 - Exercice 1"
+"R22 Heat Pump with Semi-Hermetic Compressor Model
 
-"Exercice : 2"
-"Dédoubler les équations (indice 'r')- modifier données (températures,puissance interne de pompage) - introduire équations de régulations"
+A heat pump using a semi-hermetic compressor (R22). The semi-hermetic design
+causes the motor losses to reheat the refrigerant before compression.
 
-"Compresseur semi-hermétique:"
+Known compressor parameters:
+  W_dot_loss_0 = 1294 W, alpha = 0.228, C = 0.125, V_dot_s = 0.0233 m3/s
+  AU_ev = 7000 W/K, AU_cd = 15000 W/K
+
+Operating conditions (R22):
+  M_dot_w_ev = 2.4 kg/s, T_w_ev_ex = 10 C, DELTAT_oh = 5 K
+  M_dot_w_cd = 2.2 kg/s, T_w_cd_su = 40 C, DELTAT_sc = 3 K
+
+SOLVER NOTE: This model requires the .initials file for reliable convergence.
+Without initial values all solver configurations fail.
+"
 
 W_dot_loss_0=1294
 alpha=0.228
@@ -11,7 +21,7 @@ C=0.125
 V_dot_s=0.0233
 AU_ev=7000
 AU_cd=15000
-"conditions de fonctionnement:"
+"operating conditions:"
 "R22"
 M_dot_w_ev=2.4
 M_dot_w_cd=2.2
@@ -20,14 +30,14 @@ DELTAT_oh=5
 T_w_cd_su=40
 DELTAT_sc=3
 
-"Résultats:"
+"Results:"
 
 Q_dot_u=Q_dot_ev
 Q_dot_c=W_dot_cp
 COP=Q_dot_u/Q_dot_c
 
-"!Calculs"
-"Bilan frigo:"
+"!Calculations"
+"Refrigeration energy balance:"
 Q_dot_ev+W_dot_cp=Q_dot_cd
 
 P_ev=PRESSURE(R22,T=T_ev,x=0.5)
@@ -38,12 +48,12 @@ h_3=ENTHALPY(R22,T=T_cd-DELTAT_sc,x=0)
 h_4=h_3
 Q_dot_ev=M_dot_r*(h_1-h_4)
 
-"!Compresseur:"
-"Valeurs provisoires: "
+"!Compressor:"
+"Provisional values: "
 "Q_dot_ev=50000
 Q_dot_cd=70000"
 
-W_dot_loss=Q_dot_rech "compresseur semi-hermétique"
+W_dot_loss=Q_dot_rech "semi-hermetic compressor: motor losses reheat refrigerant"
 Q_dot_rech=M_dot_r*(h_su_cp_1-h_su_cp)
 h_su_cp=ENTHALPY(R22,T=T_su_cp,P=P_su_cp)
 {Q_dot_rech=M_dot_r*cp_r*(T_su_cp_1-T_su_cp)
@@ -69,7 +79,7 @@ T_su_cp=T_ev+DELTAT_oh
 P_su_cp=P_ev
 P_ex_cp=P_cd
 
-{"Sans tenir compte du fait que le compresseur est semi-hermétique:"
+{"Without accounting for the semi-hermetic design:"
 epsilon_v=1-C*(r_v-1)
 r_v=v_su/v_ex
 v_su=VOLUME(R22,T=T_su_cp,P=P_su_cp)
@@ -91,18 +101,18 @@ Q_dot_ev=M_dot_w_ev*cp_w_ev*(T_w_ev_su-T_w_ev_ex)
 cp_w_ev=CP(Water,T=T_w_ev_m,P=P_atm)
 T_w_ev_m=(T_w_ev_su+T_w_ev_ex)/2
 P_atm=101325
-"valeur provisoire:"
+"provisional value:"
 //cp_w_ev=4187
 Q_dot_ev=epsilon_ev*C_dot_min_ev*(T_w_ev_su-T_ev)
 C_dot_min_ev=M_dot_w_ev*cp_w_ev
 epsilon_ev=1-exp(-NTU_ev)
 NTU_ev=AU_ev/C_dot_min_ev
 
-"!Condenseur"
+"!Condenser"
 Q_dot_cd=M_dot_w_cd*cp_w_cd*(T_w_cd_ex-T_w_cd_su)
 cp_w_cd=CP(Water,T=T_w_cd_m,P=P_atm)
 T_w_cd_m=(T_w_cd_su+T_w_cd_ex)/2
-"valeur provisoire:"
+"provisional value:"
 //cp_w_cd=4187
 Q_dot_cd=epsilon_cd*C_dot_min_cd*(T_cd-T_w_cd_su)
 C_dot_min_cd=M_dot_w_cd*cp_w_cd

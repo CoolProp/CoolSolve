@@ -1,3 +1,12 @@
+"Supercritical CO2 Organic Rankine Cycle Model
+
+Transcritical/supercritical CO2 cycle model using polynomial coefficients for
+compressor performance map. The polynomial coefficients (p00..p50) represent
+a fitted compressor performance map.
+
+SOLVER NOTE: This model requires the .initials file for reliable convergence.
+Without initial values all solver configurations fail.
+"
 "Data"
 {m_dot=2}
 
@@ -29,7 +38,7 @@ parameter Real gamma_inlet;"
 p_su=76.8765E5;
 T_su=32.22;
 {p_ex=140E5;}
-"pex commenté car RPM fixe le p ex"
+"p_ex commented out as RPM determines the discharge pressure"
 
 
 "Equation"
@@ -91,14 +100,14 @@ Dh=4.1}
 r_p=P[2]/P[1]
 
 
-"!2-3 : Echangeur avec 8-9 (CO2-C02 à CC)"
+"!2-3 : Heat exchanger with 8-9 (CO2-CO2 counterflow)"
 P[3]=P[2]
 {T[3]-T[2]=T[8]-T[9]}
 h[3]-h[2]=h[8]-h[9]
 s[3]=Entropy(R744,T=T[3],P=P[3])
 h[3]=Enthalpy(R744,T=T[3],P=P[3])
 
-"!3-4 : pertes de chaleurs (et de charge ?) dans tuyau"
+"!3-4 : heat (and pressure?) losses in pipe"
 xsi=0.97 "pertes de charges"
 {DELTAT_loss[3]=15;}
 DELTAT_loss[3]=2;
@@ -107,7 +116,7 @@ T[4]=T[3]-DELTAT_loss[3]
 
 
 "!4-5 : Apport solaire (air-C02)"
-"Débit air constant, mais T varie"
+"Air flow rate constant, but T varies"
 P[5]=P[4]
 DELTAT_sun=150
 T[5]-T[4]=DELTAT_sun
@@ -182,7 +191,7 @@ T[8]-T[7]=DELTAT_loss[7]
 {DELTAT_loss[7]=3}
 DELTAT_loss[7]=2
 
-"! 8-9 : échangeur (2-3)"
+"! 8-9 : heat exchanger (2-3)"
 "cf section 2-3"
 P[9]=P[8]
 s[8]=Entropy(R744,T=T[8],P=P[8])
@@ -191,11 +200,11 @@ h[8]=Enthalpy(R744,T=T[8],P=P[8])
 h[9]=Enthalpy(R744,T=T[9],P=P[9])
 
 "! 9-1 : cooler"
-"HEX (CO2-H20) à CC"
+"HEX (CO2-H2O) counterflow"
 P[1]=P[9]
 T[9]-T[1]=DELTAT_cool
 DELTAT_cool=25
-"Modélisation"
+"Modelling"
 m_dot_H2O=3
 T_H2O_in=15
 C_dot_hot=m_dot*cp_CO2
@@ -214,7 +223,7 @@ NTU=AU/C_dot_min
 {AU=4200 "DETLAT de 25K"}
 
 
-"Fausse étape 10 pour fermer le cycle"
+"Dummy step 10 to close the cycle"
 s[10]=s[1]
 h[10]=h[1]
 T[10]=T[1]

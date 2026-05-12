@@ -1,14 +1,23 @@
-"MSTH 041012 exercice 6"
-"On dispose, pour un turbocompresseur alimenté en air et entraîné à vitesse de rotation constante, des données suivantes :
-	p2 / p1 	MÖT1 /p1 	es
-	5.0	32.9		0.86
-	4.7	33.8		0.79
-	4.5	34.3		0.77
-(avec les températures en K et les pressions en bar !)
-Déterminez les variations possibles du débit d'air et de la puissance absorbée par ce compresseur dans les conditions suivantes :
-Pression d'aspiration: 0.9 bar
-Pression de refoulement : variable de 4.3 à 4.8 bar.
-Température d'aspiration : supposée constante et égale à 20 °C."
+"EVALUATION ERROR: This model requires a lookup table 'lookup 1' which must
+be provided as a companion CSV file. The CSV file is not currently present,
+so this model cannot be solved. Expected file path:
+  examples/turbocompressor_interpolate-lookup 1.csv
+"
+"Centrifugal Compressor with Lookup Table Performance Map
+
+For a constant-speed centrifugal air compressor, the following performance map
+data is available:
+  p2/p1    M*sqrt(T1)/p1    eta_s
+  5.0      32.9             0.86
+  4.7      33.8             0.79
+  4.5      34.3             0.77
+(temperatures in K, pressures in bar)
+
+Determine the variation of air flow rate and power consumption for:
+  - Inlet pressure: 0.9 bar
+  - Discharge pressure: variable from 4.3 to 4.8 bar
+  - Inlet temperature: constant at 20 C
+"
 p_su=0.9
 t_su=20
 p_ex=4.5

@@ -2,6 +2,10 @@
 "  Zorlu Geothermal Power Plant - Heat Pump with PCM Storage "
 "  Translated from EES to CoolSolve format                   "
 "  Units: T[C], P[Pa], h[J/kg], s[J/(kg*K)], m_dot[kg/s]   "
+"  SOLVER NOTE: This model requires the .initials file for   "
+"  reliable convergence. Most solver configurations fail     "
+"  without initial values due to the complexity of the       "
+"  heat pump and PCM storage coupled equations.              "
 "==========================================================="
 
 "==========================================================="

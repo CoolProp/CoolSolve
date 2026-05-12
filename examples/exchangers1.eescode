@@ -1,8 +1,11 @@
-"VL050517
-Répétition 12, exercice 1
+"Counterflow Heat Exchanger — Oil Cooled with Water
 
-1.	Un échangeur à contre-courants ayant une surface d'échange de 12.5 m2 est utilisé pour refroidir de l'huile (c = 2100 J.kg-1.K-1) à 100°C avec de l'eau à 1 bar et 20°C. Les débits d'huile et d'eau sont égaux à 2 et 0.48 kg.s-1 respectivement. Sachant que le coefficient de transfert global est estimé à 400 W.m-2.K-1, quelles sont les températures de sortie des 2 fluides ainsi que la puissance transférée. On négligera les pertes de charge dans l'échangeur.
-
+A counterflow heat exchanger with a heat transfer area of 12.5 m2 is used
+to cool oil (c = 2100 J/(kg.K)) at 100 C with water at 1 bar and 20 C.
+Oil and water flow rates are 2 and 0.48 kg/s respectively.
+Global heat transfer coefficient: U = 400 W/(m2.K).
+Determine the outlet temperatures of both fluids and the transferred power.
+(Pressure drops in the heat exchanger are neglected.)
 "
 A=12.5 "[m^2]"
 c_oil=2100 "[J/g.K]"
@@ -15,7 +18,7 @@ U=400 "[W/m^2.K]"
 
 c_w=CP(Water,T=T_w_su,P=P_w_su)
 
-"débits capacitifs:"
+"capacity flow rates:"
 C_dot_oil=M_dot_oil*c_oil
 C_dot_w=M_dot_w*c_w
 C_dot_min=min(C_dot_oil,C_dot_w)
@@ -26,10 +29,10 @@ omega=C_dot_min/C_dot_max
 AU=A*U
 NTU=AU/C_dot_min
 
-"efficacité échangeur"
+"heat exchanger effectiveness"
 epsilon=(1-exp(-NTU*(1-omega)))/(1-omega*exp(-NTU*(1-omega)))
 
-"bilan"
+"energy balance"
 Q_dot=epsilon*C_dot_min*(T_oil_su-T_w_su) "[W]"
 Q_dot=C_dot_w*(T_w_ex-T_w_su)
 Q_dot=C_dot_oil*(T_oil_su-T_oil_ex)

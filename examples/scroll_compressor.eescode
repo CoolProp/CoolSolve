@@ -4,6 +4,10 @@
 
 					Exemple: hermetic scroll compressor
 
+SOLVER NOTE: This model requires the .initials file for reliable convergence.
+Without initial values most solver configurations fail due to the complex
+coupled heat transfer and compressor equations.
+
 ########################################################################"
 
 "References:
@@ -38,7 +42,7 @@ p_su_cp=p_ev
 t_ex_cp=t_su_cd
 p_ex_cp=p_cd
 
-"Connection Condenseur - Evaporateur"
+"Condenser - Evaporator connection"
 h_ex_cd=h_su_ev
 
 

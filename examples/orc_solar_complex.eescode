@@ -2380,7 +2380,7 @@ reflectivity = 1
 
 THETA=0 "[degrees]"	"! provisoire"
 
-K = COS(THETA) + 0.000884 * THETA - 0.00005369 * (THETA)^2	"! A vérifier degrés-radians"
+K = COS(THETA) + 0.000884 * THETA - 0.00005369 * (THETA)^2	"! Check degrees-radians conversion"
 
 
 
@@ -2862,11 +2862,11 @@ $if glazingintact$='yes'
 
 	q_45cond[i] = q_34conv[i] + q_34rad[i]
 
-	q_56conv[i] = q_45cond[i]+ q_5SolAbs - q_57rad[i]		"!Q5solabs doit être fixé"
+	q_56conv[i] = q_45cond[i]+ q_5SolAbs - q_57rad[i]		"!Q5solabs must be specified"
 
 	q_12conv[i] = q_23cond[i] "[W/m]"
 
-	q_3SolAbs - q_23cond[i] - q_34conv[i] - q_34rad[i] - q_cond_bracket[i] / DELTAL = 0 "[W/m]"	"!q_3solabs doit être fixé"
+	q_3SolAbs - q_23cond[i] - q_34conv[i] - q_34rad[i] - q_cond_bracket[i] / DELTAL = 0 "[W/m]"	"!q_3solabs must be specified"
 
 	{q_12conv_bis[i] = q_5solabs + q_3solabs - q_56conv[i] - q_57rad[i] - q_cond_bracket[i]/DELTAL}
 
@@ -2874,7 +2874,7 @@ $else
 
 	q_12conv[i] = q_23cond[i] "[W/m]"
 
-	q_3SolAbs - q_23cond[i] - q_36conv[i] - q_37rad[i] - q_cond_bracket[i] / DELTAL = 0 "[W/m]"	"!q_3solabs doit être fixé"
+	q_3SolAbs - q_23cond[i] - q_36conv[i] - q_37rad[i] - q_cond_bracket[i] / DELTAL = 0 "[W/m]"	"!q_3solabs must be specified"
 
 	T_4[i] = T_6
 
@@ -3396,7 +3396,7 @@ t_ex_pp = temperature(fluid$,h=h_ex_pp,p=p_ev)
 
 
 
-"! Récupérateur :"
+"! Heat recuperator:"
 
 $bookmark recuperator
 

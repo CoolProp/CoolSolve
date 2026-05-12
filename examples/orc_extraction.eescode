@@ -1,3 +1,12 @@
+"ORC with Two-Stage Expander and Extraction (R134a)
+
+Organic Rankine Cycle model with a two-stage expander and intermediate
+pressure extraction. Working fluid: R134a.
+Evaporation temperature: 90 C, condensation temperature: 30 C.
+
+SOLVER NOTE: Some solver configurations fail without the .initials file.
+The default full pipeline converges successfully with initials provided.
+"
 T_ev=90
 
 T_cd=30
@@ -406,7 +415,7 @@ eta=(W_dot_exp-W_dot_pp)/Q_dot_ev
 
 "8. T-s diagram"
 
-"entrée expanseur"
+"expander inlet"
 
 T[1]=T_f_su_exp
 
@@ -414,7 +423,7 @@ s[1]=s_f_su_exp
 
 
 
-"déjection"
+"expander outlet / discharge"
 
 T[2]=T_f_int_exp
 
@@ -430,7 +439,7 @@ s[3]=s_f_ex_exp
 
 
 
-"entrée condenseur"
+"condenser inlet"
 
 T[4]=T_f_su_cd
 

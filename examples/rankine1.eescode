@@ -1,23 +1,20 @@
-"VL050325
-Répétition 7, exercice 1
+"Steam Rankine Cycle — 60 MW Power Plant
 
-1.	Dans une centrale à vapeur de 60 MW, la vapeur entre dans la turbine à une pression de 70 bar et une température de 500°C. 
+In a 60 MW steam power plant, steam enters the turbine at 70 bar and 500 C.
+Given data:
+  - Condenser pressure: 0.1 bar
+  - Boiler pressure drop: approx. 4 bar
+  - Overall boiler efficiency: 0.90
+  - Condenser cooling water temperature rise: limited to 10 C
+  - Isentropic efficiency of turbine: 0.85
+  - Alternator efficiency: 0.95
+  - Isentropic efficiency of pumps and drive motor efficiency: 0.85 and 0.94 respectively
 
-Sachant que :
-*	La pression au condenseur à eau est de 0.1 bar,
-*	Les pertes de charge dans la chaudière sont estimées à environ 4 bar,
-*	Le rendement global de la chaudière est de 0.90,
-*	L'augmentation de la température d'eau au condenseur est limitée à 10°C,
-*	L'efficacité isentropique de la turbine est égale à 0.85,
-*	Le rendement de l'alternateur est égal à 0.95,
-*	L'efficacité isentropique des pompes et le rendement des moteurs électriques d'entraînement sont égaux à 0.85 et 0.94 respectivement,
-
-On demande de calculer :
-*	Le débit de vapeur dans la machine,
-*	La puissance de la chaudière,
-*	Le rendement de la machine,
-*	Le débit d'eau au condenseur.
-
+Determine:
+  - Steam flow rate
+  - Boiler power
+  - Plant thermal efficiency
+  - Condenser cooling water flow rate
 "
 
 W_dot_el=60E6 "[W]"
@@ -30,41 +27,41 @@ eta_a=0.95
 epsilon_s_p=0.85
 eta_m=0.94
 
-"POINT 1: sortie du condenseur:"
+"POINT 1: condenser outlet:"
 x_1=0
 h_1=enthalpy(water,P=P_cd,x=x_1)
 s_1=entropy(water,P=P_cd,x=x_1)
 
-"POINT 2: sortie de la pompe"
+"POINT 2: pump outlet"
 epsilon_s_p=(h_2_s-h_1)/(h_2-h_1)
 h_2_s=enthalpy(water,s=s_1,P=P_2)
 P_2=P_3+DELTA_P
 P_3=70E5
 
-"POINT 3: sortie de la chaudière= entrée de la turbine"
+"POINT 3: boiler outlet = turbine inlet"
 T_3=500 "[°C]"
 h_3=enthalpy(water,P=P_3,T=T_3)
 s_3=entropy(water,P=P_3,T=T_3)
 
-"POINT 4: sortie de la turbine"
+"POINT 4: turbine outlet"
 epsilon_s_t=(h_3-h_4)/(h_3-h_4_s)
 h_4_s=enthalpy(water,s=s_3,P=P_cd)
 x_4=quality(water,P=P_cd,h=h_4)
 
-"PUISSANCE CENTRALE:"
+"PLANT POWER:"
 W_dot_el=W_dot_t*eta_a
 W_dot_t=M_dot_steam*(h_3-h_4)
 
-"CHAUDIERE"
+"BOILER"
 Q_dot_boiler=M_dot_steam*(h_3-h_2)/eta_boiler
 
-"TRAVAIL POMPE"
+"PUMP WORK"
 W_dot_p=M_dot_steam*(h_2-h_1)/eta_m
 
-"RENDEMENT"
+"THERMAL EFFICIENCY"
 eta=W_dot_el/(Q_dot_boiler+W_dot_p)
 
-"DEBIT EAU CONDENSEUR"
+"CONDENSER COOLING WATER FLOW RATE"
 Q_dot_cd=M_dot_steam*(h_4-h_1)
 Q_dot_cd=M_dot_w_cd*cp_w*DELTAT_w_cd
 cp_w=4186

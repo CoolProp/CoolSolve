@@ -1,7 +1,9 @@
-"VL050211
-Répétition 7, exercice 3
+"Steam Rankine Cycle with Regenerative Extraction at 25 bar
 
-Que deviendrait le rendement du cycle si le soutirage de l'exercice précédent était effectué à 25 bar?
+Same 60 MW steam plant as rankine1.eescode but with a regenerative extraction
+at 25 bar from the turbine for feedwater preheating.
+Isentropic efficiency of turbine: 0.83 (adjusted from previous exercise).
+Determine the new thermal efficiency of the cycle.
 "
 
 W_dot_el=60E6 "[W]"
@@ -14,65 +16,65 @@ eta_a=0.95
 epsilon_s_p=0.85
 eta_m=0.94
 
-"POINT 1: sortie du condenseur:"
+"POINT 1: condenser outlet:"
 x_1=0
 h_1=enthalpy(water,P=P_cd,x=x_1)
 s_1=entropy(water,P=P_cd,x=x_1)
 
-"POINT 2: sortie de la pompe 1"
+"POINT 2: pump 1 outlet"
 epsilon_s_p=(h_2_s-h_1)/(h_2-h_1)
 h_2_s=enthalpy(water,s=s_1,P=P_2)
 P_2=P_2a{+DELTA_P}
 P_2a=P_3a
-P_3a=14E5 "car dans table paramétrique"
+P_3a=14E5 "see parametric table"
 P_3=70E5
 
-"POINT 2A: sortie du mélangeur"
+"POINT 2A: mixer outlet"
 
 (M_dot_steam-M_dot_steam_s)*h_2+M_dot_steam_s*h_3a=M_dot_steam*h_2a
-"!!"h_2a=enthalpy(water,p=p_2a,x=0)"!!" "A la sortie de ce réchauffeur, l'eau est à l'état saturé"
+"!!"h_2a=enthalpy(water,p=p_2a,x=0)"!!" "water saturated at preheater outlet"
 s_2a=entropy(water,P=P_2a,h=h_2a)
 
-"POINT 2B: sortie de la pompe 2"
+"POINT 2B: pump 2 outlet"
 epsilon_s_p*(h_2b-h_2a)=(h_2b_s-h_2a)
 {h_2b=h_2b_s}
 h_2b_s=enthalpy(water,s=s_2a,P=P_2"!!"b"!!")
 P_2"!!"b"!!"=P_3+DELTA_P
 
 
-"POINT 3: sortie de la chaudière= entrée de la turbine"
+"POINT 3: boiler outlet = turbine inlet"
 T_3=500 "[°C]"
 h_3=enthalpy(water,P=P_3,T=T_3)
 s_3=entropy(water,P=P_3,T=T_3)
 
-"POINT 3a: sortie de la turbine1"
-epsilon_s_t=(h_3-h_3a)/(h_3-h_3a_s) "permet de calculer h_3a"
+"POINT 3a: turbine 1 outlet (extraction point)"
+epsilon_s_t=(h_3-h_3a)/(h_3-h_3a_s) "allows computing h_3a"
 h_3a_s=enthalpy(water,s=s_3,P=P_3a)
 s_3a=entropy(water,h=h_3a,P=P_3a)
 
-"POINT 4: sortie de la turbine 2"
+"POINT 4: turbine 2 outlet"
 epsilon_s_t=(h_3a-h_4)/(h_3a-h_4_s)
 h_4_s=enthalpy(water,s=s_3"!!"a"!!",P=P_cd)
 x_4=quality(water,P=P_cd,h=h_4)
 
-"PUISSANCE CENTRALE:"
+"PLANT POWER:"
 W_dot_el=W_dot_t*eta_a
 W_dot_t=W_dot_t_1+W_dot_t_2
 W_dot_t_1=M_dot_steam*(h_3-h_3a)
 W_dot_t_2=(M_dot_steam-M_dot_steam_s)*(h_3a-h_4)
 
-"CHAUDIERE"
+"BOILER"
 Q_dot_boiler=M_dot_steam*(h_3-h_2"!!"b"!!")/eta_boiler
 
-"TRAVAIL POMPE"
+"PUMP WORK"
 W_dot_p=W_dot_p_1+W_dot_p_2
 W_dot_p_1=M_dot_steam*(h_2-h_1)/eta_m
 W_dot_p_2=M_dot_steam*(h_2b-h_2a)/eta_m
 
-"RENDEMENT"
+"THERMAL EFFICIENCY"
 eta=W_dot_el/(Q_dot_boiler+W_dot_p)
 
-"DEBIT EAU CONDENSEUR"
+"CONDENSER COOLING WATER FLOW RATE"
 Q_dot_cd=(M_dot_steam-M_dot_steam_s)*(h_4-h_1)
 Q_dot_cd=M_dot_w_cd*cp_w*DELTAT_w_cd
 cp_w=4186

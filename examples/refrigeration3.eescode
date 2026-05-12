@@ -1,17 +1,15 @@
-"VL050415
-Répétition 8, exercice 5
+"Scroll Compressor Heat Pump — Data Consistency Verification
 
-5.	Un fabricant de compresseurs scroll pour pompes à chaleur nous fournit les performances suivantes relatives à un point de fonctionnement de son compresseur :
-*	Température d'évaporation : 0 °C, surchauffe à l'aspiration : 5 K
-*	Température de condensation : 50 °C, sous - refroidissement : 4 K
-*	Puissance calorifique : 6.30 kW
-*	Puissance absorbée : 1.81 kW
-*	Puissance frigorifique : 4.60 kW
-*	Débit massique : 30.9 g/s et volume balayé : 5.92 m3/h
-*	Réfrigérant : R407C
+A scroll compressor manufacturer provides the following performance data:
+  - Evaporation temperature: 0 C, inlet superheat: 5 K
+  - Condensation temperature: 50 C, subcooling: 4 K
+  - Heating capacity: 6.30 kW
+  - Electrical power input: 1.81 kW
+  - Refrigerating capacity: 4.60 kW
+  - Mass flow rate: 30.9 g/s, swept volume flow rate: 5.92 m3/h
+  - Refrigerant: R407C
 
-Vérifier que ces données sont cohérentes et calculer l'efficacité isentropique globale du compresseur. 
-
+Verify that these data are consistent and calculate the overall isentropic efficiency.
 "
 
 T_ev=0
@@ -20,20 +18,20 @@ Q_dot_cd=6.3E3
 Q_dot_ev=4.6E3
 W_dot_el=1.81E3
 {COP=3.48}
-COP=Q_dot_cd/W_dot_el "on retrouve tout de suite la valeur du COP annoncée par le constructeur"
+COP=Q_dot_cd/W_dot_el "COP matches manufacturer's announced value"
 DELTA_T_oh=5
 DELTA_T_sc=4
-{M_dot=30.9E-3} "on peut choisire de recalculer le débit prédit par le constructeur et le volume balayé V_dot_m3h"
+{M_dot=30.9E-3} "optionally recompute predicted mass flow rate and swept volume V_dot_m3h"
 {V_dot_m3h=5.92}
 
-"entrée compresseur:"
+"compressor inlet:"
 
 T_1=T_ev+DELTA_T_oh
 P_1=PRESSURE(R407C,T=T_ev,x=1)
 s_1=entropy(R407C,P=P_1,T=T_1)
 rho_1=density(R407C,P=P_1,T=T_1)
 
-"entrée condenseur=sortie compresseur"
+"condenser inlet = compressor outlet"
 
 P_2=PRESSURE(R407C,T=T_cd,x=1)
 Q_dot_cd=M_dot*(h_2-h_3)
@@ -47,21 +45,21 @@ W_dot_s=M_dot*(h_2_s-h_1)
 eta_el=W_dot/W_dot_el
 epsilon_s_cp_glob=W_dot_s/W_dot_el
 
-"sortie condenseur"
+"condenser outlet"
 
 T_3=T_cd-DELTA_T_sc
 P_3=PRESSURE(R407C,T=T_cd,x=0)
 
-"entrée évaporteur"
+"evaporator inlet"
 
 h_4=h_3
 h_1=enthalpy(R407C,P=P_1,T=T_1)
 h_4=PRESSURE(R407C,T=T_ev,p=p_4)
 Q_dot_ev{_bis}=M_dot*(h_1-h_4)
 
-"calcul cylindrée"
+"displacement volume calculation"
 
-M_dot=V_dot*rho_1 "[kg/s]" "le compresseur est une machine volumétrique: pour une vitesse de rotation donnée, il aspire toujours le même débit volumique V_dot "
+M_dot=V_dot*rho_1 "[kg/s]" "volumetric machine: at given speed, always draws the same volumetric flow V_dot"
 V_dot_m3h=3600*V_dot "[m3/h]"
 
 P[1]=P_1
@@ -76,4 +74,4 @@ h[3]=h_3
 P[4]=P_4
 h[4]=h_4
 
-"on retrouve des valeurs du débit massique et du volume balayé proches de celle annocées par le constructeur"
+"computed mass flow and swept volume are close to manufacturer's announced values"

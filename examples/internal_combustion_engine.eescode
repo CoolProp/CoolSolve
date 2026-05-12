@@ -1,4 +1,13 @@
-"MSTh - SB - R3 - Exercice 2"
+"Internal Combustion Engine Compressor Model
+
+Piston compressor model with inlet pressure drop and internal leakage.
+Operating conditions:
+  - Speed: 3000 rpm
+  - Inlet temperature: 20 C, pressure: 1 bar
+  - Outlet pressure: 4 bar
+  - Isentropic efficiency: 0.75
+  - Internal leakage flow rate: 10% of total mass flow rate
+"
 
 rpm=3000
 N=rpm/60
@@ -8,10 +17,10 @@ P_ex=4E5
 epsilon_s=0.75
 M_dot_l=0.1*M_dot
 
-"!En relatif"
+"!Relative basis (M_dot = 1)"
 M_dot=1
 
-"!Compression globale"
+"!Overall compression"
 epsilon_s=w_s/w
 w_s=h_ex_s-h_su
 h_ex_s=ENTHALPY(Air,s=s_su,P=P_ex)
@@ -20,72 +29,72 @@ h_su=ENTHALPY(Air,T=T_su)
 
 W_dot=M_dot*w
 
-"!perte de charge à l'admission - état su_1"
+"!Inlet pressure drop — state su_1"
 
 C_thr^2/2=h_su-h_thr
 h_su_1=h_su
 h_thr=ENTHALPY(Air,s=s_su,P=P_thr)
 P_thr="max(P_su_1,P_crit)"P_su_1
 P_crit=(2/(gamma+1))^(gamma/(gamma-1))*P_su
-"valeur provisoire:"
+"provisional value:"
 "gamma=1.4"
 (T_thr+273)/(T_su+273)=(P_thr/P_su)^((gamma-1)/gamma)
 T_thr=TEMPERATURE(Air,h=h_thr)
 
-"section équivalente"
+"equivalent nozzle area"
 M_dot=V_dot_thr_su/v_thr_su
 v_thr_su=VOLUME(Air,T=T_thr,P=P_thr)
 V_dot_thr_su=C_thr*A_thr_su
 d_su^2/4=A_thr_su/PI
 
-"!compression interne isentropique"
+"!Internal isentropic compression"
 W_dot=M_dot_in*(h_ex_2-h_su_2)
 h_ex_2=ENTHALPY(Air,s=s_su_2,P=P_ex)
 s_su_2=ENTROPY(Air,h=h_su_2,P=P_su_2)
 
-P_su_2=P_su_1 "le mélange se fait de façon isobare, la pression d'entrée du compresseur n'est pas influencée par la fuite mais seulement par la perte de charge"
+P_su_2=P_su_1 "mixing is isobaric; compressor inlet pressure is affected only by the pressure drop, not by leakage"
 
-"calcul de la cylindrée"
+"displacement volume calculation"
 V_dot_su_2=N*V_s
 V_dot_su_2=M_dot_in*v_su_2
 v_su_2=VOLUME(Air,h=h_su_2,P=P_su_2)
 
-"!Sans fuite interne, on a :"
+"!Without internal leakage:"
 "M_dot=M_dot_in
 h_su_1=h_su_2"
 
-"!En tenant compte de la fuite interne:"
-"mélange"
+"!Accounting for internal leakage:"
+"mixing"
 M_dot_in=M_dot_l+M_dot
 h_su_1*M_dot+h_ex_2*M_dot_l=M_dot_in*h_su_2
 
-"tuyère équivalente"
+"equivalent leakage nozzle"
 h_thr_l+C_thr_l^2/2=h_ex_2
 h_thr_l=ENTHALPY(Air,s=s_ex_2,P=P_thr_l)
 s_ex_2=ENTROPY(Air,T=T_ex_2,P=P_ex)
 
 P_thr_l=max(P_su_1,P_crit_l)
 P_crit_l=(2/(gamma_l+1))^(gamma_l/(gamma_l-1))*P_ex
-"valeur provisoire:"
+"provisional value:"
 "gamma_l=1.4"
 (T_thr_l+273)/(T_ex_2+273)=(P_thr/P_ex)^((gamma_l-1)/gamma_l)
 T_ex_2=TEMPERATURE(Air,h=h_ex_2)
 T_thr_l=TEMPERATURE(Air,h=h_thr_l)
-T_su_2=TEMPERATURE(Air,h=h_su_2) "à titre informatif"
+T_su_2=TEMPERATURE(Air,h=h_su_2) "for information only"
 
-"section équivalente"
+"equivalent nozzle area (leakage)"
 M_dot_l=V_dot_thr_l/v_thr_l
 v_thr_l=VOLUME(Air,T=T_thr_l,P=P_thr_l)
 V_dot_thr_l=C_thr_l*A_thr_leak
 
-"!RESULTATS"
-"1°) PERTE DE CHARGE à l'admission :"
-"La section équivalente est : A_thr_su=0.00578 [m^2]"
-"La tuyère fictive n'est pas choquée (P_su_1>P_crit : P_su_1=84994 > P_crit=52841), cette section a un diamètre de d_su=0.08579 [m]"
-"La perte de charge est telle que la pression passe de 1 bar (P_su=100000 ) à P_su_1=84994"
+"!RESULTS"
+"1°) INLET PRESSURE DROP:"
+"Equivalent nozzle area: A_thr_su=0.00578 [m^2]"
+"The fictitious nozzle is not choked (P_su_1>P_crit: P_su_1=84994 > P_crit=52841), nozzle diameter d_su=0.08579 [m]"
+"Pressure drop: from 1 bar (P_su=100000) to P_su_1=84994 Pa"
 
-"2°) FUITE INTERNE"
-"La section équivalente est : A_thr_leak=0.0001368 [m^2]  "
-"Le régime est choqué dans cette tuyère (P_crit_l > P_su_1 : P_crit_l=233118 > P_su_1=84994 )"
-"L'échauffement du fluide frais grâce au remélange avec la fuite est tel que : T_su=20 [C] passe à T_su_2=37.22 [C] "
+"2°) INTERNAL LEAKAGE"
+"Equivalent leakage nozzle area: A_thr_leak=0.0001368 [m^2]"
+"Flow is choked at this nozzle (P_crit_l > P_su_1: P_crit_l=233118 > P_su_1=84994)"
+"Mixing with leakage raises fresh gas from T_su=20 [C] to T_su_2=37.22 [C]"
 

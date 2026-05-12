@@ -1,6 +1,16 @@
-"MSTh - SB - R11 - Exercice 2"
+"UNSUPPORTED FUNCTION: This model uses X_LIBR() and H_LIBR() functions for
+Lithium-Bromide solution properties which are not yet implemented in CoolSolve.
+This model cannot be solved until LiBr property support is added."
+"Water-Lithium Bromide Absorption Cycle
 
-"Données"
+LiBr/Water absorption cycle analysis.
+Cycle conditions:
+  - Evaporation temperature: 5 C
+  - Absorber temperature: 40 C
+  - Condenser temperature: 45 C
+  - Generator temperature: 130 C
+"
+"Given data"
 T_ev=5
 DELTAT_oh=0
 T_abs=40
@@ -9,34 +19,34 @@ DELTAT_sc=0
 T_gen=130
 P_ev=PRESSURE(Water,T=T_ev,x=0.5)
 P_cd=PRESSURE(Water,T=T_cd,x=0.5)
-"hypothèse:"
+"assumption: working fluid mass flow rate M_dot_w = 1"
 M_dot_w=1
 
-"!évaporateur:"
+"!evaporator:"
 Q_dot_ev=M_dot_w*(h_w_ev_ex-h_w_ev_su)
 h_w_ev_su=h_w_cd_ex
 h_w_ev_ex=ENTHALPY(Water,T=T_ev,x=1)
 
-"!condenseur:"
+"!condenser:"
 h_w_cd_ex=ENTHALPY(Water,T=T_cd,x=0)
 Q_dot_cd=M_dot_w*(h_w_cd_su-h_w_cd_ex)
 
-"!générateur:"
-"conservation du débit"
+"!generator:"
+"flow rate conservation"
 M_dot_weak=M_dot_w+M_dot_rich
-"bilan énergétique"
+"energy balance"
 M_dot_weak*h_weak_gen_su+Q_dot_gen=M_dot_w*h_w_gen_ex+M_dot_rich*h_rich_gen_ex
 h_w_gen_ex=h_w_cd_su
 h_w_gen_ex=ENTHALPY(Water,T=T_gen,P=P_cd)
-"débits et concentrations des solutions"
+"solution flow rates and concentrations"
 M_dot_libr=x_abs*M_dot_weak
 M_dot_libr=x_gen*M_dot_rich
 x_abs=X_LIBR('SI',T_abs,P_ev/1000)
 x_gen=X_LIBR('SI',T_gen,P_cd/1000)
-"enthalpies du LiBr"
+"LiBr solution enthalpies"
 h_weak_abs_ex=H_LIBR('SI',T_abs,x_abs)*1000
 h_rich_gen_ex=H_LIBR('SI',T_gen,x_gen)*1000
-"!ajout d'un échangeur de récupération"
+"!heat recovery exchanger"
 Q_dot_HEX=epsilon_HEX*M_dot_rich*(h_rich_gen_ex-h_rich_abs_su_min)
 h_rich_abs_su_min=H_LIBR('SI',T_abs,x_gen)*1000
 epsilon_HEX=0.75

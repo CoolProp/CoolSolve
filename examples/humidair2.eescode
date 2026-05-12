@@ -1,8 +1,9 @@
-"VL050429
-Répétition 10, exercice 3
+"Air Handling Unit — Moist Air Conditioning
 
-3.	L'air soufflé dans le local de l'exercice précédent vient de l'extérieur. La température de l'air extérieur est de 30°C et l'humidité relative de 60%. Les conditions de soufflage sont obtenues grâce à une unité de traitement d'air. Calculer la puissance échangée à la batterie froide (efficacité de contact de 80%), la puissance nécessaire pour la post chauffe et le débit d'eau condensée sur la batterie froide.
-
+Supply air for a room comes from outdoors. Outdoor air: T = 30 C, RH = 60%.
+The supply conditions are achieved via an air handling unit.
+Calculate: the cooling coil capacity (contact effectiveness = 80%), the post-heating
+power, and the condensate flow rate at the cooling coil.
 "
 
 P_in=1E5
@@ -12,32 +13,32 @@ M_dot_w=0.08/3600 "[kg/s]"
 V_dot_a=40/3600 "[m^3/s]"
 Q_dot_t=130 "[W]"
 
-"conditions de soufflage"
+"supply air conditions"
 Q_dot_t=M_dot_a*(h_in-h_su)
 h_in=ENTHALPY(AirH2O,T=T_in,P=P_in,R=RH_in)
 M_dot_a=V_dot_a/v_a_su
 
-v_a_su=volume(airH2O,T=T_su{in},P=P_in,w=w_su{in}) "pour updater les guesses"
+v_a_su=volume(airH2O,T=T_su{in},P=P_in,w=w_su{in}) "for updating initial guesses"
 T_su=temperature(airH2O,h=h_su,P=P_in,w=w_su)
 
-"bilan eau"
+"water mass balance"
 M_dot_a*w_su+M_dot_w=M_dot_a*w_in
 w_in=humrat(airH2O,T=T_in,P=P_in,R=RH_in)
 
 RH_su=Relhum(AIRH2O,P=P_in,T=T_su,w=w_su)
 
-"conditions extérieures"
+"outdoor conditions"
 
 T_out=30
 RH_out=0.60
-	"batterie"
+	"cooling coil"
 epsilon_c=0.8
 epsilon_c=(w_out-w_su)/(w_out-w_c) "pour calculer w_c"
 w_out=humrat(airH2O,T=T_out,R=RH_out,P=P_in)
 T_c=dewpoint(airH2O,P=P_in,w=w_c,T=T_out)
 epsilon_c=(T_out-T_ex_bat)/(T_out-T_c)
 
-	"post chauffe"
+	"post-heating"
 Q_dot_pc=M_dot_a*(h_su-h_ex_bat)
 h_ex_bat=enthalpy(airH2O,P=P_in,T=T_ex_bat,w=w_su)
  "ou"
@@ -45,14 +46,14 @@ Q_dot_pc_bis=M_dot_a*(h_su_air-h_ex_bat_air)
 h_su_air=enthalpy(air,T=T_su)
 h_ex_bat_air=enthalpy(air,T=T_ex_bat)
 	
-	"débit d'eau condensé"
+	"condensate flow rate"
 M_dot_w_cond=M_dot_a*(w_out-w_su)
 
-	"puissance batterie"
+	"cooling coil capacity"
 h_out=enthalpy(airH2O,P=P_in,T=T_out,w=w_out)
 Q_dot_batt=M_dot_a*(h_out-h_ex_bat)
 
- 	"Q_dot_pc=Q_dot_pc_bis car pas d'échange de chaleur latente car humidité à la sortie de la batterie égale  w_su"
+"Q_dot_pc=Q_dot_pc_bis since no latent heat exchange after the cooling coil (humidity is constant = w_su)"
 
 "digramme"
 T[1]=T_out

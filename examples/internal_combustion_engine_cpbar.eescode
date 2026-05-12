@@ -26,52 +26,52 @@ x = 1
 e_min = 0
 e = 0
 
-"Composition de l'air simplifié"
+"Composition of simplified air"
 x_air_N2 = 0.79 ; x_air_O2= 0.21 
 
-"Constante universelle des gaz"
+"Universal gas constant"
 R_u = 8314 "J/kmol.K"
 
-"Masses molaires des différents constituants"
+"Molar masses of species"
 MM_CO = molarmass(CO) ; MM_N2 = molarmass(N2) ; MM_O2 = molarmass(O2)
 MM_CO2 = molarmass(CO2) ; MM_H2O = molarmass(H2O)
 
-IF (f>0) Then "produits de combustion et pas de l'air pur"
+IF (f>0) Then "combustion products case (not pure air)"
 
-"f  stoechiométrique, excès d'air et f"
+"Stoichiometric f, excess air and f"
 parfuel = m+n/4
 MM_f = 12*m+1*n
 f_st = MM_f/(parfuel*(MM_O2+(x_air_N2/x_air_O2)*MM_N2))
 e = (f_st/f)-1 
 
-IF (f>f_st) Then "défaut d'air"
+IF (f>f_st) Then "air deficiency"
 
-"Combustion stoechiométrique : CmHn+(m+n/4)*(O2+(79/21)*N2"
-e_min = -m/(2*parfuel) "pour avoir x>0"
+"Stoichiometric combustion: CmHn+(m+n/4)*(O2+(79/21)*N2"
+e_min = -m/(2*parfuel) "to ensure x>0"
 f_max = f_st/(1+e_min) 
 
-"Hypothèse : suffisamment d'air pour oxydation de H en H2O et pas d'O2 dans les fumées" 
-"D'où : CmHn+(m+n/4)*(O2+(79/21)*N2)*(1+e) = a*CO2+b*CO+c*H2O+g*N2"
+"Assumption: enough air to oxidize H to H2O and no O2 in flue gas" 
+"Hence: CmHn+(m+n/4)*(O2+(79/21)*N2)*(1+e) = a*CO2+b*CO+c*H2O+g*N2"
 g = parfuel*(1+e)*(79/21)
 c = n/2
 x=2*(e*parfuel+m/2)/m
-a = m*x "x est le nombre d'atomes de C oxydés en CO2"
+a = m*x "x is the fraction of C atoms oxidized to CO2"
 b = m*(1-x)
-"Fractions molaires des constituants" 
+"Molar fractions of constituents" 
 nkmoltot = a+ b + c +g
 x_CO2 = a/nkmoltot
 x_CO = b/nkmoltot
 x_H2O = c/nkmoltot
 x_N2 = g/nkmoltot
 mmprod = x_CO2*MM_CO2+x_CO*MM_CO+x_H2O*MM_H2O+x_N2*MM_N2
-"!c_p moyen des produits de combustion"
+"!Mean c_p of combustion products"
 h_CO2 = (enthalpy(CO2,T=T_p1)-enthalpy(CO2,T=T_p2))*MM_CO2
 h_CO = (enthalpy(CO,T=T_p1)-enthalpy(CO,T=T_p2))*MM_CO
 h_H2O =(enthalpy(H2O,T=T_p1)-enthalpy(H2O,T=T_p2))*MM_H2O
 h_N2 = (enthalpy(N2,T=T_p1)-enthalpy(N2,T=T_p2))*MM_N2
 c_bar_p = ((x_CO2*h_CO2+x_CO*h_CO+x_H2O*h_H2O+x_N2*h_N2)/mmprod)/(T_p1-T_p2)
  
-"Pertes par imbrûlés par kmol de combustible"
+"Unburned losses per kmol of fuel"
 T_ref = 25
 LHV_CO_mol = enthalpy(CO,T=T_ref)*MM_CO+0.5*enthalpy(O2,T=T_ref)*MM_O2-ENTHALPY(CO2,T=T_ref)*MM_CO2
 LHV_CO_mas = LHV_CO_mol/MM_CO
@@ -79,17 +79,17 @@ Q_4 = LHV_CO_mol*b
  
 ELSE
 
-"Fractions molaires des constituants" 
+"Molar fractions of constituents" 
 nkmoltot = m+ n/2 + parfuel*(e+(1+e)*(x_air_N2/x_air_O2))
 x_CO2 = m/nkmoltot
 x_H2O = (n/2)/nkmoltot
 x_O2 = parfuel*e/nkmoltot
 x_N2 = parfuel*(1+e)*(x_air_N2/x_air_O2)/nkmoltot
 
-"Masse molaire des produits de combustion"
+"Molar mass of combustion products"
 MM_prod = x_CO2*MM_CO2+x_H2O*MM_H2O+x_O2*MM_O2+x_N2*MM_N2
 
-"Enthalpie et chaleur massique des produits de combustion ; /kg de produits"
+"Enthalpy and mean specific heat of combustion products [per kg of products]"
 hp_1 = (enthalpy(CO2,T=T_p1)-enthalpy(CO2, T=T_p2))*MM_CO2
 hp_2 = (enthalpy(H2O,T=T_p1)-enthalpy(H2O, T=T_p2))*MM_H2O
 hp_3 = (enthalpy(O2,T=T_p1)-enthalpy(O2, T=T_p2))*MM_O2
@@ -101,7 +101,7 @@ ENDIF
 
 ELSE
 
-"Cas de l'air pur"
+"Pure air case"
 MM_a = x_air_O2*MM_O2+x_air_N2*MM_N2
 ha_1 = (enthalpy(O2,T=T_p1)-enthalpy(O2, T=T_p2))*MM_O2
 ha_2 = (enthalpy(N2,T=T_p1)-enthalpy(N2, T=T_p2))*MM_N2
@@ -116,9 +116,18 @@ END
 
 
 
-"MSTH051114 Exercice 4"
-"introduisons la perte de charge à l'admission (papillon du carburateur):" 
-"voir table paramétrique: pour annuller la puissance, il faut réduire p2 aux environs de 1.8E4:"
+"Internal Combustion Engine with cpbar Procedure
+
+Internal combustion engine model using the mean specific heat (cp_bar) procedure
+for combustion product properties.
+From the textbook exercises (MSTH051114 Exercice 4).
+
+SOLVER NOTE: This model requires the .initials file for reliable convergence.
+Without initial values most solver configurations fail due to the strongly
+non-linear combustion and thermodynamic equations.
+"
+"introduce inlet pressure drop (throttle valve):" 
+"see parametric table: to cancel power, reduce p2 to approximately 1.8E4:"
 "p_2=1.8E4"
 "on peut alors imposer:"
 W_dot_sh=0
@@ -143,11 +152,11 @@ LHV=50E6
 W_dot_m=10E3
 Q_dot_wa=8E3"
 "Figure V.16"
-"Conditions nominales:"
+"Nominal conditions:"
 t_1=t_a
 p_1=p
 t_2=t_1
-"(on suppose que le combustible est à la même température que l'air)"
+"(assume fuel is at the same temperature as air)"
 "p_2=p_1"
 M_dot_g=M_dot_a+M_dot_f
 M_dot_f=f*M_dot_a
@@ -175,17 +184,17 @@ Q_dot_3=-M_dot_f*LHV
 Q_dot_4=0
 Q_dot_5=M_dot_g*c_p_g_6*(t_6-25)
 Q_dot_1+Q_dot_2+Q_dot_3+Q_dot_4+Q_dot_5=0
-"Estimation provisoire:"
+"Provisional estimate:"
 //c_p_g_6=1200
 c_p_g_6= cpbar(m,n,f,25,t_6)
 M_dot_g*c_p_g_67*(t_6-t_7)=W_dot_sh
-"Valeur provisoire:"
+"Provisional value:"
 //c_p_g_67=1200
 c_p_g_67=cpbar(m,n,f,T_6,t_7)
 Q_dot_gw=epsilon_gw*C_dot_min_gw*(t_7-t_w_su)
 C_dot_min_gw=min(C_dot_g_78,C_dot_w)
 C_dot_g_78=M_dot_g*c_p_g_78
-"valeur provisoire:"
+"provisional value:"
 //c_p_g_78=1200
 c_p_g_78=cpbar(m,n,f,T_7,t_8)
 C_dot_w=M_dot_w*c_w

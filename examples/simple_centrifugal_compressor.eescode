@@ -1,15 +1,23 @@
-"MSTH 041012 exercice 4"
-"Un turbocompresseur centrifuge a été conçu de telle sorte que ses performances soient les meilleures dans les conditions suivantes:
-	Fluide : air sec et pur
-	Pression et température d'aspiration : 1 bar et 20°C
-	Pression de refoulement : 2.5 bar
-	Débit : 6000 m3/h
-	Facteur de débit : 0.3
-	Facteur d'enthalpie : 1.4
-Déterminez:
-	- Le diamètre et la vitesse de rotation optimale de la roue;
-	- Le diamètre et la vitesse de rotation à attribuer à un compresseur du même type pour comprimer 12000 m3/h de méthane de 2 bar, 20 °C à 3 bar."
-"!Détermination de la vitesse de rotation optimale N et du diamètre"
+"Centrifugal Compressor Design and Similarity Analysis
+
+A centrifugal turbocompressor designed for best performance at the following nominal conditions:
+  - Working fluid: dry clean air
+  - Inlet pressure and temperature: 1 bar and 20 C
+  - Discharge pressure: 2.5 bar
+  - Flow rate: 6000 m3/h
+  - Flow coefficient: phi = 0.3
+  - Head coefficient: psi = 1.4
+
+Determine:
+  - The optimal impeller diameter and rotation speed;
+  - The diameter and rotation speed for a similar compressor compressing
+    12000 m3/h of methane from 2 bar, 20 C to 3 bar.
+
+SOLVER NOTE: Newton solver fails (Singular Jacobian on blk1). Use the full
+solver pipeline (TrustRegion or subsequent solvers work correctly).
+The default solver configuration includes TrustRegion and will converge.
+"
+"!Determination of optimal rotation speed N and impeller diameter"
 p_su=1E5
 t_su=20
 p_ex=2.5E5

@@ -1,8 +1,11 @@
-"VL051107
-Répétition 7, exercice 3
+"Boiler Model with On/Off Burner Control
 
-3.	Supposez que, pour la chaudière de la question 2 (température de l'eau à l'entrée égale à 70°C), on fixe la température de consigne à 80°C. Déterminez la fraction de temps de fonctionnement du brûleur (régulé en tout-ou-rien) ainsi que le rendement moyen de la chaudière.
+For the boiler of the base case (water inlet temperature = 70 C), the set-point
+outlet temperature is fixed at 80 C. Determine the burner on-time fraction (on/off
+control) and the mean boiler efficiency.
 
+The model reuses the same cp_bar-based boiler equations but adds the on/off
+regulation equations to compute theta (on fraction) and eta_set (mean efficiency).
 "
 
 T_w_ex_set=80
@@ -15,9 +18,9 @@ M_dot_a=0.02153 [-]
 M_dot_f=0.001292 
 M_dot_w=0.5972 
 
-y_c=0.869 "fraction massique de C"
+y_c=0.869 "carbon mass fraction"
 y_h=1-y_c
-c_f=1800 "[J/kg.K]" "chaleur massique du fuel"
+c_f=1800 "[J/kg.K]" "specific heat of fuel"
 LHV=4.3E7 "[J/kg]"
 {M_dot_f=0.0006} 
 {f=0.06 "fuel air ratio" "!!"}
@@ -25,21 +28,21 @@ T_a_su=25
 T_f_su=25 
 T_env=25 
 
-T_w_su=70 "!!" "retour de l'eau vers chaudière"
+T_w_su=70 "!!" "boiler water return temperature"
 {T_w_ex=90 "!!"}
 {T_gas_ex=220 "!!"} "!!"
 {M_dot_w=0.28 "[kg/s]"} "!!"
 {eta=0.9 "!!"
 Q_dot_u=50E3 "!!"} "!!"
 
-"pour 1 kg de fuel, on a y_c kg de C et y_h de H
-pour 1 kg de fuel on a y_c/12 kmol de C et y_h/1 kmol de H
-pour 1 mole de C, on a y_h*12/y_c mole de C"
+"For 1 kg of fuel: y_c kg of C and y_h kg of H.
+For 1 kg of fuel: y_c/12 kmol of C and y_h/1 kmol of H.
+For 1 mol of C: y_h*12/y_c mol of H."
 
 m=1
 n=y_h*12/y_c
 
-"température adiabatique de combustion"
+"adiabatic flame temperature"
 M_dot_f*LHV+M_dot_a*cp_a*(T_a_su-T_ref)+M_dot_f*c_f*(T_f_su-T_ref)=M_dot_p*cp_p*(T_p_ad-T_ref)
 
 
@@ -50,7 +53,7 @@ cp_a=CP(air,T=T_a_su)
 cp_p = 1300
 M_dot_p=M_dot_a+M_dot_f
 
-"échangeur gaz-eau"
+"Gas-to-water heat exchanger"
 
 T_gas_su=T_p_ad
 C_dot_p=M_dot_p*cp_p_hex
@@ -65,25 +68,25 @@ epsilon_1=(1-exp(-NTU_1*(1-omega_1)))/(1-omega_1*exp(-NTU_1*(1-omega_1)))
 NTU_1=AU_1/C_dot_min_1
 
 Q_dot_1=epsilon_1*C_dot_min_1*(T_gas_su-T_w_su)
-Q_dot_1=C_dot_w*(T_w_ex_1-T_w_su) "pour calculer T_w_ex_1"
-Q_dot_1=C_dot_p*(T_gas_su-T_gas_ex) "calcul de la température de cheminée T_gas_ex"
+Q_dot_1=C_dot_w*(T_w_ex_1-T_w_su) "compute T_w_ex_1"
+Q_dot_1=C_dot_p*(T_gas_su-T_gas_ex) "compute flue gas exit temperature T_gas_ex"
 
-"enveloppe: 2 en ON"
+"Envelope heat loss (side 2) — burner ON"
 NTU_2=AU_2/C_dot_w
 epsilon_2=1-exp(-NTU_2)
 Q_dot_2_on=epsilon_2*C_dot_w*(T_w_ex_1-T_env)
-Q_dot_2_on=C_dot_w*(T_w_ex_1-T_w_ex_on) "pour calculer T_w_ex"
+Q_dot_2_on=C_dot_w*(T_w_ex_1-T_w_ex_on) "compute T_w_ex when burner is ON"
 
 Q_dot_u=Q_dot_1-Q_dot_2_on
 Q_dot_c=M_dot_f*LHV
 eta=Q_dot_u/Q_dot_c
 
-"enveloppe:2 en OFF"
+"Envelope heat loss (side 2) — burner OFF"
 
 Q_dot_2_off=epsilon_2*C_dot_w*(T_w_su-T_env)
 Q_dot_2_off=C_dot_w*(T_w_su-T_w_ex_off) 
 
-"rendement moyen"
+"Mean efficiency"
 Q_dot_u_set=C_dot_w*(T_w_ex_set-T_w_su)
 Q_dot_c_set=theta*Q_dot_c
 eta_set=Q_dot_u_set/Q_dot_c_set

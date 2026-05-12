@@ -1,5 +1,8 @@
+"PARSE ERROR: This file contains invalid procedure syntax
+(comment string inside argument list, e.g. '<=inputs outputs=>')
+It currently cannot be parsed by CoolSolve. The procedure definitions require
+fixes before this model can be solved."
 "=============================================================================================================================="
-"PUMP   MODEL"
 "=============================================================================================================================="
 $bookmark pump_model
 

@@ -1,13 +1,28 @@
+"Pipe Pressure Drop Calculation (Colebrook-White Equation)
+
+Calculates the friction pressure drop in a straight pipe using the Colebrook-White
+correlation. Working fluid: n-pentane (both gas and liquid conditions shown).
+
+Inputs:
+  - Pipe inner diameter D_i
+  - Absolute roughness epsilon
+  - Mass flow rate M_dot
+  - Pipe length L = 10 m
+
+Outputs:
+  - Pressure drop DELTAP [Pa] and DELTAPbar [bar]
+  - Dynamic pressure P_dyn
+"
 fluid$='n-pentane'{'R123'}
-epsilon=0.0000015 [m] "rugosité absolue"
-D_i=16E-3 [m] "Diam intérieur"
+epsilon=0.0000015 [m] "absolute roughness"
+D_i=16E-3 [m] "inner diameter"
 
 "n-pentane conditions"
-	"gaz"
+	"gas phase"
 {P=10E5
 T=T_sat+50}
 
-	"liquide"
+	"liquid phase"
 P=1E5
 T=T_sat+10
 
@@ -17,12 +32,12 @@ rho=1/v
 M_dot=80E-3 [kg/s]
 
 
-"coefficient de résistance conduite"
+"pipe friction factor (Colebrook-White)"
 
 1/sqrt(f)=-2*LOG10(epsilon/(3.7*D_i)+2.51/(Re*sqrt(f))) "colebrook"
 f_vlad=(-1.8*log10((6.9/Re+(epsilon/(3.7*D_i))^1.11)))^(-2)
 
-"perte de charge linéique"
+"friction pressure gradient [Pa/m]"
 deltaP_lin=f/D_i*rho*U^2/2 "[Pa/m]"
 deltaP_lin_vlad=f_vlad/D_i*rho*U^2/2 "[Pa/m]"
 U=V_dot/A_i
@@ -34,7 +49,7 @@ Re=D_i*U/nu
 nu=mu/rho
 mu=viscosity(fluid$,P=P,T=T)
 
-"perte de charge totale"
+"total pressure drop"
 
 DELTAP=deltaP_lin*L "[Pa]"
 DELTAP_vlad=deltaP_lin_vlad*L "[Pa]"
@@ -42,7 +57,7 @@ L=10 [m]
 DELTAPbar=DELTAP/1E5 "[bar]"
 DELTAP_vladbar=DELTAP_vlad/1E5 "[bar]"
 
-"pression dynamique"
+"dynamic pressure"
 
 P_dyn=rho*U^2/2
 ratio=P_dyn/DELTAP

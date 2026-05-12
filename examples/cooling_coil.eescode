@@ -1,4 +1,18 @@
-"MSTh - SB - R5 - Exercice 1"
+"Air Cooling Coil Model — Dry and Wet Regimes
+
+A chilled-water air cooling coil with the following data:
+  R_a   = 0.5e-3 m2.K/W  (air-side thermal resistance per unit area)
+  R_m   = 0.1e-3 m2.K/W  (wall metal resistance)
+  R_w   = 0.3e-3 m2.K/W  (water-side thermal resistance)
+  M_dot_a = 1 kg/s        (air mass flow rate)
+  M_dot_w = 2 kg/s        (water mass flow rate)
+
+Inlet conditions:
+  Air: T = 30 C, RH = 50%, P = 101325 Pa
+  Water: T = 5 C, P = 101325 Pa
+
+The model calculates both dry and wet regimes and the contact effectiveness.
+"
 
 R_a=0.5E-3
 M_dot_a=1
@@ -6,78 +20,78 @@ R_m=0.1E-3
 R_w=0.3E-3
 M_dot_w=2
 
-"conditions d'alimentation:"
+"Inlet conditions:"
 P_a_su=101325
 T_a_su=30
 RH_su=0.5
 T_w_su=5
 P_w_su=101325
 
-"!Régime SEC"
-"Côté air:"
+"Dry regime"
+"Air side (dry):"
 Q_dot_dry=C_dot_a_dry*(T_a_su-T_a_ex_dry)
 C_dot_a_dry=M_dot_a*cp_a_dry
 //cp_a_dry=CP(AirH2O,T=T_a_m,P=P_a_su,R=RH_su)
-"valeur provisoire:"
+"provisional value:"
 cp_a_dry=1200
 T_a_m=(T_a_su+T_a_ex_dry)/2
 
-"Côté eau"
+"Water side (dry):"
 Q_dot_dry=C_dot_w_dry*(T_w_ex_dry-T_w_su)
 C_dot_w_dry=M_dot_w*cp_w_dry
 //cp_w_dry=CP(Water,T=T_w_m,P=P_w_su)
-"valeur provisoire:"
+"provisional value:"
 cp_w_dry=4187
 T_w_m=(T_w_su+T_w_ex_dry)/2
 
-"Performances en régime sec"
+"Dry regime performance"
 Q_dot_dry=epsilon_dry*C_dot_min_dry*(T_a_su-T_w_su)
 C_dot_min_dry=min(C_dot_a_dry,C_dot_w_dry)
 
-"Hypothèse d'un échangeur à contre courant:"
+"Counterflow heat exchanger assumption:"
 epsilon_dry=(1-exp(-NTU_dry*(1-omega_dry)))/(1-omega_dry*exp(-NTU_dry*(1-omega_dry)))
 NTU_dry=AU_dry/C_dot_min_dry
 1/AU_dry=R_a+R_m+R_w
 omega_dry=C_dot_min_dry/C_dot_max_dry
 C_dot_max_dry=max(C_dot_a_dry,C_dot_w_dry)
 
-"Calcul du risque de condensation"
+"Condensation risk check"
 w_su=HUMRAT(AirH2O,T=T_a_su,P=P_a_su,R=RH_su)
-w_ex_dry=w_su "(pas de condensation en régime sec)"
+w_ex_dry=w_su "(no condensation in dry regime)"
 RH_ex_dry=RELHUM(AirH2O,T=T_a_ex_dry,P=P_a_su,w=w_ex_dry)
 
-"!Régime HUMIDE"
+"Wet regime"
 Q_dot_wet=M_dot_a*(h_a_su-h_a_ex_wet)-M_dot_cd*cp_w_wet*T_cd
 h_a_su=ENTHALPY(AirH2O,T=T_a_su,P=P_a_su,w=w_su)
 h_a_ex_wet=ENTHALPY(AirH2O,T=T_a_ex_wet,P=P_a_su,w=w_ex_wet)
 M_dot_cd=M_dot_a*(w_su-w_ex_wet)
 T_cd=T_a_ex_wet
 
-"Côté air:"
+"Air side (wet):"
 Q_dot_wet=C_dot_a_wet_f*(T_wb_su-T_wb_ex)
 C_dot_a_wet_f=M_dot_a*cp_a_wet_f
 T_wb_su=WETBULB(AirH2O,T=T_a_su,P=P_a_su,R=RH_su)
 T_wb_ex=WETBULB(AirH2O,T=T_a_ex_wet,P=P_a_su,w=w_ex_wet)
 //RH_ex_wet=RELHUM(AirH2O,T=T_a_ex_wet,P=P_a_su,w=w_ex_wet)
 
-"valeur provisoire:"
+"provisional value:"
 //cp_a_wet_f=3000
 
-"Côté eau"
+"Water side (wet):"
 Q_dot_wet=C_dot_w_wet*(T_w_ex_wet-T_w_su)
 C_dot_w_wet=M_dot_w*cp_w_wet
 //cp_w_wet=CP(Water,T=T_w_m_wet,P=P_w_su)
-"valeur provisoire:"
+"provisional value:"
 cp_w_wet=4187
 T_w_m_wet=(T_w_su+T_w_ex_wet)/2
 
-"Performances en régime sec"
+"Wet regime performance"
 Q_dot_wet=epsilon_wet_f*C_dot_min_wet_f*(T_wb_su-T_w_su)
 C_dot_min_wet_f=min(C_dot_a_wet_f,C_dot_w_wet)
 
-"Hypothèse d'un échangeur à contre courant:"
+"Counterflow heat exchanger assumption:"
 //epsilon_wet_f=(1-exp(-NTU_wet_f*(1-omega_wet)))/(1-omega_wet*exp(-NTU_wet_f*(1-omega_wet)))
-"valeur provisoire:"
+"provisional value:"
 epsilon_wet_f=0.4
 NTU_wet_f=AU_wet_f/C_dot_min_wet_f
 1/AU_wet_f=R_a_f+R_m+R_w
@@ -85,17 +99,17 @@ R_a/R_a_f=cp_a_wet_f/cp_a_dry
 omega_wet=C_dot_min_wet_f/C_dot_max_wet_f "!! guess for omega_wet =1"
 C_dot_max_wet_f=max(C_dot_a_wet_f,C_dot_w_wet)
 
-"valeur provisoire:"
+"provisional value:"
 RH_ex_wet=0.9
 
-"Calcul des conditions de sortie de l'air:"
+"Outlet air conditions:"
 (h_a_su-h_a_ex_wet)/(h_a_su-h_a_c_wet)=epsilon_c
 (w_su-w_ex_wet)/(w_su-w_c_wet)=epsilon_c
 epsilon_c=1-exp(-NTU_c)
 NTU_c=1/(R_a*C_dot_a_dry)
 w_c_wet=HUMRAT(AirH2O,T=T_c_wet,P=P_a_su,R=1)
 T_c_wet=TEMPERATURE(AirH2O,h=h_a_c_wet,P=P_a_su,R=1)
-"!ou:"
+"or:"
 Q_dot_wet=epsilon_c_bis*M_dot_a*(h_a_su-h_a_c_wet_bis)
 M_dot_cd=epsilon_c_bis*M_dot_a*(w_su-w_c_wet_bis)
 M_dot_c=epsilon_c_bis*M_dot_a

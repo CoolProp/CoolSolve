@@ -1,13 +1,24 @@
-"MSTh - SB - R5 - Exercice 3"
+"Wet Air-Cooled Condenser Model
 
-"paramètres supposés constants:"
+An air-cooled condenser operating in wet regime (spray evaporation cooling).
+Given condenser capacity and inlet/outlet air conditions, determine the overall
+heat transfer coefficient (AU_f) and the air and refrigerant mass flow rates.
+
+Known fixed parameters:
+  epsilon_c = 1  (contact effectiveness)
+  M_dot_a   = 0.7398 kg/s
+  NTU_f     = 0.532
+  C_dot_a_f = 3322 W/K
+"
+
+"assumed constant parameters:"
 "epsilon_c=1 [-]"
 "M_dot_a=0.7398 
 NTU_f=0.532 [-]
 C_dot_a_f=3322 "
 
  
-"données"
+"given data"
 Q_dot_cd=35000
 T_a_su=25
 P_su=101325
@@ -24,7 +35,7 @@ Q_dot_cd=epsilon_cd_f*C_dot_a_f*(T_cd-T_wb_su)
 epsilon_cd_f=1-exp(-NTU_f)
 NTU_f=AU_f/C_dot_a_f
 
-"calcul du débit d'air:"
+"Air mass flow rate computation:"
 Q_dot_cd=M_dot_a*(h_a_ex-h_a_su)-M_dot_cd*cp_w*T_w_cd
 T_w_cd=T_cd
 cp_w=4187

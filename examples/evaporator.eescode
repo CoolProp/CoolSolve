@@ -1,4 +1,15 @@
-"MSTh - SB - R5 - Exercice 2"
+"Refrigeration Evaporator with Moist Air
+
+Air-cooling evaporator working in wet regime (moist air condensation on the coil).
+Given: refrigeration capacity Q_dot_ev = 25 kW, refrigerant R134a with T_cd = 50 C,
+T_ev = 3 C, superheat = 5 K, subcooling = 4 K.
+Air inlet: T = 35 C, RH = 50%, outlet: T = 10 C, RH = 95%.
+
+Determined parameters from design:
+  AU_f = 1900 W/K
+  M_dot_a = 0.4761 kg/s
+  M_dot_r = 0.1815 kg/s
+"
 
 T_cd=50
 T_ev=3
@@ -14,12 +25,12 @@ RH_ex=0.95
 
 Q_dot_ev=25000
 
-"Paramètres déterminés:"
+"Determined parameters:"
 "AU_f=1900 
 M_dot_a=0.4761 
 M_dot_r=0.1815" 
 
-"!Frigo"
+"!Refrigerant side"
 
 P_ev=PRESSURE(R134a,T=T_ev,x=0.5)
 P_cd=PRESSURE(R134a,T=T_cd,x=0.5)
@@ -29,9 +40,9 @@ h_1=ENTHALPY(R134a,T=T_ev+DELTAT_oh,x=1)
 h_4=h_3
 h_3=ENTHALPY(R134a,T=T_cd-DELTAT_sc,x=0)
 
-"!Côté air"
+"!Air side"
 
-"!Régime HUMIDE"
+"!Wet regime"
 
 Q_dot_ev=M_dot_a*(h_a_su-h_a_ex)-M_dot_cd*cp_w*T_cd_w
 
@@ -41,7 +52,7 @@ h_a_ex=ENTHALPY(AirH2O,T=T_a_ex,P=P_a_su,w=w_ex)
 M_dot_cd=M_dot_a*(w_su-w_ex)
 "RH_ex=RELHUM(AirH2O,T=T_a_ex,P=P_a_su,w=w_ex)"
 w_ex=HUMRAT(AirH2O,T=T_a_ex,P=P_a_su,R=RH_ex)
-"ou"
+"or"
 w_su=HUMRAT(AirH2O,T=T_a_su,P=P_a_su,R=RH_su)
 cp_w=4187
 T_cd_w=T_a_ex
@@ -51,12 +62,11 @@ C_dot_a_f=M_dot_a*cp_a_f
 T_wb_su=WETBULB(AirH2O,T=T_a_su,P=P_a_su,R=RH_su)
 T_wb_ex=WETBULB(AirH2O,T=T_a_ex,P=P_a_su,w=w_ex)
 
-"performances:"
+"performance:"
 Q_dot_ev=epsilon_ev_f*C_dot_min*(T_wb_su-T_ev)
 C_dot_min=C_dot_a_f
 epsilon_ev_f=1-exp(-NTU_f)
 NTU_f=AU_f/C_dot_a_f
 
-"!Problème:"
-"l'exercice ne tourne que dans un sens, grosse instabilité numérique au niveau du calcul du RH_ex"
+"!Note: the model only runs in one direction due to numerical instability in the RH_ex calculation"
 

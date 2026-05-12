@@ -1,14 +1,21 @@
-"MSTH 051024 Exercice 2"
-"Déterminez les régimes de fonctionnement, les températures de sortie, les
-     puissances dissipées et les puissances électriques moyennes consommées par la
-     tour de la question précédente, lorsque l'on fait varier de 26 à 36 °C la température
-     de consigne  de l'eau à la sortie de la tour.
-     La tour est équipée d'un ventilateur à deux vitesses. :
-     Vitesse nominale et vitesse réduite de moitié.
-     Puissance consommée par le ventilateur à vitesse nominale : 15 kW.
-     Supposez que le débit d'air et le coefficient d'échange de la tour sont tous les                deux pratiquement   proportionnels à la vitesse de rotation du ventilateur.
-    Négligez la variation possible du rendement du ventilateur."
-"On doit définir le régime à vitesse réduite:"
+"Two-Speed Cooling Tower Model
+
+Determine the operating regimes, outlet temperatures, dissipated capacities and mean
+electrical consumption of the cooling tower when the set-point temperature at the tower
+water outlet varies from 26 to 36 C.
+
+The tower is equipped with a two-speed fan:
+  - Nominal speed and half-speed.
+  - Power consumption at nominal speed: 15 kW.
+  - Air flow rate and heat transfer coefficient are both approximately proportional
+    to fan rotational speed.
+  - Fan efficiency variation is neglected.
+
+SOLVER NOTE: This model requires the .initials file for reliable convergence.
+Without initial values all solver configurations fail due to the coupled
+non-linear wet heat transfer equations.
+"
+"Reduced-speed regime:"
 AU=90E3
 M_dot_w=50
 M_dot_a=60
@@ -30,7 +37,7 @@ NTU_f_r=AU_f_r/C_dot_min_f_r
 AU_f_r=AU_r*c_p_f_r/c_p
 c_p_f_r=(h_a_ex_r-h_a_su)/(t_wb_ex_r-t_wb_su)
 
-"valeur provisoire:"
+"provisional value:"
 //c_p_f=4000
 //c_p_f_r=4000
 c_p=SPECHEAT(AirH2O,T=T_a_su,P=P,R=RH_su)
@@ -52,12 +59,12 @@ t_wb_ex=temperature(AirH2O,h=h_a_ex,P=P,R=1)
 Q_dot=C_dot_w*(t_w_su-t_w_ex)
 t_wb_ex_r=temperature(AirH2O,h=h_a_ex_r,P=P,R=1)
 Q_dot_r=C_dot_w*(t_w_su-t_w_ex_r)
-"Puissance consommée par le ventilateur:"
+"Fan power consumption:"
 W_dot=15E3
 W_dot=V_dot_a*DELTAp/eta
-"avec"
+"with"
 eta=0.6
-"(valeur hypothétique; ça n'a pas d'importance ici)"
+"(hypothetical value; does not affect the result here)"
 V_dot_a=A*C_a
 V_dot_a=M_dot_a*v_a
 v_a*DELTAp=C_a^2/2
