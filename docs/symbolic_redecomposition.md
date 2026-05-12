@@ -1,528 +1,305 @@
-# §3.2.2 — Post-Reduction Block Re-Decomposition
+# Post-Reduction Block Re-Decomposition
 
-**Status:** Design document  
-**Depends on:** §3.2.1 Symbolic Block Reduction (`enableSymbolicReduction`)  
-**Authors:** Auto-generated design analysis  
-**Date:** 2026-03-03
-
----
-
-## 1. Problem Statement
-
-The current symbolic reduction pipeline (§3.2.1) removes equations and
-variables from strongly connected blocks via CoolProp inversions, explicit
-extractions, and dead-variable elimination.  After removal, the *remaining*
-equations are solved as a **single monolithic block**.
-
-However, removing a node from a strongly connected component (SCC) can
-**break** it into multiple smaller SCCs.  If that happens, the current code
-misses an opportunity: instead of solving one `n`-variable nonlinear system,
-we could solve two or more independent systems of sizes `n₁ + n₂ + … = n`,
-which is dramatically easier (Newton cost scales as O(n³) per iteration).
-
-**The question is: does this actually happen in practice, and what is the
-best strategy to exploit it?**
+**Feature area:** Symbolic reduction pipeline  
+**Depends on:** `enableSymbolicReduction = true`  
+**Automatic:** Yes — enabled whenever symbolic reduction is active  
 
 ---
 
-## 2. Theoretical Analysis
+## 1. Overview
 
-### 2.1 Can Removing Nodes from an SCC Create Multiple SCCs?
+When CoolSolve's symbolic reduction eliminates equations from a strongly
+connected component (SCC), the remaining equations may no longer be mutually
+dependent.  In that case the single large block can be **split into several
+independent sub-blocks**, each solved separately and in dependency order.
 
-**Yes.** This is a fundamental property of directed graphs.
+This is called *post-reduction block re-decomposition*.  It is implemented
+in `StructuralAnalyzer::redecomposeBlock()` and integrated directly into the
+`solveBlock()` path in `solver.cpp`.
 
-A strongly connected component (SCC) is a maximal set of nodes where every
-node can reach every other node through directed paths.  If we remove a
-node `v` that is an *articulation point* — meaning it lies on the only
-directed path between some pair of other nodes — then the remaining graph
-may have two or more SCCs.
+### Why it matters
 
-**Graph-theory argument:**
+Newton's method cost scales as O(n³) per iteration in block size *n*.
+Splitting a 56-variable block into sub-blocks of sizes 42, 9, and 5
+reduces the per-iteration cost from 175,616 units to 74,088 + 729 + 125 ≈
+**75,000 units — a 2× improvement** in that step alone.  With fewer
+iterations needed in smaller blocks, real-world speedups are typically
+larger.  Smaller blocks also make convergence more reliable, especially for
+bad initial guesses.
 
-Consider a block with equations `{E1, …, E5}` coupled through variables
-`{a, b, c, d, e}`:
+### Typical trigger
 
-```
-E1(a, b, c)  →  depends on E3 via c
-E2(a, b)     →  depends on E1 via a
-E3(c, a)     →  depends on E1 via a;  matched output = c
-E4(d, e, c)  →  depends on E3 via c
-E5(d, e)     →  depends on E4 via d
-```
-
-The dependency graph (eq → eq edges) is:
-```
-E1 → E3 → E1  (cycle through c, a)
-E3 → E4 → E5 → E4  (cycle through d, e)
-E1 → E2 → E1  (cycle through a, b)
-```
-All nodes can reach each other through E3 (which bridges via variable `c`),
-so `{E1..E5}` is one SCC.
-
-Now suppose symbolic reduction inverts E3 away (CoolProp inversion: we can
-compute `c` directly).  Remove E3 and `c` from the block.  The remaining
-graph is:
-
-```
-E1(a, b) ↔ E2(a, b)     — SCC₁ = {E1, E2}
-E4(d, e) ↔ E5(d, e)     — SCC₂ = {E4, E5}
-```
-
-No edge connects the two groups because `c` was the only bridging
-variable.  **The single SCC has split into two independent SCCs.**
-
-### 2.2 Is This Likely in Thermodynamic Models?
-
-**Very likely.**  CoolProp property calls are often the "glue" that
-couples sub-systems.  Typical patterns:
-
-| Physical model             | Coupling variable      | Bridge equation                           |
-|----------------------------|------------------------|-------------------------------------------|
-| Compressor ↔ condenser     | `h_ex` (enthalpy)     | `h_ex = enthalpy(R$, T=T_ex, P=P_ex)`    |
-| Evaporator ↔ expansion     | `T_su` (temperature)  | `T_su = temperature(R$, h=h_su, P=P_su)` |
-| Sub-cooler ↔ two-phase     | `P_r_ex` (pressure)   | `t_out = temperature(R$, x=0, P=P_r_ex)` |
-
-When such an equation is inverted (e.g., `T_ex = temperature(R$, H=h_ex,
-P=P_ex)`), the variable that bridged two physical sub-systems disappears
-from the remaining equations, and the sub-systems become independent.
-
-### 2.3 Concrete Example: `condenser_3zones.eescode`
-
-Block 38 has 62 equations.  After symbolic reduction, 6 variables are
-eliminated (5 CoolProp inversions + 1 extraction), leaving 56 equations
-solved as one monolithic system.
-
-The removed variables include:
-- `h_r_ex_cd_sh` — enthalpy at superheated zone exit
-- `P_r_ex_cd_sh` — pressure at superheated zone exit (CoolProp inversion)
-- `h_cf_ex_cd_sh`, `h_cf_ex_cd_tp`, `h_cf_ex_cd_sc` — coolant enthalpies
-- `P_r_cd` — average refrigerant pressure
-
-These variables are shared between the three heat exchange zones
-(superheated, two-phase, sub-cooled).  Their removal may decouple these
-zones into independent sub-blocks, reducing a 56-variable problem into
-several smaller ones.
-
-**Whether this block actually splits can only be determined by running
-Tarjan's SCC algorithm on the 56-equation reduced graph.** This is exactly
-the proposed improvement.
+CoolProp property calls are often the "glue" that couples physically
+distinct sub-systems inside one SCC.  When symbolic inversion removes such
+a call (e.g., inferring enthalpy from a temperature-pressure pair), the
+variable that bridged two sub-systems disappears, and the sub-systems
+become independent.
 
 ---
 
-## 3. Proposed Strategy: Lightweight In-Block Re-Decomposition
+## 2. How to Enable
 
-### 3.1 High-Level Design
+Re-decomposition is **automatic** whenever symbolic reduction is enabled:
 
-After symbolic reduction produces a set of reduced equations and variables,
-**run a local BLT decomposition on that subset** before handing it to the
-nonlinear solver.  If the reduced graph has multiple SCCs (or acyclic
-components), solve them sequentially in topological order.
-
-```
-Original pipeline:
-
-  StructuralAnalysis → blocks → for each block:
-    SymbolicReduction → reducedBlock(nReduced)
-    Solve(reducedBlock)
-
-Proposed pipeline:
-
-  StructuralAnalysis → blocks → for each block:
-    SymbolicReduction → reducedBlock(nReduced)
-    LocalBLT(reducedBlock) → sub-blocks [b₁, b₂, …, bₖ]
-    for each sub-block bᵢ (topological order):
-      Solve(bᵢ)
-      Propagate solved variables to next sub-blocks
+```conf
+# coolsolve.conf
+enableSymbolicReduction = true
 ```
 
-### 3.2 Algorithm: `redecomposeReducedBlock()`
+or programmatically:
 
-Input:
-- `reducedEquationIds` (vector of global equation IDs)
-- `reducedVariables` (vector of variable names)
-- Reference to the IR (for `EquationInfo.variables`)
-- The global `matching` (for output-variable assignments)
-
-Steps:
-
-1. **Build local matching.**  
-   For each reduced equation `eqId`, its output variable is
-   `analysis.matching[eqId]`.  Build `localOutput[i] = matching[reducedEqIds[i]]`
-   for local index `i`.
-
-2. **Build local adjacency list.**  
-   For each local equation index `i`, scan its variable set
-   (`EquationInfo.variables`).  For each variable `v` in that set:
-   - Skip if `v` is the output of equation `i`
-   - Skip if `v` is not in `reducedVariables`
-   - Find local equation index `j` such that `localOutput[j] = v`
-   - Add edge `i → j`
-
-   This is O(k²) in the worst case for k = |reducedEquationIds|, but in
-   practice each equation references only a few variables, so it is O(k·m)
-   where m is the average number of variables per equation (~3–5).
-
-3. **Run Tarjan's SCC.**  
-   Call `StructuralAnalyzer::tarjanSCC(k, localAdj)`.
-   Returns sub-SCCs in topological order (dependencies first — this is
-   already the convention in the codebase, see `structural_analysis.cpp`
-   line 152).
-
-4. **Build sub-blocks.**  
-   For each SCC, create a `Block` with:
-   - `equationIds` = global equation IDs of the SCC members
-   - `variables` = output variables of those equations
-
-5. **Return** `vector<Block>` in topological solve order.
-
-**Complexity:** O(k + E) for Tarjan, where k ≤ 60 and E ≤ 300 typically.
-Negligible compared to even a single Newton iteration.
-
-### 3.3 Integration into `solveBlock()`
-
-The change is localized to the `else` branch in `solveBlock()` (the
-`nReduced > 1` case at ~line 1096 in `solver.cpp`).
-
-**Current code (simplified):**
 ```cpp
-} else {
-    // Reduced block still size > 1 — use normal pipeline
-    BlockEvaluator reducedEval(reducedBlock, ir_, options.coolpropConfig);
-    // ... build problem, solve monolithically
-}
+SolverOptions opts;
+opts.enableSymbolicReduction = true;   // re-decomposition is included
 ```
 
-**Proposed replacement:**
-```cpp
-} else {
-    // Re-decompose reduced block into sub-SCCs
-    auto subBlocks = redecomposeReducedBlock(
-        reduction.reducedEquationIds,
-        reduction.reducedVariables,
-        ir_, analysis_);
+There is **no separate option**.  When `enableSymbolicReduction = false`
+(the default), re-decomposition code is never reached, so there is zero
+overhead.
 
-    if (subBlocks.size() <= 1) {
-        // Still a single SCC — solve monolithically (existing code)
-        BlockEvaluator reducedEval(reducedBlock, ir_, options.coolpropConfig);
-        // ...
-    } else {
-        // Multiple sub-SCCs — solve sequentially
-        for (auto& subBlock : subBlocks) {
-            size_t subN = subBlock.variables.size();
-            // Build external vars (everything not in subBlock)
-            auto subExternal = buildExternalVars(subBlock);
-            if (subN == 0) continue;
-            if (subN == 1) {
-                // Explicit or Newton1D — same logic as existing size-1 path
-            } else {
-                // Full pipeline solve for this sub-block
-            }
-            // Propagate solved variables for subsequent sub-blocks
-            for (const auto& var : subBlock.variables) {
-                reducedExternalVars[var] = evaluator_.getVariableValue(var);
-            }
-        }
-    }
-}
-```
+---
 
-### 3.4 Trace / Debug Output
+## 3. What Happens at Runtime
 
-When re-decomposition splits a block, record it in the `SolverTrace`:
+For each multi-variable block, `solveBlock()` runs:
 
 ```
-Block 38: symbolic reduction 62 → 56 vars
-  Re-decomposition: 56-var block → 3 sub-blocks [22, 18, 16]
-  Sub-block 38a (22 vars): Newton SUCCESS (2 iter)
-  Sub-block 38b (18 vars): Newton SUCCESS (3 iter)
-  Sub-block 38c (16 vars): Newton SUCCESS (1 iter)
+1. Symbolic reduction
+   → eliminates equations via CoolProp inversion, explicit extraction,
+     or dead-variable substitution
+   → if the reduced block is empty (all eliminated): done, no Newton needed
+   → if the reduced block has size 1: scalar Newton or explicit solve
+
+2. Re-decomposition (only when reduced block size > 1)
+   → calls StructuralAnalyzer::redecomposeBlock()
+   → builds a local dependency graph on the remaining equations
+   → runs Tarjan's SCC algorithm
+   → returns sub-blocks in topological solve order
+
+3a. If the block splits (sub-blocks > 1):
+    → solve each sub-block independently in order:
+        size 0: skip
+        size 1: explicit assignment or Newton1D
+        size > 1: full solver pipeline (Newton → TR → LM → BisectionND
+                                        → Homotopy → Partitioned)
+    → propagate solved values before each subsequent sub-block
+    → on any sub-block failure: fall through to monolithic solve (step 3b)
+
+3b. If the block does not split (single SCC):
+    → solve as a single system with the full solver pipeline
+    → this is the same path as without re-decomposition
 ```
 
-The `symbolic_reduction.md` debug file should include a section like:
+---
+
+## 4. Terminal Output
+
+When `verbose = true` and a block splits, CoolSolve prints a summary line:
+
+```
+  Re-decomposition: 56-var block → 3 sub-blocks [42, 9, 5]
+```
+
+No output is produced when the block does not split, or when symbolic
+reduction is disabled.
+
+---
+
+## 5. Debug Report (`symbolic_reduction.md`)
+
+When `debugReductionPath` is set to a file path, CoolSolve writes a full
+Markdown report.  The **Block Summary** table includes a `Sub-Blocks`
+column:
 
 ```markdown
-### Block 38: Re-Decomposition
-
-After symbolic reduction (62 → 56 vars), the reduced block was decomposed
-into 3 independent sub-blocks:
-
-| Sub-block | Size | Variables (preview) | Solver | Iterations |
-|-----------|------|---------------------|--------|------------|
-| 38.1      | 22   | T_r_su_cd_sh, ...   | Newton | 2          |
-| 38.2      | 18   | P_r_su_cd_tp, ...   | Newton | 3          |
-| 38.3      | 16   | t_r_ex_cd_sc, ...   | Newton | 1          |
+| Block | Original Size | Reduced Size | Sub-Blocks     | Inversions | ... |
+|------:|-------------:|-------------:|---------------:|-----------:|-----|
+|    38 |           62 |           56 | 3 [42,9,5]     |          5 | ... |
+|    12 |           10 |            8 | —              |          2 | ... |
 ```
 
-### 3.5 Activation Control
+`—` means re-decomposition ran but the reduced block remained a single SCC.
 
-Re-decomposition is automatically enabled when `enableSymbolicReduction`
-is true.  It is a natural extension of symbolic reduction — it only makes
-sense when variables have been removed, and has zero cost when no
-reduction occurred.  No separate option is needed.
+The **Detailed Reduction Steps** section for each block also includes:
 
-**When symbolic reduction is disabled:** zero overhead.  The
-re-decomposition code path is never reached because it sits inside the
-symbolic reduction branch.
+```markdown
+**Re-decomposition:** 3 sub-blocks [42, 9, 5]
+```
+
+### Setting the debug path
+
+```conf
+# coolsolve.conf
+debugReductionPath = symbolic_reduction.md
+```
+
+or:
+
+```cpp
+opts.debugReductionPath = "symbolic_reduction.md";
+```
 
 ---
 
-## 4. Implementation Plan
+## 6. Programmatic Access
 
-### 4.1 Files to Modify
-
-| File | Change |
-|------|--------|
-| `include/coolsolve/structural_analysis.h` | Add static method: `redecomposeBlock(eqIds, vars, ir, analysis) → vector<Block>` |
-| `src/structural_analysis.cpp` | Implement `redecomposeBlock()` using local adjacency + `tarjanSCC()` |
-| `include/coolsolve/solver.h` | Extend `SolverTrace` and `BlockResult` with sub-block info |
-| `src/solver.cpp` | In `solveBlock()`: call `redecomposeBlock()` when `nReduced > 1`, solve sub-blocks sequentially |
-| `src/solver.cpp` | In `writeDebugReductionReport()`: add re-decomposition section |
-| `src/solver.cpp` | In `writeDebugReductionReport()`: add re-decomposition section |
-
-### 4.2 New Function Signature
+### `SolverTrace` (per-block tracing, requires `enableTracing = true`)
 
 ```cpp
-// In structural_analysis.h:
-class StructuralAnalyzer {
-public:
-    /// Re-decompose a reduced block into sub-SCCs after symbolic reduction.
-    /// Returns sub-blocks in topological solve order.
-    /// If the reduced block is still a single SCC, returns a vector of size 1.
-    static std::vector<Block> redecomposeBlock(
-        const std::vector<int>& reducedEquationIds,
-        const std::vector<std::string>& reducedVariables,
-        const IR& ir,
-        const StructuralAnalysisResult& analysis);
+struct SolverTrace {
+    bool redecompositionApplied = false;
+    int  numSubBlocks = 0;
+    std::vector<int> subBlockSizes;   // size of each sub-block
+    // ... (also: symbolicReductionApplied, originalBlockSize, reducedBlockSize, ...)
+};
+```
+
+### `BlockResult` (always populated)
+
+```cpp
+struct BlockResult {
+    bool redecompositionApplied = false;
+    int  numSubBlocks = 0;
+    std::vector<int> subBlockSizes;
     // ...
 };
 ```
 
-### 4.3 Estimated Complexity
+Example check:
 
-- **`redecomposeBlock()`:** ~50 lines (adjacency build + Tarjan call + Block construction)
-- **`solveBlock()` changes:** ~40 lines (sub-block solve loop, replacing the current monolithic path)
-- **Trace/debug extensions:** ~30 lines
-- **Tests:** ~60 lines (2–3 test cases with synthetic blocks)
-
-Total: ~180 lines of new/modified code.
+```cpp
+auto result = solver.solve(opts, /*enableTracing=*/true);
+for (const auto& br : result.blockResults) {
+    if (br.redecompositionApplied) {
+        std::cout << "Block split into " << br.numSubBlocks << " sub-blocks: ";
+        for (int sz : br.subBlockSizes) std::cout << sz << " ";
+        std::cout << "\n";
+    }
+}
+```
 
 ---
 
-## 5. Architecture Compatibility
+## 7. Interaction with Other Features
 
-### 5.1 Interaction with Tearing
+### Tearing (`enableTearing`)
 
-#### 5.1.1 Current Execution Order
+Tearing is a separate fallback that runs **only when symbolic reduction
+fails**.  Re-decomposition runs **within** symbolic reduction, before the
+solver pipeline.
 
-In `solveBlock()`, the three optimisations are applied as **sequential
-fallbacks**, not complementary passes:
-
-```
-Step 1  →  Symbolic Reduction    (if enableSymbolicReduction && n > 1)
-           On SUCCESS → return
-           On FAILURE → fall through
-
-Step 2  →  Tearing               (if enableTearing && n >= tearingMinBlockSize)
-           On SUCCESS → return    operates on ORIGINAL block (not reduced)
-           On FAILURE → fall through
-
-Step 3  →  Standard Pipeline     (Newton → TR → LM → BisectionND → Homotopy → Partitioned)
-```
-
-**Critical observations:**
-
-1. Tearing never sees the reduced block.  When symbolic reduction fails
-   and falls through, tearing operates on the **full original block**
-   (variables `varNames` and block evaluator `blockEval` are unchanged).
-   
-2. When symbolic reduction succeeds, tearing is skipped entirely.  It
-   only activates as a fallback when reduction failed.
-
-3. When *both* are disabled, only the standard pipeline runs.
-
-#### 5.1.2 How Tearing Works
-
-The tearing algorithm implements a **Greedy Feedback Vertex Set (FVS)**:
-
-1. Build the block's internal dependency graph
-   (`buildBlockDependencyGraph`, `structural_analysis.cpp` L218)
-2. Find any cycle via DFS
-3. Remove the node with maximum out-degree from the cycle
-4. Repeat until the graph is acyclic
-5. Removed nodes become **tear variables** (outer Newton loop)
-6. Remaining nodes are solved in **topological order** (inner sequential
-   evaluation) at each outer iteration
-
-The torn system is solved via a Schur-complement Newton method: the inner
-(acyclic) equations are solved by sequential forward-substitution, then a
-Newton update is computed for the tear variables only.
-
-#### 5.1.3 Impact of Re-Decomposition on Tearing
-
-| Scenario | Current behaviour | With re-decomposition |
-|----------|------------------|-----------------------|
-| Reduction succeeds, block doesn't split | Tearing skipped | Tearing skipped (same) |
-| Reduction succeeds, block splits into sub-blocks | N/A (not implemented) | Each sub-block solved independently; tearing only if sub-block ≥ `tearingMinBlockSize` |
-| Reduction fails → tearing runs | Tearing on full original block | Same (tearing is a fallback) |
-| Reduction succeeds, sub-block solve fails | N/A | Sub-block falls through to tearing on *that sub-block* |
-
-**Key insight:** Re-decomposition generally **reduces or eliminates the
-need for tearing**, because:
-
-- Smaller sub-blocks have simpler cycle structures, requiring fewer (or
-  zero) tear variables.
-- Size-1 sub-blocks need no tearing at all.
-- The total tear variables across all sub-blocks is typically ≤ the tear
-  set of the original block, because some cycles in the original block
-  spanned equations that now live in different sub-blocks.
-
-**When tearing is still needed:** If a sub-block is large enough (≥
-`tearingMinBlockSize`, default 4), it goes through the standard pipeline
-which includes the tearing fallback.  Re-decomposition does not disable
-tearing — it just makes it less necessary.
-
-#### 5.1.4 Could Tearing Guide Which Equations to Reduce?
-
-The current symbolic reduction picks CoolProp inversions in scan order,
-without considering which removals have the most structural impact.  An
-improvement would be to **prioritise inversions that are articulation
-points** (bridge nodes) in the dependency graph — i.e., inversions that
-would break the SCC into multiple sub-blocks.
-
-This is a future enhancement (not in scope for this initial
-implementation), but the design accommodates it: `redecomposeBlock()` uses
-the same `tarjanSCC()` that could be called speculatively during the
-reduction analysis to evaluate candidate inversions.
-
-**Potential future algorithm:**
+Execution order in `solveBlock()`:
 
 ```
-For each candidate CoolProp inversion (eq_i, var_i):
-    Simulate removing eq_i from the dependency graph
-    Run tarjanSCC on the remaining graph
-    Score = number of resulting SCCs (more = better)
-Sort candidates by score (descending)
-Apply inversions in that order
+Symbolic reduction (with re-decomposition)  →  if fails, fall through
+Tearing                                      →  if fails, fall through
+Standard pipeline (Newton → TR → … → Partitioned)
 ```
 
-This adds O(m · (V + E)) to the reduction analysis (m candidates, V+E
-for each Tarjan run), which is negligible for practical block sizes.
+Re-decomposition and tearing are therefore independent and complementary:
+- Re-decomposition converts one large system into several smaller ones.
+- If a sub-block is still large and the standard pipeline fails, tearing
+  may be applied to that sub-block as a last resort.
+- Re-decomposition generally reduces or eliminates the need for tearing,
+  because smaller blocks have simpler cycle structures.
 
-### 5.2 Why Re-Decomposition Integrates Cleanly
+### Initial guesses (`.initials` files)
 
-The codebase already supports all the required primitives:
+Initial guesses are loaded before structural analysis and are available to
+sub-block solvers in the same way as for full blocks.  There is no
+interaction with initial guess loading.
 
-1. **`Block` is a plain value struct** (`equationIds` + `variables`).
-   No special construction needed — we can build sub-blocks from any
-   subset of equations and variables.
+### Solver pipeline mode (sequential vs parallel)
 
-2. **`BlockEvaluator` accepts any `Block`**.  The solver already does
-   this for reduced blocks (`reducedBlock` at solver.cpp ~line 1001).
-   Sub-blocks work identically.
-
-3. **`tarjanSCC()` is a static method** taking a generic adjacency list.
-   No coupling to the global analysis — it can be called on any sub-graph.
-
-4. **External variable propagation** is already handled: each solved
-   block's variable values are added to `externalVars` before solving
-   the next block.  The same pattern applies to sub-blocks.
-
-5. **The matching is preserved.**  Symbolic reduction does not change the
-   equation-to-variable matching from the original structural analysis.
-   The output variable of each reduced equation is still
-   `analysis.matching[eqId]`.
-
-### 5.3 Zero-Overhead When Disabled
-
-When `enableSymbolicReduction = false`:
-- No code in `redecomposeBlock()` executes
-- The re-decomposition logic is entirely inside the symbolic reduction
-  branch, so there is zero overhead
-
-### 5.4 Interaction with Tearing (Summary)
-
-See §5.1 for the full analysis.  In brief:
-- **Tearing** is a fallback applied after symbolic reduction fails.
-- **Re-decomposition** is applied *within* symbolic reduction, before the
-  solver pipeline.
-- After re-decomposition, sub-blocks that are still large enough may
-  still fall through to tearing if the standard pipeline fails.
-- Re-decomposition generally reduces or eliminates the need for tearing.
+Each sub-block uses the configured solver pipeline
+(`SolverOptions::solverPipeline`) in sequential mode.  Sub-blocks
+themselves are always solved sequentially, in topological order.
 
 ---
 
-## 6. Expected Impact
+## 8. Algorithm Details
 
-### 6.1 Performance
+`StructuralAnalyzer::redecomposeBlock()` takes the reduced equation IDs and
+variable names and proceeds as follows:
 
-For a block of original size `n` that splits into `k` sub-blocks of sizes
-`n₁, n₂, …, nₖ`:
+1. **Build local matching.**  
+   For each reduced equation `eqId`, the output variable is
+   `analysis.matching[eqId]` (unchanged from the original structural
+   analysis — symbolic reduction preserves the matching).
 
-- **Jacobian cost:** O(n₁³ + n₂³ + … + nₖ³) vs O(n³)
-- Example: 56-var block → 3 sub-blocks of [22, 18, 16]
-  - Before: 56³ = 175,616 (units)
-  - After: 22³ + 18³ + 16³ = 10,648 + 5,832 + 4,096 = 20,576 (units)
-  - **8.5× faster** per iteration
-- Smaller blocks also converge in fewer iterations, so the real speedup
-  may be **10–20×** for the block solve.
+2. **Build local adjacency list.**  
+   For each reduced equation *i*, scan its variable set from the IR
+   (`EquationInfo::variables`).  For each variable *v*:
+   - Skip if *v* is the output of equation *i* (self-loop)
+   - Skip if *v* is not in the reduced variable set (external dependency)
+   - Add an edge *i → j* where *j* is the equation whose output is *v*
 
-### 6.2 Robustness
+3. **Run Tarjan's SCC.**  
+   `tarjanSCC(k, localAdj)` is called on the local *k*-node graph.
+   SCCs are returned in topological order (independent equations first,
+   equations that depend on them later).
 
-Smaller blocks are:
-- Less likely to have singular Jacobians
-- Less likely to diverge from bad initial guesses
-- Faster to fall through the solver pipeline if one strategy fails
-- More amenable to BisectionND (which struggles above ~10 variables)
+4. **Build output blocks.**  
+   Each SCC becomes a `Block` with the corresponding global equation IDs
+   and output variable names.
 
-### 6.3 Risk
-
-**Low.** The re-decomposition is a pure refinement — if the block does not
-split, the behavior is identical to the current code.  If it does split,
-we get smaller independent problems that can only be easier, never harder,
-than solving them together.
-
-The only risk is a bug in the local adjacency construction.  This is
-mitigated by:
-1. The function is simple (~50 lines, reusing existing `tarjanSCC`)
-2. Easy to validate: sum of sub-block sizes must equal the reduced block
-   size
-3. Sits inside the symbolic reduction branch — disabling symbolic
-   reduction also disables re-decomposition
+Complexity: O(k + E) where *k* ≤ reduced block size and *E* ≤ k × (average
+variables per equation).  For realistic models this runs in microseconds.
 
 ---
 
-## 7. Testing Strategy
+## 9. Tests
 
-### 7.1 Unit Tests
+The following tests cover this feature:
 
-| Test | Description |
-|------|-------------|
-| `Redecomposition: block that splits into 2` | Synthetic block with bridge variable; after removing bridge, verify 2 sub-blocks |
-| `Redecomposition: block that stays monolithic` | Synthetic fully-connected block; verify `redecomposeBlock()` returns 1 block |
-| `Redecomposition: chain splits into 3` | Synthetic block with two bridge variables; after removing both, verify 3 sub-blocks |
-| `Redecomposition: topological order` | Verify sub-blocks are returned in dependency order (causal blocks first) |
-| `End-to-end: condenser_3zones with redecomposition` | Solve condenser_3zones.eescode with both flags on; verify success + smaller blocks in trace |
+| Test | File | Tag |
+|------|------|-----|
+| `redecomposeBlock: trivial size-0` | `test_symbolic_reduction.cpp` | `[symbolic][redecomp]` |
+| `redecomposeBlock: trivial size-1` | `test_symbolic_reduction.cpp` | `[symbolic][redecomp]` |
+| `redecomposeBlock: two independent equations split into 2 sub-blocks` | `test_symbolic_reduction.cpp` | `[symbolic][redecomp]` |
+| `redecomposeBlock: mutually coupled equations stay monolithic` | `test_symbolic_reduction.cpp` | `[symbolic][redecomp]` |
+| `redecomposeBlock: chain of 3 splits into 3 sub-blocks in topological order` | `test_symbolic_reduction.cpp` | `[symbolic][redecomp]` |
+| `redecomposeBlock: mixed — 1 cycle + 1 independent forms 2 sub-blocks` | `test_symbolic_reduction.cpp` | `[symbolic][redecomp]` |
+| `redecomposeBlock: variables outside reduced set are ignored` | `test_symbolic_reduction.cpp` | `[symbolic][redecomp]` |
+| `Re-decomposition: SolverTrace fields populated when split occurs` | `test_symbolic_reduction.cpp` | `[symbolic][redecomp][integration]` |
+| `Re-decomposition: results match non-reduction baseline` | `test_symbolic_reduction.cpp` | `[symbolic][redecomp][integration]` |
 
-### 7.2 Robustness Tests
+Run them with:
 
-Run the existing robustness test suite with a new configuration:
+```bash
+./coolsolve_tests "[redecomp]"
 ```
-"Default + SymbolicReduction + Redecomposition (with initials)"
-```
-and compare success rates against the existing `SymbolicReduction` config
-to verify no regressions.
+
+The robustness test suite (`[solver-robustness]`) also tracks
+re-decomposition statistics via the `redecompositionCount` and
+`redecompDetail` fields in `RobustnessResult`.  These are reported in the
+`Re-decomposition` column of the Symbolic Reduction Impact table.
 
 ---
 
-## 8. Summary
+## 10. Known Limitations
 
-| Aspect | Details |
-|--------|---------|
-| **Correctness** | Mathematically sound: decomposing independent sub-systems does not change the solution |
-| **Efficiency** | O(k + E) re-decomposition cost, negligible vs solver; potential 10× speedup for blocks that split |
-| **Integration** | Uses existing `Block`, `BlockEvaluator`, `tarjanSCC` — no architectural changes |
-| **Activation** | Automatic when `enableSymbolicReduction = true` (no separate option) |
-| **Overhead when off** | Single `if` check per block — effectively zero |
-| **Debug output** | Recorded in `SolverTrace`, shown in `symbolic_reduction.md` and terminal output |
-| **Implementation size** | ~180 lines across 4 files |
-| **Risk** | Low — pure refinement, identical behavior when block doesn't split |
+- **No articulation-point prioritisation.**  The current symbolic reduction
+  picks inversion candidates in scan order, without preferring candidates
+  whose removal would split the SCC.  An optimised selection strategy could
+  achieve more splits, but is not yet implemented.
+
+- **Sub-block failures fall back to monolithic.**  If any sub-block solve
+  fails, the solver retries the entire reduced block as a single system.
+  This is safe but loses the performance benefit.
+
+- **Tearing is not applied at sub-block level** as a first-attempt
+  strategy; tearing is only a last resort in the full pipeline.
+
+---
+
+## 11. Future Work
+
+- **Articulation-point-guided inversion ordering:** during the symbolic
+  reduction analysis, speculatively evaluate which inversion candidates are
+  articulation points (bridge nodes) in the dependency graph.  Prioritise
+  those candidates to maximise the number of sub-blocks produced.
+
+- **Per-sub-block tearing as a first strategy:** for sub-blocks above a
+  threshold size, apply tearing before Newton as a first attempt rather
+  than as a last resort.

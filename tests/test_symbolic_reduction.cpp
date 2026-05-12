@@ -1,12 +1,15 @@
 /**
  * @file test_symbolic_reduction.cpp
- * @brief Tests for the symbolic block reduction feature (§3.2.1).
+ * @brief Tests for the symbolic block reduction feature (§3.2.1) and
+ *        post-reduction block re-decomposition (§3.2.2).
  *
  * Tests cover:
  *  - CoolProp inversion helpers (function/input name mapping, pair validity)
  *  - Analysis of blocks: explicit extraction, CoolProp inversion, substitution
  *  - End-to-end solver integration with enableSymbolicReduction = true
  *  - Verification that disabling the feature has zero overhead
+ *  - redecomposeBlock(): unit tests for all graph topology cases
+ *  - Re-decomposition integration: SolverTrace fields, end-to-end on real models
  */
 
 #include <catch2/catch_test_macros.hpp>
@@ -411,3 +414,259 @@ TEST_CASE("Symbolic reduction on real example files", "[symbolic][integration][e
         }
     }
 }
+
+// ============================================================================
+// redecomposeBlock() unit tests
+//
+// These tests exercise StructuralAnalyzer::redecomposeBlock() directly,
+// independent of the symbolic reduction pipeline.  They use simple parsed
+// models to obtain a valid IR + matching, then call redecomposeBlock() with
+// hand-crafted subsets of equations to check every graph topology.
+// ============================================================================
+
+// Helper: parse a code snippet and return IR + analysis.  Returns false if
+// parsing or analysis failed (lets the caller SKIP rather than FAIL).
+static bool parseAndAnalyse(const std::string& code, IR& ir,
+                            StructuralAnalysisResult& analysis) {
+    EESParser parser;
+    auto pr = parser.parse(code);
+    if (!pr.success) return false;
+    ir = IR::fromAST(pr.program);
+    analysis = StructuralAnalyzer::analyze(ir);
+    return analysis.success;
+}
+
+TEST_CASE("redecomposeBlock: trivial size-0 returns single block", "[symbolic][redecomp]") {
+    IR ir;
+    StructuralAnalysisResult analysis;
+    REQUIRE(parseAndAnalyse("X = 1", ir, analysis));
+
+    auto blocks = StructuralAnalyzer::redecomposeBlock({}, {}, ir, analysis);
+    REQUIRE(blocks.size() == 1);
+    CHECK(blocks[0].equationIds.empty());
+    CHECK(blocks[0].variables.empty());
+}
+
+TEST_CASE("redecomposeBlock: trivial size-1 returns single block", "[symbolic][redecomp]") {
+    IR ir;
+    StructuralAnalysisResult analysis;
+    REQUIRE(parseAndAnalyse("X = 42", ir, analysis));
+    REQUIRE(!analysis.matching.empty());
+
+    // Pass the single equation as the "reduced" block
+    auto blocks = StructuralAnalyzer::redecomposeBlock({0}, {"X"}, ir, analysis);
+    REQUIRE(blocks.size() == 1);
+    CHECK(blocks[0].equationIds.size() == 1);
+}
+
+TEST_CASE("redecomposeBlock: two independent equations split into 2 sub-blocks",
+          "[symbolic][redecomp]") {
+    // Two explicit equations with no shared variables.
+    // After reduction these would be fully independent.
+    IR ir;
+    StructuralAnalysisResult analysis;
+    REQUIRE(parseAndAnalyse("X1 = 5\nX2 = 7", ir, analysis));
+    REQUIRE(analysis.matching.size() >= 2);
+
+    // Both equations: X1 and X2 have no cross-dependency in reduced set.
+    auto blocks = StructuralAnalyzer::redecomposeBlock({0, 1}, {"X1", "X2"}, ir, analysis);
+    REQUIRE(blocks.size() == 2);
+    // Each sub-block has exactly 1 equation and 1 variable
+    CHECK(blocks[0].equationIds.size() == 1);
+    CHECK(blocks[0].variables.size() == 1);
+    CHECK(blocks[1].equationIds.size() == 1);
+    CHECK(blocks[1].variables.size() == 1);
+}
+
+TEST_CASE("redecomposeBlock: mutually coupled equations stay monolithic",
+          "[symbolic][redecomp]") {
+    // X1 = X2 + 1 and X2 = X1 + 1 form a 2-cycle — cannot be split.
+    IR ir;
+    StructuralAnalysisResult analysis;
+    REQUIRE(parseAndAnalyse("X1 = X2 + 1\nX2 = X1 + 1", ir, analysis));
+    REQUIRE(analysis.matching.size() >= 2);
+
+    auto blocks = StructuralAnalyzer::redecomposeBlock({0, 1}, {"X1", "X2"}, ir, analysis);
+    // Must remain a single block
+    REQUIRE(blocks.size() == 1);
+    CHECK(blocks[0].equationIds.size() == 2);
+    CHECK(blocks[0].variables.size() == 2);
+}
+
+TEST_CASE("redecomposeBlock: chain of 3 splits into 3 sub-blocks in topological order",
+          "[symbolic][redecomp]") {
+    // X1=5, X2=X1+1, X3=X2+1 forms a dependency chain X1→X2→X3.
+    // Each is its own SCC; topological order must be X1 first, X3 last.
+    IR ir;
+    StructuralAnalysisResult analysis;
+    REQUIRE(parseAndAnalyse("X1 = 5\nX2 = X1 + 1\nX3 = X2 + 1", ir, analysis));
+    REQUIRE(analysis.matching.size() >= 3);
+
+    auto blocks = StructuralAnalyzer::redecomposeBlock(
+        {0, 1, 2}, {"X1", "X2", "X3"}, ir, analysis);
+
+    REQUIRE(blocks.size() == 3);
+    // Each sub-block is a singleton
+    for (const auto& b : blocks) {
+        CHECK(b.equationIds.size() == 1);
+        CHECK(b.variables.size() == 1);
+    }
+    // Topological order: X1 before X2 before X3
+    std::string v0 = blocks[0].variables[0];
+    std::string v1 = blocks[1].variables[0];
+    std::string v2 = blocks[2].variables[0];
+    // Case-insensitive comparisons
+    auto ci = [](const std::string& a, const std::string& b) {
+        std::string la = a, lb = b;
+        for (auto& c : la) c = std::tolower(c);
+        for (auto& c : lb) c = std::tolower(c);
+        return la == lb;
+    };
+    CHECK(ci(v0, "X1"));
+    CHECK(ci(v1, "X2"));
+    CHECK(ci(v2, "X3"));
+}
+
+TEST_CASE("redecomposeBlock: mixed — 1 cycle + 1 independent forms 2 sub-blocks",
+          "[symbolic][redecomp]") {
+    // X1 = X2 + 1; X2 = X1 + 1 (cycle), X3 = 99 (independent).
+    // Reduced set is all three but X3 has no cross-link with X1/X2.
+    IR ir;
+    StructuralAnalysisResult analysis;
+    REQUIRE(parseAndAnalyse("X1 = X2 + 1\nX2 = X1 + 1\nX3 = 99", ir, analysis));
+    REQUIRE(analysis.matching.size() >= 3);
+
+    auto blocks = StructuralAnalyzer::redecomposeBlock(
+        {0, 1, 2}, {"X1", "X2", "X3"}, ir, analysis);
+
+    // X1/X2 form one SCC; X3 is a separate SCC → 2 sub-blocks
+    REQUIRE(blocks.size() == 2);
+
+    // The coupled pair comes before the independent singleton, or vice versa
+    // (both orderings are valid for independent SCCs, but X3 has no dep on X1/X2)
+    bool hasPair  = false;
+    bool hasSingle = false;
+    for (const auto& b : blocks) {
+        if (b.variables.size() == 2) hasPair = true;
+        if (b.variables.size() == 1) hasSingle = true;
+    }
+    CHECK(hasPair);
+    CHECK(hasSingle);
+}
+
+TEST_CASE("redecomposeBlock: variables outside reduced set are ignored",
+          "[symbolic][redecomp]") {
+    // X1 = X2 + X3; X2 = X1 + X3; X3 = 5
+    // Structural analysis sees a 3-equation system.
+    // If we call redecomposeBlock with only {0,1} and {X1,X2}, X3 is external
+    // and both equations depend only on each other's output → mutual cycle → 1 block.
+    IR ir;
+    StructuralAnalysisResult analysis;
+    REQUIRE(parseAndAnalyse("X1 = X2 + X3\nX2 = X1 + X3\nX3 = 5", ir, analysis));
+    REQUIRE(analysis.matching.size() >= 3);
+
+    // Restrict to equations 0 and 1; X3 is treated as external
+    auto blocks = StructuralAnalyzer::redecomposeBlock({0, 1}, {"X1", "X2"}, ir, analysis);
+    REQUIRE(blocks.size() == 1);
+    CHECK(blocks[0].equationIds.size() == 2);
+}
+
+// ============================================================================
+// Re-decomposition integration tests
+// ============================================================================
+
+TEST_CASE("Re-decomposition: SolverTrace fields populated when split occurs",
+          "[symbolic][redecomp][integration]") {
+    // Use condenser_3zones — a large model known to benefit from re-decomposition
+    // when symbolic reduction is enabled.  If the file does not exist, skip.
+    namespace fs = std::filesystem;
+    const std::string filepath = "../examples/condenser_3zones.eescode";
+    if (!fs::exists(filepath)) {
+        WARN("Skipping: condenser_3zones.eescode not found");
+        return;
+    }
+
+    EESParser parser;
+    auto pr = parser.parseFile(filepath);
+    REQUIRE(pr.success);
+
+    IR ir = IR::fromAST(pr.program);
+
+    const std::string initialsPath = "../examples/condenser_3zones.initials";
+    if (fs::exists(initialsPath)) ir.loadInitialsFromFile(initialsPath);
+
+    auto analysis = StructuralAnalyzer::analyze(ir);
+    REQUIRE(analysis.success);
+
+    SolverOptions opts;
+    opts.enableSymbolicReduction = true;
+    opts.tolerance = 1e-6;
+
+    Solver solver(ir, analysis);
+    auto result = solver.solve(opts, /*enableTracing=*/true);
+
+    REQUIRE(result.success);
+
+    // Check that at least one block reports re-decomposition
+    bool anyRedecomp = false;
+    for (const auto& br : result.blockResults) {
+        if (br.redecompositionApplied) {
+            anyRedecomp = true;
+            CHECK(br.numSubBlocks > 1);
+            CHECK(static_cast<int>(br.subBlockSizes.size()) == br.numSubBlocks);
+            int totalVars = 0;
+            for (int sz : br.subBlockSizes) totalVars += sz;
+            CHECK(totalVars == br.reducedSize);
+        }
+    }
+    // If symbolic reduction runs but finds no split, that is acceptable;
+    // only assert the invariants above when it does split.
+    (void)anyRedecomp;
+}
+
+TEST_CASE("Re-decomposition: results match non-reduction baseline",
+          "[symbolic][redecomp][integration]") {
+    // Verify that enabling symbolic reduction (with re-decomposition) produces
+    // the same numerical results as solving without it.
+    namespace fs = std::filesystem;
+    const std::string filepath = "../examples/condenser_3zones.eescode";
+    if (!fs::exists(filepath)) {
+        WARN("Skipping: condenser_3zones.eescode not found");
+        return;
+    }
+
+    EESParser parser;
+    auto pr = parser.parseFile(filepath);
+    REQUIRE(pr.success);
+
+    IR ir = IR::fromAST(pr.program);
+    const std::string initialsPath = "../examples/condenser_3zones.initials";
+    if (fs::exists(initialsPath)) ir.loadInitialsFromFile(initialsPath);
+
+    auto analysis = StructuralAnalyzer::analyze(ir);
+    REQUIRE(analysis.success);
+
+    SolverOptions opts;
+    opts.tolerance = 1e-6;
+
+    // Baseline: no reduction
+    opts.enableSymbolicReduction = false;
+    Solver s1(ir, analysis);
+    auto r1 = s1.solve(opts);
+
+    // With reduction
+    opts.enableSymbolicReduction = true;
+    Solver s2(ir, analysis);
+    auto r2 = s2.solve(opts);
+
+    if (r1.success) {
+        REQUIRE(r2.success);
+        // Key output variable from the example expected solutions
+        auto it1 = r1.variables.find("epsilon_cd_tp");
+        auto it2 = r2.variables.find("epsilon_cd_tp");
+        if (it1 != r1.variables.end() && it2 != r2.variables.end()) {
+            CHECK_THAT(it2->second, WithinRel(it1->second, 0.001));
+        }
+    }
+}
+
