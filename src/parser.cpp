@@ -388,6 +388,10 @@ private:
     peg::parser parser_;
     bool grammarValid_ = false;
     std::string lastError_;
+    // Set by parseFunctionCall when a named-argument value cannot be parsed;
+    // consumed (and cleared) by tryParseEquationOrAssignment to emit a
+    // specific diagnostic instead of the generic "Could not parse line".
+    std::string pendingExpressionError_;
     
     // Known built-in math/utility functions (case-insensitive)
     static const std::unordered_set<std::string>& knownBuiltinFunctions() {
@@ -941,6 +945,9 @@ private:
 
     StmtPtr tryParseEquationOrAssignment(const std::string& line, int lineNum,
                                         std::string* errorMsg = nullptr) {
+        // Clear any stale expression error from a previous call.
+        pendingExpressionError_.clear();
+
         // Remove inline comments first, extracting any "" comment
         std::string inlineComment;
         std::string cleaned = removeInlineComments(line, &inlineComment);
@@ -1017,7 +1024,12 @@ private:
             }
         }
         
-        if (!lhs || !rhs) return nullptr;
+        if (!lhs || !rhs) {
+            // Propagate a specific message from parseFunctionCall if available.
+            if (errorMsg && !pendingExpressionError_.empty())
+                *errorMsg = pendingExpressionError_;
+            return nullptr;
+        }
         
         auto stmt = std::make_shared<Statement>();
         if (op == ":=") {
@@ -1541,6 +1553,12 @@ private:
                         fc.namedArgs.push_back({paramName, valueExpr});
                         continue;
                     }
+                    // Value expression is malformed — report a specific error and
+                    // abort the whole function call so the equation fails to parse
+                    // instead of silently continuing with a missing argument.
+                    pendingExpressionError_ = "Could not parse value for named argument '"
+                        + paramName + "': '" + paramValue + "'";
+                    return nullptr;
                 }
             }
             

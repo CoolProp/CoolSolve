@@ -721,3 +721,63 @@ TEST_CASE("Parser backslash namespace separator in variable names", "[parser]") 
         REQUIRE_FALSE(result.success);
     }
 }
+
+TEST_CASE("Parser named-argument error reporting", "[parser]") {
+    // Regression tests for: named-argument values that cannot be parsed must
+    // produce an explicit parse error instead of being silently dropped.
+    // Silently dropping the argument caused solver failures with cryptic
+    // messages such as "CoolProp functions require exactly 2 input properties,
+    // got 1" rather than pointing to the offending source line.
+    coolsolve::EESParser parser;
+
+    SECTION("Identifier-dot-number (e.g. p_1.707e5) is rejected with clear error") {
+        // 'p_1.707e5' is neither a valid identifier (contains '.') nor a valid
+        // number (starts with a letter).  The parser must reject it and report
+        // the offending argument name so the user knows where to look.
+        auto result = parser.parse("T = temperature('Water', p=p_1.707e5, x=1)");
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.errors.size() >= 1);
+        // Error message must name the problematic argument
+        bool mentionsArg = false;
+        for (const auto& e : result.errors) {
+            if (e.message.find("named argument") != std::string::npos &&
+                e.message.find("'p'") != std::string::npos) {
+                mentionsArg = true;
+            }
+        }
+        REQUIRE(mentionsArg);
+    }
+
+    SECTION("Malformed named-arg value is reported on the correct line") {
+        auto result = parser.parse("x = 1\nT = temperature('Water', p=p_1.707e5, x=1)\ny = 2");
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.errors.size() >= 1);
+        // The error must be on line 2 (1-based)
+        bool onLine2 = false;
+        for (const auto& e : result.errors) {
+            if (e.line == 2) onLine2 = true;
+        }
+        REQUIRE(onLine2);
+    }
+
+    SECTION("Valid named args still parse correctly") {
+        auto result = parser.parse("T = temperature('Water', p=1.707e5, x=1)");
+        REQUIRE(result.success);
+        REQUIRE(result.equationCount == 1);
+    }
+
+    SECTION("T_crit as both variable name and function name is accepted") {
+        // A variable named T_crit may be assigned the return value of the
+        // built-in T_crit() function without any conflict.
+        auto result = parser.parse("fluid$ = 'R134a'\nT_crit = T_crit(fluid$)");
+        REQUIRE(result.success);
+        REQUIRE(result.equationCount == 2);
+    }
+
+    SECTION("Multi-arg malformed: only the bad argument triggers the error") {
+        // Even if other args around the bad one are valid, we still reject.
+        auto result = parser.parse("h = enthalpy('R134a', T=my_var.5, P=1e5)");
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.errors.size() >= 1);
+    }
+}
