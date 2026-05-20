@@ -2,6 +2,7 @@
 #include "coolsolve/lookup_table.h"
 #include "coolsolve/units.h"
 #include "coolsolve/fluids.h"
+#include "coolsolve/user_hints.h"
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -66,6 +67,38 @@ static CoolProp::input_pairs getInputPair(CoolProp::parameters p1,
 static double getOutputValue(CoolProp::AbstractState& state,
                              CoolProp::parameters param) {
     return state.keyed_output(param);
+}
+
+static ThermoInputKind thermoKindFromCoolProp(CoolProp::parameters param,
+                                              const std::string& inputName) {
+    std::string n = inputName;
+    std::transform(n.begin(), n.end(), n.begin(), ::tolower);
+    if (param == CoolProp::iP) return ThermoInputKind::Pressure;
+    if (param == CoolProp::iT) return ThermoInputKind::Temperature;
+    if (param == CoolProp::iHmass) return ThermoInputKind::Enthalpy;
+    if (param == CoolProp::iSmass) return ThermoInputKind::Entropy;
+    if (param == CoolProp::iQ) return ThermoInputKind::Quality;
+    if (param == CoolProp::iDmass) {
+        if (n == "v" || n == "volume") return ThermoInputKind::SpecificVolume;
+        return ThermoInputKind::Density;
+    }
+    return ThermoInputKind::Pressure;
+}
+
+static ThermoInputKind thermoKindFromHAName(const std::string& name) {
+    std::string n = name;
+    std::transform(n.begin(), n.end(), n.begin(), ::tolower);
+    if (n == "t") return ThermoInputKind::Temperature;
+    if (n == "p") return ThermoInputKind::Pressure;
+    if (n == "w") return ThermoInputKind::HumidityRatio;
+    if (n == "r") return ThermoInputKind::RelativeHumidity;
+    if (n == "d") return ThermoInputKind::Density;
+    if (n == "h") return ThermoInputKind::Enthalpy;
+    return ThermoInputKind::Temperature;
+}
+
+void resetCoolPropUnitHints() {
+    resetThermoInputHints();
 }
 
 // ============================================================================
@@ -626,7 +659,7 @@ std::string ExpressionEvaluator::evaluateString(const ExprPtr& expr) {
             }
             auto fluid = FluidRegistry::getFluid(eesFluidName);
             if (!fluid) {
-                throw std::runtime_error("Unknown fluid: " + eesFluidName);
+                throw std::runtime_error(unknownFluidErrorMessage(eesFluidName));
             }
             if (fluid->getType() == FluidType::HumidAir) {
                 return "gas";
@@ -950,7 +983,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     
     auto fluid = FluidRegistry::getFluid(eesFluidName);
     if (!fluid) {
-        throw std::runtime_error("Unknown fluid: " + eesFluidName);
+        throw std::runtime_error(unknownFluidErrorMessage(eesFluidName));
     }
     
     // Derived thermophysical properties — compute by combining base CoolProp calls
@@ -1129,6 +1162,9 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         std::vector<double> vals;
         for (size_t i = 0; i < 3; ++i) {
             double v = inputValues[i].value;
+            checkThermoInputValueHint(diagnostics_, func.name + "()", units,
+                                      thermoKindFromHAName(inputNamesList[i]),
+                                      inputNamesList[i], v);
             UnitType type = haParamToUnitType(inParams[i]);
             
             if (type != UnitType::Dimensionless) {
@@ -1364,8 +1400,9 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     }
     
     if (inputs.size() != 2) {
-        throw std::runtime_error("CoolProp functions require exactly 2 input properties, got " + 
-                                std::to_string(inputs.size()));
+        throw std::runtime_error(func.name + " requires exactly 2 input properties "
+            "(e.g. T=..., P=...), got " + std::to_string(inputs.size()) +
+            coolPropUnitsReminder(units));
     }
     
     std::vector<std::string> inputNamesList;
@@ -1387,11 +1424,19 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     // CoolProp does not support T,H as an input pair for any output property
     if ((input1Param == CoolProp::iT && input2Param == CoolProp::iHmass) ||
         (input1Param == CoolProp::iHmass && input2Param == CoolProp::iT)) {
-        throw std::runtime_error("CoolProp does not support T,H as input pair. Use P,H or T,S instead.");
+        throw std::runtime_error("CoolProp does not support T,H as input pair. Use P,H or T,S instead." +
+            coolPropUnitsReminder(units));
     }
     
     double val1 = inputValues[0].value;
     double val2 = inputValues[1].value;
+
+    checkThermoInputValueHint(diagnostics_, func.name + "()", units,
+                              thermoKindFromCoolProp(input1Param, inputNamesList[0]),
+                              inputNamesList[0], val1);
+    checkThermoInputValueHint(diagnostics_, func.name + "()", units,
+                              thermoKindFromCoolProp(input2Param, inputNamesList[1]),
+                              inputNamesList[1], val2);
     
     // Clamp quality inputs to [0, 1]: CoolProp returns -1 for subcooled and values >1 for
     // superheated states, but when quality is used as *input* to another CoolProp call
@@ -1400,23 +1445,42 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     if (!disableClamping_) {
     if (input1Param == CoolProp::iQ) {
         if (val1 < 0.0) {
-            std::cerr << "Warning: quality input clamped from " << val1 << " to 0 (subcooled state) for " << outputStr << "(" << cpFluidName << ")" << std::endl;
+            if (diagnostics_) {
+                diagnostics_->push(DiagnosticSeverity::Warning, "C002",
+                    "Quality input " + inputNamesList[0] + "=" + std::to_string(val1) +
+                        " clamped to 0 (subcooled); quality is only valid in [0, 1] for two-phase states.",
+                    "evaluator");
+            }
             val1 = 0.0;
-            // Zero out gradient since we're clamping (derivative is 0 at the boundary)
             for (size_t i = 0; i < numVariables_; ++i) inputValues[0].gradient[i] = 0.0;
         } else if (val1 > 1.0) {
-            std::cerr << "Warning: quality input clamped from " << val1 << " to 1 (superheated state) for " << outputStr << "(" << cpFluidName << ")" << std::endl;
+            if (diagnostics_) {
+                diagnostics_->push(DiagnosticSeverity::Warning, "C002",
+                    "Quality input " + inputNamesList[0] + "=" + std::to_string(val1) +
+                        " clamped to 1 (superheated); quality is only valid in [0, 1] for two-phase states.",
+                    "evaluator");
+            }
             val1 = 1.0;
             for (size_t i = 0; i < numVariables_; ++i) inputValues[0].gradient[i] = 0.0;
         }
     }
     if (input2Param == CoolProp::iQ) {
         if (val2 < 0.0) {
-            std::cerr << "Warning: quality input clamped from " << val2 << " to 0 (subcooled state) for " << outputStr << "(" << cpFluidName << ")" << std::endl;
+            if (diagnostics_) {
+                diagnostics_->push(DiagnosticSeverity::Warning, "C002",
+                    "Quality input " + inputNamesList[1] + "=" + std::to_string(val2) +
+                        " clamped to 0 (subcooled); quality is only valid in [0, 1] for two-phase states.",
+                    "evaluator");
+            }
             val2 = 0.0;
             for (size_t i = 0; i < numVariables_; ++i) inputValues[1].gradient[i] = 0.0;
         } else if (val2 > 1.0) {
-            std::cerr << "Warning: quality input clamped from " << val2 << " to 1 (superheated state) for " << outputStr << "(" << cpFluidName << ")" << std::endl;
+            if (diagnostics_) {
+                diagnostics_->push(DiagnosticSeverity::Warning, "C002",
+                    "Quality input " + inputNamesList[1] + "=" + std::to_string(val2) +
+                        " clamped to 1 (superheated); quality is only valid in [0, 1] for two-phase states.",
+                    "evaluator");
+            }
             val2 = 1.0;
             for (size_t i = 0; i < numVariables_; ++i) inputValues[1].gradient[i] = 0.0;
         }
@@ -1623,7 +1687,8 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                     oss << "CoolProp returned invalid result (NaN or Inf) for " << outputStr 
                         << "(" << cpFluidName << ") with inputs: " 
                         << input1Str << "=" << val1 << siUnitLabel(input1Param) << ", "
-                        << input2Str << "=" << val2 << siUnitLabel(input2Param);
+                        << input2Str << "=" << val2 << siUnitLabel(input2Param)
+                        << coolPropUnitsReminder(units);
                     throw std::runtime_error(oss.str());
                 }
                 
@@ -1750,7 +1815,8 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 oss << "CoolProp returned invalid result (NaN or Inf) for " << outputStr 
                     << "(" << cpFluidName << ") with inputs: " 
                     << input1Str << "=" << val1 << siUnitLabel(input1Param) << ", "
-                    << input2Str << "=" << val2 << siUnitLabel(input2Param);
+                    << input2Str << "=" << val2 << siUnitLabel(input2Param)
+                    << coolPropUnitsReminder(units);
                 throw std::runtime_error(oss.str());
             }
             

@@ -18,6 +18,7 @@ namespace coolsolve {
 // Profiling API
 // ============================================================================
 void resetProfilingStats();
+void resetCoolPropUnitHints();
 std::string getProfilingStatsString();
 
 /**

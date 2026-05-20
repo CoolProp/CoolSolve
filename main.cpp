@@ -224,12 +224,46 @@ int main(int argc, char* argv[]) {
     // Note: runner.run() automatically loads .initials if present
     // Pass debugMode as enableTracing
     bool runSuccess = runner.run(options, debugMode);
+
+    auto printRunnerDiagnostics = [&](const coolsolve::CoolSolveRunner& r) {
+        const auto& diagnostics = r.getDiagnostics();
+        if (diagnostics.size() == 0) return;
+        std::map<std::string, int> c001Counts;
+        std::vector<coolsolve::Diagnostic> otherDiag;
+        int totalC001 = 0;
+        for (const auto& d : diagnostics.items()) {
+            if (d.code == "C001") {
+                c001Counts[d.message]++;
+                totalC001++;
+            } else {
+                otherDiag.push_back(d);
+            }
+        }
+        for (const auto& d : otherDiag) {
+            const char* prefix = "";
+            switch (d.severity) {
+                case coolsolve::DiagnosticSeverity::Error:   prefix = "\033[31merror\033[0m"; break;
+                case coolsolve::DiagnosticSeverity::Warning: prefix = "\033[33mwarning\033[0m"; break;
+                case coolsolve::DiagnosticSeverity::Info:    prefix = "\033[36minfo\033[0m"; break;
+            }
+            std::cerr << prefix;
+            if (d.line > 0) std::cerr << " (line " << d.line << ")";
+            std::cerr << ": " << d.message << "\n";
+        }
+        if (totalC001 > 0) {
+            std::cerr << "\033[33mwarning\033[0m: " << totalC001 << " CoolProp warning(s) during solving ("
+                      << c001Counts.size() << " unique)";
+            if (!debugMode) std::cerr << ". Use -d for details";
+            std::cerr << "\n";
+        }
+    };
     
     if (!runner.isParseSuccess()) {
         std::cerr << "Parse failed:\n";
         for (const auto& err : runner.getParseResult().errors) {
             std::cerr << "  Line " << err.line << ": " << err.message << "\n";
         }
+        printRunnerDiagnostics(runner);
         return 1;
     }
     
@@ -274,6 +308,7 @@ int main(int argc, char* argv[]) {
     if (!analysisResult.success) {
         std::cerr << "\n=== Structural Analysis Error ===\n";
         std::cerr << analysisResult.errorMessage << "\n";
+        printRunnerDiagnostics(runner);
         return 1;
     }
     
@@ -426,45 +461,7 @@ int main(int argc, char* argv[]) {
         file << output;
     } 
 
-    // Print diagnostics (warnings, info messages) if any
-    const auto& diagnostics = runner.getDiagnostics();
-    if (diagnostics.size() > 0) {
-        // Separate C001 CoolProp warnings (can be very numerous) from other diagnostics
-        std::map<std::string, int> c001Counts;  // unique message -> count
-        std::vector<coolsolve::Diagnostic> otherDiag;
-        int totalC001 = 0;
-        for (const auto& d : diagnostics.items()) {
-            if (d.code == "C001") {
-                c001Counts[d.message]++;
-                totalC001++;
-            } else {
-                otherDiag.push_back(d);
-            }
-        }
-        
-        // Print non-C001 diagnostics (errors, info, other warnings)
-        for (const auto& d : otherDiag) {
-            const char* prefix = "";
-            switch (d.severity) {
-                case coolsolve::DiagnosticSeverity::Error:   prefix = "\033[31merror\033[0m"; break;
-                case coolsolve::DiagnosticSeverity::Warning: prefix = "\033[33mwarning\033[0m"; break;
-                case coolsolve::DiagnosticSeverity::Info:    prefix = "\033[36minfo\033[0m"; break;
-            }
-            std::cerr << prefix;
-            if (d.line > 0) std::cerr << " (line " << d.line << ")";
-            std::cerr << ": " << d.message << "\n";
-        }
-        
-        // Print C001 summary instead of flooding the terminal
-        if (totalC001 > 0) {
-            std::cerr << "\033[33mwarning\033[0m: " << totalC001 << " CoolProp warning(s) during solving ("
-                      << c001Counts.size() << " unique)";
-            if (!debugMode) {
-                std::cerr << ". Use -d for details";
-            }
-            std::cerr << "\n";
-        }
-    }
+    printRunnerDiagnostics(runner);
 
     return solutionValid ? 0 : 1;
 }

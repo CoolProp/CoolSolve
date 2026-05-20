@@ -1646,3 +1646,133 @@ TEST_CASE("Multiple fluids with AbstractState", "[coolprop][abstractstate]") {
         }
     }
 }
+
+TEST_CASE("CoolProp unit hints for suspicious inputs", "[evaluator][unit-hints]") {
+    coolsolve::resetCoolPropUnitHints();
+    coolsolve::EESParser parser;
+
+    // All test inputs below are numeric literals, so the parse-time path in
+    // validateThermoUserPatterns emits C002 before any CoolProp call.
+    // Evaluating blocks with these deliberately out-of-range values (e.g. P=1 Pa,
+    // D=1 kg/m³) can cause CoolProp to loop; parse-time diagnostics are sufficient.
+    auto getHints = [&parser](const std::string& source) {
+        coolsolve::resetCoolPropUnitHints();
+        auto parseResult = parser.parse(source);
+        REQUIRE(parseResult.success);
+        return parseResult.diagnostics;
+    };
+
+    auto hasC002Containing = [](const coolsolve::DiagnosticCollector& diag,
+                                const std::string& needle) {
+        for (const auto& d : diag.items()) {
+            if (d.code == "C002" && d.message.find(needle) != std::string::npos) return true;
+        }
+        return false;
+    };
+
+    SECTION("P=1 emits hint about Pa vs bar/kPa") {
+        auto diag = getHints("h = enthalpy(Water, T=25, P=1)");
+        REQUIRE(hasC002Containing(diag, "Pa"));
+    }
+
+    SECTION("P=14.7 suggests psi confusion") {
+        auto diag = getHints("h = enthalpy(Water, T=25, P=14.7)");
+        REQUIRE(hasC002Containing(diag, "psi"));
+    }
+
+    SECTION("P=0.101325 suggests MPa confusion") {
+        auto diag = getHints("h = enthalpy(Water, T=25, P=0.101325)");
+        REQUIRE(hasC002Containing(diag, "MPa"));
+    }
+
+    SECTION("T=300 emits hint about Celsius vs Kelvin") {
+        auto diag = getHints("h = enthalpy(Water, T=300, P=101325)");
+        REQUIRE(hasC002Containing(diag, "°C"));
+    }
+
+    SECTION("T=77 suggests Fahrenheit") {
+        auto diag = getHints("h = enthalpy(Water, T=77, P=101325)");
+        REQUIRE(hasC002Containing(diag, "Fahrenheit"));
+    }
+
+    SECTION("H=400 suggests kJ/kg vs J/kg") {
+        auto diag = getHints("T = temperature(Water, H=400, P=101325)");
+        REQUIRE(hasC002Containing(diag, "kJ/kg"));
+    }
+
+    SECTION("D=1 suggests g/cm3 vs kg/m3") {
+        auto diag = getHints("T = temperature(Water, D=1, P=101325)");
+        REQUIRE(hasC002Containing(diag, "g/cm"));
+    }
+
+    SECTION("Q=50 suggests percent quality") {
+        auto diag = getHints("T = temperature(Water, P=101325, Q=50)");
+        REQUIRE(hasC002Containing(diag, "percent"));
+    }
+
+    SECTION("Humid air R=50 suggests percent RH") {
+        auto diag = getHints("w = humrat(AirH2O, T=25, P=101325, R=50)");
+        REQUIRE(hasC002Containing(diag, "percent"));
+    }
+
+    SECTION("Humid air W=15 suggests g/kg") {
+        auto diag = getHints("rh = relhum(AirH2O, T=25, P=101325, W=15)");
+        REQUIRE(hasC002Containing(diag, "g/kg"));
+    }
+
+    SECTION("P=101325 does not emit low-pressure hint") {
+        auto diag = getHints("h = enthalpy(Water, T=25, P=101325)");
+        for (const auto& d : diag.items()) {
+            REQUIRE(d.code != "C002");
+        }
+    }
+}
+
+TEST_CASE("CoolProp error messages mention default units", "[evaluator][errors]") {
+    coolsolve::EESParser parser;
+
+    SECTION("Missing second input mentions units") {
+        auto parseResult = parser.parse("h = enthalpy(Water, T=25)");
+        REQUIRE(parseResult.success);
+        auto ir = coolsolve::IR::fromAST(parseResult.program);
+        auto analysis = coolsolve::StructuralAnalyzer::analyze(ir);
+        coolsolve::SystemEvaluator sysEval(ir, analysis);
+        sysEval.setVariableValue("h", 1.0);
+
+        bool mentionsUnits = false;
+        for (size_t i = 0; i < sysEval.getNumBlocks(); ++i) {
+            try {
+                sysEval.evaluateBlock(i);
+            } catch (const std::exception& e) {
+                std::string msg = e.what();
+                if (msg.find("CoolSolve default units") != std::string::npos) {
+                    mentionsUnits = true;
+                }
+            }
+        }
+        REQUIRE(mentionsUnits);
+    }
+
+    SECTION("Unknown fluid message explains first argument") {
+        auto parseResult = parser.parse("h = enthalpy(fluid, T=25, P=101325)");
+        REQUIRE(parseResult.success);
+        auto ir = coolsolve::IR::fromAST(parseResult.program);
+        auto analysis = coolsolve::StructuralAnalyzer::analyze(ir);
+        coolsolve::SystemEvaluator sysEval(ir, analysis);
+        sysEval.setVariableValue("h", 1.0);
+
+        bool helpful = false;
+        for (size_t i = 0; i < sysEval.getNumBlocks(); ++i) {
+            try {
+                sysEval.evaluateBlock(i);
+            } catch (const std::exception& e) {
+                std::string msg = e.what();
+                if (msg.find("string variable") != std::string::npos ||
+                    msg.find("fluid$") != std::string::npos) {
+                    helpful = true;
+                }
+            }
+        }
+        REQUIRE(helpful);
+    }
+}

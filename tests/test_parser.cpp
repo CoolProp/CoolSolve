@@ -781,3 +781,70 @@ TEST_CASE("Parser named-argument error reporting", "[parser]") {
         REQUIRE(result.errors.size() >= 1);
     }
 }
+
+TEST_CASE("Parser unbalanced parenthesis error reporting", "[parser]") {
+    coolsolve::EESParser parser;
+
+    SECTION("Missing closing parenthesis") {
+        auto result = parser.parse("h = enthalpy(Water, T=25, P=101325");
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.errors.size() >= 1);
+        REQUIRE(result.errors[0].message.find("Unmatched '('") != std::string::npos);
+    }
+
+    SECTION("Extra closing parenthesis in expression") {
+        auto result = parser.parse("h = enthalpy(Water, T=25, P=101325))");
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.errors.size() >= 1);
+        bool specific = false;
+        for (const auto& e : result.errors) {
+            if (e.message.find("named argument") != std::string::npos ||
+                e.message.find("Unmatched") != std::string::npos) {
+                specific = true;
+            }
+        }
+        REQUIRE(specific);
+    }
+}
+
+TEST_CASE("Parser thermo user-pattern warnings", "[parser][user-hints]") {
+    coolsolve::EESParser parser;
+
+    auto hasDiag = [](const coolsolve::ParseResult& r, const std::string& code,
+                      const std::string& needle) {
+        for (const auto& d : r.diagnostics.items()) {
+            if (d.code == code && d.message.find(needle) != std::string::npos) return true;
+        }
+        return false;
+    };
+
+    SECTION("Function typo enthalphy suggests enthalpy") {
+        auto result = parser.parse("h = enthalphy(Water, T=25, P=101325)");
+        REQUIRE(result.success);
+        REQUIRE(hasDiag(result, "P004", "enthalpy"));
+    }
+
+    SECTION("Steam fluid name suggests Water") {
+        auto result = parser.parse("h = enthalpy(Steam, T=25, P=101325)");
+        REQUIRE(result.success);
+        REQUIRE(hasDiag(result, "P005", "Water"));
+    }
+
+    SECTION("Literal P=1 at parse time includes line number") {
+        auto result = parser.parse("h = enthalpy(Water, T=25, P=1)");
+        REQUIRE(result.success);
+        bool found = false;
+        for (const auto& d : result.diagnostics.items()) {
+            if (d.code == "C002" && d.line == 1 && d.message.find("Pa") != std::string::npos) {
+                found = true;
+            }
+        }
+        REQUIRE(found);
+    }
+
+    SECTION("Unquoted refrigerant variable warns about fluid argument") {
+        auto result = parser.parse("h = enthalpy(refrigerant, T=25, P=101325)");
+        REQUIRE(result.success);
+        REQUIRE(hasDiag(result, "P005", "placeholder"));
+    }
+}

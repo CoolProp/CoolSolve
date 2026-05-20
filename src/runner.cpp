@@ -18,6 +18,8 @@ CoolSolveRunner::CoolSolveRunner(const std::string& inputFile)
     : inputFile_(inputFile) {}
 
 bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
+    resetCoolPropUnitHints();
+
     // Pay the CoolProp first-call cost up front so that later timings
     // (especially variable inference) are not distorted by library
     // initialization overhead.
@@ -43,6 +45,7 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
         solveResult_.status = SolverStatus::ParseFailed;
         solveResult_.errorMessage = errMsg.str();
         solveResult_.detailedError = errMsg.str();
+        diagnostics_.merge(parseResult_.diagnostics);
         return false;
     }
 

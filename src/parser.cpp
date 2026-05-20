@@ -1,6 +1,8 @@
 #include "coolsolve/parser.h"
 #include "coolsolve/diagnostic.h"
 #include "coolsolve/ir.h"
+#include "coolsolve/units.h"
+#include "coolsolve/user_hints.h"
 #include <peglib.h>
 #include <fstream>
 #include <sstream>
@@ -378,6 +380,7 @@ public:
         
         // Post-parse validation: check function names against known builtins
         validateFunctionNames(result);
+        validateThermoUserPatterns(result);
         
         return result;
     }
@@ -499,10 +502,153 @@ private:
             if (isEESThermophysicalFunction(call.name)) continue;
             if (userDefined.count(call.name)) continue;
             
+            const std::string typo = suggestThermoFunctionTypo(call.name);
+            if (!typo.empty()) {
+                result.diagnostics.push(DiagnosticSeverity::Warning, "P004",
+                    "Unknown function '" + call.name + "'. " + typo,
+                    "parser", call.line, 0);
+                alreadyWarned.insert(call.name);
+                continue;
+            }
+            
             result.diagnostics.push(DiagnosticSeverity::Warning, "P003",
                 "Unknown function '" + call.name + "'",
                 "parser", call.line, 0);
             alreadyWarned.insert(call.name);
+        }
+    }
+
+    static bool tryGetNumericLiteral(const ExprPtr& expr, double& out) {
+        if (!expr) return false;
+        if (expr->is<NumberLiteral>()) {
+            out = expr->as<NumberLiteral>().value;
+            return true;
+        }
+        if (expr->is<UnaryOp>()) {
+            const auto& u = expr->as<UnaryOp>();
+            if (u.op == "-" && u.operand && u.operand->is<NumberLiteral>()) {
+                out = -u.operand->as<NumberLiteral>().value;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static ThermoInputKind thermoKindFromArgName(const std::string& argName) {
+        std::string n = argName;
+        std::transform(n.begin(), n.end(), n.begin(), ::tolower);
+        if (n == "p" || n == "pressure") return ThermoInputKind::Pressure;
+        if (n == "t" || n == "temperature") return ThermoInputKind::Temperature;
+        if (n == "h" || n == "enthalpy") return ThermoInputKind::Enthalpy;
+        if (n == "s" || n == "entropy") return ThermoInputKind::Entropy;
+        if (n == "d" || n == "rho" || n == "density") return ThermoInputKind::Density;
+        if (n == "v" || n == "volume") return ThermoInputKind::SpecificVolume;
+        if (n == "q" || n == "x" || n == "quality") return ThermoInputKind::Quality;
+        if (n == "w") return ThermoInputKind::HumidityRatio;
+        if (n == "r") return ThermoInputKind::RelativeHumidity;
+        return ThermoInputKind::Temperature;
+    }
+
+    void validateThermoUserPatterns(ParseResult& result) {
+        resetThermoInputHints();
+        UnitSystem units;
+        std::set<std::string, CaseInsensitiveLess> fluidWarningsDone;
+
+        auto inspectThermoCall = [&](const FunctionCall& call, int line) {
+            if (!isEESThermophysicalFunction(call.name)) return;
+
+            // First positional argument: fluid name patterns
+            if (!call.args.empty() && call.args[0]->is<Variable>()) {
+                const auto& var = call.args[0]->as<Variable>();
+                const bool isStringVar = !var.name.empty() && var.name.back() == '$';
+                const std::string hint = unquotedFluidArgumentHint(
+                    call.name, var.name, isStringVar);
+                if (!hint.empty() && !fluidWarningsDone.count(var.name)) {
+                    result.diagnostics.push(DiagnosticSeverity::Warning, "P005",
+                                            hint, "parser", line, 0);
+                    fluidWarningsDone.insert(var.name);
+                }
+                if (!isStringVar) {
+                    const std::string fluidHint = suggestFluidNameHint(var.name);
+                    if (!fluidHint.empty() && !fluidWarningsDone.count("fluid:" + var.name)) {
+                        result.diagnostics.push(DiagnosticSeverity::Warning, "P005",
+                            call.name + "(): fluid argument '" + var.name + "'. " + fluidHint,
+                            "parser", line, 0);
+                        fluidWarningsDone.insert("fluid:" + var.name);
+                    }
+                }
+            } else if (!call.args.empty() && call.args[0]->is<StringLiteral>()) {
+                const std::string fluid = call.args[0]->as<StringLiteral>().value;
+                const std::string fluidHint = suggestFluidNameHint(fluid);
+                if (!fluidHint.empty() && !fluidWarningsDone.count("str:" + fluid)) {
+                    result.diagnostics.push(DiagnosticSeverity::Warning, "P005",
+                        call.name + "(): fluid '" + fluid + "'. " + fluidHint,
+                        "parser", line, 0);
+                    fluidWarningsDone.insert("str:" + fluid);
+                }
+            }
+
+            // Literal named arguments: static unit hints with line numbers
+            for (const auto& [argName, argExpr] : call.namedArgs) {
+                double lit = 0.0;
+                if (!tryGetNumericLiteral(argExpr, lit)) continue;
+                checkThermoInputValueHint(&result.diagnostics, call.name,
+                                          units, thermoKindFromArgName(argName),
+                                          argName, lit, line);
+            }
+        };
+
+        auto walkExpr = [&](const ExprPtr& expr, auto& self) -> void {
+            if (!expr) return;
+            std::visit([&](const auto& node) {
+                using T = std::decay_t<decltype(node)>;
+                if constexpr (std::is_same_v<T, FunctionCall>) {
+                    inspectThermoCall(node, expr->sourceLineNumber);
+                    for (const auto& arg : node.args) self(arg, self);
+                    for (const auto& [k, v] : node.namedArgs) self(v, self);
+                } else if constexpr (std::is_same_v<T, UnaryOp>) {
+                    self(node.operand, self);
+                } else if constexpr (std::is_same_v<T, BinaryOp>) {
+                    self(node.left, self); self(node.right, self);
+                } else if constexpr (std::is_same_v<T, Variable>) {
+                    for (const auto& idx : node.indices) self(idx, self);
+                }
+            }, expr->node);
+        };
+
+        auto walkStmt = [&](const StmtPtr& stmt, auto& self) -> void {
+            if (!stmt) return;
+            std::visit([&](const auto& node) {
+                using T = std::decay_t<decltype(node)>;
+                if constexpr (std::is_same_v<T, Equation>) {
+                    walkExpr(node.lhs, walkExpr);
+                    walkExpr(node.rhs, walkExpr);
+                } else if constexpr (std::is_same_v<T, Assignment>) {
+                    walkExpr(node.lhs, walkExpr);
+                    walkExpr(node.rhs, walkExpr);
+                } else if constexpr (std::is_same_v<T, IfThenElse>) {
+                    walkExpr(node.condition, walkExpr);
+                    for (const auto& s : node.thenBranch) self(s, self);
+                    for (const auto& s : node.elseBranch) self(s, self);
+                } else if constexpr (std::is_same_v<T, Duplicate>) {
+                    walkExpr(node.start, walkExpr);
+                    walkExpr(node.end, walkExpr);
+                    for (const auto& s : node.body) self(s, self);
+                } else if constexpr (std::is_same_v<T, RepeatUntil>) {
+                    walkExpr(node.condition, walkExpr);
+                    for (const auto& s : node.body) self(s, self);
+                } else if constexpr (std::is_same_v<T, ProcedureCall>) {
+                    for (const auto& arg : node.inputArgs) walkExpr(arg, walkExpr);
+                } else if constexpr (std::is_same_v<T, FunctionDefinition>) {
+                    for (const auto& s : node.body) self(s, self);
+                } else if constexpr (std::is_same_v<T, ProcedureDefinition>) {
+                    for (const auto& s : node.body) self(s, self);
+                }
+            }, stmt->node);
+        };
+
+        for (const auto& stmt : result.program.statements) {
+            walkStmt(stmt, walkStmt);
         }
     }
     
@@ -1218,7 +1364,14 @@ private:
             if (c == '\'') { inString = !inString; continue; }
             if (inString) continue;
             if (c == '(' || c == '[') { depth++; continue; }
-            if (c == ')' || c == ']') { depth--; continue; }
+            if (c == ')' || c == ']') {
+                depth--;
+                if (depth < 0) {
+                    errorMsg = std::string("Unmatched '") + c + "' — extra closing parenthesis or bracket";
+                    return false;
+                }
+                continue;
+            }
 
             // Detect consecutive arithmetic operators: ++, --, +-, -+, +++, etc.
             if ((c == '+' || c == '-') && depth == 0) {
@@ -1263,6 +1416,10 @@ private:
                     return false;
                 }
             }
+        }
+        if (depth > 0) {
+            errorMsg = "Unmatched '(' — missing closing parenthesis ')'";
+            return false;
         }
         return true;
     }
