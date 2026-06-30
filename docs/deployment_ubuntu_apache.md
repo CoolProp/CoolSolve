@@ -67,6 +67,10 @@ sudo chmod -R 755 /home/coolsolve/CoolSolve/examples
 sudo mkdir -p /tmp/coolsolve_sessions
 sudo chown coolsolve:coolsolve /tmp/coolsolve_sessions
 sudo chmod 700 /tmp/coolsolve_sessions
+
+# Recreate after reboot (/tmp is wiped; the service needs this path to exist)
+echo 'd /tmp/coolsolve_sessions 0700 coolsolve coolsolve -' | sudo tee /etc/tmpfiles.d/coolsolve.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/coolsolve.conf
 ```
 
 ---
@@ -426,12 +430,14 @@ sudo systemctl restart systemd-journald
 
 | Symptom | Check |
 |---------|-------|
+| 503 Service Unavailable | Apache is up but CoolSolve is not — see below |
 | 502 Bad Gateway | `sudo systemctl status coolsolve` — is it running? |
 | 403 Forbidden | Check `.htpasswd` file permissions and Apache auth config |
 | SSE/progress not streaming | Verify `proxy-sendchunked` env is set in Apache config |
 | Slow CoolProp startup | First request after restart triggers warmup (~1-2 s); this is normal |
 | Session lost between requests | Ensure Apache forwards cookies (`ProxyPreserveHost On`) |
 | Permission denied in logs | Check that `coolsolve` user owns the working directory |
+| Service exits with `226/NAMESPACE` | `/tmp/coolsolve_sessions` missing — recreate it (see §3) and ensure `/etc/tmpfiles.d/coolsolve.conf` is installed |
 
 Check all components:
 
@@ -465,4 +471,5 @@ sudo ufw status verbose
 | Application logs | `journalctl -u coolsolve` |
 | Apache logs | `/var/log/apache2/coolsolve_{access,error}.log` |
 | Session temp data | `/tmp/coolsolve_sessions/` |
+| Session dir persistence | `/etc/tmpfiles.d/coolsolve.conf` |
 | Examples | `/home/coolsolve/CoolSolve/examples/` |
