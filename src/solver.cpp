@@ -234,6 +234,8 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             else if (key == "trShrinkFactor") options.trShrinkFactor = std::stod(val);
             else if (key == "trGrowFactor") options.trGrowFactor = std::stod(val);
             else if (key == "trAdaptiveRadius") options.trAdaptiveRadius = parseBool(val);
+            else if (key == "trBroydenRecomputeInterval") options.trBroydenRecomputeInterval = std::stoi(val);
+            else if (key == "trBroydenRestartRejects") options.trBroydenRestartRejects = std::stoi(val);
             else if (key == "partitionedMaxIterations") options.partitionedMaxIterations = std::stoi(val);
             else if (key == "partitionedRelaxation") options.partitionedRelaxation = std::stod(val);
             else if (key == "partitionedMinDiagonal") options.partitionedMinDiagonal = std::stod(val);
