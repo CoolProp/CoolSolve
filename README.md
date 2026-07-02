@@ -212,7 +212,12 @@ A convenience script `build_installer.bat` in the project root automates all ste
 
 ### Build Type: Release vs Debug
 
-**Important**: CoolSolve defaults to **Release** mode for optimal performance. CoolProp property calculations are computationally intensive, and Debug mode can be **10-50x slower** than Release.
+**Important**: CoolSolve defaults to **Release** mode for optimal performance. CoolProp property calculations are computationally intensive, and Debug mode can be **10-50x slower** than Release. **Do not switch to Debug** for routine work, benchmarks, or robustness reports — only when you genuinely need a debugger on the C++ code. **When you are done debugging, always switch back to Release and rebuild:**
+
+```bash
+cmake -DCMAKE_BUILD_TYPE=Release ..
+cmake --build . -j$(nproc)    # or: make -j$(nproc)
+```
 
 ```bash
 # Default: Release mode (recommended)
@@ -221,13 +226,13 @@ cmake ..
 # Explicitly set Release mode
 cmake -DCMAKE_BUILD_TYPE=Release ..
 
-# Debug mode (for development only - very slow!)
+# Debug mode (C++ debugger only — revert to Release afterwards!)
 cmake -DCMAKE_BUILD_TYPE=Debug ..
 ```
 
 If you experience slow solve times, verify you're building in Release mode:
 ```bash
-# Check current build type
+# Check current build type (must show Release)
 grep CMAKE_BUILD_TYPE CMakeCache.txt
 ```
 
@@ -341,6 +346,7 @@ cd build
 
 # Run solver robustness tests (stress-tests every example with multiple
 # solver configurations: Newton-only, LM-only, tearing, symbolic reduction, etc.)
+# Requires a Release build — Debug timings are ~10x slower and must not be committed as reports.
 ./coolsolve_tests "[solver-robustness]"
 ```
 

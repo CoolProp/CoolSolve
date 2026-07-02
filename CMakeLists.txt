@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.14)
 project(CoolSolve VERSION 0.2.0 LANGUAGES CXX)
 
 # --- Default to Release build for performance ---
+# Always build in Release unless you are actively debugging C++ code with a debugger.
+# Debug can be 10–50x slower (CoolProp + Jacobian work dominates). If you switch to Debug,
+# revert when done: cmake -DCMAKE_BUILD_TYPE=Release .. && cmake --build . -j
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     message(STATUS "Setting build type to 'Release' as none was specified.")
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
