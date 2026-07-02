@@ -112,3 +112,35 @@ TEST_CASE("CoolProp config defaults from file with no CoolProp keys", "[config][
     REQUIRE(options.coolpropConfig.cacheEnabled == true);
     REQUIRE(options.coolpropConfig.enableSuperancillaries == true);
 }
+
+TEST_CASE("TrustRegion hybrd Broyden options are loaded from config", "[config][solver][trustregion][hybrd]") {
+    fs::path tmpDir = fs::temp_directory_path();
+    fs::path configPath = tmpDir / "coolsolve_test_tr_hybrd.conf";
+    std::ofstream f(configPath);
+    REQUIRE(f.is_open());
+    f << "trBroydenRecomputeInterval = 5\n";
+    f << "trBroydenRestartRejects = 3\n";
+    f.close();
+    coolsolve::SolverOptions options;
+    bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    fs::remove(configPath);
+    REQUIRE(loaded);
+    REQUIRE(options.trBroydenRecomputeInterval == 5);
+    REQUIRE(options.trBroydenRestartRejects == 3);
+}
+
+TEST_CASE("TrustRegion hybrd Broyden options default when not set", "[config][solver][trustregion][hybrd]") {
+    fs::path tmpDir = fs::temp_directory_path();
+    fs::path configPath = tmpDir / "coolsolve_test_tr_hybrd_default.conf";
+    std::ofstream f(configPath);
+    REQUIRE(f.is_open());
+    f << "maxIterations = 50\n";
+    f.close();
+    coolsolve::SolverOptions options;
+    bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    fs::remove(configPath);
+    REQUIRE(loaded);
+    REQUIRE(options.trBroydenRecomputeInterval == 0);
+    REQUIRE(options.trBroydenRestartRejects == 2);
+}
+

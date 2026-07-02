@@ -126,6 +126,20 @@ struct SolverOptions {
     double trGrowFactor = 2.0;        // Factor to grow trust region on good steps
     bool trAdaptiveRadius = true;     // Adaptive initial radius based on Cauchy step norm
 
+    // --- Broyden quasi-Newton for TrustRegion (hybrd-style Jacobian reuse) ---
+    // When > 0, TrustRegion computes a full Jacobian every K iterations and
+    // maintains a Broyden rank-1 approximation in between, saving O(n)
+    // CoolProp calls per intermediate iteration. The Broyden state is kept
+    // as an incrementally-updated QR factorization (Golub & Van Loan,
+    // "Matrix Computations" Sec. 12.5, via solver_hybrd_qr.h) rather than a
+    // raw dense matrix, for improved numerical stability across many
+    // updates. 0 = disabled (default).
+    int trBroydenRecomputeInterval = 0;
+    // Powell restart criterion: force a full Jacobian recompute after this
+    // many consecutive rejected steps while using a Broyden approximation
+    // (MINPACK hybrd uses 2). Only relevant when trBroydenRecomputeInterval > 0.
+    int trBroydenRestartRejects = 2;
+
     // Levenberg-Marquardt options
     double lmInitialLambda = 1e-3;    // Initial damping parameter
     double lmLambdaIncrease = 10.0;   // Factor to increase lambda on bad step (fallback; see Nielsen)

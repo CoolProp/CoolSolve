@@ -99,6 +99,7 @@ struct SolverConfig {
     bool useInitials;
     bool enableTearing;
     bool enableSymbolicReduction = false;
+    int trBroydenRecomputeInterval = 0;  // hybrd-style TrustRegion Broyden reuse (0 = legacy/disabled)
 };
 
 static bool shouldSkipFile(const fs::path& filepath) {
@@ -218,6 +219,7 @@ static RobustnessResult testFile(const fs::path& filepath, const SolverConfig& c
     opts.pipelineMode = coolsolve::SolverPipelineMode::Sequential;
     opts.enableTearing = cfg.enableTearing;
     opts.enableSymbolicReduction = cfg.enableSymbolicReduction;
+    opts.trBroydenRecomputeInterval = cfg.trBroydenRecomputeInterval;
 
     // If we want to skip initials, we need to run the pipeline stages manually
     // to avoid auto-loading from .initials file
@@ -348,6 +350,10 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
          {coolsolve::SolverStrategy::TrustRegion},
          true, false},
 
+        {"TrustRegion + Hybrd K=5 (with initials)",
+         {coolsolve::SolverStrategy::TrustRegion},
+         true, false, false, 5},
+
         {"LevenbergMarquardt only (with initials)",
          {coolsolve::SolverStrategy::LevenbergMarquardt},
          true, false},
@@ -408,6 +414,10 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
         {"TrustRegion only (NO initials)",
          {coolsolve::SolverStrategy::TrustRegion},
          false, false},
+
+        {"TrustRegion + Hybrd K=5 (NO initials)",
+         {coolsolve::SolverStrategy::TrustRegion},
+         false, false, false, 5},
 
         {"LevenbergMarquardt only (NO initials)",
          {coolsolve::SolverStrategy::LevenbergMarquardt},

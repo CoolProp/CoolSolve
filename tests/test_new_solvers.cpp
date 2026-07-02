@@ -555,3 +555,47 @@ TEST_CASE("BisectionND - zero Jacobian at starting point (Newton stuck)", "[bise
         CHECK(status != SolverStatus::Success);
     }
 }
+
+// ============================================================================
+// TrustRegion convergence tests
+//
+// The TrustRegion solver uses a dogleg step with non-monotone acceptance and
+// recomputes the full Jacobian every iteration. A Broyden quasi-Newton mode
+// (full-J every K iterations) was evaluated but found numerically unstable
+// for ill-conditioned thermodynamic Jacobians and was not adopted — see
+// docs/solver_roadmap.md §3 for the full analysis.
+// ============================================================================
+
+TEST_CASE("TrustRegion - Powell badly-scaled converges", "[trustregion]") {
+    auto eval = [](const Eigen::VectorXd& x,
+                   Eigen::VectorXd& F,
+                   Eigen::MatrixXd& J,
+                   bool computeJac) {
+        F(0) = 1e4 * x(0) * x(1) - 1.0;
+        F(1) = std::exp(-x(0)) + std::exp(-x(1)) - 1.0001;
+        if (computeJac) {
+            J(0, 0) = 1e4 * x(1);          J(0, 1) = 1e4 * x(0);
+            J(1, 0) = -std::exp(-x(0));    J(1, 1) = -std::exp(-x(1));
+        }
+    };
+
+    TrustRegionSolver solver;
+    NonLinearSolver::Problem problem;
+    problem.size = 2;
+    problem.evaluate = eval;
+
+    Eigen::VectorXd x(2);
+    x << 0.0, 1.0;
+
+    SolverOptions opts;
+    opts.tolerance = 1e-10;
+    opts.maxIterations = 200;
+
+    auto status = solver.solve(problem, x, opts);
+    REQUIRE(status == SolverStatus::Success);
+
+    Eigen::VectorXd F(2);
+    Eigen::MatrixXd Jd(2, 2);
+    eval(x, F, Jd, false);
+    CHECK(F.lpNorm<Eigen::Infinity>() < 1e-6);
+}

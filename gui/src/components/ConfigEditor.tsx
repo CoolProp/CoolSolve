@@ -224,6 +224,20 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
           + 'instead of using the fixed trInitialRadius. This scales the trust region to the problem '
           + 'geometry automatically. Also enables smoother rho-based radius adaptation '
           + 'and gradient-based recovery after consecutive rejections. Recommended for most models.' },
+      { key: 'trBroydenRecomputeInterval', label: 'Broyden interval', type: 'number', defaultVal: '0',
+        description:
+          'hybrd-style (Powell 1970) Broyden quasi-Newton enhancement for TrustRegion. '
+          + 'When > 0, computes a full Jacobian every K iterations and maintains a Broyden rank-1 '
+          + 'approximation (via an incrementally-updated QR factorization) in between, saving expensive '
+          + 'Jacobian evaluations. A full Jacobian is also recomputed after consecutive rejected steps '
+          + '(see Broyden restart rejects) or if the resulting step is non-finite. '
+          + '0 = disabled (classic full-Jacobian TrustRegion, default). '
+          + '5 = recompute every 5 iterations (good starting point for large CoolProp models).' },
+      { key: 'trBroydenRestartRejects', label: 'Broyden restart rejects', type: 'number', defaultVal: '2',
+        description:
+          'Number of consecutive rejected steps that triggers a full Jacobian recompute (Powell restart '
+          + 'criterion) when Broyden interval > 0. Lower values recover from a stale approximation sooner '
+          + 'at the cost of more Jacobian evaluations.' },
     ],
   },
   {

@@ -564,6 +564,17 @@ through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
      iteration rather than using a fixed value, automatically scaling to the
      problem geometry.  Includes smoother rho-based radius adaptation and
      gradient-based recovery after consecutive rejections.
+   - **Hybrd-style Broyden reuse** (option `trBroydenRecomputeInterval`,
+     default 0 = disabled): when set to K > 0, computes a full Jacobian
+     every K iterations and maintains a Broyden rank-1 approximation in
+     between via an incrementally-updated QR factorization (numerically
+     stable Givens-rotation-based updates, not a raw dense rank-1 add — see
+     `docs/solver_roadmap.md` §4.1). A full Jacobian is also recomputed
+     after `trBroydenRestartRejects` (default 2) consecutive rejected
+     steps, or if the resulting step is non-finite. Empirically validated
+     as non-regressive but not currently a net speed/robustness win on
+     tested models (see `docs/solver_roadmap.md` §3.7) — kept as opt-in,
+     tested infrastructure rather than enabled by default.
    - Helps avoid oversized steps that drive thermodynamic calls into invalid
      regions (e.g., non-physical pressure/temperature).
 

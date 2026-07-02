@@ -17,9 +17,24 @@
  *   uses max(0.1, 1-rho)*delta instead of a fixed trShrinkFactor.
  * - **Better rejection recovery**: Consecutive rejections trigger a Cauchy
  *   step fallback (gradient direction within delta) before resetting.
+ *
+ * Optional hybrd-style Broyden updates (trBroydenRecomputeInterval > 0):
+ * mirrors MINPACK's `hybrd` (Powell 1970), which combines Broyden rank-1
+ * Jacobian updates with trust-region dogleg step acceptance. Unlike the
+ * Newton solver's dense Broyden update, the approximation here is
+ * maintained as an incrementally-updated QR factorization (see
+ * solver_hybrd_qr.h, based on Golub & Van Loan, "Matrix Computations"
+ * Sec. 12.5) applied via numerically stable Givens rotations, then
+ * reconstructed to a dense Jacobian for the existing (unchanged) dogleg/
+ * model/acceptance logic below. A full Jacobian is recomputed every K
+ * iterations, or immediately after trBroydenRestartRejects consecutive
+ * rejected steps (Powell's restart criterion), or if the resulting Newton
+ * step is non-finite. Disabled by default (K=0), leaving the legacy
+ * behavior byte-for-byte unchanged.
  */
 #include "coolsolve/solver.h"
 #include "coolsolve/solver_common.h"
+#include "coolsolve/solver_hybrd_qr.h"
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -92,6 +107,21 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
     // Non-monotone merit history (Grippo et al. 1986)
     NonMonotoneHistory meritHistory(options.lsNonMonotoneMemory);
 
+    // --- hybrd-style Broyden state (QR-maintained; see file header) ---
+    const int broydenK = options.trBroydenRecomputeInterval;
+    const bool useBroyden = (broydenK > 0 && n > 1);
+    Eigen::MatrixXd Q, R;          // QR factors of the Broyden Jacobian approximation
+    Eigen::VectorXd F_prev;        // Previous residual (for rank-1 update)
+    Eigen::VectorXd y_prev;        // Previous iterate in scaled coords
+    int itersSinceFullJ = 0;       // Count iterations since last full Jacobian
+    bool forceFullJacobian = false; // Retry flag when Broyden step is unusable
+
+    if (useBroyden && options.verbose) {
+        std::cout << "TrustRegion: Broyden recompute interval K=" << broydenK
+                   << ", restart after " << options.trBroydenRestartRejects
+                   << " rejects" << std::endl;
+    }
+
     for (int iter = 0; iter < options.maxIterations; ++iter) {
         if (TimeoutGuard::hasTimedOut()) {
             if (detailedError) *detailedError = "Solver timed out";
@@ -104,13 +134,45 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
             return SolverStatus::MaxIterations;
         }
 
+        bool fullJacobianThisIter = !useBroyden || iter == 0 ||
+                                    itersSinceFullJ >= broydenK ||
+                                    forceFullJacobian;
+
         try {
             Eigen::VectorXd xu = y.cwiseProduct(scale);
-            problem.evaluate(xu, F, J_unscaled, true);
-            J = J_unscaled * scale.asDiagonal();
+            if (fullJacobianThisIter) {
+                problem.evaluate(xu, F, J_unscaled, true);
+                J = J_unscaled * scale.asDiagonal();
+                if (useBroyden) {
+                    computeInitialQR(J, Q, R);
+                    itersSinceFullJ = 0;
+                    forceFullJacobian = false;
+                }
+            } else {
+                // Residual-only evaluation + Broyden rank-1 update via QR
+                Eigen::MatrixXd J_dummy;
+                problem.evaluate(xu, F, J_dummy, false);
+
+                Eigen::VectorXd dy_actual = y - y_prev;
+                double dy2 = dy_actual.squaredNorm();
+                if (dy2 > 1e-30) {
+                    // Broyden Type-I update B += (dF - B*dy)*dy^T/dy2, computed
+                    // via the QR factors: B*dy = Q*(R*dy).
+                    Eigen::VectorXd Bdy = Q * (R * dy_actual);
+                    Eigen::VectorXd u = (F - F_prev - Bdy) / dy2;
+                    rank1QRUpdate(Q, R, u, dy_actual);
+                }
+                J = Q * R;
+                itersSinceFullJ++;
+            }
         } catch (const std::exception&) {
             x = y.cwiseProduct(scale);
             throw;
+        }
+
+        if (useBroyden) {
+            F_prev = F;
+            y_prev = y;
         }
 
         double residualNorm = F.lpNorm<Eigen::Infinity>();
@@ -194,7 +256,15 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
         // Newton step
         Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(J);
         Eigen::VectorXd dx_n = qr.solve(-F);
-        if (!dx_n.allFinite()) dx_n = dx_c;
+        if (!dx_n.allFinite()) {
+            // Broyden approximation produced an unusable step; retry this
+            // iterate with a full Jacobian instead of the Cauchy fallback.
+            if (useBroyden && !fullJacobianThisIter) {
+                forceFullJacobian = true;
+                continue;
+            }
+            dx_n = dx_c;
+        }
 
         // Dogleg step
         Eigen::VectorXd dy = doglegStep(dx_n, dx_c, delta);
@@ -258,6 +328,12 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
         } else {
             // Reject step — rho-based shrinking instead of fixed factor
             consecutiveRejects++;
+            if (useBroyden && consecutiveRejects >= options.trBroydenRestartRejects) {
+                // Powell restart criterion: repeated rejections suggest the
+                // Broyden approximation has drifted; refresh from a full
+                // Jacobian on the next iteration.
+                forceFullJacobian = true;
+            }
             if (rho < 0.0) {
                 // Very bad step: aggressive shrink
                 delta *= std::max(0.1, options.trShrinkFactor);

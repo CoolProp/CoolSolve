@@ -1,6 +1,9 @@
 # CoolSolve — Solver Roadmap & Status
 
-*Last updated: June 2026*
+*Last updated: June 2026 — Tier 2.1 (incremental QR) and Tier 1 (hybrd-style
+TrustRegion + Broyden) both implemented, on the corrected order (QR first).
+Validated non-regressive; empirically neutral on the tested models — see
+§3.7.*
 
 This document consolidates the performance, robustness, and architecture
 plans for CoolSolve's solver subsystem. It replaces the earlier
@@ -88,7 +91,7 @@ into independent sub-blocks before entering the solver pipeline.
 
 ### 2.3 Test Results (current baseline)
 
-`./coolsolve_tests` runs ~195 unit tests (1291 assertions). All
+`./coolsolve_tests` runs 274 unit tests (2832 assertions). All
 passing. The comprehensive example suite solves **36 / 42** `.eescode`
 files (≈ 2.07 s total).
 
@@ -119,9 +122,29 @@ CoolProp calls, near-singular Jacobians) are: `zorlu_heat_pump`
 The **without-initials** column (67.5%) is the real robustness gap and
 is addressed by Tier 2.2 (multi-start).
 
+This table is the full 42-file × 20-configuration baseline and has not
+been regenerated wholesale (the full suite takes too long to re-run for
+every change). It remains accurate because Tier 1 (§3) defaults to off.
+For a targeted, curated-subset comparison of legacy `TrustRegion` vs.
+the new hybrd mode specifically, see §3.7.
+
 ---
 
 ## 3. Tier 1 — Hybrd-Style TrustRegion + Broyden (the `scipy.fsolve` Algorithm)
+
+**Status (June 2026): implemented (take 2), on top of the QR infrastructure
+from §4.1, following the corrected order from §3.6.** Validated
+non-regressive against the full unit suite and examples-comprehensive.
+Empirical robustness/performance on a curated subset of the hardest models
+is **neutral**: no new failures and no measurable net benefit either — see
+§3.7 for the full, honest results and what they mean for whether this
+feature is worth keeping enabled. It remains **off by default**
+(`trBroydenRecomputeInterval = 0`), so no existing user is affected either
+way. §3.1–§3.5 below are the *original* plan as written before
+implementation; §3.7 documents what was actually built, since it differs
+from the original plan in some specifics (notably: QR-maintained Broyden
+state rather than a dense matrix, `trDynamicScaling` deferred, and a
+default of `0` rather than `5`).
 
 **Goal**: convert the existing `TrustRegionSolver` into a faithful
 implementation of MINPACK `hybrd` (Powell 1970). Single, well-scoped
@@ -150,6 +173,12 @@ bool trDynamicScaling           = true;
 Setting `trBroydenRecomputeInterval = 0` recovers the exact current TR
 behaviour, so the change is backward-compatible.
 
+> **What was actually implemented (§3.7): `trBroydenRecomputeInterval`
+> and `trBroydenRestartRejects` defaulted to `0`/`2` respectively (not
+> `5`), the Broyden state is a QR factorization rather than a dense
+> matrix `B` (see §4.1), and `trDynamicScaling` was not implemented.
+> The two fields that were shipped match the names/semantics above.**
+
 ### 3.2 Implementation Steps in `src/solver_trust_region.cpp`
 
 Mirror the Broyden state pattern already proven in
@@ -173,6 +202,12 @@ Mirror the Broyden state pattern already proven in
    apply the Broyden Type-I update
    `B += ((dF - B·dy) * dy.transpose()) / dy.squaredNorm()` (with
    `dy = y - y_prev`, `dF = F - F_prev`), and alias `J = B`.
+
+   > **As shipped**: this dense update was replaced with
+   > `rank1QRUpdate()` against the maintained `(Q, R)` factors (§4.1),
+   > per the §3.6 finding that the dense version is numerically
+   > unstable. `J` is then reconstructed as `Q * R` for the existing
+   > dogleg code below. See §3.7.
 
 3. **On trust-region rejection** (`solver_trust_region.cpp:260-268`):
    increment `consecutiveRejects`; if it reaches
@@ -236,6 +271,17 @@ Walk through these explicitly when implementing Tier 1:
 All tests follow the existing pattern in `tests/test_new_solvers.cpp`
 (`NonLinearSolver::Problem` lambda + `solver.solve(problem, x, opts)`
 + `CHECK_THAT(... WithinAbs(...))`).
+
+> **As shipped (§3.7)**: the actual tests landed in the new
+> `tests/test_trust_region_hybrd.cpp` (6 cases: config defaults, Powell
+> badly-scaled, restart-on-reject, mild Rosenbrock, and a
+> Broyden-tridiagonal full-Jacobian-eval-count reduction check) plus 2
+> new cases in `tests/test_config.cpp`, rather than exactly the T1–T8 /
+> A1–A2 list below. The list below is retained as the original test
+> *design* — most of its scenarios (Powell badly-scaled, restart
+> behaviour, full-J eval counting, config round-trip) are covered by
+> what shipped; the ones tied to `trDynamicScaling` (T8) were not
+> applicable since that option was not implemented.
 
 #### 3.4.1 Unit Tests (Catch2 tag `[trustregion][broyden]`)
 
@@ -321,6 +367,13 @@ first failure:
    `./build/coolsolve_tests "[solver-robustness]"` regenerates
    `examples/solver_robustness_report.md`.
 
+   > **As run (§3.7)**: per instructions, the full 42-file suite was
+   > not re-run for this change (too slow to iterate on). Instead,
+   > `COOLSOLVE_EXAMPLES_DIR` was pointed at a curated 9-file subset of
+   > the hardest models plus two easy ones, with two new configs added
+   > to `test_solver_robustness.cpp` (`TrustRegion only` vs.
+   > `TrustRegion + Hybrd K=5`). See §3.7 for results.
+
 **Targets after Tier 1 lands:**
 
 - With initials: ≥ 95% (currently 92.7%).
@@ -329,6 +382,212 @@ first failure:
 - `scroll_compressor` solve time: ≤ 0.10 s (currently 0.11 s).
 - For 30-var blocks: full-J evals/iter drop from ~31 (1 + n) to ~7
   (1 every 5 iters + 4 residual-only).
+
+> **Not validated against these exact targets (§3.7)**: the curated
+> 9-file subset used for the actual validation run is a different,
+> smaller sample than the full 42-file population these percentages are
+> computed over, and on that subset legacy `TrustRegion only` already
+> solves 100% of the with-initials cases (it happens not to include
+> any of the with-initials failures from the full-suite baseline), so
+> the ≥95%/≥75% targets could not be directly confirmed or refuted.
+> What *was* confirmed: zero new failures on this subset, and no
+> measurable net speedup (see §3.7) — so these targets remain open
+> questions rather than met goals.
+
+### 3.6 Investigation Findings (June 2026) — Why Tier 1 (Take 1) Was Reverted
+
+An implementation attempt followed the plan above: `SolverOptions` gained
+`trBroydenRecomputeInterval` (default 5), `trBroydenRestartRejects`
+(default 2), `trDynamicScaling` (default true), and
+`TrustRegionSolver` was given the dual-branch Jacobian (full J vs.
+Broyden rank-1 update) described in §3.2.
+
+**Symptom**: scoped robustness testing against real thermodynamic
+models showed the change *increased* iteration counts and, in some
+cases, turned a previously-solving model into a failure:
+
+| Model                    | Effect of enabling Broyden (K=5) |
+|---------------------------|-----------------------------------|
+| `condenser_3zones`        | +40% iterations                   |
+| `zorlu_heat_pump`         | +75% iterations                   |
+| `air_screw_compressor`    | TrustRegion-only: `Success` → `MaxIterations` |
+
+**Root cause**: the dense Broyden Type-I rank-1 update
+(`B += ((dF - B·dy)·dyᵀ) / dyᵀdy`) is numerically unstable for the
+ill-conditioned Jacobians typical of thermodynamic property blocks,
+where variables span many orders of magnitude (`T ~ 300`, `P ~ 1e7`,
+`h ~ 1e5`) even after scaling. Each rank-1 update accumulates error in
+directions the update doesn't observe, and this error compounds over
+the K iterations between full-Jacobian refreshes. MINPACK's actual
+`hybrd` never forms this dense matrix at all: it maintains the **QR
+factorization** of the Jacobian incrementally, via the numerically
+stable Givens-rotation-based `r1updt`/`r1mpyq` routines. That
+incremental-QR foundation is what §4.1 (Tier 2.1) describes — and it
+had not been implemented yet, so the dense-matrix version in this
+attempt was the numerically fragile approximation, not the real
+algorithm.
+
+**Verification performed**: rather than re-running the full 42-file
+robustness suite, the diagnosis was confirmed by:
+
+1. `git diff` against every solver `.cpp` file — confirmed the revert
+   left `solver_trust_region.cpp`, `solver_newton.cpp`, `solver_lm.cpp`,
+   and `solver_common.h` **byte-identical** to the pre-Tier-1 baseline.
+2. A full default unit test run (264 test cases / 1904 assertions) —
+   all passing, unaffected.
+3. A scoped robustness run (`COOLSOLVE_EXAMPLES_DIR` pointed at a
+   10-model subset including every model flagged above) — reproduced
+   the pre-Tier-1 baseline almost exactly (identical pass/fail category
+   and residual for 9/10 models across all 10 solver configurations,
+   including `TrustRegion only` now solving `air_screw_compressor`
+   again). The one exception was the combined *Default pipeline*
+   column on `air_screw_compressor`'s block 13 (a 13-variable,
+   near-singular compressor-leak block that is already the hardest
+   case in the suite): it alternated between success and failure
+   across separate runs. This is a pre-existing run-to-run sensitivity
+   in `solveBlockSequential`'s warm-start logic (later pipeline stages
+   reuse the best residual found so far, so Newton's exact — and
+   CoolProp-cache-sensitive — failure trajectory changes what starting
+   point TrustRegion receives), not something introduced by this
+   attempt: the warm-start code itself is untouched.
+
+**Conclusion**: at the point this investigation concluded, there was
+**no active code regression** — the working tree's solver behaviour is
+functionally identical to the pre-Tier-1 baseline. The regression
+previously visible in `examples/solver_robustness_report.md` reflected
+an intermediate, since-reverted state of the dense-Broyden experiment
+and has been refreshed. The speculative `trBroydenRecomputeInterval` /
+`trBroydenRestartRejects` / `trDynamicScaling` options were removed
+(rather than left in as inert/dead config surface — setting them would
+have silently done nothing) so the codebase reflects exactly what is
+implemented.
+
+**Corrected path forward**: implement §4.1 (incremental QR via
+`r1updt`/`r1mpyq`) *first*, as a standalone, independently testable
+change. Only once TrustRegion maintains a numerically stable
+incremental factorization should Broyden updates be layered on top —
+at that point they operate on the QR factors, not a dense matrix, and
+should no longer suffer the instability documented above. In other
+words, Tier 2.1 is a **prerequisite** for Tier 1, not a follow-on
+optimisation; the tiers should be re-ordered in any future planning
+pass.
+
+### 3.7 Take 2 (June 2026) — QR-Based Implementation & Empirical Findings
+
+The corrected path forward above was followed exactly: §4.1
+(`solver_hybrd_qr.h`/`.cpp`, incremental QR via Golub & Van Loan §12.5
+rank-1 updates — the same numerically-stable building block as MINPACK's
+`r1updt`/`r1mpyq`) was implemented and unit-tested **first** (916
+assertions across random-matrix agreement tests, tag `[hybrd][qr]`).
+Only then was `TrustRegionSolver` given the dual-branch Jacobian.
+
+**What was actually built, and how it differs from §3.1/§3.2's original
+plan**:
+
+- The Broyden approximation is maintained as a QR factorization (`Q`,
+  `R`), updated via `rank1QRUpdate()`, **not** as a dense matrix `B`
+  updated via the raw Type-I formula. This is the fix for the §3.6
+  instability.
+- Each iteration where Broyden mode is active still reconstructs a
+  dense Jacobian `J = Q * R` and re-factors it with
+  `ColPivHouseholderQR` for the actual dogleg solve, rather than doing
+  a fully "hybrd-native" O(n²) triangular solve directly against `R`.
+  This deliberately trades away part of the theoretical speedup (see
+  below) to keep `ColPivHouseholderQR`'s rank-revealing pivoting — the
+  incrementally-updated `R` has no pivoting, so a direct triangular
+  solve on a near-singular Broyden-updated Jacobian could silently
+  produce a large-but-finite garbage step that would not trip the
+  existing `!dx_n.allFinite()` safety net.
+- `trBroydenRecomputeInterval` defaults to **0** (disabled), not 5.
+  Given the empirical findings below, shipping it enabled-by-default
+  would not be justified.
+- `trDynamicScaling` was **not implemented**. Dynamically growing the
+  `scale` vector mid-solve requires rescaling the live iterate
+  (`y = x/scale`) to preserve the physical-position invariant — a
+  nontrivial correctness-sensitive change. Deferred; not needed to
+  evaluate the core hybrd-vs-legacy question.
+- Powell's restart criterion (force full-J after `trBroydenRestartRejects`
+  consecutive rejections, default 2) **was** implemented as planned.
+
+**Validation performed** (per §3.5, substituting a curated subset for
+the full robustness suite as instructed — the full 42-file ×
+22-configuration matrix is too slow to run on every iteration of this
+work):
+
+1. Full default unit suite: **274 test cases / 2832 assertions, all
+   passing** (baseline was 264/1904 at the time of §3.6; growth is the
+   new QR + hybrd tests, not a change in existing behaviour).
+2. Targeted tests: `[hybrd]` tag — **936 assertions / 11 test cases**
+   (the 4 QR-correctness cases from §4.1 plus 7 new TrustRegion-hybrd
+   cases in `tests/test_trust_region_hybrd.cpp` and `test_config.cpp`,
+   covering config defaults, Powell-badly-scaled convergence, the
+   restart-on-reject safety net, mild Rosenbrock, and a
+   full-Jacobian-eval-count reduction check on a Broyden-tridiagonal
+   problem). `[trustregion]` tag — **38 assertions / 15 test cases**.
+3. `[examples-comprehensive]`: still **36/42**, identical to the
+   pre-existing baseline (expected: default pipeline uses K=0).
+4. **Curated-subset robustness comparison**: a 9-file subset chosen as
+   "hardest known models" (`zorlu_heat_pump` 63 vars, `condenser_3zones`
+   62 vars, `heat_pump_MSTh_SB_R10` 39 vars, `orc_r245fa` 38 vars,
+   `orc_co2` 28 vars, `cooling_tower` 22 vars, `air_screw_compressor`)
+   plus two easy models for contrast (`cpbar`, `rankine1`), run through
+   `tests/test_solver_robustness.cpp` with two new configurations
+   added specifically for this comparison, `TrustRegion only` vs.
+   `TrustRegion + Hybrd K=5`, both with-initials and without-initials
+   (22 configs × 9 files = 198 combinations total, ≈524s wall time).
+
+**Empirical results (the honest verdict)**:
+
+| Configuration                              | With initials  | Without initials |
+|---------------------------------------------|---------------:|------------------:|
+| TrustRegion only                             | 9/9 (100.0%), avg 0.079 s | 2/9 (22.2%), avg 0.054 s |
+| TrustRegion + Hybrd K=5                      | 9/9 (100.0%), avg 0.104 s | 2/9 (22.2%), avg 0.060 s |
+
+- **No regressions**: every file that legacy `TrustRegion only` solves,
+  hybrd mode also solves — both with and without initials. This is the
+  key difference from the §3.6 attempt (which turned
+  `air_screw_compressor` from `Success` into `MaxIterations`). Without
+  initials, both configurations fail on exactly the same 7/9 files
+  (`condenser_3zones`, `cooling_tower`, `cpbar`, `heat_pump_MSTh_SB_R10`,
+  `orc_co2`, `orc_r245fa`, `zorlu_heat_pump`), mostly via
+  `MaxIterations` in both cases.
+- **No improvement either**: identical success counts in both
+  scenarios. Hybrd mode does not rescue any without-initials failure
+  and does not add any with-initials failure.
+- **Slightly slower wall-clock, not faster**, on the two largest blocks
+  in the with-initials set — the case this feature is meant to help:
+  `condenser_3zones` 0.18s → 0.35s (+94%), `zorlu_heat_pump` 0.09s →
+  0.13s (+44%). Smaller blocks (`cpbar`, `orc_co2`, `rankine1`, etc.)
+  show no measurable difference either way.
+- A dedicated unit test (`"Broyden tridiagonal reduces full-Jacobian
+  evaluations"`) confirms the *mechanism* works as designed — K=4
+  genuinely performs fewer full-Jacobian evaluations than K=0 on that
+  synthetic problem. The wall-clock results above show that this
+  reduction in Jacobian *evaluations* does not currently translate
+  into a reduction in overall *solve time* on real CoolProp models.
+
+**Root cause of the missing speedup**: per the design trade-off above,
+the Broyden branch still pays the full `O(n³)` cost of reconstructing
+`J = Q·R` and re-running `ColPivHouseholderQR` on every iteration —
+identical linear-algebra cost to the legacy full-Jacobian path. The
+only thing actually saved is the CoolProp Jacobian-evaluation call
+itself. At this codebase's problem sizes (n ≤ 63) that call is
+apparently not the dominant per-iteration cost, so skipping it does
+not show up as a net win — and any extra iterations the Broyden
+approximation needs to reach convergence (compared to a fresh exact
+Jacobian every step) tip the balance further against it.
+
+**Conclusion / recommendation**: keep the feature in the codebase —
+it is fully opt-in, thoroughly tested, causes zero regressions, and
+the underlying QR module (§4.1) is independently valuable — but do
+**not** claim it improves robustness or speed, and do **not** enable it
+by default. Realizing the originally-hoped-for speedup would require
+a genuinely "hybrd-native" solve that uses the maintained `R` directly
+(an `O(n²)` triangular solve, forgoing `ColPivHouseholderQR`'s
+pivoting) rather than reconstructing and re-factoring a dense matrix
+every iteration — deferred as future work in §5, since it reopens the
+robustness-vs-speed trade-off discussed in §3.6 and would need its own
+careful validation.
 
 ---
 
@@ -341,6 +600,19 @@ full test suite → docs).
 
 ### 4.1 Incremental QR Factorization (Port MINPACK `r1updt` + `r1mpyq`)
 
+**Status (June 2026): DELIVERED.** Implemented *before* Tier 1, per the
+corrected ordering in §3.6/§3.7 (this item is a prerequisite for Tier 1,
+not a follow-on — the section numbering here is left as originally
+planned to avoid renumbering the whole document, but the actual
+delivery order was 4.1 then 3). Lives in
+`include/coolsolve/solver_hybrd_qr.h` / `src/solver_hybrd_qr.cpp`,
+exposing `computeInitialQR()` and `rank1QRUpdate()`. Validated with 916
+assertions (tag `[hybrd][qr]`) checking agreement against a from-scratch
+`ColPivHouseholderQR` after sequential rank-1 updates. Consumed by
+`TrustRegionSolver`'s hybrd mode (§3.7); not yet consumed by
+`solver_newton.cpp`'s pre-existing dense-Broyden path (that would be a
+separate, independent follow-on, not required by anything above).
+
 **Why**: When Broyden updates `B`, the Tier 1 solver recomputes
 `B` and then calls `ColPivHouseholderQR` from scratch
 (`solver_trust_region.cpp:195-197`) — `O(n³)` every iteration. hybrd
@@ -348,6 +620,14 @@ instead maintains the QR of `B` incrementally via the 80-line `r1updt`
 routine, giving `O(n²)` per update. On 60-var blocks
 (`zorlu_heat_pump`, `condenser_3zones`) this is roughly a 60× speedup
 on the linear-algebra portion of each iteration.
+
+**Note added in §3.7**: this `O(n²)` speedup is only realized if the
+consumer uses the maintained `R` directly for the solve. The current
+`TrustRegionSolver` integration does not do this (it reconstructs dense
+`J = Q·R` and re-runs `ColPivHouseholderQR`, for pivoting/robustness
+reasons) — so the linear-algebra speedup described here is not yet
+observed end-to-end. The QR module itself works exactly as specified
+and is validated in isolation.
 
 **Implementation**:
 
@@ -469,6 +749,7 @@ mode for hard thermodynamic models with non-monotonic `t`-paths.
 | #  | Improvement                       | Primary benefit                                              | Estimated effort |
 |----|-----------------------------------|--------------------------------------------------------------|------------------|
 | 13 | **KINSOL (SUNDIALS) integration** | Robustness for very large blocks (> 30 vars) and preconditioning | 1-2 weeks        |
+| 14 | **Hybrd-native `O(n²)` triangular solve for TrustRegion Broyden mode** | Realize the speedup §3.7 found missing: solve directly against the maintained `R` instead of reconstructing dense `J` and re-running `ColPivHouseholderQR` every iteration | 3-5 days, plus a careful robustness re-validation (loses rank-revealing pivoting, reopening §3.6's instability concern) |
 
 KINSOL remains the recommended path when even Tier 1 + Tier 2 cannot
 crack the largest industrial models (e.g. `orc_solar_complex`).
@@ -495,7 +776,7 @@ reference; nothing here is open work.
 | Feature                                    | Status   | Notes                                                                                                                  |
 |--------------------------------------------|----------|------------------------------------------------------------------------------------------------------------------------|
 | Newton + non-monotone line search          | **Done** | Default workhorse; Grippo et al. 1986 non-monotone Armijo (M = 10); Broyden quasi-Newton rank-1 updates                |
-| Trust Region Dogleg                        | **Done** | Adaptive initial radius (Cauchy step norm), smoother rho-based radius adaptation, gradient-based rejection recovery   |
+| Trust Region Dogleg                        | **Done** | Adaptive initial radius (Cauchy step norm), smoother rho-based radius adaptation, gradient-based rejection recovery; optional hybrd-style Broyden/QR reuse (`trBroydenRecomputeInterval`, off by default — see §3.7) |
 | Levenberg-Marquardt                        | **Done** | Nielsen's λ adaptation, cumulative Marquardt diagonal scaling, geodesic acceleration (Transtrum & Sethna 2012)         |
 | BisectionND (simplex bisection)            | **Done** | Sign-pattern simplex; `bisectionNDMaxBlockSize` (default 8), `bisectionNDIterFactor`                                   |
 | Homotopy continuation                      | **Done** | Predictor-corrector with adaptive step, Newton + LM corrector fallback, final polish                                   |
@@ -689,16 +970,17 @@ References:
 |-----------------------------------------|-------------|--------------|----------------------|--------------------------------|
 | Default pipeline, with initials         | 17/18 (94%) | 36/42 (86%)  | ≥ 40/42 (95%)        | ≥ 41/42 (98%)                  |
 | Default pipeline, without initials      | 14/17 (82%) | 28/42 (67%)  | ≥ 31/42 (75%)        | ≥ 38/42 (90%) with multi-start |
-| Unit tests                              | 117 (805)   | 195 (1291)   | +10 (Tier 1.4)       | +15 (Tier 2)                   |
+| Unit tests                              | 117 (805)   | 262 (1896)   | +10 (Tier 1.4)       | +15 (Tier 2)                   |
 | CoolProp evals per property             | 5 (1+4 FD)  | 1-3 (AbsState + check) | 1-3 (unchanged) | 1-3 (unchanged)               |
 | CoolProp evals per iter, 30-var block   | ~31         | ~31          | ~7 (hybrd mode)      | ~7 with `O(n²)` QR             |
 | `scroll_compressor` solve time          | 0.42 s      | 0.11 s       | ≤ 0.10 s             | ≤ 0.08 s                       |
-| Cold-start warmup for R22               | 32 s        | ~same        | ~same                | < 1 s (via superancillary)     |
 
 > **Note**: the model count grew from 18 to 42 across versions, so
 > percentages are not directly comparable across the *Previous* and
 > *Current* columns. The Tier 1 and Tier 2 targets are anchored to the
-> current 42-model baseline.
+> current 42-model baseline. Tier 1 (this table's target column) has
+> **not** been reached yet — see §3.6 for why the first attempt was
+> reverted and what is required before re-attempting it.
 
 ---
 
