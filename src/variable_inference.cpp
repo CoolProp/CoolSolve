@@ -225,9 +225,57 @@ static bool tryComputeProperty(const std::string& cpFluid, const std::string& pr
     return false;
 }
 
+std::optional<double> computeThermoGuessAt(const std::string& inferredFluid,
+                                           const std::string& propCode,
+                                           double T_K, double P_Pa,
+                                           const std::string& units) {
+    if (inferredFluid.empty() || propCode.empty()) return std::nullopt;
+
+    auto propMap = getPropMapping(propCode);
+    if (!propMap) return std::nullopt;
+
+    auto fluid = FluidRegistry::getFluid(inferredFluid);
+    if (!fluid) return std::nullopt;
+
+    UnitSystem defaultUnits;
+
+    // Humid air uses HAPropsSI with a default humidity ratio R = 0.5.
+    if (fluid->getType() == FluidType::HumidAir) {
+        std::string outProp = propMap->code;
+        if (outProp == "D") outProp = "V"; // HAPropsSI uses V for volume
+        try {
+            double valSI = HumidAir::HAPropsSI(outProp, "T", T_K, "P", P_Pa, "R", 0.5);
+            if (!std::isfinite(valSI)) return std::nullopt;
+            if (propMap->code == "D") { // convert specific volume -> density
+                if (valSI == 0.0) return std::nullopt;
+                valSI = 1.0 / valSI;
+            }
+            return UnitConverter::fromSI(valSI, propMap->unitType, units.empty()
+                ? getUnitString(propMap->unitType, defaultUnits) : units);
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    // Real / ideal / incompressible fluid via PropsSI.
+    std::string cpFluid = fluid->getCoolPropName();
+    double valSI = 0.0;
+    if (!tryComputeProperty(cpFluid, propMap->code, T_K, P_Pa, valSI)) {
+        return std::nullopt;
+    }
+
+    // Match the reference-state offset applied by initializeVariables() so the
+    // candidate is on the same enthalpy/entropy basis as the default guess.
+    auto ref = fluid->getReferenceState();
+    if (propMap->unitType == UnitType::SpecificEnergy)  valSI += ref.h_offset;
+    if (propMap->unitType == UnitType::SpecificEntropy) valSI += ref.s_offset;
+
+    return UnitConverter::fromSI(valSI, propMap->unitType, units.empty()
+        ? getUnitString(propMap->unitType, defaultUnits) : units);
+}
+
 void initializeVariables(IR& ir) {
     UnitSystem units; // Defaults
-    
     // Reset profiling counters
     g_inference_propsSI_calls = 0;
     g_inference_propsSI_time_ms = 0.0;

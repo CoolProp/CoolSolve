@@ -169,6 +169,21 @@ struct SolverOptions {
     // inversion, and equation substitution.  Off by default (zero overhead).
     bool enableSymbolicReduction = false;
 
+    // --- Multi-start fallback (roadmap §4.2) ---
+    // When a multi-variable block fails the entire solver pipeline, the solver
+    // retries it from a small set of alternative starting points derived from
+    // each variable's inferred physical kind (pressure / temperature / enthalpy
+    // ...).  This rescues models whose default initial guess lies in the wrong
+    // convergence basin — the dominant failure mode when no .initials file is
+    // provided.  Zero overhead when every block converges on the first try:
+    // the candidate search only triggers after a block failure.
+    // Size-1 blocks are skipped (Newton1D already does its own multi-probe).
+    bool multiStartEnabled = true;
+    // Number of alternative starting points to try on a failed block.
+    // Each candidate replays the full solver pipeline, so large values increase
+    // the worst-case cost of a failure.  Default: 4.
+    int  multiStartMaxRestarts = 4;
+
     // --- BisectionND options ---
     // BisectionND is a derivative-free sign-change bisection solver.
     // It is only feasible for small blocks because it requires 2^n function evaluations
@@ -811,6 +826,43 @@ private:
                            const SolverOptions& options,
                            SolverTrace* trace,
                            std::string* outErrorMessage = nullptr);
+
+    /**
+     * @brief Solve a block, retrying from alternative starting points if the
+     *        normal pipeline fails (roadmap §4.2 multi-start fallback).
+     *
+     * Only engages when `options.multiStartEnabled` is true and the block has
+     * more than one unknown.  Candidates are derived from each variable's
+     * inferred physical kind so that, e.g., all pressure variables are shifted
+     * together to a plausible operating level.  Zero overhead when the first
+     * attempt converges.
+     *
+     * @param multistastInfo Optional: filled with a human-readable description
+     *        of which candidate rescued the block (empty if multi-start did
+     *        not engage or also failed).
+     */
+    SolverStatus solveBlockWithMultiStart(size_t blockIndex,
+                                         const SolverOptions& options,
+                                         SolverTrace* trace,
+                                         std::string* outErrorMessage,
+                                         std::string* multistartInfo);
+
+    /**
+     * @brief Build alternative starting vectors for a block from the inferred
+     *        physical kind of each variable.
+     *
+     * Returns up to `maxRestarts` candidate vectors (excluding the default
+     * guess, which is already tried before multi-start), each paired with a
+     * short human-readable label.  Deterministic and reproducible (no
+     * randomness) so debug output is diffable.  Two complementary strategies
+     * are used depending on whether the block contains thermo variables:
+     *   - thermo blocks: candidates re-evaluate every property via CoolProp at
+     *     a coherent reference (T, P) state (pressure regimes);
+     *   - purely-algebraic blocks: candidates scale the default guess by a set
+     *     of factors (the failure is a wrong magnitude, e.g. C ~ 0.05 vs 1.0).
+     */
+    std::vector<std::pair<Eigen::VectorXd, std::string>>
+    generateMultiStartCandidates(size_t blockIndex, int maxRestarts) const;
 
     /**
      * @brief Run a single NonLinearSolver strategy on a block.

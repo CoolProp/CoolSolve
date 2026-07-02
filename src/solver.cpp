@@ -1,6 +1,7 @@
 #include "coolsolve/solver.h"
 #include "coolsolve/solver_common.h"
 #include "coolsolve/symbolic_reduction.h"
+#include "coolsolve/variable_inference.h"
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -14,6 +15,8 @@
 #include <mutex>
 #include <future>
 #include <memory>
+#include <optional>
+#include <limits>
 
 #ifdef __unix__
 #include <unistd.h>
@@ -283,6 +286,20 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             // BisectionND options
             else if (key == "bisectionNDMaxBlockSize") options.bisectionNDMaxBlockSize = std::stoi(val);
             else if (key == "bisectionNDIterFactor")   options.bisectionNDIterFactor   = std::stod(val);
+            // Multi-start fallback (roadmap §4.2)
+            else if (key == "multiStartEnabled") {
+                options.multiStartEnabled = parseBool(val);
+            }
+            else if (key == "multiStartMaxRestarts") {
+                int v = std::stoi(val);
+                if (v < 0) {
+                    std::cerr << "[Warning] multiStartMaxRestarts=" << v
+                              << " is negative; falling back to default (4).\n";
+                    options.multiStartMaxRestarts = 4;
+                } else {
+                    options.multiStartMaxRestarts = v;
+                }
+            }
             // CoolProp integration options
             else if (key == "coolpropBackend") options.coolpropConfig.backend = val;
             else if (key == "coolpropUseAbstractState") options.coolpropConfig.useAbstractState = parseBool(val);
@@ -2078,6 +2095,314 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
     return SolverStatus::MaxIterations;
 }
 
+// ============================================================================
+// Multi-start fallback (roadmap §4.2)
+// ============================================================================
+//
+// When a multi-variable block fails the entire solver pipeline, the dominant
+// cause (for models without a .initials file) is that the default guess lies
+// in the wrong convergence basin — typically the wrong *pressure level* for a
+// refrigeration / power cycle, since initializeVariables() guesses every
+// thermo variable at T=20°C, P=1 atm regardless of the cycle's operating
+// point.  The candidates below shift every thermo variable *together* to a
+// plausible operating level, which is far more effective than perturbing
+// variables independently (the physical states in a cycle are correlated).
+//
+// References:
+//   - Roadmap §4.2: "Multi-Start for the Without-Initials Case".
+//   - Allgower & Georg (2003), §1.3 on the role of starting points for
+//     continuation / Newton methods.
+
+namespace {
+
+// A physically-coherent operating regime.  Every thermo variable in the block
+// is re-evaluated via CoolProp at (T_K, P_Pa) so the candidate is internally
+// consistent (h matches enthalpy(fluid, T, P), etc.) — this is what makes the
+// candidates land in real convergence basins rather than producing the huge
+// residuals of an inconsistent state.  genericScale perturbs the remaining
+// (non-thermo) variables to escape scale locks.
+struct MultiStartRegime {
+    double T_K;          // reference temperature (Kelvin)
+    double P_Pa;         // reference pressure (Pascal)
+    double quality;      // for quality variables (no CoolProp recompute)
+    double genericScale; // multiplier for non-thermo variables
+    const char* label;
+};
+
+// Ordered by estimated likelihood of rescuing thermodynamic cycles.  The first
+// few cover the common low/medium/high pressure bands of refrigeration and
+// ORC loops; the last two add mild generic perturbation to escape scale locks.
+const std::vector<MultiStartRegime>& multistartRegimes() {
+    static const std::vector<MultiStartRegime> regimes = {
+        {353.15,  2.0e6, 0.5, 1.0, "medium pressure (2 MPa, 80C)"},
+        {423.15,  1.0e7, 0.5, 1.0, "high pressure (10 MPa, 150C)"},
+        {298.15,  5.0e5, 0.5, 1.0, "low pressure (0.5 MPa, 25C)"},
+        {373.15,  5.0e6, 0.5, 1.0, "mid-high pressure (5 MPa, 100C)"},
+        {273.15,  1.0e5, 0.5, 0.7, "atmospheric (0C, downscale)"},
+        {523.15,  2.0e7, 0.5, 1.5, "very high (20 MPa, 250C, upscale)"},
+    };
+    return regimes;
+}
+
+// Global scale factors used for purely-algebraic blocks (no thermo variables).
+// Many such blocks solve to small values (efficiencies, volumetric ratios,
+// clearance C ~ 0.05, swept volume ~ 0.1) while initializeVariables() guesses
+// 1.0, so a downscale is the most effective single move.  The set spans three
+// orders of magnitude symmetrically around 1.
+const std::vector<double>& multistartScales() {
+    static const std::vector<double> s = {0.1, 0.3, 3.0, 10.0};
+    return s;
+}
+
+} // namespace
+
+std::vector<std::pair<Eigen::VectorXd, std::string>>
+Solver::generateMultiStartCandidates(size_t blockIndex, int maxRestarts) const {
+    std::vector<std::pair<Eigen::VectorXd, std::string>> candidates;
+    if (maxRestarts <= 0) return candidates;
+
+    const auto& varNames = evaluator_.getBlock(blockIndex).getVariables();
+    const size_t n = varNames.size();
+    if (n <= 1) return candidates;
+
+    // Default guess vector (already tried before multi-start; reused as the
+    // base for non-thermo variables).
+    Eigen::VectorXd defaultGuess(n);
+    bool hasThermo = false;
+    for (size_t i = 0; i < n; ++i) {
+        defaultGuess[i] = evaluator_.getVariableValue(varNames[i]);
+        const VariableInfo* info = ir_.getVariable(varNames[i]);
+        if (info && !info->inferredFluid.empty() && !info->inferredProperty.empty()) {
+            hasThermo = true;
+        }
+    }
+
+    // Helper to guard against zero guesses (would collapse a Jacobian column).
+    auto guarded = [](double v) { return (v == 0.0) ? 1.0 : v; };
+
+    // Build the candidate list.  Two complementary strategies:
+    //   - Thermo regime candidates for blocks containing CoolProp-dependent
+    //     variables (recompute them consistently at a reference state).
+    //   - Global scale candidates for purely-algebraic blocks, where the
+    //     failure is a wrong overall magnitude rather than a wrong fluid state.
+    // For thermo blocks the regimes dominate and are tried first; for algebraic
+    // blocks the scale factors are the only useful move.
+    if (hasThermo) {
+        const auto& regimes = multistartRegimes();
+        int count = std::min<int>(maxRestarts, static_cast<int>(regimes.size()));
+        candidates.reserve(count);
+        for (int k = 0; k < count; ++k) {
+            const auto& r = regimes[k];
+            Eigen::VectorXd cand(n);
+            for (size_t i = 0; i < n; ++i) {
+                const VariableInfo* info = ir_.getVariable(varNames[i]);
+                std::string prop = info ? info->inferredProperty : std::string{};
+                std::string fluid = info ? info->inferredFluid : std::string{};
+                std::string units = info ? info->units : std::string{};
+
+                double val = std::numeric_limits<double>::quiet_NaN();
+                if (!fluid.empty() && !prop.empty()) {
+                    if (prop == "Q") {
+                        val = r.quality;
+                    } else {
+                        // Recompute the property consistently at the regime state.
+                        auto guessed = computeThermoGuessAt(fluid, prop, r.T_K, r.P_Pa, units);
+                        if (guessed && std::isfinite(*guessed)) val = *guessed;
+                    }
+                }
+                if (std::isnan(val)) {
+                    val = guarded(defaultGuess[i]) * r.genericScale;
+                }
+                cand[i] = val;
+            }
+            candidates.emplace_back(std::move(cand), std::string(r.label));
+        }
+    } else {
+        const auto& scales = multistartScales();
+        int count = std::min<int>(maxRestarts, static_cast<int>(scales.size()));
+        candidates.reserve(count);
+        for (int k = 0; k < count; ++k) {
+            Eigen::VectorXd cand(n);
+            for (size_t i = 0; i < n; ++i) {
+                cand[i] = guarded(defaultGuess[i]) * scales[k];
+            }
+            std::ostringstream lbl;
+            lbl << "scale x" << scales[k];
+            candidates.emplace_back(std::move(cand), lbl.str());
+        }
+    }
+    return candidates;
+}
+
+SolverStatus Solver::solveBlockWithMultiStart(size_t blockIndex,
+                                              const SolverOptions& options,
+                                              SolverTrace* trace,
+                                              std::string* outErrorMessage,
+                                              std::string* multistartInfo) {
+    if (multistartInfo) multistartInfo->clear();
+
+    // Capture the original starting guess BEFORE the first attempt: solveBlock
+    // leaves the evaluator state at its (possibly diverged) iterate after a
+    // failure, so reading the "default" guess later would return that garbage.
+    // Multi-start candidates must be derived from the genuine initial guess.
+    const auto& varNames0 = evaluator_.getBlock(blockIndex).getVariables();
+    Eigen::VectorXd originalGuess(varNames0.size());
+    for (size_t i = 0; i < varNames0.size(); ++i) {
+        originalGuess[i] = evaluator_.getVariableValue(varNames0[i]);
+    }
+
+    // 1. Normal attempt with the default starting guess.
+    std::string firstError;
+    SolverStatus status = solveBlock(blockIndex, options, trace, &firstError);
+
+    // Conditions to engage multi-start:
+    //  - option enabled,
+    //  - multi-variable block (size-1 has its own multi-probe in Newton1D),
+    //  - a non-fatal failure (EvaluationError/InvalidInput/ParseFailed are not
+    //    starting-point problems and would just waste time retrying).
+    bool fatal = (status == SolverStatus::EvaluationError ||
+                  status == SolverStatus::InvalidInput ||
+                  status == SolverStatus::ParseFailed);
+    if (status == SolverStatus::Success || !options.multiStartEnabled || fatal) {
+        if (outErrorMessage) *outErrorMessage = firstError;
+        return status;
+    }
+
+    const auto& varNames = evaluator_.getBlock(blockIndex).getVariables();
+    if (varNames.size() <= 1) {
+        if (outErrorMessage) *outErrorMessage = firstError;
+        return status;
+    }
+
+    // Restore the genuine initial guess so candidate generation reads clean
+    // base values rather than the first attempt's diverged endpoint.
+    for (size_t i = 0; i < varNames.size(); ++i) {
+        evaluator_.setVariableValue(varNames[i], originalGuess[i]);
+    }
+
+    // 2. Generate candidate starting vectors and replay the pipeline.
+    auto candidates = generateMultiStartCandidates(
+        blockIndex, options.multiStartMaxRestarts);
+    if (candidates.empty()) {
+        if (outErrorMessage) *outErrorMessage = firstError;
+        return status;
+    }
+
+    auto candidateResidualNorm = [](SolverTrace* t) -> double {
+        if (t && !t->iterations.empty()) return t->iterations.back().residualNorm;
+        return std::numeric_limits<double>::infinity();
+    };
+
+    // Preserve the default-guess attempt as the initial "best" so that, if no
+    // candidate improves things, we restore the state solveBlock left behind.
+    double bestResidual = candidateResidualNorm(trace);
+    int bestCandidate = -1;  // -1 == default-guess attempt
+    Eigen::VectorXd bestState(varNames.size());
+    for (size_t i = 0; i < varNames.size(); ++i) {
+        bestState[i] = evaluator_.getVariableValue(varNames[i]);
+    }
+
+    if (options.verbose) {
+        std::cerr << "[MultiStart] Block " << blockIndex << " (size "
+                  << varNames.size() << ") failed with default guess ("
+                  << statusToString(status) << ", |F|=" << bestResidual
+                  << "); trying " << candidates.size() << " alternative start(s).\n";
+    }
+
+    for (size_t k = 0; k < candidates.size(); ++k) {
+        if (TimeoutGuard::hasTimedOut()) break;
+
+        const std::string& candLabel = candidates[k].second;
+
+        // Install candidate starting values.
+        for (size_t i = 0; i < varNames.size(); ++i) {
+            evaluator_.setVariableValue(varNames[i], candidates[k].first[i]);
+        }
+
+        SolverTrace candTrace;
+        SolverTrace* pt = trace ? &candTrace : nullptr;
+        std::string candError;
+        auto t0 = std::chrono::high_resolution_clock::now();
+        SolverStatus candStatus = solveBlock(blockIndex, options, pt, &candError);
+        auto t1 = std::chrono::high_resolution_clock::now();
+
+        if (options.verbose) {
+            double initRes = (pt && !pt->iterations.empty())
+                ? pt->iterations.front().residualNorm
+                : std::numeric_limits<double>::infinity();
+            std::cerr << "[MultiStart]   candidate " << (k + 1) << " ("
+                      << candLabel << ") init|F|=" << initRes << "\n";
+        }
+
+        if (candStatus == SolverStatus::Success) {
+            // Winner: reflect the winning attempt in the reported trace.
+            if (trace) {
+                trace->iterations = candTrace.iterations;
+                trace->finalStatus = SolverStatus::Success;
+                trace->totalTime = t1 - t0;
+                trace->solverAttempts = candTrace.solverAttempts;
+                trace->symbolicReductionApplied = candTrace.symbolicReductionApplied;
+                trace->originalBlockSize = candTrace.originalBlockSize;
+                trace->reducedBlockSize = candTrace.reducedBlockSize;
+                trace->symInversions = candTrace.symInversions;
+                trace->symExtractions = candTrace.symExtractions;
+                trace->symSubstitutions = candTrace.symSubstitutions;
+                trace->redecompositionApplied = candTrace.redecompositionApplied;
+                trace->numSubBlocks = candTrace.numSubBlocks;
+                trace->subBlockSizes = candTrace.subBlockSizes;
+                trace->solverType = "MultiStart(" + candLabel + ")->" +
+                    (candTrace.solverType.empty() ? std::string("pipeline")
+                                                  : candTrace.solverType);
+            }
+            if (multistartInfo) {
+                std::ostringstream ss;
+                ss << "block " << blockIndex << " rescued by multi-start candidate "
+                   << (k + 1) << "/" << candidates.size()
+                   << " (" << candLabel << ")";
+                *multistartInfo = ss.str();
+            }
+            if (options.verbose) {
+                std::cerr << "[MultiStart] Block " << blockIndex
+                          << " converged with candidate " << (k + 1)
+                          << " (" << candLabel << ").\n";
+            }
+            if (outErrorMessage) outErrorMessage->clear();
+            return SolverStatus::Success;
+        }
+
+        // Candidate failed too — keep the lowest-residual state for restoration.
+        double candResidual = candidateResidualNorm(pt);
+        if (candStatus != SolverStatus::EvaluationError && candResidual < bestResidual) {
+            bestResidual = candResidual;
+            bestCandidate = static_cast<int>(k);
+            for (size_t i = 0; i < varNames.size(); ++i) {
+                bestState[i] = evaluator_.getVariableValue(varNames[i]);
+            }
+        }
+
+        if (options.verbose) {
+            std::cerr << "[MultiStart]   candidate " << (k + 1) << " ("
+                      << candLabel << "): "
+                      << statusToString(candStatus) << " |F|=" << candResidual << "\n";
+        }
+    }
+
+    // 3. No candidate converged — restore the best attempt's state and report
+    //    the original failure (the default-guess error message is the most
+    //    informative).
+    for (size_t i = 0; i < varNames.size(); ++i) {
+        evaluator_.setVariableValue(varNames[i], bestState[i]);
+    }
+    if (options.verbose) {
+        std::cerr << "[MultiStart] Block " << blockIndex
+                  << " still failed after " << candidates.size()
+                  << " restart(s); restored best |F|=" << bestResidual
+                  << " (candidate " << (bestCandidate + 1) << ").\n";
+    }
+    if (outErrorMessage) *outErrorMessage = firstError;
+    return status;
+}
+
 SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
     auto startTime = std::chrono::high_resolution_clock::now();
     
@@ -2122,7 +2447,11 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
         evaluator_.getBlock(blockIdx).setDiagnostics(&blockDiag);
         
         std::string blockError;
-        SolverStatus blockStatus = solveBlock(blockIdx, options, trace, &blockError);
+        std::string multistartInfo;
+        // Multi-start fallback (roadmap §4.2): retries the block from
+        // alternative starting points if the normal pipeline fails.
+        SolverStatus blockStatus = solveBlockWithMultiStart(
+            blockIdx, options, trace, &blockError, &multistartInfo);
         
         // Detach diagnostics pointer (blockDiag goes out of scope later)
         evaluator_.getBlock(blockIdx).setDiagnostics(nullptr);
@@ -2169,6 +2498,11 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
         // Emit solver diagnostics for this block
         auto& blkDiag = result.blockResults.back().diagnostics;
         blkDiag.merge(blockDiag);  // Merge CoolProp diagnostics collected during evaluation
+        if (!multistartInfo.empty()) {
+            // V006: multi-start rescued a block that failed with the default guess
+            blkDiag.push(DiagnosticSeverity::Info, "V006",
+                "Multi-start: " + multistartInfo, "solver");
+        }
         if (br.solverAttempts.size() > 1) {
             // V004: pipeline fallthrough
             std::string attemptList;

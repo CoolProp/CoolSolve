@@ -333,6 +333,24 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
     ],
   },
   {
+    title: 'Multi-Start',
+    fields: [
+      { key: 'multiStartEnabled', label: 'Enable multi-start', type: 'boolean', defaultVal: 'true',
+        description:
+          'When a multi-variable block fails the entire solver pipeline, retry it from a few '
+          + 'alternative starting points. Thermo blocks re-evaluate every property via CoolProp at '
+          + 'a coherent reference (T, P) state (pressure regimes); purely-algebraic blocks scale the '
+          + 'default guess (wrong magnitude is the typical failure, e.g. C ~ 0.05 guessed as 1.0). '
+          + 'Zero overhead when every block converges on the first try: the search only triggers after '
+          + 'a block failure. Size-1 blocks are skipped (Newton1D already does its own multi-probe).' },
+      { key: 'multiStartMaxRestarts', label: 'Max restarts', type: 'number', defaultVal: '4',
+        description:
+          'Number of alternative starting points to try on a failed block. Each candidate replays '
+          + 'the full solver pipeline, so large values increase the worst-case cost of a failure. '
+          + 'Range 1..6.' },
+    ],
+  },
+  {
     title: 'Solver Pipeline',
     fields: [],
     custom: 'pipeline',

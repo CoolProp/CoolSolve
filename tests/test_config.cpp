@@ -144,3 +144,49 @@ TEST_CASE("TrustRegion hybrd Broyden options default when not set", "[config][so
     REQUIRE(options.trBroydenRestartRejects == 2);
 }
 
+TEST_CASE("Multi-start options are loaded from config", "[config][solver][multistart]") {
+    fs::path tmpDir = fs::temp_directory_path();
+    fs::path configPath = tmpDir / "coolsolve_test_multistart.conf";
+    std::ofstream f(configPath);
+    REQUIRE(f.is_open());
+    f << "multiStartEnabled = false\n";
+    f << "multiStartMaxRestarts = 6\n";
+    f.close();
+    coolsolve::SolverOptions options;
+    bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    fs::remove(configPath);
+    REQUIRE(loaded);
+    REQUIRE(options.multiStartEnabled == false);
+    REQUIRE(options.multiStartMaxRestarts == 6);
+}
+
+TEST_CASE("Multi-start options default when not set", "[config][solver][multistart]") {
+    fs::path tmpDir = fs::temp_directory_path();
+    fs::path configPath = tmpDir / "coolsolve_test_multistart_default.conf";
+    std::ofstream f(configPath);
+    REQUIRE(f.is_open());
+    f << "maxIterations = 50\n";  // unrelated key
+    f.close();
+    coolsolve::SolverOptions options;
+    bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    fs::remove(configPath);
+    REQUIRE(loaded);
+    REQUIRE(options.multiStartEnabled == true);
+    REQUIRE(options.multiStartMaxRestarts == 4);
+}
+
+TEST_CASE("Multi-start negative max restarts falls back to default", "[config][solver][multistart]") {
+    fs::path tmpDir = fs::temp_directory_path();
+    fs::path configPath = tmpDir / "coolsolve_test_multistart_neg.conf";
+    std::ofstream f(configPath);
+    REQUIRE(f.is_open());
+    f << "multiStartMaxRestarts = -3\n";
+    f.close();
+    coolsolve::SolverOptions options;
+    bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    fs::remove(configPath);
+    REQUIRE(loaded);
+    // Negative values are rejected and reset to the default (4).
+    REQUIRE(options.multiStartMaxRestarts == 4);
+}
+
