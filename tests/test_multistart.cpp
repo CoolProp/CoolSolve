@@ -155,6 +155,41 @@ TEST_CASE("Multi-start is zero-overhead when the block converges first time",
     }
 }
 
+TEST_CASE("Multi-start parallel mode rescues the singular block",
+          "[solver][multistart][parallel]") {
+    // Same singular-Jacobian block as above, but candidates run concurrently.
+    // The parallel path must recover the same solution (x = y = 0.1).
+    SolverOptions opts = newtonOnlyOpts();
+    opts.multiStartEnabled = true;
+    opts.multiStartMaxRestarts = 4;
+    opts.multiStartNumCores = 2;  // enable parallel multi-start
+    auto out = solveFromSource(kSingularScaleBlock, opts);
+    REQUIRE(out.success);
+    REQUIRE(out.result.variables.count("x"));
+    REQUIRE(out.result.variables.count("y"));
+    REQUIRE_THAT(out.result.variables.at("x"), WithinAbs(0.1, 1e-4));
+    REQUIRE_THAT(out.result.variables.at("y"), WithinAbs(0.1, 1e-4));
+
+    bool foundDiag = false;
+    for (const auto& br : out.result.blockResults) {
+        for (const auto& d : br.diagnostics.items()) {
+            if (d.code == "V006") foundDiag = true;
+        }
+    }
+    REQUIRE(foundDiag);
+}
+
+TEST_CASE("Multi-start auto cores (0) rescues the singular block",
+          "[solver][multistart][parallel]") {
+    SolverOptions opts = newtonOnlyOpts();
+    opts.multiStartEnabled = true;
+    opts.multiStartMaxRestarts = 4;
+    opts.multiStartNumCores = 0;  // auto = use hardware_concurrency
+    auto out = solveFromSource(kSingularScaleBlock, opts);
+    REQUIRE(out.success);
+    REQUIRE_THAT(out.result.variables.at("x"), WithinAbs(0.1, 1e-4));
+}
+
 // ----------------------------------------------------------------------------
 // Targeted real models (run only when the examples directory is available).
 // These are the models the roadmap §4.2 identifies as the multi-start targets:

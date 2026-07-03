@@ -183,6 +183,15 @@ struct SolverOptions {
     // Each candidate replays the full solver pipeline, so large values increase
     // the worst-case cost of a failure.  Default: 4.
     int  multiStartMaxRestarts = 4;
+    // Number of threads used to evaluate multi-start candidates concurrently.
+    // 1  = sequential (default; bit-for-bit identical to the original behaviour,
+    //      zero threading overhead).
+    // N>1= run up to N candidates concurrently (first-to-converge wins).
+    // 0  = auto: min(hardware_concurrency, number of candidates).
+    // Only consulted when multiStartEnabled is true and a block actually fails
+    // (zero overhead otherwise).  Parallel candidates reuse the thread-safe
+    // solveBlockSequential core (see Solver::solveBlockMultiStartParallel).
+    int  multiStartNumCores = 1;
 
     // --- BisectionND options ---
     // BisectionND is a derivative-free sign-change bisection solver.
@@ -865,6 +874,38 @@ private:
     generateMultiStartCandidates(size_t blockIndex, int maxRestarts) const;
 
     /**
+     * @brief Run multi-start candidates concurrently, first-to-converge wins.
+     *
+     * Reuses the thread-safe `solveBlockSequential` core (which only reads
+     * `evaluator_` once for warm-start and otherwise operates on thread-local
+     * x/trace), mirroring the established `solveBlockParallel` safety model.
+     * Candidates are run in waves of size `numCores` to respect the core limit.
+     * Self-contained: on a win it writes the solution to the evaluator, updates
+     * `trace` and `multistartInfo`; on overall failure it restores the lowest-
+     * residual candidate and returns `firstAttemptStatus`.
+     *
+     * Only invoked when `multiStartNumCores > 1`; the default single-core path
+     * stays inline in solveBlockWithMultiStart() so the original sequential
+     * behaviour is bit-for-bit unchanged when parallelism is off.
+     *
+     * Note: parallel candidates run the solver pipeline on the (unreduced)
+     * block via solveBlockSequential; tearing and symbolic reduction, when
+     * enabled, are applied only in the initial single-threaded attempt and in
+     * the sequential multi-start path.
+     */
+    SolverStatus solveBlockMultiStartParallel(
+        size_t blockIndex,
+        const std::vector<std::pair<Eigen::VectorXd, std::string>>& candidates,
+        const Eigen::VectorXd& originalGuess,
+        const SolverOptions& options,
+        int numCores,
+        SolverStatus firstAttemptStatus,
+        const std::string& firstAttemptError,
+        SolverTrace* trace,
+        std::string* outErrorMessage,
+        std::string* multistartInfo);
+
+    /**
      * @brief Run a single NonLinearSolver strategy on a block.
      *
      * Handles the Partitioned strategy specially (it needs the structural
@@ -897,7 +938,8 @@ private:
                                       Eigen::VectorXd& x,
                                       const SolverOptions& options,
                                       SolverTrace* trace,
-                                      std::string* outErrorMessage);
+                                      std::string* outErrorMessage,
+                                      const Eigen::VectorXd* warmStartGuess = nullptr);
 
     /**
      * @brief Parallel execution: launch all pipeline solvers concurrently.

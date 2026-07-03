@@ -190,3 +190,31 @@ TEST_CASE("Multi-start negative max restarts falls back to default", "[config][s
     REQUIRE(options.multiStartMaxRestarts == 4);
 }
 
+TEST_CASE("Multi-start numCores is loaded from config", "[config][solver][multistart]") {
+    fs::path tmpDir = fs::temp_directory_path();
+    fs::path configPath = tmpDir / "coolsolve_test_ms_cores.conf";
+    std::ofstream f(configPath);
+    REQUIRE(f.is_open());
+    f << "multiStartNumCores = 0\n";  // 0 = auto
+    f.close();
+    coolsolve::SolverOptions options;
+    bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    fs::remove(configPath);
+    REQUIRE(loaded);
+    REQUIRE(options.multiStartNumCores == 0);
+}
+
+TEST_CASE("Multi-start numCores negative falls back to sequential default", "[config][solver][multistart]") {
+    fs::path tmpDir = fs::temp_directory_path();
+    fs::path configPath = tmpDir / "coolsolve_test_ms_cores_neg.conf";
+    std::ofstream f(configPath);
+    REQUIRE(f.is_open());
+    f << "multiStartNumCores = -2\n";
+    f.close();
+    coolsolve::SolverOptions options;
+    bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    fs::remove(configPath);
+    REQUIRE(loaded);
+    REQUIRE(options.multiStartNumCores == 1);
+}
+

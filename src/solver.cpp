@@ -300,6 +300,16 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
                     options.multiStartMaxRestarts = v;
                 }
             }
+            else if (key == "multiStartNumCores") {
+                int v = std::stoi(val);
+                if (v < 0) {
+                    std::cerr << "[Warning] multiStartNumCores=" << v
+                              << " is negative; falling back to default (1 = sequential).\n";
+                    options.multiStartNumCores = 1;
+                } else {
+                    options.multiStartNumCores = v;
+                }
+            }
             // CoolProp integration options
             else if (key == "coolpropBackend") options.coolpropConfig.backend = val;
             else if (key == "coolpropUseAbstractState") options.coolpropConfig.useAbstractState = parseBool(val);
@@ -1242,7 +1252,8 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
                                           Eigen::VectorXd& x,
                                           const SolverOptions& options,
                                           SolverTrace* trace,
-                                          std::string* outErrorMessage) {
+                                          std::string* outErrorMessage,
+                                          const Eigen::VectorXd* warmStartGuess) {
     const size_t n = varNames.size();
     SolverStatus status = SolverStatus::InvalidInput;
     std::string lastError;
@@ -1306,8 +1317,16 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
         // solution found so far by a previous solver.
         if (idx > 0 || round > 0) {
             Eigen::VectorXd x_init(n);
-            for (size_t i = 0; i < n; ++i) {
-                x_init[i] = evaluator_.getVariableValue(varNames[i]);
+            if (warmStartGuess) {
+                // Thread-local warm-start context (e.g. a multi-start candidate):
+                // chain solvers against THIS starting point rather than the shared
+                // evaluator state, which may hold an unrelated guess when several
+                // candidates run concurrently.
+                x_init = *warmStartGuess;
+            } else {
+                for (size_t i = 0; i < n; ++i) {
+                    x_init[i] = evaluator_.getVariableValue(varNames[i]);
+                }
             }
             // Evaluate residual at initial guess
             double initResidualNorm = std::numeric_limits<double>::max();
@@ -2309,6 +2328,21 @@ SolverStatus Solver::solveBlockWithMultiStart(size_t blockIndex,
                   << "); trying " << candidates.size() << " alternative start(s).\n";
     }
 
+    // Dispatch: run candidates in parallel when more than one core is
+    // available.  The parallel path is self-contained (it updates the
+    // evaluator, trace, and multistartInfo itself).  The single-core path
+    // below stays inline so the default sequential behaviour is unchanged.
+    int effCores = options.multiStartNumCores;
+    if (effCores == 0) {
+        unsigned hw = std::thread::hardware_concurrency();
+        effCores = (hw == 0) ? 1 : static_cast<int>(hw);
+    }
+    if (effCores > 1 && static_cast<int>(candidates.size()) > 1) {
+        return solveBlockMultiStartParallel(blockIndex, candidates, originalGuess,
+                                            options, effCores, status, firstError,
+                                            trace, outErrorMessage, multistartInfo);
+    }
+
     for (size_t k = 0; k < candidates.size(); ++k) {
         if (TimeoutGuard::hasTimedOut()) break;
 
@@ -2401,6 +2435,233 @@ SolverStatus Solver::solveBlockWithMultiStart(size_t blockIndex,
     }
     if (outErrorMessage) *outErrorMessage = firstError;
     return status;
+}
+
+// ----------------------------------------------------------------------------
+// Multi-start parallel execution (roadmap §4.2)
+// ----------------------------------------------------------------------------
+//
+// Concurrency model: identical to solveBlockParallel's.  BlockEvaluator::
+// evaluate is const-safe (it does not mutate shared state), and CoolProp's
+// AbstractState cache is thread-local, so concurrent candidate solves against
+// the same block evaluator are safe as long as each thread uses its own x
+// vector and trace.  solveBlockSequential additionally reads evaluator_ once
+// per solver for its warm-start heuristic — a concurrent read that is safe
+// because no thread writes evaluator_ during the parallel section (the winner
+// is written back single-threaded afterwards).
+//
+// Candidates are run in waves of size `numCores` to honour the configured core
+// limit.  A shared atomic stop flag gives first-to-converge semantics: as soon
+// as one candidate succeeds, the others' solvers see the cancel token and wind
+// down quickly.
+
+namespace {
+// One candidate attempt's outcome, produced inside a worker thread.
+struct MSTaskResult {
+    bool converged = false;
+    int index = -1;
+    std::string label;
+    Eigen::VectorXd solution;
+    Eigen::VectorXd finalX;   // solver's final iterate (== solution when converged)
+    double residualNorm = std::numeric_limits<double>::infinity();
+    SolverTrace trace;
+};
+} // namespace
+
+SolverStatus Solver::solveBlockMultiStartParallel(
+    size_t blockIndex,
+    const std::vector<std::pair<Eigen::VectorXd, std::string>>& candidates,
+    const Eigen::VectorXd& originalGuess,
+    const SolverOptions& options,
+    int numCores,
+    SolverStatus firstAttemptStatus,
+    const std::string& firstAttemptError,
+    SolverTrace* trace,
+    std::string* outErrorMessage,
+    std::string* multistartInfo) {
+
+    const auto& varNames = evaluator_.getBlock(blockIndex).getVariables();
+    const size_t n = varNames.size();
+
+    // Build the (shared) evaluation problem, mirroring solveBlock().  The
+    // evaluate lambda only captures const-safe references (blockEval,
+    // externalVars), so it is safe to invoke concurrently from many threads,
+    // each passing its own x.
+    BlockEvaluator& blockEval = evaluator_.getBlock(blockIndex);
+
+    auto caseInsensitiveEqual = [](const std::string& a, const std::string& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (std::tolower(static_cast<unsigned char>(a[i])) !=
+                std::tolower(static_cast<unsigned char>(b[i]))) return false;
+        return true;
+    };
+    std::map<std::string, double> externalVars;
+    for (const auto& [name, value] : evaluator_.getAllVariables()) {
+        bool inBlock = false;
+        for (const auto& bvar : varNames)
+            if (caseInsensitiveEqual(name, bvar)) { inBlock = true; break; }
+        if (!inBlock) externalVars[name] = value;
+    }
+    std::map<std::string, std::string> externalStringVars;
+    for (const auto& [name, value] : evaluator_.getAllStringVariables())
+        externalStringVars[name] = value;
+
+    NonLinearSolver::Problem problem;
+    problem.size = static_cast<int>(n);
+    problem.evaluate = [&blockEval, &externalVars, &externalStringVars](
+                           const Eigen::VectorXd& xv, Eigen::VectorXd& F,
+                           Eigen::MatrixXd& J, bool computeJacobian) {
+        std::vector<double> x_std(xv.data(), xv.data() + xv.size());
+        auto result = blockEval.evaluate(x_std, externalVars, externalStringVars,
+                                         computeJacobian);
+        const size_t nEqs = result.residuals.size();
+        F.resize(nEqs);
+        for (size_t i = 0; i < nEqs; ++i) F[i] = result.residuals[i];
+        if (computeJacobian) {
+            J.resize(nEqs, xv.size());
+            for (size_t i = 0; i < nEqs; ++i)
+                for (size_t j = 0; j < result.jacobian[i].size(); ++j)
+                    J(i, j) = result.jacobian[i][j];
+        }
+    };
+
+    // Keep the evaluator on the genuine initial guess (already restored by the
+    // caller) so solveBlockSequential's warm-start read is consistent across
+    // all worker threads.
+    // (No extra action needed; originalGuess is the current evaluator state.)
+
+    auto parallelStop = std::make_shared<std::atomic<bool>>(false);
+
+    // Lowest-residual fallback across all candidates (for the failure case).
+    MSTaskResult best;
+    best.index = -1;
+    best.label = "default guess";
+    best.solution = originalGuess;
+    best.finalX = originalGuess;
+
+    const int waveSize = std::max(1, numCores);
+    size_t launched = 0;
+
+    while (launched < candidates.size()) {
+        if (TimeoutGuard::hasTimedOut()) break;
+
+        // Launch one wave of up to waveSize candidates.
+        std::vector<std::future<MSTaskResult>> futures;
+        size_t waveEnd = std::min(candidates.size(), launched + waveSize);
+        for (size_t k = launched; k < waveEnd; ++k) {
+            Eigen::VectorXd x0 = candidates[k].first;        // candidate start
+            std::string label = candidates[k].second;
+            int idx = static_cast<int>(k);
+            futures.push_back(std::async(std::launch::async,
+                [this, blockIndex, &varNames, &problem, &blockEval,
+                 &externalVars, &externalStringVars, &options, parallelStop,
+                 x0 = std::move(x0), label = std::move(label), idx]() mutable {
+                    MSTaskResult r;
+                    r.index = idx;
+                    r.label = label;
+                    r.finalX = x0;
+
+                    SolverOptions threadOpts = options;
+                    threadOpts.cancelToken = parallelStop.get();
+
+                    Eigen::VectorXd x = x0;
+                    SolverTrace tlocal;
+                    SolverTrace* pt = &tlocal;
+                    std::string err;
+                    auto tA = std::chrono::high_resolution_clock::now();
+                    // Pass the candidate as the warm-start context so solver
+                    // chaining stays within this candidate (the shared
+                    // evaluator still holds the original guess).
+                    SolverStatus st = solveBlockSequential(
+                        blockIndex, problem, blockEval, varNames,
+                        externalVars, externalStringVars, x, threadOpts, pt, &err,
+                        &x0);
+                    auto tB = std::chrono::high_resolution_clock::now();
+                    tlocal.totalTime = tB - tA;
+
+                    r.converged = (st == SolverStatus::Success);
+                    r.finalX = x;
+                    if (r.converged) {
+                        r.solution = x;
+                        r.residualNorm =
+                            (pt && !pt->iterations.empty())
+                                ? pt->iterations.back().residualNorm
+                                : 0.0;
+                        r.trace = std::move(tlocal);
+                        parallelStop->store(true, std::memory_order_release);
+                    } else {
+                        r.residualNorm =
+                            (pt && !pt->iterations.empty())
+                                ? pt->iterations.back().residualNorm
+                                : std::numeric_limits<double>::infinity();
+                        r.trace = std::move(tlocal);
+                    }
+                    return r;
+                }));
+        }
+        launched = waveEnd;
+
+        // Collect the wave, polling so the block timeout / cancel can fire.
+        for (auto& fut : futures) {
+            if (!fut.valid()) continue;
+            while (true) {
+                auto st = fut.wait_for(std::chrono::milliseconds(50));
+                if (st == std::future_status::ready) break;
+                if (TimeoutGuard::hasTimedOut())
+                    parallelStop->store(true, std::memory_order_release);
+            }
+            MSTaskResult r = fut.get();
+
+            if (r.converged) {
+                // Winner — write solution back, update trace/info, return.
+                for (size_t i = 0; i < n; ++i)
+                    evaluator_.setVariableValue(varNames[i], r.solution[i]);
+                if (trace) {
+                    trace->iterations = r.trace.iterations;
+                    trace->finalStatus = SolverStatus::Success;
+                    trace->totalTime = r.trace.totalTime;
+                    trace->solverAttempts = r.trace.solverAttempts;
+                    trace->solverType =
+                        "MultiStart(" + r.label + ")->" +
+                        (r.trace.solverType.empty() ? std::string("pipeline")
+                                                    : r.trace.solverType);
+                }
+                if (multistartInfo) {
+                    std::ostringstream ss;
+                    ss << "block " << blockIndex
+                       << " rescued by multi-start candidate " << (r.index + 1)
+                       << "/" << candidates.size() << " (" << r.label
+                       << ") [parallel, " << numCores << " cores]";
+                    *multistartInfo = ss.str();
+                }
+                if (options.verbose) {
+                    std::cerr << "[MultiStart] Block " << blockIndex
+                              << " converged with candidate " << (r.index + 1)
+                              << " (" << r.label << ") [parallel].\n";
+                }
+                if (outErrorMessage) outErrorMessage->clear();
+                return SolverStatus::Success;
+            }
+
+            if (r.residualNorm < best.residualNorm) best = std::move(r);
+        }
+
+        if (parallelStop->load(std::memory_order_relaxed)) break; // cancelled
+    }
+
+    // No candidate converged — restore the lowest-residual iterate and report
+    // the original failure.
+    for (size_t i = 0; i < n; ++i)
+        evaluator_.setVariableValue(varNames[i], best.finalX[i]);
+    if (options.verbose) {
+        std::cerr << "[MultiStart] Block " << blockIndex
+                  << " still failed after " << candidates.size()
+                  << " restart(s) [parallel]; restored best |F|=" << best.residualNorm
+                  << " (candidate " << (best.index + 1) << ").\n";
+    }
+    if (outErrorMessage) *outErrorMessage = firstAttemptError;
+    return firstAttemptStatus;
 }
 
 SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {

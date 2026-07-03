@@ -100,6 +100,7 @@ struct SolverConfig {
     bool enableTearing;
     bool enableSymbolicReduction = false;
     int trBroydenRecomputeInterval = 0;  // hybrd-style TrustRegion Broyden reuse (0 = legacy/disabled)
+    int multiStartNumCores = 1;          // 1 = sequential multi-start (default); 0/N>1 = parallel
 };
 
 static bool shouldSkipFile(const fs::path& filepath) {
@@ -220,6 +221,7 @@ static RobustnessResult testFile(const fs::path& filepath, const SolverConfig& c
     opts.enableTearing = cfg.enableTearing;
     opts.enableSymbolicReduction = cfg.enableSymbolicReduction;
     opts.trBroydenRecomputeInterval = cfg.trBroydenRecomputeInterval;
+    opts.multiStartNumCores = cfg.multiStartNumCores;
 
     // If we want to skip initials, we need to run the pipeline stages manually
     // to avoid auto-loading from .initials file
@@ -461,6 +463,29 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
           coolsolve::SolverStrategy::Homotopy,
           coolsolve::SolverStrategy::Partitioned},
          false, true, true},
+
+        // -- Multi-start (parallel) without initials --
+        // Exercises the parallel multi-start path (roadmap §4.2). Candidates
+        // run concurrently (numCores = 0 → auto).  Compared against the plain
+        // "Default pipeline (NO initials)" config above to confirm parallel
+        // mode is non-regressive and rescues the same models.
+        {"Default + MultiStart parallel (NO initials)",
+         {coolsolve::SolverStrategy::Newton,
+          coolsolve::SolverStrategy::TrustRegion,
+          coolsolve::SolverStrategy::LevenbergMarquardt,
+          coolsolve::SolverStrategy::BisectionND,
+          coolsolve::SolverStrategy::Homotopy,
+          coolsolve::SolverStrategy::Partitioned},
+         false, false, false, 0, 0},
+
+        {"Default + MultiStart parallel (with initials)",
+         {coolsolve::SolverStrategy::Newton,
+          coolsolve::SolverStrategy::TrustRegion,
+          coolsolve::SolverStrategy::LevenbergMarquardt,
+          coolsolve::SolverStrategy::BisectionND,
+          coolsolve::SolverStrategy::Homotopy,
+          coolsolve::SolverStrategy::Partitioned},
+         true, false, false, 0, 0},
     };
 
     // Collect results: configs x files

@@ -1,6 +1,6 @@
 # CoolSolve Solver Robustness Report
 
-**Generated:** Thu Jul  2 12:22:53 2026
+**Generated:** Thu Jul  2 23:41:12 2026
 
 Total example files tested: 42
 
@@ -13,26 +13,28 @@ Failure cells show: `ErrorCategory blkN |F|=residual` where N is the failed bloc
 |---:|---|:---:|:---:|:---:|---:|---:|---:|---:|
 | 1 | Default pipeline (with initials) | Yes | No | No | 38 | 41 | 92.7% | 0.027 |
 | 2 | Newton only (with initials) | Yes | No | No | 34 | 41 | 82.9% | 0.010 |
-| 3 | TrustRegion only (with initials) | Yes | No | No | 36 | 41 | 87.8% | 0.011 |
-| 4 | TrustRegion + Hybrd K=5 (with initials) | Yes | No | No | 36 | 41 | 87.8% | 0.011 |
-| 5 | LevenbergMarquardt only (with initials) | Yes | No | No | 32 | 41 | 78.0% | 0.366 |
+| 3 | TrustRegion only (with initials) | Yes | No | No | 37 | 41 | 90.2% | 0.049 |
+| 4 | TrustRegion + Hybrd K=5 (with initials) | Yes | No | No | 37 | 41 | 90.2% | 0.402 |
+| 5 | LevenbergMarquardt only (with initials) | Yes | No | No | 33 | 41 | 80.5% | 0.364 |
 | 6 | BisectionND only (with initials) | Yes | No | No | 17 | 41 | 41.5% | 0.003 |
 | 7 | Homotopy only (with initials) | Yes | No | No | 35 | 41 | 85.4% | 0.036 |
 | 8 | Partitioned only (with initials) | Yes | No | No | 16 | 41 | 39.0% | 0.011 |
-| 9 | Default + Tearing (with initials) | Yes | Yes | No | 38 | 41 | 92.7% | 0.027 |
+| 9 | Default + Tearing (with initials) | Yes | Yes | No | 38 | 41 | 92.7% | 0.025 |
 | 10 | Default + SymbolicReduction (with initials) | Yes | No | Yes | 38 | 41 | 92.7% | 0.026 |
-| 11 | Default + Tearing + SymbolicReduction (with initials) | Yes | Yes | Yes | 38 | 41 | 92.7% | 0.027 |
-| 12 | Default pipeline (NO initials) | No | No | No | 27 | 40 | 67.5% | 0.070 |
-| 13 | Newton only (NO initials) | No | No | No | 20 | 40 | 50.0% | 0.021 |
-| 14 | TrustRegion only (NO initials) | No | No | No | 19 | 40 | 47.5% | 0.024 |
-| 15 | TrustRegion + Hybrd K=5 (NO initials) | No | No | No | 20 | 40 | 50.0% | 0.019 |
-| 16 | LevenbergMarquardt only (NO initials) | No | No | No | 16 | 40 | 40.0% | 0.007 |
+| 11 | Default + Tearing + SymbolicReduction (with initials) | Yes | Yes | Yes | 38 | 41 | 92.7% | 0.026 |
+| 12 | Default pipeline (NO initials) | No | No | No | 30 | 40 | 75.0% | 0.140 |
+| 13 | Newton only (NO initials) | No | No | No | 24 | 40 | 60.0% | 0.256 |
+| 14 | TrustRegion only (NO initials) | No | No | No | 26 | 40 | 65.0% | 1.237 |
+| 15 | TrustRegion + Hybrd K=5 (NO initials) | No | No | No | 22 | 40 | 55.0% | 0.022 |
+| 16 | LevenbergMarquardt only (NO initials) | No | No | No | 19 | 40 | 47.5% | 0.013 |
 | 17 | BisectionND only (NO initials) | No | No | No | 14 | 40 | 35.0% | 0.003 |
-| 18 | Homotopy only (NO initials) | No | No | No | 27 | 40 | 67.5% | 0.262 |
+| 18 | Homotopy only (NO initials) | No | No | No | 27 | 40 | 67.5% | 0.273 |
 | 19 | Partitioned only (NO initials) | No | No | No | 14 | 40 | 35.0% | 0.014 |
-| 20 | Default + Tearing (NO initials) | No | Yes | No | 27 | 40 | 67.5% | 0.064 |
-| 21 | Default + SymbolicReduction (NO initials) | No | No | Yes | 27 | 40 | 67.5% | 0.069 |
-| 22 | Default + Tearing + SymbolicReduction (NO initials) | No | Yes | Yes | 27 | 40 | 67.5% | 0.064 |
+| 20 | Default + Tearing (NO initials) | No | Yes | No | 30 | 40 | 75.0% | 0.142 |
+| 21 | Default + SymbolicReduction (NO initials) | No | No | Yes | 30 | 40 | 75.0% | 0.147 |
+| 22 | Default + Tearing + SymbolicReduction (NO initials) | No | Yes | Yes | 30 | 40 | 75.0% | 0.136 |
+| 23 | Default + MultiStart parallel (NO initials) | No | No | No | 32 | 40 | 80.0% | 0.560 |
+| 24 | Default + MultiStart parallel (with initials) | Yes | No | No | 38 | 41 | 92.7% | 0.028 |
 
 ## Symbolic Reduction Impact
 
@@ -110,9 +112,9 @@ For configurations with symbolic reduction enabled, shows how multi-variable blo
 | internal_combustion_engine_cpbar.eescode | Default + SymbolicReduction (NO initials) | 49 | 2 → 2 | 12 → 12 | 0 | — |
 | orc_co2.eescode | Default + SymbolicReduction (NO initials) | 112 | 1 → 1 | 28 → 28 | 0 | — |
 | orc_extraction.eescode | Default + SymbolicReduction (NO initials) | 113 | 1 → 1 | 21 → 21 | 0 | — |
-| orc_r245fa.eescode | Default + SymbolicReduction (NO initials) | 152 | 7 → 7 | 34 → 34 | 0 | — |
+| orc_r245fa.eescode | Default + SymbolicReduction (NO initials) | 152 | 8 → 8 | 38 → 38 | 0 | — |
 | orc_simple.eescode | Default + SymbolicReduction (NO initials) | 150 | 7 → 7 | 29 → 29 | 0 | — |
-| piston_compressor.eescode | Default + SymbolicReduction (NO initials) | 58 | 1 → 1 | 4 → 4 | 0 | — |
+| piston_compressor.eescode | Default + SymbolicReduction (NO initials) | 58 | 2 → 2 | 6 → 6 | 0 | — |
 | rankine2.eescode | Default + SymbolicReduction (NO initials) | 42 | 1 → 1 | 4 → 4 | 0 | — |
 | refrigeration_compressor.eescode | Default + SymbolicReduction (NO initials) | 53 | 2 → 2 | 6 → 6 | 0 | — |
 | scroll_compressor.eescode | Default + SymbolicReduction (NO initials) | 66 | 1 → 1 | 34 → 34 | 0 | — |
@@ -136,9 +138,9 @@ For configurations with symbolic reduction enabled, shows how multi-variable blo
 | internal_combustion_engine_cpbar.eescode | Default + Tearing + SymbolicReduction (NO initials) | 49 | 2 → 2 | 12 → 12 | 0 | — |
 | orc_co2.eescode | Default + Tearing + SymbolicReduction (NO initials) | 112 | 1 → 1 | 28 → 28 | 0 | — |
 | orc_extraction.eescode | Default + Tearing + SymbolicReduction (NO initials) | 113 | 1 → 1 | 21 → 21 | 0 | — |
-| orc_r245fa.eescode | Default + Tearing + SymbolicReduction (NO initials) | 152 | 7 → 7 | 34 → 34 | 0 | — |
+| orc_r245fa.eescode | Default + Tearing + SymbolicReduction (NO initials) | 152 | 8 → 8 | 38 → 38 | 0 | — |
 | orc_simple.eescode | Default + Tearing + SymbolicReduction (NO initials) | 150 | 7 → 7 | 29 → 29 | 0 | — |
-| piston_compressor.eescode | Default + Tearing + SymbolicReduction (NO initials) | 58 | 1 → 1 | 4 → 4 | 0 | — |
+| piston_compressor.eescode | Default + Tearing + SymbolicReduction (NO initials) | 58 | 2 → 2 | 6 → 6 | 0 | — |
 | rankine2.eescode | Default + Tearing + SymbolicReduction (NO initials) | 42 | 1 → 1 | 4 → 4 | 0 | — |
 | refrigeration_compressor.eescode | Default + Tearing + SymbolicReduction (NO initials) | 53 | 2 → 2 | 6 → 6 | 0 | — |
 | scroll_compressor.eescode | Default + Tearing + SymbolicReduction (NO initials) | 66 | 1 → 1 | 34 → 34 | 0 | — |
@@ -147,97 +149,97 @@ For configurations with symbolic reduction enabled, shows how multi-variable blo
 
 ## Detailed Results: With Initials
 
-| File | Nwt+TR+LM+BisectionND+Homotopy+Part | Nwt | TR | TR | LM | BisectionND | Homotopy | Part | Nwt+TR+LM+BisectionND+Homotopy+Part+Tear | Nwt+TR+LM+BisectionND+Homotopy+Part | Nwt+TR+LM+BisectionND+Homotopy+Part+Tear |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| advanced_features.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| air_screw_compressor.eescode | **OK** (0.03s) | Singular Jacobian blk13 |F|=322614.1 | **OK** (0.02s) | **OK** (0.02s) | Singular Jacobian blk13 |F|=365861.1 | Other blk13 | **OK** (0.64s) | Max iterations blk13 |F|=2e+08 | **OK** (0.02s) | **OK** (0.03s) | **OK** (0.02s) |
-| air_screw_compressor_simple.eescode | **OK** (0.03s) | Singular Jacobian blk13 |F|=304355.9 | **OK** (0.02s) | **OK** (0.02s) | Singular Jacobian blk13 |F|=365861.1 | Other blk13 | Other blk13 |F|=419347.5 | Max iterations blk13 |F|=2e+08 | **OK** (0.02s) | **OK** (0.03s) | **OK** (0.02s) |
-| boiler_cpbar.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| boiler_cpbar2.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.02s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
-| compressor_refrigeration_simple.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| condenser_3zones.eescode | **OK** (0.03s) | **OK** (0.02s) | **OK** (0.03s) | **OK** (0.04s) | **OK** (0.21s) | Other blk62 | **OK** (0.03s) | Max iterations blk62 |F|=3335.5 | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) |
-| condenser_wet.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 |F|=0.1 | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| cooling_coil.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | Other blk12 | **OK** (0.02s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
-| cooling_tower.eescode | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.04s) | **OK** (0.03s) | **OK** (7.48s) | Other blk11 | **OK** (0.06s) | Max iterations blk11 |F|=27486.9 | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) |
-| cooling_tower2.eescode | **OK** (0.56s) | Singular Jacobian blk11 |F|=2e+07 | Max iterations blk11 |F|=2e+07 | Max iterations blk11 |F|=2e+07 | Singular Jacobian blk11 |F|=2e+07 | Other blk11 | Other blk11 |F|=2e+07 | **OK** (0.12s) | **OK** (0.57s) | **OK** (0.56s) | **OK** (0.59s) |
-| cpbar.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | Other blk5 |F|=4e+08 | **OK** (0.02s) | Max iterations blk5 |F|=5e+08 | **OK** (0.00s) | **OK** (0.01s) | **OK** (0.00s) |
-| evaporator.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.05s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| exchangers1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| exchangers2.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk4 |F|=355.6 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| exchangers3.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.01s) | Other blk3 |F|=123803.1 | **OK** (0.01s) | Other blk3 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| heat_pump_MSTh_SB_R10.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.72s) | Other blk39 | **OK** (0.01s) | Max iterations blk39 |F|=2e+158 | **OK** (0.01s) | **OK** (0.00s) | **OK** (0.01s) |
-| humidair1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| humidair2.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.00s) | **OK** (0.05s) | Other blk5 |F|=2.0 | **OK** (0.01s) | Max iterations blk5 |F|=1e+09 | **OK** (0.01s) | **OK** (0.00s) | **OK** (0.01s) |
-| internal_combustion_engine.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.01s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| internal_combustion_engine_cpbar.eescode | **OK** (0.04s) | **OK** (0.04s) | Max iterations blk2 |F|=0.0 | Max iterations blk2 |F|=0.0 | **OK** (0.03s) | Other blk2 |F|=0.0 | **OK** (0.12s) | Other blk2 | **OK** (0.04s) | **OK** (0.04s) | **OK** (0.04s) |
-| lookup_demo.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| orc_co2.eescode | **OK** (0.03s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.02s) | Other blk28 | **OK** (0.03s) | Max iterations blk28 |F|=1e+14 | **OK** (0.01s) | **OK** (0.02s) | **OK** (0.01s) |
-| orc_complex.eescode | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE |
-| orc_extraction.eescode | **OK** (0.02s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | Max iterations blk21 |F|=0.0 | Other blk21 | **OK** (0.02s) | Max iterations blk21 |F|=5e+47 | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
-| orc_r245fa.eescode | **OK** (0.03s) | **OK** (0.03s) | **OK** (0.03s) | **OK** (0.03s) | **OK** (1.83s) | Other blk8 |F|=904.1 | **OK** (0.06s) | Other blk2 | **OK** (0.03s) | **OK** (0.03s) | **OK** (0.05s) |
-| orc_simple.eescode | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) | Other blk7 |F|=0.0 | **OK** (0.03s) | Other blk2 | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.03s) |
-| piston_compressor.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| pressuredrop.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| rankine1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| rankine2.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk4 |F|=42594.2 | **OK** (0.00s) | **OK** (0.02s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| refrigeration1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| refrigeration2.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| refrigeration3.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| refrigeration_compressor.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk4 |F|=0.1 | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| scroll_compressor.eescode | **OK** (0.10s) | **OK** (0.09s) | **OK** (0.09s) | **OK** (0.09s) | Max iterations blk34 |F|=0.8 | Other blk34 | **OK** (0.11s) | Max iterations blk34 |F|=inf | **OK** (0.13s) | **OK** (0.09s) | **OK** (0.09s) |
-| simple_centrifugal_compressor.eescode | **OK** (0.00s) | Singular Jacobian blk1 |F|=0.3 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk1 |F|=0.3 | Other blk1 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| storage_integraltable.eescode | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS |
-| turbocompressor.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk9 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| turbocompressor_interpolate.eescode | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 |
-| water_libr.eescode | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 |
-| zorlu_heat_pump.eescode | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) | **OK** (1.22s) | Other blk63 | **OK** (0.05s) | Max iterations blk63 |F|=4576.0 | **OK** (0.03s) | **OK** (0.02s) | **OK** (0.03s) |
+| File | Nwt+TR+LM+BisectionND+Homotopy+Part | Nwt | TR | TR | LM | BisectionND | Homotopy | Part | Nwt+TR+LM+BisectionND+Homotopy+Part+Tear | Nwt+TR+LM+BisectionND+Homotopy+Part | Nwt+TR+LM+BisectionND+Homotopy+Part+Tear | Nwt+TR+LM+BisectionND+Homotopy+Part |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| advanced_features.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| air_screw_compressor.eescode | **OK** (0.03s) | Singular Jacobian blk13 |F|=322614.1 | **OK** (0.02s) | **OK** (0.02s) | Singular Jacobian blk13 |F|=365861.1 | Other blk13 | **OK** (0.64s) | Max iterations blk13 |F|=2e+08 | **OK** (0.02s) | **OK** (0.03s) | **OK** (0.02s) | **OK** (0.03s) |
+| air_screw_compressor_simple.eescode | **OK** (0.03s) | Singular Jacobian blk13 |F|=304355.9 | **OK** (0.02s) | **OK** (0.02s) | Singular Jacobian blk13 |F|=365861.1 | Other blk13 | Other blk13 |F|=419347.5 | Max iterations blk13 |F|=2e+08 | **OK** (0.02s) | **OK** (0.03s) | **OK** (0.02s) | **OK** (0.03s) |
+| boiler_cpbar.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| boiler_cpbar2.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
+| compressor_refrigeration_simple.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| condenser_3zones.eescode | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.03s) | **OK** (0.04s) | **OK** (0.21s) | Other blk62 | **OK** (0.02s) | Max iterations blk62 |F|=3335.5 | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.03s) | **OK** (0.02s) |
+| condenser_wet.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.07s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| cooling_coil.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | Other blk12 | **OK** (0.02s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
+| cooling_tower.eescode | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.03s) | **OK** (0.03s) | **OK** (7.33s) | Other blk11 | **OK** (0.05s) | Max iterations blk11 |F|=27486.9 | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) |
+| cooling_tower2.eescode | **OK** (0.57s) | Singular Jacobian blk11 |F|=2e+07 | Max iterations blk11 |F|=2e+07 | Max iterations blk11 |F|=2e+07 | Singular Jacobian blk11 |F|=2e+07 | Other blk11 | Other blk11 |F|=2e+07 | **OK** (0.12s) | **OK** (0.56s) | **OK** (0.56s) | **OK** (0.56s) | **OK** (0.57s) |
+| cpbar.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | Other blk5 |F|=4e+08 | **OK** (0.02s) | Max iterations blk5 |F|=5e+08 | **OK** (0.00s) | **OK** (0.01s) | **OK** (0.00s) | **OK** (0.01s) |
+| evaporator.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.05s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| exchangers1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| exchangers2.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk4 |F|=355.6 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| exchangers3.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.01s) | Other blk3 |F|=123803.1 | **OK** (0.01s) | Other blk3 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| heat_pump_MSTh_SB_R10.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.91s) | Other blk39 | **OK** (0.01s) | Max iterations blk39 |F|=2e+158 | **OK** (0.01s) | **OK** (0.00s) | **OK** (0.01s) | **OK** (0.00s) |
+| humidair1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| humidair2.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.05s) | Other blk5 |F|=2.0 | **OK** (0.01s) | Max iterations blk5 |F|=1e+09 | **OK** (0.01s) | **OK** (0.00s) | **OK** (0.01s) | **OK** (0.01s) |
+| internal_combustion_engine.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.01s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| internal_combustion_engine_cpbar.eescode | **OK** (0.04s) | **OK** (0.04s) | **OK** (1.44s) | **OK** (14.49s) | **OK** (0.03s) | Other blk2 |F|=0.0 | **OK** (0.12s) | Other blk2 | **OK** (0.04s) | **OK** (0.04s) | **OK** (0.04s) | **OK** (0.05s) |
+| lookup_demo.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| orc_co2.eescode | **OK** (0.03s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.02s) | Other blk28 | **OK** (0.03s) | Max iterations blk28 |F|=1e+14 | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.03s) |
+| orc_complex.eescode | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE |
+| orc_extraction.eescode | **OK** (0.02s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | Max iterations blk21 |F|=0.0 | Other blk21 | **OK** (0.02s) | Max iterations blk21 |F|=5e+47 | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.03s) |
+| orc_r245fa.eescode | **OK** (0.03s) | **OK** (0.03s) | **OK** (0.03s) | **OK** (0.03s) | **OK** (2.03s) | Other blk8 |F|=904.1 | **OK** (0.06s) | Other blk2 | **OK** (0.03s) | **OK** (0.03s) | **OK** (0.03s) | **OK** (0.05s) |
+| orc_simple.eescode | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) | Other blk7 |F|=0.0 | **OK** (0.03s) | Other blk2 | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) |
+| piston_compressor.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| pressuredrop.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| rankine1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| rankine2.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk4 |F|=42594.2 | **OK** (0.00s) | **OK** (0.01s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| refrigeration1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| refrigeration2.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| refrigeration3.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| refrigeration_compressor.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk4 |F|=0.1 | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| scroll_compressor.eescode | **OK** (0.10s) | **OK** (0.09s) | **OK** (0.09s) | **OK** (0.09s) | Max iterations blk34 |F|=0.8 | Other blk34 | **OK** (0.10s) | Max iterations blk34 |F|=inf | **OK** (0.09s) | **OK** (0.09s) | **OK** (0.09s) | **OK** (0.09s) |
+| simple_centrifugal_compressor.eescode | **OK** (0.00s) | Singular Jacobian blk1 |F|=0.3 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk1 |F|=0.3 | Other blk1 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| storage_integraltable.eescode | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS |
+| turbocompressor.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk9 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| turbocompressor_interpolate.eescode | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 |
+| water_libr.eescode | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 |
+| zorlu_heat_pump.eescode | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.02s) | **OK** (1.21s) | Other blk63 | **OK** (0.05s) | Max iterations blk63 |F|=4576.0 | **OK** (0.03s) | **OK** (0.02s) | **OK** (0.03s) | **OK** (0.02s) |
 
 ## Detailed Results: Without Initials
 
-| File | Nwt+TR+LM+BisectionND+Homotopy+Part | Nwt | TR | TR | LM | BisectionND | Homotopy | Part | Nwt+TR+LM+BisectionND+Homotopy+Part+Tear | Nwt+TR+LM+BisectionND+Homotopy+Part | Nwt+TR+LM+BisectionND+Homotopy+Part+Tear |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| advanced_features.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| air_screw_compressor.eescode | **OK** (0.03s) | Singular Jacobian blk13 |F|=322614.1 | **OK** (0.02s) | **OK** (0.02s) | Singular Jacobian blk13 |F|=365861.1 | Other blk13 | **OK** (0.62s) | Max iterations blk13 |F|=2e+08 | **OK** (0.02s) | **OK** (0.03s) | **OK** (0.02s) |
-| air_screw_compressor_simple.eescode | **OK** (0.03s) | Singular Jacobian blk13 |F|=304355.9 | **OK** (0.02s) | **OK** (0.02s) | Singular Jacobian blk13 |F|=365861.1 | Other blk13 | Other blk13 |F|=419347.5 | Max iterations blk13 |F|=2e+08 | **OK** (0.02s) | **OK** (0.03s) | **OK** (0.02s) |
-| boiler_cpbar.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| boiler_cpbar2.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
-| compressor_refrigeration_simple.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| condenser_3zones.eescode | **OK** (0.08s) | **OK** (0.08s) | Other blk62 |F|=19852.0 | Max iterations blk62 |F|=19288.0 | Max iterations blk62 |F|=921.2 | Other blk62 | **OK** (2.26s) | Max iterations blk62 |F|=1e+07 | **OK** (0.08s) | **OK** (0.08s) | **OK** (0.08s) |
-| condenser_wet.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 |F|=0.1 | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| cooling_coil.eescode | Other blk12 |F|=468.5 | Line search failed blk12 |F|=723.3 | Max iterations blk12 |F|=0.8 | Max iterations blk12 |F|=1.6 | Max iterations blk12 |F|=58.0 | Other blk12 | **OK** (1.75s) | Max iterations blk12 |F|=4e+08 | Other blk12 |F|=468.5 | Other blk12 |F|=468.5 | Other blk12 |F|=468.5 |
-| cooling_tower.eescode | Max iterations blk11 |F|=8e+18 | Singular Jacobian blk11 |F|=2e+07 | Max iterations blk11 |F|=2e+07 | Max iterations blk11 |F|=2e+07 | Singular Jacobian blk11 |F|=2e+07 | Other blk11 | Other blk11 |F|=2e+07 | Max iterations blk11 |F|=8e+18 | Max iterations blk11 |F|=8e+18 | Max iterations blk11 |F|=8e+18 | Max iterations blk11 |F|=8e+18 |
-| cooling_tower2.eescode | **OK** (0.56s) | Singular Jacobian blk11 |F|=2e+07 | Max iterations blk11 |F|=2e+07 | Max iterations blk11 |F|=2e+07 | Singular Jacobian blk11 |F|=2e+07 | Other blk11 | Other blk11 |F|=2e+07 | **OK** (0.12s) | **OK** (0.56s) | **OK** (0.56s) | **OK** (0.60s) |
-| cpbar.eescode | **OK** (0.00s) | **OK** (0.00s) | Max iterations blk5 |F|=1e+08 | Max iterations blk5 |F|=1e+08 | **OK** (0.01s) | Other blk5 |F|=1e+08 | **OK** (0.02s) | Max iterations blk5 |F|=1e+08 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| evaporator.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.04s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| exchangers1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| exchangers2.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk4 |F|=4e+12 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
-| exchangers3.eescode | **OK** (0.00s) | **OK** (0.00s) | Max iterations blk3 |F|=10003.6 | Max iterations blk3 |F|=5643.2 | Max iterations blk3 |F|=8.1 | Other blk3 |F|=4e+09 | **OK** (0.00s) | Other blk3 | **OK** (0.01s) | **OK** (0.00s) | **OK** (0.01s) |
-| heat_pump_MSTh_SB_R10.eescode | Max iterations blk39 |F|=5e+06 | Max iterations blk39 |F|=808738.9 | Max iterations blk39 |F|=68904.0 | Max iterations blk39 |F|=47705.3 | Max iterations blk39 |F|=1674.7 | Other blk39 | Other blk39 |F|=3e+06 | Max iterations blk39 |F|=3e+82 | Max iterations blk39 |F|=5e+06 | Max iterations blk39 |F|=5e+06 | Max iterations blk39 |F|=5e+06 |
-| humidair1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| humidair2.eescode | **OK** (0.01s) | **OK** (0.01s) | Max iterations blk5 |F|=446.7 | **OK** (0.01s) | Max iterations blk5 |F|=0.0 | Other blk5 |F|=9930.0 | **OK** (0.02s) | Max iterations blk5 |F|=136222.2 | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
-| internal_combustion_engine.eescode | **OK** (0.18s) | Singular Jacobian blk5 |F|=399999.0 | Max iterations blk5 |F|=399999.0 | Max iterations blk5 |F|=399999.0 | Singular Jacobian blk5 |F|=399999.0 | Other blk5 |F|=4198.3 | Other blk5 |F|=399999.0 | Other blk2 | **OK** (0.01s) | **OK** (0.18s) | **OK** (0.01s) |
-| internal_combustion_engine_cpbar.eescode | Max iterations blk5 |F|=38.8 | Max iterations blk7 |F|=31452.4 | Max iterations blk7 |F|=0.3 | Max iterations blk7 |F|=0.3 | Max iterations blk7 |F|=0.3 | Other blk7 |F|=2078.6 | Other blk7 |F|=638863.1 | Max iterations blk7 |F|=2e+08 | Max iterations blk5 |F|=38.8 | Max iterations blk5 |F|=38.8 | Max iterations blk5 |F|=38.8 |
-| lookup_demo.eescode | Other blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Other blk1 | Other blk1 | Other blk1 | Other blk1 |
-| orc_co2.eescode | Max iterations blk28 |F|=1e+12 | Singular Jacobian blk28 |F|=491599.2 | Max iterations blk28 |F|=491599.2 | Max iterations blk28 |F|=491599.2 | Singular Jacobian blk28 |F|=491599.2 | Other blk28 | Other blk28 |F|=491599.2 | Max iterations blk28 |F|=1e+12 | Max iterations blk28 |F|=1e+12 | Max iterations blk28 |F|=1e+12 | Max iterations blk28 |F|=1e+12 |
-| orc_complex.eescode | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE |
-| orc_extraction.eescode | **OK** (0.36s) | Singular Jacobian blk21 |F|=inf | Max iterations blk21 |F|=inf | Max iterations blk21 |F|=inf | Singular Jacobian blk21 |F|=inf | Other blk21 | Other blk21 |F|=inf | **OK** (0.01s) | **OK** (0.41s) | **OK** (0.36s) | **OK** (0.37s) |
-| orc_r245fa.eescode | Max iterations blk12 |F|=27146.4 | Singular Jacobian blk12 |F|=46791.8 | Max iterations blk12 |F|=93714.8 | Max iterations blk12 |F|=91775.1 | Max iterations blk6 |F|=5.1 | Other blk8 |F|=1930.2 | Other blk12 |F|=57429.4 | Other blk2 | Max iterations blk12 |F|=27146.4 | Max iterations blk12 |F|=27146.4 | Max iterations blk12 |F|=27146.4 |
-| orc_simple.eescode | **OK** (0.25s) | **OK** (0.25s) | **OK** (0.26s) | **OK** (0.26s) | Max iterations blk6 |F|=2.8 | Other blk8 |F|=3417.9 | **OK** (1.26s) | Other blk2 | **OK** (0.26s) | **OK** (0.25s) | **OK** (0.25s) |
-| piston_compressor.eescode | Max iterations blk4 |F|=0.6 | Max iterations blk4 |F|=0.3 | Singular Jacobian blk4 |F|=0.3 | Singular Jacobian blk4 |F|=0.3 | Max iterations blk4 |F|=0.3 | Other blk4 |F|=0.2 | **OK** (0.00s) | Max iterations blk4 |F|=0.6 | Max iterations blk4 |F|=0.6 | Max iterations blk4 |F|=0.6 | Max iterations blk4 |F|=0.6 |
-| pressuredrop.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
-| rankine1.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
-| rankine2.eescode | **OK** (0.03s) | **OK** (0.01s) | Max iterations blk4 |F|=6e+07 | Max iterations blk4 |F|=6e+07 | **OK** (0.01s) | Other blk4 |F|=6e+07 | **OK** (0.01s) | **OK** (0.03s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
-| refrigeration1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| refrigeration2.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| refrigeration3.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| refrigeration_compressor.eescode | Max iterations blk4 |F|=0.2 | Max iterations blk4 |F|=0.0 | Singular Jacobian blk4 |F|=0.0 | **OK** (0.01s) | Max iterations blk4 |F|=0.0 | Other blk2 |F|=310.0 | **OK** (0.00s) | Other blk2 | Max iterations blk4 |F|=0.2 | Max iterations blk4 |F|=0.2 | Max iterations blk4 |F|=0.2 |
-| scroll_compressor.eescode | Max iterations blk34 |F|=1e+07 | Max iterations blk34 |F|=4.4 | Max iterations blk34 |F|=8863.5 | Other blk34 |F|=7350.0 | Singular Jacobian blk34 |F|=1e+07 | Other blk34 | **OK** (0.95s) | Max iterations blk34 |F|=inf | Max iterations blk34 |F|=1e+07 | Max iterations blk34 |F|=1e+07 | Max iterations blk34 |F|=1e+07 |
-| simple_centrifugal_compressor.eescode | **OK** (0.00s) | Singular Jacobian blk1 |F|=0.3 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk1 |F|=0.3 | Other blk1 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
-| storage_integraltable.eescode | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS |
-| turbocompressor.eescode | **OK** (0.28s) | Singular Jacobian blk9 |F|=425994.2 | **OK** (0.12s) | Max iterations blk9 |F|=419375.3 | Singular Jacobian blk9 |F|=419155.1 | Other blk9 | **OK** (0.05s) | Max iterations blk9 |F|=6e+10 | **OK** (0.28s) | **OK** (0.28s) | **OK** (0.28s) |
-| turbocompressor_interpolate.eescode | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 |
-| water_libr.eescode | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 |
-| zorlu_heat_pump.eescode | Other blk63 |F|=6195.6 | Line search failed blk63 |F|=6196.8 | Max iterations blk63 |F|=3e+06 | Max iterations blk63 |F|=3e+06 | Max iterations blk63 |F|=65.5 | Other blk63 | **OK** (0.07s) | Max iterations blk63 |F|=2e+06 | Other blk63 |F|=6195.6 | Other blk63 |F|=6195.6 | Other blk63 |F|=6195.6 |
+| File | Nwt+TR+LM+BisectionND+Homotopy+Part | Nwt | TR | TR | LM | BisectionND | Homotopy | Part | Nwt+TR+LM+BisectionND+Homotopy+Part+Tear | Nwt+TR+LM+BisectionND+Homotopy+Part | Nwt+TR+LM+BisectionND+Homotopy+Part+Tear | Nwt+TR+LM+BisectionND+Homotopy+Part |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| advanced_features.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| air_screw_compressor.eescode | **OK** (0.03s) | Singular Jacobian blk13 |F|=322614.1 | **OK** (0.02s) | **OK** (0.02s) | Singular Jacobian blk13 |F|=365861.1 | Other blk13 | **OK** (0.62s) | Max iterations blk13 |F|=2e+08 | **OK** (0.02s) | **OK** (0.04s) | **OK** (0.02s) | **OK** (0.03s) |
+| air_screw_compressor_simple.eescode | **OK** (0.03s) | Singular Jacobian blk13 |F|=304355.9 | **OK** (0.02s) | **OK** (0.02s) | Singular Jacobian blk13 |F|=365861.1 | Other blk13 | Other blk13 |F|=419347.5 | Max iterations blk13 |F|=2e+08 | **OK** (0.02s) | **OK** (0.05s) | **OK** (0.02s) | **OK** (0.03s) |
+| boiler_cpbar.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| boiler_cpbar2.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.02s) | **OK** (0.01s) | **OK** (0.01s) |
+| compressor_refrigeration_simple.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| condenser_3zones.eescode | **OK** (0.08s) | **OK** (0.08s) | Other blk62 |F|=19852.0 | Max iterations blk62 |F|=19288.0 | Max iterations blk62 |F|=921.2 | Other blk62 | **OK** (2.43s) | Max iterations blk62 |F|=1e+07 | **OK** (0.08s) | **OK** (0.10s) | **OK** (0.08s) | **OK** (0.08s) |
+| condenser_wet.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.07s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| cooling_coil.eescode | Other blk12 |F|=468.5 | **OK** (0.94s) | **OK** (11.29s) | Max iterations blk12 |F|=1.6 | Max iterations blk12 |F|=58.0 | Other blk12 | **OK** (1.76s) | Max iterations blk12 |F|=4e+08 | Other blk12 |F|=468.5 | Other blk12 |F|=468.5 | Other blk12 |F|=468.5 | Other blk12 |F|=468.5 |
+| cooling_tower.eescode | Max iterations blk11 |F|=8e+18 | Singular Jacobian blk11 |F|=2e+07 | Max iterations blk11 |F|=2e+07 | Max iterations blk11 |F|=2e+07 | Singular Jacobian blk11 |F|=2e+07 | Other blk11 | Other blk11 |F|=2e+07 | Max iterations blk11 |F|=8e+18 | Max iterations blk11 |F|=8e+18 | Max iterations blk11 |F|=8e+18 | Max iterations blk11 |F|=8e+18 | Max iterations blk11 |F|=8e+18 |
+| cooling_tower2.eescode | **OK** (0.56s) | Singular Jacobian blk11 |F|=2e+07 | Max iterations blk11 |F|=2e+07 | Max iterations blk11 |F|=2e+07 | Singular Jacobian blk11 |F|=2e+07 | Other blk11 | Other blk11 |F|=2e+07 | **OK** (0.12s) | **OK** (0.59s) | **OK** (0.57s) | **OK** (0.58s) | **OK** (0.58s) |
+| cpbar.eescode | **OK** (0.00s) | **OK** (0.00s) | Max iterations blk5 |F|=1e+08 | Max iterations blk5 |F|=1e+08 | **OK** (0.01s) | Other blk5 |F|=1e+08 | **OK** (0.02s) | Max iterations blk5 |F|=1e+08 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| evaporator.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.05s) | **OK** (0.00s) | **OK** (0.00s) | Other blk2 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| exchangers1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| exchangers2.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk4 |F|=4e+12 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
+| exchangers3.eescode | **OK** (0.00s) | **OK** (0.00s) | Max iterations blk3 |F|=10003.6 | Max iterations blk3 |F|=5643.2 | Max iterations blk3 |F|=8.1 | Other blk3 |F|=4e+09 | **OK** (0.00s) | Other blk3 | **OK** (0.01s) | **OK** (0.00s) | **OK** (0.01s) | **OK** (0.00s) |
+| heat_pump_MSTh_SB_R10.eescode | Max iterations blk39 |F|=5e+06 | Max iterations blk39 |F|=808738.9 | Max iterations blk39 |F|=68904.0 | Max iterations blk39 |F|=47705.3 | Max iterations blk39 |F|=1674.7 | Other blk39 | Other blk39 |F|=3e+06 | Max iterations blk39 |F|=3e+82 | Max iterations blk39 |F|=5e+06 | Max iterations blk39 |F|=5e+06 | Max iterations blk39 |F|=5e+06 | **OK** (11.40s) |
+| humidair1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| humidair2.eescode | **OK** (0.01s) | **OK** (0.01s) | Max iterations blk5 |F|=446.7 | **OK** (0.02s) | Max iterations blk5 |F|=0.0 | Other blk5 |F|=9930.0 | **OK** (0.02s) | Max iterations blk5 |F|=136222.2 | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
+| internal_combustion_engine.eescode | **OK** (0.18s) | Singular Jacobian blk5 |F|=399999.0 | Max iterations blk5 |F|=399999.0 | Max iterations blk5 |F|=399999.0 | Singular Jacobian blk5 |F|=399999.0 | Other blk5 |F|=4198.3 | Other blk5 |F|=399999.0 | Other blk2 | **OK** (0.01s) | **OK** (0.18s) | **OK** (0.01s) | **OK** (0.19s) |
+| internal_combustion_engine_cpbar.eescode | Max iterations blk5 |F|=38.8 | Max iterations blk7 |F|=31452.4 | Max iterations blk7 |F|=0.3 | Max iterations blk7 |F|=0.3 | Max iterations blk7 |F|=0.3 | Other blk7 |F|=2078.6 | Other blk9 |F|=44089.1 | Max iterations blk7 |F|=2e+08 | Max iterations blk5 |F|=38.8 | Max iterations blk5 |F|=38.8 | Max iterations blk5 |F|=38.8 | Max iterations blk5 |F|=38.8 |
+| lookup_demo.eescode | Other blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Other blk1 | Other blk1 | Other blk1 | Other blk1 | Other blk1 |
+| orc_co2.eescode | Max iterations blk28 |F|=1e+12 | Singular Jacobian blk28 |F|=491599.2 | Max iterations blk28 |F|=491599.2 | Max iterations blk28 |F|=491599.2 | Singular Jacobian blk28 |F|=491599.2 | Other blk28 | Other blk28 |F|=491599.2 | Max iterations blk28 |F|=1e+12 | Max iterations blk28 |F|=1e+12 | Max iterations blk28 |F|=1e+12 | Max iterations blk28 |F|=1e+12 | Max iterations blk28 |F|=1e+12 |
+| orc_complex.eescode | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE | PARSE |
+| orc_extraction.eescode | **OK** (0.36s) | Singular Jacobian blk21 |F|=inf | Max iterations blk21 |F|=inf | Max iterations blk21 |F|=inf | Singular Jacobian blk21 |F|=inf | Other blk21 | Other blk21 |F|=inf | **OK** (0.01s) | **OK** (0.42s) | **OK** (0.37s) | **OK** (0.42s) | **OK** (0.43s) |
+| orc_r245fa.eescode | **OK** (1.30s) | Singular Jacobian blk12 |F|=46791.8 | **OK** (0.70s) | Max iterations blk12 |F|=91775.1 | Max iterations blk6 |F|=5.1 | Other blk8 |F|=1930.2 | Other blk12 |F|=57429.4 | Other blk2 | **OK** (1.37s) | **OK** (1.33s) | **OK** (1.29s) | **OK** (0.59s) |
+| orc_simple.eescode | **OK** (0.26s) | **OK** (0.25s) | **OK** (0.28s) | **OK** (0.28s) | Max iterations blk6 |F|=2.8 | Other blk8 |F|=3417.9 | **OK** (1.32s) | Other blk2 | **OK** (0.27s) | **OK** (0.28s) | **OK** (0.25s) | **OK** (0.26s) |
+| piston_compressor.eescode | **OK** (0.68s) | **OK** (0.04s) | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.04s) | Other blk4 |F|=0.2 | **OK** (0.00s) | Other blk2 | **OK** (0.73s) | **OK** (0.74s) | **OK** (0.67s) | **OK** (0.75s) |
+| pressuredrop.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
+| rankine1.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) |
+| rankine2.eescode | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.06s) | **OK** (0.06s) | **OK** (0.01s) | Other blk4 |F|=6e+07 | **OK** (0.01s) | **OK** (0.03s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.01s) | **OK** (0.02s) |
+| refrigeration1.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| refrigeration2.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| refrigeration3.eescode | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| refrigeration_compressor.eescode | **OK** (0.35s) | **OK** (0.01s) | **OK** (0.02s) | **OK** (0.02s) | **OK** (0.04s) | Other blk2 |F|=310.0 | **OK** (0.00s) | Other blk2 | **OK** (0.38s) | **OK** (0.38s) | **OK** (0.36s) | **OK** (0.51s) |
+| scroll_compressor.eescode | Max iterations blk34 |F|=1e+07 | **OK** (4.75s) | **OK** (5.30s) | Other blk34 |F|=7350.0 | Singular Jacobian blk34 |F|=1e+07 | Other blk34 | **OK** (0.98s) | Max iterations blk34 |F|=inf | Max iterations blk34 |F|=1e+07 | Max iterations blk34 |F|=1e+07 | Max iterations blk34 |F|=1e+07 | **OK** (2.70s) |
+| simple_centrifugal_compressor.eescode | **OK** (0.00s) | Singular Jacobian blk1 |F|=0.3 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | Other blk1 |F|=0.3 | Other blk1 | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) | **OK** (0.00s) |
+| storage_integraltable.eescode | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS | ANALYSIS |
+| turbocompressor.eescode | **OK** (0.28s) | Singular Jacobian blk9 |F|=425994.2 | **OK** (0.13s) | Max iterations blk9 |F|=419375.3 | Singular Jacobian blk9 |F|=419155.1 | Other blk9 | **OK** (0.08s) | Max iterations blk9 |F|=6e+10 | **OK** (0.28s) | **OK** (0.28s) | **OK** (0.28s) | **OK** (0.29s) |
+| turbocompressor_interpolate.eescode | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 | Evaluation error blk1 |
+| water_libr.eescode | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 | Unsupported function blk1 |
+| zorlu_heat_pump.eescode | Other blk63 |F|=6195.6 | Line search failed blk63 |F|=6196.8 | **OK** (14.28s) | Max iterations blk63 |F|=3e+06 | Max iterations blk63 |F|=65.5 | Other blk63 | **OK** (0.08s) | Max iterations blk63 |F|=2e+06 | Other blk63 |F|=6195.6 | Other blk63 |F|=6195.5 | Other blk63 |F|=6195.6 | Other blk63 |F|=6195.6 |
 
 ## Model Difficulty Ranking
 
@@ -245,37 +247,37 @@ Models ranked by number of configurations that failed to solve them.
 
 | File | Failures / Configs | Failed Configurations |
 |---|---:|---|
-| water_libr.eescode | 22 / 22 | Default pipeline (with initials), Newton only (with initials), TrustRegion only (with initials), TrustRegion + Hybrd K=5 (with initials), LevenbergMarquardt only (with initials), BisectionND only (with initials), Homotopy only (with initials), Partitioned only (with initials), Default + Tearing (with initials), Default + SymbolicReduction (with initials), Default + Tearing + SymbolicReduction (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| turbocompressor_interpolate.eescode | 22 / 22 | Default pipeline (with initials), Newton only (with initials), TrustRegion only (with initials), TrustRegion + Hybrd K=5 (with initials), LevenbergMarquardt only (with initials), BisectionND only (with initials), Homotopy only (with initials), Partitioned only (with initials), Default + Tearing (with initials), Default + SymbolicReduction (with initials), Default + Tearing + SymbolicReduction (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| internal_combustion_engine_cpbar.eescode | 15 / 22 | TrustRegion only (with initials), TrustRegion + Hybrd K=5 (with initials), BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| scroll_compressor.eescode | 13 / 22 | LevenbergMarquardt only (with initials), BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| orc_r245fa.eescode | 13 / 22 | BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| cooling_tower.eescode | 13 / 22 | BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| orc_co2.eescode | 13 / 22 | BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| heat_pump_MSTh_SB_R10.eescode | 13 / 22 | BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| zorlu_heat_pump.eescode | 12 / 22 | BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| cooling_tower2.eescode | 12 / 22 | Newton only (with initials), TrustRegion only (with initials), TrustRegion + Hybrd K=5 (with initials), LevenbergMarquardt only (with initials), BisectionND only (with initials), Homotopy only (with initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials) |
-| lookup_demo.eescode | 11 / 22 | Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| refrigeration_compressor.eescode | 11 / 22 | BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| piston_compressor.eescode | 11 / 22 | Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| orc_complex.eescode | 11 / 11 | Default pipeline (with initials), Newton only (with initials), TrustRegion only (with initials), TrustRegion + Hybrd K=5 (with initials), LevenbergMarquardt only (with initials), BisectionND only (with initials), Homotopy only (with initials), Partitioned only (with initials), Default + Tearing (with initials), Default + SymbolicReduction (with initials), Default + Tearing + SymbolicReduction (with initials) |
-| cooling_coil.eescode | 11 / 22 | BisectionND only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
-| air_screw_compressor_simple.eescode | 10 / 22 | Newton only (with initials), LevenbergMarquardt only (with initials), BisectionND only (with initials), Homotopy only (with initials), Partitioned only (with initials), Newton only (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials) |
-| orc_extraction.eescode | 9 / 22 | LevenbergMarquardt only (with initials), BisectionND only (with initials), Partitioned only (with initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials) |
-| air_screw_compressor.eescode | 8 / 22 | Newton only (with initials), LevenbergMarquardt only (with initials), BisectionND only (with initials), Partitioned only (with initials), Newton only (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
-| internal_combustion_engine.eescode | 8 / 22 | Partitioned only (with initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials) |
-| exchangers3.eescode | 7 / 22 | BisectionND only (with initials), Partitioned only (with initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
-| condenser_3zones.eescode | 7 / 22 | BisectionND only (with initials), Partitioned only (with initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
-| cpbar.eescode | 6 / 22 | BisectionND only (with initials), Partitioned only (with initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
-| humidair2.eescode | 6 / 22 | BisectionND only (with initials), Partitioned only (with initials), TrustRegion only (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
-| turbocompressor.eescode | 6 / 22 | BisectionND only (with initials), Newton only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
-| simple_centrifugal_compressor.eescode | 6 / 22 | Newton only (with initials), Homotopy only (with initials), Partitioned only (with initials), Newton only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials) |
-| orc_simple.eescode | 5 / 22 | BisectionND only (with initials), Partitioned only (with initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
-| condenser_wet.eescode | 4 / 22 | LevenbergMarquardt only (with initials), Partitioned only (with initials), LevenbergMarquardt only (NO initials), Partitioned only (NO initials) |
-| rankine2.eescode | 4 / 22 | BisectionND only (with initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), BisectionND only (NO initials) |
-| exchangers2.eescode | 2 / 22 | BisectionND only (with initials), BisectionND only (NO initials) |
-| advanced_features.eescode | 2 / 22 | Partitioned only (with initials), Partitioned only (NO initials) |
-| evaporator.eescode | 2 / 22 | Partitioned only (with initials), Partitioned only (NO initials) |
+| water_libr.eescode | 24 / 24 | Default pipeline (with initials), Newton only (with initials), TrustRegion only (with initials), TrustRegion + Hybrd K=5 (with initials), LevenbergMarquardt only (with initials), BisectionND only (with initials), Homotopy only (with initials), Partitioned only (with initials), Default + Tearing (with initials), Default + SymbolicReduction (with initials), Default + Tearing + SymbolicReduction (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials), Default + MultiStart parallel (NO initials), Default + MultiStart parallel (with initials) |
+| turbocompressor_interpolate.eescode | 24 / 24 | Default pipeline (with initials), Newton only (with initials), TrustRegion only (with initials), TrustRegion + Hybrd K=5 (with initials), LevenbergMarquardt only (with initials), BisectionND only (with initials), Homotopy only (with initials), Partitioned only (with initials), Default + Tearing (with initials), Default + SymbolicReduction (with initials), Default + Tearing + SymbolicReduction (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials), Default + MultiStart parallel (NO initials), Default + MultiStart parallel (with initials) |
+| orc_co2.eescode | 14 / 24 | BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials), Default + MultiStart parallel (NO initials) |
+| internal_combustion_engine_cpbar.eescode | 14 / 24 | BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials), Default + MultiStart parallel (NO initials) |
+| cooling_tower.eescode | 14 / 24 | BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials), Default + MultiStart parallel (NO initials) |
+| heat_pump_MSTh_SB_R10.eescode | 13 / 24 | BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
+| lookup_demo.eescode | 12 / 24 | Default pipeline (NO initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials), Default + MultiStart parallel (NO initials) |
+| zorlu_heat_pump.eescode | 12 / 24 | BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), Newton only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials), Default + MultiStart parallel (NO initials) |
+| orc_complex.eescode | 12 / 12 | Default pipeline (with initials), Newton only (with initials), TrustRegion only (with initials), TrustRegion + Hybrd K=5 (with initials), LevenbergMarquardt only (with initials), BisectionND only (with initials), Homotopy only (with initials), Partitioned only (with initials), Default + Tearing (with initials), Default + SymbolicReduction (with initials), Default + Tearing + SymbolicReduction (with initials), Default + MultiStart parallel (with initials) |
+| cooling_tower2.eescode | 12 / 24 | Newton only (with initials), TrustRegion only (with initials), TrustRegion + Hybrd K=5 (with initials), LevenbergMarquardt only (with initials), BisectionND only (with initials), Homotopy only (with initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials) |
+| scroll_compressor.eescode | 11 / 24 | LevenbergMarquardt only (with initials), BisectionND only (with initials), Partitioned only (with initials), Default pipeline (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials) |
+| cooling_coil.eescode | 10 / 24 | BisectionND only (with initials), Default pipeline (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials), Default + Tearing (NO initials), Default + SymbolicReduction (NO initials), Default + Tearing + SymbolicReduction (NO initials), Default + MultiStart parallel (NO initials) |
+| air_screw_compressor_simple.eescode | 10 / 24 | Newton only (with initials), LevenbergMarquardt only (with initials), BisectionND only (with initials), Homotopy only (with initials), Partitioned only (with initials), Newton only (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials) |
+| orc_extraction.eescode | 9 / 24 | LevenbergMarquardt only (with initials), BisectionND only (with initials), Partitioned only (with initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials) |
+| air_screw_compressor.eescode | 8 / 24 | Newton only (with initials), LevenbergMarquardt only (with initials), BisectionND only (with initials), Partitioned only (with initials), Newton only (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
+| orc_r245fa.eescode | 8 / 24 | BisectionND only (with initials), Partitioned only (with initials), Newton only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials) |
+| internal_combustion_engine.eescode | 8 / 24 | Partitioned only (with initials), Newton only (NO initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials) |
+| exchangers3.eescode | 7 / 24 | BisectionND only (with initials), Partitioned only (with initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
+| condenser_3zones.eescode | 7 / 24 | BisectionND only (with initials), Partitioned only (with initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
+| cpbar.eescode | 6 / 24 | BisectionND only (with initials), Partitioned only (with initials), TrustRegion only (NO initials), TrustRegion + Hybrd K=5 (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
+| turbocompressor.eescode | 6 / 24 | BisectionND only (with initials), Newton only (NO initials), TrustRegion + Hybrd K=5 (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
+| simple_centrifugal_compressor.eescode | 6 / 24 | Newton only (with initials), Homotopy only (with initials), Partitioned only (with initials), Newton only (NO initials), Homotopy only (NO initials), Partitioned only (NO initials) |
+| humidair2.eescode | 6 / 24 | BisectionND only (with initials), Partitioned only (with initials), TrustRegion only (NO initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
+| orc_simple.eescode | 5 / 24 | BisectionND only (with initials), Partitioned only (with initials), LevenbergMarquardt only (NO initials), BisectionND only (NO initials), Partitioned only (NO initials) |
+| refrigeration_compressor.eescode | 4 / 24 | BisectionND only (with initials), Partitioned only (with initials), BisectionND only (NO initials), Partitioned only (NO initials) |
+| piston_compressor.eescode | 3 / 24 | Partitioned only (with initials), BisectionND only (NO initials), Partitioned only (NO initials) |
+| evaporator.eescode | 2 / 24 | Partitioned only (with initials), Partitioned only (NO initials) |
+| advanced_features.eescode | 2 / 24 | Partitioned only (with initials), Partitioned only (NO initials) |
+| rankine2.eescode | 2 / 24 | BisectionND only (with initials), BisectionND only (NO initials) |
+| exchangers2.eescode | 2 / 24 | BisectionND only (with initials), BisectionND only (NO initials) |
+| condenser_wet.eescode | 2 / 24 | Partitioned only (with initials), Partitioned only (NO initials) |
 
 ## Error Category Breakdown
 
@@ -283,12 +285,12 @@ Across all configurations and models:
 
 | Error Category | Count | Fraction |
 |---|---:|---:|
-| Evaluation error | 28 | 9.5% |
-| Line search failed | 2 | 0.7% |
-| Max iterations | 109 | 36.9% |
-| Other | 105 | 35.6% |
-| Singular Jacobian | 29 | 9.8% |
-| Unsupported function | 22 | 7.5% |
+| Evaluation error | 30 | 10.9% |
+| Line search failed | 1 | 0.4% |
+| Max iterations | 86 | 31.3% |
+| Other | 108 | 39.3% |
+| Singular Jacobian | 26 | 9.5% |
+| Unsupported function | 24 | 8.7% |
 
 ## Solver Pipeline Results
 
@@ -410,7 +412,7 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | humidair1.eescode | **OK** | — |
 | humidair2.eescode | **OK** | TR:Success |
 | internal_combustion_engine.eescode | **OK** | TR:Success |
-| internal_combustion_engine_cpbar.eescode | FAIL | TR:LineSearchFailed→TR:MaxIterations |
+| internal_combustion_engine_cpbar.eescode | **OK** | TR:Success |
 | lookup_demo.eescode | **OK** | — |
 | orc_co2.eescode | **OK** | TR:Success |
 | orc_complex.eescode | FAIL | — |
@@ -456,7 +458,7 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | humidair1.eescode | **OK** | — |
 | humidair2.eescode | **OK** | TR:Success |
 | internal_combustion_engine.eescode | **OK** | TR:Success |
-| internal_combustion_engine_cpbar.eescode | FAIL | TR:LineSearchFailed→TR:LineSearchFailed→TR:MaxIterations |
+| internal_combustion_engine_cpbar.eescode | **OK** | TR:Success |
 | lookup_demo.eescode | **OK** | — |
 | orc_co2.eescode | **OK** | TR:Success |
 | orc_complex.eescode | FAIL | — |
@@ -489,7 +491,7 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | boiler_cpbar2.eescode | **OK** | — |
 | compressor_refrigeration_simple.eescode | **OK** | — |
 | condenser_3zones.eescode | **OK** | LM:Success |
-| condenser_wet.eescode | FAIL | LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations |
+| condenser_wet.eescode | **OK** | LM:MaxIterations→LM:MaxIterations→LM:Success |
 | cooling_coil.eescode | **OK** | LM:Success |
 | cooling_tower.eescode | **OK** | LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:Success |
 | cooling_tower2.eescode | FAIL | LM:SingularJacobian |
@@ -828,16 +830,16 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | lookup_demo.eescode | FAIL | Newton:EvaluationError→TR:EvaluationError→LM:EvaluationError→BisectionND:EvaluationError→Homotopy:EvaluationError→Part:MaxIterations |
 | orc_co2.eescode | FAIL | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations |
 | orc_extraction.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:Success |
-| orc_r245fa.eescode | FAIL | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations→Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations |
+| orc_r245fa.eescode | **OK** | Newton:Success |
 | orc_simple.eescode | **OK** | Newton:Success |
-| piston_compressor.eescode | FAIL | Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations→Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations |
+| piston_compressor.eescode | **OK** | Newton:Success |
 | pressuredrop.eescode | **OK** | — |
 | rankine1.eescode | **OK** | — |
 | rankine2.eescode | **OK** | Newton:Success |
 | refrigeration1.eescode | **OK** | — |
 | refrigeration2.eescode | **OK** | — |
 | refrigeration3.eescode | **OK** | — |
-| refrigeration_compressor.eescode | FAIL | Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations→Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations |
+| refrigeration_compressor.eescode | **OK** | Newton:Success |
 | scroll_compressor.eescode | FAIL | Newton:MaxIterations→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations→Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations |
 | simple_centrifugal_compressor.eescode | **OK** | — |
 | turbocompressor.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:MaxIterations→BisectionND:InvalidInput→Homotopy:Success |
@@ -857,7 +859,7 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | compressor_refrigeration_simple.eescode | **OK** | — |
 | condenser_3zones.eescode | **OK** | Newton:Success |
 | condenser_wet.eescode | **OK** | Newton:Success |
-| cooling_coil.eescode | FAIL | Newton:LineSearchFailed→Newton:LineSearchFailed |
+| cooling_coil.eescode | **OK** | Newton:Success |
 | cooling_tower.eescode | FAIL | Newton:SingularJacobian |
 | cooling_tower2.eescode | FAIL | Newton:SingularJacobian |
 | cpbar.eescode | **OK** | Newton:Success |
@@ -875,15 +877,15 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | orc_extraction.eescode | FAIL | Newton:SingularJacobian |
 | orc_r245fa.eescode | FAIL | Newton:SingularJacobian |
 | orc_simple.eescode | **OK** | Newton:Success |
-| piston_compressor.eescode | FAIL | Newton:MaxIterations→Newton:MaxIterations |
+| piston_compressor.eescode | **OK** | Newton:Success |
 | pressuredrop.eescode | **OK** | — |
 | rankine1.eescode | **OK** | — |
 | rankine2.eescode | **OK** | Newton:Success |
 | refrigeration1.eescode | **OK** | — |
 | refrigeration2.eescode | **OK** | — |
 | refrigeration3.eescode | **OK** | — |
-| refrigeration_compressor.eescode | FAIL | Newton:MaxIterations→Newton:MaxIterations |
-| scroll_compressor.eescode | FAIL | Newton:MaxIterations→Newton:LineSearchFailed→Newton:MaxIterations |
+| refrigeration_compressor.eescode | **OK** | Newton:Success |
+| scroll_compressor.eescode | **OK** | Newton:Success |
 | simple_centrifugal_compressor.eescode | FAIL | Newton:SingularJacobian |
 | turbocompressor.eescode | FAIL | Newton:SingularJacobian |
 | turbocompressor_interpolate.eescode | FAIL | — |
@@ -902,7 +904,7 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | compressor_refrigeration_simple.eescode | **OK** | — |
 | condenser_3zones.eescode | FAIL | TR:MaxIterations→TR:LineSearchFailed |
 | condenser_wet.eescode | **OK** | TR:Success |
-| cooling_coil.eescode | FAIL | TR:MaxIterations→TR:MaxIterations |
+| cooling_coil.eescode | **OK** | TR:Success |
 | cooling_tower.eescode | FAIL | TR:MaxIterations |
 | cooling_tower2.eescode | FAIL | TR:MaxIterations |
 | cpbar.eescode | FAIL | TR:MaxIterations |
@@ -918,22 +920,22 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | lookup_demo.eescode | FAIL | TR:EvaluationError |
 | orc_co2.eescode | FAIL | TR:MaxIterations |
 | orc_extraction.eescode | FAIL | TR:MaxIterations |
-| orc_r245fa.eescode | FAIL | TR:MaxIterations |
+| orc_r245fa.eescode | **OK** | TR:Success |
 | orc_simple.eescode | **OK** | TR:Success |
-| piston_compressor.eescode | FAIL | TR:MaxIterations→TR:SingularJacobian |
+| piston_compressor.eescode | **OK** | TR:Success |
 | pressuredrop.eescode | **OK** | — |
 | rankine1.eescode | **OK** | — |
-| rankine2.eescode | FAIL | TR:MaxIterations |
+| rankine2.eescode | **OK** | TR:MaxIterations→TR:Success |
 | refrigeration1.eescode | **OK** | — |
 | refrigeration2.eescode | **OK** | — |
 | refrigeration3.eescode | **OK** | — |
-| refrigeration_compressor.eescode | FAIL | TR:MaxIterations→TR:SingularJacobian |
-| scroll_compressor.eescode | FAIL | TR:MaxIterations→TR:MaxIterations→TR:MaxIterations→TR:MaxIterations |
+| refrigeration_compressor.eescode | **OK** | TR:Success |
+| scroll_compressor.eescode | **OK** | TR:MaxIterations→TR:MaxIterations→TR:MaxIterations→TR:Success |
 | simple_centrifugal_compressor.eescode | **OK** | — |
 | turbocompressor.eescode | **OK** | TR:MaxIterations→TR:Success |
 | turbocompressor_interpolate.eescode | FAIL | — |
 | water_libr.eescode | FAIL | — |
-| zorlu_heat_pump.eescode | FAIL | TR:MaxIterations |
+| zorlu_heat_pump.eescode | **OK** | TR:MaxIterations→TR:Success |
 
 ### TrustRegion + Hybrd K=5 (NO initials)
 
@@ -965,10 +967,10 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | orc_extraction.eescode | FAIL | TR:MaxIterations |
 | orc_r245fa.eescode | FAIL | TR:MaxIterations |
 | orc_simple.eescode | **OK** | TR:Success |
-| piston_compressor.eescode | FAIL | TR:MaxIterations→TR:SingularJacobian |
+| piston_compressor.eescode | **OK** | TR:Success |
 | pressuredrop.eescode | **OK** | — |
 | rankine1.eescode | **OK** | — |
-| rankine2.eescode | FAIL | TR:MaxIterations |
+| rankine2.eescode | **OK** | TR:MaxIterations→TR:Success |
 | refrigeration1.eescode | **OK** | — |
 | refrigeration2.eescode | **OK** | — |
 | refrigeration3.eescode | **OK** | — |
@@ -991,7 +993,7 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | boiler_cpbar2.eescode | **OK** | — |
 | compressor_refrigeration_simple.eescode | **OK** | — |
 | condenser_3zones.eescode | FAIL | LM:MaxIterations→LM:MaxIterations |
-| condenser_wet.eescode | FAIL | LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations→LM:MaxIterations |
+| condenser_wet.eescode | **OK** | LM:MaxIterations→LM:MaxIterations→LM:Success |
 | cooling_coil.eescode | FAIL | LM:MaxIterations→LM:MaxIterations |
 | cooling_tower.eescode | FAIL | LM:SingularJacobian |
 | cooling_tower2.eescode | FAIL | LM:SingularJacobian |
@@ -1010,14 +1012,14 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | orc_extraction.eescode | FAIL | LM:SingularJacobian |
 | orc_r245fa.eescode | FAIL | LM:MaxIterations→LM:MaxIterations |
 | orc_simple.eescode | FAIL | LM:MaxIterations→LM:MaxIterations |
-| piston_compressor.eescode | FAIL | LM:MaxIterations→LM:MaxIterations |
+| piston_compressor.eescode | **OK** | LM:Success |
 | pressuredrop.eescode | **OK** | — |
 | rankine1.eescode | **OK** | — |
 | rankine2.eescode | **OK** | LM:Success |
 | refrigeration1.eescode | **OK** | — |
 | refrigeration2.eescode | **OK** | — |
 | refrigeration3.eescode | **OK** | — |
-| refrigeration_compressor.eescode | FAIL | LM:MaxIterations→LM:MaxIterations |
+| refrigeration_compressor.eescode | **OK** | LM:Success |
 | scroll_compressor.eescode | FAIL | LM:SingularJacobian→LM:SingularJacobian |
 | simple_centrifugal_compressor.eescode | **OK** | — |
 | turbocompressor.eescode | FAIL | LM:SingularJacobian |
@@ -1145,7 +1147,7 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | orc_extraction.eescode | **OK** | Part:Success |
 | orc_r245fa.eescode | FAIL | Part:MaxIterations |
 | orc_simple.eescode | FAIL | Part:MaxIterations |
-| piston_compressor.eescode | FAIL | Part:MaxIterations→Part:MaxIterations |
+| piston_compressor.eescode | FAIL | Part:MaxIterations |
 | pressuredrop.eescode | **OK** | — |
 | rankine1.eescode | **OK** | — |
 | rankine2.eescode | **OK** | Part:MaxIterations→Part:MaxIterations→Part:Success |
@@ -1188,16 +1190,16 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | lookup_demo.eescode | FAIL | Newton:EvaluationError→TR:EvaluationError→LM:EvaluationError→BisectionND:EvaluationError→Homotopy:EvaluationError→Part:MaxIterations |
 | orc_co2.eescode | FAIL | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations |
 | orc_extraction.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:Success |
-| orc_r245fa.eescode | FAIL | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations→Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations |
+| orc_r245fa.eescode | **OK** | Newton:Success |
 | orc_simple.eescode | **OK** | Newton:Success |
-| piston_compressor.eescode | FAIL | Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations→Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations |
+| piston_compressor.eescode | **OK** | Newton:Success |
 | pressuredrop.eescode | **OK** | — |
 | rankine1.eescode | **OK** | — |
 | rankine2.eescode | **OK** | — |
 | refrigeration1.eescode | **OK** | — |
 | refrigeration2.eescode | **OK** | — |
 | refrigeration3.eescode | **OK** | — |
-| refrigeration_compressor.eescode | FAIL | Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations→Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations |
+| refrigeration_compressor.eescode | **OK** | Newton:Success |
 | scroll_compressor.eescode | FAIL | Newton:MaxIterations→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations→Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations |
 | simple_centrifugal_compressor.eescode | **OK** | — |
 | turbocompressor.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:MaxIterations→BisectionND:InvalidInput→Homotopy:Success |
@@ -1233,16 +1235,16 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | lookup_demo.eescode | FAIL | Newton:EvaluationError→TR:EvaluationError→LM:EvaluationError→BisectionND:EvaluationError→Homotopy:EvaluationError→Part:MaxIterations |
 | orc_co2.eescode | FAIL | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations |
 | orc_extraction.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:Success |
-| orc_r245fa.eescode | FAIL | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations→Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations |
+| orc_r245fa.eescode | **OK** | Newton:Success |
 | orc_simple.eescode | **OK** | Newton:Success |
-| piston_compressor.eescode | FAIL | Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations→Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations |
+| piston_compressor.eescode | **OK** | Newton:Success |
 | pressuredrop.eescode | **OK** | — |
 | rankine1.eescode | **OK** | — |
 | rankine2.eescode | **OK** | Newton:Success |
 | refrigeration1.eescode | **OK** | — |
 | refrigeration2.eescode | **OK** | — |
 | refrigeration3.eescode | **OK** | — |
-| refrigeration_compressor.eescode | FAIL | Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations→Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations |
+| refrigeration_compressor.eescode | **OK** | Newton:Success |
 | scroll_compressor.eescode | FAIL | Newton:MaxIterations→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations→Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations |
 | simple_centrifugal_compressor.eescode | **OK** | — |
 | turbocompressor.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:MaxIterations→BisectionND:InvalidInput→Homotopy:Success |
@@ -1278,22 +1280,113 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | lookup_demo.eescode | FAIL | Newton:EvaluationError→TR:EvaluationError→LM:EvaluationError→BisectionND:EvaluationError→Homotopy:EvaluationError→Part:MaxIterations |
 | orc_co2.eescode | FAIL | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations |
 | orc_extraction.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:Success |
-| orc_r245fa.eescode | FAIL | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations→Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations |
+| orc_r245fa.eescode | **OK** | Newton:Success |
 | orc_simple.eescode | **OK** | Newton:Success |
-| piston_compressor.eescode | FAIL | Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations→Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations |
+| piston_compressor.eescode | **OK** | Newton:Success |
 | pressuredrop.eescode | **OK** | — |
 | rankine1.eescode | **OK** | — |
 | rankine2.eescode | **OK** | — |
 | refrigeration1.eescode | **OK** | — |
 | refrigeration2.eescode | **OK** | — |
 | refrigeration3.eescode | **OK** | — |
-| refrigeration_compressor.eescode | FAIL | Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations→Newton:MaxIterations→TR:SingularJacobian→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations |
+| refrigeration_compressor.eescode | **OK** | Newton:Success |
 | scroll_compressor.eescode | FAIL | Newton:MaxIterations→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations→Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations |
 | simple_centrifugal_compressor.eescode | **OK** | — |
 | turbocompressor.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:MaxIterations→BisectionND:InvalidInput→Homotopy:Success |
 | turbocompressor_interpolate.eescode | FAIL | — |
 | water_libr.eescode | FAIL | — |
 | zorlu_heat_pump.eescode | FAIL | Newton:LineSearchFailed→TR:MaxIterations→LM:MaxIterations→BisectionND:InvalidInput→Homotopy:MaxIterations |
+
+### Default + MultiStart parallel (NO initials)
+
+| File | Status | Pipeline (solver:result) |
+|---|:---:|---|
+| advanced_features.eescode | **OK** | Newton:Success |
+| air_screw_compressor.eescode | **OK** | Newton:SingularJacobian→TR:Success |
+| air_screw_compressor_simple.eescode | **OK** | Newton:SingularJacobian→TR:Success |
+| boiler_cpbar.eescode | **OK** | — |
+| boiler_cpbar2.eescode | **OK** | — |
+| compressor_refrigeration_simple.eescode | **OK** | — |
+| condenser_3zones.eescode | **OK** | Newton:Success |
+| condenser_wet.eescode | **OK** | Newton:Success |
+| cooling_coil.eescode | FAIL | Newton:LineSearchFailed→TR:MaxIterations→LM:MaxIterations→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations→Newton:MaxIterations→TR:MaxIterations→LM:MaxIterations→BisectionND:InvalidInput→Homotopy:MaxIterations |
+| cooling_tower.eescode | FAIL | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations |
+| cooling_tower2.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:Success |
+| cpbar.eescode | **OK** | Newton:Success |
+| evaporator.eescode | **OK** | Newton:Success |
+| exchangers1.eescode | **OK** | — |
+| exchangers2.eescode | **OK** | Newton:Success |
+| exchangers3.eescode | **OK** | Newton:Success |
+| heat_pump_MSTh_SB_R10.eescode | **OK** | Newton:MaxIterations→TR:MaxIterations→LM:MaxIterations→BisectionND:InvalidInput→Homotopy:Success |
+| humidair1.eescode | **OK** | — |
+| humidair2.eescode | **OK** | Newton:Success |
+| internal_combustion_engine.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:MaxIterations→Homotopy:Success |
+| internal_combustion_engine_cpbar.eescode | FAIL | Newton:MaxIterations→TR:MaxIterations→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations→Part:MaxIterations→Newton:MaxIterations→TR:MaxIterations→LM:MaxIterations→BisectionND:MaxIterations→Homotopy:MaxIterations |
+| lookup_demo.eescode | FAIL | Newton:EvaluationError→TR:EvaluationError→LM:EvaluationError→BisectionND:EvaluationError→Homotopy:EvaluationError→Part:MaxIterations |
+| orc_co2.eescode | FAIL | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:MaxIterations |
+| orc_extraction.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:Success |
+| orc_r245fa.eescode | **OK** | Newton:Success |
+| orc_simple.eescode | **OK** | Newton:Success |
+| piston_compressor.eescode | **OK** | Newton:Success |
+| pressuredrop.eescode | **OK** | — |
+| rankine1.eescode | **OK** | — |
+| rankine2.eescode | **OK** | Newton:Success |
+| refrigeration1.eescode | **OK** | — |
+| refrigeration2.eescode | **OK** | — |
+| refrigeration3.eescode | **OK** | — |
+| refrigeration_compressor.eescode | **OK** | Newton:Success |
+| scroll_compressor.eescode | **OK** | Newton:Success |
+| simple_centrifugal_compressor.eescode | **OK** | — |
+| turbocompressor.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:MaxIterations→BisectionND:InvalidInput→Homotopy:Success |
+| turbocompressor_interpolate.eescode | FAIL | — |
+| water_libr.eescode | FAIL | — |
+| zorlu_heat_pump.eescode | FAIL | Newton:LineSearchFailed→TR:MaxIterations→LM:MaxIterations→BisectionND:InvalidInput→Homotopy:MaxIterations |
+
+### Default + MultiStart parallel (with initials)
+
+| File | Status | Pipeline (solver:result) |
+|---|:---:|---|
+| advanced_features.eescode | **OK** | Newton:Success |
+| air_screw_compressor.eescode | **OK** | Newton:SingularJacobian→TR:Success |
+| air_screw_compressor_simple.eescode | **OK** | Newton:SingularJacobian→TR:Success |
+| boiler_cpbar.eescode | **OK** | — |
+| boiler_cpbar2.eescode | **OK** | — |
+| compressor_refrigeration_simple.eescode | **OK** | — |
+| condenser_3zones.eescode | **OK** | Newton:Success |
+| condenser_wet.eescode | **OK** | Newton:Success |
+| cooling_coil.eescode | **OK** | Newton:Success |
+| cooling_tower.eescode | **OK** | Newton:Success |
+| cooling_tower2.eescode | **OK** | Newton:SingularJacobian→TR:MaxIterations→LM:SingularJacobian→BisectionND:InvalidInput→Homotopy:MaxIterations→Part:Success |
+| cpbar.eescode | **OK** | Newton:Success |
+| evaporator.eescode | **OK** | Newton:Success |
+| exchangers1.eescode | **OK** | — |
+| exchangers2.eescode | **OK** | Newton:Success |
+| exchangers3.eescode | **OK** | Newton:Success |
+| heat_pump_MSTh_SB_R10.eescode | **OK** | Newton:Success |
+| humidair1.eescode | **OK** | — |
+| humidair2.eescode | **OK** | Newton:Success |
+| internal_combustion_engine.eescode | **OK** | Newton:Success |
+| internal_combustion_engine_cpbar.eescode | **OK** | Newton:Success |
+| lookup_demo.eescode | **OK** | — |
+| orc_co2.eescode | **OK** | Newton:Success |
+| orc_complex.eescode | FAIL | — |
+| orc_extraction.eescode | **OK** | Newton:Success |
+| orc_r245fa.eescode | **OK** | Newton:Success |
+| orc_simple.eescode | **OK** | Newton:Success |
+| piston_compressor.eescode | **OK** | Newton:Success |
+| pressuredrop.eescode | **OK** | — |
+| rankine1.eescode | **OK** | — |
+| rankine2.eescode | **OK** | Newton:Success |
+| refrigeration1.eescode | **OK** | — |
+| refrigeration2.eescode | **OK** | — |
+| refrigeration3.eescode | **OK** | — |
+| refrigeration_compressor.eescode | **OK** | Newton:Success |
+| scroll_compressor.eescode | **OK** | Newton:Success |
+| simple_centrifugal_compressor.eescode | **OK** | — |
+| turbocompressor.eescode | **OK** | Newton:Success |
+| turbocompressor_interpolate.eescode | FAIL | — |
+| water_libr.eescode | FAIL | — |
+| zorlu_heat_pump.eescode | **OK** | Newton:Success |
 
 
 ## Detailed Error Messages
@@ -1323,7 +1416,6 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | File | Category | Block | Residual | Error (truncated) |
 |---|---|---:|---:|---|
 | cooling_tower2.eescode | Max iterations | 11 | 2.2e+07 | Block 12 (size 11, vars: C_dot_max_f, omega_f, AU_f, ...) failed: MaxIterations - [TrustRegion] Trus |
-| internal_combustion_engine_cpbar.eescode | Max iterations | 2 | 0.00 | Block 39 (size 2, vars: t_7, c_p_g_67) failed: MaxIterations - [TrustRegion] Trust region: Max itera |
 | orc_complex.eescode | Other | ? | — | Parse failed:   Line 37: Construct 'module' is not yet handled by coolsolve   Line 196: Could not pa |
 | turbocompressor_interpolate.eescode | Evaluation error | 1 | — | Block 4 (size 1, vars: M_r) failed: EvaluationError - Unknown fluid: 'lookup 1'. The first argument  |
 | water_libr.eescode | Unsupported function | 1 | — | Block 16 (size 1, vars: x_gen) failed: EvaluationError - Unknown or unsupported function: X_LIBR wit |
@@ -1333,7 +1425,6 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | File | Category | Block | Residual | Error (truncated) |
 |---|---|---:|---:|---|
 | cooling_tower2.eescode | Max iterations | 11 | 2.2e+07 | Block 12 (size 11, vars: C_dot_max_f, omega_f, AU_f, ...) failed: MaxIterations - [TrustRegion] Trus |
-| internal_combustion_engine_cpbar.eescode | Max iterations | 2 | 0.00 | Block 39 (size 2, vars: t_7, c_p_g_67) failed: MaxIterations - [TrustRegion] Trust region: Max itera |
 | orc_complex.eescode | Other | ? | — | Parse failed:   Line 37: Construct 'module' is not yet handled by coolsolve   Line 196: Could not pa |
 | turbocompressor_interpolate.eescode | Evaluation error | 1 | — | Block 4 (size 1, vars: M_r) failed: EvaluationError - Unknown fluid: 'lookup 1'. The first argument  |
 | water_libr.eescode | Unsupported function | 1 | — | Block 16 (size 1, vars: x_gen) failed: EvaluationError - Unknown or unsupported function: X_LIBR wit |
@@ -1344,7 +1435,6 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 |---|---|---:|---:|---|
 | air_screw_compressor.eescode | Singular Jacobian | 13 | 365861.14 | Block 13 (size 13, vars: v_thr_leak, s_ex, h_thr_leak, ...) failed: SingularJacobian -  Initial //F/ |
 | air_screw_compressor_simple.eescode | Singular Jacobian | 13 | 365861.14 | Block 14 (size 13, vars: v_thr_leak, s_ex, h_thr_leak, ...) failed: SingularJacobian -  Initial //F/ |
-| condenser_wet.eescode | Other | 2 | 0.10 | Block 19 (size 2, vars: M_dot_a, M_dot_cd) failed: MaxIterations -  Initial //F//_inf = 178978, best |
 | cooling_tower2.eescode | Singular Jacobian | 11 | 2.2e+07 | Block 12 (size 11, vars: C_dot_max_f, omega_f, AU_f, ...) failed: SingularJacobian -  Initial //F//_ |
 | orc_complex.eescode | Other | ? | — | Parse failed:   Line 37: Construct 'module' is not yet handled by coolsolve   Line 196: Could not pa |
 | orc_extraction.eescode | Max iterations | 21 | 0.00 | Block 40 (size 21, vars: P_f_in3_exp, w_in_4_exp, v_f_in3_exp, ...) failed: MaxIterations - [Levenbe |
@@ -1450,19 +1540,16 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 
 | File | Category | Block | Residual | Error (truncated) |
 |---|---|---:|---:|---|
-| cooling_coil.eescode | Other | 12 | 468.46 | Block 35 (size 12, vars: T_cd, M_dot_cd, C_dot_min_wet_f, ...) failed: MaxIterations -  Initial //F/ |
+| cooling_coil.eescode | Other | 12 | 468.47 | Block 35 (size 12, vars: T_cd, M_dot_cd, C_dot_min_wet_f, ...) failed: MaxIterations -  Initial //F/ |
 | cooling_tower.eescode | Max iterations | 11 | 7.7e+18 | Block 15 (size 11, vars: t_wb_ex_r, h_a_ex_r, Q_dot_r, ...) failed: MaxIterations - [TrustRegion] Tr |
 | heat_pump_MSTh_SB_R10.eescode | Max iterations | 39 | 4.6e+06 | Block 13 (size 39, vars: Q_dot_rech, P_ex_cp, v_ex_1, ...) failed: MaxIterations - [Newton] Max iter |
 | internal_combustion_engine_cpbar.eescode | Max iterations | 5 | 38.80 | Block 25 (size 5, vars: s_2, t_3, C_3, ...) failed: MaxIterations - [Newton] Max iterations (100) re |
 | lookup_demo.eescode | Other | 1 | — | Block 1 (size 1, vars: h_interp) failed: MaxIterations - [Newton] INTERPOLATE(): lookup table 'data' |
 | orc_co2.eescode | Max iterations | 28 | 1.0e+12 | Block 77 (size 28, vars: T[5], T[4], T[3], ...) failed: MaxIterations - [TrustRegion] Trust region:  |
-| orc_r245fa.eescode | Max iterations | 12 | 27146.44 | Block 82 (size 12, vars: rho_hf_su_ev, nu_hf_su_ev, k_hf_su_ev, ...) failed: MaxIterations - [TrustR |
-| piston_compressor.eescode | Max iterations | 4 | 0.61 | Block 19 (size 4, vars: epsilon_v_1, C, epsilon_v_2, ...) failed: MaxIterations - [Newton] Max itera |
-| refrigeration_compressor.eescode | Max iterations | 4 | 0.16 | Block 43 (size 4, vars: C, epsilon_v_2, V_dot_s, ...) failed: MaxIterations - [Newton] Max iteration |
 | scroll_compressor.eescode | Max iterations | 34 | 1.3e+07 | Block 32 (size 34, vars: W_dot_loss, w_nad, w_ad, ...) failed: MaxIterations - [TrustRegion] Trust r |
 | turbocompressor_interpolate.eescode | Evaluation error | 1 | — | Block 4 (size 1, vars: M_r) failed: EvaluationError - Unknown fluid: 'lookup 1'. The first argument  |
 | water_libr.eescode | Unsupported function | 1 | — | Block 16 (size 1, vars: x_gen) failed: EvaluationError - Unknown or unsupported function: X_LIBR wit |
-| zorlu_heat_pump.eescode | Other | 63 | 6195.56 | Block 42 (size 63, vars: T_su_ev, T_sf_x1_ev, T_sf_x0_ev, ...) failed: MaxIterations -  Initial //F/ |
+| zorlu_heat_pump.eescode | Other | 63 | 6195.58 | Block 42 (size 63, vars: T_su_ev, T_sf_x1_ev, T_sf_x0_ev, ...) failed: MaxIterations -  Initial //F/ |
 
 ### Newton only (NO initials)
 
@@ -1470,7 +1557,6 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 |---|---|---:|---:|---|
 | air_screw_compressor.eescode | Singular Jacobian | 13 | 322614.05 | Block 13 (size 13, vars: v_thr_leak, s_ex, h_thr_leak, ...) failed: SingularJacobian -  Initial //F/ |
 | air_screw_compressor_simple.eescode | Singular Jacobian | 13 | 304355.91 | Block 14 (size 13, vars: v_thr_leak, s_ex, h_thr_leak, ...) failed: SingularJacobian -  Initial //F/ |
-| cooling_coil.eescode | Line search failed | 12 | 723.28 | Block 35 (size 12, vars: T_cd, M_dot_cd, C_dot_min_wet_f, ...) failed: LineSearchFailed - [Newton] L |
 | cooling_tower.eescode | Singular Jacobian | 11 | 2.2e+07 | Block 14 (size 11, vars: C_dot_max_f, omega_f, AU_f, ...) failed: SingularJacobian -  Initial //F//_ |
 | cooling_tower2.eescode | Singular Jacobian | 11 | 2.2e+07 | Block 12 (size 11, vars: C_dot_max_f, omega_f, AU_f, ...) failed: SingularJacobian -  Initial //F//_ |
 | heat_pump_MSTh_SB_R10.eescode | Max iterations | 39 | 808738.89 | Block 13 (size 39, vars: Q_dot_rech, P_ex_cp, v_ex_1, ...) failed: MaxIterations - [Newton] Max iter |
@@ -1480,9 +1566,6 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | orc_co2.eescode | Singular Jacobian | 28 | 491599.19 | Block 77 (size 28, vars: T[5], T[4], T[3], ...) failed: SingularJacobian -  Initial //F//_inf = 4915 |
 | orc_extraction.eescode | Singular Jacobian | 21 | inf | Block 40 (size 21, vars: P_f_in3_exp, w_in_4_exp, v_f_in3_exp, ...) failed: SingularJacobian |
 | orc_r245fa.eescode | Singular Jacobian | 12 | 46791.80 | Block 82 (size 12, vars: rho_hf_su_ev, nu_hf_su_ev, k_hf_su_ev, ...) failed: SingularJacobian -  Ini |
-| piston_compressor.eescode | Max iterations | 4 | 0.26 | Block 19 (size 4, vars: epsilon_v_1, C, epsilon_v_2, ...) failed: MaxIterations - [Newton] Max itera |
-| refrigeration_compressor.eescode | Max iterations | 4 | 0.04 | Block 43 (size 4, vars: C, epsilon_v_2, V_dot_s, ...) failed: MaxIterations - [Newton] Max iteration |
-| scroll_compressor.eescode | Max iterations | 34 | 4.37 | Block 32 (size 34, vars: W_dot_loss, w_nad, w_ad, ...) failed: MaxIterations - [Newton] Max iteratio |
 | simple_centrifugal_compressor.eescode | Singular Jacobian | 1 | 0.30 | Block 11 (size 1, vars: A) failed: SingularJacobian -  Initial //F//_inf = 0.295303, best achieved = |
 | turbocompressor.eescode | Singular Jacobian | 9 | 425994.21 | Block 17 (size 9, vars: h_t_2, w, h_2s, ...) failed: SingularJacobian -  Initial //F//_inf = 419405, |
 | turbocompressor_interpolate.eescode | Evaluation error | 1 | — | Block 4 (size 1, vars: M_r) failed: EvaluationError - Unknown fluid: 'lookup 1'. The first argument  |
@@ -1494,7 +1577,6 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | File | Category | Block | Residual | Error (truncated) |
 |---|---|---:|---:|---|
 | condenser_3zones.eescode | Other | 62 | 19851.98 | Block 38 (size 62, vars: t_r_ex_cd_sh, M_dot_cf_cd_sh, H_dot_cf_cd_sh, ...) failed: LineSearchFailed |
-| cooling_coil.eescode | Max iterations | 12 | 0.78 | Block 35 (size 12, vars: T_cd, M_dot_cd, C_dot_min_wet_f, ...) failed: MaxIterations - [TrustRegion] |
 | cooling_tower.eescode | Max iterations | 11 | 2.2e+07 | Block 14 (size 11, vars: C_dot_max_f, omega_f, AU_f, ...) failed: MaxIterations - [TrustRegion] Trus |
 | cooling_tower2.eescode | Max iterations | 11 | 2.2e+07 | Block 12 (size 11, vars: C_dot_max_f, omega_f, AU_f, ...) failed: MaxIterations - [TrustRegion] Trus |
 | cpbar.eescode | Max iterations | 5 | 1.1e+08 | Block 5 (size 5, vars: x, Q_4, e_min, ...) failed: MaxIterations - [TrustRegion] Trust region: Max i |
@@ -1506,14 +1588,8 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | lookup_demo.eescode | Evaluation error | 1 | — | Block 1 (size 1, vars: h_interp) failed: EvaluationError - [TrustRegion] INTERPOLATE(): lookup table |
 | orc_co2.eescode | Max iterations | 28 | 491599.19 | Block 77 (size 28, vars: T[5], T[4], T[3], ...) failed: MaxIterations - [TrustRegion] Trust region:  |
 | orc_extraction.eescode | Max iterations | 21 | inf | Block 40 (size 21, vars: P_f_in3_exp, w_in_4_exp, v_f_in3_exp, ...) failed: MaxIterations - [TrustRe |
-| orc_r245fa.eescode | Max iterations | 12 | 93714.78 | Block 82 (size 12, vars: rho_hf_su_ev, nu_hf_su_ev, k_hf_su_ev, ...) failed: MaxIterations - [TrustR |
-| piston_compressor.eescode | Singular Jacobian | 4 | 0.26 | Block 19 (size 4, vars: epsilon_v_1, C, epsilon_v_2, ...) failed: SingularJacobian -  Initial //F//_ |
-| rankine2.eescode | Max iterations | 4 | 6.3e+07 | Block 28 (size 4, vars: W_dot_t_2, W_dot_t_1, M_dot_steam, ...) failed: MaxIterations - [TrustRegion |
-| refrigeration_compressor.eescode | Singular Jacobian | 4 | 0.04 | Block 43 (size 4, vars: C, epsilon_v_2, V_dot_s, ...) failed: SingularJacobian -  Initial //F//_inf  |
-| scroll_compressor.eescode | Max iterations | 34 | 8863.53 | Block 32 (size 34, vars: W_dot_loss, w_nad, w_ad, ...) failed: MaxIterations - [TrustRegion] Trust r |
 | turbocompressor_interpolate.eescode | Evaluation error | 1 | — | Block 4 (size 1, vars: M_r) failed: EvaluationError - Unknown fluid: 'lookup 1'. The first argument  |
 | water_libr.eescode | Unsupported function | 1 | — | Block 16 (size 1, vars: x_gen) failed: EvaluationError - Unknown or unsupported function: X_LIBR wit |
-| zorlu_heat_pump.eescode | Max iterations | 63 | 2.7e+06 | Block 42 (size 63, vars: T_su_ev, T_sf_x1_ev, T_sf_x0_ev, ...) failed: MaxIterations - [TrustRegion] |
 
 ### TrustRegion + Hybrd K=5 (NO initials)
 
@@ -1532,8 +1608,6 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | orc_co2.eescode | Max iterations | 28 | 491599.19 | Block 77 (size 28, vars: T[5], T[4], T[3], ...) failed: MaxIterations - [TrustRegion] Trust region:  |
 | orc_extraction.eescode | Max iterations | 21 | inf | Block 40 (size 21, vars: P_f_in3_exp, w_in_4_exp, v_f_in3_exp, ...) failed: MaxIterations - [TrustRe |
 | orc_r245fa.eescode | Max iterations | 12 | 91775.14 | Block 82 (size 12, vars: rho_hf_su_ev, nu_hf_su_ev, k_hf_su_ev, ...) failed: MaxIterations - [TrustR |
-| piston_compressor.eescode | Singular Jacobian | 4 | 0.26 | Block 19 (size 4, vars: epsilon_v_1, C, epsilon_v_2, ...) failed: SingularJacobian -  Initial //F//_ |
-| rankine2.eescode | Max iterations | 4 | 6.3e+07 | Block 28 (size 4, vars: W_dot_t_2, W_dot_t_1, M_dot_steam, ...) failed: MaxIterations - [TrustRegion |
 | scroll_compressor.eescode | Other | 34 | 7349.97 | Block 32 (size 34, vars: W_dot_loss, w_nad, w_ad, ...) failed: LineSearchFailed -  Initial //F//_inf |
 | turbocompressor.eescode | Max iterations | 9 | 419375.30 | Block 17 (size 9, vars: h_t_2, w, h_2s, ...) failed: MaxIterations - [TrustRegion] Trust region: Max |
 | turbocompressor_interpolate.eescode | Evaluation error | 1 | — | Block 4 (size 1, vars: M_r) failed: EvaluationError - Unknown fluid: 'lookup 1'. The first argument  |
@@ -1547,7 +1621,6 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | air_screw_compressor.eescode | Singular Jacobian | 13 | 365861.14 | Block 13 (size 13, vars: v_thr_leak, s_ex, h_thr_leak, ...) failed: SingularJacobian -  Initial //F/ |
 | air_screw_compressor_simple.eescode | Singular Jacobian | 13 | 365861.14 | Block 14 (size 13, vars: v_thr_leak, s_ex, h_thr_leak, ...) failed: SingularJacobian -  Initial //F/ |
 | condenser_3zones.eescode | Max iterations | 62 | 921.23 | Block 38 (size 62, vars: t_r_ex_cd_sh, M_dot_cf_cd_sh, H_dot_cf_cd_sh, ...) failed: MaxIterations -  |
-| condenser_wet.eescode | Other | 2 | 0.10 | Block 19 (size 2, vars: M_dot_a, M_dot_cd) failed: MaxIterations -  Initial //F//_inf = 178978, best |
 | cooling_coil.eescode | Max iterations | 12 | 57.96 | Block 35 (size 12, vars: T_cd, M_dot_cd, C_dot_min_wet_f, ...) failed: MaxIterations - [LevenbergMar |
 | cooling_tower.eescode | Singular Jacobian | 11 | 2.2e+07 | Block 14 (size 11, vars: C_dot_max_f, omega_f, AU_f, ...) failed: SingularJacobian -  Initial //F//_ |
 | cooling_tower2.eescode | Singular Jacobian | 11 | 2.2e+07 | Block 12 (size 11, vars: C_dot_max_f, omega_f, AU_f, ...) failed: SingularJacobian -  Initial //F//_ |
@@ -1561,8 +1634,6 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | orc_extraction.eescode | Singular Jacobian | 21 | inf | Block 40 (size 21, vars: P_f_in3_exp, w_in_4_exp, v_f_in3_exp, ...) failed: SingularJacobian |
 | orc_r245fa.eescode | Max iterations | 6 | 5.11 | Block 59 (size 6, vars: h_cf_ex_tp, T_cf_ex_tp, h_cf_ex_cd, ...) failed: MaxIterations - [LevenbergM |
 | orc_simple.eescode | Max iterations | 6 | 2.85 | Block 57 (size 6, vars: h_cf_ex_tp, T_cf_ex_tp, h_cf_ex_cd, ...) failed: MaxIterations - [LevenbergM |
-| piston_compressor.eescode | Max iterations | 4 | 0.26 | Block 19 (size 4, vars: epsilon_v_1, C, epsilon_v_2, ...) failed: MaxIterations - [LevenbergMarquard |
-| refrigeration_compressor.eescode | Max iterations | 4 | 0.04 | Block 43 (size 4, vars: C, epsilon_v_2, V_dot_s, ...) failed: MaxIterations - [LevenbergMarquardt] L |
 | scroll_compressor.eescode | Singular Jacobian | 34 | 1.2e+07 | Block 32 (size 34, vars: W_dot_loss, w_nad, w_ad, ...) failed: SingularJacobian -  Initial //F//_inf |
 | turbocompressor.eescode | Singular Jacobian | 9 | 419155.15 | Block 17 (size 9, vars: h_t_2, w, h_2s, ...) failed: SingularJacobian -  Initial //F//_inf = 419405, |
 | turbocompressor_interpolate.eescode | Evaluation error | 1 | — | Block 4 (size 1, vars: M_r) failed: EvaluationError - Unknown fluid: 'lookup 1'. The first argument  |
@@ -1609,7 +1680,7 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | cooling_tower2.eescode | Other | 11 | 2.2e+07 | Block 12 (size 11, vars: C_dot_max_f, omega_f, AU_f, ...) failed: MaxIterations - [Homotopy] Homotop |
 | heat_pump_MSTh_SB_R10.eescode | Other | 39 | 3.4e+06 | Block 13 (size 39, vars: Q_dot_rech, P_ex_cp, v_ex_1, ...) failed: MaxIterations - [Homotopy] Homoto |
 | internal_combustion_engine.eescode | Other | 5 | 399999.00 | Block 35 (size 5, vars: T_thr_l, gamma_l, P_crit_l, ...) failed: MaxIterations - [Homotopy] Homotopy |
-| internal_combustion_engine_cpbar.eescode | Other | 7 | 638863.13 | Block 22 (size 7, vars: v_4, p_4, W_dot_p, ...) failed: MaxIterations - [Homotopy] Homotopy: did not |
+| internal_combustion_engine_cpbar.eescode | Other | 9 | 44089.11 | Block 42 (size 9, vars: t_8, c_p_g_78, Q_dot_gw, ...) failed: MaxIterations - [Homotopy] Homotopy: d |
 | lookup_demo.eescode | Evaluation error | 1 | — | Block 1 (size 1, vars: h_interp) failed: EvaluationError - [Homotopy] INTERPOLATE(): lookup table 'd |
 | orc_co2.eescode | Other | 28 | 491599.19 | Block 77 (size 28, vars: T[5], T[4], T[3], ...) failed: MaxIterations - [Homotopy] Homotopy: did not |
 | orc_extraction.eescode | Other | 21 | inf | Block 40 (size 21, vars: P_f_in3_exp, w_in_4_exp, v_f_in3_exp, ...) failed: MaxIterations - [Homotop |
@@ -1640,7 +1711,7 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | orc_co2.eescode | Max iterations | 28 | 1.0e+12 | Block 77 (size 28, vars: T[5], T[4], T[3], ...) failed: MaxIterations - [Partitioned] Partitioned so |
 | orc_r245fa.eescode | Other | 2 | — | Block 55 (size 2, vars: p_cd_v, h_cd_v) failed: MaxIterations -  Initial //F//_inf = 76754.1, best a |
 | orc_simple.eescode | Other | 2 | — | Block 53 (size 2, vars: p_cd_v, h_cd_v) failed: MaxIterations -  Initial //F//_inf = 76754.1, best a |
-| piston_compressor.eescode | Max iterations | 4 | 0.61 | Block 19 (size 4, vars: epsilon_v_1, C, epsilon_v_2, ...) failed: MaxIterations - [Partitioned] Part |
+| piston_compressor.eescode | Other | 2 | — | Block 27 (size 2, vars: W_dot_loss_0, alpha) failed: MaxIterations -  Initial //F//_inf = 11041.2, b |
 | refrigeration_compressor.eescode | Other | 2 | — | Block 34 (size 2, vars: W_dot_loss_0, alpha) failed: MaxIterations -  Initial //F//_inf = 9483.31, b |
 | scroll_compressor.eescode | Max iterations | 34 | inf | Block 32 (size 34, vars: W_dot_loss, w_nad, w_ad, ...) failed: MaxIterations - [Partitioned] Partiti |
 | simple_centrifugal_compressor.eescode | Other | 1 | — | Block 11 (size 1, vars: A) failed: MaxIterations -  Initial //F//_inf = 0.295303, best achieved = 0. |
@@ -1659,9 +1730,6 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | internal_combustion_engine_cpbar.eescode | Max iterations | 5 | 38.80 | Block 25 (size 5, vars: s_2, t_3, C_3, ...) failed: MaxIterations - Tearing: singular Schur compleme |
 | lookup_demo.eescode | Other | 1 | — | Block 1 (size 1, vars: h_interp) failed: MaxIterations - [Newton] INTERPOLATE(): lookup table 'data' |
 | orc_co2.eescode | Max iterations | 28 | 1.0e+12 | Block 77 (size 28, vars: T[5], T[4], T[3], ...) failed: MaxIterations - Tearing: singular Schur comp |
-| orc_r245fa.eescode | Max iterations | 12 | 27146.44 | Block 82 (size 12, vars: rho_hf_su_ev, nu_hf_su_ev, k_hf_su_ev, ...) failed: MaxIterations - Tearing |
-| piston_compressor.eescode | Max iterations | 4 | 0.61 | Block 19 (size 4, vars: epsilon_v_1, C, epsilon_v_2, ...) failed: MaxIterations - Tearing: max itera |
-| refrigeration_compressor.eescode | Max iterations | 4 | 0.16 | Block 43 (size 4, vars: C, epsilon_v_2, V_dot_s, ...) failed: MaxIterations - Tearing: max iteration |
 | scroll_compressor.eescode | Max iterations | 34 | 1.3e+07 | Block 32 (size 34, vars: W_dot_loss, w_nad, w_ad, ...) failed: MaxIterations - Tearing: singular Sch |
 | turbocompressor_interpolate.eescode | Evaluation error | 1 | — | Block 4 (size 1, vars: M_r) failed: EvaluationError - Unknown fluid: 'lookup 1'. The first argument  |
 | water_libr.eescode | Unsupported function | 1 | — | Block 16 (size 1, vars: x_gen) failed: EvaluationError - Unknown or unsupported function: X_LIBR wit |
@@ -1677,13 +1745,10 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | internal_combustion_engine_cpbar.eescode | Max iterations | 5 | 38.80 | Block 25 (size 5, vars: s_2, t_3, C_3, ...) failed: MaxIterations - [Newton] Max iterations (100) re |
 | lookup_demo.eescode | Other | 1 | — | Block 1 (size 1, vars: h_interp) failed: MaxIterations - [Newton] INTERPOLATE(): lookup table 'data' |
 | orc_co2.eescode | Max iterations | 28 | 1.0e+12 | Block 77 (size 28, vars: T[5], T[4], T[3], ...) failed: MaxIterations - [TrustRegion] Trust region:  |
-| orc_r245fa.eescode | Max iterations | 12 | 27146.44 | Block 82 (size 12, vars: rho_hf_su_ev, nu_hf_su_ev, k_hf_su_ev, ...) failed: MaxIterations - [TrustR |
-| piston_compressor.eescode | Max iterations | 4 | 0.61 | Block 19 (size 4, vars: epsilon_v_1, C, epsilon_v_2, ...) failed: MaxIterations - [Newton] Max itera |
-| refrigeration_compressor.eescode | Max iterations | 4 | 0.16 | Block 43 (size 4, vars: C, epsilon_v_2, V_dot_s, ...) failed: MaxIterations - [Newton] Max iteration |
 | scroll_compressor.eescode | Max iterations | 34 | 1.3e+07 | Block 32 (size 34, vars: W_dot_loss, w_nad, w_ad, ...) failed: MaxIterations - [TrustRegion] Trust r |
 | turbocompressor_interpolate.eescode | Evaluation error | 1 | — | Block 4 (size 1, vars: M_r) failed: EvaluationError - Unknown fluid: 'lookup 1'. The first argument  |
 | water_libr.eescode | Unsupported function | 1 | — | Block 16 (size 1, vars: x_gen) failed: EvaluationError - Unknown or unsupported function: X_LIBR wit |
-| zorlu_heat_pump.eescode | Other | 63 | 6195.58 | Block 42 (size 63, vars: T_su_ev, T_sf_x1_ev, T_sf_x0_ev, ...) failed: MaxIterations -  Initial //F/ |
+| zorlu_heat_pump.eescode | Other | 63 | 6195.52 | Block 42 (size 63, vars: T_su_ev, T_sf_x1_ev, T_sf_x0_ev, ...) failed: MaxIterations -  Initial //F/ |
 
 ### Default + Tearing + SymbolicReduction (NO initials)
 
@@ -1695,11 +1760,29 @@ Shows which solver(s) were tried and their outcome for each model/config combina
 | internal_combustion_engine_cpbar.eescode | Max iterations | 5 | 38.80 | Block 25 (size 5, vars: s_2, t_3, C_3, ...) failed: MaxIterations - Tearing: singular Schur compleme |
 | lookup_demo.eescode | Other | 1 | — | Block 1 (size 1, vars: h_interp) failed: MaxIterations - [Newton] INTERPOLATE(): lookup table 'data' |
 | orc_co2.eescode | Max iterations | 28 | 1.0e+12 | Block 77 (size 28, vars: T[5], T[4], T[3], ...) failed: MaxIterations - Tearing: singular Schur comp |
-| orc_r245fa.eescode | Max iterations | 12 | 27146.44 | Block 82 (size 12, vars: rho_hf_su_ev, nu_hf_su_ev, k_hf_su_ev, ...) failed: MaxIterations - Tearing |
-| piston_compressor.eescode | Max iterations | 4 | 0.61 | Block 19 (size 4, vars: epsilon_v_1, C, epsilon_v_2, ...) failed: MaxIterations - Tearing: max itera |
-| refrigeration_compressor.eescode | Max iterations | 4 | 0.16 | Block 43 (size 4, vars: C, epsilon_v_2, V_dot_s, ...) failed: MaxIterations - Tearing: max iteration |
 | scroll_compressor.eescode | Max iterations | 34 | 1.3e+07 | Block 32 (size 34, vars: W_dot_loss, w_nad, w_ad, ...) failed: MaxIterations - Tearing: singular Sch |
 | turbocompressor_interpolate.eescode | Evaluation error | 1 | — | Block 4 (size 1, vars: M_r) failed: EvaluationError - Unknown fluid: 'lookup 1'. The first argument  |
 | water_libr.eescode | Unsupported function | 1 | — | Block 16 (size 1, vars: x_gen) failed: EvaluationError - Unknown or unsupported function: X_LIBR wit |
-| zorlu_heat_pump.eescode | Other | 63 | 6195.56 | Block 42 (size 63, vars: T_su_ev, T_sf_x1_ev, T_sf_x0_ev, ...) failed: MaxIterations - Tearing: sing |
+| zorlu_heat_pump.eescode | Other | 63 | 6195.62 | Block 42 (size 63, vars: T_su_ev, T_sf_x1_ev, T_sf_x0_ev, ...) failed: MaxIterations - Tearing: sing |
+
+### Default + MultiStart parallel (NO initials)
+
+| File | Category | Block | Residual | Error (truncated) |
+|---|---|---:|---:|---|
+| cooling_coil.eescode | Other | 12 | 468.46 | Block 35 (size 12, vars: T_cd, M_dot_cd, C_dot_min_wet_f, ...) failed: MaxIterations -  Initial //F/ |
+| cooling_tower.eescode | Max iterations | 11 | 7.7e+18 | Block 15 (size 11, vars: t_wb_ex_r, h_a_ex_r, Q_dot_r, ...) failed: MaxIterations - [TrustRegion] Tr |
+| internal_combustion_engine_cpbar.eescode | Max iterations | 5 | 38.80 | Block 25 (size 5, vars: s_2, t_3, C_3, ...) failed: MaxIterations - [Newton] Max iterations (100) re |
+| lookup_demo.eescode | Other | 1 | — | Block 1 (size 1, vars: h_interp) failed: MaxIterations - [Newton] INTERPOLATE(): lookup table 'data' |
+| orc_co2.eescode | Max iterations | 28 | 1.0e+12 | Block 77 (size 28, vars: T[5], T[4], T[3], ...) failed: MaxIterations - [TrustRegion] Trust region:  |
+| turbocompressor_interpolate.eescode | Evaluation error | 1 | — | Block 4 (size 1, vars: M_r) failed: EvaluationError - Unknown fluid: 'lookup 1'. The first argument  |
+| water_libr.eescode | Unsupported function | 1 | — | Block 16 (size 1, vars: x_gen) failed: EvaluationError - Unknown or unsupported function: X_LIBR wit |
+| zorlu_heat_pump.eescode | Other | 63 | 6195.58 | Block 42 (size 63, vars: T_su_ev, T_sf_x1_ev, T_sf_x0_ev, ...) failed: MaxIterations -  Initial //F/ |
+
+### Default + MultiStart parallel (with initials)
+
+| File | Category | Block | Residual | Error (truncated) |
+|---|---|---:|---:|---|
+| orc_complex.eescode | Other | ? | — | Parse failed:   Line 37: Construct 'module' is not yet handled by coolsolve   Line 196: Could not pa |
+| turbocompressor_interpolate.eescode | Evaluation error | 1 | — | Block 4 (size 1, vars: M_r) failed: EvaluationError - Unknown fluid: 'lookup 1'. The first argument  |
+| water_libr.eescode | Unsupported function | 1 | — | Block 16 (size 1, vars: x_gen) failed: EvaluationError - Unknown or unsupported function: X_LIBR wit |
 

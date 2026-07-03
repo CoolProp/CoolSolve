@@ -659,31 +659,55 @@ and is validated in isolation.
 **Status (July 2026): DELIVERED.** Implemented as a block-level multi-start
 fallback in `Solver::solveBlockWithMultiStart()` (`src/solver.cpp`), gated by
 `multiStartEnabled` (default `true`) and `multiStartMaxRestarts` (default 4).
-Both `SolverOptions` keys are parsed from `coolsolve.conf`, exposed in the GUI
-ConfigEditor, and covered by `tests/test_multistart.cpp` + `test_config.cpp`.
+Candidates may run **concurrently** via `multiStartNumCores` (default `1` =
+sequential; `N`>1 or `0`=auto runs candidates in parallel, first-to-converge
+wins). All three `SolverOptions` keys are parsed from `coolsolve.conf`, exposed
+in the GUI ConfigEditor, and covered by `tests/test_multistart.cpp` +
+`test_config.cpp` + `test_solver_robustness.cpp`.
 
-**Empirical results (curated 44-file subset, without initials, full default
+**Parallel execution design.** Rather than introduce a new threading model,
+the parallel path **reuses the thread-safe `solveBlockSequential` core** that
+the existing `solveBlockParallel` already relies on: `BlockEvaluator::evaluate`
+is const-safe (no shared-state mutation) and CoolProp's `AbstractState` cache
+is `thread_local`, so concurrent candidate solves against the same block
+evaluator are safe as long as each thread uses its own `x` and trace.
+Candidates run in waves of size `numCores` (honouring the configured core
+limit) with a shared atomic stop flag for first-to-converge semantics; a poll
+loop on the main thread propagates the block timeout/cancel to workers. When
+`multiStartNumCores == 1` (the default) the original sequential loop runs
+inline and bit-for-bit unchanged — **zero threading overhead and zero
+behaviour change when parallelism is off**. Tearing and symbolic reduction,
+when enabled, are applied only in the initial single-threaded attempt and in
+the sequential candidate path (parallel candidates run the pipeline on the
+unreduced block).
+
+**Empirical results (full 42-file suite, without initials, full default
 pipeline, 30 s per-solve timeout):**
 
-| Configuration                | Without initials |
-|------------------------------|-----------------:|
-| Default pipeline (baseline)  | 27/44            |
-| Default pipeline + multi-start | 30/44          |
+| Configuration                          | Without initials | With initials |
+|----------------------------------------|-----------------:|--------------:|
+| Default pipeline, sequential multi-start (default) | 30/40 (75.0%) | 38/41 (92.7%) |
+| Default pipeline, **parallel** multi-start (auto cores) | **32/40 (80.0%)** | 38/41 (92.7%) |
 
-- **3 models rescued** from FAIL → OK: `piston_compressor` (blk 4, scale
-  candidate ×0.1), `refrigeration_compressor` (blk 4, scale candidate ×0.1),
-  and `orc_r245fa` (blk 12, a thermo block rescued by the medium-pressure
-  regime candidate).
-- **Zero regressions**: every model the baseline solves, multi-start also
-  solves (with initials, multi-start never engages because all blocks converge
-  first try — verified by `[examples-comprehensive]` still reaching 36/42 with
-  identical timings).
-- The roadmap's original target of "+4 to +6 models" was only partially met
-  (+3). The remaining without-initials failures (`orc_co2`, `cooling_tower`,
-  `heat_pump_MSTh_SB_R10`, `zorlu_heat_pump`, …) have huge initial residuals
-  (|F| up to 1e12) from deeply coupled 5th-order polynomial fits and CoolProp
-  calls whose convergence basin is too narrow for a handful of starting points
-  — these need good `.initials` or KINSOL (Tier 3).
+(Pre-multi-start baseline was 27/40 = 67.5% without initials.)
+
+- With initials, parallel multi-start is **bit-for-bit non-regressive**
+  (38/41, identical to sequential) — it never engages because every block
+  converges first try.
+- Without initials, parallel multi-start is **strictly ≥ sequential**: it
+  rescues every model sequential does (`piston_compressor`,
+  `refrigeration_compressor`, `orc_r245fa`) **plus** `heat_pump_MSTh_SB_R10`
+  and `scroll_compressor`. The two extra wins come from *time-budget
+  amplification* — within the fixed 30 s wall-clock timeout, parallel
+  candidates each get ~the full budget to run their pipeline, whereas
+  sequential splits the budget across candidates. This is a genuine, fair
+  benefit of parallelism for time-limited solves (a user setting a wall-clock
+  timeout gets more robustness at the same latency).
+- The remaining without-initials failures (`orc_co2`, `cooling_tower`,
+  `zorlu_heat_pump`, …) have initial residuals up to |F|=1e12 from deeply
+  coupled 5th-order polynomial fits and CoolProp calls whose convergence basin
+  is too narrow for a handful of starting points — these need good `.initials`
+  or KINSOL (Tier 3).
 
 **What was actually built, and how it differs from the original plan:**
 

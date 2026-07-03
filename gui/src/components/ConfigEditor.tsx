@@ -348,6 +348,12 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
           'Number of alternative starting points to try on a failed block. Each candidate replays '
           + 'the full solver pipeline, so large values increase the worst-case cost of a failure. '
           + 'Range 1..6.' },
+      { key: 'multiStartNumCores', label: 'Num cores', type: 'number', defaultVal: '1',
+        description:
+          'Number of threads used to evaluate multi-start candidates concurrently. '
+          + '1 = sequential (default, no threading overhead); N>1 = run up to N candidates '
+          + 'concurrently (first-to-converge wins); 0 = auto (min(hardware_concurrency, candidates)). '
+          + 'Only consulted when multi-start engages (a block fails), so successful solves are unaffected.' },
     ],
   },
   {

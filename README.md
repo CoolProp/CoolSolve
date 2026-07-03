@@ -72,7 +72,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
   - **Multi-dimensional Bisection (BisectionND)** for small blocks (configurable size limit, default n ≤ 8 via `bisectionNDMaxBlockSize`): derivative-free sign-change bisection that works even when the Jacobian is singular or zero
    - **Homotopy continuation** for convergence from distant or difficult starting points where gradient methods fail
    - **Partitioned Block Updates** as a fallback for ill-conditioned algebraic loops
-   - **Multi-Start fallback** (roadmap §4.2): when a multi-variable block fails the entire pipeline, CoolSolve retries it from a few alternative starting points — CoolProp-consistent pressure regimes for thermo blocks, scale factors for purely-algebraic blocks. Zero overhead when every block converges on the first try.
+   - **Multi-Start fallback** (roadmap §4.2): when a multi-variable block fails the entire pipeline, CoolSolve retries it from a few alternative starting points — CoolProp-consistent pressure regimes for thermo blocks, scale factors for purely-algebraic blocks. Candidates can run concurrently (`multiStartNumCores`). Zero overhead when every block converges on the first try.
   - **Symbolic Block Reduction**: optional pre-processing that shrinks blocks via explicit extraction, CoolProp call inversion, and equation substitution — with automatic re-decomposition of the reduced block into independent sub-blocks
   - **Parallel solver execution** (multithreaded, first-to-converge wins)
 
@@ -128,6 +128,7 @@ CoolSolve uses several file formats for input and verification:
     - `lsNonMonotoneMemory`: Number of recent merit values kept for non-monotone acceptance (default: `10`). Set to `1` for classic monotone line search.
     - `multiStartEnabled`: When `true` (default), retry a failed multi-variable block from alternative starting points derived from each variable's inferred physical kind.
     - `multiStartMaxRestarts`: Number of alternative starting points to try on a failed block (default: `4`).
+    - `multiStartNumCores`: Threads for concurrent multi-start candidates (default: `1` = sequential; `N`>1 or `0`=auto runs candidates in parallel, first-to-converge wins).
   - **CoolProp Integration options**:
     - `coolpropBackend`: CoolProp backend string (default: `HEOS`). Options: `HEOS`, `INCOMP`, `TTSE&HEOS`, `BICUBIC&HEOS`.
     - `coolpropUseAbstractState`: Use the low-level `AbstractState` API instead of `PropsSI` (default: `true`). Provides 2–5× speedup by caching fluid objects and avoiding string parsing.
