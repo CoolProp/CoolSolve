@@ -541,6 +541,56 @@ body {
   outline: none;
 }
 
+/* Custom config dropdown — menu opens right-aligned so it stays in the panel */
+.config-select {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.config-select-trigger {
+  cursor: pointer;
+  min-width: 140px;
+  width: max-content;
+  max-width: min(240px, 100%);
+}
+
+.config-select-menu {
+  position: absolute;
+  top: calc(100% + 2px);
+  right: 0;
+  left: auto;
+  z-index: 200;
+  margin: 0;
+  padding: 2px 0;
+  list-style: none;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  min-width: 100%;
+  width: max-content;
+  max-width: min(280px, calc(100vw - 16px));
+}
+
+.config-select-option {
+  display: block;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: right;
+  font-size: 12px;
+  font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+  white-space: nowrap;
+}
+
+.config-select-option:hover,
+.config-select-option.active {
+  background: var(--bg-secondary);
+}
+
 /* Info-icon tooltip for config fields */
 .config-tooltip-wrap {
   position: relative;

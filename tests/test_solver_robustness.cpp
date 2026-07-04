@@ -101,6 +101,8 @@ struct SolverConfig {
     bool enableSymbolicReduction = false;
     int trBroydenRecomputeInterval = 0;  // hybrd-style TrustRegion Broyden reuse (0 = legacy/disabled)
     int multiStartNumCores = 1;          // 1 = sequential multi-start (default); 0/N>1 = parallel
+    // Globalisation strategy when the pipeline contains Kinsol (linesearch/picard/fp).
+    coolsolve::KinsolGlobalStrategy kinsolStrategy = coolsolve::KinsolGlobalStrategy::LineSearch;
 };
 
 static bool shouldSkipFile(const fs::path& filepath) {
@@ -222,6 +224,7 @@ static RobustnessResult testFile(const fs::path& filepath, const SolverConfig& c
     opts.enableSymbolicReduction = cfg.enableSymbolicReduction;
     opts.trBroydenRecomputeInterval = cfg.trBroydenRecomputeInterval;
     opts.multiStartNumCores = cfg.multiStartNumCores;
+    opts.kinsolGlobalStrategy = cfg.kinsolStrategy;
 
     // If we want to skip initials, we need to run the pipeline stages manually
     // to avoid auto-loading from .initials file
@@ -486,6 +489,36 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
           coolsolve::SolverStrategy::Homotopy,
           coolsolve::SolverStrategy::Partitioned},
          true, false, false, 0, 0},
+
+        // -- KINSOL (SUNDIALS-style), one config per globalisation strategy --
+        // Exercises the in-tree KINSOL port (src/solver_kinsol.cpp): inexact
+        // Newton + Dennis-Schnabel line search, Picard/Richardson fixed point,
+        // and Anderson-accelerated fixed point.  All three are Jacobian-based
+        // (linesearch) or derivative-free (picard/fp) alternatives to the
+        // existing single-solver configs above.
+        {"KINSOL linesearch (with initials)",
+         {coolsolve::SolverStrategy::Kinsol},
+         true, false, false, 0, 1, coolsolve::KinsolGlobalStrategy::LineSearch},
+
+        {"KINSOL picard (with initials)",
+         {coolsolve::SolverStrategy::Kinsol},
+         true, false, false, 0, 1, coolsolve::KinsolGlobalStrategy::Picard},
+
+        {"KINSOL fp/Anderson (with initials)",
+         {coolsolve::SolverStrategy::Kinsol},
+         true, false, false, 0, 1, coolsolve::KinsolGlobalStrategy::FixedPoint},
+
+        {"KINSOL linesearch (NO initials)",
+         {coolsolve::SolverStrategy::Kinsol},
+         false, false, false, 0, 1, coolsolve::KinsolGlobalStrategy::LineSearch},
+
+        {"KINSOL picard (NO initials)",
+         {coolsolve::SolverStrategy::Kinsol},
+         false, false, false, 0, 1, coolsolve::KinsolGlobalStrategy::Picard},
+
+        {"KINSOL fp/Anderson (NO initials)",
+         {coolsolve::SolverStrategy::Kinsol},
+         false, false, false, 0, 1, coolsolve::KinsolGlobalStrategy::FixedPoint},
     };
 
     // Collect results: configs x files
@@ -623,9 +656,17 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
                 else if (sn == "Partitioned") sn = "Part";
                 else if (sn == "TrustRegion") sn = "TR";
                 else if (sn == "Newton") sn = "Nwt";
+                else if (sn == "Kinsol") sn = "Kin";
                 shortLabel += sn;
             }
             if (configs[ci].enableTearing) shortLabel += "+Tear";
+            // Distinguish the three KINSOL globalisation modes in column headers.
+            if (!configs[ci].pipeline.empty() &&
+                configs[ci].pipeline[0] == coolsolve::SolverStrategy::Kinsol) {
+                if (configs[ci].kinsolStrategy == coolsolve::KinsolGlobalStrategy::LineSearch) shortLabel += "(LS)";
+                else if (configs[ci].kinsolStrategy == coolsolve::KinsolGlobalStrategy::Picard) shortLabel += "(Pic)";
+                else shortLabel += "(FP)";
+            }
             withInitLabels.push_back(shortLabel);
         }
     }
@@ -662,9 +703,17 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
                 else if (sn == "Partitioned") sn = "Part";
                 else if (sn == "TrustRegion") sn = "TR";
                 else if (sn == "Newton") sn = "Nwt";
+                else if (sn == "Kinsol") sn = "Kin";
                 shortLabel += sn;
             }
             if (configs[ci].enableTearing) shortLabel += "+Tear";
+            // Distinguish the three KINSOL globalisation modes in column headers.
+            if (!configs[ci].pipeline.empty() &&
+                configs[ci].pipeline[0] == coolsolve::SolverStrategy::Kinsol) {
+                if (configs[ci].kinsolStrategy == coolsolve::KinsolGlobalStrategy::LineSearch) shortLabel += "(LS)";
+                else if (configs[ci].kinsolStrategy == coolsolve::KinsolGlobalStrategy::Picard) shortLabel += "(Pic)";
+                else shortLabel += "(FP)";
+            }
             noInitLabels.push_back(shortLabel);
         }
     }

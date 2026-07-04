@@ -84,6 +84,7 @@ into independent sub-blocks before entering the solver pipeline.
 | `solver_lm.cpp`            | 268   | Levenberg-Marquardt                                                    |
 | `solver_bisection_nd.cpp`  | 450   | N-dimensional bisection (sign-pattern simplex)                         |
 | `solver_homotopy.cpp`      | 209   | Homotopy continuation (predictor-corrector)                            |
+| `solver_kinsol.cpp`        | 647   | KINSOL (SUNDIALS-style): inexact Newton + Dennis-Schnabel line search, Picard, Anderson FP |
 | `solver_symbolic.cpp`      | 611   | Symbolic block reduction (inversion + extraction + substitution)       |
 | `symbolic_reduction.h`     | 147   | Symbolic reduction data structures and API                             |
 | `structural_analysis.h`    | 155   | Graph decomposition API (Tarjan SCC + redecomposition)                 |
@@ -839,8 +840,34 @@ mode for hard thermodynamic models with non-monotonic `t`-paths.
 
 | #  | Improvement                       | Primary benefit                                              | Estimated effort |
 |----|-----------------------------------|--------------------------------------------------------------|------------------|
-| 13 | **KINSOL (SUNDIALS) integration** | Robustness for very large blocks (> 30 vars) and preconditioning | 1-2 weeks        |
 | 14 | **Hybrd-native `O(n²)` triangular solve for TrustRegion Broyden mode** | Realize the speedup §3.7 found missing: solve directly against the maintained `R` instead of reconstructing dense `J` and re-running `ColPivHouseholderQR` every iteration | 3-5 days, plus a careful robustness re-validation (loses rank-revealing pivoting, reopening §3.6's instability concern) |
+
+> **Item 13 (KINSOL/SUNDIALS integration) was DELIVERED (July 2026).** Rather
+> than link the SUNDIALS library (CoolSolve ships no external solver
+> dependencies), the three SUNDIALS KINSOL globalisation strategies were ported
+> in-tree as a new `Kinsol` pipeline solver (`src/solver_kinsol.cpp`,
+> `include/coolsolve/solver.h`), selectable via `kinsolGlobalStrategy`:
+>
+> - **`linesearch`** (KIN_LINESEARCH, default) — inexact Newton (exact direct
+>   linear solve) + Dennis-Schnabel line search (Dennis & Schnabel 1983,
+>   Alg. A6.3.1mod: quadratic then cubic interpolation with the Armijo
+>   sufficient-decrease test on ½‖F‖²).
+> - **`picard`** (KIN_PICARD) — fixed-point (Richardson) iteration
+>   `x ← x − ωF(x)`, Jacobian-free.
+> - **`fp`** (KIN_FP) — Anderson-accelerated fixed point (Anderson 1965;
+>   Walker & Ni 2011), derivative-free, with a col-pivoted-QR least-squares
+>   depth-`m` solve.
+>
+> KINSOL is **opt-in**: it is parsed from `coolsolve.conf` and exposed in the
+> GUI but is **not** in the default pipeline, so existing models are
+> unaffected (zero overhead unless the user adds it). Covered by
+> `tests/test_kinsol.cpp` (19 cases) plus config-round-trip coverage. The
+> "preconditioning / very-large-blocks" angle of the original SUNDIALS use case
+> relies on iterative (Krylov) linear solvers, which CoolSolve does not use;
+> this port therefore uses exact direct solves (η = 0 inexact-Newton forcing)
+> and is most valuable as an additional fallback with a different
+> globalization strategy (and the derivative-free Picard/Anderson modes),
+> not as a Krylov-based large-block solver.
 
 KINSOL remains the recommended path when even Tier 1 + Tier 2 cannot
 crack the largest industrial models (e.g. `orc_solar_complex`).
@@ -871,6 +898,7 @@ reference; nothing here is open work.
 | Levenberg-Marquardt                        | **Done** | Nielsen's λ adaptation, cumulative Marquardt diagonal scaling, geodesic acceleration (Transtrum & Sethna 2012)         |
 | BisectionND (simplex bisection)            | **Done** | Sign-pattern simplex; `bisectionNDMaxBlockSize` (default 8), `bisectionNDIterFactor`                                   |
 | Homotopy continuation                      | **Done** | Predictor-corrector with adaptive step, Newton + LM corrector fallback, final polish                                   |
+| KINSOL (SUNDIALS-style)                    | **Done** | In-tree port of the three KINSOL globalisation modes: inexact Newton + Dennis-Schnabel line search, Picard, Anderson-accelerated fixed point (`src/solver_kinsol.cpp`). Opt-in pipeline solver (`Kinsol`), not in the default chain |
 | Partitioned solver                         | **Done** | Per-variable diagonal updates; gracefully returns `MaxIterations` for small blocks                                     |
 | Newton1D                                   | **Done** | Specialized for size-1 blocks: multi-probe + bisection + Newton hybrid (extracted to `solver_newton1d.cpp`)            |
 | Tearing                                    | **Done** | Greedy FVS + acyclic sequential solve + Newton on tear residuals                                                       |

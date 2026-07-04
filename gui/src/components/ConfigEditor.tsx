@@ -3,6 +3,7 @@ import { useModelStore } from '../stores/modelStore';
 import { api } from '../api/client';
 import { RotateCcw, Info } from 'lucide-react';
 import Tooltip from './Tooltip';
+import ConfigSelect from './ConfigSelect';
 
 interface ConfigField {
   key: string;
@@ -22,7 +23,7 @@ interface ConfigGroup {
 // ---------------------------------------------------------------------------
 // Pipeline presets — each preset sets both solverPipeline and pipelineMode.
 // ---------------------------------------------------------------------------
-const ALL_SOLVERS = 'Newton, TrustRegion, LevenbergMarquardt, BisectionND, Homotopy, Partitioned';
+const ALL_SOLVERS = 'Newton, TrustRegion, LevenbergMarquardt, BisectionND, Homotopy, Partitioned, Kinsol';
 
 const PIPELINE_PRESETS: Array<{
   id: string;
@@ -37,7 +38,7 @@ const PIPELINE_PRESETS: Array<{
     pipeline: ALL_SOLVERS,
     mode: 'sequential',
     description:
-      'Tries all solvers in order: Newton → TrustRegion → LM → BisectionND → Homotopy → Partitioned. '
+      'Tries all solvers in order: Newton → TrustRegion → LM → BisectionND → Homotopy → Partitioned → Kinsol. '
       + 'Each solver warm-starts from the best result found so far. '
       + 'BisectionND is automatically skipped for blocks larger than bisectionNDMaxBlockSize. '
       + 'Robust and covers the widest range of problem types.',
@@ -111,6 +112,17 @@ const PIPELINE_PRESETS: Array<{
       'Partitioned Block Updates. Updates each variable using its matched equation diagonal: '
       + 'xᵢ ← xᵢ − w·Fᵢ/(∂Fᵢ/∂xᵢ). Acts like a DAE-style tear without restructuring the block. '
       + 'Last-resort stabilizer for stiff or highly nonlinear loops. No fallback.',
+  },
+  {
+    id: 'kinsol-only',
+    label: 'KINSOL',
+    pipeline: 'Kinsol',
+    mode: 'sequential',
+    description:
+      'SUNDIALS-KINSOL-style solver. Three globalisation modes (set via kinsolGlobalStrategy): '
+      + 'inexact Newton + Dennis-Schnabel line search (default), Picard/Richardson fixed-point, '
+      + 'or Anderson-accelerated fixed point. The derivative-free modes can solve blocks where '
+      + 'the Jacobian is zero or singular. No fallback.',
   },
   // Sentinel: shown only when the conf contains values that match no preset above.
   {
@@ -298,6 +310,35 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
     ],
   },
   {
+    title: 'KINSOL (SUNDIALS-style)',
+    fields: [
+      { key: 'kinsolGlobalStrategy', label: 'Global strategy', type: 'string', defaultVal: 'linesearch',
+        description:
+          'Globalisation strategy for the KINSOL solver (add "Kinsol" to the pipeline). '
+          + 'One of: linesearch (inexact Newton + Dennis-Schnabel line search; default), '
+          + 'picard (fixed-point/Richardson iteration, no Jacobian), '
+          + 'fp (Anderson-accelerated fixed point, derivative-free).' },
+      { key: 'kinsolLineSearchAlpha', label: 'LS sufficient decrease α', type: 'number', defaultVal: '1e-4',
+        description:
+          'Armijo sufficient-decrease coefficient α for the KINSOL line search (linesearch mode). '
+          + 'Range (0,1). Smaller → stricter decrease.' },
+      { key: 'kinsolLineSearchMaxIters', label: 'LS max backtracks', type: 'number', defaultVal: '30',
+        description: 'Maximum number of backtracking trials per Newton step in the KINSOL line search.' },
+      { key: 'kinsolPicardOmega', label: 'Picard ω', type: 'number', defaultVal: '1.0',
+        description:
+          'Relaxation ω for Picard and Anderson modes: x ← x − ω·F(x). Must be > 0. '
+          + 'Use ω < 1 to under-relax stiff (near-divergent) fixed-point iterations.' },
+      { key: 'kinsolAndersonDepth', label: 'Anderson depth m', type: 'number', defaultVal: '5',
+        description:
+          'History depth m for Anderson acceleration (fp mode). '
+          + 'm = 0 disables acceleration (degenerates to plain fixed point).' },
+      { key: 'kinsolAndersonRelaxation', label: 'Anderson damping θ', type: 'number', defaultVal: '1.0',
+        description:
+          'Damping θ for Anderson acceleration: x_next = x + θ·(x_Anderson − x). '
+          + 'θ = 1 → pure Anderson (default); θ < 1 → more conservative. Range (0,1].' },
+    ],
+  },
+  {
     title: 'Tearing',
     fields: [
       { key: 'enableTearing', label: 'Enable tearing', type: 'boolean', defaultVal: 'true',
@@ -464,16 +505,17 @@ function PipelineGroup({ confMap, onChange, onBatchChange }: PipelineGroupProps)
           <span className="config-field-label">Pipeline</span>
           <span className="config-field-default">default: Sequential</span>
         </label>
-        <select
-          className="config-input"
+        <ConfigSelect
           value={currentPresetId}
-          onChange={(e) => handlePresetChange(e.target.value)}
-        >
-          {PIPELINE_PRESETS.filter((p) => p.id !== 'custom').map((p) => (
-            <option key={p.id} value={p.id}>{p.label}</option>
-          ))}
-          {isCustom && <option value="custom">Custom (current conf)</option>}
-        </select>
+          onChange={handlePresetChange}
+          options={[
+            ...PIPELINE_PRESETS.filter((p) => p.id !== 'custom').map((p) => ({
+              value: p.id,
+              label: p.label,
+            })),
+            ...(isCustom ? [{ value: 'custom', label: 'Custom (current conf)' }] : []),
+          ]}
+        />
       </div>
 
       {/* Description */}
@@ -594,15 +636,15 @@ export default function ConfigEditor() {
                         <span className="config-field-default">default: {field.defaultVal}</span>
                       </label>
                       {field.type === 'boolean' ? (
-                        <select
+                        <ConfigSelect
                           value={isSet ? current : ''}
-                          onChange={(e) => handleChange(field.key, e.target.value)}
-                          className="config-input"
-                        >
-                          <option value="">— default —</option>
-                          <option value="true">true</option>
-                          <option value="false">false</option>
-                        </select>
+                          onChange={(v) => handleChange(field.key, v)}
+                          options={[
+                            { value: '', label: '— default —' },
+                            { value: 'true', label: 'true' },
+                            { value: 'false', label: 'false' },
+                          ]}
+                        />
                       ) : (
                         <input
                           type="text"

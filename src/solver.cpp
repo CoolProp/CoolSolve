@@ -137,6 +137,7 @@ std::string strategyToString(SolverStrategy strategy) {
         case SolverStrategy::Partitioned:       return "Partitioned";
         case SolverStrategy::BisectionND:       return "BisectionND";
         case SolverStrategy::Homotopy:          return "Homotopy";
+        case SolverStrategy::Kinsol:            return "Kinsol";
         default:                                return "Unknown";
     }
 }
@@ -155,6 +156,7 @@ bool parseStrategy(const std::string& name, SolverStrategy& out) {
                                                     { out = SolverStrategy::BisectionND; return true; }
     if (lower == "homotopy" || lower == "continuation")
                                                     { out = SolverStrategy::Homotopy; return true; }
+    if (lower == "kinsol" || lower == "kin")        { out = SolverStrategy::Kinsol; return true; }
     return false;
 }
 
@@ -178,6 +180,8 @@ std::unique_ptr<NonLinearSolver> createSolver(SolverStrategy strategy) {
             return std::make_unique<BisectionNDSolver>();
         case SolverStrategy::Homotopy:
             return std::make_unique<HomotopySolver>();
+        case SolverStrategy::Kinsol:
+            return std::make_unique<KINSOLSolver>();
         case SolverStrategy::Partitioned:
             // Partitioned is handled specially by the orchestrator (needs structural info).
             return nullptr;
@@ -286,6 +290,56 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             // BisectionND options
             else if (key == "bisectionNDMaxBlockSize") options.bisectionNDMaxBlockSize = std::stoi(val);
             else if (key == "bisectionNDIterFactor")   options.bisectionNDIterFactor   = std::stod(val);
+            // KINSOL options
+            else if (key == "kinsolGlobalStrategy") {
+                std::string lower = val;
+                std::transform(lower.begin(), lower.end(), lower.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (lower == "linesearch" || lower == "line_search" || lower == "ls" || lower == "newton")
+                    options.kinsolGlobalStrategy = KinsolGlobalStrategy::LineSearch;
+                else if (lower == "picard" || lower == "richardson")
+                    options.kinsolGlobalStrategy = KinsolGlobalStrategy::Picard;
+                else if (lower == "fp" || lower == "fixedpoint" || lower == "fixed_point" || lower == "anderson")
+                    options.kinsolGlobalStrategy = KinsolGlobalStrategy::FixedPoint;
+                else {
+                    std::cerr << "[Warning] kinsolGlobalStrategy='" << val
+                              << "' is not one of {linesearch, picard, fp}; "
+                              << "falling back to default (linesearch).\n";
+                    options.kinsolGlobalStrategy = KinsolGlobalStrategy::LineSearch;
+                }
+            }
+            else if (key == "kinsolLineSearchAlpha") {
+                double v = std::stod(val);
+                if (v <= 0.0 || v >= 1.0) {
+                    std::cerr << "[Warning] kinsolLineSearchAlpha=" << v
+                              << " out of range (0,1); falling back to default (1e-4).\n";
+                    options.kinsolLineSearchAlpha = 1e-4;
+                } else {
+                    options.kinsolLineSearchAlpha = v;
+                }
+            }
+            else if (key == "kinsolLineSearchMaxIters") options.kinsolLineSearchMaxIters = std::stoi(val);
+            else if (key == "kinsolPicardOmega") {
+                double v = std::stod(val);
+                if (v <= 0.0) {
+                    std::cerr << "[Warning] kinsolPicardOmega=" << v
+                              << " must be > 0; falling back to default (1.0).\n";
+                    options.kinsolPicardOmega = 1.0;
+                } else {
+                    options.kinsolPicardOmega = v;
+                }
+            }
+            else if (key == "kinsolAndersonDepth")   options.kinsolAndersonDepth   = std::stoi(val);
+            else if (key == "kinsolAndersonRelaxation") {
+                double v = std::stod(val);
+                if (v <= 0.0 || v > 1.0) {
+                    std::cerr << "[Warning] kinsolAndersonRelaxation=" << v
+                              << " out of range (0,1]; falling back to default (1.0).\n";
+                    options.kinsolAndersonRelaxation = 1.0;
+                } else {
+                    options.kinsolAndersonRelaxation = v;
+                }
+            }
             // Multi-start fallback (roadmap §4.2)
             else if (key == "multiStartEnabled") {
                 options.multiStartEnabled = parseBool(val);
@@ -1226,6 +1280,12 @@ SolverStatus Solver::runSolverStrategy(SolverStrategy strategy,
     if (strategy == SolverStrategy::Homotopy) {
         // Homotopy uses internal Newton corrector steps; allow generous budget
         int minIter = 200;
+        if (solverOpts.maxIterations < minIter) solverOpts.maxIterations = minIter;
+    }
+    if (strategy == SolverStrategy::Kinsol) {
+        // KINSOL (esp. Picard / fixed-point modes) can be slow to converge;
+        // allow a generous budget like TrustRegion/LM.
+        int minIter = (n > 10) ? 500 : 300;
         if (solverOpts.maxIterations < minIter) solverOpts.maxIterations = minIter;
     }
 

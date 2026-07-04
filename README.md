@@ -119,7 +119,7 @@ CoolSolve uses several file formats for input and verification:
 - **.initials**: Initial values for variables, used to seed the solver or evaluator. Format: `variable=value` (one per line).
 - **coolsolve.conf**: Optional solver configuration. Place in the **same folder** as your .eescode file (not in subfolders). Format: `key = value` per line; lines starting with `#` are comments. Only the options you set override the defaults (see `include/coolsolve/solver.h` for `SolverOptions`). An example with all keys and comments is in `examples/coolsolve.conf`. In debug mode (`-d`), this file is copied into the debug folder. Key options:
   - **Pipeline options**:
-    - `solverPipeline`: Comma-separated list of solvers to try (e.g. `Newton, LM, TrustRegion, BisectionND, Homotopy, Partitioned`). Available solvers: `Newton`, `TrustRegion`, `LM` (or `LevenbergMarquardt`), `BisectionND`, `Homotopy`, `Partitioned`.
+    - `solverPipeline`: Comma-separated list of solvers to try (e.g. `Newton, LM, TrustRegion, BisectionND, Homotopy, Partitioned`). Available solvers: `Newton`, `TrustRegion`, `LM` (or `LevenbergMarquardt`), `BisectionND`, `Homotopy`, `Partitioned`, `Kinsol`.
     - `pipelineMode`: `sequential` (default) or `parallel` (first-to-converge wins)
     - `enableTearing`: When `true`, use structural tearing for blocks of size ≥ `tearingMinBlockSize`.
     - `enableSymbolicReduction`: When `true`, pre-process blocks to reduce their size via explicit extraction, CoolProp call inversion, and equation substitution, with automatic re-decomposition of the reduced block.
@@ -441,8 +441,9 @@ CoolSolve/
 │   ├── solver.cpp              # Pipeline orchestrator, Newton, tearing, config loading
 │   ├── solver_bisection_nd.cpp # Multi-dimensional bisection solver
 │   ├── solver_homotopy.cpp     # Homotopy continuation solver
-│   ├── solver_lm.cpp           # Levenberg-Marquardt solver
-│   ├── solver_newton.cpp       # Newton + line search solver
+    │   ├── solver_lm.cpp           # Levenberg-Marquardt solver
+    │   ├── solver_kinsol.cpp       # KINSOL (SUNDIALS-style) solver: line search / Picard / Anderson
+    │   ├── solver_newton.cpp       # Newton + line search solver
 │   ├── solver_symbolic.cpp     # Symbolic block reduction preprocessing
 │   ├── solver_trust_region.cpp # Trust-region dogleg solver
 │   └── solution_checker.cpp    # Post-solve equation-by-equation verification
@@ -458,7 +459,8 @@ CoolSolve/
 │   ├── test_tearing.cpp        # Structural tearing unit tests
 │   ├── test_config.cpp         # coolsolve.conf loading tests
 │   ├── test_fluids.cpp         # CoolProp fluid property tests
-│   └── test_examples.cpp       # Integration tests with example files
+│   ├── test_examples.cpp       # Integration tests with example files
+│   └── test_kinsol.cpp         # KINSOL solver unit tests (3 modes + config)
 └── examples/                   # Example .eescode files for testing
 ```
 
@@ -649,7 +651,24 @@ through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
      improving stability in stiff or highly nonlinear loops.
    - Designed as a last-resort stabilizer when full Newton steps are unreliable.
 
-7. **Structural Tearing** (option `enableTearing`)
+ 7. **KINSOL** (`Kinsol`, opt-in — not in the default pipeline)
+    - A SUNDIALS-KINSOL-style solver with three selectable globalisation
+      strategies (`kinsolGlobalStrategy`), implemented in-tree (no external
+      library):
+      - **`linesearch`** (default): inexact Newton (exact direct linear solve)
+        + **Dennis-Schnabel line search** — backtracking with quadratic then
+        cubic interpolation and the Armijo sufficient-decrease test on
+        ½‖F‖². A more sophisticated globalization than the geometric
+        backtracking used by the `Newton` solver.
+      - **`picard`**: fixed-point (Richardson) iteration `x ← x − ω·F(x)`,
+        Jacobian-free. Converges when `ρ(I − ω·J) < 1`; under-relax
+        (`kinsolPicardOmega < 1`) for stiff systems.
+      - **`fp`**: **Anderson-accelerated** fixed point (Anderson 1965; Walker
+        & Ni 2011), derivative-free — can converge for blocks where the
+        Jacobian is zero or singular (complementary to `BisectionND`).
+    - Add it to the pipeline with `solverPipeline = ..., Kinsol`.
+
+ 8. **Structural Tearing** (option `enableTearing`)
    - When enabled, blocks of size ≥ `tearingMinBlockSize` are first solved via
      **equation tearing**: a greedy **feedback vertex set (FVS)** is computed so
      that removing the corresponding equations (and their output variables) makes
@@ -661,8 +680,8 @@ through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
      `tearingInnerIterations`. In debug mode (`-d`), a `tearing.md` file lists
      tear sets and acyclic order per block.
 
-8. **Symbolic Block Reduction** (option `enableSymbolicReduction`)
-   - When enabled, blocks of size ≥ 2 are **pre-processed** before the
+ 9. **Symbolic Block Reduction** (option `enableSymbolicReduction`)
+    - When enabled, blocks of size ≥ 2 are **pre-processed** before the
      iterative solver to reduce their size.  Three techniques are applied
      iteratively until a fixed point:
      1. **Explicit extraction**: equations where the output variable's RHS
@@ -743,6 +762,7 @@ pipelineMode = sequential
 > | BisectionND | Zero or undefined Jacobian at the start; derivative-free |
 > | Homotopy | Distant starting points; avoids large nonlinear barriers |
 > | Partitioned | Ill-conditioned algebraic loops; diagonal per-variable update |
+> | Kinsol | Dennis-Schnabel line search, or derivative-free Picard/Anderson fixed-point (opt-in) |
 
 #### Example: Single Solver
 
@@ -864,7 +884,8 @@ CALL single_phase_HX('Air_ha', 'Water', 20 : Q_total)
 ## Future Work
 
 The next steps in the implementation plan include:
-- **KINSOL (SUNDIALS) integration**: For large-scale nonlinear systems requiring robust preconditioning
+- **Hybrd-native `O(n²)` triangular solve** for TrustRegion's Broyden mode, to realize the speedup that the QR infrastructure (§4.1) makes possible
+- **Pseudo-arclength continuation** in the Homotopy solver (roadmap §4.4) to pass turning points
 
 See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
 

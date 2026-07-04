@@ -52,7 +52,20 @@ enum class SolverStrategy {
     LevenbergMarquardt,///< Levenberg-Marquardt (damped least-squares)
     Partitioned,       ///< Per-variable diagonal updates (tear-based)
     BisectionND,       ///< Multi-dimensional bisection (small systems only, n≤8)
-    Homotopy           ///< Homotopy continuation (global convergence)
+    Homotopy,          ///< Homotopy continuation (global convergence)
+    Kinsol             ///< SUNDIALS-KINSOL-style inexact Newton / Picard / Anderson-accelerated fixed point
+};
+
+/**
+ * @brief Globalisation strategy for the KINSOL solver (SUNDIALS KIN_* modes).
+ *
+ * Mirrors the three globalisation strategies of SUNDIALS KINSOL.  Selected at
+ * solve time via `SolverOptions::kinsolGlobalStrategy`.
+ */
+enum class KinsolGlobalStrategy {
+    LineSearch,  ///< KIN_LINESEARCH: inexact Newton + Dennis-Schnabel line search (default)
+    Picard,      ///< KIN_PICARD:     fixed-point (Richardson) iteration x ← x − ωF
+    FixedPoint   ///< KIN_FP:         fixed-point iteration with Anderson acceleration
 };
 
 /**
@@ -205,6 +218,48 @@ struct SolverOptions {
     // solvers are often needed.  bisectionNDMaxBlockSize is unaffected by this factor.
     // Example: bisectionNDIterFactor = 5 gives 500 bisection steps when maxIterations = 100.
     double bisectionNDIterFactor = 1.0; // Multiplier for max bisection iterations (default: 1.0).
+
+    // --- KINSOL options (SUNDIALS KINSOL-style solver) ---
+    // KINSOL is a pipeline solver available as the strategy "Kinsol".  It is
+    // OFF by default (not in the default pipeline); add it via
+    //   solverPipeline = Newton, ..., Kinsol
+    // Three globalisation strategies mirror SUNDIALS KIN_* and are selected by
+    // `kinsolGlobalStrategy`:
+    //   LineSearch – inexact Newton + Dennis-Schnabel line search.  Uses the
+    //                Jacobian (exact linear solve via Householder QR).  The
+    //                line search uses quadratic/cubic interpolation with the
+    //                Armijo sufficient-decrease test on 0.5||F||², which is
+    //                more sophisticated than the geometric backtracking used
+    //                by the Newton solver.  (Default.)
+    //   Picard     – fixed-point (Richardson) iteration x ← x − ωF(x).  No
+    //                Jacobian.  Converges when ρ(I − ωJ) < 1.
+    //   FixedPoint – fixed-point iteration with Anderson acceleration
+    //                (Anderson 1965, Walker & Ni 2011).  Derivative-free; can
+    //                converge for blocks where the Jacobian is zero/singular.
+    // The mode is shared by every "Kinsol" entry in the pipeline.
+    KinsolGlobalStrategy kinsolGlobalStrategy = KinsolGlobalStrategy::LineSearch;
+
+    // Sufficient-decrease coefficient α for the KINSOL line search (Armijo).
+    // Range (0, 1).  Smaller → stricter decrease.  (Default: 1e-4, as in SUNDIALS.)
+    double kinsolLineSearchAlpha = 1e-4;
+
+    // Maximum number of backtracking trials in the KINSOL line search per
+    // Newton iteration.  (Default: 30.)
+    int kinsolLineSearchMaxIters = 30;
+
+    // Relaxation ω for Picard iteration: x_{k+1} = x_k − ω F(x_k).
+    // Must be > 0.  (Default: 1.0.)
+    double kinsolPicardOmega = 1.0;
+
+    // History depth m for Anderson acceleration (KIN_FP).  Range [0, ~20].
+    // m = 0 disables acceleration (degenerates to plain fixed point).
+    // (Default: 5.)
+    int kinsolAndersonDepth = 5;
+
+    // Damping/relaxation θ for Anderson acceleration: the accepted iterate is
+    // x_{k+1} = x_k + θ·(x_Anderson − x_k).  θ = 1 → pure Anderson (default);
+    // θ < 1 → damped, more conservative.  Range (0, 1].  (Default: 1.0.)
+    double kinsolAndersonRelaxation = 1.0;
 
     // --- Solver pipeline configuration ---
     // The pipeline defines which solvers to try and in what order.
@@ -599,6 +654,79 @@ public:
                        const SolverOptions& options = SolverOptions(),
                        SolverTrace* trace = nullptr,
                        std::string* detailedError = nullptr) override;
+};
+
+// ============================================================================
+// KINSOL Solver (SUNDIALS-style inexact Newton / Picard / Anderson FP)
+// ============================================================================
+
+/**
+ * @brief SUNDIALS-KINSOL-style nonlinear solver with three globalisation
+ *        strategies, selectable via SolverOptions::kinsolGlobalStrategy.
+ *
+ * Faithful port of the three SUNDIALS KINSOL globalisation modes into the
+ * CoolSolve solver framework (no external library; algorithm implemented
+ * directly in src/solver_kinsol.cpp).  References:
+ *  - Hindmarsh, Brown, Lee, Serban, Shumaker, Woodward (2005): *SUNDIALS*,
+ *    ACM Trans. Math. Softw. 31(3).  KINSOL linesearch follows Dennis &
+ *    Schnabel, *Numerical Methods for Unconstrained Optimization and Nonlinear
+ *    Equations* (1983), Alg. A6.3.1mod — quadratic then cubic interpolation
+ *    with the Armijo sufficient-decrease test.
+ *  - Anderson (1965): *Iterative Procedures for Nonlinear Integral Equations*,
+ *    J. ACM 12(4).  Anderson-accelerated fixed point follows Walker & Ni
+ *    (2011), *Anderson Acceleration for Fixed-Point Iterations*, SIAM J. Numer.
+ *    Anal. 49(4), with a least-squares solve via column-pivoted QR.
+ *
+ * Modes:
+ *  - LineSearch: inexact Newton (exact direct linear solve) + Dennis-Schnabel
+ *    line search.  Uses the Jacobian.
+ *  - Picard:     fixed-point (Richardson) iteration x ← x − ωF(x).  Jacobian-free.
+ *  - FixedPoint: Anderson-accelerated fixed point.  Jacobian-free.
+ *
+ * The problem is posed as F(x) = 0; the Picard/FixedPoint maps use the
+ * equivalent fixed-point form G(x) = x − ωF(x).
+ */
+class KINSOLSolver : public NonLinearSolver {
+public:
+    SolverStatus solve(Problem& problem,
+                       Eigen::VectorXd& x_guess,
+                       const SolverOptions& options = SolverOptions(),
+                       SolverTrace* trace = nullptr,
+                       std::string* detailedError = nullptr) override;
+
+private:
+    Eigen::VectorXd computeScalingFactors(const Eigen::VectorXd& x) const;
+
+    /** @brief Dennis-Schnabel line search on φ(λ)=½||F(x+λs)||² (LineSearch mode). */
+    double lineSearch(Problem& problem,
+                      const Eigen::VectorXd& y,
+                      const Eigen::VectorXd& s,
+                      const Eigen::VectorXd& scale,
+                      double phi0,
+                      double dphi0,
+                      const SolverOptions& options,
+                      Eigen::VectorXd& F_out);
+
+    /** @brief Inexact-Newton + line-search mode (KIN_LINESEARCH). */
+    SolverStatus solveLineSearch(Problem& problem, Eigen::VectorXd& y,
+                                 const Eigen::VectorXd& scale,
+                                 const SolverOptions& options,
+                                 SolverTrace* trace,
+                                 std::string* detailedError);
+
+    /** @brief Picard (Richardson) fixed-point mode (KIN_PICARD). */
+    SolverStatus solvePicard(Problem& problem, Eigen::VectorXd& y,
+                             const Eigen::VectorXd& scale,
+                             const SolverOptions& options,
+                             SolverTrace* trace,
+                             std::string* detailedError);
+
+    /** @brief Anderson-accelerated fixed-point mode (KIN_FP). */
+    SolverStatus solveFixedPoint(Problem& problem, Eigen::VectorXd& y,
+                                 const Eigen::VectorXd& scale,
+                                 const SolverOptions& options,
+                                 SolverTrace* trace,
+                                 std::string* detailedError);
 };
 
 // ============================================================================
