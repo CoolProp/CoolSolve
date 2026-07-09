@@ -198,6 +198,20 @@ def test_bundle_round_trip():
                       any("0.0183" in line for line in txt.splitlines()),
                       f"tail={txt.splitlines()[-1] if txt else ''}")
 
+        # The dedicated CSV endpoint exposes the restored CSV text directly
+        # (the GUI tab parses this on bundle load when no live JSON is present).
+        try:
+            csv_ep = api("GET", "/integral/csv")
+            if isinstance(csv_ep, (bytes, bytearray)):
+                csv_ep_text = csv_ep.decode()
+                check("GET /integral/csv returns CSV text after re-upload",
+                      "y" in csv_ep_text.splitlines()[0] if csv_ep_text else False,
+                      f"head={csv_ep_text.splitlines()[0] if csv_ep_text else ''}")
+                check("GET /integral/csv has the y(4) row",
+                      any("0.0183" in line for line in csv_ep_text.splitlines()))
+        except Exception as e:
+            check("GET /integral/csv returns CSV text after re-upload", False, str(e))
+
 
 def _integral_result_empty() -> bool:
     try:

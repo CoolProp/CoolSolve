@@ -38,6 +38,8 @@ export function registerEESLanguage(monaco: typeof Monaco) {
       'lookup', 'lookupcol', 'lookupcol1', 'lookupcellempty',
       'tablevalue', 'nlookuprows', 'nlookupcolumns',
       'sumlookup', 'avglookup', 'maxlookup', 'minlookup', 'stddevlookup',
+      // Equation-based integration (INTEGRAL / $IntegralTable)
+      'integral', 'integralvalue',
     ],
     operators: [
       '=', ':=', '+', '-', '*', '/', '^',

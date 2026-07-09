@@ -17,6 +17,7 @@ import type {
   LatexReportResponse,
   LatexCompileRequest,
   LookupTablesResponse,
+  IntegralTableData,
 } from './types';
 
 const API_BASE = '/api/v1';
@@ -190,6 +191,19 @@ export const api = {
   // Get last parametric study result
   getParametricResult: () =>
     request<ParametricStudyResult>('/parametric/result'),
+
+  // Integral (INTEGRAL/$IntegralTable) — columnar JSON of the last trajectory
+  getIntegralResult: () =>
+    requestOptional<{ integralTable?: IntegralTableData; integralCsvName?: string }>('/integral/result'),
+
+  // Integral trajectory as raw CSV text (survives ZIP bundle round-trip;
+  // the GUI tab parses this on bundle load when no live JSON is present)
+  getIntegralCSV: async (): Promise<string | null> => {
+    const res = await fetch(`${API_BASE}/integral/csv`);
+    if (res.status === 204 || res.status === 404) return null;
+    if (!res.ok) return null;
+    return res.text();
+  },
 
   // LaTeX report
   getLatexReport: () =>

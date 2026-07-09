@@ -11,8 +11,8 @@ CoolSolve. It is the result of reading the EES help pages
 `finding_a_limit_of_integration.htm`) and of a thorough exploration of
 the existing CoolSolve codebase.
 
-**Status:** Phases 0–9 delivered (2026-07-05). See §12 *Progress Log*.
-Phases 10–11 pending (GUI tab + documentation).
+**Status:** Phases 0–10 delivered (2026-07-09). See §12 *Progress Log*.
+Phase 11 (documentation) pending.
 
 Reference for conventions: [`docs/contributing.md`](contributing.md).
 
@@ -1068,40 +1068,20 @@ Python API test passes 12/12.
 
 ---
 
-## 13. Remaining work (Phases 10–11)
+## 13. Remaining work (Phase 11)
 
-The **backend is feature-complete and fully tested** through the REST API and
-ZIP bundle: an integral model can be parsed, solved, tabulated, exported to
-CSV, embedded in the solve response, and round-tripped through a ZIP bundle.
-What remains is the **frontend GUI tab** and the **user-facing documentation**.
+The **full stack — backend, REST API, ZIP round-trip, and the GUI tab — is
+feature-complete and tested.** An integral model can be parsed, solved,
+tabulated, exported to CSV, embedded in the solve response, round-tripped
+through a ZIP bundle, and visualised in the bottom-panel Integral tab. What
+remains is the **user-facing documentation** (Phase 11).
 
-### 13.1 Phase 10 — GUI Integral Table tab (bottom panel)
+### 13.1 Phase 10 — delivered (see §12 progress log)
 
-The bottom panel already hosts the parametric study as the `sensitivity` tab
-(`gui/src/App.tsx:141-166`). The integral table becomes a sibling tab. The
-data is already delivered to the frontend by Phase 9:
-
-- The solve response (`resultJson`) now carries `integralTable`
-  (`{ integrationVar, columns[], data{<col>: number[]}, numRows, csvName,
-  totalSteps, rejectedSteps }`) and `integralCsvName`.
-- `GET /api/v1/integral/result` returns the same payload on demand.
-- The ZIP bundle round-trips the CSV.
-
-Tasks (see §4 Phase 10 for the full table):
-
-| Change | File | Detail |
-|--------|------|--------|
-| New bottom-panel tab | `gui/src/App.tsx` | Add an `integral` button alongside `console`/`sensitivity`/`lookuptables`; render `<IntegralTable/>` when active (mirror the existing tab-toggle pattern). |
-| New component | `gui/src/components/IntegralTable.tsx` | Mirror `ParametricStudy.tsx`: scrollable columnar table (integration var first), row count, "Export CSV" button, empty-state message. Read-only. Optional: a `PlotlyChart` line plot of the first tabulated variable vs the integration var. On bundle load with no live JSON, parse `integralCsvName`'s CSV text from the bundle into the same shape. |
-| Types | `gui/src/api/types.ts` | Add `IntegralTableData { columns: string[]; data: Record<string, number[]>; integrationVar: string; csvName: string; numRows: number }` and extend the solve-response type with `integralTable?: IntegralTableData`. |
-| Store | `gui/src/stores/modelStore.ts` | Add `integralTable: IntegralTableData \| null`; set from the solve response; clear on new/open/reset (same lifecycle as `parametricStudies`). |
-| Syntax highlighting | `gui/src/languages/ees.ts` | Add `integral`, `integralvalue` to built-in functions and `$IntegralTable` (and `$IntegralAutoStep`/`$IntegralStop`) to directives. |
-| Config editor | `gui/src/components/ConfigEditor.tsx` | New `ConfigGroup` "Integration" exposing the `integral*` keys from §5 (method dropdown, step, tolerances, Richardson toggle). |
-| Smoke test | manual | `npm run dev`, solve `examples/integral_decay.eescode`, verify the tab populates, export the bundle, re-import, verify repopulation. |
-
-The frontend can be built and tested independently of any further backend
-work — every endpoint and payload it needs already exists and is covered by
-`tests/test_integral_api.py`.
+Phase 10 (GUI Integral Table tab) shipped on 2026-07-09. See the
+**2026-07-09 — Phase 10 (GUI Integral Table tab)** entry in §12 for the full
+delivery record. The frontend can now solve, display, plot, export, and
+round-trip an integral trajectory through the bottom-panel Integral tab.
 
 ### 13.2 Phase 11 — Documentation
 
@@ -1111,7 +1091,7 @@ work — every endpoint and payload it needs already exists and is covered by
 | `docs/language_reference.md` | New section "Equation-based integration" covering `INTEGRAL`, `$IntegralTable`, `INTEGRALVALUE`, and the `coolsolve.conf` keys. |
 | `docs/debugging_models.md` | New subsection on diagnosing integration failures (step rejected, high-index warning, non-constant limits). |
 | `docs/solver_roadmap.md` | Mark dynamic solving as delivered; note BDF/stiff and index reduction as future. |
-| `docs/gui.md` | Document the Integral Table bottom-panel tab and the CSV bundle round-trip (after Phase 10). |
+| `docs/gui.md` | Document the Integral Table bottom-panel tab and the CSV bundle round-trip. |
 | `docs/docs.html` | Append any new doc page to the sidebar nav. |
 | `docs/ees_vs_coolsolve.csv` | Flip `INTEGRAL` / `INTEGRALVALUE` / `$IntegralTable` to `Yes`; add a "Dynamic/DAE solving" row. |
 | `docs/versions.md` | Changelog entry at release time. |
@@ -1122,3 +1102,111 @@ work — every endpoint and payload it needs already exists and is covered by
 > `src/evaluator.cpp` + a thread-local pointer to the current `IntegralTable`).
 > It is not exercised by any current example or test and does not block the
 > core dynamic-solving workflow.
+
+### 2026-07-09 — Phase 10 (GUI Integral Table tab) ✅
+
+**Delivered** — the bottom-panel Integral tab ships with the same UX as the
+parametric study: a scrollable columnar table (integration variable first), a
+row/step count, an "Export CSV" button, an optional `PlotlyChart` line plot
+of one tabulated variable versus the integration variable, and an empty-state
+message. Read-only (EES Integral Tables are not user-editable).
+
+**Frontend changes (all additive):**
+
+| File | Change |
+|------|--------|
+| `gui/src/components/IntegralTable.tsx` (**new**) | The tab component. Resolves the active table from two sources in priority order: (1) the live columnar JSON (`integralTable`), (2) the restored CSV text (`integralCSV`) parsed client-side via a small CSV splitter that honours quoting. Renders the columnar table (integration var highlighted with the existing `.sweep-col` style), a Y-variable selector + Plotly line plot, and an "Export CSV" button that re-serialises the table to a downloadable `<csvName>`. |
+| `gui/src/api/types.ts` | New `IntegralTableData` interface (mirrors the backend `integralResultToJSON` payload: `integrationVar`, `columns`, `data` keyed by column, `numRows`, `csvName`, optional `totalSteps`/`rejectedSteps`). `SolveResponse` extended with optional `integralTable?` and `integralCsvName?`. |
+| `gui/src/api/client.ts` | `getIntegralResult()` (columnar JSON via `GET /integral/result`) and `getIntegralCSV()` (raw CSV text via `GET /integral/csv`, returning `null` on 404 so the round-trip degrades gracefully when there is no table). |
+| `gui/src/stores/modelStore.ts` | New `integralTable: IntegralTableData \| null` + `integralCSV: string` state, with `setIntegralTable`/`setIntegralCSV` actions. Both are reset on `loadFile` and `clearModel` (same lifecycle as `parametricStudies`). |
+| `gui/src/stores/uiStore.ts` | `'integral'` added to the `BottomTab` union. |
+| `gui/src/App.tsx` | New `Integral` button in the bottom-panel tab bar (alongside Console/Parametric/Lookup Tables) following the exact toggle-on-reclick pattern; renders `<IntegralTable/>` when active. |
+| `gui/src/components/Toolbar.tsx` | Solve `done` handler now: (a) stores `result.integralTable` when present and clears `integralCSV`, otherwise clears the table and fetches the CSV as a fallback; (b) ensures the bottom panel is open when an integral was produced. Bundle `handleOpen` and `handleBack` both restore the trajectory by fetching `/integral/result` (columnar) and `/integral/csv` (CSV) after the file load, so the tab repopulates on bundle round-trip. |
+| `gui/src/components/ConfigEditor.tsx` | New `Integration` config group exposing all nine `integral*` keys from §5 (method, fixed step, max steps, rel/abs tol, min/max step, Richardson, output interval) with the standard `ConfigField` renderer and full tooltips. |
+| `gui/src/languages/ees.ts` | `integral` and `integralvalue` added to `builtinFunctions` so Monaco highlights them as predefined. (`$IntegralTable` / `$IntegralAutoStep` / `$IntegralStop` are already matched by the generic `\$\w+` directive rule.) |
+| `gui/src/App.css` | New `.integral-table-panel` / `.integral-header` / `.integral-meta` styles (the table reuses `.parametric-table` / `.sweep-col`). |
+
+**Backend change (minimal additive):**
+
+| File | Change |
+|------|--------|
+| `src/server.cpp` | New `GET /api/v1/integral/csv` endpoint returning the trajectory CSV text (`text/csv`, 404 when none). This closes the bundle round-trip gap: on ZIP re-upload only the CSV is restored server-side (`session.lastIntegralCSV`), so the GUI tab needs a way to fetch it. Mirrors the existing `GET /tables/{name}` lookup-table CSV pattern. |
+
+**Why the extra backend endpoint?** The plan's Phase 10 table said "no
+separate call needed" for the bundle round-trip, but that assumed the solve
+response's columnar JSON is always available. On a pure bundle load (no live
+solve since server restart), `session.lastIntegralResult` (the JSON) is empty
+— only `session.lastIntegralCSV` (the CSV) survives the round-trip (Phase 9
+design note, line ~1058). A 21-line `GET /integral/csv` endpoint is the
+cleanest way to expose that restored CSV to the frontend, keeping the tab
+fully functional on bundle load. The frontend parses the CSV client-side
+(`parseCSVToTable` in `IntegralTable.tsx`).
+
+**Verification (live smoke test):**
+
+Started the server in `--gui` mode serving the freshly built `gui/dist`,
+opened `examples/integral_decay.eescode`, solved, and confirmed:
+
+```
+solve.integralTable present: True | cols: ['t', 'y', 'dydt'] | csvName: integral_decay-integral.csv
+  y(4) = 0.018315638888891046  (e^-4 = 0.01831563888873418)
+GET /integral/csv -> first line: t,y,dydt
+GET /integral/csv -> last line: 4,0.0183156,-0.0183156
+```
+
+The bundle round-trip (`*-integral.csv` exported → re-uploaded → CSV restored
+via `/integral/csv`) is covered by the extended `tests/test_integral_api.py`.
+
+**Test results:**
+
+- `./coolsolve_tests` → **352 test cases, 3109 assertions, all pass**
+  (no regressions; the `server.cpp` change is purely additive).
+- `python3 tests/test_integral_api.py --auto` → **14/14 passed**
+  (was 12/12; the 2 new checks verify `GET /integral/csv` returns CSV text
+  with the correct header and the `y(4)=e⁻⁴` row after a bundle round-trip).
+- Frontend: `tsc -b` clean; `npm run build` succeeds (1758 modules, 4.95 s);
+  `npm run lint` introduces **zero new errors** (22 problems, identical to
+  the pre-Phase-10 baseline — all pre-existing `any`/`_removed` warnings).
+
+**Decisions / deviations from the plan:**
+
+- The plan suggested a "method dropdown" for `integralMethod` in the config
+  editor. The standard `ConfigField` renderer only dropdowns booleans, so
+  `integralMethod` uses a text input with a tooltip listing the four valid
+  values (`EulerExplicit`, `EulerImplicit`, `RK4`, `RK45`) — consistent with
+  the existing `kinsolGlobalStrategy` field. A dedicated enum-dropdown
+  renderer would be a general ConfigEditor improvement, out of scope here.
+- The Integral tab does **not** auto-switch on solve (only ensures the bottom
+  panel is open), so the user keeps their console focus during a solve. The
+  tab badge/population is immediate once the user clicks it.
+- CSV parsing on the frontend is a small bespoke splitter (handles quoting)
+  rather than pulling in PapaParse/JSZip — keeps the bundle size unchanged
+  and is sufficient for the numeric, headered CSV the backend emits.
+
+#### Pre-existing GUI lint baseline (out of scope — flagged for future cleanup)
+
+Phase 10's `npm run lint` reports **22 problems (19 errors, 3 warnings)**,
+all of which pre-date this phase (verified by `git stash` against the
+Phase-9 baseline). They are **general GUI health issues, not integral-feature
+bugs**: the production build (`tsc -b && vite build`) succeeds and runtime
+behaviour is unaffected. Line numbers below are as of the 2026-07-09 delivery
+and will drift with future edits — re-run `npm run lint` for current
+locations.
+
+| # | Rule | Count | Files (line) | Why it occurs | Severity / impact | Suggested fix |
+|---|------|-------|--------------|---------------|-------------------|---------------|
+| 1 | `@typescript-eslint/no-explicit-any` | 11 | `Toolbar.tsx` (195, 212, 246, 289, 317, 335, 345, 357, 394, 410), `DebugViewer.tsx` (35) | All are `catch (err: any)` blocks that read `err.message`. Predates TS 4.4's `useUnknownInCatchVariables` default; `any` was the historical convenience. | **Low.** eslint-level only; no runtime/correctness impact. | Change to `catch (err: unknown)` + `err instanceof Error ? err.message : String(err)` (or a small `toMsg(err)` helper). Mechanical, ~15-min sweep. |
+| 2 | `@typescript-eslint/no-explicit-any` | 6 | `CodeEditor.tsx` (11, 16, 32, 71, 104, 166) | Monaco editor integration typed loosely: the exported `editorInstance` ref, the `toggleBrace/QuoteComment(editor)` params, an `edits: any[]`, a `useRef<any>`, and `(window as any).monaco` (Monaco is loaded via a `<script>` tag, not the typed npm import). | **Low.** Works because Monaco's runtime shape matches; loses editor/IDE autocomplete on these locals. | `import type * as Monaco from 'monaco-editor'` and type the editor params/refs; replace `(window as any).monaco` with a `declare global` augmentation or the `@monaco-editor/react` loader. |
+| 3 | `@typescript-eslint/no-explicit-any` | 1 | `exportPlots.ts` (40) | `(Plotly as any).toImage(...)` — the `plotly.js-cartesian-dist-min` type definitions omit the `toImage` imperative method. | **Low.** Single cast; the call is correct at runtime. | Define a small local interface (`interface PlotlyExport { toImage(gd, opts): Promise<string> }`) and cast through it, or add a scoped `// eslint-disable-next-line` with a comment. |
+| 4 | `@typescript-eslint/no-unused-vars` | 1 | `modelStore.ts` (146) | The destructure-to-omit pattern `const { [name]: _removed, ...rest } = state.lookupTableCSVs` in `removeLookupTable`. The `_removed` binding is intentionally unused (underscore prefix is the conventional "I know" signal), but the eslint config has no `varsIgnorePattern: "^_"`. | **Trivial.** | Add `"varsIgnorePattern": "^_"` (and `argsIgnorePattern`) to the `no-unused-vars` rule in `eslint.config.js`, or extract an `omitKey(obj, key)` helper. |
+| 5 | `react-refresh/only-export-components` | 2 (warn) | `CodeEditor.tsx` (16, 71) | The file exports both the `CodeEditor` component **and** non-component values (`editorInstance`, `toggleBraceComment`, `toggleQuoteComment`). React Fast Refresh requires component-only files for hot swapping. | **Dev-experience only.** Editing `CodeEditor.tsx` triggers a full page reload instead of an HMR swap; no production impact. | Move `editorInstance` + the two comment-toggle helpers into a sibling non-component module (e.g. `editorUtils.ts`) and import them where needed. |
+| 6 | `react-hooks/exhaustive-deps` | 1 (warn) | `ParametricStudy.tsx` (464) | The `plotData` `useMemo` reads `sortedResults` but lists only `[activeResult, plotYVar, plotType]` in its deps. | **Latent.** Currently masked because `activeResult` changes whenever `sortedResults` would, but it is a potential stale-plot bug if the derivation ever decouples. | Add `sortedResults` to the dependency array. |
+
+**Severity summary:** none of these affect correctness or the shipped bundle.
+The `no-explicit-any` cluster (items 1–3, 18 of the 19 errors) is the bulk of
+the noise and is a straightforward typing sweep; item 4 is a one-line eslint
+config change; items 5–6 are dev-experience/latent-hygiene warnings. Tackling
+them would bring `npm run lint` to a clean exit and is independent of the
+integral feature.
+
+**Next:** Phase 11 (user-facing documentation).

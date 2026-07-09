@@ -79,6 +79,10 @@ export interface SolveResponse {
   largestBlock?: number;
   latexReportAvailable?: boolean;
   diagnostics?: Diagnostic[];
+  // Integral (INTEGRAL/$IntegralTable) trajectory — present only when the
+  // model is a dynamic/DAE solve (see IntegralTableData).
+  integralTable?: IntegralTableData;
+  integralCsvName?: string;
 }
 
 export interface SolvedVariable {
@@ -251,6 +255,38 @@ export interface SavedParametricStudy {
   sweepVariables: SweepVariable[];
   result: ParametricStudyResult;
   timestamp: number;
+}
+
+// ============================================================================
+// Integral Table Types (equation-based dynamic / DAE solving)
+// ============================================================================
+
+/**
+ * Columnar trajectory table produced by an `INTEGRAL` / `$IntegralTable`
+ * solve. Mirrors the JSON emitted by the backend
+ * (`integralResultToJSON` in src/server.cpp):
+ *
+ *   {
+ *     "integrationVar": "t",
+ *     "columns": ["t", "y", "dydt"],
+ *     "data": { "t": [...], "y": [...], "dydt": [...] },
+ *     "numRows": 9,
+ *     "csvName": "model-integral.csv",
+ *     "totalSteps": 40,
+ *     "rejectedSteps": 0
+ *   }
+ *
+ * The `data` field is keyed by column name; every column has the same
+ * length (`numRows`). The integration variable is always `columns[0]`.
+ */
+export interface IntegralTableData {
+  integrationVar: string;
+  columns: string[];
+  data: Record<string, number[]>;
+  numRows: number;
+  csvName: string;
+  totalSteps?: number;
+  rejectedSteps?: number;
 }
 
 /** User-defined unit override */

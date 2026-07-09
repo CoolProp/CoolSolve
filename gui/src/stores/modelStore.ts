@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { SolveResponse, ParseError, SolvedVariable, VariableInfo, SavedParametricStudy, UserUnitOverride, LookupTableInfo } from '../api/types';
+import type { SolveResponse, ParseError, SolvedVariable, VariableInfo, SavedParametricStudy, UserUnitOverride, LookupTableInfo, IntegralTableData } from '../api/types';
 
 interface ModelState {
   // File state
@@ -26,6 +26,10 @@ interface ModelState {
 
   // Parametric studies (saved results)
   parametricStudies: SavedParametricStudy[];
+
+  // Integral (INTEGRAL/$IntegralTable) trajectory
+  integralTable: IntegralTableData | null;  // columnar table (live solve)
+  integralCSV: string;                       // raw CSV text (round-trip via ZIP)
 
   // Lookup tables
   lookupTables: LookupTableInfo[];
@@ -57,6 +61,8 @@ interface ModelState {
   addParametricStudy: (study: SavedParametricStudy) => void;
   removeParametricStudy: (id: string) => void;
   setParametricStudies: (studies: SavedParametricStudy[]) => void;
+  setIntegralTable: (table: IntegralTableData | null) => void;
+  setIntegralCSV: (csv: string) => void;
   setUserUnitOverrides: (overrides: UserUnitOverride[]) => void;
   setUserUnit: (variableName: string, units: string) => void;
   setLookupTables: (tables: LookupTableInfo[]) => void;
@@ -88,6 +94,8 @@ export const useModelStore = create<ModelState>((set) => ({
   userUnitOverrides: [],
   lookupTables: [],
   lookupTableCSVs: {},
+  integralTable: null,
+  integralCSV: '',
 
   consoleLines: [],
 
@@ -108,14 +116,16 @@ export const useModelStore = create<ModelState>((set) => ({
     set((state) => ({ consoleLines: [...state.consoleLines, line] })),
   clearConsole: () => set({ consoleLines: [] }),
   loadFile: (path, eescode, initials, sol, conf, modelName) =>
-    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', parametricStudies: [], parsedVariables: [], lookupTables: [], lookupTableCSVs: {} }),
+    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', parametricStudies: [], parsedVariables: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '' }),
   clearModel: () =>
-    set({ filePath: '', modelName: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], userUnitOverrides: [], lookupTables: [], lookupTableCSVs: {} }),
+    set({ filePath: '', modelName: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], userUnitOverrides: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '' }),
   addParametricStudy: (study) =>
     set((state) => ({ parametricStudies: [...state.parametricStudies, study] })),
   removeParametricStudy: (id) =>
     set((state) => ({ parametricStudies: state.parametricStudies.filter((s) => s.id !== id) })),
   setParametricStudies: (studies) => set({ parametricStudies: studies }),
+  setIntegralTable: (table) => set({ integralTable: table }),
+  setIntegralCSV: (csv) => set({ integralCSV: csv }),
   setUserUnitOverrides: (overrides) => set({ userUnitOverrides: overrides }),
   setUserUnit: (variableName, units) =>
     set((state) => {

@@ -24,6 +24,8 @@ export default function Toolbar() {
   const modelName = useModelStore((s) => s.modelName);
   const setModelName = useModelStore((s) => s.setModelName);
   const setLookupTables = useModelStore((s) => s.setLookupTables);
+  const setIntegralTable = useModelStore((s) => s.setIntegralTable);
+  const setIntegralCSV = useModelStore((s) => s.setIntegralCSV);
   const canGoBack = useModelStore((s) => s.canGoBack);
   const setSol = useModelStore((s) => s.setSol);
   const setInitials = useModelStore((s) => s.setInitials);
@@ -128,6 +130,21 @@ export default function Toolbar() {
                 api.getSol().then((s) => setSol(s.content)).catch(() => {});
                 // Refresh lookup table list (tables may have been created/loaded)
                 api.getTables().then((r) => setLookupTables(r.tables)).catch(() => {});
+                // Integral trajectory: prefer the columnar JSON embedded in the
+                // solve response; fall back to fetching the CSV (e.g. if the
+                // result was large and stripped, or for restored sessions).
+                if (result.integralTable) {
+                  setIntegralTable(result.integralTable);
+                  setIntegralCSV('');
+                } else {
+                  setIntegralTable(null);
+                  api.getIntegralCSV().then((csv) => setIntegralCSV(csv ?? '')).catch(() => {});
+                }
+                // Auto-switch to the Integral tab when a trajectory was produced,
+                // so the user immediately sees the result.
+                if (result.integralTable) {
+                  setBottomPanelOpen(true);
+                }
               }
               setSolving(false);
               es.close();
@@ -180,7 +197,7 @@ export default function Toolbar() {
         setSolving(false);
       }
     },
-    [eescode, initials, setSolving, clearConsole, addConsoleLine, setSolveResult, setSol, setBottomPanelOpen, setLookupTables]
+    [eescode, initials, setSolving, clearConsole, addConsoleLine, setSolveResult, setSol, setBottomPanelOpen, setLookupTables, setIntegralTable, setIntegralCSV]
   );
 
   // ================================================================
@@ -219,6 +236,11 @@ export default function Toolbar() {
           const confRes = await api.getConf();
           setCanGoBack(true);
           loadFile(file.name.replace(/\.zip$/, ''), ees.content, init.content, solRes.content, confRes.content, res.modelName);
+          // Restore integral trajectory: the columnar JSON is not round-tripped
+          // through the bundle, but the CSV is — fetch it so the Integral tab
+          // repopulates on bundle load.
+          api.getIntegralResult().then((t) => setIntegralTable(t?.integralTable ?? null)).catch(() => setIntegralTable(null));
+          api.getIntegralCSV().then((csv) => setIntegralCSV(csv ?? '')).catch(() => setIntegralCSV(''));
           addConsoleLine(`>>> Opened: ${res.files.join(', ')}`);
         }
       } catch (err: any) {
@@ -226,7 +248,7 @@ export default function Toolbar() {
       }
     };
     input.click();
-  }, [loadFile, addConsoleLine, setCanGoBack]);
+  }, [loadFile, addConsoleLine, setCanGoBack, setIntegralTable, setIntegralCSV]);
 
   // ================================================================
   // Save — download ZIP bundle
@@ -287,12 +309,15 @@ export default function Toolbar() {
           const result = await api.getSolveResult();
           setSolveResult(result);
         } catch { /* no result */ }
+        // Restore integral trajectory (CSV-backed; survives the model swap).
+        api.getIntegralResult().then((t) => setIntegralTable(t?.integralTable ?? null)).catch(() => setIntegralTable(null));
+        api.getIntegralCSV().then((csv) => setIntegralCSV(csv ?? '')).catch(() => setIntegralCSV(''));
         addConsoleLine('>>> Restored previous model');
       }
     } catch (err: any) {
       addConsoleLine(`>>> ERROR: ${err.message}`);
     }
-  }, [loadFile, addConsoleLine, setCanGoBack, setSolveResult]);
+  }, [loadFile, addConsoleLine, setCanGoBack, setSolveResult, setIntegralTable, setIntegralCSV]);
 
   // Open example by server path
   const openFileByPath = useCallback(async (path: string) => {

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 
 type RightTab = 'variables' | 'arrays' | 'config' | 'debug' | 'diagrams';
-type BottomTab = 'console' | 'sensitivity' | 'diagrams' | 'lookuptables';
+type BottomTab = 'console' | 'sensitivity' | 'diagrams' | 'lookuptables' | 'integral';
 
 interface UIState {
   theme: 'light' | 'dark';

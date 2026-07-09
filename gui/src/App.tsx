@@ -9,6 +9,7 @@ import ThermoDiagram from './components/ThermoDiagram';
 import ParametricStudy from './components/ParametricStudy';
 import Console from './components/Console';
 import LookupTableEditor from './components/LookupTableEditor';
+import IntegralTable from './components/IntegralTable';
 import SplitPane from './components/SplitPane';
 import { useModelStore } from './stores/modelStore';
 import { useUIStore } from './stores/uiStore';
@@ -158,12 +159,19 @@ export default function App() {
             >
               Lookup Tables
             </button>
+            <button
+              className={`tab-btn ${bottomTab === 'integral' ? 'active' : ''}`}
+              onClick={() => { if (bottomTab === 'integral' && bottomPanelOpen) toggleBottomPanel(); else setBottomTab('integral'); }}
+            >
+              Integral
+            </button>
           </div>
           {bottomPanelOpen && (
             <>
               {bottomTab === 'console' && <Console />}
               {bottomTab === 'sensitivity' && <ParametricStudy />}
               {bottomTab === 'lookuptables' && <LookupTableEditor />}
+              {bottomTab === 'integral' && <IntegralTable />}
             </>
           )}
         </div>

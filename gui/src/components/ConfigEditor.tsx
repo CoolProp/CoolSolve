@@ -403,6 +403,44 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
     custom: 'pipeline',
   },
   {
+    title: 'Integration',
+    fields: [
+      { key: 'integralMethod', label: 'Method', type: 'string', defaultVal: 'RK4',
+        description:
+          'Time-marching integrator for equation-based INTEGRAL / $IntegralTable models. '
+          + 'One of: EulerExplicit (order 1, cheap, conditionally stable), '
+          + 'EulerImplicit (order 1, A-stable, good for stiff systems), '
+          + 'RK4 (classic 4th-order Runge-Kutta; fixed step, recommended default), '
+          + 'RK45 (Dormand-Prince adaptive embedded pair; variable step, error-controlled). '
+          + 'Ignored for non-integral models.' },
+      { key: 'integralFixedStep', label: 'Fixed step', type: 'number', defaultVal: '0',
+        description:
+          'Fixed time step. 0 ⇒ derive the step from integralMaxSteps and the integration interval. '
+          + 'Used by EulerExplicit, EulerImplicit, RK4 (and by RK45 as the initial step guess).' },
+      { key: 'integralMaxSteps', label: 'Max steps', type: 'number', defaultVal: '1000',
+        description: 'Upper bound on the number of integration steps. The march aborts if exceeded.' },
+      { key: 'integralRelTol', label: 'Relative tol.', type: 'number', defaultVal: '1e-6',
+        description:
+          'RK45 local-error control (relative component). '
+          + 'The step is accepted when the weighted error ≤ relTol·|y| + absTol. Ignored for fixed-step methods.' },
+      { key: 'integralAbsTol', label: 'Absolute tol.', type: 'number', defaultVal: '1e-9',
+        description: 'RK45 absolute-error floor. Prevents over-tightening the step when |y| ≈ 0.' },
+      { key: 'integralMinStep', label: 'Min step', type: 'number', defaultVal: '0',
+        description: 'Minimum step size for RK45 (0 = auto, derived from the interval). ' },
+      { key: 'integralMaxStep', label: 'Max step', type: 'number', defaultVal: '0',
+        description: 'Maximum step size for RK45 (0 = auto = the full interval).' },
+      { key: 'integralRichardson', label: 'Richardson', type: 'boolean', defaultVal: 'false',
+        description:
+          'Richardson extrapolation (fixed-step methods only). Runs one h step + two h/2 steps and '
+          + 'combines them as (2^p·I_{h/2} − I_h)/(2^p − 1) where p is the method order, '
+          + 'reducing truncation error by 1–2 orders at ~3× cost.' },
+      { key: 'integralOutputInterval', label: 'Output interval', type: 'number', defaultVal: '0',
+        description:
+          'Default $IntegralTable output interval when the directive omits the ":n". '
+          + '0 = record every step. Does not change the integration — only which rows are tabulated.' },
+    ],
+  },
+  {
     title: 'CoolProp Integration',
     fields: [
       { key: 'coolpropBackend', label: 'Backend', type: 'string', defaultVal: 'HEOS',

@@ -2163,6 +2163,27 @@ int startServer(const ServerOptions& options) {
     });
 
     // ================================================================
+    // Get last integral trajectory as raw CSV text
+    //
+    // Returns the CSV text (first column = integration variable, then the
+    // $IntegralTable columns). This is the artefact that survives a ZIP
+    // bundle round-trip (re-upload only restores the CSV, not the columnar
+    // JSON), so the GUI tab parses it on bundle load. 404 when no integral
+    // trajectory has been produced or restored yet.
+    // ================================================================
+    svr.Get("/api/v1/integral/csv", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        std::lock_guard<std::mutex> lock(session.integralMutex);
+        if (session.lastIntegralCSV.empty()) {
+            res.status = 404;
+            json j = {{"error", "No integral CSV available"}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        res.set_content(session.lastIntegralCSV, "text/csv");
+    });
+
+    // ================================================================
     // Update guesses: copy .sol -> .initials
     // ================================================================
     svr.Post("/api/v1/update-guesses", [&](const httplib::Request& req, httplib::Response& res) {
