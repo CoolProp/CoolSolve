@@ -373,6 +373,21 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             // LaTeX report options
             else if (key == "enableLatexReport") options.enableLatexReport = parseBool(val);
             else if (key == "latexCompiler") options.latexCompiler = val;
+            // --- Equation-based integration ---
+            else if (key == "integralMethod") {
+                std::string lower = val;
+                std::transform(lower.begin(), lower.end(), lower.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                options.integralMethod = lower;  // validated by makeIntegratorOptions
+            }
+            else if (key == "integralFixedStep")      options.integralFixedStep = std::stod(val);
+            else if (key == "integralMaxSteps")       options.integralMaxSteps = std::stoi(val);
+            else if (key == "integralRelTol")         options.integralRelTol = std::stod(val);
+            else if (key == "integralAbsTol")         options.integralAbsTol = std::stod(val);
+            else if (key == "integralMinStep")        options.integralMinStep = std::stod(val);
+            else if (key == "integralMaxStep")        options.integralMaxStep = std::stod(val);
+            else if (key == "integralRichardson")     options.integralRichardson = parseBool(val);
+            else if (key == "integralOutputInterval") options.integralOutputInterval = std::stod(val);
         } catch (...) {
             // Ignore malformed values
         }

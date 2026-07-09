@@ -5,6 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include "coolsolve/solver.h"
+#include "coolsolve/integral/integrator.h"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -70,6 +71,41 @@ TEST_CASE("Tearing options are loaded from config", "[config][solver][tearing]")
     REQUIRE(options.tearingMaxIterations == 200);
     REQUIRE(options.tearingMinBlockSize == 2);
     REQUIRE(options.tearingInnerIterations == 8);
+}
+
+TEST_CASE("Integral options are loaded from config", "[config][solver][integral]") {
+    fs::path tmpDir = fs::temp_directory_path();
+    fs::path configPath = tmpDir / "coolsolve_test_integral.conf";
+    std::ofstream f(configPath);
+    REQUIRE(f.is_open());
+    f << "integralMethod = RK45\n";
+    f << "integralFixedStep = 0.0\n";
+    f << "integralMaxSteps = 5000\n";
+    f << "integralRelTol = 1e-8\n";
+    f << "integralAbsTol = 1e-10\n";
+    f << "integralMinStep = 1e-6\n";
+    f << "integralMaxStep = 0.5\n";
+    f << "integralRichardson = true\n";
+    f << "integralOutputInterval = 0.25\n";
+    f.close();
+    coolsolve::SolverOptions options;
+    bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    fs::remove(configPath);
+    REQUIRE(loaded);
+    REQUIRE(options.integralMethod == "rk45");
+    REQUIRE(options.integralFixedStep == 0.0);
+    REQUIRE(options.integralMaxSteps == 5000);
+    REQUIRE(options.integralRelTol == 1e-8);
+    REQUIRE(options.integralAbsTol == 1e-10);
+    REQUIRE(options.integralMinStep == 1e-6);
+    REQUIRE(options.integralMaxStep == 0.5);
+    REQUIRE(options.integralRichardson == true);
+    REQUIRE(options.integralOutputInterval == 0.25);
+
+    // The method string round-trips through parseIntegralMethod.
+    coolsolve::IntegratorOptions::Method m;
+    REQUIRE(coolsolve::parseIntegralMethod(options.integralMethod, m));
+    REQUIRE(m == coolsolve::IntegratorOptions::RK45);
 }
 
 TEST_CASE("CoolProp integration options are loaded from config", "[config][solver][coolprop]") {

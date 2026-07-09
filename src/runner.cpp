@@ -3,6 +3,7 @@
 #include "coolsolve/variable_inference.h"
 #include "coolsolve/evaluator.h" // For getProfilingStatsString
 #include "coolsolve/lookup_table.h"
+#include "coolsolve/integral/integral_problem.h"  // hasIntegral
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -13,6 +14,24 @@
 namespace fs = std::filesystem;
 
 namespace coolsolve {
+
+namespace {
+/// Build integrator options from the algebraic `SolverOptions`' `integral*`
+/// fields. `integralMethod` is parsed case-insensitively (falls back to RK4).
+IntegratorOptions makeIntegratorOptions(const SolverOptions& options) {
+    IntegratorOptions opt;
+    if (!parseIntegralMethod(options.integralMethod, opt.method))
+        opt.method = IntegratorOptions::RK4;
+    opt.fixedStep = options.integralFixedStep;
+    opt.maxSteps  = options.integralMaxSteps;
+    opt.relTol    = options.integralRelTol;
+    opt.absTol    = options.integralAbsTol;
+    opt.minStep   = options.integralMinStep;
+    opt.maxStep   = options.integralMaxStep;
+    opt.richardson= options.integralRichardson;
+    return opt;
+}
+}  // namespace
 
 CoolSolveRunner::CoolSolveRunner(const std::string& inputFile)
     : inputFile_(inputFile) {}
@@ -76,22 +95,25 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
         analysisResult_ = StructuralAnalyzer::analyze(*ir_);
         t2 = std::chrono::high_resolution_clock::now();
         timing_.analysis_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
-        if (!analysisResult_.success) return false;
     } catch (...) {
         return false;
     }
 
+    // Detect an equation-based dynamic (INTEGRAL) model. Such models are
+    // intentionally non-square algebraically (the integration variable and the
+    // states are free), so `analysisResult_` may report success=false; the
+    // IntegralSolver builds its own reduced (square) analysis internally.
+    integralModel_ = hasIntegral(*ir_);
+    if (!integralModel_ && !analysisResult_.success) return false;
+
     // 5. Solve
     try {
-        // Load initials if present BEFORE constructing solver
+        // Load initials if present BEFORE constructing the solver.
         fs::path initialsPath = fs::path(inputFile_);
         initialsPath.replace_extension(".initials");
         if (fs::exists(initialsPath)) {
             ir_->loadInitialsFromFile(initialsPath.string());
         }
-
-        t1 = std::chrono::high_resolution_clock::now();
-        Solver solver(*ir_, analysisResult_, options.coolpropConfig);
 
         // Load lookup tables: use a pre-supplied store (server mode) or
         // auto-load the companion CSV named <modelStem>.csv (CLI mode).
@@ -99,9 +121,30 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
         if (!lookupTableStorePreloaded_) {
             lookupTableStore_ = loadLookupTableForModel(inputFile_, &diagnostics_);
         }
-        solver.setLookupTableStore(&lookupTableStore_);
 
-        solveResult_ = solver.solve(options, enableTracing);
+        t1 = std::chrono::high_resolution_clock::now();
+
+        if (integralModel_) {
+            // ----- Dynamic (INTEGRAL) path -----
+            IntegralSolver isolver(parseResult_.program, *ir_, analysisResult_, options);
+            integralResult_ = isolver.solve(makeIntegratorOptions(options));
+            // Map the integral result onto solveResult_ so the existing
+            // debug/JSON/.sol downstream code keeps working unchanged.
+            solveResult_.success = integralResult_.success;
+            solveResult_.status = integralResult_.success ? SolverStatus::Success
+                                                          : SolverStatus::EvaluationError;
+            solveResult_.errorMessage = integralResult_.errorMessage;
+            solveResult_.detailedError = integralResult_.errorMessage;
+            solveResult_.variables = integralResult_.algebraicResult.variables;
+            solveResult_.stringVariables = integralResult_.algebraicResult.stringVariables;
+            solveResult_.totalIterations = integralResult_.totalSteps;
+        } else {
+            // ----- Algebraic path (unchanged) -----
+            Solver solver(*ir_, analysisResult_, options.coolpropConfig);
+            solver.setLookupTableStore(&lookupTableStore_);
+            solveResult_ = solver.solve(options, enableTracing);
+        }
+
         t2 = std::chrono::high_resolution_clock::now();
         timing_.solve_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
     } catch (...) {
@@ -512,6 +555,57 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         writeFile(debugDir / "solver_singular_diagnostics.md", diag.str());
         break;  // Only first failing block
     }
+
+    // 13b. Integral model summary (equation-based dynamic / INTEGRAL models).
+    if (integralModel_) {
+        std::ostringstream md;
+        md << "# Integral Solver Report\n\n";
+        const auto& ip = integralResult_.problem;
+        md << "## Problem\n\n";
+        md << "- Integration variable: `" << ip.integrationVar << "`\n";
+        md << "- Interval: [" << ip.lowerLimit << ", " << ip.upperLimit << "]";
+        if (ip.fixedStep > 0.0) md << " (fixed step " << ip.fixedStep << ")";
+        md << "\n- State variables (" << ip.states.size() << "): ";
+        for (size_t i = 0; i < ip.states.size(); ++i) {
+            if (i) md << ", ";
+            md << "`" << ip.states[i].name << "` (derivative `" << ip.states[i].integrandVar << "`)";
+        }
+        md << "\n- Algebraic variables: " << ip.algebraicVars.size() << "\n\n";
+
+        md << "## Solve\n\n";
+        md << "- Method: " << methodToString(makeIntegratorOptions(SolverOptions{}).method) << "\n";
+        md << "- Status: " << (integralResult_.success ? "SUCCESS" : "FAILED");
+        if (!integralResult_.errorMessage.empty())
+            md << " (" << integralResult_.errorMessage << ")";
+        md << "\n- Accepted steps: " << integralResult_.totalSteps << "\n";
+        md << "- Rejected steps: " << integralResult_.rejectedSteps << "\n";
+        if (!integralResult_.acceptedStepSizes.empty()) {
+            double mn = integralResult_.acceptedStepSizes.front();
+            double mx = mn, sum = 0.0;
+            for (double h : integralResult_.acceptedStepSizes) {
+                mn = std::min(mn, h); mx = std::max(mx, h); sum += h;
+            }
+            double avg = sum / static_cast<double>(integralResult_.acceptedStepSizes.size());
+            md << "- Step size — min/avg/max: " << mn << " / " << avg << " / " << mx << "\n";
+        }
+        md << "\n## Trajectory preview\n\n";
+        const auto& tbl = integralResult_.table;
+        md << "Columns: ";
+        for (size_t i = 0; i < tbl.columns().size(); ++i) {
+            if (i) md << ", ";
+            md << "`" << tbl.columns()[i] << "`";
+        }
+        md << "  (" << tbl.numRows() << " rows)\n\n";
+        md << "```\n" << tbl.toCSV() << "```\n";
+
+        if (!ip.diagnostics.empty()) {
+            md << "\n## Diagnostics\n\n";
+            for (const auto& d : ip.diagnostics) md << "- " << d << "\n";
+        }
+        writeFile(debugDir / "integral.md", md.str());
+        // Also drop a copy of the CSV alongside the debug folder.
+        integralResult_.table.writeCSV((debugDir / "integral_table.csv").string());
+    }
     
     // 14. Index
     std::ostringstream index;
@@ -544,6 +638,10 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     }
     if (solveResult_.success) {
         index << "| [solution_check.md](solution_check.md) | Post-solve equation verification |\n";
+    }
+    if (integralModel_) {
+        index << "| [integral.md](integral.md) | Integral solver report (dynamic/INTEGRAL models) |\n";
+        index << "| [integral_table.csv](integral_table.csv) | Full trajectory as CSV |\n";
     }
     
     // Write diagnostics.md with all CoolProp warnings (detailed log for debugging)

@@ -309,6 +309,23 @@ struct SolverOptions {
     // original vs reduced equations for every block where symbolic reduction
     // was applied.  Useful for inspecting what the reduction pass did.
     std::string debugReductionPath;
+
+    // --- Equation-based integration (INTEGRAL / $IntegralTable) ---
+    // All inert by default: a model without an INTEGRAL() call never reaches
+    // this code path (zero overhead). Stored as plain values so solver.h stays
+    // decoupled from the integrator module; the runner maps them into
+    // IntegratorOptions via makeIntegratorOptions().
+    //   integralMethod: "EulerExplicit" | "EulerImplicit" | "RK4" | "RK45"
+    std::string integralMethod   = "RK4";   // integration method (default: RK4)
+    double integralFixedStep     = 0.0;     // 0 => derive from integralMaxSteps
+    int    integralMaxSteps      = 1000;    // upper bound on number of steps
+    double integralRelTol        = 1e-6;    // RK45 relative error control
+    double integralAbsTol        = 1e-9;    // RK45 absolute error floor
+    double integralMinStep       = 0.0;     // RK45 minimum step (0 = auto)
+    double integralMaxStep       = 0.0;     // RK45 maximum step (0 = auto)
+    bool   integralRichardson    = false;   // Richardson extrapolation (fixed step)
+    double integralOutputInterval= 0.0;     // default output spacing when
+                                            //   $IntegralTable omits the ':n'
 };
 
 /**

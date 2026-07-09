@@ -84,6 +84,8 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"refrigeration2.eescode",    {"COP", 4.472}},
     {"refrigeration3.eescode",    {"COP", 3.481}},
     {"scroll_compressor.eescode", {"epsilon_s_cp", 0.2424}},
+    // Equation-based dynamic (INTEGRAL) model: y(4) = e^{-4} ~= 0.01832.
+    {"integral_decay.eescode",    {"y", 0.01832}},
     // Models from notsolving/ (fixed)
     {"internal_combustion_engine.eescode",      {"W_dot", 190817}},
     {"internal_combustion_engine_cpbar.eescode", {"M_dot_a", 0.004209}},

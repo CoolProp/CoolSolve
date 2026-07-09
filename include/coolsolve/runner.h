@@ -6,6 +6,7 @@
 #include "coolsolve/solver.h"
 #include "coolsolve/lookup_table.h"
 #include "coolsolve/diagnostic.h"
+#include "coolsolve/integral/integral_solver.h"
 #include <string>
 #include <memory>
 
@@ -38,6 +39,11 @@ public:
     const StructuralAnalysisResult& getAnalysisResult() const { return analysisResult_; }
     const SolveResult& getSolveResult() const { return solveResult_; }
     const PipelineTiming& getTiming() const { return timing_; }
+
+    /// True if the last run solved an equation-based dynamic (INTEGRAL) model.
+    bool hasIntegralResult() const { return integralResult_.success || integralModel_; }
+    /// Result of the last integral solve (trajectory table + diagnostics).
+    const IntegralSolveResult& getIntegralResult() const { return integralResult_; }
     
     bool isParseSuccess() const { return parseResult_.success; }
     bool isIRSuccess() const { return ir_ != nullptr; }
@@ -83,6 +89,8 @@ private:
     std::unique_ptr<IR> ir_;
     StructuralAnalysisResult analysisResult_;
     SolveResult solveResult_;
+    IntegralSolveResult integralResult_;
+    bool integralModel_ = false;   ///< set when the parsed model contains INTEGRAL()
     PipelineTiming timing_;
     mutable std::string latexReportContent_;  // cached LaTeX source
     DiagnosticCollector diagnostics_;

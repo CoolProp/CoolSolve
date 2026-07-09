@@ -413,6 +413,7 @@ private:
             "lookupcol", "lookupcol1", "lookupcellempty",
             "ntumethod", "effectivenessntu",
             "lmtd",
+            "integral", "integralvalue",  // equation-based dynamic solver
         };
         return fns;
     }
@@ -904,7 +905,67 @@ private:
         
         return nullptr;
     }
-    
+
+    // Parse the body of a `$IntegralTable` directive into an IntegralTableSpec.
+    // EES syntax:  $IntegralTable t:0.1  y  dydt  X[1..5]
+    //   - first token: integration variable, optionally followed by ":interval"
+    //   - remaining tokens: tabulated variables; "X[lo..hi]" ranges are expanded
+    //     to X[1], X[2], ... at parse time so the rest of the pipeline sees a
+    //     flat column list (additive — only active inside this directive parser).
+    static IntegralTableSpec parseIntegralTableContent(const std::string& content) {
+        IntegralTableSpec spec;
+        std::istringstream iss(content);
+        std::vector<std::string> tokens;
+        std::string tok;
+        while (iss >> tok) tokens.push_back(tok);
+        if (tokens.empty()) {
+            spec.errorMessage = "no integration variable specified";
+            return spec;
+        }
+        // First token: var[:interval].
+        const std::string& first = tokens[0];
+        size_t colon = first.find(':');
+        if (colon != std::string::npos) {
+            spec.integrationVar = first.substr(0, colon);
+            try {
+                spec.outputInterval = std::stod(first.substr(colon + 1));
+            } catch (...) {
+                spec.errorMessage = "invalid output interval '" + first.substr(colon + 1) + "'";
+                return spec;
+            }
+        } else {
+            spec.integrationVar = first;
+        }
+        spec.columns.push_back(spec.integrationVar);
+
+        // Remaining tokens: expand X[lo..hi] ranges, otherwise push as-is.
+        for (size_t i = 1; i < tokens.size(); ++i) {
+            const std::string& t = tokens[i];
+            size_t lb = t.find('[');
+            size_t rb = t.find(']');
+            size_t dots = t.find("..");
+            if (lb != std::string::npos && rb != std::string::npos && dots != std::string::npos
+                && lb < dots && dots < rb) {
+                std::string base = t.substr(0, lb);
+                std::string loStr = t.substr(lb + 1, dots - (lb + 1));
+                std::string hiStr = t.substr(dots + 2, rb - (dots + 2));
+                try {
+                    int lo = std::stoi(loStr);
+                    int hi = std::stoi(hiStr);
+                    if (lo > hi) std::swap(lo, hi);
+                    for (int k = lo; k <= hi; ++k)
+                        spec.columns.push_back(base + "[" + std::to_string(k) + "]");
+                    continue;
+                } catch (...) {
+                    // fall through and record the raw token
+                }
+            }
+            spec.columns.push_back(t);
+        }
+        spec.valid = true;
+        return spec;
+    }
+
     StmtPtr tryParseDirective(const std::string& line, int lineNum, DiagnosticCollector* diag = nullptr) {
         std::string trimmed = trim(line);
         
@@ -930,6 +991,7 @@ private:
                 "include", "export", "import",
                 "tabstops", "unitsystem", "opentable",
                 "arrays", "common", "integraltable",
+                "integralautostep", "integralstop",  // recognised-but-not-interpreted
                 "diagrams", "bookmark", "hiddenvariables",
                 "checkunits", "warnings", "complex",
                 "reference", "savelookup",
@@ -939,9 +1001,36 @@ private:
                            "Unknown directive '$" + name + "'",
                            "parser", lineNum, 1);
             }
+            // $IntegralAutoStep / $IntegralStop are recognised for compatibility
+            // but not interpreted — integration parameters live in coolsolve.conf
+            // (see docs/integral_table_plan.md §1.3, §5).
+            if (lower == "integralautostep" || lower == "integralstop") {
+                diag->push(DiagnosticSeverity::Warning, "P005",
+                           "'$" + name + "' is recognised but not interpreted; "
+                           "configure integration via the 'integral*' keys in coolsolve.conf.",
+                           "parser", lineNum, 1);
+            }
         }
-        
-        return makeDirective(name, content, lineNum);
+
+        StmtPtr stmt = makeDirective(name, content, lineNum);
+        // Capture the structured payload for $IntegralTable (variable list +
+        // optional output interval, with X[1..5] range expansion).
+        if (diag) {
+            std::string lower = name;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            if (lower == "integraltable") {
+                auto& d = stmt->as<Directive>();
+                d.integralTableSpec = parseIntegralTableContent(content);
+                d.hasIntegralTableSpec = true;
+                if (!d.integralTableSpec.valid) {
+                    diag->push(DiagnosticSeverity::Warning, "P006",
+                               "$IntegralTable: " + d.integralTableSpec.errorMessage,
+                               "parser", lineNum, 1);
+                }
+            }
+        }
+
+        return stmt;
     }
     
     bool tryParseFunctionHeader(const std::string& line, std::string& name, std::vector<std::string>& params) {

@@ -1,0 +1,6 @@
+"Exponential decay:  dy/dt = -y,  y(0) = 1  =>  y(t) = e^{-t}"
+
+y = 1 + integral(dydt, t, 0, 4)
+dydt = -y
+
+$IntegralTable t:0.5  y  dydt

@@ -3,3 +3,5 @@
 /misc/
 CoolSolve_Installer.exe
 *.csv#
+# Auto-generated integral trajectories (equation-based dynamic models)
+*-integral.csv

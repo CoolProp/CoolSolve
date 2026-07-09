@@ -14,6 +14,7 @@
 #include <string>
 #include <filesystem>
 #include <iomanip>
+#include <nlohmann/json.hpp>
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
@@ -304,8 +305,11 @@ int main(int argc, char* argv[]) {
         runner.generateDebugOutput(debugPath.string(), sourceCode.value_or(""));
     }
 
-    // Check for structural analysis errors (e.g., non-square system)
-    if (!analysisResult.success) {
+    // Check for structural analysis errors (e.g., non-square system).
+    // Equation-based dynamic (INTEGRAL) models are intentionally non-square
+    // (the integration variable and states are free), so the analysis may
+    // report success=false even though the IntegralSolver succeeded.
+    if (!analysisResult.success && !runner.hasIntegralResult()) {
         std::cerr << "\n=== Structural Analysis Error ===\n";
         std::cerr << analysisResult.errorMessage << "\n";
         printRunnerDiagnostics(runner);
@@ -412,8 +416,28 @@ int main(int argc, char* argv[]) {
             for (const auto& [name, val] : solveResult.stringVariables) {
                 solFile << name << " = '" << val << "'\n";
             }
+            // Append the IntegralTable trajectory for dynamic (INTEGRAL) models.
+            if (runner.hasIntegralResult()) {
+                const auto& ires = runner.getIntegralResult();
+                if (ires.success && ires.table.numRows() > 0) {
+                    solFile << "\n# IntegralTable\n";
+                    solFile << ires.table.toCSV();
+                }
+            }
         } else {
              std::cerr << "Warning: Could not write solution file: " << solPath << "\n";
+        }
+    }
+
+    // Write the IntegralTable CSV next to the model for dynamic (INTEGRAL) models.
+    if (solutionValid && runner.hasIntegralResult() && writeSolFile) {
+        const auto& ires = runner.getIntegralResult();
+        if (ires.success && ires.table.numRows() > 0) {
+            fs::path inputPath(inputFile);
+            fs::path csvPath = inputPath.parent_path() / (inputPath.stem().string() + "-integral.csv");
+            if (!ires.table.writeCSV(csvPath.string())) {
+                std::cerr << "Warning: Could not write integral table CSV: " << csvPath << "\n";
+            }
         }
     }
     
@@ -444,6 +468,25 @@ int main(int argc, char* argv[]) {
     std::string output;
     if (format == "json") {
         output = coolsolve::generateAnalysisJSON(ir, analysisResult);
+        // For dynamic (INTEGRAL) models, inject the trajectory table and the
+        // auto-written CSV name into the JSON output.
+        if (runner.hasIntegralResult()) {
+            const auto& ires = runner.getIntegralResult();
+            if (ires.success && ires.table.numRows() > 0) {
+                try {
+                    auto j = nlohmann::json::parse(output);
+                    nlohmann::json tbl;
+                    for (const auto& col : ires.table.columns())
+                        tbl[col] = ires.table.column(col);
+                    j["integralTable"] = tbl;
+                    fs::path inputPath(inputFile);
+                    j["integralCsv"] = inputPath.stem().string() + "-integral.csv";
+                    output = j.dump(2);
+                } catch (const std::exception&) {
+                    // Leave the base JSON untouched if injection fails.
+                }
+            }
+        }
     } else if (format == "latex") {
         output = ir.toLatex();
     } else {

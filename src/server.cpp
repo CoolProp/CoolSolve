@@ -194,6 +194,14 @@ struct Session {
     // Last parametric study result (JSON string, protected by mutex)
     std::mutex parametricMutex;
     std::string lastParametricResult;
+
+    // Last integral (INTEGRAL/$IntegralTable) trajectory: columnar JSON + CSV
+    // text, produced by the same solve that generates lastResult. Protected by
+    // integralMutex. Empty when the model is not a dynamic (INTEGRAL) model.
+    std::mutex integralMutex;
+    std::string lastIntegralResult;   // columnar JSON (integralTable object)
+    std::string lastIntegralCSV;      // full trajectory CSV text
+    std::string lastIntegralCsvName;  // e.g. "model-integral.csv"
     
     // LaTeX report content (generated after solve when enableLatexReport is true)
     std::string latexReportContent;
@@ -576,6 +584,37 @@ static json solveResultToJSON(const SolveResult& result, const CoolSolveRunner::
     return j;
 }
 
+/**
+ * @brief Build the JSON payload for an integral (INTEGRAL/$IntegralTable) solve.
+ *
+ * Returns a columnar `integralTable` object plus metadata. Empty if the model
+ * had no integral table or the solve produced no rows.
+ */
+static json integralResultToJSON(const CoolSolveRunner& runner, const std::string& modelName) {
+    json j;
+    if (!runner.hasIntegralResult()) return j;
+    const auto& ires = runner.getIntegralResult();
+    if (ires.table.numRows() == 0) return j;
+
+    json tbl;
+    tbl["integrationVar"] = ires.table.integrationVar();
+    json cols = json::array();
+    json columnsObj;
+    for (const auto& col : ires.table.columns()) {
+        cols.push_back(col);
+        columnsObj[col] = ires.table.column(col);
+    }
+    tbl["columns"] = cols;
+    tbl["data"] = columnsObj;
+    tbl["numRows"] = ires.table.numRows();
+    tbl["csvName"] = (modelName.empty() ? std::string("model") : modelName) + "-integral.csv";
+    tbl["totalSteps"] = ires.totalSteps;
+    tbl["rejectedSteps"] = ires.rejectedSteps;
+    j["integralTable"] = tbl;
+    j["integralCsvName"] = tbl["csvName"];
+    return j;
+}
+
 // ============================================================================
 // Open browser helper (cross-platform)
 // ============================================================================
@@ -781,7 +820,13 @@ int startServer(const ServerOptions& options) {
                 session.hasResult = false;
                 session.lastResult = SolveResult{};
             }
-            
+            {
+                std::lock_guard<std::mutex> lock(session.integralMutex);
+                session.lastIntegralResult.clear();
+                session.lastIntegralCSV.clear();
+                session.lastIntegralCsvName.clear();
+            }
+
             // Auto-discover companion files
             discoverCompanionFiles(session);
             
@@ -839,7 +884,13 @@ int startServer(const ServerOptions& options) {
             session.lastResult = SolveResult{};
             session.lastTiming = CoolSolveRunner::PipelineTiming{};
         }
-        
+        {
+            std::lock_guard<std::mutex> lock(session.integralMutex);
+            session.lastIntegralResult.clear();
+            session.lastIntegralCSV.clear();
+            session.lastIntegralCsvName.clear();
+        }
+
         // Clear inference data
         session.inferredVariables.clear();
         session.modelFluids.clear();
@@ -1085,7 +1136,15 @@ int startServer(const ServerOptions& options) {
                 session.hasResult = false;
                 session.lastResult = SolveResult{};
             }
-            
+            {
+                // A new solve supersedes any previous integral trajectory
+                // (also clears it when the new model is not an integral model).
+                std::lock_guard<std::mutex> lock(session.integralMutex);
+                session.lastIntegralResult.clear();
+                session.lastIntegralCSV.clear();
+                session.lastIntegralCsvName.clear();
+            }
+
             // Write temp files for the runner (session-isolated temp dir)
             auto tmpDir = session.tempDir;
             fs::create_directories(tmpDir);
@@ -1240,6 +1299,31 @@ int startServer(const ServerOptions& options) {
                         session.lastDiagnostics = runner.getDiagnostics();
                         session.hasResult = true;
                     }
+
+                    // Store the integral (INTEGRAL/$IntegralTable) trajectory, if any,
+                    // and auto-write the CSV into the session working directory.
+                    {
+                        std::lock_guard<std::mutex> lock(session.integralMutex);
+                        session.lastIntegralResult.clear();
+                        session.lastIntegralCSV.clear();
+                        session.lastIntegralCsvName.clear();
+                        if (runner.hasIntegralResult()) {
+                            const auto& ires = runner.getIntegralResult();
+                            if (ires.success && ires.table.numRows() > 0) {
+                                json ij = integralResultToJSON(runner, session.modelName);
+                                session.lastIntegralResult = ij.dump();
+                                session.lastIntegralCSV = ires.table.toCSV();
+                                session.lastIntegralCsvName = ij["integralTable"]["csvName"];
+                                // Persist the CSV next to the working .eescode copy.
+                                std::string stem = session.modelName.empty()
+                                                       ? std::string("model") : session.modelName;
+                                try {
+                                    std::ofstream csvf(tmpDir / (stem + "-integral.csv"));
+                                    if (csvf.is_open()) csvf << session.lastIntegralCSV;
+                                } catch (...) { /* best-effort */ }
+                            }
+                        }
+                    }
                     
                     // Extract inference data from IR for thermodynamic diagrams
                     if (runner.isIRSuccess()) {
@@ -1357,7 +1441,20 @@ int startServer(const ServerOptions& options) {
                         }
                     }
                     resultJson["latexReportAvailable"] = session.latexReportAvailable;
-                    
+
+                    // Embed the integral trajectory (if any) in the solve result
+                    // so the GUI receives it with every solve — no separate fetch.
+                    {
+                        std::lock_guard<std::mutex> lock(session.integralMutex);
+                        if (!session.lastIntegralResult.empty()) {
+                            try {
+                                json ij = json::parse(session.lastIntegralResult);
+                                resultJson["integralTable"] = ij["integralTable"];
+                                resultJson["integralCsvName"] = ij["integralCsvName"];
+                            } catch (...) { /* ignore malformed */ }
+                        }
+                    }
+
                     // Send final event with embedded result
                     json finalEvt;
                     finalEvt["type"] = solutionValid ? "done" : "error";
@@ -1441,6 +1538,17 @@ int startServer(const ServerOptions& options) {
             return;
         }
         json j = solveResultToJSON(session.lastResult, session.lastTiming, &session.lastDiagnostics);
+        // Embed the integral trajectory if this solve produced one.
+        {
+            std::lock_guard<std::mutex> ilock(session.integralMutex);
+            if (!session.lastIntegralResult.empty()) {
+                try {
+                    json ij = json::parse(session.lastIntegralResult);
+                    j["integralTable"] = ij["integralTable"];
+                    j["integralCsvName"] = ij["integralCsvName"];
+                } catch (...) { /* ignore */ }
+            }
+        }
         res.set_content(j.dump(), "application/json");
     });
     
@@ -2038,7 +2146,22 @@ int startServer(const ServerOptions& options) {
         }
         res.set_content(session.lastParametricResult, "application/json");
     });
-    
+
+    // ================================================================
+    // Get last integral (INTEGRAL/$IntegralTable) solve result
+    // ================================================================
+    svr.Get("/api/v1/integral/result", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        std::lock_guard<std::mutex> lock(session.integralMutex);
+        if (session.lastIntegralResult.empty()) {
+            res.status = 404;
+            json j = {{"error", "No integral result available"}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+        res.set_content(session.lastIntegralResult, "application/json");
+    });
+
     // ================================================================
     // Update guesses: copy .sol -> .initials
     // ================================================================
@@ -2467,6 +2590,16 @@ int startServer(const ServerOptions& options) {
                 files.push_back({"parametric_studies.json", session.lastParametricResult});
             }
         }
+
+        // Include the integral trajectory CSV if present
+        {
+            std::lock_guard<std::mutex> lock(session.integralMutex);
+            if (!session.lastIntegralCSV.empty()) {
+                std::string name = session.lastIntegralCsvName.empty()
+                                       ? stem + "-integral.csv" : session.lastIntegralCsvName;
+                files.push_back({name, session.lastIntegralCSV});
+            }
+        }
         
         if (files.empty()) {
             res.status = 400;
@@ -2539,12 +2672,19 @@ int startServer(const ServerOptions& options) {
             fs::remove_all(session.debugDir, ec);
             session.debugDir.clear();
         }
-        {
-            std::lock_guard<std::mutex> lock(session.resultMutex);
-            session.hasResult = false;
-            session.lastResult = SolveResult{};
-        }
-        
+            {
+                std::lock_guard<std::mutex> lock(session.resultMutex);
+                session.hasResult = false;
+                session.lastResult = SolveResult{};
+            }
+            {
+                // A new solve supersedes any previous integral trajectory.
+                std::lock_guard<std::mutex> lock(session.integralMutex);
+                session.lastIntegralResult.clear();
+                session.lastIntegralCSV.clear();
+                session.lastIntegralCsvName.clear();
+            }
+            
         // Extract files from ZIP
         json fileList = json::array();
         bool hasDebug = false;
@@ -2576,6 +2716,13 @@ int startServer(const ServerOptions& options) {
             } else if (endsWith(zname, "_report.tex")) {
                 session.latexReportContent = zcontent;
                 session.latexReportAvailable = true;
+                fileList.push_back(zname);
+            } else if (endsWith(zname, "-integral.csv")) {
+                // Integral trajectory CSV: restore into the integral session
+                // state (must precede the generic CSV/lookup-table branch).
+                std::lock_guard<std::mutex> lock(session.integralMutex);
+                session.lastIntegralCSV = zcontent;
+                session.lastIntegralCsvName = zname;
                 fileList.push_back(zname);
             } else if (endsWith(zname, ".csv") && !startsWith(zname, "debug_output/")) {
                 // Lookup table CSV: derive table name from filename stem

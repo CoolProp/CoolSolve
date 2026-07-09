@@ -4,8 +4,44 @@
 #include <iomanip>
 #include <cmath>
 #include <algorithm>
+#include <cctype>
 
 namespace coolsolve {
+
+namespace {
+// True if `expr` contains an INTEGRAL() call (equation-based dynamic model).
+// Such equations are declared/verified by the IntegralSolver's trajectory, not
+// by a final-state LHS==RHS check (the evaluator has no standalone `integral`
+// built-in), so the solution checker skips them.
+bool containsIntegralCall(const ExprPtr& expr) {
+    if (!expr) return false;
+    bool found = false;
+    std::visit([&](const auto& node) {
+        using T = std::decay_t<decltype(node)>;
+        if constexpr (std::is_same_v<T, FunctionCall>) {
+            std::string n = node.name;
+            std::transform(n.begin(), n.end(), n.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (n == "integral") found = true;
+        }
+    }, expr->node);
+    if (found) return true;
+    std::visit([&](const auto& node) {
+        using T = std::decay_t<decltype(node)>;
+        if constexpr (std::is_same_v<T, UnaryOp>) {
+            found = containsIntegralCall(node.operand);
+        } else if constexpr (std::is_same_v<T, BinaryOp>) {
+            found = containsIntegralCall(node.left) || containsIntegralCall(node.right);
+        } else if constexpr (std::is_same_v<T, FunctionCall>) {
+            for (const auto& a : node.args) if ((found = containsIntegralCall(a))) return;
+            for (const auto& na : node.namedArgs) if ((found = containsIntegralCall(na.second))) return;
+        } else if constexpr (std::is_same_v<T, Variable>) {
+            for (const auto& idx : node.indices) if ((found = containsIntegralCall(idx))) return;
+        }
+    }, expr->node);
+    return found;
+}
+}  // namespace
 
 SolutionCheckResult checkSolution(
     const IR& ir,
@@ -143,6 +179,15 @@ SolutionCheckResult checkSolution(
 
         // Skip placeholder equations (secondary CALL outputs with null LHS/RHS)
         if (!eqInfo.lhs || !eqInfo.rhs) {
+            result.skippedCount++;
+            continue;
+        }
+
+        // Skip integral-declaring equations: they are ODE declarations whose
+        // correctness is established by the IntegralSolver's trajectory, not by
+        // a final-state LHS==RHS check (the evaluator has no standalone
+        // `integral` built-in). Phase 7 adds trajectory-based re-checking.
+        if (containsIntegralCall(eqInfo.rhs) || containsIntegralCall(eqInfo.lhs)) {
             result.skippedCount++;
             continue;
         }

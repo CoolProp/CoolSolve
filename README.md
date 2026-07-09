@@ -304,6 +304,8 @@ The debug folder contains:
 | `incidence.md` | Variable-equation incidence matrix |
 | `evaluator.md` | Evaluator structure and block evaluation tests |
 | `symbolic_reduction.md` | Symbolic reduction debug report (when `enableSymbolicReduction` is on) |
+| `integral.md` | Integral solver report (dynamic/`INTEGRAL` models) |
+| `integral_table.csv` | Full trajectory CSV (dynamic/`INTEGRAL` models) |
 | `solution_check.md` | Post-solve equation verification (LHS vs RHS for every equation) |
 | `original.eescode` | Copy of the original input |
 

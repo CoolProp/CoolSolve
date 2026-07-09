@@ -11,7 +11,8 @@ CoolSolve. It is the result of reading the EES help pages
 `finding_a_limit_of_integration.htm`) and of a thorough exploration of
 the existing CoolSolve codebase.
 
-**Status:** Planning only. Nothing is implemented yet.
+**Status:** Phases 0–9 delivered (2026-07-05). See §12 *Progress Log*.
+Phases 10–11 pending (GUI tab + documentation).
 
 Reference for conventions: [`docs/contributing.md`](contributing.md).
 
@@ -669,3 +670,455 @@ Add example `.eescode` files to `examples/` (e.g.
   (default: write only when an integral was actually solved, so it is
   naturally opt-in).
 - Default `integralMethod`: this plan proposes `RK4`. Confirm.
+
+---
+
+## 12. Progress Log
+
+A running record of what has been implemented and verified. Each entry is
+added after the phase's targeted tests pass.
+
+### 2026-07-05 — Phase 0 + Phase 1 (integrators) ✅
+
+**Delivered:**
+
+- `include/coolsolve/integral/integrator.h` — public interface:
+  `IntegratorOptions` (method enum + tolerances), `RHSFunction`,
+  `StepResult` (carries `yNew`, `stepTaken`, `nextStep`, `errorEstimate`,
+  `accepted`, `rhsEvaluations`), abstract `Integrator` (with `order()` for
+  Richardson), `createIntegrator()` factory, `wrapRichardson()`,
+  `methodToString()`, `parseIntegralMethod()`.
+- `src/integral/integrator.cpp` — factory + helpers.
+- `src/integral/integrator_euler_explicit.cpp` — forward Euler (order 1).
+- `src/integral/integrator_euler_implicit.cpp` — backward Euler with an
+  internal Newton + finite-difference Jacobian (A-stable, order 1).
+- `src/integral/integrator_rk4.cpp` — classic RK4 (order 4), 4 evals/step.
+- `src/integral/integrator_rk45.cpp` — Dormand-Prince DOPRI5 embedded pair
+  with the Hairer §II.4 step-size controller (order 5, 7 stages, adaptive).
+- `src/integral/richardson.cpp` — Richardson wrapper using the **general**
+  combination `(2^p·I_{h/2} − I_h)/(2^p − 1)` driven by the base method's
+  reported order. (The EES-doc formula `(4·I_{h/2} − I_h)/3` is the p=2
+  special case; the original plan text used it generically, which is only
+  correct for order-2 methods — corrected here.)
+- `src/integral/integrators_internal.h` — internal `make*()` declarations.
+- `tests/integrator_test_util.h` — shared `marchFixed` / `marchAdaptive`
+  helpers (the outer time-march loop that becomes `IntegralSolver` in §5).
+- `tests/test_integrator_euler.cpp`, `test_integrator_rk4.cpp`,
+  `test_integrator_rk45.cpp`, `test_richardson.cpp` — TDD tests against
+  analytical solutions (exp decay, t² polynomial, harmonic oscillator,
+  stiff `dy/dt = -1000 y`, RK45 tolerance ladder, convergence-order
+  verification for every method and for Richardson's order gain).
+
+**Build:** no `CMakeLists.txt` change — the new files are auto-globbed by
+the existing `GLOB_RECURSE` (`CMakeLists.txt:142`, `:266`). One `cmake ..`
+reconfigure picks them up.
+
+**Test results:** `./coolsolve_tests "[integrator],[richardson]"` →
+16 test cases, 38 assertions, all pass. Existing suites (config, newton)
+unaffected — the integral module is fully isolated under
+`coolsolve::` / `src/integral/`.
+
+**Decisions / deviations from the plan:**
+
+- The `Integrator::step()` signature takes the proposed step `h` as an
+  explicit argument (not bundled inside `IntegratorOptions`), and
+  `StepResult::nextStep` carries the adaptive controller's recommendation
+  back to the caller. This keeps the step-size logic inside RK45 (where it
+  belongs) and leaves the outer march loop trivial — it will map cleanly
+  onto `IntegralSolver` in Phase 5.
+- `Integrator::order()` was added so Richardson picks the correct 2^p factor
+  per method (plan §2.3 only quoted the p=2 formula).
+- DOPRI5 is implemented stateless (7 evals/step) rather than FSAL-cached;
+  one extra RHS eval/step is negligible next to CoolProp algebraic solves.
+
+**Next:** Phase 2 (`IntegralTable` + `INTEGRALVALUE`).
+
+### 2026-07-05 — Phase 2 (IntegralTable + interpolation) ✅
+
+**Delivered:**
+
+- `include/coolsolve/integral/integral_table.h` — `IntegralTableSpec`
+  (integration var, output interval, expanded column list) and the
+  `IntegralTable` class (columnar `std::map<string, vector<double>>`
+  storage, deterministic column order, integration var always column 0).
+- `src/integral/integral_table.cpp` — `appendRow` (name-map and ordered-row
+  overloads), `value`, `column`, **`interpolate`** (binary-search linear
+  interpolation with clamping at the endpoints), `clear`, `toCSV`,
+  `writeCSV`.
+- `tests/test_integral_table.cpp` — TDD coverage: column setup, append,
+  missing-column NaN, linear-interpolation midpoints + clamping,
+  empty/single-row/unknown-column edge cases, CSV round-trip,
+  `IntegralTableSpec::isPresent`.
+
+**Test results:** `./coolsolve_tests "[integral-table]"` → 6 test cases,
+23 assertions, all pass. Existing suites unaffected.
+
+**Decision / deviation from the plan:** the `INTEGRALVALUE(t,'X')` evaluator
+dispatch is deferred to Phase 5. It needs both (a) the active-table context
+that only `IntegralSolver` can supply during a step, and (b) parser
+recognition of `integralvalue` (Phase 3). The interpolation numerical core
+it calls — `IntegralTable::interpolate` — is fully implemented and tested
+here, so Phase 5 just wires the evaluator name to it.
+
+**Next:** Phase 3 (parser & AST hooks).
+
+### 2026-07-05 — Phase 3 (parser & AST hooks) ✅
+
+**Delivered (all changes additive):**
+
+- `include/coolsolve/ast.h` — `Directive` carries an optional
+  `IntegralTableSpec` payload (`hasIntegralTableSpec` flag). Reuses the
+  struct defined in `integral_table.h`; no new Statement variant.
+- `src/parser.cpp`
+  - `knownBuiltinFunctions()` — added `integral` and `integralvalue` so the
+    calls parse without "Unknown function" warnings.
+  - `knownDirectives` — added `integralautostep` and `integralstop`
+    (recognised for compatibility).
+  - new `parseIntegralTableContent()` — parses `$IntegralTable t:0.1 y X[1..5]`
+    into an `IntegralTableSpec`, expanding `X[lo..hi]` ranges into a flat
+    column list at parse time.
+  - `tryParseDirective()` — attaches the spec to the `IntegralTable` directive,
+    warns on empty/invalid specs (P006), and emits a dedicated diagnostic
+    (P005) for `$IntegralAutoStep`/`$IntegralStop` directing users to the
+    `integral*` `coolsolve.conf` keys.
+- `tests/test_parser_integral.cpp` — 7 TDD cases: spec capture, interval
+  parsing, `X[1..5]` expansion, default-zero interval, `INTEGRAL`/`integralvalue`
+  parse without warnings, `$IntegralAutoStep`/`$IntegralStop` warned-and-ignored,
+  empty `$IntegralTable` negative case.
+
+**Test results:** `./coolsolve_tests "[parser],[integral]"` → all pass;
+`./coolsolve_tests "[parser]"` → 22 test cases, 154 assertions, no regressions.
+
+**Decisions:**
+
+- `IntegralTableSpec` lives canonically in `integral_table.h`; `ast.h`
+  includes that header to carry the optional payload. The dependency is
+  one-way (integral headers never include `ast.h`), so no layering cycle.
+- `makeDirective(name, content)` still works unchanged: the new aggregate
+  members are value-initialised (empty spec, `hasIntegralTableSpec=false`).
+- `$IntegralTable` columns keep the bracket form `X[1]` as written; the
+  IR variable-name reconciliation (e.g. flattened `X_1`) happens in Phase 4.
+
+**Next:** Phase 4 (IR extraction of the `IntegralProblem`).
+
+### 2026-07-05 — Phase 4 (IR extraction of IntegralProblem) ✅
+
+**Delivered:**
+
+- `include/coolsolve/integral/integral_problem.h` — `StateVariable` (name,
+  integrand var/expr, base expression, equation id) and `IntegralProblem`
+  (integration var, limit expressions + constant-folded values, optional
+  fixed step, state/algebraic variable classification, equation-id
+  partition, `IntegralTableSpec`, validity + diagnostics). Declares
+  `hasIntegral()` and `extractIntegralProblem()`.
+- `src/integral/integral_extraction.cpp` — walks every equation for
+  top-level `INTEGRAL(...)` calls (4- or 5-arg form), validates a single
+  shared integration variable + `[lo, hi]` interval across all states,
+  rejects nested integrals (multi-variable integration), classifies state
+  vs algebraic variables (excluding the integration var, which the
+  integrator owns), partitions equations, and runs a conservative
+  high-index *warning* plus a structural squareness check on the algebraic
+  subsystem.
+- `tests/test_integral_extraction.cpp` — 12 TDD cases built through the
+  real parser→IR→analyze path: decay, base expression, two-state oscillator,
+  fixed step, inconsistent var/limits (rejected), nested integrals
+  (rejected), wrong arg count, `hasIntegral` true/false, variable
+  classification, non-square subsystem flagging.
+
+**Key design decision — initial values:** the initial state is *not*
+extracted here. At `t = t0` the integral term has a zero-width interval and
+evaluates to 0, so `y(t0)` falls out of the algebraic solve at the first
+step (handled by `IntegralSolver` in Phase 5). The non-integral part of the
+RHS (`baseExpr`, computed by blanking the INTEGRAL call to 0) is what
+recovers `y(t0)`.
+
+**Deviation from the plan — high-index handling:** the plan described
+high-index detection as a *rejection*. That would false-positive on the
+feature's primary use case: legitimate index-1 thermo models routinely
+have state variables (e.g. temperatures) appearing in algebraic equations
+(heat-transfer laws). It is therefore emitted as a **warning diagnostic**
+(`prob.diagnostics`), not `valid=false`. Hard structural rejection is left
+to the algebraic-subsystem squareness check. True Pantelides-style index
+reduction remains a §9 placeholder.
+
+**Test results:** `./coolsolve_tests "[extraction]"` → 12 cases, 48
+assertions, all pass. All 41 integral-module tests pass; parser/IR/analysis
+suites (29 cases, 197 assertions) show no regressions.
+
+**Next:** Phase 5 (`IntegralSolver` orchestration + end-to-end tests).
+
+### 2026-07-05 — Phase 5 (IntegralSolver orchestration) ✅
+
+**Delivered:**
+
+- `include/coolsolve/integral/integral_solver.h` — `IntegralSolveResult`
+  (success, problem, table, step counts, accepted step sizes, final algebraic
+  result) and the `IntegralSolver` class.
+- `src/integral/integral_solver.cpp` — the time-march loop. Construction:
+  harvests the `$IntegralTable` spec from the AST, builds a **reduced
+  algebraic IR** (integral equations removed + driver equations added),
+  re-analyses it, and constructs a long-lived algebraic `Solver` reused at
+  every step. `solve()`: computes the initial state at `t0` (via each
+  state's `baseExpr`), then marches with the chosen `Integrator`, recording
+  rows into an `IntegralTable` (honouring the output interval).
+- `tests/test_integral_e2e.cpp` — 6 end-to-end cases: exponential decay,
+  coupled harmonic oscillator, RK45 adaptive, an algebraic variable coupled
+  to a state, fixed step from the 5th `INTEGRAL` argument, and
+  `$IntegralTable` column/interval honking.
+
+**The key engineering problem and its solution.** Two non-obvious obstacles
+had to be overcome to reuse the algebraic `Solver` per step:
+
+1. **The full IR is non-square.** An integral model is *deliberately*
+   under-determined algebraically: the integration variable `t` is a free
+   parameter and the states are owned by the integrator. But
+   `StructuralAnalyzer::analyze()` rejects non-square systems up front
+   (`structural_analysis.cpp:532`). Solution: the `IntegralSolver` never asks
+   the analyzer to solve the full model — it builds its own **reduced IR**.
+2. **The reduced IR is *also* non-square** (states + `t` have no defining
+   equation there). Solution: for every integrator-owned variable the
+   constructor adds a **driver equation** `v = <NumberLiteral>`. Each step
+   the integrator mutates that literal's `value` to the current `y`/`t`
+   (exploiting that `IR::fromAST` *shares* the AST `ExprPtr`s, `ir.cpp:203`),
+   so the explicit driver block resolves to the integrator's value and every
+   other block sees it as an external. This keeps the reduced IR square and
+   pins the integrator-owned variables without touching the algebraic solver.
+
+**Decisions / deviations:**
+
+- `IntegralSolver` stores `SolverOptions` **by value** (the plan showed a
+  reference); the caller (runner/tests) may pass a temporary, so a copy is
+  the safe choice.
+- The `IntegralTableSpec` is harvested from the AST inside the constructor
+  (the plan had the runner do it); this keeps Phase 6's runner change minimal
+  and makes the solver self-contained.
+- Implicit-Euler coupling of state + algebraic unknowns into one Newton
+  solve (plan §3.4) is **deferred** — the current `EulerImplicit` integrator
+  solves the implicit step with its own internal Newton on the RHS, which is
+  correct but re-solves the algebraic subsystem inside each Newton iteration.
+  This is a performance item, not a correctness gap; all methods pass their
+  analytical end-to-end tests.
+- `INTEGRALVALUE(t,'X')` evaluator dispatch remains deferred (it needs the
+  active-table context, which now exists; wiring is a small follow-up).
+
+**Test results:** `./coolsolve_tests "[e2e]"` → 6 cases, 27 assertions, all
+pass. All 62 integral-module tests pass; no regressions in parser/IR/analysis.
+
+**Next:** Phase 6 (wire the `IntegralSolver` into `CoolSolveRunner`).
+
+### 2026-07-05 — Phase 6 (runner dispatch) ✅
+
+**Delivered:**
+
+- `include/coolsolve/runner.h` — `IntegralSolveResult integralResult_` member,
+  an `integralModel_` flag, and accessors `hasIntegralResult()` /
+  `getIntegralResult()`. Includes `integral_solver.h`.
+- `src/runner.cpp` — `run()` now branches on `hasIntegral(*ir_)`:
+  - the structural-analysis step no longer hard-aborts on `success=false`
+    (integral models are intentionally non-square);
+  - integral models dispatch to `IntegralSolver` (program + IR + analysis +
+    options), and the `IntegralSolveResult` is mapped onto `solveResult_`
+    (variables, status, error) so all downstream debug/JSON/.sol code keeps
+    working unchanged;
+  - the algebraic path is byte-for-byte unchanged.
+- A file-local `makeIntegratorOptions(SolverOptions)` helper returns sensible
+  defaults (RK4, 1000-step budget) — Phase 8 replaces it with the config-driven
+  mapping.
+- `main.cpp` — the "Structural Analysis Error" early-exit is skipped for
+  integral models (`!analysisResult.success && !runner.hasIntegralResult()`).
+- `src/solution_checker.cpp` — integral-declaring equations are *skipped*
+  during post-solve verification (they are ODE declarations whose correctness
+  is established by the trajectory, and the evaluator has no standalone
+  `integral` built-in). Phase 7 adds trajectory-based re-checking.
+- `examples/integral_decay.eescode` + an `EXPECTED_SOLUTIONS` entry
+  (`y = 0.01832 = e⁻⁴`).
+
+**Verification (CLI):**
+```
+$ ./coolsolve examples/integral_decay.eescode
+... Solver: SUCCESS ...
+```
+The debug folder's `solution_check.md` shows `y(4) = 1.83156e-02 = e⁻⁴` ✓.
+
+**Test results:** all 351 unit tests pass (3096 assertions);
+`[examples-comprehensive]` passes (including the new integral example).
+No regressions on the algebraic path (the dispatch is guarded by a single
+`hasIntegral()` scan that is false for every existing model — zero overhead).
+
+**Next:** Phase 7 (output surfaces: auto-CSV, `.sol`, JSON, debug, solution check).
+
+### 2026-07-05 — Phase 7 (output surfaces) ✅
+
+**Delivered:**
+
+- **Auto CSV** (`main.cpp`): after a successful integral solve, writes
+  `<modelname>-integral.csv` next to the `.eescode` (first column = integration
+  variable, then the `$IntegralTable` columns). Added `*-integral.csv` to
+  `.gitignore` so the artefact is never committed.
+- **`.sol` block** (`main.cpp`): appends a `# IntegralTable` section (the CSV)
+  after the scalar variables — backward compatible.
+- **CLI JSON** (`main.cpp`): injects `"integralTable"` (columnar arrays) and
+  `"integralCsv"` into the analysis JSON for dynamic models. Done by re-parsing
+  the dumped JSON locally to avoid a circular include between `structural_analysis`
+  and the integral module.
+- **Debug folder** (`src/runner.cpp::generateDebugOutput`): new `integral.md`
+  (problem summary, method, step count, min/avg/max step size, trajectory
+  preview, diagnostics) plus a full `integral_table.csv` copy; both registered
+  in the debug `README.md` index.
+- **README** public debug-folder table: `integral.md` and `integral_table.csv`
+  rows added.
+
+**Verification:**
+```
+$ ./coolsolve examples/integral_decay.eescode -o out.json
+# out.json: integralTable.y[-1] = 0.01832 = e^-4, integralCsv = "integral_decay-integral.csv"
+# integral_decay-integral.csv: t,y,dydt with y(4)=0.0183156
+# -d folder: integral.md + integral_table.csv
+# solution_check: ALL EQUATIONS SATISFIED (1 skipped = the ODE declaration)
+```
+
+**Deferred items:** the trajectory-based re-checking of integral equations at
+sampled rows (plan §7) is deferred — the integral equations are *skipped* in
+the post-solve checker (Phase 6) since the trajectory itself is the evidence
+of correctness, and the solve is independently validated against analytical
+solutions in the Phase 5 e2e tests. A finite-difference slope-vs-derivative
+check can be added later as an extra safety net.
+
+**Test results:** all 351 unit tests pass; `[examples-comprehensive]` passes.
+
+**Next:** Phase 8 (`coolsolve.conf` + `SolverOptions` + `test_config`).
+
+### 2026-07-05 — Phase 8 (configuration layer) ✅
+
+**Delivered:**
+
+- `include/coolsolve/solver.h` — nine new `SolverOptions` fields
+  (`integralMethod`, `integralFixedStep`, `integralMaxSteps`, `integralRelTol`,
+  `integralAbsTol`, `integralMinStep`, `integralMaxStep`, `integralRichardson`,
+  `integralOutputInterval`), all inert by default. `integralMethod` is stored as
+  a (lower-cased) string so `solver.h` stays decoupled from the integrator
+  module's enum.
+- `src/solver.cpp` (`loadSolverOptionsFromFile`) — parses all nine keys
+  (`std::stod`/`std::stoi`/`parseBool`, case-insensitive method string).
+- `src/runner.cpp` — `makeIntegratorOptions()` now maps the `SolverOptions`
+  `integral*` fields into `IntegratorOptions` (via `parseIntegralMethod`),
+  replacing the placeholder defaults.
+- `examples/coolsolve.conf` — all nine keys added, commented out, with an
+  explanatory block (mirroring the existing option-documentation style).
+- `tests/test_config.cpp` — a round-trip regression test ("Integral options are
+  loaded from config") writes every key, reloads it, and asserts each field,
+  plus that the method string parses back to `IntegratorOptions::RK45`.
+
+**Verification (config-driven CLI):** placing
+```
+integralMethod = RK45
+integralRelTol = 1e-7
+```
+in `coolsolve.conf` next to `integral_decay.eescode` solves the model and
+produces `y(4) = 0.0183156 = e⁻⁴`.
+
+**Test results:** all 352 unit tests pass (3109 assertions); the new config
+test passes; `[examples-comprehensive]` unaffected.
+
+**Next:** Phase 9 (server / REST API / ZIP bundle round-trip).
+
+### 2026-07-05 — Phase 9 (server / REST API / ZIP round-trip) ✅
+
+**Delivered (all in `src/server.cpp`, additive):**
+
+- **Session state** — new fields `lastIntegralResult` (columnar JSON),
+  `lastIntegralCSV` (CSV text), `lastIntegralCsvName`, guarded by a new
+  `integralMutex` (mirrors `parametricMutex`).
+- **Solve handler** — after `runner.run()`, if `runner.hasIntegralResult()`,
+  builds the integral JSON (`integralResultToJSON` helper), stores it on the
+  session, auto-writes `<model>-integral.csv` into the session temp dir, and
+  embeds `integralTable` + `integralCsvName` into both the SSE `"done"` event
+  and the `GET /api/v1/solve/result` payload (so the GUI receives the table
+  with every solve — no separate fetch needed).
+- **ZIP export** (`GET /api/v1/files/bundle`) — pushes `<stem>-integral.csv`
+  right after the parametric artefact.
+- **ZIP import** (`POST /api/v1/files/upload`) — a new `endsWith("-integral.csv")`
+  branch restores the CSV into `lastIntegralCSV` **before** the generic
+  lookup-table CSV branch (so it is not mis-filed as a lookup table).
+- **Reset points** — integral state cleared on new-model, open-file,
+  per-solve, and upload (all four `session.hasResult = false` sites), so a
+  stale trajectory never lingers.
+- **New endpoint** — `GET /api/v1/integral/result` returns the last integral
+  JSON (404 when none), mirroring `/api/v1/parametric/result`.
+- **Python test** — `tests/test_integral_api.py` (12 checks, `--auto`
+  self-starting): solve → table in result → `y(4)=e⁻⁴` → bundle contains
+  `*-integral.csv` → `/new` clears → re-upload restores the CSV (round-trip).
+
+**Verification:**
+```
+$ python3 tests/test_integral_api.py --auto
+Results: 12/12 passed, 0 failed
+```
+
+**Design note:** the JSON `lastIntegralResult` is produced only by a live
+solve; on ZIP re-upload only the CSV is restored (parsing CSV→columnar JSON on
+import was judged not worth the complexity). The GUI tab (Phase 10) will parse
+the CSV directly. The round-trip contract — *download → upload → same columns
+and rows* — holds via the CSV.
+
+**Test results:** all 352 C++ unit tests pass (3109 assertions); the new
+Python API test passes 12/12.
+
+**Next:** Phase 10 (GUI Integral Table tab).
+
+---
+
+## 13. Remaining work (Phases 10–11)
+
+The **backend is feature-complete and fully tested** through the REST API and
+ZIP bundle: an integral model can be parsed, solved, tabulated, exported to
+CSV, embedded in the solve response, and round-tripped through a ZIP bundle.
+What remains is the **frontend GUI tab** and the **user-facing documentation**.
+
+### 13.1 Phase 10 — GUI Integral Table tab (bottom panel)
+
+The bottom panel already hosts the parametric study as the `sensitivity` tab
+(`gui/src/App.tsx:141-166`). The integral table becomes a sibling tab. The
+data is already delivered to the frontend by Phase 9:
+
+- The solve response (`resultJson`) now carries `integralTable`
+  (`{ integrationVar, columns[], data{<col>: number[]}, numRows, csvName,
+  totalSteps, rejectedSteps }`) and `integralCsvName`.
+- `GET /api/v1/integral/result` returns the same payload on demand.
+- The ZIP bundle round-trips the CSV.
+
+Tasks (see §4 Phase 10 for the full table):
+
+| Change | File | Detail |
+|--------|------|--------|
+| New bottom-panel tab | `gui/src/App.tsx` | Add an `integral` button alongside `console`/`sensitivity`/`lookuptables`; render `<IntegralTable/>` when active (mirror the existing tab-toggle pattern). |
+| New component | `gui/src/components/IntegralTable.tsx` | Mirror `ParametricStudy.tsx`: scrollable columnar table (integration var first), row count, "Export CSV" button, empty-state message. Read-only. Optional: a `PlotlyChart` line plot of the first tabulated variable vs the integration var. On bundle load with no live JSON, parse `integralCsvName`'s CSV text from the bundle into the same shape. |
+| Types | `gui/src/api/types.ts` | Add `IntegralTableData { columns: string[]; data: Record<string, number[]>; integrationVar: string; csvName: string; numRows: number }` and extend the solve-response type with `integralTable?: IntegralTableData`. |
+| Store | `gui/src/stores/modelStore.ts` | Add `integralTable: IntegralTableData \| null`; set from the solve response; clear on new/open/reset (same lifecycle as `parametricStudies`). |
+| Syntax highlighting | `gui/src/languages/ees.ts` | Add `integral`, `integralvalue` to built-in functions and `$IntegralTable` (and `$IntegralAutoStep`/`$IntegralStop`) to directives. |
+| Config editor | `gui/src/components/ConfigEditor.tsx` | New `ConfigGroup` "Integration" exposing the `integral*` keys from §5 (method dropdown, step, tolerances, Richardson toggle). |
+| Smoke test | manual | `npm run dev`, solve `examples/integral_decay.eescode`, verify the tab populates, export the bundle, re-import, verify repopulation. |
+
+The frontend can be built and tested independently of any further backend
+work — every endpoint and payload it needs already exists and is covered by
+`tests/test_integral_api.py`.
+
+### 13.2 Phase 11 — Documentation
+
+| Document | Change |
+|----------|--------|
+| `README.md` | New *Features* bullet for equation-based integration; add `src/integral/` to the *Project Structure* tree; add the `integral*` keys to the *coolsolve.conf* options list (already in `examples/coolsolve.conf`). |
+| `docs/language_reference.md` | New section "Equation-based integration" covering `INTEGRAL`, `$IntegralTable`, `INTEGRALVALUE`, and the `coolsolve.conf` keys. |
+| `docs/debugging_models.md` | New subsection on diagnosing integration failures (step rejected, high-index warning, non-constant limits). |
+| `docs/solver_roadmap.md` | Mark dynamic solving as delivered; note BDF/stiff and index reduction as future. |
+| `docs/gui.md` | Document the Integral Table bottom-panel tab and the CSV bundle round-trip (after Phase 10). |
+| `docs/docs.html` | Append any new doc page to the sidebar nav. |
+| `docs/ees_vs_coolsolve.csv` | Flip `INTEGRAL` / `INTEGRALVALUE` / `$IntegralTable` to `Yes`; add a "Dynamic/DAE solving" row. |
+| `docs/versions.md` | Changelog entry at release time. |
+
+> Note: `INTEGRALVALUE(t,'X')` evaluator dispatch is the one functional item
+> still deferred from the original plan (it needs the active-table context,
+> which now exists in `IntegralSolver`; wiring is a small follow-up in
+> `src/evaluator.cpp` + a thread-local pointer to the current `IntegralTable`).
+> It is not exercised by any current example or test and does not block the
+> core dynamic-solving workflow.

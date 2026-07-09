@@ -5,6 +5,8 @@
 #include <variant>
 #include <vector>
 
+#include "coolsolve/integral/integral_table.h"  // for IntegralTableSpec (Directive payload)
+
 namespace coolsolve {
 
 // Forward declarations
@@ -96,6 +98,10 @@ struct Comment {
 struct Directive {
     std::string name;  // e.g., "$ifnot", "$endif", "$bookmark"
     std::string content;
+    // Optional structured payload, populated by the parser when `name` is
+    // "IntegralTable". Other directives leave `hasIntegralTableSpec == false`.
+    IntegralTableSpec integralTableSpec;
+    bool hasIntegralTableSpec = false;
 };
 
 struct IfThenElse {
