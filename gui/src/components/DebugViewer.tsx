@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../api/client';
+import { toErrMsg } from '../utils/errors';
 import { FileText, RefreshCw } from 'lucide-react';
 
 interface DebugFile {
@@ -32,8 +33,8 @@ export default function DebugViewer() {
     try {
       const res = await api.getDebugFile(name);
       setContent(res.content);
-    } catch (err: any) {
-      setContent(`Error loading file: ${err.message}`);
+    } catch (err: unknown) {
+      setContent(`Error loading file: ${toErrMsg(err)}`);
     }
     setLoading(false);
   }, []);

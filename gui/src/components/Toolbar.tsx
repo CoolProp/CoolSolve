@@ -7,8 +7,9 @@ import {
 import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
 import { api } from '../api/client';
-import { editorInstance, toggleBraceComment, toggleQuoteComment } from './CodeEditor';
+import { editorInstance, toggleBraceComment, toggleQuoteComment } from './editorUtils';
 import { exportAllPlots } from '../utils/exportPlots';
+import { toErrMsg } from '../utils/errors';
 import type { ExampleFile, SSEEvent, SolveResponse } from '../api/types';
 
 export default function Toolbar() {
@@ -192,8 +193,8 @@ export default function Toolbar() {
         });
         eventSourceRef.current = es;
 
-      } catch (err: any) {
-        addConsoleLine(`>>> ERROR: ${err.message}`);
+      } catch (err: unknown) {
+        addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
         setSolving(false);
       }
     },
@@ -209,8 +210,8 @@ export default function Toolbar() {
       clearModel();
       setCanGoBack(res.hadContent);
       addConsoleLine('>>> New model');
-    } catch (err: any) {
-      addConsoleLine(`>>> ERROR: ${err.message}`);
+    } catch (err: unknown) {
+      addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
   }, [clearModel, addConsoleLine, setCanGoBack]);
 
@@ -243,8 +244,8 @@ export default function Toolbar() {
           api.getIntegralCSV().then((csv) => setIntegralCSV(csv ?? '')).catch(() => setIntegralCSV(''));
           addConsoleLine(`>>> Opened: ${res.files.join(', ')}`);
         }
-      } catch (err: any) {
-        addConsoleLine(`>>> ERROR: ${err.message}`);
+      } catch (err: unknown) {
+        addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
       }
     };
     input.click();
@@ -286,8 +287,8 @@ export default function Toolbar() {
 
       addConsoleLine(`>>> Saved: ${fileNames.join(', ')}`);
       window.location.href = '/api/v1/files/bundle';
-    } catch (err: any) {
-      addConsoleLine(`>>> ERROR: ${err.message}`);
+    } catch (err: unknown) {
+      addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
   }, [eescode, initials, sol, conf, modelName, setModelName, addConsoleLine]);
 
@@ -314,8 +315,8 @@ export default function Toolbar() {
         api.getIntegralCSV().then((csv) => setIntegralCSV(csv ?? '')).catch(() => setIntegralCSV(''));
         addConsoleLine('>>> Restored previous model');
       }
-    } catch (err: any) {
-      addConsoleLine(`>>> ERROR: ${err.message}`);
+    } catch (err: unknown) {
+      addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
   }, [loadFile, addConsoleLine, setCanGoBack, setSolveResult, setIntegralTable, setIntegralCSV]);
 
@@ -332,8 +333,8 @@ export default function Toolbar() {
         loadFile(res.filePath, ees.content, init.content, solRes.content, confRes.content, res.modelName);
         addConsoleLine(`>>> Opened example: ${res.modelName || res.filePath.split('/').pop()}`);
       }
-    } catch (err: any) {
-      addConsoleLine(`>>> ERROR opening example: ${err.message}`);
+    } catch (err: unknown) {
+      addConsoleLine(`>>> ERROR opening example: ${toErrMsg(err)}`);
     }
   }, [loadFile, addConsoleLine, setCanGoBack]);
 
@@ -342,8 +343,8 @@ export default function Toolbar() {
     try {
       await api.cancelSolve();
       addConsoleLine('>>> Cancel requested...');
-    } catch (err: any) {
-      addConsoleLine(`>>> ${err.message}`);
+    } catch (err: unknown) {
+      addConsoleLine(`>>> ${toErrMsg(err)}`);
     }
   }, [addConsoleLine]);
 
@@ -354,8 +355,8 @@ export default function Toolbar() {
       const init = await api.getInitials();
       setInitials(init.content);
       addConsoleLine('>>> Guesses updated from last solution');
-    } catch (err: any) {
-      addConsoleLine(`>>> ERROR: ${err.message}`);
+    } catch (err: unknown) {
+      addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
   }, [setInitials, addConsoleLine]);
 
@@ -391,8 +392,8 @@ export default function Toolbar() {
       let plots: { name: string; data: string }[] = [];
       try {
         plots = await exportAllPlots();
-      } catch (plotErr: any) {
-        addConsoleLine(`    Plot export error: ${plotErr.message} (continuing without plots)`);
+      } catch (plotErr: unknown) {
+        addConsoleLine(`    Plot export error: ${toErrMsg(plotErr)} (continuing without plots)`);
       }
       if (plots.length > 0) {
         addConsoleLine(`    Captured ${plots.length} plot(s): ${plots.map((p) => p.name).join(', ')}`);
@@ -407,9 +408,9 @@ export default function Toolbar() {
       const filename = (modelName || 'model') + '_report.pdf';
       downloadBlob(pdfBlob, filename);
       addConsoleLine(`>>> PDF report downloaded: ${filename}`);
-    } catch (err: any) {
+    } catch (err: unknown) {
       // If compilation fails (e.g. pdflatex not installed), offer the .tex file
-      addConsoleLine(`>>> PDF compilation failed: ${err.message || err}`);
+      addConsoleLine(`>>> PDF compilation failed: ${toErrMsg(err)}`);
       addConsoleLine('>>> Falling back to .tex download...');
       try {
         const res = await api.getLatexReport();

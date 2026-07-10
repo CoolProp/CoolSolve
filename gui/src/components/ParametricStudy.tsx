@@ -461,7 +461,7 @@ export default function ParametricStudy() {
     }
 
     return { data: [], layout: {} };
-  }, [activeResult, plotYVar, plotType]);
+  }, [activeResult, sortedResults, plotYVar, plotType]);
 
   // ---- Render ----
   return (

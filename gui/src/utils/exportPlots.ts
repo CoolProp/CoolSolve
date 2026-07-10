@@ -14,6 +14,16 @@
 import Plotly from 'plotly.js-cartesian-dist-min';
 import type { LatexPlotImage } from '../api/types';
 
+/**
+ * The `plotly.js-cartesian-dist-min` type definitions omit the imperative
+ * `toImage` method that ships with the runtime bundle. Define the minimal
+ * slice we call so the cast stays scoped instead of `any`.
+ */
+interface PlotlyImperative {
+  toImage(gd: HTMLDivElement, opts: Record<string, unknown>): Promise<string>;
+}
+type PlotlyWithImperative = typeof Plotly & PlotlyImperative;
+
 /** Minimal typing for a Plotly-rendered DOM element (has .data attached). */
 interface PlotlyGraphDiv extends HTMLDivElement {
   data?: unknown[];
@@ -37,7 +47,7 @@ export async function exportAllPlots(): Promise<LatexPlotImage[]> {
     if (!gd.data || gd.data.length === 0) continue;
 
     try {
-      const dataUrl: string = await (Plotly as any).toImage(gd, {
+      const dataUrl: string = await (Plotly as PlotlyWithImperative).toImage(gd, {
         format: 'png',
         width: 1200,
         height: 800,

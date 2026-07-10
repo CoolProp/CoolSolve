@@ -1183,30 +1183,6 @@ via `/integral/csv`) is covered by the extended `tests/test_integral_api.py`.
   rather than pulling in PapaParse/JSZip — keeps the bundle size unchanged
   and is sufficient for the numeric, headered CSV the backend emits.
 
-#### Pre-existing GUI lint baseline (out of scope — flagged for future cleanup)
 
-Phase 10's `npm run lint` reports **22 problems (19 errors, 3 warnings)**,
-all of which pre-date this phase (verified by `git stash` against the
-Phase-9 baseline). They are **general GUI health issues, not integral-feature
-bugs**: the production build (`tsc -b && vite build`) succeeds and runtime
-behaviour is unaffected. Line numbers below are as of the 2026-07-09 delivery
-and will drift with future edits — re-run `npm run lint` for current
-locations.
-
-| # | Rule | Count | Files (line) | Why it occurs | Severity / impact | Suggested fix |
-|---|------|-------|--------------|---------------|-------------------|---------------|
-| 1 | `@typescript-eslint/no-explicit-any` | 11 | `Toolbar.tsx` (195, 212, 246, 289, 317, 335, 345, 357, 394, 410), `DebugViewer.tsx` (35) | All are `catch (err: any)` blocks that read `err.message`. Predates TS 4.4's `useUnknownInCatchVariables` default; `any` was the historical convenience. | **Low.** eslint-level only; no runtime/correctness impact. | Change to `catch (err: unknown)` + `err instanceof Error ? err.message : String(err)` (or a small `toMsg(err)` helper). Mechanical, ~15-min sweep. |
-| 2 | `@typescript-eslint/no-explicit-any` | 6 | `CodeEditor.tsx` (11, 16, 32, 71, 104, 166) | Monaco editor integration typed loosely: the exported `editorInstance` ref, the `toggleBrace/QuoteComment(editor)` params, an `edits: any[]`, a `useRef<any>`, and `(window as any).monaco` (Monaco is loaded via a `<script>` tag, not the typed npm import). | **Low.** Works because Monaco's runtime shape matches; loses editor/IDE autocomplete on these locals. | `import type * as Monaco from 'monaco-editor'` and type the editor params/refs; replace `(window as any).monaco` with a `declare global` augmentation or the `@monaco-editor/react` loader. |
-| 3 | `@typescript-eslint/no-explicit-any` | 1 | `exportPlots.ts` (40) | `(Plotly as any).toImage(...)` — the `plotly.js-cartesian-dist-min` type definitions omit the `toImage` imperative method. | **Low.** Single cast; the call is correct at runtime. | Define a small local interface (`interface PlotlyExport { toImage(gd, opts): Promise<string> }`) and cast through it, or add a scoped `// eslint-disable-next-line` with a comment. |
-| 4 | `@typescript-eslint/no-unused-vars` | 1 | `modelStore.ts` (146) | The destructure-to-omit pattern `const { [name]: _removed, ...rest } = state.lookupTableCSVs` in `removeLookupTable`. The `_removed` binding is intentionally unused (underscore prefix is the conventional "I know" signal), but the eslint config has no `varsIgnorePattern: "^_"`. | **Trivial.** | Add `"varsIgnorePattern": "^_"` (and `argsIgnorePattern`) to the `no-unused-vars` rule in `eslint.config.js`, or extract an `omitKey(obj, key)` helper. |
-| 5 | `react-refresh/only-export-components` | 2 (warn) | `CodeEditor.tsx` (16, 71) | The file exports both the `CodeEditor` component **and** non-component values (`editorInstance`, `toggleBraceComment`, `toggleQuoteComment`). React Fast Refresh requires component-only files for hot swapping. | **Dev-experience only.** Editing `CodeEditor.tsx` triggers a full page reload instead of an HMR swap; no production impact. | Move `editorInstance` + the two comment-toggle helpers into a sibling non-component module (e.g. `editorUtils.ts`) and import them where needed. |
-| 6 | `react-hooks/exhaustive-deps` | 1 (warn) | `ParametricStudy.tsx` (464) | The `plotData` `useMemo` reads `sortedResults` but lists only `[activeResult, plotYVar, plotType]` in its deps. | **Latent.** Currently masked because `activeResult` changes whenever `sortedResults` would, but it is a potential stale-plot bug if the derivation ever decouples. | Add `sortedResults` to the dependency array. |
-
-**Severity summary:** none of these affect correctness or the shipped bundle.
-The `no-explicit-any` cluster (items 1–3, 18 of the 19 errors) is the bulk of
-the noise and is a straightforward typing sweep; item 4 is a one-line eslint
-config change; items 5–6 are dev-experience/latent-hygiene warnings. Tackling
-them would bring `npm run lint` to a clean exit and is independent of the
-integral feature.
 
 **Next:** Phase 11 (user-facing documentation).
