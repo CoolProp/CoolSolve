@@ -224,6 +224,24 @@ session and written to the solver's working directory as `<name>.csv` before
 each solve or parametric run.  They are included in the ZIP bundle and
 restored on upload.
 
+### 4.10 Integral Table
+
+When a model contains an equation-based `INTEGRAL(...)` call, the solve produces
+a time-series trajectory.  It is delivered to the frontend in two forms and rides
+on the standard solve response — no separate solve call is needed:
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/integral/result` | Last integral solve as columnar JSON (`integrationVar`, `columns`, `data`, `numRows`, `csvName`, `totalSteps`, `rejectedSteps`); 404 when no integral has been solved |
+| `GET` | `/api/v1/integral/csv` | Raw trajectory CSV text (`text/csv`); 404 when none. Exposes the CSV restored from a bundle round-trip where the columnar JSON is not available |
+
+In addition, the `POST /api/v1/solve` `"done"` SSE event and
+`GET /api/v1/solve/result` both carry optional `integralTable` (columnar) and
+`integralCsvName` fields whenever an integral was solved.  The auto-written
+`<model>-integral.csv` is exported in the ZIP bundle (see §7.2) and restored to
+the session on upload, so the Integral tab repopulates on a bundle round-trip
+(download → upload → same columns and rows).
+
 ---
 
 ## 5. Session Management
@@ -241,6 +259,7 @@ Each `Session` holds:
 - `debugDir` — temporary directory path for debug output files
 - `solveInProgress`, `cancelToken` — concurrency control for async solve
 - `lookupTableCSVs` — map from table name to raw CSV text (in-memory store for lookup tables)
+- `lastIntegralResult` / `lastIntegralCSV` / `lastIntegralCsvName` — last integral-solve trajectory (columnar JSON + raw CSV), guarded by a dedicated mutex; cleared on new/open/reset
 
 Session-scoped temp directories live at `/tmp/coolsolve_sessions/{id}/`.
 The "New" action clears all in-memory state while keeping the session alive.
@@ -271,7 +290,7 @@ The "New" action clears all in-memory state while keeping the session alive.
 │                            │  └──────────────────────────────────────┘   │
 ├────────────────────────────┴─────────────────────────────────────────────┤
 │  BOTTOM PANEL (collapsible, tabbed)                                      │
-│  Console │ Parametric │ Lookup Tables                                    │
+│  Console │ Parametric │ Lookup Tables │ Integral                         │
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -349,8 +368,8 @@ If no array variables exist, a placeholder message is shown.
 
 ### 6.6 Config Tab — `ConfigEditor.tsx`
 
-A form-based editor for `coolsolve.conf` values, organised into 9 collapsible
-groups covering all `SolverOptions` keys (~30+ fields):
+A form-based editor for `coolsolve.conf` values, organised into collapsible
+groups covering all `SolverOptions` keys (~40+ fields):
 
 | Group | Key fields |
 |-------|-----------|
@@ -363,6 +382,7 @@ groups covering all `SolverOptions` keys (~30+ fields):
 | Pipeline | `solverPipeline` (ordered list), `pipelineMode` (radio) |
 | Safety | `timeoutSeconds` |
 | Output | `writeSolFile`, `writeResiduals` |
+| Integration | `integralMethod`, `integralFixedStep`, `integralMaxSteps`, `integralRelTol`, `integralAbsTol`, `integralMinStep`, `integralMaxStep`, `integralRichardson`, `integralOutputInterval` |
 
 Changed values are highlighted.  A "Reset All" button restores defaults.
 Changes sync to the session via `PUT /api/v1/files/conf` on "Apply" or "Solve".
@@ -468,6 +488,36 @@ An inline editable HTML table:
 Tables saved here are automatically used in the next solve — no need to
 restart or re-upload files.
 
+### 6.11 Integral Table Tab — `IntegralTable.tsx`
+
+A read-only viewer for the trajectory of an equation-based dynamic (`INTEGRAL`)
+model, shown as a sibling **Integral** tab in the bottom panel (alongside
+Console / Parametric / Lookup Tables).  It mirrors the Parametric study UX.
+
+The tab resolves its data from two sources, in priority order:
+
+1. The live columnar JSON from the solve response (`integralTable`).
+2. The restored CSV text (`integralCSV`), parsed client-side with a small
+   CSV splitter that honours quoting — this is the path taken after a pure
+   bundle load (no live solve since server restart), where only the CSV
+   survives the round-trip.
+
+Contents:
+
+- A scrollable columnar table with the integration variable as the first
+  (highlighted) column, followed by the `$IntegralTable` variables.
+- A row/step count and, when available, the accepted/rejected step counts
+  (RK45).
+- A Y-variable selector + `PlotlyChart` line plot of one tabulated variable
+  versus the integration variable.
+- An **Export CSV** button that re-serialises the table to a downloadable
+  file named after the model (`<csvName>`).
+
+The tab is read-only (EES Integral Tables are not user-editable).  An empty-state
+message is shown when no integral has been solved.  It does not auto-switch on
+solve — it only ensures the bottom panel is open — so the user keeps console
+focus during a solve; the tab populates immediately once clicked.
+
 ---
 
 ## 7. File Management
@@ -506,6 +556,7 @@ writer/reader in `server.cpp` — no external library):
 | `<name>.sol` | Last solution (if solve was successful) |
 | `coolsolve.conf` | Solver configuration |
 | `<tablename>.csv` | One entry per lookup table in the session |
+| `<name>-integral.csv` | Integral trajectory (when an `INTEGRAL` model was solved) |
 | `debug/*` | Debug output files (if present) |
 
 ### 7.3 Session Snapshot (Back Button)
@@ -638,8 +689,8 @@ gui/
     │   ├── client.ts              # Typed fetch wrappers for all API endpoints
     │   └── types.ts               # TypeScript interfaces for all API responses (incl. parametric types)
     ├── stores/
-    │   ├── modelStore.ts          # Zustand: eescode, initials, sol, conf, parse errors, solve result, parametric studies, lookup tables, user unit overrides
-    │   └── uiStore.ts             # Zustand: theme, active tabs (incl. 'lookuptables'), panel visibility (persisted to localStorage)
+    │   ├── modelStore.ts          # Zustand: eescode, initials, sol, conf, parse errors, solve result, parametric studies, lookup tables, integral table, user unit overrides
+    │   └── uiStore.ts             # Zustand: theme, active tabs (incl. 'lookuptables', 'integral'), panel visibility (persisted to localStorage)
     ├── languages/
     │   └── ees.ts                 # Monaco Monarch language definition for CoolSolve syntax
     └── components/
@@ -653,6 +704,7 @@ gui/
         ├── ThermoDiagram.tsx      # Plotly thermo diagrams (T-s, P-h, h-s, T-h) with overlays + export
         ├── ParametricStudy.tsx    # Parametric sweep: variable selector, range inputs, 1D/2D plots, results table
         ├── LookupTableEditor.tsx  # Lookup table manager: list view + inline editable grid + CSV import/export
+        ├── IntegralTable.tsx      # Read-only trajectory viewer for INTEGRAL models: table + Plotly plot + CSV export
         ├── SplitPane.tsx          # Reusable resizable split-pane (horizontal/vertical)
         └── PlotlyChart.tsx        # Thin Plotly wrapper component
 ```

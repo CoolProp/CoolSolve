@@ -534,3 +534,179 @@ P_last = LOOKUP('data', 99, 2)                    "P_last = 1554900 Pa (clamped)
 The **Lookup Tables** tab in the GUI lets you create, view, and edit tables
 directly in the browser — no need to manage CSV files manually.
 
+---
+
+## 12. Equation-based integration (dynamic/DAE solving)
+
+CoolSolve can solve **initial-value differential–algebraic equation (DAE)
+systems** written in the EES integral form, and tabulate the trajectory of
+selected variables. This covers the vast majority of transient thermal models
+(tank dynamics, heat exchangers, control loops, etc.).
+
+The EES integral convention declares an ODE as an algebraic equation:
+
+```ees
+y = y0 + integral(dydt, t, t0, tf)     "declares a state variable y"
+dydt = ...                              "its derivative (an algebraic expression)"
+y0 = 1                                  "initial condition"
+```
+
+is equivalent to  `dy/dt = f(t, y, …)`, `y(t0) = y0`. When a model contains any
+top-level `integral(...)` call, CoolSolve automatically routes it to the
+dynamic solver — no flag is needed — and **non-integral models are completely
+unaffected** (zero overhead).
+
+### 12.1 `INTEGRAL` — declaring a state variable
+
+```ees
+y = <base> + INTEGRAL(integrand, t, t0, tf)
+y = <base> + INTEGRAL(integrand, t, t0, tf, step)   "fixed-step form"
+```
+
+| Argument | Meaning |
+|:---------|:--------|
+| `integrand` | The derivative expression (the `f` in `dy/dt = f`). Usually a named variable defined by its own equation. |
+| `t` | The integration variable (e.g. time). All `INTEGRAL` calls in a model must share the **same** `t`. |
+| `t0`, `tf` | Lower and upper limits. Must be constants (or constant-foldable). All calls must share the **same** `[t0, tf]`. |
+| `step` | Optional 5th argument: a **fixed** step size. Omit it to let the method choose (fixed default derived from `integralMaxSteps`, or adaptive for RK45). |
+
+`<base>` is the non-integral part of the right-hand side; at `t = t0` the
+integral term is zero, so `y(t0)` is determined by the algebraic solve of the
+remaining equations (no separate initial-value extraction is needed).
+
+The variable on the left-hand side of an integral equation is a **state
+variable** (owned by the integrator). Every other unknown is *algebraic* — it is
+solved from the remaining equations at each time step by the same algebraic
+solver used for static models.
+
+### 12.2 Coupled ODEs and algebraic variables
+
+Any number of state variables may share the same integration variable and
+interval (coupled ODEs). Algebraic variables may depend on the states and on
+each other; together this is a **semi-explicit index-1 DAE**
+`y' = f(t,y,z)`, `0 = g(t,y,z)`:
+
+```ees
+"Harmonic oscillator:  y' = z,  z' = -y"
+y = 0 + integral(dydt, t, 0, 10)
+z = 1 + integral(dzdt, t, 0, 10)
+dydt = z
+dzdt = -y
+```
+
+```ees
+"A state coupled to an algebraic variable (heat-transfer cell)"
+T = T0 + integral(dTdt, t, 0, 100)
+dTdt = (T_amb - T) / tau        "derivative"
+Q = h * (T_amb - T)             "algebraic variable, solved each step"
+```
+
+### 12.3 `$IntegralTable` — tabulating the trajectory
+
+```ees
+$IntegralTable t:0.1  y  z  dydt
+```
+
+The directive lists the variables to record, with the integration variable
+first. An optional output interval follows the integration variable as
+`name:interval` (`t:0.1` → one row every 0.1 units); if omitted, a row is
+written at every step (or every `integralOutputInterval`, see §12.5). Array
+ranges expand with the `..` notation:
+
+```ees
+$IntegralTable t  X[1..5]    "records t and X[1]..X[5]"
+```
+
+After a successful solve, CoolSolve writes the trajectory to a CSV named after
+the model — **`<modelname>-integral.csv`** — next to the `.eescode` file. The
+first column is the integration variable; subsequent columns are the
+`$IntegralTable` variables in order. This file is regenerated on each run and
+also appears in the solve JSON and the GUI's **Integral** tab (see
+[GUI §6.11](gui.md#611-integral-table-tab--integraltabletsx)).
+
+### 12.4 `INTEGRALVALUE` — retrieving a tabulated value
+
+```ees
+y_prev = INTEGRALVALUE(t-0.5, 'y')   "interpolate the trajectory of y"
+```
+
+`INTEGRALVALUE(t, 'X')` returns the value of variable `X` at integration
+variable value `t` by **linear interpolation** of the trajectory built so far
+(with flat clamping at the endpoints). It is meaningful only *during* an
+integration step. The parser recognises the function; full evaluator dispatch is
+a deferred follow-up (see `docs/integral_table_plan.md`).
+
+### 12.5 Integration methods and configuration
+
+Integration is controlled by `coolsolve.conf` keys (all inert by default —
+uncomment only what you need; see `examples/coolsolve.conf`):
+
+| Key | Default | Meaning |
+|:----|:--------|:--------|
+| `integralMethod` | `RK4` | `RK4`, `RK45`, `EulerExplicit`, or `EulerImplicit` |
+| `integralFixedStep` | `0.0` | Fixed step size. `0` ⇒ derive from `integralMaxSteps` (fixed methods) or adapt (RK45) |
+| `integralMaxSteps` | `1000` | Upper bound on the number of steps |
+| `integralRelTol` | `1e-6` | RK45 local relative error control |
+| `integralAbsTol` | `1e-9` | RK45 absolute error floor |
+| `integralMinStep` | `0.0` | Minimum step (0 = auto) |
+| `integralMaxStep` | `0.0` | Maximum step (0 = auto) |
+| `integralRichardson` | `false` | Richardson extrapolation (fixed-step methods only) |
+| `integralOutputInterval` | `0.0` | Default row interval when `$IntegralTable` omits `:n`. `0` = every step |
+
+Method guidance:
+
+- **`RK4`** (default) — classic 4th-order Runge–Kutta, fixed step. Good accuracy
+  for smooth, non-stiff systems.
+- **`RK45`** — adaptive Dormand–Prince (embedded 4th/5th order). Adjusts the step
+  from the error estimate; the right choice when the dynamics have fast and slow
+  phases. Watch the rejected-step count on stiff systems.
+- **`EulerExplicit`** — 1st-order, cheapest; useful for quick checks.
+- **`EulerImplicit`** — 1st-order, A-stable; the quick choice for stiff systems.
+
+The `$IntegralAutoStep` and `$IntegralStop` directives are recognised for EES
+compatibility but **not interpreted** — they emit a diagnostic pointing at the
+`integral*` config keys instead.
+
+### 12.6 Worked example
+
+`integral_decay.eescode` — exponential decay `dy/dt = -y`, `y(0) = 1`, whose
+analytical solution is `y(t) = e^{-t}`:
+
+```ees
+"Exponential decay:  dy/dt = -y,  y(0) = 1  =>  y(t) = e^{-t}"
+
+y = 1 + integral(dydt, t, 0, 4)
+dydt = -y
+
+$IntegralTable t:0.5  y  dydt
+```
+
+Solving gives `y(4) = 0.0183156 = e^{-4}`, recorded in
+`integral_decay-integral.csv`:
+
+```
+t,y,dydt
+0,1,-1
+0.5,0.606531,-0.606531
+…
+4,0.0183156,-0.0183156
+```
+
+### 12.7 Limitations
+
+- **One integration variable and one interval per model.** All `INTEGRAL` calls
+  must share the same `t` and `[t0, tf]`. Nested (multi-variable) integration is
+  detected and rejected with a clear message.
+- **Semi-explicit index-1 DAE only.** Higher-index systems (where an algebraic
+  constraint couples to a derivative that must be differentiated to solve) are
+  detected and reported; index reduction is not yet implemented. A *warning* that
+  a state variable appears in an algebraic equation is benign for ordinary
+  index-1 thermal models.
+- **2-arg table-based `INTEGRAL(integrand, var)`** (integration over a parametric
+  table) is not supported — it requires an EES-style Parametric table CoolSolve
+  does not have.
+- **Stiff systems.** An explicit method (RK4/RK45/EulerExplicit) may need many
+  steps on a stiff system; use `EulerImplicit` as a workaround until a BDF/stiff
+  integrator is added (see `docs/solver_roadmap.md` §9.4).
+
+

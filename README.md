@@ -92,6 +92,12 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
   - `SUMLOOKUP`, `AVGLOOKUP`, `MAXLOOKUP`, `MINLOOKUP`, `STDDEVLOOKUP` — column aggregates
   - GUI **Lookup Tables** panel: create, view, and edit tables in-browser without managing CSV files manually
 
+- **Equation-Based Dynamic Solving (`INTEGRAL`)**: solve initial-value differential–algebraic equation (DAE) models in the EES integral form `y = y0 + INTEGRAL(dydt, t, t0, tf)` and tabulate their trajectory. Coupled ODEs plus algebraic variables (semi-explicit index-1 DAE) are supported; the algebraic subsystem is solved at every step by the existing solver, unmodified.
+  - Fixed-step integrators: Euler explicit, Euler implicit, **RK4** (default); variable-step adaptive **Dormand–Prince RK45**; optional **Richardson** extrapolation
+  - `$IntegralTable` directive to declare tabulated variables and the output interval (with `X[1..5]` range expansion)
+  - Auto-written `<modelname>-integral.csv`, integral data in the solve JSON, and an **Integral** tab in the GUI (table + plot + CSV export)
+  - Nine `integral*` configuration keys (`coolsolve.conf`), all inert by default — zero overhead on non-integral models. See [Language Reference §12](docs/language_reference.md#12-equation-based-integration-dynamicdae-solving).
+
 - **Debug Mode**: Creates a comprehensive output folder with all analysis information
 
 ## Documentation
@@ -129,7 +135,15 @@ CoolSolve uses several file formats for input and verification:
     - `multiStartEnabled`: When `true` (default), retry a failed multi-variable block from alternative starting points derived from each variable's inferred physical kind.
     - `multiStartMaxRestarts`: Number of alternative starting points to try on a failed block (default: `4`).
     - `multiStartNumCores`: Threads for concurrent multi-start candidates (default: `1` = sequential; `N`>1 or `0`=auto runs candidates in parallel, first-to-converge wins).
-  - **CoolProp Integration options**:
+   - **Integration options** (equation-based `INTEGRAL` models — all inert by default; see [Language Reference §12](docs/language_reference.md#12-equation-based-integration-dynamicdae-solving)):
+     - `integralMethod`: Integrator — `RK4` (default), `RK45` (adaptive), `EulerExplicit`, or `EulerImplicit`.
+     - `integralFixedStep`: Fixed step size (`0` ⇒ derive from `integralMaxSteps` for fixed methods, or adapt for RK45).
+     - `integralMaxSteps`: Upper bound on the number of integration steps (default: `1000`).
+     - `integralRelTol` / `integralAbsTol`: RK45 error control (defaults `1e-6` / `1e-9`).
+     - `integralMinStep` / `integralMaxStep`: Step-size bounds (`0` = auto).
+     - `integralRichardson`: Richardson extrapolation on fixed-step methods (default: `false`).
+     - `integralOutputInterval`: Default `$IntegralTable` row interval when `:n` is omitted (`0` = every step).
+   - **CoolProp Integration options**:
     - `coolpropBackend`: CoolProp backend string (default: `HEOS`). Options: `HEOS`, `INCOMP`, `TTSE&HEOS`, `BICUBIC&HEOS`.
     - `coolpropUseAbstractState`: Use the low-level `AbstractState` API instead of `PropsSI` (default: `true`). Provides 2–5× speedup by caching fluid objects and avoiding string parsing.
     - `coolpropEnableAnalyticalDerivatives`: Use `first_partial_deriv()` for exact gradients with a forward-FD consistency check (default: `true`). Falls back to finite differences near phase boundaries where analytical derivatives are inaccurate.
@@ -434,12 +448,23 @@ CoolSolve/
 │   ├── evaluator.h             # Block and system evaluators
 │   ├── solution_checker.h      # Post-solve solution verification
 │   └── solver.h                # Solver pipeline, all SolverOptions declarations
+├── include/coolsolve/integral/
+│   └── *.h                     # Equation-based dynamic solver (IntegralProblem, IntegralTable, Integrator, IntegralSolver)
 ├── src/
     ├── parser.cpp              # CoolSolve language parser
 │   ├── ir.cpp                  # IR building and LaTeX generation
 │   ├── structural_analysis.cpp # Matching and SCC algorithms
 │   ├── autodiff_node.cpp       # AD function implementations
 │   ├── evaluator.cpp           # Evaluator implementations
+│   ├── integral/               # Equation-based dynamic solver (INTEGRAL / $IntegralTable)
+│   │   ├── integrator_euler_explicit.cpp  # Forward Euler (fixed step)
+│   │   ├── integrator_euler_implicit.cpp  # Backward Euler, A-stable (fixed step)
+│   │   ├── integrator_rk4.cpp             # Classic RK4 (fixed step, default)
+│   │   ├── integrator_rk45.cpp            # Dormand-Prince RK45 (adaptive)
+│   │   ├── richardson.cpp                 # Richardson extrapolation wrapper
+│   │   ├── integral_table.cpp             # Trajectory storage + interpolation + CSV
+│   │   ├── integral_extraction.cpp        # IR → IntegralProblem classification
+│   │   └── integral_solver.cpp            # Time-march loop, reuses algebraic Solver
 │   ├── solver.cpp              # Pipeline orchestrator, Newton, tearing, config loading
 │   ├── solver_bisection_nd.cpp # Multi-dimensional bisection solver
 │   ├── solver_homotopy.cpp     # Homotopy continuation solver

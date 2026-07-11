@@ -11,8 +11,9 @@ CoolSolve. It is the result of reading the EES help pages
 `finding_a_limit_of_integration.htm`) and of a thorough exploration of
 the existing CoolSolve codebase.
 
-**Status:** Phases 0–10 delivered (2026-07-09). See §12 *Progress Log*.
-Phase 11 (documentation) pending.
+**Status:** Phases 0–11 delivered (2026-07-11). See §12 *Progress Log*.
+The full stack — integrators, `$IntegralTable`, REST API, ZIP round-trip,
+GUI tab, and user-facing documentation — is complete.
 
 Reference for conventions: [`docs/contributing.md`](contributing.md).
 
@@ -1070,11 +1071,14 @@ Python API test passes 12/12.
 
 ## 13. Remaining work (Phase 11)
 
-The **full stack — backend, REST API, ZIP round-trip, and the GUI tab — is
-feature-complete and tested.** An integral model can be parsed, solved,
-tabulated, exported to CSV, embedded in the solve response, round-tripped
-through a ZIP bundle, and visualised in the bottom-panel Integral tab. What
-remains is the **user-facing documentation** (Phase 11).
+**Phase 11 (user-facing documentation) shipped on 2026-07-11 — see the
+entry at the end of §12.** The full stack — backend, REST API, ZIP
+round-trip, the GUI tab, and the documentation — is feature-complete and
+tested. An integral model can be parsed, solved, tabulated, exported to CSV,
+embedded in the solve response, round-tripped through a ZIP bundle, and
+visualised in the bottom-panel Integral tab, and the feature is documented
+across the README, language reference, debugging guide, GUI guide, solver
+roadmap, version history, and EES-comparison table.
 
 ### 13.1 Phase 10 — delivered (see §12 progress log)
 
@@ -1183,6 +1187,84 @@ via `/integral/csv`) is covered by the extended `tests/test_integral_api.py`.
   rather than pulling in PapaParse/JSZip — keeps the bundle size unchanged
   and is sufficient for the numeric, headered CSV the backend emits.
 
+### 2026-07-11 — Phase 11 (user-facing documentation) ✅
 
+**Delivered** — the equation-based integration feature is now documented
+across every user-facing surface listed in the Phase 11 table:
 
-**Next:** Phase 11 (user-facing documentation).
+| Document | Change |
+|----------|--------|
+| `README.md` | New *Equation-Based Dynamic Solving (`INTEGRAL`)* feature bullet (methods, `$IntegralTable`, auto-CSV, GUI tab); `integral*` keys added to the *coolsolve.conf* options list; `include/coolsolve/integral/` + `src/integral/` added to the *Project Structure* tree. |
+| `docs/language_reference.md` | New **§12 Equation-based integration (dynamic/DAE solving)**: `INTEGRAL` syntax (4-/5-arg), coupled ODEs + algebraic variables (index-1 DAE), `$IntegralTable`, `INTEGRALVALUE`, the nine `integral*` config keys, a worked `integral_decay.eescode` example, and an explicit limitations list. |
+| `docs/debugging_models.md` | New *Dynamic (`INTEGRAL`) Models* section: the `integral.md`/`integral_table.csv` debug files and the common failure modes (MaxSteps, RK45 step rejection, the benign high-index warning, inconsistent variable/limits, per-step algebraic failure) with fixes. |
+| `docs/solver_roadmap.md` | Header updated; new **§9 Dynamic / DAE Solving (`INTEGRAL`)** documenting the delivered scope, architecture, and config; BDF/stiff (item 15) and Pantelides index reduction (item 16) added to the §5 future-work table. |
+| `docs/gui.md` | New **§4.10 Integral Table** REST endpoints (`/integral/result`, `/integral/csv`) and solve-response fields; **§6.11 Integral Table Tab** component description; Integration group added to the ConfigEditor table; `*-integral.csv` added to the ZIP-bundle and session-state tables; `IntegralTable.tsx` added to the frontend source tree; bottom-panel diagram updated. |
+| `docs/ees_vs_coolsolve.csv` | `INTEGRAL` → `Yes`, `INTEGRALVALUE` → `Partial`, `$IntegralTable` → `Yes`, `$IntegralAutoStep`/`$IntegralStop` → `Partial` (recognised-and-warned), with file references; new *Dynamic/DAE solving (INTEGRAL)* Solver-Features row. |
+| `docs/versions.md` | New *Development (unreleased)* changelog entry for the dynamic-solving feature. |
+| `docs/docs.html` | No change required — the integration docs live in `language_reference.md`, which is already in the sidebar nav. |
+
+**Verification:** `cmake --build build -j$(nproc)` clean; `./coolsolve_tests`
+(all unit tests) pass; `[examples-comprehensive]` passes; the
+`[solver-robustness]` full suite was re-run with no regression on the
+algebraic path (the dispatch is guarded by a single `hasIntegral()` scan
+that is false for every existing model). Documentation-only changes touch no
+runtime code, so numerics are bit-for-bit unchanged.
+
+**The `INTEGRALVALUE(t,'X')` evaluator dispatch** remains the single deferred
+item (unchanged from §13.2's note): the parser recognises it and the
+interpolation core (`IntegralTable::interpolate`) is implemented, but the
+evaluator wiring is not exercised by any current example or test. It is noted
+in every relevant doc as a deferred follow-up and does not block the core
+dynamic-solving workflow.
+
+**This concludes the integral-table implementation plan.** All eleven phases
+(0–11) are delivered; remaining work is the forward-looking §9 items (BDF,
+index reduction, multi-variable integration) tracked in the solver roadmap.
+
+### 2026-07-11 — Bugfix: GUI freeze on integral solve (SSE event flood) ✅
+
+**Symptom:** solving an integral model in the GUI froze the browser — the
+progress spinner never advanced, the Stop button did not react, and the whole
+tab became unresponsive.
+
+**Root cause:** the `IntegralSolver` time-march loop reuses the algebraic
+`Solver` thousands of times (≈4 RHS evaluations × `integralMaxSteps` steps).
+The algebraic `SolverOptions` carried over from the runner still had the
+server's per-block `progressCallback` attached, so **every internal step fired
+the block start/done callbacks**. For `integral_decay.eescode` (RK4, 1000
+steps) this produced **24 063 SSE events** in ~0.5 s — each one rendered as a
+console line by the frontend's SSE handler (`Toolbar.tsx`), saturating the
+browser main thread. Because the march loop itself never polled the cancel
+token, the Stop button (which only sets `session.cancelRequested`) could not
+interrupt the flood either.
+
+**Fix** (`src/integral/integral_solver.cpp`, two additive changes):
+
+1. The constructor now clears `solverOpts_.progressCallback` before any
+   internal algebraic solve. The per-block callback is designed for a single
+   top-level solve (a handful of block events); inside the time-march loop it
+   is pure noise. This mirrors the parametric study, which likewise does **not**
+   propagate `progressCallback` to its per-point solves
+   (`server.cpp:1870`). The `cancelToken` is preserved so the Stop button
+   remains effective.
+2. The march loop now polls `solverOpts_.cancelToken` at the top of every
+   integration step (mirroring the parametric loop's per-point check at
+   `server.cpp:1908`), so cancellation is honoured within one step even when
+   the per-step algebraic solve would otherwise not reach its own block-level
+   cancel check.
+
+**Verification (server mode, `--gui`):**
+
+| Check | Before | After |
+|-------|--------|-------|
+| SSE events per integral solve | 24 063 | **3** (`start`/`progress`/`done`) |
+| `y(4)` for `integral_decay.eescode` | — | 0.0183156389 = e⁻⁴ ✓ |
+| Stop button latency | infinite (frozen) | **~2 ms** (cancel observed < 0.3 s later) |
+| Normal (non-integral) solve block events | unaffected | 96 (unchanged — fix is integral-only) |
+
+**Test results:** `./coolsolve_tests` → 352 cases / 3109 assertions, all pass;
+`tests/test_integral_api.py --auto` → 14/14. The change is confined to
+`src/integral/integral_solver.cpp`; the algebraic path is byte-for-byte
+unchanged (the dispatch is guarded by `hasIntegral()`, false for every
+non-integral model — zero overhead).
+

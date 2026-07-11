@@ -8,6 +8,34 @@ changes introduced.
 
 ---
 
+## Development (unreleased)
+
+- **Equation-based dynamic solving (`INTEGRAL`)**: solve initial-value
+  differential–algebraic equation (DAE) models written in the EES integral form
+  `y = y0 + INTEGRAL(dydt, t, t0, tf)`. Fixed-step solvers (Euler explicit,
+  Euler implicit, **RK4** — the default) and a variable-step adaptive
+  **Dormand–Prince RK45** are provided, with optional Richardson
+  extrapolation on fixed steps. Coupled ODEs plus algebraic variables
+  (semi-explicit index-1 DAE) are supported; the algebraic subsystem is
+  solved at every step by the existing `Solver`, unmodified.
+- **`$IntegralTable` directive**: declare which variables to tabulate and the
+  output interval (`$IntegralTable t:0.1  y  dydt`), including `X[1..5]`
+  range expansion. The trajectory is written to an auto-generated
+  `<modelname>-integral.csv`, embedded in the solve JSON, and shown in a new
+  **Integral** tab in the bottom panel (table + Plotly line plot + CSV export).
+- **`INTEGRALVALUE`**: parser recognises the function; the tabulated trajectory
+  is interpolated via `IntegralTable::interpolate` (evaluator dispatch is a
+  deferred follow-up).
+- **Configuration**: nine `integral*` keys in `coolsolve.conf` (method, fixed
+  step, max steps, rel/abs tol, min/max step, Richardson, output interval),
+  all inert by default — zero overhead on non-integral models.
+- **Round-trip**: the integral CSV travels in the ZIP bundle
+  (`<modelname>-integral.csv` exported and restored on upload).
+- **Debug**: new `integral.md` report + `integral_table.csv` copy in the debug
+  folder.
+
+---
+
 ## v0.2 — April 2026 (current)
 
 | Item | Detail |

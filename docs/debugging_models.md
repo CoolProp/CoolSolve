@@ -187,6 +187,76 @@ The 62-equation block is a tight algebraic loop. Create a **temporary** simplifi
 
 **Alternative:** If fixing one variable is not enough, try fixing zone fractions (e.g. `alpha_cd_sh`, `alpha_cd_tp`) or other coupling variables. The aim is to shrink the algebraic loop so the simplified model solves, giving you good initials for the full model.
 
+## Dynamic (`INTEGRAL`) Models
+
+Equation-based dynamic models (containing an `INTEGRAL(...)` call) take a
+different code path: CoolSolve time-marches the state variables and re-solves
+the algebraic subsystem at every step. See the
+[Language Reference §12](language_reference.md#12-equation-based-integration-dynamicdae-solving)
+for the syntax. When such a model fails or behaves oddly, start in debug mode:
+
+```bash
+./coolsolve -d integral_model.eescode
+```
+
+The debug folder gains two extra files for these models:
+
+| File | Use for diagnosis |
+|------|-------------------|
+| `integral.md` | Problem summary: state vs algebraic variables, integration variable, interval, chosen method, step count, min/avg/max accepted step, rejected-step count, and a trajectory preview |
+| `integral_table.csv` | Full trajectory (integration variable first, then the `$IntegralTable` columns) |
+
+### Common integration failures
+
+**`MaxSteps` reached (`integralMaxSteps`).** The march did not reach `tf` within
+the step budget. Typical causes: the step size collapsed (RK45 rejecting many
+steps on a stiff system), or the interval is large relative to the fixed step.
+Fixes:
+
+- For RK45 on a stiff system: this is the signal that a stiff (BDF) integrator
+  is warranted (not yet available — see `docs/solver_roadmap.md` §9.4); as a
+  workaround, raise `integralMaxSteps` and tighten `integralRelTol`/`integralAbsTol`
+  only if accuracy demands it.
+- For fixed-step methods: set an explicit `integralFixedStep` (or pass the 5th
+  `INTEGRAL` argument) so the step count is `(tf−t0)/step`.
+
+**RK45 rejecting many steps.** The `rejectedSteps` count in `integral.md` is
+high. The error estimate exceeds the tolerance repeatedly, so the controller
+shrinks `h` toward `integralMinStep`. This usually means the system is stiff for
+an explicit Runge–Kutta method. Try `integralMethod = EulerImplicit` (A-stable,
+1st order) as a quick check, or use fixed-step RK4 with a small step.
+
+**`High-index DAE detected` warning.** A purely algebraic equation constrains a
+state variable without going through its derivative. This is emitted as a
+*warning*, not a hard error — legitimate index-1 thermal models routinely have
+state variables (e.g. temperatures) appearing in algebraic heat-transfer laws,
+so it does not by itself indicate a problem. It only matters if the algebraic
+subsystem is structurally non-square: then you see a separate squareness error,
+which means a true high-index constraint that needs index reduction (not yet
+supported — restructure the model so every state variable is defined through its
+derivative).
+
+**Inconsistent integration variable or limits.** All `INTEGRAL(...)` calls in a
+model must share the **same** integration variable and the **same** `[t0, tf]`
+interval. CoolSolve rejects multi-interval / multi-variable integration with a
+clear message. The limits must be constants (or constant-foldable expressions);
+time-varying limits are not supported.
+
+**Non-convergence of the algebraic subsystem at a step.** If the per-step
+algebraic `Solver` fails (the same `LineSearchFailed` / `MaxIterations` errors
+covered in Steps 2–5 above), the march reports it. Apply the same
+initials/simplified-model workflow, noting that the algebraic variables must be
+well-conditioned at *every* step, not just the operating point.
+
+### Checking the result
+
+Integral-declaring equations are *skipped* in the post-solve
+`solution_check.md` (their correctness is established by the trajectory). To
+sanity-check a result, compare the final tabulated value against a known
+analytical answer (the bundled `integral_decay.eescode` exercises
+`y(t) = e^{-t}`, giving `y(4) ≈ 0.0183156`), or inspect `integral_table.csv`
+for monotonicity / energy-balance trends.
+
 ## Summary Checklist
 
 - [ ] Run with `-d` to generate debug output

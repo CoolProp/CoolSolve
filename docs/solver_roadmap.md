@@ -1,9 +1,9 @@
 # CoolSolve — Solver Roadmap & Status
 
-*Last updated: June 2026 — Tier 2.1 (incremental QR) and Tier 1 (hybrd-style
-TrustRegion + Broyden) both implemented, on the corrected order (QR first).
-Validated non-regressive; empirically neutral on the tested models — see
-§3.7.*
+*Last updated: July 2026 — dynamic/DAE solving (`INTEGRAL`) delivered (see
+§9); Tier 2.1 (incremental QR) and Tier 1 (hybrd-style TrustRegion + Broyden)
+both implemented, on the corrected order (QR first). Validated
+non-regressive; empirically neutral on the tested models — see §3.7.*
 
 This document consolidates the performance, robustness, and architecture
 plans for CoolSolve's solver subsystem. It replaces the earlier
@@ -841,6 +841,8 @@ mode for hard thermodynamic models with non-monotonic `t`-paths.
 | #  | Improvement                       | Primary benefit                                              | Estimated effort |
 |----|-----------------------------------|--------------------------------------------------------------|------------------|
 | 14 | **Hybrd-native `O(n²)` triangular solve for TrustRegion Broyden mode** | Realize the speedup §3.7 found missing: solve directly against the maintained `R` instead of reconstructing dense `J` and re-running `ColPivHouseholderQR` every iteration | 3-5 days, plus a careful robustness re-validation (loses rank-revealing pivoting, reopening §3.6's instability concern) |
+| 15 | **BDF / DASSL-style stiff variable-step integrator** | A genuinely stiff ODE/DAE integrator for the dynamic solver (§9). The current RK45 takes many steps on stiff systems; a BDF method reuses the same per-step algebraic-solve infrastructure and slots in via the existing `Integrator` factory | 1-2 weeks |
+| 16 | **Pantelides-style index reduction** | Enable fully-implicit (high-index) DAE models in the dynamic solver (§9). Currently high-index systems are detected and rejected with a clear message; dummy-derivative index reduction would make them solvable | 2-3 weeks |
 
 > **Item 13 (KINSOL/SUNDIALS integration) was DELIVERED (July 2026).** Rather
 > than link the SUNDIALS library (CoolSolve ships no external solver
@@ -1201,3 +1203,71 @@ boundaries, the check passes and analytical derivatives are used
 - Dennis, Moré (1977): *Quasi-Newton methods, motivation and theory*.
 - Kelley (2003): *Solving Nonlinear Equations with Newton's Method*
   (SIAM).
+
+---
+
+## 9. Dynamic / DAE Solving (`INTEGRAL`)
+
+**Status (July 2026): DELIVERED.** CoolSolve now solves equation-based
+initial-value differential–algebraic equation (DAE) models written in the EES
+integral form, alongside the algebraic solver described in §1–§8 above. The two
+solvers are strictly separated: a single `hasIntegral(IR)` scan routes the model
+to the dynamic path, and every non-integral model is byte-for-byte unaffected
+(zero overhead by default).
+
+This is a *different kind* of solver (time-marching, not single-shot root
+finding), so it lives in its own module (`src/integral/`,
+`include/coolsolve/integral/`) rather than as a new entry in the algebraic
+pipeline. The full design blueprint is
+[`docs/integral_table_plan.md`](integral_table_plan.md).
+
+### 9.1 Scope
+
+| Supported | Notes |
+|-----------|-------|
+| Equation-based `INTEGRAL(integrand, t, t0, tf)` and the 5-arg fixed-step form `INTEGRAL(integrand, t, t0, tf, step)` | Core. |
+| Coupled ODEs sharing one integration variable and one `[t0, tf]` interval | Harmonic oscillator, multi-state thermal models. |
+| Semi-explicit **index-1 DAE** (`y' = f(t,y,z)`, `0 = g(t,y,z)`) | The algebraic subsystem `g` is solved at every step by the existing algebraic `Solver` — **reused unmodified**. |
+| `$IntegralTable` tabulation + auto CSV + Integral GUI tab | See `docs/gui.md`. |
+| Fixed-step integrators: Euler explicit, Euler implicit, **RK4 (default)** | + optional Richardson extrapolation. |
+| Variable-step integrator: **adaptive Dormand–Prince RK45** | Error-estimation step control via `integralRelTol`/`integralAbsTol`. |
+
+| Out of scope (rejected with a clear message) | Reason |
+|----------------------------------------------|--------|
+| Multi-variable (nested) `INTEGRAL` | Rare; detected and rejected. |
+| 2-arg table-based `INTEGRAL(integrand, var)` | Needs an EES-style Parametric table. |
+| High-index DAE (requires index reduction) | Conservatively detected; see §5 item 16 for the future Pantelides-style reducer. |
+
+### 9.2 Architecture
+
+At each time step the integrator writes the current `(t, y)` into the system as
+fixed/external values, calls the algebraic `Solver` on the remaining blocks, and
+reads the integrand variables back as `f(t, y)`. The key invariant is that
+**`Solver` is called unmodified at each step** — the integral layer only decides
+*when* to call it, *what* to fix as external, and *how* to advance the state.
+
+Two non-obvious engineering points (full detail in the plan's Phase 5 log):
+
+- The full integral IR is deliberately non-square (`t` and the states are owned
+  by the integrator), so `IntegralSolver` builds a **reduced algebraic IR** with
+  a driver equation `v = <number>` per integrator-owned variable, mutated each
+  step. This keeps the reduced system square without touching the algebraic
+  solver.
+- Initial values are *not* extracted separately: at `t = t0` the integral term
+  has a zero-width interval and evaluates to 0, so `y(t0)` falls out of the
+  algebraic solve via each state's base expression.
+
+### 9.3 Configuration
+
+Nine `integral*` keys in `coolsolve.conf` (all inert by default): `integralMethod`
+(`RK4`/`RK45`/`EulerExplicit`/`EulerImplicit`), `integralFixedStep`,
+`integralMaxSteps`, `integralRelTol`, `integralAbsTol`, `integralMinStep`,
+`integralMaxStep`, `integralRichardson`, `integralOutputInterval`. `$IntegralAutoStep`
+and `$IntegralStop` are recognised and warned — parameters live in the config file
+per the user preference.
+
+### 9.4 What remains (future work)
+
+See §5 items 15 (BDF/DASSL stiff integrator) and 16 (Pantelides index reduction).
+The `Integrator` base class + `createIntegrator` factory make a future stiff solver
+a drop-in addition that reuses the same algebraic-solve infrastructure.
