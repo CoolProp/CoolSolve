@@ -64,6 +64,16 @@ IntegralSolver::IntegralSolver(const Program& program, const IR& ir,
                                const StructuralAnalysisResult& analysis,
                                const SolverOptions& options)
     : fullIr_(ir), solverOpts_(options) {
+    // The time-march loop reuses the algebraic `Solver` thousands of times
+    // (several RHS evaluations per integration step). The per-block
+    // `progressCallback` is designed for a single top-level solve (a handful
+    // of block events); firing it inside every internal step floods the GUI's
+    // SSE progress stream with tens of thousands of events and freezes the
+    // browser. The parametric study follows the same convention — it does not
+    // propagate `progressCallback` to its per-point solves (server.cpp ~1870).
+    // The `cancelToken` is preserved so the Stop button stays responsive.
+    solverOpts_.progressCallback = nullptr;
+
     problem_ = extractIntegralProblem(ir, analysis);
 
     // Harvest the $IntegralTable spec (if any) straight off the AST.
@@ -355,6 +365,16 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
 
     try {
         for (int step = 0; step < maxSteps * 4 && t < tf - 1e-12; ++step) {
+            // Honour the Stop button promptly between steps (mirrors the
+            // parametric study's per-point cancel check in server.cpp).
+            if (solverOpts_.cancelToken &&
+                solverOpts_.cancelToken->load(std::memory_order_relaxed)) {
+                result.success = false;
+                result.errorMessage = "Integration cancelled by user";
+                result.totalSteps = taken;
+                result.rejectedSteps = rejected;
+                return result;
+            }
             double hTry = h;
             if (t + hTry > tf) hTry = tf - t;  // land exactly on tf
 
