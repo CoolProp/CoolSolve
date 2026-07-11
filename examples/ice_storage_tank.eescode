@@ -1,0 +1,67 @@
+"Cold storage tank discharge with phase change (MSTh R6 Ex4)
+
+A 120 m3 water/ice thermal energy storage tank is discharged through a
+glycol-water heat exchanger. Glycol mass flow rate: 90 kg/s, inlet T = 5 C.
+Overall heat transfer coefficient AU = 0.5 MW/K. No heat loss to ambient.
+
+The specific internal energy u [J/kg] of the water/ice mixture is integrated
+over time. Phase-change logic tracks ice quality, water temperature, and
+enthalpy during melting. Initial state: fully charged ice at -0.01 C.
+
+Source: MSTh repetition exercise 4 (University of Liege thermal systems course).
+"
+
+"--- Tank and fluid data ---"
+V_sto = 120
+M_dot = 90
+AU = 5E5
+T_su = 5
+c_p = 3800
+P = 101325
+M = V_sto * 1000
+
+"--- Integration interval ---"
+tau_1 = 0
+tau_2 = 50000
+
+"--- Energy balance ---"
+Q_dot_env_sto = 0
+U_dot_sto = M * u_dot
+H_dot_br_sto = Q_dot_br_sto
+Q_dot_br_sto = epsilon * M_dot * c_p * (T_su - T_w)
+epsilon = 1 - exp(-NTU)
+NTU = AU / C_dot
+C_dot = M_dot * c_p
+
+"--- Integrated states ---"
+u = u_1 + INTEGRAL(u_dot, tau, 0, 50000)
+"Total heat discharged to the glycol loop over the integration interval [J]"
+E_discharged = INTEGRAL(Q_dot_br_sto, tau, 0, 50000)
+u_1 = u_ice_0
+"TEMPORARY: CoolProp INTENERGY(Water, T=-0.01, P=P) fails near the freezing
+point (NaN in verification). Replace with the CoolProp call once that is fixed.
+Same for VOLUME() below — use tabulated constants for now."
+u_ice_0 = -333000
+u_dot = U_dot_sto / M
+
+"--- Phase-change temperatures and quality (nested 3-arg IF) ---"
+t_ice_0 = -0.01
+t_liq_0 = 0
+u_liq_0 = 0
+c_ice = 2200
+c_liq = 4187
+t_ice = t_ice_0 + (u - u_ice_0) / c_ice
+t_liq = t_liq_0 + (u - u_liq_0) / c_liq
+t_w = IF(u - u_ice_0, IF(u, t_liq, 0), t_ice)
+t_melt = IF(-u - 1, t_liq_0, t_liq)
+x_two_phase = (u - u_liq_0) / (u_ice_0 - u_liq_0)
+x_ice = IF(u - u_ice_0, IF(u, 0, x_two_phase), 1)
+x_melt = IF(u, 0, x_two_phase)
+"TEMPORARY: replace with VOLUME(Water, T=t_ice_ref, P=P) and
+VOLUME(Water, T=t_liq_ref, P=P) once CoolProp near-freezing evaluation works."
+v_ice = 0.001091
+v_liq = 0.001004
+v = x_ice * v_ice + (1 - x_ice) * v_liq
+DELTAU_sto = M * (u - u_1)
+
+$IntegralTable tau:500 x_ice u t_w Q_dot_br_sto E_discharged t_melt v t_ice t_liq

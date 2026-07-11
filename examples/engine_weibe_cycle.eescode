@@ -1,0 +1,120 @@
+"Single-cylinder engine cycle with Weibe combustion model (dynamic integral)
+
+A crank-angle-resolved model of a four-stroke spark-ignition engine cylinder
+integrates pressure, mass, and cumulative heat/work over one firing cycle
+(intake valve opening to exhaust valve opening, theta = -360 to -180 deg).
+
+The Weibe function models the combustion heat release rate. Inlet mass flow is
+computed with an inlined choked-flow expression during the intake stroke.
+Wall heat losses, piston work, and the ideal-gas state equation close the
+algebraic subsystem at each crank angle.
+
+Source: Engine thermodynamics course exercise (University of Liege, 2008-2009),
+Weibe combustion model repetition 4.
+"
+
+PROCEDURE weibe(theta, theta_s, theta_d : x_b, x_dot_b)
+    x_b = 1 - exp(-a_weibe * ((theta - theta_s) / theta_d)^n_weibe)
+    x_dot_b = n_weibe * a_weibe / theta_d * (((theta - theta_s) / theta_d)^(n_weibe - 1)) * exp(-a_weibe * ((theta - theta_s) / theta_d)^n_weibe)
+    IF theta < theta_s THEN
+        x_b = 0
+        x_dot_b = 0
+    ENDIF
+    IF theta > (theta_s + theta_d) THEN
+        x_b = 1
+        x_dot_b = 0
+    ENDIF
+END
+
+"--- Geometry and operating point ---"
+D = 0.1
+L = D
+B = 0.15
+R_v = 10
+A_v = 6.4E-4
+N = 3000 / 60
+p_out = 1E5
+T_out = 300
+MM_mel = 29
+f = 14.6
+LHV = 43E6
+n_c = 6
+i = 0.5
+a_weibe = 5.14
+n_weibe = 3
+
+"--- Geometric volumes ---"
+V_s = PI * D^2 / 4 * L
+V_c = V_s / (R_v - 1)
+V_bdc = V_s + V_c
+
+"--- Gas properties ---"
+r_mel = R# / MM_mel
+gamma = 1.3
+rho_out = p_out / (r_mel * T_out)
+C_v = r_mel / (gamma - 1)
+C_d = 0.7
+c_son = sqrt(gamma * r_mel * T_out)
+
+"--- Kinematics (crank angle theta [deg]) ---"
+R = L / 2
+C_m = 2 * L * N
+y = B + R - (R * cos(theta) + sqrt(B^2 - R^2 * sin(theta)^2))
+C = C_m * PI / 2 * sin(theta) * (1 + cos(theta) / sqrt((B / R)^2 - sin(theta)^2))
+V = V_c + y * PI * D^2 / 4
+V_dot = C * PI * D^2 / 4
+
+"--- Crank-angle limits ---"
+theta_ivo = -360
+theta_ivc = -180
+theta_evo = 180
+theta_evc = 360
+theta_s = -20
+theta_d = 40
+theta_1 = theta_ivo
+theta_2 = -180
+
+"--- Initial charge ---"
+T_c = 1400
+rho_residuel = p_out / (r_mel * T_c)
+m_residuel = V_c * rho_residuel
+m_s = V_s * rho_out
+m_tot = m_residuel + m_s
+p_start = p_out
+T_start = m_s / m_tot * T_out + m_residuel / m_tot * T_c
+Q_comb = m_s / f * LHV
+
+"--- Integrated states (crank angle march) ---"
+p = p_start + INTEGRAL(p_dot_scaled, theta, -360, -180, 1)
+m = m_residuel + INTEGRAL(M_dot_scaled, theta, -360, -180, 1)
+Q_tot = INTEGRAL(Q_dot_weibe_deg, theta, -360, -180, 1)
+W_tot = INTEGRAL(W_dot_scaled, theta, -360, -180, 1)
+Q_tot_w = INTEGRAL(Q_dot_w_scaled, theta, -360, -180, 1)
+
+p_dot_scaled = p_dot / (360 * N)
+M_dot_scaled = M_dot / (360 * N)
+W_dot_scaled = W_dot / (360 * N)
+Q_dot_w_scaled = Q_dot_w / (360 * N)
+
+"--- Pressure dynamics (admission inlined; Weibe via procedure) ---"
+CALL weibe(theta, theta_s, theta_d : x_b, x_dot_b)
+"Intake mass flow [kg/s] — zero outside the intake valve opening interval"
+M_dot = IF(theta - theta_ivo, IF(theta_ivc - theta, IF(p - p_out, 0, C_d * A_v * p_out / c_son * gamma * (2 / (gamma + 1))^((gamma + 1) / (2 * (gamma - 1)))), 0), 0)
+Q_dot_weibe_deg = x_dot_b * Q_comb
+Q_dot_weibe = Q_dot_weibe_deg * 360 * N
+A_w = PI * D * y + 2 * PI * D^2 / 4
+U_w = 500
+T_w = 400
+Q_dot_w = A_w * U_w * (T - T_w)
+p * V = m * r_mel * T
+Q_dot_mel = M_dot * C_v * (T_out - T)
+Q_dot_net = Q_dot_weibe - Q_dot_w + Q_dot_mel
+p_dot = -gamma * p / V * V_dot + ((gamma - 1) / V) * Q_dot_net + M_dot / m * p
+W_dot = p * V_dot
+
+"--- Performance indicators ---"
+eta_eng = W_tot / Q_comb
+DELTAp_bar_e = W_tot / V_s
+W_dot_eng = W_tot * i * n_c * N
+
+$IntegralTable theta:5 p T m Q_dot_weibe Q_dot_w Q_dot_net V V_dot W_dot M_dot

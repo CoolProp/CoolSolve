@@ -86,7 +86,14 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"scroll_compressor.eescode", {"epsilon_s_cp", 0.2424}},
     // Equation-based dynamic (INTEGRAL) model: y(4) = e^{-4} ~= 0.01832.
     {"integral_decay.eescode",    {"y", 0.01832}},
-    // Models from notsolving/ (fixed)
+    // INTEGRAL examples (final integrated state at t = tf)
+    {"ice_storage_tank.eescode",  {"E_discharged", 6.56833e10}},
+    {"engine_weibe_cycle.eescode", {"p", 89221.7}},
+    // Pending: INTERPOLATE during INTEGRAL (lookup store not yet wired into
+    // IntegralSolver — see docs/integral_table_plan.md). Uncomment and set T_in
+    // from the first successful solve at tau = 604800 s once the fix lands.
+    // EES reference (ventilation only): T_in_max ≈ 29.76 °C.
+    // {"building_rc_network.eescode", {"T_in", 0.0}},
     {"internal_combustion_engine.eescode",      {"W_dot", 190817}},
     {"internal_combustion_engine_cpbar.eescode", {"M_dot_a", 0.004209}},
     {"piston_compressor.eescode",               {"C", 0.04694}},
@@ -221,8 +228,11 @@ ExampleTestResult testExampleFile(const fs::path& filepath) {
         result.irSuccess = runner.isIRSuccess();
         if (result.irSuccess) {
             result.analysisSuccess = runner.isAnalysisSuccess();
-            if (result.analysisSuccess) {
-                result.blockCount = runner.getAnalysisResult().totalBlocks;
+            const bool integralModel = runner.hasIntegralResult();
+            if (result.analysisSuccess || integralModel) {
+                if (result.analysisSuccess) {
+                    result.blockCount = runner.getAnalysisResult().totalBlocks;
+                }
                 result.solveSuccess = runner.isSolveSuccess();
                 
                 // Collect per-block stats

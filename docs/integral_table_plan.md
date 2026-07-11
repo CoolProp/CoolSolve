@@ -1268,3 +1268,74 @@ interrupt the flood either.
 unchanged (the dispatch is guarded by `hasIntegral()`, false for every
 non-integral model — zero overhead).
 
+### 2026-07-11 — Example models from legacy EES archives ✅
+
+| Example | Source | Status |
+|---------|--------|--------|
+| `building_rc_network.eescode` | CLIM R06 Ex02-02a (RC building, ventilation only) | **Fails** (lookup during integration) — kept as regression test for `IntegralSolver` + lookup store |
+| `ice_storage_tank.eescode` | MSTh R6 Ex4 (ice storage discharge) | **Solves** — 1000 steps; phase-change logic via nested 3-arg `IF` |
+| `engine_weibe_cycle.eescode` | Engine course Ex2 Weibe (4-3.EES) | **Solves** — 180 steps (θ = −360…−180°, 1° fixed step); `PROCEDURE weibe` + inlined intake flow |
+
+**Conversion notes applied to all three:**
+
+- English header comments describing the physical model.
+- EES `dT\dtau` derivative notation replaced by explicit variables
+  (`dT_in_dtau = Q_dot_capa_in / C_in`) and `T = T_0 + INTEGRAL(...)`.
+- `INTEGRAL` limits written as numeric literals (`0`, `604800`, …) — see
+  limitation below.
+- `$IntegralTable` columns are **space-separated** (EES syntax); commas in the
+  directive are parsed as part of the column name and produce empty CSV columns.
+- Weibe exponent renamed `n` → `n_weibe` (bare `n = 3` is unmatched by the
+  structural analyser).
+
+**CoolSolve limitations encountered (no source changes made):**
+
+1. **Non-constant integration limits** — `tau_2 = N_h * 3600` in the original
+   EES files is not constant-folded into `INTEGRAL(..., tau_1, tau_2)`. Use
+   literal bounds in the `INTEGRAL` call; keep named parameters (`tau_2 = …`)
+   only for documentation elsewhere.
+
+2. **EES multi-threshold `IF(x, a, b, c, d)` (5 arguments)** — not supported;
+   only the 3-arg `IF(cond, true, false)` with `cond > 0` is implemented.
+   Phase-change logic in `ice_storage_tank.eescode` uses nested 3-arg `IF`.
+
+3. **Lookup tables inside integral models** — `IntegralSolver` constructs its
+   internal algebraic `Solver` without calling `setLookupTableStore()`. Models
+   that `INTERPOLATE` weather data during time-marching fail with
+   `lookup table '…' not found (no table store is available in this context)`.
+   `building_rc_network.eescode` **keeps** the `INTERPOLATE('week', …)` calls
+   and companion `building_rc_network-week.csv` deliberately, as a regression
+   test until the fix lands.
+   **Fix (deferred):** propagate `runner.lookupTableStore_` into
+   `IntegralSolver`'s algebraic solver in `integral_solver.cpp`. When fixed,
+   uncomment the `building_rc_network.eescode` entry in
+   `tests/test_examples.cpp` (`EXPECTED_SOLUTIONS`) and set `T_in` from the
+   first successful solve.
+
+4. **`PROCEDURE admission` + coupled outputs `M_dot` / `choked`** — the original
+   engine model's `CALL admission(… : M_dot, choked)` produced a
+   `SingularJacobian` on the `{choked, M_dot}` block at θ = −360°. The example
+   inlines a choked-flow `M_dot` expression and keeps only `PROCEDURE weibe`.
+   Full admission procedure support during integration may need further
+   investigation of procedure-output blocks inside the reduced algebraic
+   subsystem.
+
+5. **CoolProp near freezing** — `INTENERGY(Water, T=-0.01, P=P)` fails
+   verification; `ice_storage_tank.eescode` uses `u_ice_0 = -333000` J/kg and
+   constant `v_ice` / `v_liq` instead.
+
+**Run commands:**
+
+```bash
+./build/coolsolve examples/building_rc_network.eescode   # ~9 s
+./build/coolsolve examples/ice_storage_tank.eescode     # ~3 s
+./build/coolsolve examples/engine_weibe_cycle.eescode   # ~2 s
+```
+
+Each writes `<model>-integral.csv` next to the `.eescode` file.
+
+
+
+The pre-existing `integral_decay.eescode` (analytical sanity check) remains
+in `examples/`.
+

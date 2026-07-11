@@ -1,0 +1,97 @@
+"3R2C building thermal network with equation-based integration (CLIM R06 Ex02)
+
+A single-zone building model with three thermal capacitances (indoor air,
+opaque facade, internal masonry walls) coupled through resistances. Outdoor
+weather (temperature, south solar irradiance, occupancy factor) is read from
+the companion lookup table building_rc_network-week.csv (July sunny week,
+tables p.4.12 and 2.23 of the CLIM course).
+
+Ventilation provides the only cooling (no active HVAC). The model integrates
+indoor and wall temperatures over one week (168 h) using INTEGRAL.
+
+NOTE: this model intentionally uses INTERPOLATE during time-marching. It is
+expected to fail until CoolSolve wires the lookup table store into
+IntegralSolver (see docs/integral_table_plan.md). Keep it as a regression
+test for that feature.
+
+Source: CLIM R06 repetition exercise 2 (University of Liege), simplified
+from the original EES model (variant 2a: constant ventilation, no cooling unit).
+"
+
+"--- Geometry and ventilation ---"
+Haut = 2.7
+Prof = 6
+Larg = 4
+V_in = Larg * Prof * Haut
+V_dot_su_m3h = 60
+V_dot_su = V_dot_su_m3h / 3600
+rho = 1.2
+c_p = 1005
+T_su = 14
+
+"--- Internal gains (peak values) ---"
+Q_dot_occ_max = 160
+Q_dot_light_max = 250
+Q_dot_appl_max = 250
+SF = 0.5
+
+"--- Integration interval (one week, 600 s output interval) ---"
+tau_1 = 0
+tau_2 = 604800
+N_h = 168
+DELTAtau = 600
+tau_hour = tau / 3600
+
+"--- Weather from lookup table (July sunny week) ---"
+T_out = INTERPOLATE('week', 'tau', 'T_out', tau)
+I_dot_south = INTERPOLATE('week', 'tau', 'I_dot_south', tau)
+f_occ = INTERPOLATE('week', 'tau', 'f_occ', tau)
+
+"--- Thermal resistances and capacitances ---"
+C_opaque = 360000
+R_in_1 = 0.1964
+R_out_1 = 0.1149
+A_opaque = 6.3
+U_glazing = 3
+A_glazing = 4.5
+R_glazing = 1 / U_glazing
+h_in = 8
+R_w = 0.1429
+R_in = 1 / h_in + R_w / 2
+A_InternalWalls = Haut * Prof * 2 + Haut * Larg + Prof * Larg * 2
+C_InternalWalls = C_opaque / 2
+C_in = 5 * V_in * rho * c_p
+C_dot_su = V_dot_su * rho * c_p
+
+"--- Initial temperatures [C] ---"
+T_in_0 = 25
+T_c_in_0 = 25
+T_c_wall_0 = 25
+
+"--- State equations (integrated) ---"
+T_in = T_in_0 + INTEGRAL(dT_in_dtau, tau, 0, 604800)
+T_c_wall = T_c_wall_0 + INTEGRAL(dT_c_wall_dtau, tau, 0, 604800)
+T_c_in = T_c_in_0 + INTEGRAL(dT_c_in_dtau, tau, 0, 604800)
+
+dT_in_dtau = Q_dot_capa_in / C_in
+dT_c_wall_dtau = Q_dot_capa_c_wall / (C_opaque * A_opaque)
+dT_c_in_dtau = Q_dot_capa_c_in / (C_InternalWalls * A_InternalWalls)
+
+"--- Node balances ---"
+Q_dot_sens + H_dot_vent + (T_c_in - T_in) / (R_in / A_InternalWalls) + (T_out - T_in) / (R_glazing / A_glazing) + (T_c_wall - T_in) / (R_in_1 / A_opaque) = Q_dot_capa_in
+
+(T_in - T_c_wall) / (R_in_1 / A_opaque) + (T_out - T_c_wall) / (R_out_1 / A_opaque) = Q_dot_capa_c_wall
+
+(T_in - T_c_in) / (R_in / A_InternalWalls) = Q_dot_capa_c_in
+
+"--- Heat flows ---"
+H_dot_vent = C_dot_su * (T_su - T_in)
+Q_dot_sol = A_glazing * SF * I_dot_south
+Q_dot_light = f_occ * Q_dot_light_max
+Q_dot_appl = f_occ * Q_dot_appl_max
+Q_dot_occ = f_occ * Q_dot_occ_max
+Q_dot_clim = 0
+Q_dot_sens = Q_dot_clim + Q_dot_light + Q_dot_appl + Q_dot_occ + Q_dot_sol
+Q_dot_in_walls = (T_c_wall - T_in) / (R_in_1 / A_opaque) + (T_c_in - T_in) / (R_in / A_InternalWalls)
+
+$IntegralTable tau:600 tau_hour T_c_in T_in T_c_wall T_out Q_dot_in_walls Q_dot_sol Q_dot_sens H_dot_vent Q_dot_capa_in Q_dot_capa_c_wall Q_dot_capa_c_in

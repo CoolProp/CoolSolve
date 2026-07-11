@@ -257,6 +257,16 @@ analytical answer (the bundled `integral_decay.eescode` exercises
 `y(t) = e^{-t}`, giving `y(4) ≈ 0.0183156`), or inspect `integral_table.csv`
 for monotonicity / energy-balance trends.
 
+### Integral-specific pitfalls
+
+| Symptom | Likely cause | Workaround |
+|---------|--------------|------------|
+| `Non-constant integration limits` | `INTEGRAL(..., tau_1, tau_2)` with non-literal bounds | Use numeric literals in the `INTEGRAL` call (`0`, `604800`, …) |
+| `lookup table '…' not found (no table store…)` | `INTERPOLATE` inside an integral model | Use analytic expressions, or see `docs/integral_table_plan.md` (lookup store not yet wired into `IntegralSolver`) |
+| `Unknown or unsupported function: IF with 5 arguments` | EES multi-threshold `IF` | Rewrite with nested 3-arg `IF(cond, true, false)` where `cond > 0` |
+| Empty columns in `*-integral.csv` | Commas in `$IntegralTable` directive | Use **space-separated** column names: `$IntegralTable tau:600 T_in T_out` |
+| `PROCEDURE` / `CALL` fails at first step | Procedure-output block in reduced algebraic subsystem | Inline simple outputs, or debug with `-d` and `integral.md` |
+
 ## Summary Checklist
 
 - [ ] Run with `-d` to generate debug output
