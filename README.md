@@ -913,6 +913,9 @@ CALL single_phase_HX('Air_ha', 'Water', 20 : Q_total)
 The next steps in the implementation plan include:
 - **Hybrd-native `O(n²)` triangular solve** for TrustRegion's Broyden mode, to realize the speedup that the QR infrastructure (§4.1) makes possible
 - **Pseudo-arclength continuation** in the Homotopy solver (roadmap §4.4) to pass turning points
+- **Try Harder** button in the gui: if newton fails, tries all the other methods
+- **Library of models**: turn the examples folder into a well structured library of thermodynamics models
+- **Improved plotting**: interface to generate plots from any of the active tables in the model
 
 See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
 
