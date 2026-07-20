@@ -97,6 +97,30 @@ enum class SolverPipelineMode {
 std::string pipelineModeToString(SolverPipelineMode mode);
 
 /**
+ * @brief When to engage the multi-start fallback on a failed block.
+ *
+ * Replaces the legacy boolean `multiStartEnabled`.  The legacy flag is still
+ * parsed from `coolsolve.conf` for backward compatibility and mapped to one
+ * of these modes (`true` → `Always`, `false` → `Never`).
+ */
+enum class MultiStartMode {
+    Always,        ///< Engage on every solve (legacy multiStartEnabled = true)
+    InDeepSearch,  ///< Engage only when running a Deep Search (default)
+    Never          ///< Never engage (legacy multiStartEnabled = false)
+};
+
+/**
+ * @brief Convert MultiStartMode to string.
+ */
+std::string multiStartModeToString(MultiStartMode mode);
+
+/**
+ * @brief Parse a multi-start mode name (case-insensitive) to enum.
+ * @return true if parsing succeeded, false if the name is unknown.
+ */
+bool parseMultiStartMode(const std::string& name, MultiStartMode& out);
+
+/**
  * @brief Options for non-linear solvers.
  */
 struct SolverOptions {
@@ -191,20 +215,31 @@ struct SolverOptions {
     // provided.  Zero overhead when every block converges on the first try:
     // the candidate search only triggers after a block failure.
     // Size-1 blocks are skipped (Newton1D already does its own multi-probe).
+    //
+    // -- Legacy boolean (deprecated, kept for backward compatibility) --
+    // Setting `multiStartEnabled = false` in coolsolve.conf forces
+    // MultiStartMode::Never.  Setting it to `true` forces Always.  When both
+    // are present in the file, the last one wins.  When neither is present,
+    // `multiStartMode` (default InDeepSearch) decides.
     bool multiStartEnabled = true;
+    // Canonical multi-start engagement mode (default: InDeepSearch).
+    MultiStartMode multiStartMode = MultiStartMode::InDeepSearch;
     // Number of alternative starting points to try on a failed block.
     // Each candidate replays the full solver pipeline, so large values increase
     // the worst-case cost of a failure.  Default: 4.
     int  multiStartMaxRestarts = 4;
     // Number of threads used to evaluate multi-start candidates concurrently.
-    // 1  = sequential (default; bit-for-bit identical to the original behaviour,
+    // 1  = sequential (bit-for-bit identical to the original behaviour,
     //      zero threading overhead).
     // N>1= run up to N candidates concurrently (first-to-converge wins).
     // 0  = auto: min(hardware_concurrency, number of candidates).
-    // Only consulted when multiStartEnabled is true and a block actually fails
-    // (zero overhead otherwise).  Parallel candidates reuse the thread-safe
-    // solveBlockSequential core (see Solver::solveBlockMultiStartParallel).
-    int  multiStartNumCores = 1;
+    // Only consulted when multi-start is engaged (a block actually fails
+    // and the mode allows it) — zero overhead otherwise.  Parallel candidates
+    // reuse the thread-safe solveBlockSequential core (see
+    // Solver::solveBlockMultiStartParallel).  Default: 4 — multi-start only
+    // triggers on failure, so the threading overhead is amortised across the
+    // expensive candidate re-solves.
+    int  multiStartNumCores = 4;
 
     // --- BisectionND options ---
     // BisectionND is a derivative-free sign-change bisection solver.
@@ -272,6 +307,36 @@ struct SolverOptions {
     /// Execution mode: sequential fallback or parallel (first-to-solve wins)
     SolverPipelineMode pipelineMode = SolverPipelineMode::Sequential;
 
+    // --- Deep Search ("Try Harder") pipeline ---
+    //
+    // When `deepSearch` is true (set transiently by the GUI's "Try Harder"
+    // button — never read from coolsolve.conf), the solver substitutes
+    // `deepSearchPipeline` for `solverPipeline` and additionally forces
+    // `enableTearing = true` and `enableSymbolicReduction = true` so that the
+    // hardest possible pass is applied.  Default deepSearchPipeline is the
+    // full sequential chain so that a single click tries every available
+    // strategy before giving up.  Users may customise it (e.g. drop
+    // BisectionND for very large models) via the `deepSearchPipeline` key in
+    // coolsolve.conf.
+    std::vector<SolverStrategy> deepSearchPipeline = {
+        SolverStrategy::Newton,
+        SolverStrategy::TrustRegion,
+        SolverStrategy::LevenbergMarquardt,
+        SolverStrategy::BisectionND,
+        SolverStrategy::Homotopy,
+        SolverStrategy::Partitioned,
+        SolverStrategy::Kinsol
+    };
+
+    /// Execution mode for the Deep Search pipeline.
+    SolverPipelineMode deepSearchPipelineMode = SolverPipelineMode::Sequential;
+
+    /// Transient flag: when true, the solver uses `deepSearchPipeline` and
+    /// forces tearing + symbolic reduction.  Set by the GUI "Try Harder"
+    /// button via the `/api/v1/solve` body (`{"deepSearch": true}`); never
+    /// parsed from coolsolve.conf.
+    bool deepSearch = false;
+
     // Performance and safety
     int timeoutSeconds = 0;           // Timeout in seconds (0 = none)
 
@@ -326,6 +391,27 @@ struct SolverOptions {
     bool   integralRichardson    = false;   // Richardson extrapolation (fixed step)
     double integralOutputInterval= 0.0;     // default output spacing when
                                             //   $IntegralTable omits the ':n'
+
+    /**
+     * @brief Resolve the multi-start engagement rule against the current
+     *        run-time state.
+     *
+     * Combines the legacy `multiStartEnabled` bool with the canonical
+     * `multiStartMode` enum:
+     *   - `multiStartEnabled == false` always wins (legacy off).
+     *   - `Always`       → engaged.
+     *   - `Never`        → not engaged.
+     *   - `InDeepSearch` → engaged only when `deepSearch == true`.
+     */
+    bool isMultiStartActive() const {
+        if (!multiStartEnabled) return false;
+        switch (multiStartMode) {
+            case MultiStartMode::Always:       return true;
+            case MultiStartMode::Never:        return false;
+            case MultiStartMode::InDeepSearch: return deepSearch;
+        }
+        return false;
+    }
 };
 
 /**

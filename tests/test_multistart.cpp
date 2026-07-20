@@ -64,11 +64,14 @@ SolveOutcome solveFromSource(const std::string& code, SolverOptions opts) {
 
 // Default options: Newton-only pipeline so the singular-Jacobian failure is
 // not masked by BisectionND/Homotopy fallbacks — this isolates multi-start.
+// Multi-start is set to Always so legacy `multiStartEnabled = true/false`
+// overrides below continue to work as a pure on/off switch for these tests.
 SolverOptions newtonOnlyOpts() {
     SolverOptions opts;
     opts.tolerance = 1e-8;
     opts.maxIterations = 50;
     opts.solverPipeline = {SolverStrategy::Newton};
+    opts.multiStartMode = MultiStartMode::Always;
     return opts;
 }
 } // namespace
@@ -218,7 +221,7 @@ TEST_CASE("Multi-start rescues piston_compressor without initials",
         SolverStrategy::LevenbergMarquardt, SolverStrategy::BisectionND,
         SolverStrategy::Homotopy, SolverStrategy::Partitioned,
     };
-    opts.multiStartEnabled = true;
+    opts.multiStartMode = MultiStartMode::Always;
 
     Solver solver(*ir, an);
     auto res = solver.solve(opts, true);
@@ -247,9 +250,77 @@ TEST_CASE("Multi-start rescues refrigeration_compressor without initials",
         SolverStrategy::LevenbergMarquardt, SolverStrategy::BisectionND,
         SolverStrategy::Homotopy, SolverStrategy::Partitioned,
     };
-    opts.multiStartEnabled = true;
+    opts.multiStartMode = MultiStartMode::Always;
 
     Solver solver(*ir, an);
     auto res = solver.solve(opts, true);
     REQUIRE(res.success);
+}
+
+// ----------------------------------------------------------------------------
+// "Try Harder" / Deep Search integration.
+//
+// Verifies the two essential properties of the feature:
+//   1. With default options (Newton-only pipeline, multiStartMode = InDeepSearch),
+//      the singular-scale block FAILS in a normal solve because multi-start
+//      does not engage (deepSearch = false).
+//   2. Setting `deepSearch = true` engages the full deep-search pipeline AND
+//      flips multi-start on (because mode == InDeepSearch); the block now
+//      converges.
+// ----------------------------------------------------------------------------
+TEST_CASE("Deep search (Try Harder) rescues the singular block",
+          "[solver][multistart][deepsearch]") {
+    // 1. Baseline: defaults fail.
+    {
+        SolverOptions opts;
+        opts.tolerance = 1e-8;
+        opts.maxIterations = 50;
+        // Default: solverPipeline = {Newton}, multiStartMode = InDeepSearch,
+        // deepSearch = false → multi-start NOT engaged.
+        auto out = solveFromSource(kSingularScaleBlock, opts);
+        REQUIRE_FALSE(out.success);
+    }
+
+    // 2. Try Harder: same options but with deepSearch = true.
+    //    The deep-search pipeline (default = all solvers, sequential) now
+    //    runs, tearing + symbolic reduction are forced on, AND multi-start
+    //    engages (mode == InDeepSearch, deepSearch == true).  The block now
+    //    converges via one of these mechanisms.
+    {
+        SolverOptions opts;
+        opts.tolerance = 1e-8;
+        opts.maxIterations = 50;
+        opts.deepSearch = true;
+        auto out = solveFromSource(kSingularScaleBlock, opts);
+        REQUIRE(out.success);
+        REQUIRE_THAT(out.result.variables.at("x"), WithinAbs(0.1, 1e-4));
+        REQUIRE_THAT(out.result.variables.at("y"), WithinAbs(0.1, 1e-4));
+    }
+}
+
+TEST_CASE("isMultiStartActive follows the mode + deepSearch combination",
+          "[solver][multistart][deepsearch]") {
+    SolverOptions opts;
+    // Default: InDeepSearch, deepSearch off → not active.
+    REQUIRE_FALSE(opts.isMultiStartActive());
+
+    // Flip deepSearch on → active.
+    opts.deepSearch = true;
+    REQUIRE(opts.isMultiStartActive());
+
+    // Always → active regardless of deepSearch.
+    opts.multiStartMode = MultiStartMode::Always;
+    opts.deepSearch = false;
+    REQUIRE(opts.isMultiStartActive());
+
+    // Never → never active.
+    opts.multiStartMode = MultiStartMode::Never;
+    opts.deepSearch = true;
+    REQUIRE_FALSE(opts.isMultiStartActive());
+
+    // Legacy bool override: false wins regardless of mode.
+    opts.multiStartMode = MultiStartMode::Always;
+    opts.deepSearch = true;
+    opts.multiStartEnabled = false;
+    REQUIRE_FALSE(opts.isMultiStartActive());
 }

@@ -30,6 +30,28 @@ This creates a folder `<input>_coolsolve/` (or `<input>_coolsolve/` next to the 
 | `coolsolve_residuals.md` | Equation-by-equation LHS, RHS, residual values |
 | `equations.md` | Which equations are in each block |
 
+## Quick Win — "Try Harder" (GUI)
+
+Before diving into the diagnosis below, click the **Try Harder** button in the
+GUI (shortcut: `Ctrl+Enter` after a failed solve). It re-runs the model with
+the full **Deep Search** pipeline (`deepSearchPipeline`), forces structural
+**tearing** and **symbolic reduction** on, and engages multi-start according
+to `multiStartMode`. If the failure was due to a poor initial guess or an
+algebraic loop that tearing can crack, Try Harder recovers it in one click —
+no manual diagnosis required.
+
+- **If Try Harder succeeds**, the model is fine; the default pipeline simply
+  needed more fire-power. To make Deep Search the default, set `solverPipeline`
+  to the full chain in `coolsolve.conf`.
+- **If Try Harder also fails**, proceed to Step 2 to interpret the error and
+  apply the structured workflow below.
+- Editing the model, the initials, or the configuration restores the normal
+  **Solve** button.
+
+Outside the GUI, the equivalent is to send `{"deepSearch": true}` to the
+`POST /api/v1/solve` endpoint — see
+[GUI §6.2](gui.md#62-toolbar--toolbartsx).
+
 ## Step 2: Interpret the Error
 
 ### LineSearchFailed
@@ -123,7 +145,14 @@ Use `equations.md` and `report.md` to see which variables appear in the largest 
 
 ### Unit Mismatches (CoolProp)
 
-- CoolProp expects **Pa** for pressure. If the model uses bar or kPa, convert (e.g. `P=101325` for 1 atm).
+- **Temperatures are in °C, never K.** CoolSolve's unit system is fixed (see
+  the warning at the top of the [Language Reference](language_reference.md)):
+  every `T=...` argument and every value returned by `temperature(...)`,
+  `t_sat(...)`, `T_CRIT`, … is in degrees Celsius. CoolProp works internally
+  in Kelvin; the `°C ↔ K` conversion is performed automatically by CoolSolve.
+  Writing `T=300` therefore means **300 °C** (≈ 573 K), not 300 K — getting
+  this wrong is a common source of `EvaluationError` from CoolProp.
+- **CoolProp expects Pa for pressure.** If the model uses bar or kPa, convert (e.g. `P=101325` for 1 atm).
 - Example: `specheat(cf$, T=t_bar_cf, P=1)` may mean 1 bar in some contexts but 1 Pa in CoolProp → use `P=101325`.
 
 ### Procedure Fixes
@@ -262,7 +291,7 @@ for monotonicity / energy-balance trends.
 | Symptom | Likely cause | Workaround |
 |---------|--------------|------------|
 | `Non-constant integration limits` | `INTEGRAL(..., tau_1, tau_2)` with non-literal bounds | Use numeric literals in the `INTEGRAL` call (`0`, `604800`, …) |
-| `lookup table '…' not found (no table store…)` | `INTERPOLATE` inside an integral model | Use analytic expressions, or see `docs/integral_table_plan.md` (lookup store not yet wired into `IntegralSolver`) |
+| `lookup table '…' not found (no table store…)` | `INTERPOLATE` inside an integral model | Use analytic expressions, or see [Dynamic Solving §7.1](integral_table.md#71-current-limitations) (lookup store not yet wired into `IntegralSolver`) |
 | `Unknown or unsupported function: IF with 5 arguments` | EES multi-threshold `IF` | Rewrite with nested 3-arg `IF(cond, true, false)` where `cond > 0` |
 | Empty columns in `*-integral.csv` | Commas in `$IntegralTable` directive | Use **space-separated** column names: `$IntegralTable tau:600 T_in T_out` |
 | `PROCEDURE` / `CALL` fails at first step | Procedure-output block in reduced algebraic subsystem | Inline simple outputs, or debug with `-d` and `integral.md` |

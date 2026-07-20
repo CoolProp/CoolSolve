@@ -1,10 +1,15 @@
 # CoolSolve Language Reference
 
-[← Back to overview](../README.md)
-
 This page describes the CoolSolve language — an EES-compatible subset with
 thermodynamic property functions backed by CoolProp. Only features that are
 currently implemented and covered by tests are documented here.
+
+> **⚠ Unit system (fixed).** In its current state, **the unit system of
+> CoolSolve cannot be changed.** Temperature is always in **°C**, pressure in
+> **Pa**, energy in **J**, etc. (see `include/coolsolve/units.h`). CoolProp
+> works internally in SI (K), so values are converted `°C → K` on the way in
+> and `K → °C` on the way out — this is transparent to the model. **Never use
+> Kelvin values for `T=...` arguments** or you will be ~273 °C off.
 
 ---
 
@@ -53,18 +58,20 @@ From tightest to loosest:
 An optional **unit annotation** `"[unit]"` may follow an equation:
 
 ```ees
-T_1 = 300  "[K]"
+T_1 = 25  "[°C]"
 ```
 
-Units annotations are informational; the solver uses the unit system
-configured in `coolsolve.conf`.
+The annotation is purely informational — it is **not** used to convert the
+value. The unit system is fixed (temperature in °C, pressure in Pa, energy in
+J, …); see the warning at the top of this page.
 
 ### Directives
 
 Parser-level directives begin with `$` and span a single line:
 
 - `$if <cond>` / `$ifnot <cond>` / `$endif`
-- `$unitSystem SI` / `$unitSystem K` etc.
+- `$unitSystem SI` — recognised for EES compatibility but currently **ignored**;
+  the unit system is fixed (see the warning at the top of this page).
 
 ---
 
@@ -145,17 +152,18 @@ variables). Example:
 
 ```ees
 h_1 = enthalpy('Water', T=T_1, P=P_1)
-rho = density('R134a', T=280, P=500e3)
+rho = density('R134a', T=10, P=500e3)
 ```
 
-Inputs and outputs are in the unit system configured in `coolsolve.conf`
-(default temperature is Celsius).
+Inputs and outputs follow the **fixed unit system** of CoolSolve:
+temperature is in **°C** (never K), pressure in Pa, energy in J/kg, entropy in
+J/(kg·K). See the warning at the top of this page.
 
 ### Standard properties
 
-| Function                             | Result (SI)                |
+| Function                             | Result (CoolSolve units)   |
 |:-------------------------------------|:---------------------------|
-| `temperature` / `T`                  | K                          |
+| `temperature` / `T`                  | °C                         |
 | `pressure` / `P`                     | Pa                         |
 | `enthalpy` / `H`                     | J/kg                       |
 | `entropy` / `S`                      | J/(kg·K)                   |
@@ -240,8 +248,9 @@ CALL psychprops(T_1, P_1, R_1 : T, v, h, s, u, W, R, Twb, Tdp)
 ```
 
 Returns all nine psychrometric properties at the specified state
-(`T` [K|°C], `P` [Pa], `R` = relative humidity in [0..1]). Outputs are
-returned in the configured unit system.
+(`T` in °C, `P` in Pa, `R` = relative humidity in [0..1]). Outputs are
+returned in CoolSolve's fixed unit system (temperature in °C, see the warning
+at the top of this page).
 
 ---
 
@@ -296,8 +305,8 @@ in mass %, or the named `C=...` argument):
 Example:
 
 ```ees
-rho = density('MEG', 30, T=280, P=101325)   "30 % MEG"
-cp  = cp('EthyleneGlycol', T=280, P=101325, C=30)
+rho = density('MEG', 30, T=10, P=101325)   "30 % MEG at 10 °C"
+cp  = cp('EthyleneGlycol', T=10, P=101325, C=30)
 ```
 
 ### Unsupported EES fluids
@@ -389,12 +398,20 @@ Guess values live in a `.initials` file next to the model, one
 
 See `examples/coolsolve.conf` for the full list of options. Key sections:
 
-- `[units]` — temperature, pressure, energy, …
 - `[coolprop]` — backend (`HEOS`, `BICUBIC&HEOS`, `TTSE&HEOS`), analytical
   derivatives, AbstractState caching.
 - `[solver]` — pipeline order (Newton, TrustRegion, LM, BisectionND,
-  Homotopy, Partitioned), tolerances, iteration limits.
+  Homotopy, Partitioned, Kinsol), tolerances, iteration limits.
+- `[deepsearch]` — `deepSearchPipeline` / `deepSearchPipelineMode` used by
+  the GUI **Try Harder** button (defaults to the full sequential chain).
+- `[multistart]` — `multiStartMode` (`always` / `deepsearch` / `never`),
+  `multiStartMaxRestarts`, `multiStartNumCores` (default 4). The legacy
+  `multiStartEnabled` boolean is still accepted.
 - `[tearing]` — SCC-based block reduction options.
+
+> **Note on units.** The unit system itself is **not** configurable through
+> `coolsolve.conf`: temperature is always in °C, pressure in Pa, energy in J.
+> See the warning at the top of this page.
 
 ---
 
@@ -634,7 +651,7 @@ y_prev = INTEGRALVALUE(t-0.5, 'y')   "interpolate the trajectory of y"
 variable value `t` by **linear interpolation** of the trajectory built so far
 (with flat clamping at the endpoints). It is meaningful only *during* an
 integration step. The parser recognises the function; full evaluator dispatch is
-a deferred follow-up (see `docs/integral_table_plan.md`).
+a deferred follow-up (see [Dynamic Solving §7.2](integral_table.md#72-planned-improvements)).
 
 ### 12.5 Integration methods and configuration
 

@@ -9,13 +9,12 @@ using namespace coolsolve::test;
 using Catch::Matchers::WithinRel;
 
 // ============================================================================
-// Phase 0 — TDD tests for Richardson extrapolation (fixed-step methods).
+// TDD tests for Richardson extrapolation (fixed-step methods).
 //
 // Richardson cancels the leading O(h^p) error term, raising the effective
 // order by one:  I_rich = (2^p · I_{h/2} − I_h) / (2^p − 1).
 // We verify the *order gain* (the defining property) by checking the error
 // convergence ratio when N doubles, not a hard absolute threshold.
-// See docs/integral_table_plan.md §Phase 0 and §2.3.
 // ============================================================================
 
 TEST_CASE("Richardson: RK4 gains one order (4 -> 5)", "[richardson][integrator]") {

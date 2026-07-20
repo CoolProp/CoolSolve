@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Play, FolderOpen, Save, RefreshCw, Bug, Sun, Moon,
-  ChevronDown, ChevronUp, BookOpen, Square,
+  ChevronDown, ChevronUp, BookOpen, Square, Zap,
   Braces, Quote, FilePlus, Undo, Pencil, FileText, Library,
 } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
@@ -34,6 +34,10 @@ export default function Toolbar() {
   const loadFile = useModelStore((s) => s.loadFile);
   const clearModel = useModelStore((s) => s.clearModel);
   const lastResult = useModelStore((s) => s.lastResult);
+  const tryHarderAvailable = useModelStore((s) => s.tryHarderAvailable);
+  const setTryHarderAvailable = useModelStore((s) => s.setTryHarderAvailable);
+  const deepSearchRunning = useModelStore((s) => s.deepSearchRunning);
+  const setDeepSearchRunning = useModelStore((s) => s.setDeepSearchRunning);
 
   const theme = useUIStore((s) => s.theme);
   const toggleTheme = useUIStore((s) => s.toggleTheme);
@@ -73,14 +77,25 @@ export default function Toolbar() {
     };
   }, []);
 
-  // Solve handler — async with SSE progress streaming
+  // Solve handler — async with SSE progress streaming.
+  //
+  // `deepSearch = true` triggers a "Try Harder" run: the backend swaps in the
+  // deep-search pipeline and forces tearing + symbolic reduction.  This is
+  // exposed in the UI by morphing the primary "Solve" button into a
+  // "Try Harder" button after a failed solve (see tryHarderAvailable).
   const handleSolve = useCallback(
-    async (debug = false) => {
+    async (debug = false, deepSearch = false) => {
       if (!eescode.trim()) return;
       setSolving(true);
+      setDeepSearchRunning(deepSearch);
+      // Starting a fresh solve clears the "Try Harder" affordance: it is only
+      // re-armed if this solve also fails (see the 'error' SSE branch below).
+      setTryHarderAvailable(false);
       clearConsole();
       setBottomPanelOpen(true);
-      addConsoleLine('>>> Starting solve...');
+      addConsoleLine(deepSearch
+        ? '>>> Starting deep search (try harder)...'
+        : '>>> Starting solve...');
 
       try {
         // Save current content to backend
@@ -88,7 +103,7 @@ export default function Toolbar() {
         if (initials) await api.putInitials(initials);
 
         // Trigger async solve
-        await api.solve({ debug });
+        await api.solve({ debug, deepSearch });
 
         // Subscribe to SSE progress stream
         if (eventSourceRef.current) eventSourceRef.current.close();
@@ -148,6 +163,7 @@ export default function Toolbar() {
                 }
               }
               setSolving(false);
+              setDeepSearchRunning(false);
               es.close();
               break;
             }
@@ -182,10 +198,20 @@ export default function Toolbar() {
                     addConsoleLine(`    [${d.severity}]${loc}: ${d.message}`);
                   }
                 }
+                // Arm the "Try Harder" affordance only for failures that deep
+                // search can plausibly rescue (not parse errors, not
+                // non-square systems, and not while it is already running).
+                const rescueable =
+                  result.status !== 'ParseFailed' &&
+                  result.status !== 'InvalidInput' &&
+                  result.isSquare !== false &&
+                  !deepSearchRunning;
+                if (rescueable) setTryHarderAvailable(true);
               } else {
                 addConsoleLine(`>>> ERROR: ${event.message}`);
               }
               setSolving(false);
+              setDeepSearchRunning(false);
               es.close();
               break;
             }
@@ -196,9 +222,10 @@ export default function Toolbar() {
       } catch (err: unknown) {
         addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
         setSolving(false);
+        setDeepSearchRunning(false);
       }
     },
-    [eescode, initials, setSolving, clearConsole, addConsoleLine, setSolveResult, setSol, setBottomPanelOpen, setLookupTables, setIntegralTable, setIntegralCSV]
+    [eescode, initials, setSolving, clearConsole, addConsoleLine, setSolveResult, setSol, setBottomPanelOpen, setLookupTables, setIntegralTable, setIntegralCSV, setDeepSearchRunning, setTryHarderAvailable, deepSearchRunning]
   );
 
   // ================================================================
@@ -442,7 +469,7 @@ export default function Toolbar() {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        if (!solving) handleSolve(e.shiftKey);
+        if (!solving) handleSolve(e.shiftKey, tryHarderAvailable && !e.shiftKey);
       } else if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
         handleSave();
@@ -462,7 +489,7 @@ export default function Toolbar() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [solving, handleSolve, handleSave, handleOpen, handleNew, handleUpdateGuesses, handleStopSolve]);
+  }, [solving, handleSolve, handleSave, handleOpen, handleNew, handleUpdateGuesses, handleStopSolve, tryHarderAvailable]);
 
   return (
     <div className="toolbar">
@@ -509,13 +536,23 @@ export default function Toolbar() {
       {/* Solve group */}
       <div className="toolbar-group">
         <button
-          className="toolbar-btn primary"
-          onClick={() => handleSolve(false)}
+          className={`toolbar-btn primary${tryHarderAvailable ? ' try-harder' : ''}`}
+          onClick={() => handleSolve(false, tryHarderAvailable)}
           disabled={solving || !eescode.trim()}
-          title="Solve (Ctrl+Enter)"
+          title={
+            solving
+              ? (deepSearchRunning ? 'Deep search in progress...' : 'Solving...')
+              : tryHarderAvailable
+                ? 'Try Harder: re-run with the Deep Search pipeline (Ctrl+Enter)'
+                : 'Solve (Ctrl+Enter)'
+          }
         >
-          {solving ? <span className="spinner" /> : <Play size={16} />}
-          {solving ? 'Solving...' : 'Solve'}
+          {solving ? <span className="spinner" /> : tryHarderAvailable ? <Zap size={16} /> : <Play size={16} />}
+          {solving
+            ? (deepSearchRunning ? 'Searching...' : 'Solving...')
+            : tryHarderAvailable
+              ? 'Try Harder'
+              : 'Solve'}
         </button>
         <button
           className="toolbar-btn"

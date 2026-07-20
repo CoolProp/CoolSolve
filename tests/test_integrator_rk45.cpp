@@ -9,8 +9,7 @@ using namespace coolsolve::test;
 using Catch::Matchers::WithinRel;
 
 // ============================================================================
-// Phase 0 — TDD tests for the Dormand-Prince RK45 adaptive integrator.
-// See docs/integral_table_plan.md §Phase 0.
+// TDD tests for the Dormand-Prince RK45 adaptive integrator.
 // ============================================================================
 
 TEST_CASE("RK45: dy/dt = -y recovers e^{-t}", "[integrator][rk45]") {

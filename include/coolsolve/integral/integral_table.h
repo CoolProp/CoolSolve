@@ -11,7 +11,7 @@
  * built-in).  CSV serialisation mirrors the lookup-table / parametric-study
  * workflow (`<modelname>-integral.csv`).
  *
- * See `docs/integral_table_plan.md` §Phase 2.
+ * See `docs/integral_table.md` §4 (IntegralTable).
  */
 #include <limits>
 #include <map>

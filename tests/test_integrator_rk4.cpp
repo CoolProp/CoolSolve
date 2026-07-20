@@ -9,8 +9,7 @@ using namespace coolsolve::test;
 using Catch::Matchers::WithinRel;
 
 // ============================================================================
-// Phase 0 — TDD tests for the classic 4th-order Runge-Kutta integrator.
-// See docs/integral_table_plan.md §Phase 0.
+// TDD tests for the classic 4th-order Runge-Kutta integrator.
 // ============================================================================
 
 TEST_CASE("RK4: dy/dt = -y recovers e^{-t}", "[integrator][rk4]") {

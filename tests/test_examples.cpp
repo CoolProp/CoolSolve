@@ -90,8 +90,9 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"ice_storage_tank.eescode",  {"E_discharged", 6.56833e10}},
     {"engine_weibe_cycle.eescode", {"p", 89221.7}},
     // Pending: INTERPOLATE during INTEGRAL (lookup store not yet wired into
-    // IntegralSolver — see docs/integral_table_plan.md). Uncomment and set T_in
-    // from the first successful solve at tau = 604800 s once the fix lands.
+    // IntegralSolver — see docs/integral_table.md §7.1 Limitations). Uncomment
+    // and set T_in from the first successful solve at tau = 604800 s once the
+    // fix lands.
     // EES reference (ventilation only): T_in_max ≈ 29.76 °C.
     // {"building_rc_network.eescode", {"T_in", 0.0}},
     {"internal_combustion_engine.eescode",      {"W_dot", 190817}},

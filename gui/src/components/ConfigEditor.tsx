@@ -11,13 +11,17 @@ interface ConfigField {
   type: 'number' | 'boolean' | 'string';
   defaultVal: string;
   description: string;
+  /** When set, the field is rendered as a dropdown of these values (the
+   *  empty choice is prepended as the "default" option).  Use for enum-like
+   *  string fields such as multiStartMode or kinsolGlobalStrategy. */
+  options?: string[];
 }
 
 interface ConfigGroup {
   title: string;
   fields: ConfigField[];
   /** Render this group with a custom component instead of the standard field list */
-  custom?: 'pipeline';
+  custom?: 'pipeline' | 'deepPipeline';
 }
 
 // ---------------------------------------------------------------------------
@@ -136,12 +140,25 @@ const PIPELINE_PRESETS: Array<{
   },
 ];
 
-/** Infer which preset matches the current conf entries, or "custom" if none match. */
-function detectPipelinePreset(confMap: Map<string, string>): string {
-  // Nothing set → Newton (default)
-  if (!confMap.has('solverPipeline') && !confMap.has('pipelineMode')) return 'newton-only';
-  const pipeline = (confMap.get('solverPipeline') ?? '').trim().toLowerCase();
-  const mode = (confMap.get('pipelineMode') ?? 'sequential').trim().toLowerCase();
+/**
+ * Infer which preset matches the current conf entries, or "custom" if none match.
+ *
+ * For the main pipeline (`pipelineKey='solverPipeline'`), the default — when
+ * nothing is set — is `newton-only`.  For the Deep Search pipeline
+ * (`deep=true`), the default is `sequential` (all solvers, sequential).
+ */
+function detectPipelinePreset(
+  confMap: Map<string, string>,
+  pipelineKey = 'solverPipeline',
+  modeKey = 'pipelineMode',
+  deep = false,
+): string {
+  // Nothing set → default preset
+  if (!confMap.has(pipelineKey) && !confMap.has(modeKey)) {
+    return deep ? 'sequential' : 'newton-only';
+  }
+  const pipeline = (confMap.get(pipelineKey) ?? '').trim().toLowerCase();
+  const mode = (confMap.get(modeKey) ?? 'sequential').trim().toLowerCase();
 
   // 1) Check single-solver presets (exact pipeline match + mode)
   for (const p of PIPELINE_PRESETS) {
@@ -313,6 +330,7 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
     title: 'KINSOL (SUNDIALS-style)',
     fields: [
       { key: 'kinsolGlobalStrategy', label: 'Global strategy', type: 'string', defaultVal: 'linesearch',
+        options: ['linesearch', 'picard', 'fp'],
         description:
           'Globalisation strategy for the KINSOL solver (add "Kinsol" to the pipeline). '
           + 'One of: linesearch (inexact Newton + Dennis-Schnabel line search; default), '
@@ -376,25 +394,33 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
   {
     title: 'Multi-Start',
     fields: [
-      { key: 'multiStartEnabled', label: 'Enable multi-start', type: 'boolean', defaultVal: 'true',
+      { key: 'multiStartMode', label: 'Multi-start mode', type: 'string', defaultVal: 'deepsearch',
+        options: ['always', 'deepsearch', 'never'],
         description:
-          'When a multi-variable block fails the entire solver pipeline, retry it from a few '
-          + 'alternative starting points. Thermo blocks re-evaluate every property via CoolProp at '
-          + 'a coherent reference (T, P) state (pressure regimes); purely-algebraic blocks scale the '
-          + 'default guess (wrong magnitude is the typical failure, e.g. C ~ 0.05 guessed as 1.0). '
+          'When to retry a failed multi-variable block from alternative starting points. '
+          + 'Thermo blocks re-evaluate every property via CoolProp at a coherent reference (T, P) '
+          + 'state (pressure regimes); purely-algebraic blocks scale the default guess '
+          + '(wrong magnitude is the typical failure, e.g. C ~ 0.05 guessed as 1.0). '
           + 'Zero overhead when every block converges on the first try: the search only triggers after '
-          + 'a block failure. Size-1 blocks are skipped (Newton1D already does its own multi-probe).' },
+          + 'a block failure. Size-1 blocks are skipped (Newton1D already does its own multi-probe). '
+          + '\n• always: engage on every solve (legacy behaviour; useful for brittle models). '
+          + '\n• deepsearch (default): engage only when running a Deep Search ("Try Harder"). '
+          + '\n• never: never engage. '
+          + '\nThe legacy boolean key multiStartEnabled = true/false is still accepted and maps to always/never.' },
       { key: 'multiStartMaxRestarts', label: 'Max restarts', type: 'number', defaultVal: '4',
         description:
           'Number of alternative starting points to try on a failed block. Each candidate replays '
           + 'the full solver pipeline, so large values increase the worst-case cost of a failure. '
           + 'Range 1..6.' },
-      { key: 'multiStartNumCores', label: 'Num cores', type: 'number', defaultVal: '1',
+      { key: 'multiStartNumCores', label: 'Num cores', type: 'number', defaultVal: '4',
         description:
           'Number of threads used to evaluate multi-start candidates concurrently. '
-          + '1 = sequential (default, no threading overhead); N>1 = run up to N candidates '
-          + 'concurrently (first-to-converge wins); 0 = auto (min(hardware_concurrency, candidates)). '
-          + 'Only consulted when multi-start engages (a block fails), so successful solves are unaffected.' },
+          + '4 = default (multi-start only triggers on failure, so the threading overhead is '
+          + 'amortised across the expensive candidate re-solves); N>1 = run up to N candidates '
+          + 'concurrently (first-to-converge wins); 0 = auto (min(hardware_concurrency, candidates)); '
+          + '1 = sequential (no threading overhead, bit-for-bit identical to the original behaviour). '
+          + 'Only consulted when multi-start engages (a block fails and the mode allows it), so '
+          + 'successful solves are unaffected.' },
     ],
   },
   {
@@ -403,9 +429,15 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
     custom: 'pipeline',
   },
   {
+    title: 'Deep Search Pipeline',
+    fields: [],
+    custom: 'deepPipeline',
+  },
+  {
     title: 'Integration',
     fields: [
       { key: 'integralMethod', label: 'Method', type: 'string', defaultVal: 'RK4',
+        options: ['EulerExplicit', 'EulerImplicit', 'RK4', 'RK45'],
         description:
           'Time-marching integrator for equation-based INTEGRAL / $IntegralTable models. '
           + 'One of: EulerExplicit (order 1, cheap, conditionally stable), '
@@ -444,6 +476,7 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
     title: 'CoolProp Integration',
     fields: [
       { key: 'coolpropBackend', label: 'Backend', type: 'string', defaultVal: 'HEOS',
+        options: ['HEOS', 'INCOMP', 'TTSE&HEOS', 'BICUBIC&HEOS'],
         description:
           'CoolProp AbstractState backend. HEOS = full Helmholtz EOS (default). '
           + 'TTSE&HEOS or BICUBIC&HEOS = tabular interpolation backends that build lookup '
@@ -514,34 +547,51 @@ function serializeConf(map: Map<string, string>): string {
 }
 
 // ---------------------------------------------------------------------------
-// Pipeline group — custom dropdown component
+// Pipeline group — custom dropdown component.
+// Reused for both the main solver pipeline and the Deep Search pipeline:
+// `pipelineKey` / `modeKey` select which conf entries are read & written.
 // ---------------------------------------------------------------------------
 interface PipelineGroupProps {
   confMap: Map<string, string>;
   onChange: (key: string, value: string) => void;
   onBatchChange: (changes: Record<string, string>) => void;
+  /** Conf key for the comma-separated solver list. */
+  pipelineKey?: string;
+  /** Conf key for the sequential/parallel mode. */
+  modeKey?: string;
+  /** When true, the group is rendered as the Deep Search variant
+   *  (slightly different copy + always shows the solver list). */
+  deep?: boolean;
 }
 
-function PipelineGroup({ confMap, onChange, onBatchChange }: PipelineGroupProps) {
-  const currentPresetId = detectPipelinePreset(confMap);
+function PipelineGroup({
+  confMap,
+  onChange,
+  onBatchChange,
+  pipelineKey = 'solverPipeline',
+  modeKey = 'pipelineMode',
+  deep = false,
+}: PipelineGroupProps) {
+  const currentPresetId = detectPipelinePreset(confMap, pipelineKey, modeKey, deep);
   const isCustom = currentPresetId === 'custom';
-  const showPipelineList = currentPresetId === 'sequential' || currentPresetId === 'parallel';
+  const showPipelineList =
+    deep || currentPresetId === 'sequential' || currentPresetId === 'parallel' || isCustom;
   const currentPreset = PIPELINE_PRESETS.find((p) => p.id === currentPresetId) ?? PIPELINE_PRESETS[0];
 
   const handlePresetChange = (newId: string) => {
     if (newId === 'custom') return;
     const preset = PIPELINE_PRESETS.find((p) => p.id === newId);
     if (!preset) return;
-    onBatchChange({ solverPipeline: preset.pipeline, pipelineMode: preset.mode });
+    onBatchChange({ [pipelineKey]: preset.pipeline, [modeKey]: preset.mode });
   };
 
   return (
     <div className="config-group-body">
       {/* Preset dropdown */}
       <div className="config-field">
-        <label title="Choose the solver pipeline preset">
-          <span className="config-field-label">Pipeline</span>
-          <span className="config-field-default">default: Sequential</span>
+        <label title={deep ? 'Choose the Deep Search pipeline preset' : 'Choose the solver pipeline preset'}>
+          <span className="config-field-label">{deep ? 'Deep Search pipeline' : 'Pipeline'}</span>
+          <span className="config-field-default">default: {deep ? 'All Solvers (Sequential)' : 'Newton'}</span>
         </label>
         <ConfigSelect
           value={currentPresetId}
@@ -561,11 +611,12 @@ function PipelineGroup({ confMap, onChange, onBatchChange }: PipelineGroupProps)
         {currentPreset.description}
       </div>
 
-      {/* Solver list — only for multi-solver presets (sequential / parallel) or custom */}
-      {(showPipelineList || isCustom) && (
+      {/* Solver list — always shown for the Deep Search variant, otherwise only
+          for multi-solver presets (sequential / parallel) or custom. */}
+      {showPipelineList && (
         <div style={{ padding: '4px 0' }}>
           <div style={{ fontSize: '0.82rem', marginBottom: '4px' }}>
-            <span className="config-field-label" title="Comma-separated list of solvers: Newton, TrustRegion, LM, BisectionND, Homotopy, Partitioned">
+            <span className="config-field-label" title="Comma-separated list of solvers: Newton, TrustRegion, LM, BisectionND, Homotopy, Partitioned, Kinsol">
               Solver list
             </span>
           </div>
@@ -573,9 +624,9 @@ function PipelineGroup({ confMap, onChange, onBatchChange }: PipelineGroupProps)
             className="config-input"
             rows={2}
             style={{ resize: 'vertical', width: '100%', boxSizing: 'border-box', fontFamily: 'inherit', fontSize: 'inherit', display: 'block' }}
-            value={confMap.get('solverPipeline') ?? ''}
-            placeholder="Newton, TrustRegion, LevenbergMarquardt, BisectionND, Homotopy, Partitioned"
-            onChange={(e) => onChange('solverPipeline', e.target.value)}
+            value={confMap.get(pipelineKey) ?? ''}
+            placeholder="Newton, TrustRegion, LevenbergMarquardt, BisectionND, Homotopy, Partitioned, Kinsol"
+            onChange={(e) => onChange(pipelineKey, e.target.value)}
           />
         </div>
       )}
@@ -655,6 +706,15 @@ export default function ConfigEditor() {
           {!collapsed.has(group.title) && (
             group.custom === 'pipeline' ? (
               <PipelineGroup confMap={confMap} onChange={handleChange} onBatchChange={handleBatchChange} />
+            ) : group.custom === 'deepPipeline' ? (
+              <PipelineGroup
+                confMap={confMap}
+                onChange={handleChange}
+                onBatchChange={handleBatchChange}
+                pipelineKey="deepSearchPipeline"
+                modeKey="deepSearchPipelineMode"
+                deep
+              />
             ) : (
               <div className="config-group-body">
                 {group.fields.map((field) => {
@@ -681,6 +741,15 @@ export default function ConfigEditor() {
                             { value: '', label: '— default —' },
                             { value: 'true', label: 'true' },
                             { value: 'false', label: 'false' },
+                          ]}
+                        />
+                      ) : field.options ? (
+                        <ConfigSelect
+                          value={isSet ? current : ''}
+                          onChange={(v) => handleChange(field.key, v)}
+                          options={[
+                            { value: '', label: '— default —' },
+                            ...field.options.map((o) => ({ value: o, label: o })),
                           ]}
                         />
                       ) : (

@@ -10,8 +10,7 @@ using namespace coolsolve;
 using Catch::Matchers::WithinRel;
 
 // ============================================================================
-// Phase 2 — TDD tests for IntegralTable storage + interpolation + CSV.
-// See docs/integral_table_plan.md §Phase 2.
+// TDD tests for IntegralTable storage + interpolation + CSV.
 // ============================================================================
 
 TEST_CASE("IntegralTable: columns and append-row", "[integral][integral-table]") {

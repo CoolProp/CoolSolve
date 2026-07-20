@@ -1003,7 +1003,7 @@ private:
             }
             // $IntegralAutoStep / $IntegralStop are recognised for compatibility
             // but not interpreted — integration parameters live in coolsolve.conf
-            // (see docs/integral_table_plan.md §1.3, §5).
+            // (see docs/integral_table.md §5 Configuration).
             if (lower == "integralautostep" || lower == "integralstop") {
                 diag->push(DiagnosticSeverity::Warning, "P005",
                            "'$" + name + "' is recognised but not interpreted; "

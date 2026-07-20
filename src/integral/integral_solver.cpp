@@ -2,14 +2,14 @@
  * @file integral_solver.cpp
  * @brief Time-marching orchestrator for the equation-based dynamic solver.
  *
- * Strategy (see `docs/integral_table_plan.md` §3.4): the integral equations
- * `y = base + INTEGRAL(dydt, t, t0, tf)` are *removed* from a working copy of
- * the IR, producing an "algebraic subsystem" in which the state variables `y`
- * and the integration variable `t` have no defining equation — they become
- * free external values that the integrator fixes each step. The algebraic
- * `Solver` (reused unmodified) then resolves the remaining equations (the
- * derivative definitions `dydt = f(...)` and any algebraic constraints) and the
- * integrand values are read back as `f = dy/dt`.
+ * Strategy: the integral equations `y = base + INTEGRAL(dydt, t, t0, tf)` are
+ * *removed* from a working copy of the IR, producing an "algebraic subsystem"
+ * in which the state variables `y` and the integration variable `t` have no
+ * defining equation — they become free external values that the integrator
+ * fixes each step. The algebraic `Solver` (reused unmodified) then resolves
+ * the remaining equations (the derivative definitions `dydt = f(...)` and any
+ * algebraic constraints) and the integrand values are read back as `f = dy/dt`.
+ * See docs/integral_table.md §2 (Algorithm overview) and §3 (Architecture).
  */
 #include "coolsolve/integral/integral_solver.h"
 

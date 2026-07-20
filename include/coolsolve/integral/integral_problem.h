@@ -7,8 +7,8 @@
  * Classifies every equation/variable into the semi-explicit index-1 DAE form
  *     y' = f(t, y, z)    (state variables y, expressed via INTEGRAL)
  *     0  = g(t, y, z)    (algebraic variables z, solved each step)
- * and validates the structural preconditions.  See
- * `docs/integral_table_plan.md` §Phase 4 and §2.2.
+ * and validates the structural preconditions.  See `docs/integral_table.md`
+ * §1 (Mathematical model) and §3 (Architecture).
  */
 #include "coolsolve/ast.h"
 #include "coolsolve/integral/integral_table.h"

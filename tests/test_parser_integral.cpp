@@ -32,8 +32,7 @@ bool diagnosticContains(const ParseResult& r, const std::string& needle) {
 }  // namespace
 
 // ============================================================================
-// Phase 3 — Parser & AST hooks for INTEGRAL / $IntegralTable.
-// See docs/integral_table_plan.md §Phase 3.
+// Parser & AST hooks for INTEGRAL / $IntegralTable.
 // ============================================================================
 
 TEST_CASE("Parser: $IntegralTable captures spec", "[parser][integral]") {

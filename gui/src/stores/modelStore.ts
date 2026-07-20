@@ -21,6 +21,13 @@ interface ModelState {
 
   // Solve state
   solving: boolean;
+  /** True when the last solve failed (and nothing has changed since), so the
+   *  toolbar can morph the "Solve" button into "Try Harder".  Cleared by any
+   *  edit to eescode / initials / conf, and by a successful (or restarted) solve. */
+  tryHarderAvailable: boolean;
+  /** True while a Deep Search ("Try Harder") run is in flight, so the toolbar
+   *  can label the spinner accordingly. */
+  deepSearchRunning: boolean;
   lastResult: SolveResponse | null;
   solvedVariables: SolvedVariable[];
 
@@ -50,6 +57,8 @@ interface ModelState {
   setParseResult: (errors: ParseError[], eqCount: number, varCount: number, isSquare: boolean) => void;
   setParsedVariables: (vars: VariableInfo[]) => void;
   setSolving: (solving: boolean) => void;
+  setTryHarderAvailable: (available: boolean) => void;
+  setDeepSearchRunning: (running: boolean) => void;
   setSolveResult: (result: SolveResponse) => void;
   setSolvedVariables: (vars: SolvedVariable[]) => void;
   setSol: (sol: string) => void;
@@ -87,6 +96,8 @@ export const useModelStore = create<ModelState>((set) => ({
   parsedVariables: [],
 
   solving: false,
+  tryHarderAvailable: false,
+  deepSearchRunning: false,
   lastResult: null,
   solvedVariables: [],
 
@@ -99,15 +110,17 @@ export const useModelStore = create<ModelState>((set) => ({
 
   consoleLines: [],
 
-  setEescode: (code) => set({ eescode: code, dirty: true }),
-  setInitials: (initials) => set({ initials }),
-  setConf: (conf) => set({ conf }),
+  setEescode: (code) => set({ eescode: code, dirty: true, tryHarderAvailable: false }),
+  setInitials: (initials) => set({ initials, tryHarderAvailable: false }),
+  setConf: (conf) => set({ conf, tryHarderAvailable: false }),
   setFilePath: (path) => set({ filePath: path }),
   setModelName: (name) => set({ modelName: name }),
   setParseResult: (errors, eqCount, varCount, isSquare) =>
     set({ parseErrors: errors, equationCount: eqCount, variableCount: varCount, isSquare }),
   setParsedVariables: (vars) => set({ parsedVariables: vars }),
   setSolving: (solving) => set({ solving }),
+  setTryHarderAvailable: (available) => set({ tryHarderAvailable: available }),
+  setDeepSearchRunning: (running) => set({ deepSearchRunning: running }),
   setSolveResult: (result) => set({ lastResult: result }),
   setSolvedVariables: (vars) => set({ solvedVariables: vars }),
   setSol: (sol) => set({ sol }),
@@ -116,9 +129,9 @@ export const useModelStore = create<ModelState>((set) => ({
     set((state) => ({ consoleLines: [...state.consoleLines, line] })),
   clearConsole: () => set({ consoleLines: [] }),
   loadFile: (path, eescode, initials, sol, conf, modelName) =>
-    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', parametricStudies: [], parsedVariables: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '' }),
+    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', parametricStudies: [], parsedVariables: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
   clearModel: () =>
-    set({ filePath: '', modelName: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], userUnitOverrides: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '' }),
+    set({ filePath: '', modelName: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], userUnitOverrides: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
   addParametricStudy: (study) =>
     set((state) => ({ parametricStudies: [...state.parametricStudies, study] })),
   removeParametricStudy: (id) =>

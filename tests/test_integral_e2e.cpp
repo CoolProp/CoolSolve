@@ -36,8 +36,7 @@ IntegralSolver makeSolver(const std::string& src, std::unique_ptr<IR>& irOut,
 }  // namespace
 
 // ============================================================================
-// Phase 5 — end-to-end tests for the IntegralSolver time-march loop.
-// See docs/integral_table_plan.md §Phase 5.
+// End-to-end tests for the IntegralSolver time-march loop.
 // ============================================================================
 
 TEST_CASE("Integral e2e: exponential decay", "[integral][e2e]") {
@@ -167,8 +166,7 @@ TEST_CASE("Integral e2e: $IntegralTable directive columns honoured", "[integral]
 // progressCallback, no cancelToken). In server mode the runner propagates both
 // into the IntegralSolver; the time-march loop must (a) NOT relay the per-block
 // progressCallback to its thousands of internal algebraic solves, and (b) still
-// honour the cancelToken so the Stop button works. See docs/integral_table_plan.md
-// §"2026-07-11 — Bugfix: GUI freeze on integral solve".
+// honour the cancelToken so the Stop button works.
 // ============================================================================
 
 TEST_CASE("Integral e2e: internal solves do not relay the progress callback",

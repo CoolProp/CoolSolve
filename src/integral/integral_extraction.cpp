@@ -5,11 +5,11 @@
  * Walks every equation looking for top-level `INTEGRAL(integrand, var, lo, hi[, step])`
  * calls, classifies state vs algebraic variables, validates structural
  * preconditions, and runs a conservative high-index rejection.  See
- * `docs/integral_table_plan.md` §Phase 4.
+ * `docs/integral_table.md` §1 (Mathematical model) and §3 (Architecture).
  *
  * The initial state is *not* extracted here: at t = t0 the integral term has a
  * zero-width interval and evaluates to 0, so `y(t0)` falls out of the algebraic
- * solve at the first step (handled by `IntegralSolver` in Phase 5).
+ * solve at the first step (handled by `IntegralSolver`).
  */
 #include "coolsolve/integral/integral_problem.h"
 
@@ -247,7 +247,7 @@ IntegralProblem extractIntegralProblem(const IR& ir,
         // The integrand expression must not itself contain an INTEGRAL call.
         if (findIntegralCall(s.integrandExpr)) {
             return fail("Nested INTEGRAL() calls are not supported in this version "
-                        "(multi-variable integration). See docs/integral_table_plan.md §1.3.");
+                        "(multi-variable integration). See docs/integral_table.md §7.1.");
         }
     }
 

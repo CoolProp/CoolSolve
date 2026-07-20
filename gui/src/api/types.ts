@@ -145,6 +145,8 @@ export interface SSEBlockEvent {
 export interface SSEProgressEvent {
   type: 'progress' | 'start';
   message: string;
+  /** Present on 'start' events when this run is a Deep Search ("Try Harder"). */
+  deepSearch?: boolean;
 }
 
 export interface SSEDoneEvent {

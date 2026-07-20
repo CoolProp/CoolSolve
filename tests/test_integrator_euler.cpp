@@ -10,10 +10,10 @@ using Catch::Matchers::WithinRel;
 using Catch::Matchers::WithinAbs;
 
 // ============================================================================
-// Phase 0 — TDD tests for the Euler (explicit + implicit) integrators.
+// TDD tests for the Euler (explicit + implicit) integrators.
 //
 // These pin down the numerics BEFORE any parser/IR coupling, against
-// analytical solutions.  See docs/integral_table_plan.md §Phase 0.
+// analytical solutions.
 // ============================================================================
 
 static const double tol5pct = 0.05;   // generous for 1st-order methods

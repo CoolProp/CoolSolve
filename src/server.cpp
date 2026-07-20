@@ -1107,12 +1107,14 @@ int startServer(const ServerOptions& options) {
             std::string eesSource = session.eescodeContent;
             std::string initials = session.initialsContent;
             bool enableTracing = false;
-            
+            bool deepSearch = false;
+
             if (!req.body.empty()) {
                 auto body = json::parse(req.body);
                 if (body.contains("eescode")) eesSource = body["eescode"].get<std::string>();
                 if (body.contains("initials")) initials = body["initials"].get<std::string>();
                 if (body.contains("debug")) enableTracing = body["debug"].get<bool>();
+                if (body.contains("deepSearch")) deepSearch = body["deepSearch"].get<bool>();
             }
             
             if (eesSource.empty()) {
@@ -1184,11 +1186,19 @@ int startServer(const ServerOptions& options) {
             auto lookupCSVs = session.lookupTableCSVs;
 
             // Launch solve in background thread
-            std::thread([sessionPtr, tmpEes, tmpDir, enableTracing, confContent, eesSource,
+            std::thread([sessionPtr, tmpEes, tmpDir, enableTracing, deepSearch, confContent, eesSource,
                          lookupCSVs]() {
                 auto& session = *sessionPtr;
                 try {
-                    session.addProgressEvent("{\"type\":\"start\",\"message\":\"Solve started\"}");
+                    {
+                        json startEvt;
+                        startEvt["type"] = "start";
+                        startEvt["deepSearch"] = deepSearch;
+                        startEvt["message"] = deepSearch
+                            ? "Deep search started (try harder)"
+                            : "Solve started";
+                        session.addProgressEvent(startEvt.dump());
+                    }
                     
                     CoolSolveRunner runner(tmpEes.string());
 
@@ -1211,6 +1221,11 @@ int startServer(const ServerOptions& options) {
                     if (fs::exists(confPath)) {
                         loadSolverOptionsFromFile(confPath.string(), solverOpts);
                     }
+
+                    // Apply the "Try Harder" request flag (transient, never
+                    // persisted to coolsolve.conf).  Must be set AFTER conf
+                    // loading so it is not overwritten.
+                    solverOpts.deepSearch = deepSearch;
                     
                     // Wire cancellation token
                     solverOpts.cancelToken = &session.cancelRequested;

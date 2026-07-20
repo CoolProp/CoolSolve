@@ -11,8 +11,8 @@ indoor and wall temperatures over one week (168 h) using INTEGRAL.
 
 NOTE: this model intentionally uses INTERPOLATE during time-marching. It is
 expected to fail until CoolSolve wires the lookup table store into
-IntegralSolver (see docs/integral_table_plan.md). Keep it as a regression
-test for that feature.
+IntegralSolver (see docs/integral_table.md §7.1 Limitations). Keep it as a
+regression test for that feature.
 
 Source: CLIM R06 repetition exercise 2 (University of Liege), simplified
 from the original EES model (variant 2a: constant ventilation, no cooling unit).

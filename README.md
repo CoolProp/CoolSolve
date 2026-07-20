@@ -25,88 +25,45 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 ## Features
 
-- **Parser**: Parses CoolSolve source code (.eescode files) into an Abstract Syntax Tree
-  - Variables (scalars and arrays like `P[1]`)
-  - Equations with operators (`+`, `-`, `*`, `/`, `^`)
-  - Comparison operators (`<`, `>`, `<=`, `>=`)
-  - **Procedural Statements**: Support for `=` and `:=` in procedural blocks
-  - **Functions and Procedures**: `FUNCTION` and `PROCEDURE` blocks with local scoping
-  - **Procedure Calls**: `CALL name(inputs : outputs)` syntax
-  - **Conditional Logic**: `IF-THEN-ELSE` support within procedural blocks
-  - **Inline IF**: `IF(condition, true_value, false_value)` expression-level conditional
-  - **DUPLICATE loops**: `DUPLICATE i=1,N ... END` for array iteration in procedural blocks
-  - **REPEAT-UNTIL loops**: `REPEAT ... UNTIL(condition)` for iterative procedural logic
-  - Comments (`"..."`, `{...}`, `//...`)
-  - Directives (`$ifnot`, `$endif`, etc.)
-  - Units annotations (`"[Pa]"`, `"[kJ/kg]"`)
-  - Function calls with named arguments (`enthalpy(R134a, T=300, P=1E5)`)
+- **Parser**: Parses CoolSolve source code (`.eescode` files) into an AST — variables, equations, procedural blocks (`FUNCTION`, `PROCEDURE`, `CALL`), control flow (`IF-THEN-ELSE`, `DUPLICATE`, `REPEAT-UNTIL`), directives, array subscripts, and named function arguments.
 
-- **Structural Analysis**: Decomposes the equation system into solvable blocks
-  - Hopcroft-Karp algorithm for variable-equation matching
-  - Tarjan's algorithm for Strongly Connected Components (SCCs)
-  - Block decomposition (identifies algebraic loops)
+- **Structural Analysis**: Decomposes the equation system into solvable blocks using the Hopcroft–Karp matching algorithm and Tarjan's SCC algorithm.
 
-- **Automatic Differentiation**: Forward-mode AD for efficient Jacobian computation
-  - Full support for arithmetic operators (`+`, `-`, `*`, `/`, `^`)
-  - Transcendental functions (`sin`, `cos`, `exp`, `log`, `sqrt`, etc.)
-  - Inverse hyperbolic functions (`arcsinh`, `arccosh`, `arctanh`)
-  - Rounding functions (`ceil`, `floor`, `round`, `trunc`, `sign`, `mod`)
-  - Aggregation functions (`sum`, `average`, `product`, `stddev`)
-  - Unit conversion functions (`convert`, `converttemp`)
-  - Exact analytical derivatives (no finite differences)
-  - Prepares for Newton-based numerical solvers
+- **Automatic Differentiation**: Forward-mode AD with exact analytical derivatives for all arithmetic, transcendental, and CoolProp functions — no finite differences.
 
-- **Equation Evaluator**: Evaluates residuals and Jacobians for each block
-  - Block-level evaluation with external variable support
-  - System-level orchestration for sequential block solving
-  - **CoolProp integration** for thermodynamic property calculations via the low-level `AbstractState` API (with thread-local caching and `PropsSI` fallback)
-  - **Analytical derivatives** from CoolProp's `first_partial_deriv()` with automatic forward-FD consistency check (falls back to FD near phase boundaries)
-  - **Residual-only evaluation mode**: skips Jacobian computation during line search backtracking
-  - Automatic temperature conversion (Celsius ↔ Kelvin)
-  - **Configurable Solver Pipeline** with multiple algorithms and execution modes
-  - **Explicit solve for size-1 blocks**: Bypasses Newton entirely for structurally explicit assignments (one residual evaluation, no Jacobian)
-  - **Newton1D root-finder** for size-1 implicit blocks with multi-probe exploration and bisection fallback
-  - **Newton + Line Search** for fast convergence on well-conditioned blocks
-  - **Trust-Region Dogleg** for robust convergence on stiff nonlinear blocks
-  - **Levenberg-Marquardt** for improved convergence when initial guesses are poor
-  - **Multi-dimensional Bisection (BisectionND)** for small blocks (configurable size limit, default n ≤ 8 via `bisectionNDMaxBlockSize`): derivative-free sign-change bisection that works even when the Jacobian is singular or zero
-   - **Homotopy continuation** for convergence from distant or difficult starting points where gradient methods fail
-   - **Partitioned Block Updates** as a fallback for ill-conditioned algebraic loops
-   - **Multi-Start fallback** (roadmap §4.2): when a multi-variable block fails the entire pipeline, CoolSolve retries it from a few alternative starting points — CoolProp-consistent pressure regimes for thermo blocks, scale factors for purely-algebraic blocks. Candidates can run concurrently (`multiStartNumCores`). Zero overhead when every block converges on the first try.
-  - **Symbolic Block Reduction**: optional pre-processing that shrinks blocks via explicit extraction, CoolProp call inversion, and equation substitution — with automatic re-decomposition of the reduced block into independent sub-blocks
-  - **Parallel solver execution** (multithreaded, first-to-converge wins)
+- **Configurable Solver Pipeline**: Multiple algorithms with automatic fallback:
+  - **Newton + Line Search** (default workhorse)
+  - **Trust-Region Dogleg** with optional hybrd-style Broyden reuse
+  - **Levenberg-Marquardt** with geodesic acceleration
+  - **Multi-dimensional Bisection** (derivative-free, for singular Jacobians)
+  - **Homotopy Continuation** (for distant starting points)
+  - **KINSOL** (opt-in: Dennis-Schnabel line search, Picard, Anderson-accelerated fixed-point)
+  - **Structural Tearing** (equation tearing for large blocks)
+  - **Symbolic Block Reduction** (explicit extraction, CoolProp call inversion, equation substitution)
+  - **Multi-Start** fallback (CoolProp-consistent starting points for thermo blocks, scale factors for algebraic blocks; parallel execution available; engageable always, never, or only on Deep Search)
 
-- **Output Formats**:
-  - JSON (for automated testing and integration)
-  - LaTeX equations
-  - Evaluator report (block summary and state)
-  - **Solution/Initials files**: Support for loading initial values and comparing solutions
+- **CoolProp Integration**: Thermodynamic property calculations via the low-level `AbstractState` API (2–5× faster than `PropsSI`), with analytical derivatives and thread-local caching.
 
-- **Solution Verification**: After a successful solve, CoolSolve independently re-evaluates every equation (including procedure CALLs) using the proposed solution and checks that LHS ≈ RHS within a configurable tolerance (default: 0.1%). This catches structural bugs, numerical drift, and procedure output inconsistencies that the solver's own convergence check may miss. Enabled automatically in debug mode (`-d`) and in the comprehensive test suite.
+- **Lookup Tables**: 1D/2D interpolation, cell access, and aggregate functions from external CSV files. A GUI panel lets you create and edit tables in-browser.
 
-- **Lookup Tables**: External CSV data files are loaded automatically and callable from equations via built-in interpolation and lookup functions. Companion CSVs follow the naming convention **`<modelname>-<tablename>.csv`** (e.g. `mymodel-data.csv` is callable as `LOOKUP('data', …)`). See [Language Reference §11](docs/language_reference.md#11-lookup-tables) for full details.
-  - `INTERPOLATE('table', 'xcol', 'ycol', x)` — 1D linear interpolation with analytical AD gradient
-  - `INTERPOLATE2('table', 'xcol', 'ycol', 'zcol', x, y)` — 2D bilinear interpolation with AD partial derivatives
-  - `LOOKUP('table', row, col)` / `TABLEVALUE(...)` — direct cell access
-  - `NLOOKUPROWS`, `NLOOKUPCOLUMNS`, `LOOKUPCOL`, `LOOKUPCELLEMPTY` — table metadata
-  - `SUMLOOKUP`, `AVGLOOKUP`, `MAXLOOKUP`, `MINLOOKUP`, `STDDEVLOOKUP` — column aggregates
-  - GUI **Lookup Tables** panel: create, view, and edit tables in-browser without managing CSV files manually
+- **Equation-Based Dynamic Solving (`INTEGRAL`)**: Solve initial-value DAE models in the EES integral form (`y = y0 + INTEGRAL(dydt, t, t0, tf)`). Supports coupled ODEs, algebraic variables, RK4/RK45/Euler integrators, Richardson extrapolation, and an **Integral** GUI tab. See [Language Reference §12](docs/language_reference.md#12-equation-based-integration-dynamicdae-solving) and [docs/integral_table.md](docs/integral_table.md).
 
-- **Equation-Based Dynamic Solving (`INTEGRAL`)**: solve initial-value differential–algebraic equation (DAE) models in the EES integral form `y = y0 + INTEGRAL(dydt, t, t0, tf)` and tabulate their trajectory. Coupled ODEs plus algebraic variables (semi-explicit index-1 DAE) are supported; the algebraic subsystem is solved at every step by the existing solver, unmodified.
-  - Fixed-step integrators: Euler explicit, Euler implicit, **RK4** (default); variable-step adaptive **Dormand–Prince RK45**; optional **Richardson** extrapolation
-  - `$IntegralTable` directive to declare tabulated variables and the output interval (with `X[1..5]` range expansion)
-  - Auto-written `<modelname>-integral.csv`, integral data in the solve JSON, and an **Integral** tab in the GUI (table + plot + CSV export)
-  - Nine `integral*` configuration keys (`coolsolve.conf`), all inert by default — zero overhead on non-integral models. See [Language Reference §12](docs/language_reference.md#12-equation-based-integration-dynamicdae-solving).
+  - **Solution Verification**: Post-solve check that re-evaluates every equation (LHS ≈ RHS) to catch bugs the solver's convergence check may miss.
 
-- **Debug Mode**: Creates a comprehensive output folder with all analysis information
+  - **Try Harder**: One-click recovery for failed solves. After a failed run the GUI's *Solve* button morphs into *Try Harder*; clicking it re-runs the model with the full Deep Search pipeline, tearing and symbolic reduction forced on, and the configured multi-start policy. Editing the model, the initials, or the configuration restores the normal *Solve* button.
+
+- **Output Formats**: JSON, LaTeX, `.sol` files, CSV trajectory files, and a comprehensive **Debug Mode** (`-d`) folder.
+
+- **GUI & REST API**: Embedded single-page app (React/TypeScript) with a code editor, variable table, parametric studies, thermodynamic diagrams, and ZIP bundle round-trip. See [GUI & REST API](docs/gui.md).
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [Language Reference](docs/language_reference.md) | CoolSolve language syntax and built-in functions |
+| [Language Reference](docs/language_reference.md) | CoolSolve language syntax, built-in functions, and configuration keys |
+| [Dynamic Solving](docs/integral_table.md) | Equation-based `INTEGRAL` / `$IntegralTable` — algorithms, architecture, and limitations |
 | [Debugging Models](docs/debugging_models.md) | Diagnosing and fixing solver failures |
-| [Solver Roadmap](docs/solver_roadmap.md) | Performance roadmap and future architecture |
+| [Solver Roadmap](docs/solver_roadmap.md) | Performance roadmap, algorithm details, and implementation status |
 | [Symbolic Block Reduction](docs/symbolic_redecomposition.md) | Symbolic block reduction algorithm |
 | [GUI & REST API](docs/gui.md) | Web interface, REST API, and parametric studies |
 | [Deployment Guide](docs/deployment_ubuntu_apache.md) | Deploying CoolSolve on Ubuntu with Apache |
@@ -127,14 +84,15 @@ CoolSolve uses several file formats for input and verification:
   - **Pipeline options**:
     - `solverPipeline`: Comma-separated list of solvers to try (e.g. `Newton, LM, TrustRegion, BisectionND, Homotopy, Partitioned`). Available solvers: `Newton`, `TrustRegion`, `LM` (or `LevenbergMarquardt`), `BisectionND`, `Homotopy`, `Partitioned`, `Kinsol`.
     - `pipelineMode`: `sequential` (default) or `parallel` (first-to-converge wins)
+    - `deepSearchPipeline` / `deepSearchPipelineMode`: pipeline used when the GUI **Try Harder** button is clicked after a failed solve (defaults to the full sequential chain). Deep Search also forces tearing and symbolic reduction on.
     - `enableTearing`: When `true`, use structural tearing for blocks of size ≥ `tearingMinBlockSize`.
     - `enableSymbolicReduction`: When `true`, pre-process blocks to reduce their size via explicit extraction, CoolProp call inversion, and equation substitution, with automatic re-decomposition of the reduced block.
     - `bisectionNDMaxBlockSize`: Maximum block size for BisectionND (default: `8`).
     - `bisectionNDIterFactor`: Multiplier for BisectionND iteration budget (default: `1.0`).
     - `lsNonMonotoneMemory`: Number of recent merit values kept for non-monotone acceptance (default: `10`). Set to `1` for classic monotone line search.
-    - `multiStartEnabled`: When `true` (default), retry a failed multi-variable block from alternative starting points derived from each variable's inferred physical kind.
+    - `multiStartMode`: When to retry a failed multi-variable block from alternative starting points — `always`, `deepsearch` (default; only when running a Deep Search), or `never`. The legacy `multiStartEnabled = true/false` is still accepted and maps to `always`/`never`.
     - `multiStartMaxRestarts`: Number of alternative starting points to try on a failed block (default: `4`).
-    - `multiStartNumCores`: Threads for concurrent multi-start candidates (default: `1` = sequential; `N`>1 or `0`=auto runs candidates in parallel, first-to-converge wins).
+    - `multiStartNumCores`: Threads for concurrent multi-start candidates (default: `4`; `N`>1 or `0`=auto runs candidates in parallel, first-to-converge wins).
    - **Integration options** (equation-based `INTEGRAL` models — all inert by default; see [Language Reference §12](docs/language_reference.md#12-equation-based-integration-dynamicdae-solving)):
      - `integralMethod`: Integrator — `RK4` (default), `RK45` (adaptive), `EulerExplicit`, or `EulerImplicit`.
      - `integralFixedStep`: Fixed step size (`0` ⇒ derive from `integralMaxSteps` for fixed methods, or adapt for RK45).
@@ -493,431 +451,40 @@ CoolSolve/
 
 ## How It Works
 
-### 1. Parsing
+CoolSolve follows a standard equation-solving pipeline:
 
-The parser reads CoolSolve source code and builds an Abstract Syntax Tree (AST). It handles the language syntax including:
-- Case-insensitive keywords
-- Multiple comment styles
-- Thermodynamic function calls with named parameters
-- Array subscript notation
+1. **Parsing** — Source code (`.eescode`) is parsed into an AST and then transformed into an Intermediate Representation (IR) that builds the variable-equation incidence matrix.
 
-### 2. IR Building
+2. **Structural Analysis** — The Hopcroft–Karp algorithm matches equations to output variables, Tarjan's algorithm finds strongly connected components (SCCs), and blocks are topologically sorted.
 
-The AST is transformed into an Intermediate Representation (IR) that:
-- Extracts all variables from equations
-- Builds the incidence matrix (which variables appear in which equations)
-- Identifies thermodynamic function calls (first argument is fluid name, not a variable)
+3. **Automatic Differentiation** — Forward-mode AD computes exact derivatives alongside values, building the Jacobian matrix analytically.
 
-### 3. Structural Analysis
+4. **Evaluation** — The evaluator computes residuals F(x) and Jacobian J for each block.
 
-The equation system is analyzed using graph algorithms:
+5. **Solving** — Each block is solved by the configurable pipeline (`Newton → TrustRegion → LM → BisectionND → Homotopy → Partitioned`), with optional tearing and symbolic reduction. For detailed algorithm descriptions, see the [Solver Roadmap](docs/solver_roadmap.md).
 
-1. **Matching**: The Hopcroft-Karp algorithm finds a maximum bipartite matching, assigning each equation to one "output" variable it will determine.
+6. **Dynamic Solving** — When the model contains `INTEGRAL(...)` calls, CoolSolve time-marches the state variables and re-solves the algebraic subsystem at each step. See [Dynamic Solving](docs/integral_table.md).
 
-2. **SCC Detection**: Tarjan's algorithm finds Strongly Connected Components in the dependency graph. Each SCC becomes a "block" that must be solved simultaneously.
-
-3. **Block Ordering**: Blocks are topologically sorted so they can be solved in sequence.
-
-### 4. Automatic Differentiation
-
-Forward-mode automatic differentiation computes exact derivatives alongside values:
-
-1. **ADValue**: A dual number storing both `value` and `gradient` (partial derivatives w.r.t. all block variables).
-
-2. **Propagation Rules**: Each operation propagates gradients using the chain rule:
-   - Addition: `(x + y).grad = x.grad + y.grad`
-   - Multiplication: `(x * y).grad = x.grad * y + y.grad * x`
-   - Power: `(x^n).grad = n * x^(n-1) * x.grad`
-   - Functions: `sin(x).grad = cos(x) * x.grad`
-
-3. **Jacobian Construction**: For each equation residual F_i, the gradient gives row i of the Jacobian matrix.
-
-### 5. Evaluation
-
-The evaluator system provides numerical computation:
-
-1. **ExpressionEvaluator**: Traverses the AST and computes ADValues for any expression.
-
-2. **BlockEvaluator**: Evaluates a block of equations, returning residuals F(x) and Jacobian J.
-
-3. **SystemEvaluator**: Orchestrates evaluation across all blocks with proper variable handling.
-
-### 5b. Solver Pipeline
-
-CoolSolve solves each block using a strategy adapted to the block's size and
-structure, with several layers of fallback:
-
-```
-Block to solve
-  ├── Size 1, explicit?  →  Direct evaluation (no iteration)
-  ├── Size 1, implicit?  →  Newton1D solver (see below)
-  ├── Size ≥ tearingMinBlockSize & tearing enabled?
-  │     →  Structural tearing (FVS + acyclic solve + Newton on tears)
-  │     └── On failure: restore initial guess, fall through ↓
-  └── Solver pipeline (configurable fallback chain)
-        →  Newton → TrustRegion → LM → BisectionND → Homotopy → Partitioned  (default, sequential)
-```
-
-The pipeline is configured via `coolsolve.conf` (see below) or programmatically
-through `SolverOptions::solverPipeline` and `SolverOptions::pipelineMode`.
-
-#### Available Solver Algorithms
-
-0. **Newton1D** (automatic for size-1 implicit blocks)
-   - Specialized root-finding solver for single-equation blocks where the
-     unknown cannot be isolated symbolically.
-   - **Phase 1 — Trust-region Newton**: Standard Newton steps with adaptive
-     radius limiting and sign-change detection for bisection fallback.
-   - **Phase 2 — Multi-probe exploration**: If Phase 1 stalls (e.g. initial
-     guess far from root), evaluates the residual at ~900 probe points:
-     log-spaced values across ±1e8, **plus values near every external
-     variable** (×0.5, ×0.9, …, ×2.0).  This finds narrow sign-change
-     regions even when they occur near poles in the residual.  All sign
-     changes are scored by midpoint residual to prefer true roots over poles.
-   - **Phase 3 — Bisection + Newton hybrid**: Once a bracket is found,
-     alternates bisection and Newton steps within the bracket for fast,
-     guaranteed convergence.
-   - **Phase 4 — Final Newton polish**: A short Newton loop from the best
-     point found, with relaxed tolerance acceptance.
-   - Falls through to the standard pipeline if all phases fail.
-
-1. **Newton + Non-Monotone Line Search** (`Newton`)
-   - Solves `J(x) * dx = -F(x)` and applies backtracking with a non-monotone
-     Armijo condition (Grippo, Lampariello, Lucidi 1986): instead of requiring
-     strict decrease at every step, the merit function is compared against the
-     maximum over the last M iterations (`lsNonMonotoneMemory`, default 10).
-     This helps escape narrow curved valleys and saddle points.
-   - **Broyden quasi-Newton** (option `broydenRecomputeInterval`, default 0 =
-     disabled): when set to K > 0, the solver computes a full Jacobian every K
-     iterations and uses Broyden rank-1 updates in between.  This saves
-     expensive Jacobian evaluations while retaining superlinear convergence.
-     If a Broyden step fails line search the full Jacobian is recomputed
-     automatically.  Good starting point: K = 5.
-   - Efficient when the Jacobian is well-conditioned and the model is smooth.
-
-2. **Trust-Region Dogleg** (`TrustRegion`)
-   - Uses a dogleg step that blends steepest descent with the Newton step to
-     keep updates inside a safe radius.
-   - **Adaptive initial radius** (option `trAdaptiveRadius`, default true):
-     sets the initial trust radius from the Cauchy step norm on the first
-     iteration rather than using a fixed value, automatically scaling to the
-     problem geometry.  Includes smoother rho-based radius adaptation and
-     gradient-based recovery after consecutive rejections.
-   - **Hybrd-style Broyden reuse** (option `trBroydenRecomputeInterval`,
-     default 0 = disabled): when set to K > 0, computes a full Jacobian
-     every K iterations and maintains a Broyden rank-1 approximation in
-     between via an incrementally-updated QR factorization (numerically
-     stable Givens-rotation-based updates, not a raw dense rank-1 add — see
-     `docs/solver_roadmap.md` §4.1). A full Jacobian is also recomputed
-     after `trBroydenRestartRejects` (default 2) consecutive rejected
-     steps, or if the resulting step is non-finite. Empirically validated
-     as non-regressive but not currently a net speed/robustness win on
-     tested models (see `docs/solver_roadmap.md` §3.7) — kept as opt-in,
-     tested infrastructure rather than enabled by default.
-   - Helps avoid oversized steps that drive thermodynamic calls into invalid
-     regions (e.g., non-physical pressure/temperature).
-
-3. **Levenberg-Marquardt** (`LM` or `LevenbergMarquardt`)
-   - Solves `(J^T J + λ D) dx = -J^T F` with adaptive damping parameter λ.
-   - When λ is large → gradient descent (safe, slow); when λ is small →
-     Gauss-Newton (fast, quadratic convergence near solution).
-   - **Nielsen's λ adaptation** (option `lmNielsenUpdate`, default true):
-     uses λ = λ × max(1/3, 1 − (2ρ−1)³) on acceptance and exponential increase
-     (λ × ν with ν doubling) on consecutive rejections (Madsen et al. 2004).
-     Provides smoother, faster-converging λ transitions than legacy step-wise
-     adjustments.  Also uses cumulative Marquardt diagonal scaling:
-     D_k = max(D_{k-1}, diag(J^T J)), preventing scale collapse when the
-     Jacobian changes dramatically.
-   - **Geodesic acceleration** (option `lmGeodesicAcceleration`, default true):
-     adds a second-order correction to the LM step by evaluating the
-     directional second derivative of F along the velocity step (Transtrum &
-     Sethna 2012).  Costs 1 extra residual evaluation per iteration but can
-     halve the number of iterations on curved problems.
-   - Particularly effective when the initial guess is far from the solution,
-     because the damping prevents oversized steps that would cause divergence.
-
-4. **Multi-dimensional Bisection** (`BisectionND`)
-   - A derivative-free solver based on sign-change bisection in n dimensions
-     (Vrahatis-style). Automatically skipped for blocks exceeding
-     `bisectionNDMaxBlockSize` unknowns (default: 8). Returns `InvalidInput`
-     so the pipeline transparently advances to the next solver. The error
-     message names the configurable parameter when triggered, e.g.
-     `"BisectionND: block too large (n=34 > bisectionNDMaxBlockSize=8).
-     Increase bisectionNDMaxBlockSize in coolsolve.conf..."`. The iteration
-     budget is `maxIterations × bisectionNDIterFactor` (default multiplier: 1.0);
-   - **Phase 1 — Structured probe**: Evaluates F at axis-aligned points
-     (±0.1…±5× scale) plus all 2^n diagonal corner combinations at two radii
-     (±2× and ±5× scale). This ensures all sign patterns can be discovered
-     even when the root is not reachable from axis-only probes.
-   - **Phase 2 — Bisection with full sign-pattern simplex**: Builds a simplex
-     with one vertex per distinct sign pattern found (up to 2^n vertices).
-     Bisects the longest edge whose midpoint is not a duplicate, replacing the
-     matching-sign vertex. If all edges produce duplicates (degenerate simplex),
-     the worst vertex is randomly perturbed to escape the cycle.
-   - **Advantage**: Unlike gradient-based solvers, BisectionND converges even
-     when J(x₀) = 0 (e.g. at a stationary point of ‖F‖²) because it relies
-     only on function evaluations and sign patterns.
-
-5. **Homotopy Continuation** (`Homotopy`)
-   - Deforms the problem F(x)=0 into an easy auxiliary problem G(x)=0 via a
-     homotopy parameter t ∈ [0,1]: H(x,t) = (1-t)G(x) + t F(x).
-   - **Predictor–corrector path following**: Takes Newton-corrected tangent
-     predictor steps along the homotopy path, gradually transforming x from
-     the G-solution toward the F-solution.
-   - **Advantage**: Can reach solutions from starting points that are too far
-     from the root for Newton, TrustRegion, or LM to converge, because the
-     smooth deformation avoids the large nonlinear barriers that trap
-     gradient-based methods.
-
-6. **Partitioned Block Updates** (`Partitioned`)
-   - Uses the equation-to-output-variable mapping from structural matching to
-     apply **per-variable diagonal updates** inside a block:
-     `x_i <- x_i - w * F_i / (dF_i/dx_i)`.
-   - This mimics a DAE-style "tear" without changing the block structure: each
-     equation directly updates its matched variable, reducing coupling and
-     improving stability in stiff or highly nonlinear loops.
-   - Designed as a last-resort stabilizer when full Newton steps are unreliable.
-
- 7. **KINSOL** (`Kinsol`, opt-in — not in the default pipeline)
-    - A SUNDIALS-KINSOL-style solver with three selectable globalisation
-      strategies (`kinsolGlobalStrategy`), implemented in-tree (no external
-      library):
-      - **`linesearch`** (default): inexact Newton (exact direct linear solve)
-        + **Dennis-Schnabel line search** — backtracking with quadratic then
-        cubic interpolation and the Armijo sufficient-decrease test on
-        ½‖F‖². A more sophisticated globalization than the geometric
-        backtracking used by the `Newton` solver.
-      - **`picard`**: fixed-point (Richardson) iteration `x ← x − ω·F(x)`,
-        Jacobian-free. Converges when `ρ(I − ω·J) < 1`; under-relax
-        (`kinsolPicardOmega < 1`) for stiff systems.
-      - **`fp`**: **Anderson-accelerated** fixed point (Anderson 1965; Walker
-        & Ni 2011), derivative-free — can converge for blocks where the
-        Jacobian is zero or singular (complementary to `BisectionND`).
-    - Add it to the pipeline with `solverPipeline = ..., Kinsol`.
-
- 8. **Structural Tearing** (option `enableTearing`)
-   - When enabled, blocks of size ≥ `tearingMinBlockSize` are first solved via
-     **equation tearing**: a greedy **feedback vertex set (FVS)** is computed so
-     that removing the corresponding equations (and their output variables) makes
-     the block acyclic. The acyclic part is then solved sequentially (one
-     equation, one unknown per step), and the tear variables are updated with
-     Newton on the tear residuals. This reduces the simultaneous system to the
-     tear set only and can improve robustness on stiff or ill-conditioned loops.
-   - Config: `enableTearing = true`, `tearingMaxIterations`, `tearingMinBlockSize`,
-     `tearingInnerIterations`. In debug mode (`-d`), a `tearing.md` file lists
-     tear sets and acyclic order per block.
-
- 9. **Symbolic Block Reduction** (option `enableSymbolicReduction`)
-    - When enabled, blocks of size ≥ 2 are **pre-processed** before the
-     iterative solver to reduce their size.  Three techniques are applied
-     iteratively until a fixed point:
-     1. **Explicit extraction**: equations where the output variable's RHS
-        only references known (external) values are extracted from the block
-        and evaluated directly.
-     2. **CoolProp call inversion**: equations like
-        `h = enthalpy(Water, T=T, P=P)` are reformulated so that an unknown
-        input becomes the output, e.g. `T = temperature(Water, H=h, P=P)`,
-        when the original output and the other input are known.  All standard
-        CoolProp input pairs (PT, HP, PS, HS, DP, DT, QT, PQ, …) are checked.
-     3. **Equation substitution**: if a variable appears only in its own
-        defining equation (no other block equation references it), it is
-        extracted as a post-solve step.
-   - **Post-reduction re-decomposition**: after reduction, the remaining
-     equations are automatically re-analysed (local Tarjan SCC) to detect
-     if they split into independent sub-blocks. Each sub-block is then
-     solved separately in topological order.  For example, a 62-variable
-     condenser block can be reduced to 56 variables and further split into
-     13 sub-blocks (sizes 15, 30, and eleven 1×1).
-   - **Advantage**: Can dramatically reduce block sizes — e.g. turning a
-     3-variable CoolProp block into three size-1 direct evaluations, avoiding
-     Newton iterations entirely.  Fewer variables mean better Jacobian
-     conditioning and faster convergence for the remaining block.
-   - Config: `enableSymbolicReduction = true` (default: `false`).
-     When disabled, zero overhead is added to the solving pipeline.
-
-#### CoolProp Robustness
-
-Models operating near phase boundaries or critical points (e.g. supercritical
-CO2) can produce unphysical trial points during Newton iteration. Two layers of
-protection are applied:
-
-- **Input clamping**: Pressure, temperature, and density are clamped to
-  physically valid floors ($P \geq 1000$ Pa, $T \geq 50$ K,
-  $\rho \geq 10^{-4}$) before CoolProp calls, preventing the most common
-  crash-inducing inputs.
-- **Penalty-based error handling**: If CoolProp still throws, a finite penalty
-  value (10⁴) is returned instead of propagating the exception, keeping the
-  residual landscape smooth for TR and LM solvers.
-
-#### Pipeline Modes
-
-- **Sequential** (default): Solvers are tried one after another.  Each
-  subsequent solver **warm-starts** from the best solution found so far
-  (rather than resetting to the original initial guess).  If a full pipeline
-  pass reduces the residual by ≥5% without converging, the pipeline
-  **restarts** from the best point for up to 10 rounds.  The Partitioned
-  solver is automatically skipped in later rounds if it worsens the solution.
-- **Parallel**: All solvers are launched concurrently in separate threads.  The
-  first solver to converge wins and its solution is used.  This can save time
-  when it is unclear which algorithm will work best for a given block.
-
-On failure, the error message reports both the initial and best-achieved
-residual norms with the percentage of reduction, helping diagnose whether the
-problem is a poor initial guess or a genuinely unsolvable system.
-
-#### Default Pipeline
-
-```
-solverPipeline = Newton, TrustRegion, LevenbergMarquardt, BisectionND, Homotopy, Partitioned
-pipelineMode = sequential
-```
-
-> **Note**: `BisectionND` automatically returns `InvalidInput` for blocks
-> exceeding `bisectionNDMaxBlockSize` unknowns (default: 8) and is
-> transparently skipped by the pipeline.  For large blocks the effective
-> default is Newton → TrustRegion → LM → Homotopy → Partitioned.
-> Use `bisectionNDIterFactor` (default: 1.0) to multiply the iteration budget
-> when BisectionND exits early with `MaxIterations`.
-> Each solver is characterised by the class of problems where it has a
-> specific advantage:
->
-> | Solver | Characteristic advantage |
-> |--------|--------------------------|
-> | Newton | Quadratic convergence near a good starting point |
-> | TrustRegion | Safe steps inside bounded search regions (e.g. log-domain constraints) |
-> | LevenbergMarquardt | Near-singular Jacobians; blends gradient descent and Newton |
-> | BisectionND | Zero or undefined Jacobian at the start; derivative-free |
-> | Homotopy | Distant starting points; avoids large nonlinear barriers |
-> | Partitioned | Ill-conditioned algebraic loops; diagonal per-variable update |
-> | Kinsol | Dennis-Schnabel line search, or derivative-free Picard/Anderson fixed-point (opt-in) |
-
-#### Example: Single Solver
-
-To use only Levenberg-Marquardt (no fallback):
-
-```ini
-solverPipeline = LM
-```
-
-#### Example: Parallel Execution
-
-```ini
-solverPipeline = Newton, TrustRegion, LM
-pipelineMode = parallel
-```
-
-### 6. Output
-
-The analysis results can be exported in various formats for:
-- Integration with numerical solvers (JSON)
-- Documentation (LaTeX)
+For implementation details, see the [Language Reference](docs/language_reference.md) and [Contributing Guide](docs/contributing.md).
 
 ## Example
 
-Given this CoolSolve code:
-```
+```ees
 T_in = 25            // Temperature in Celsius
 P = 101325           // Pressure in Pa
-h = enthalpy(Water, T=T_in, P=P)
-s = entropy(Water, T=T_in, P=P)
+h = enthalpy('Water', T=T_in, P=P)
+s = entropy('Water', T=T_in, P=P)
 ```
 
-CoolSolve will:
-1. Parse 4 equations
-2. Identify 4 variables: `T_in`, `P`, `h`, `s`
-3. Create 4 blocks (all explicit, no algebraic loops)
-4. Determine solution order: T_in → P → h, s
-5. Evaluate thermodynamic properties using CoolProp (with automatic °C→K conversion)
+CoolSolve parses these 4 equations, identifies the variable-equation structure, and evaluates the thermodynamic properties using CoolProp. Temperatures are written in **°C** in the model — CoolSolve's unit system is fixed (it cannot be changed through `coolsolve.conf`) and the conversion `°C → K` required by CoolProp's SI interface is performed automatically behind the scenes.
 
-## CoolProp Integration
-
-CoolSolve integrates with CoolProp for thermodynamic property calculations, using the **low-level `AbstractState` API** for performance:
-
-### Evaluation Pipeline
-
-1. **AbstractState path** (default, fast): Creates and caches `AbstractState` objects per fluid per thread. Property evaluation via `state->update(input_pair, v1, v2)` + `state->hmass()` etc. Eliminates string parsing, fluid lookup, and backend selection overhead on every call.
-2. **Analytical derivatives** (default, when enabled): Uses `first_partial_deriv()` for exact gradients, validated by a forward-FD consistency check. Falls back to FD when derivatives disagree by >5% (near phase boundaries for pseudo-pure/mixture fluids like Air).
-3. **PropsSI fallback**: If `AbstractState` throws, falls back to the high-level `PropsSI()` function with central finite differences.
-
-### Supported Functions and Fluids
-
-- **Supported functions**: `enthalpy`, `entropy`, `density`, `volume`, `pressure`, `temperature`, `quality`, `cp`, `cv`, `viscosity`, `conductivity`, `prandtl`, `soundspeed`, `molarmass`, `t_sat`, `p_sat`
-- **Supported input pairs**: `T,P`, `T,x`, `P,h`, `P,s`, `H,P`, `D,P`, and others
-- **Temperature units**: Automatically converts Celsius (as used by CoolSolve) to Kelvin (CoolProp)
-- **Derivatives**: Analytical via `first_partial_deriv()` with FD consistency check; central FD fallback
-- **Fluids**: All CoolProp fluids are supported (Water, R134a, Air, CO2, etc.)
-
-### Configuration
-
-CoolProp behavior is configured via `coolsolve.conf`:
-
-```ini
-# Use the low-level AbstractState API (default: true, 2-5x faster than PropsSI)
-coolpropUseAbstractState = true
-
-# Use analytical derivatives with consistency check (default: true)
-coolpropEnableAnalyticalDerivatives = true
-
-# CoolProp backend (default: HEOS). Options: HEOS, INCOMP, TTSE&HEOS, BICUBIC&HEOS
-coolpropBackend = HEOS
-
-# Enable thread-local AbstractState caching (default: true)
-coolpropCacheEnabled = true
-
-# Enable superancillary equations (default: true)
-coolpropEnableSuperancillaries = true
-```
-
-All CoolProp settings are also editable in the GUI via the "CoolProp Integration" section of the Config Editor.
-
-### Default Units
-
-CoolSolve assumes the following default units:
-- Temperature: **°C** (automatically converted to K for CoolProp calls)
-- Pressure: **Pa**
-- Energy: **J**
-- Mass: **kg**
-- Force: **N**
-- Length: **m**
-
-Built-in constants like `g#` use these SI units (e.g., `g# = 9.80665 m/s^2`).
-
-Example usage in EES code:
-```
-T_ev = -10           // Celsius
-P_ev = pressure(R134a, T=T_ev, x=1)   // Saturation pressure
-h_1 = enthalpy(R134a, P=P_ev, T=T_1)  // Enthalpy at state 1
-```
-
-### Functions and Procedures
-
-CoolSolve supports user-defined functions and procedures for modular code:
-
-```ees
-PROCEDURE single_phase_HX(cf$, hf$, t_cf_su : Q_dot)
-    "Procedural block with local scope"
-    cp_cf = specheat(cf$, T=t_cf_su, P=101325)
-    Q_dot := alpha * cp_cf * (t_hf_su - t_cf_su)
-END
-
-CALL single_phase_HX('Air_ha', 'Water', 20 : Q_total)
-```
-
-- **Local Scope**: Variables inside functions and procedures are local and do not interfere with the main program.
-- **Assignment**: Use `:=` for assignment inside procedural blocks (though `=` is also supported for compatibility).
-- **Control Flow**: `IF-THEN-ELSE` statements are supported within these blocks.
-- **Automatic Differentiation**: CoolSolve automatically propagates derivatives through procedural calls, ensuring accurate Jacobians.
+For the full language syntax, built-in functions, and CoolProp integration details, see the [Language Reference](docs/language_reference.md).
 
 ## Future Work
 
-The next steps in the implementation plan include:
-- **Hybrd-native `O(n²)` triangular solve** for TrustRegion's Broyden mode, to realize the speedup that the QR infrastructure (§4.1) makes possible
-- **Pseudo-arclength continuation** in the Homotopy solver (roadmap §4.4) to pass turning points
-- **Try Harder** button in the gui: if newton fails, tries all the other methods
-- **Library of models**: turn the examples folder into a well structured library of thermodynamics models
-- **Improved plotting**: interface to generate plots from any of the active tables in the model
+Future features include a complete library of models embedded into coolsolve and improved plotting capabilities. 
 
-See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
+Planned improvements for the solver include a stiff ODE integrator (BDF), pseudo-arclength continuation, and an improved plotting interface. See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
 
 ## Acknowledgements & License
 

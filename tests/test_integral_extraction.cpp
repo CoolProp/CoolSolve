@@ -28,8 +28,7 @@ bool diagContains(const IntegralProblem& p, const std::string& needle) {
 }  // namespace
 
 // ============================================================================
-// Phase 4 — TDD tests for extractIntegralProblem.
-// See docs/integral_table_plan.md §Phase 4.
+// TDD tests for extractIntegralProblem.
 // ============================================================================
 
 TEST_CASE("Extraction: decay model", "[integral][extraction]") {

@@ -8,8 +8,8 @@
  * equations are stripped into a reduced "algebraic subsystem" IR, the state
  * variables `y` and the integration variable `t` are fixed as external values
  * each step, and the algebraic solve returns the derivatives `f = dy/dt`. An
- * `Integrator` (Phase 1) then advances the state. See
- * `docs/integral_table_plan.md` §Phase 5 and §3.4.
+ * `Integrator` then advances the state. See `docs/integral_table.md` §3
+ * (Architecture) and §3.3 (RHS evaluation strategy).
  */
 #include "coolsolve/ast.h"
 #include "coolsolve/integral/integral_problem.h"

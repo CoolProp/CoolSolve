@@ -131,6 +131,16 @@ body {
   opacity: 0.5;
 }
 
+/* "Try Harder" state — primary solve button morphs after a failed run. */
+.toolbar-btn.primary.try-harder {
+  background: var(--warning-color);
+  color: white;
+}
+
+.toolbar-btn.primary.try-harder:hover {
+  filter: brightness(1.08);
+}
+
 .toolbar-btn.danger {
   background: var(--error-color);
   color: white;

@@ -311,6 +311,7 @@ Implemented in `Toolbar.tsx`.  All actions include keyboard shortcuts:
 | Open | `Ctrl+O` | Load `.eescode` from disk + companion files |
 | Save | `Ctrl+S` | Download ZIP bundle |
 | Solve | `Ctrl+Enter` | Run async solve, stream progress via SSE |
+| Try Harder | `Ctrl+Enter` (after a failure) | Re-run with `deepSearch: true` — substitutes `deepSearchPipeline`, forces tearing + symbolic reduction on, and consults `multiStartMode`.  The Solve button morphs into Try Harder automatically when the previous run failed; editing the model, initials, or config reverts it to Solve. |
 | Debug Solve | `Ctrl+Shift+Enter` | Solve with tracing enabled, generate debug output |
 | Stop | `Escape` | Cancel running solve |
 | Update Guesses | `Ctrl+G` | Copy solved values into initial guesses |
@@ -380,6 +381,8 @@ groups covering all `SolverOptions` keys (~40+ fields):
 | Partitioned Solver | `partitionedMaxIterations`, `partitionedTolerance` |
 | Tearing | `enableTearing`, `tearingMinBlockSize`, `tearingMethod` |
 | Pipeline | `solverPipeline` (ordered list), `pipelineMode` (radio) |
+| Deep Search Pipeline | `deepSearchPipeline`, `deepSearchPipelineMode` — used by the *Try Harder* button |
+| Multi-Start | `multiStartMode` (`always` / `deepsearch` / `never`), `multiStartMaxRestarts`, `multiStartNumCores` |
 | Safety | `timeoutSeconds` |
 | Output | `writeSolFile`, `writeResiduals` |
 | Integration | `integralMethod`, `integralFixedStep`, `integralMaxSteps`, `integralRelTol`, `integralAbsTol`, `integralMinStep`, `integralMaxStep`, `integralRichardson`, `integralOutputInterval` |
@@ -740,8 +743,8 @@ All the following tests pass against the current codebase:
 | Debug file content (`report.md`) | ✅ Full analysis content |
 | `GET /api/v1/coolprop/fluids` | ✅ 128 fluids; Water `hasDome:true`; Air `hasDome:false` |
 | `GET /api/v1/coolprop/fluids` (modelFluids, before parse) | ✅ `"modelFluids":[]` |
-| `POST /api/v1/coolprop/saturation` — Water, 50 pts | ✅ `critical.T≈647.1 K`, `computeTime_ms≈67` |
-| `POST /api/v1/coolprop/saturation` — R134a, 100 pts | ✅ `critical.T≈374.2 K` |
+| `POST /api/v1/coolprop/saturation` — Water, 50 pts | ✅ `critical.T≈647.1 K` (raw SI from CoolProp; converted to °C in the JSON response), `computeTime_ms≈67` |
+| `POST /api/v1/coolprop/saturation` — R134a, 100 pts | ✅ `critical.T≈374.2 K` (raw SI from CoolProp; converted to °C in the JSON response) |
 | `POST /api/v1/coolprop/saturation` — invalid fluid | ✅ HTTP 400 |
 | `POST /api/v1/coolprop/saturation` — Air (ideal gas) | ✅ HTTP 400 "no dome" |
 | `GET /api/v1/variables/inferred` (before solve) | ✅ 0 variables |
@@ -902,7 +905,7 @@ These are extensions to the already-implemented `ThermoDiagram.tsx`:
 
 | Item | Description |
 |------|-------------|
-| Unit conversion | Display properties in user-friendly units (°C, kPa, kJ/kg, kJ/(kg·K)) instead of raw SI |
+| Unit conversion | Display properties in additional user-friendly units (kPa, kJ/kg, …) alongside the current °C/Pa/J defaults |
 | Isolines | Isotherms, isobars, iso-quality lines on the saturation dome |
 | Multiple fluids | Overlay domes for two fluids on the same chart for comparison |
 | CoolProp.js (WASM) | Compute missing state properties in the browser without backend calls |

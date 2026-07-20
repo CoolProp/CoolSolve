@@ -168,6 +168,33 @@ std::string pipelineModeToString(SolverPipelineMode mode) {
     }
 }
 
+std::string multiStartModeToString(MultiStartMode mode) {
+    switch (mode) {
+        case MultiStartMode::Always:       return "Always";
+        case MultiStartMode::InDeepSearch: return "InDeepSearch";
+        case MultiStartMode::Never:        return "Never";
+        default:                           return "Unknown";
+    }
+}
+
+bool parseMultiStartMode(const std::string& name, MultiStartMode& out) {
+    std::string s = name;
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    // Strip spaces and underscores so "in deep search" / "in_deep_search" both work.
+    s.erase(std::remove_if(s.begin(), s.end(),
+                           [](unsigned char c) { return c == ' ' || c == '_' || c == '-'; }),
+            s.end());
+    if (s == "always") { out = MultiStartMode::Always; return true; }
+    if (s == "indeepsearch" || s == "deepsearch" || s == "deep") {
+        out = MultiStartMode::InDeepSearch; return true;
+    }
+    if (s == "never" || s == "off" || s == "no") {
+        out = MultiStartMode::Never; return true;
+    }
+    return false;
+}
+
 std::unique_ptr<NonLinearSolver> createSolver(SolverStrategy strategy) {
     switch (strategy) {
         case SolverStrategy::Newton:
@@ -207,6 +234,27 @@ static bool parseBool(const std::string& v) {
     if (s == "true" || s == "1" || s == "yes") return true;
     if (s == "false" || s == "0" || s == "no") return false;
     return std::stoi(v) != 0;
+}
+
+/// Parse a comma-separated list of solver strategy names into a vector.
+/// Unknown names are silently skipped (mirrors the historical behaviour of
+/// `solverPipeline`).  Returns true if at least one strategy was recognised.
+static bool parseStrategyList(const std::string& val, std::vector<SolverStrategy>& out) {
+    out.clear();
+    std::istringstream ss(val);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        token = trim(token);
+        if (token.empty()) continue;
+        SolverStrategy strat;
+        if (parseStrategy(token, strat)) {
+            out.push_back(strat);
+        } else {
+            std::cerr << "[Warning] unknown solver strategy '" << token
+                      << "' in pipeline list; ignored.\n";
+        }
+    }
+    return !out.empty();
 }
 
 bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) {
@@ -264,18 +312,7 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             else if (key == "lmGeodesicAcceleration") options.lmGeodesicAcceleration = parseBool(val);
             // Solver pipeline configuration
             else if (key == "solverPipeline") {
-                // Parse comma-separated list of solver names
-                // e.g. "Newton, TrustRegion, LM"
-                options.solverPipeline.clear();
-                std::istringstream ss(val);
-                std::string token;
-                while (std::getline(ss, token, ',')) {
-                    token = trim(token);
-                    SolverStrategy strat;
-                    if (parseStrategy(token, strat)) {
-                        options.solverPipeline.push_back(strat);
-                    }
-                }
+                parseStrategyList(val, options.solverPipeline);
             }
             else if (key == "pipelineMode") {
                 std::string lower = val;
@@ -285,6 +322,21 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
                     options.pipelineMode = SolverPipelineMode::Parallel;
                 } else {
                     options.pipelineMode = SolverPipelineMode::Sequential;
+                }
+            }
+            // Deep Search pipeline ("Try Harder" button) — same parsing rules
+            // as solverPipeline.  Used only when options.deepSearch == true.
+            else if (key == "deepSearchPipeline") {
+                parseStrategyList(val, options.deepSearchPipeline);
+            }
+            else if (key == "deepSearchPipelineMode") {
+                std::string lower = val;
+                std::transform(lower.begin(), lower.end(), lower.begin(),
+                               [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (lower == "parallel") {
+                    options.deepSearchPipelineMode = SolverPipelineMode::Parallel;
+                } else {
+                    options.deepSearchPipelineMode = SolverPipelineMode::Sequential;
                 }
             }
             // BisectionND options
@@ -342,7 +394,27 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             }
             // Multi-start fallback (roadmap §4.2)
             else if (key == "multiStartEnabled") {
-                options.multiStartEnabled = parseBool(val);
+                // Legacy boolean: still accepted for backward compatibility.
+                // Maps onto MultiStartMode so a single source of truth decides
+                // engagement (see SolverOptions::isMultiStartActive).
+                bool v = parseBool(val);
+                options.multiStartEnabled = v;
+                options.multiStartMode = v ? MultiStartMode::Always
+                                           : MultiStartMode::Never;
+            }
+            else if (key == "multiStartMode") {
+                MultiStartMode m;
+                if (parseMultiStartMode(val, m)) {
+                    options.multiStartMode = m;
+                    // Keep the legacy bool in sync so old code paths that still
+                    // consult `multiStartEnabled` see a consistent value.
+                    options.multiStartEnabled = (m != MultiStartMode::Never);
+                } else {
+                    std::cerr << "[Warning] multiStartMode='" << val
+                              << "' is not one of {always, deepsearch, never}; "
+                              << "falling back to default (deepsearch).\n";
+                    options.multiStartMode = MultiStartMode::InDeepSearch;
+                }
             }
             else if (key == "multiStartMaxRestarts") {
                 int v = std::stoi(val);
@@ -358,8 +430,8 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
                 int v = std::stoi(val);
                 if (v < 0) {
                     std::cerr << "[Warning] multiStartNumCores=" << v
-                              << " is negative; falling back to default (1 = sequential).\n";
-                    options.multiStartNumCores = 1;
+                              << " is negative; falling back to default (4).\n";
+                    options.multiStartNumCores = 4;
                 } else {
                     options.multiStartNumCores = v;
                 }
@@ -2350,14 +2422,14 @@ SolverStatus Solver::solveBlockWithMultiStart(size_t blockIndex,
     SolverStatus status = solveBlock(blockIndex, options, trace, &firstError);
 
     // Conditions to engage multi-start:
-    //  - option enabled,
+    //  - option enabled (via the mode + deepSearch combination),
     //  - multi-variable block (size-1 has its own multi-probe in Newton1D),
     //  - a non-fatal failure (EvaluationError/InvalidInput/ParseFailed are not
     //    starting-point problems and would just waste time retrying).
     bool fatal = (status == SolverStatus::EvaluationError ||
                   status == SolverStatus::InvalidInput ||
                   status == SolverStatus::ParseFailed);
-    if (status == SolverStatus::Success || !options.multiStartEnabled || fatal) {
+    if (status == SolverStatus::Success || !options.isMultiStartActive() || fatal) {
         if (outErrorMessage) *outErrorMessage = firstError;
         return status;
     }
@@ -2741,53 +2813,72 @@ SolverStatus Solver::solveBlockMultiStartParallel(
 
 SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
     auto startTime = std::chrono::high_resolution_clock::now();
-    
+
+    // Deep Search override: when options.deepSearch is set (the GUI's "Try
+    // Harder" button), substitute the deep-search pipeline and force tearing +
+    // symbolic reduction on, regardless of their normal defaults.  Multi-start
+    // engagement is decided later via isMultiStartActive(), which already
+    // consults `deepSearch`.  We make a local copy so the rest of solve() can
+    // read a single, consistent options struct.
+    SolverOptions effOpts = options;
+    if (effOpts.deepSearch) {
+        if (!effOpts.deepSearchPipeline.empty()) {
+            effOpts.solverPipeline = effOpts.deepSearchPipeline;
+        }
+        // Mirror the deep-search-specific execution mode (sequential/parallel)
+        // onto the active pipeline mode so solveBlock sees it.
+        effOpts.pipelineMode = effOpts.deepSearchPipelineMode;
+        effOpts.enableTearing = true;
+        effOpts.enableSymbolicReduction = true;
+    }
+    const SolverOptions& opts = effOpts;
+
     SolveResult result;
     result.blocksEvaluated = 0;
     result.totalIterations = 0;
-    
+
     // Always allocate block traces so iteration counts are tracked even
     // without full debug tracing.  The overhead is minimal.
     result.blockTraces.resize(evaluator_.getNumBlocks());
-    
+
     // Solve blocks in topological order
     int totalBlocks = static_cast<int>(evaluator_.getNumBlocks());
     for (size_t blockIdx = 0; blockIdx < evaluator_.getNumBlocks(); ++blockIdx) {
         // Check cancellation before each block
-        if (options.cancelToken && options.cancelToken->load()) {
+        if (opts.cancelToken && opts.cancelToken->load()) {
             result.success = false;
             result.status = SolverStatus::MaxIterations;
             result.errorMessage = "Solve cancelled by user";
             result.variables = evaluator_.getAllVariables();
             result.stringVariables = evaluator_.getAllStringVariables();
             result.totalTime = std::chrono::high_resolution_clock::now() - startTime;
-            
-            if (options.progressCallback) {
-                options.progressCallback(static_cast<int>(blockIdx), totalBlocks, "fail", 0, 0.0);
+
+            if (opts.progressCallback) {
+                opts.progressCallback(static_cast<int>(blockIdx), totalBlocks, "fail", 0, 0.0);
             }
             return result;
         }
-        
+
         SolverTrace* trace = &result.blockTraces[blockIdx];
-        
+
         // Notify progress: block starting
-        if (options.progressCallback) {
-            options.progressCallback(static_cast<int>(blockIdx), totalBlocks, "start", 0, 0.0);
+        if (opts.progressCallback) {
+            opts.progressCallback(static_cast<int>(blockIdx), totalBlocks, "start", 0, 0.0);
         }
-        
+
         // Setup timeout protection
-        TimeoutGuard timeout(options.timeoutSeconds);
-        
+        TimeoutGuard timeout(opts.timeoutSeconds);
+
         // Set up per-block diagnostic collection for CoolProp errors
         DiagnosticCollector blockDiag;
         evaluator_.getBlock(blockIdx).setDiagnostics(&blockDiag);
-        
+
         std::string blockError;
         std::string multistartInfo;
         // Multi-start fallback (roadmap §4.2): retries the block from
         // alternative starting points if the normal pipeline fails.
         SolverStatus blockStatus = solveBlockWithMultiStart(
-            blockIdx, options, trace, &blockError, &multistartInfo);
+            blockIdx, opts, trace, &blockError, &multistartInfo);
         
         // Detach diagnostics pointer (blockDiag goes out of scope later)
         evaluator_.getBlock(blockIdx).setDiagnostics(nullptr);
@@ -2864,19 +2955,19 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
         
         if (blockStatus != SolverStatus::Success) {
             // Notify progress: block failed
-            if (options.progressCallback) {
-                options.progressCallback(static_cast<int>(blockIdx), totalBlocks, "fail",
+            if (opts.progressCallback) {
+                opts.progressCallback(static_cast<int>(blockIdx), totalBlocks, "fail",
                     br.iterations, br.maxResidual);
             }
-            
+
             result.success = false;
             result.status = blockStatus;
             result.detailedError = blockError;
-            
+
             // Get block info for error message
             const auto& block = evaluator_.getBlock(blockIdx);
             std::ostringstream ss;
-            ss << "Block " << blockIdx << " (size " << block.size() 
+            ss << "Block " << blockIdx << " (size " << block.size()
                << ", vars: ";
             const auto& vars = block.getVariables();
             for (size_t i = 0; i < std::min(vars.size(), size_t(3)); ++i) {
@@ -2889,27 +2980,27 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
                 ss << " - " << blockError;
             }
             result.errorMessage = ss.str();
-            
+
             // Copy partial solution anyway
             result.variables = evaluator_.getAllVariables();
             result.stringVariables = evaluator_.getAllStringVariables();
             result.totalTime = std::chrono::high_resolution_clock::now() - startTime;
 
             // Write debug reduction .md file if requested (even on failure)
-            if (!options.debugReductionPath.empty() && enableTracing) {
-                writeDebugReductionReport(options.debugReductionPath, result);
+            if (!opts.debugReductionPath.empty() && enableTracing) {
+                writeDebugReductionReport(opts.debugReductionPath, result);
             }
 
             return result;
         }
-        
+
         // Notify progress: block done
-        if (options.progressCallback) {
-            options.progressCallback(static_cast<int>(blockIdx), totalBlocks, "done",
+        if (opts.progressCallback) {
+            opts.progressCallback(static_cast<int>(blockIdx), totalBlocks, "done",
                 br.iterations, br.maxResidual);
         }
     }
-    
+
     // Success - copy final solution
     result.success = true;
     result.status = SolverStatus::Success;
@@ -2918,8 +3009,8 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
     result.totalTime = std::chrono::high_resolution_clock::now() - startTime;
 
     // Write debug reduction .md file if requested
-    if (!options.debugReductionPath.empty() && enableTracing) {
-        writeDebugReductionReport(options.debugReductionPath, result);
+    if (!opts.debugReductionPath.empty() && enableTracing) {
+        writeDebugReductionReport(opts.debugReductionPath, result);
     }
 
     return result;
