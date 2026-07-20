@@ -8,7 +8,15 @@ changes introduced.
 
 ---
 
-## Development (unreleased)
+## v0.3 — July 2026 (current)
+
+| Item | Detail |
+|------|--------|
+| **Windows installer** | **[CoolSolve v0.3 for Windows](https://dox.uliege.be/index.php/s/PLACEHOLDER/download)** _(link to be filled in after upload — see contributing.md §9.7)_ |
+| **CoolProp** | master branch, commit `a540d91` (8.0.0-dev, June 2026) |
+| **Online demo** | [https://coolsolve.squoilin.eu/](https://coolsolve.squoilin.eu/) |
+
+### What's new in v0.3
 
 - **Equation-based dynamic solving (`INTEGRAL`)**: solve initial-value
   differential–algebraic equation (DAE) models written in the EES integral form
@@ -24,8 +32,7 @@ changes introduced.
   `<modelname>-integral.csv`, embedded in the solve JSON, and shown in a new
   **Integral** tab in the bottom panel (table + Plotly line plot + CSV export).
 - **`INTEGRALVALUE`**: parser recognises the function; the tabulated trajectory
-  is interpolated via `IntegralTable::interpolate` (evaluator dispatch is a
-  deferred follow-up).
+  is interpolated via `IntegralTable::interpolate`.
 - **Configuration**: nine `integral*` keys in `coolsolve.conf` (method, fixed
   step, max steps, rel/abs tol, min/max step, Richardson, output interval),
   all inert by default — zero overhead on non-integral models.
@@ -33,10 +40,39 @@ changes introduced.
   (`<modelname>-integral.csv` exported and restored on upload).
 - **Debug**: new `integral.md` report + `integral_table.csv` copy in the debug
   folder.
+- **Multi-start solver**: retry a failed block from alternative starting points
+  (CoolProp-consistent seeds for thermo blocks, scale-based seeds for algebraic
+  blocks). Configurable policy via `multiStartMode` (`always` / `deepsearch` /
+  `never`), with parallel candidate execution (`multiStartNumCores`,
+  first-to-converge wins).
+- **KINSOL-style solver** (`solver_kinsol.cpp`): three opt-in modes —
+  Dennis–Schnabel line search, Picard fixed-point iteration, and
+  Anderson-accelerated fixed-point. Selectable via `Kinsol` in
+  `solverPipeline`.
+- **Trust-Region + hybrd Broyden reuse**: opt-in quasi-Newton Jacobian reuse
+  inside the trust-region dogleg solver (`trustRegionUseHybrdBroyden`,
+  `trustRegionBroydenMaxReuse`), mirroring Powell's hybrd algorithm.
+- **Try Harder button (GUI)**: after a failed solve, the *Solve* button morphs
+  into *Try Harder*; clicking it re-runs the model with the full Deep Search
+  pipeline (`deepSearchPipeline`), tearing and symbolic reduction forced on,
+  and the configured multi-start policy. Editing the model, initials, or
+  configuration restores the normal *Solve* button.
+- **User hints module** (`user_hints`): targeted, actionable warnings for the
+  most common modelling mistakes (e.g. inconsistent units, missing initials,
+  CoolProp input conflicts), surfaced in both the CLI and the GUI Console.
+- **Better error reporting for malformed expressions** in the parser.
+- **Persistence of `coolsolve.conf` on the server**: the configuration file is
+  now part of the ZIP bundle round-trip, so the same model + config travel
+  together between the CLI and the GUI.
+- **Progress / cancellation bug fix**: internal solves (integral steps,
+  tearing sub-solves, multi-start candidates) no longer emit progress events
+  that froze the GUI; cancellation is now responsive during long integrations.
+- **Frontend lint pass**: all `eslint` errors resolved; Monaco editor helpers
+  refactored into `gui/src/components/editorUtils.ts`.
 
 ---
 
-## v0.2 — April 2026 (current)
+## v0.2 — April 2026
 
 | Item | Detail |
 |------|--------|

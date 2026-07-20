@@ -1,7 +1,7 @@
 !include "MUI2.nsh"
 
-!define VERSION "0.2"
-!define COOLPROP_VERSION "7.2.1-dev"
+!define VERSION "0.3"
+!define COOLPROP_VERSION "8.0.0-dev"
 
 Name "CoolSolve ${VERSION}"
 OutFile "CoolSolve_v${VERSION}_Installer.exe"

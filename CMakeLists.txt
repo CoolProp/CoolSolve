@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(CoolSolve VERSION 0.2.0 LANGUAGES CXX)
+project(CoolSolve VERSION 0.3.0 LANGUAGES CXX)
 
 # --- Default to Release build for performance ---
 # Always build in Release unless you are actively debugging C++ code with a debugger.
