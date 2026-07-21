@@ -12,7 +12,7 @@ changes introduced.
 
 | Item | Detail |
 |------|--------|
-| **Windows installer** | **[CoolSolve v0.3 for Windows](https://dox.uliege.be/index.php/s/PLACEHOLDER/download)** _(link to be filled in after upload — see contributing.md §9.7)_ |
+| **Windows installer** | **[CoolSolve v0.3 for Windows](https://github.com/CoolProp/CoolSolve/releases/download/v0.3/CoolSolve_v0.3_Installer.exe)** ([release notes](https://github.com/CoolProp/CoolSolve/releases/tag/v0.3)) |
 | **CoolProp** | master branch, commit `a540d91` (8.0.0-dev, June 2026) |
 | **Online demo** | [https://coolsolve.squoilin.eu/](https://coolsolve.squoilin.eu/) |
 

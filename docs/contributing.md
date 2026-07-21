@@ -570,26 +570,27 @@ unexpected changes in iteration counts or runtimes (see §5).
 Edit [`docs/versions.md`](versions.md):
 
 1. Add a new `## vX.Y — Month Year (current)` section at the top with:
-   - The Windows installer download link (fill in after uploading, see §9.7).
+   - The Windows installer download link (GitHub Releases URL — see §9.7).
    - The CoolProp commit hash and version string from §9.3.
    - A bullet list of the main changes since the previous release.
 2. Remove the `(current)` label from the previous version's heading.
 
 Keep the v0.1 entry permanently at the bottom as the historical baseline.
 
-### 9.6 Create the Git tag
+Also update the **Try CoolSolve** section in `README.md` to point to the new
+version's installer link.
 
-```bash
-git add CMakeLists.txt coolsolve.nsi coolsolve.rc docs/versions.md README.md
-git commit -m "chore: release v0.3"
-git tag -a v0.3 -m "CoolSolve v0.3"
-git push origin v0.3
+The download URL follows a fixed pattern once the tag is chosen:
+
+```
+https://github.com/CoolProp/CoolSolve/releases/download/vX.Y/CoolSolve_vX.Y_Installer.exe
 ```
 
-The tag is the single source of truth for the release on the repository
-server.
+You can set this link in the docs **before** publishing the release (the URL
+is deterministic). The installer built in §9.6 will not embed the updated
+docs — that is expected and harmless.
 
-### 9.7 Build and upload the Windows installer
+### 9.6 Build the Windows installer
 
 On a Windows machine with Visual Studio 2022, Python 3, Node.js, and NSIS:
 
@@ -597,16 +598,44 @@ On a Windows machine with Visual Studio 2022, Python 3, Node.js, and NSIS:
 build_installer.bat
 ```
 
-This produces `CoolSolve_v0.3_Installer.exe`. Upload it to the file-sharing
-server (dox.uliege.be) and copy the public share link. Then replace the
-placeholder link in `docs/versions.md` and `README.md` with the real URL,
-and push the update:
+This produces `CoolSolve_vX.Y_Installer.exe` in the project root. Do **not**
+commit the `.exe` to git; it is attached to the GitHub Release in §9.7.
+
+### 9.7 Publish the GitHub Release
+
+Commit the documentation updates from §9.5, then create and push the tag:
 
 ```bash
 git add docs/versions.md README.md
-git commit -m "docs: add v0.3 Windows installer link"
-git push
+git commit -m "docs: add vX.Y GitHub release download link"
+git tag -a vX.Y -m "CoolSolve vX.Y"
+git push origin main
+git push origin vX.Y
 ```
+
+Create the release and upload the installer with the GitHub CLI
+(`gh` must be installed and authenticated — `gh auth login`):
+
+```bash
+gh release create vX.Y \
+  --repo CoolProp/CoolSolve \
+  --title "CoolSolve vX.Y" \
+  --notes-file docs/versions.md \
+  CoolSolve_vX.Y_Installer.exe
+```
+
+On Windows (PowerShell), use backtick line continuations or a single line:
+
+```powershell
+gh release create vX.Y --repo CoolProp/CoolSolve --title "CoolSolve vX.Y" `
+  --notes-file docs/versions.md CoolSolve_vX.Y_Installer.exe
+```
+
+The release page will be at
+`https://github.com/CoolProp/CoolSolve/releases/tag/vX.Y`.
+
+Older releases (v0.1, v0.2) may still point to the legacy dox.uliege.be
+host; new releases should use GitHub Releases exclusively.
 
 ### 9.8 Checklist summary
 
@@ -615,6 +644,7 @@ git push
 - [ ] Full test suite passes (unit + examples-comprehensive + solver-robustness)
 - [ ] docs/versions.md updated (new section, CoolProp version, changelog)
 - [ ] README.md "Try CoolSolve" section updated to the new version
+- [ ] Windows installer built with build_installer.bat (not committed to git)
 - [ ] Git tag created and pushed
-- [ ] Windows installer built and uploaded; links updated and pushed
+- [ ] GitHub Release published with installer attached (gh release create)
 ```

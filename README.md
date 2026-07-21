@@ -12,7 +12,7 @@ CoolSolve is a parser, structural analyzer, and equation solver using a language
 
 ### Windows Desktop Application (v0.3)
 
-Download the Windows installer: **[CoolSolve v0.3 for Windows](https://dox.uliege.be/index.php/s/PLACEHOLDER/download)** _(link to be filled in after upload)_
+Download the Windows installer: **[CoolSolve v0.3 for Windows](https://github.com/CoolProp/CoolSolve/releases/download/v0.3/CoolSolve_v0.3_Installer.exe)**
 
 See [Version History](docs/versions.md) for all releases, changelogs, and
 the CoolProp version bundled in each release.
