@@ -17,7 +17,7 @@
 
 namespace coolsolve {
 
-struct IR;                 // forward (full def in ir.h)
+class IR;                  // forward (full def in ir.h)
 struct StructuralAnalysisResult;  // forward
 
 /**

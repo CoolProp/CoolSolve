@@ -144,7 +144,7 @@ while(1)
         endif()
         get_filename_component(FNAME "${FULL_PATH}" NAME)
         # Skip lock/temp files
-        if(FNAME MATCHES "^\.~")
+        if(FNAME MATCHES "^[.]~")
             continue()
         endif()
         # When embedding the repo root, only take README.md
@@ -168,7 +168,7 @@ while(1)
         string(MAKE_C_IDENTIFIER "extraasset_${EXTRA_INDEX}_${FNAME}" VAR_NAME)
         guess_mime_type("${FNAME}" MIME)
         # Override MIME for markdown
-        if(FNAME MATCHES "\.md$")
+        if(FNAME MATCHES "[.]md$")
             set(MIME "text/plain; charset=utf-8")
         endif()
 
