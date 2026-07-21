@@ -26,9 +26,6 @@
 #include "coolsolve/parser.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/fluids.h"
-#ifdef _MSC_VER
-#  define _USE_MATH_DEFINES
-#endif
 #include <cmath>
 
 using Catch::Matchers::WithinAbs;

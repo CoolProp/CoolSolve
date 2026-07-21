@@ -5,9 +5,6 @@
 #include "coolsolve/parser.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/structural_analysis.h"
-#ifdef _MSC_VER
-#  define _USE_MATH_DEFINES
-#endif
 #include <cmath>
 #include <iomanip>
 #include <sstream>

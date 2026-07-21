@@ -214,9 +214,16 @@ endif()
 # Find threading library (needed for parallel solver pipeline)
 find_package(Threads REQUIRED)
 
-# MSVC-specific flags: /utf-8 (required by fmtlib), /Zc:__cplusplus (correct C++ version macro for peglib)
+# MSVC-specific flags:
+#   /utf-8             — required by fmtlib
+#   /Zc:__cplusplus    — correct C++ version macro for peglib
+#   _USE_MATH_DEFINES  — makes M_PI etc. available from <cmath> (otherwise
+#                        MSVC hides them behind this feature-test macro).
+#                        Defined on the compiler command line so it is seen
+#                        BEFORE any standard header is included transitively.
 if(MSVC)
     target_compile_options(coolsolve_lib PRIVATE /utf-8 /Zc:__cplusplus)
+    target_compile_definitions(coolsolve_lib PUBLIC _USE_MATH_DEFINES)
 endif()
 
 # Link with nlohmann_json, Eigen, and Threads
