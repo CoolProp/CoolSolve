@@ -118,6 +118,12 @@ CoolSolve uses several file formats for input and verification:
 - Python 3 (required by CoolProp's CMake scripts at configure time)
 - Node.js 18+ and npm (required to build the React GUI frontend)
 
+On Ubuntu/Debian, install all prerequisites at once:
+
+```bash
+sudo apt update && sudo apt install -y build-essential cmake git python3 nodejs npm
+```
+
 ### How Dependencies Are Handled
 
 CoolSolve is a **standalone library** that automatically downloads all its dependencies using CMake's FetchContent mechanism:
