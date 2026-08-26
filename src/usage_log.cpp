@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iostream>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
@@ -109,14 +110,28 @@ void appendUsageLog(const std::string& path, const UsageLogEntry& entry) {
     std::lock_guard<std::mutex> lock(appendMutex);
 
     // Create the file with its header on first use, then always append.
-    // Errors are intentionally swallowed: logging must never break solving.
+    // I/O errors never propagate: logging must not break solving. They are
+    // reported once to stderr (the journal in a systemd deployment), because
+    // an unwritable path is otherwise indistinguishable from "no solves yet"
+    // on the /stats dashboard.
     std::error_code ec;
     if (!fs::exists(path, ec)) {
         std::ofstream create(path, std::ios::binary | std::ios::trunc);
         if (create.is_open()) create << kLogHeader << '\n';
     }
     std::ofstream file(path, std::ios::binary | std::ios::app);
-    if (file.is_open()) file << line.str();
+    if (file.is_open()) {
+        file << line.str();
+        if (file.good()) return;
+    }
+
+    static bool warned = false;
+    if (!warned) {
+        warned = true;
+        std::cerr << "[Warning] Cannot write the usage log at '" << path
+                  << "'; solve statistics will stay empty. Point COOLSOLVE_GUI_LOG "
+                     "at a writable file (see docs/gui.md \u00a74.11).\n";
+    }
 }
 
 // ============================================================================

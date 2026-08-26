@@ -672,6 +672,16 @@ int startServer(const ServerOptions& options) {
         if (envPath && *envPath) usageLogPath = envPath;
     }
     if (usageLogPath.empty()) usageLogPath = "coolsolve_gui.log";
+    // Echo the resolved path (absolute, so a relative default is unambiguous):
+    // hardened deployments often have a read-only working directory, and a
+    // silently unwritable log leaves /stats permanently empty.
+    {
+        std::error_code pathEc;
+        auto absolutePath = fs::absolute(usageLogPath, pathEc);
+        // std::endl, not "\n": stdout is block-buffered when piped to the
+        // systemd journal, so an unflushed line would not appear there.
+        std::cout << "Usage log: " << (pathEc ? usageLogPath : absolutePath.string()) << std::endl;
+    }
 
     // getSession: extract session from cookie, create if new
     auto getSession = [&sessionMgr](const httplib::Request& req, httplib::Response& res) -> std::shared_ptr<Session> {

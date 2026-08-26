@@ -255,6 +255,15 @@ as ordinary solves.
 2. else the `COOLSOLVE_GUI_LOG` environment variable;
 3. else `coolsolve_gui.log` in the server's working directory.
 
+The resolved path is printed at startup (`Usage log: /path/to/file`). The
+directory must be writable by the server process: if it is not, a single
+`[Warning] Cannot write the usage log at ...` is emitted, solving continues
+unaffected, and the `/stats` dashboard stays empty. Hardened deployments need
+an explicit writable path — see
+[Deployment Guide §4](deployment_ubuntu_apache.md#4-systemd-service-auto-start),
+where `ProtectSystem=strict` makes the working directory read-only and the log
+lives in `/var/lib/coolsolve` instead.
+
 The file is git-ignored. It is created with a header line on first write:
 
 ```

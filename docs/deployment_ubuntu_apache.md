@@ -100,12 +100,19 @@ ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/tmp/coolsolve_sessions
 PrivateTmp=false
+
+# Persistent state: systemd creates /var/lib/coolsolve (owned by the service
+# user) and keeps it writable despite ProtectSystem=strict. The usage log must
+# live here — the working directory below is under /home and therefore
+# read-only, so the default relative log path cannot be created.
+StateDirectory=coolsolve
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 
 # Environment
 Environment=HOME=/home/coolsolve
+Environment=COOLSOLVE_GUI_LOG=/var/lib/coolsolve/coolsolve_gui.log
 
 # Logging
 StandardOutput=journal
@@ -135,6 +142,28 @@ Useful commands:
 sudo systemctl restart coolsolve   # restart after recompilation
 sudo systemctl stop coolsolve      # stop the server
 journalctl -u coolsolve --since today  # today's logs
+```
+
+### Verifying the usage log
+
+The service prints the resolved usage-log path on startup and warns once if it
+cannot be written. Both go to the journal:
+
+```bash
+journalctl -u coolsolve | grep -i "usage log"
+```
+
+`Usage log: /var/lib/coolsolve/coolsolve_gui.log` means logging is active. A
+`[Warning] Cannot write the usage log at ...` line means the path is not
+writable, and the `/stats` dashboard will stay empty — check that
+`StateDirectory=coolsolve` and `Environment=COOLSOLVE_GUI_LOG=...` are both
+present in the unit, since `ProtectSystem=strict` and `ProtectHome=read-only`
+leave the working directory read-only.
+
+```bash
+# The log should exist and grow by one line per solve
+sudo ls -l /var/lib/coolsolve/coolsolve_gui.log
+sudo tail -3 /var/lib/coolsolve/coolsolve_gui.log
 ```
 
 ---
