@@ -18,6 +18,7 @@ import type {
   LatexCompileRequest,
   LookupTablesResponse,
   IntegralTableData,
+  UsageStatsResponse,
 } from './types';
 
 const API_BASE = '/api/v1';
@@ -262,4 +263,7 @@ export const api = {
       `/tables/${encodeURIComponent(name)}`,
       { method: 'DELETE' }
     ),
+
+  // Usage log statistics (hidden dashboard at /stats)
+  getUsageStats: () => request<UsageStatsResponse>('/stats/log'),
 };

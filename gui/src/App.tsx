@@ -10,13 +10,25 @@ import ParametricStudy from './components/ParametricStudy';
 import Console from './components/Console';
 import LookupTableEditor from './components/LookupTableEditor';
 import IntegralTable from './components/IntegralTable';
+import UsageStats from './components/UsageStats';
 import SplitPane from './components/SplitPane';
 import { useModelStore } from './stores/modelStore';
 import { useUIStore } from './stores/uiStore';
 import { api } from './api/client';
 import './App.css';
 
+// Hidden utility page (solve usage statistics) — reachable at /stats only,
+// deliberately not linked from anywhere in the UI.
+const STATS_PATH = '/stats';
+
 export default function App() {
+  if (window.location.pathname === STATS_PATH) {
+    return <UsageStats />;
+  }
+  return <MainApp />;
+}
+
+function MainApp() {
   const theme = useUIStore((s) => s.theme);
   const rightTab = useUIStore((s) => s.rightTab);
   const setRightTab = useUIStore((s) => s.setRightTab);

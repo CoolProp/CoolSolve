@@ -56,6 +56,8 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 - **GUI & REST API**: Embedded single-page app (React/TypeScript) with a code editor, variable table, parametric studies, thermodynamic diagrams, and ZIP bundle round-trip. See [GUI & REST API](docs/gui.md).
 
+- **Usage Log**: In GUI mode, every solve or *Try Harder* attempt appends one CSV line to a local log file (timestamp, model name and size, outcome, duration, client IP, version). Written after the solve completes — no impact on solving. Aggregated statistics are available on a hidden `/stats` dashboard. See [GUI & REST API](docs/gui.md).
+
 ## Documentation
 
 | Document | Description |
@@ -405,6 +407,7 @@ CoolSolve/
 │   ├── autodiff_node.h         # Forward-mode AD types and operations
 │   ├── evaluator.h             # Block and system evaluators
 │   ├── solution_checker.h      # Post-solve solution verification
+│   ├── usage_log.h             # GUI solve-attempt log (append + aggregated stats)
 │   └── solver.h                # Solver pipeline, all SolverOptions declarations
 ├── include/coolsolve/integral/
 │   └── *.h                     # Equation-based dynamic solver (IntegralProblem, IntegralTable, Integrator, IntegralSolver)
@@ -431,6 +434,7 @@ CoolSolve/
     │   ├── solver_newton.cpp       # Newton + line search solver
 │   ├── solver_symbolic.cpp     # Symbolic block reduction preprocessing
 │   ├── solver_trust_region.cpp # Trust-region dogleg solver
+│   ├── usage_log.cpp           # GUI solve-attempt log: CSV append + cached statistics
 │   └── solution_checker.cpp    # Post-solve equation-by-equation verification
 ├── tests/
 │   ├── test_parser.cpp         # Parser/IR unit tests (Catch2)

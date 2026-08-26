@@ -13,6 +13,7 @@
 #include "coolsolve/variable_inference.h"
 #include "coolsolve/units.h"
 #include "coolsolve/latex_report.h"
+#include "coolsolve/usage_log.h"
 
 #include <httplib.h>
 #include "CoolProp.h"
@@ -341,6 +342,29 @@ static std::string generateSessionId() {
 }
 
 // ============================================================================
+// Client IP extraction (usage log)
+// ============================================================================
+
+// Resolve the originating client IP. When the server runs behind a reverse
+// proxy (see docs/deployment_ubuntu_apache.md), Apache appends the real
+// client address to X-Forwarded-For and remote_addr is only the proxy.
+static std::string getClientIP(const httplib::Request& req) {
+    auto it = req.headers.find("X-Forwarded-For");
+    if (it != req.headers.end() && !it->second.empty()) {
+        // The first entry in the (comma-separated) list is the client.
+        const std::string& value = it->second;
+        std::size_t comma = value.find(',');
+        std::string ip = (comma == std::string::npos) ? value : value.substr(0, comma);
+        // Trim surrounding whitespace
+        std::size_t b = ip.find_first_not_of(" \t");
+        std::size_t e = ip.find_last_not_of(" \t");
+        if (b != std::string::npos) return ip.substr(b, e - b + 1);
+        return ip;
+    }
+    return req.remote_addr;
+}
+
+// ============================================================================
 // ZIP helpers (minimal uncompressed archive implementation)
 // ============================================================================
 
@@ -639,7 +663,16 @@ static void openBrowser(const std::string& url) {
 int startServer(const ServerOptions& options) {
     httplib::Server svr;
     SessionManager sessionMgr;
-    
+
+    // Resolve the usage-log path once at startup (explicit option > env var
+    // > default file in the working directory).
+    std::string usageLogPath = options.usageLogFile;
+    if (usageLogPath.empty()) {
+        const char* envPath = std::getenv("COOLSOLVE_GUI_LOG");
+        if (envPath && *envPath) usageLogPath = envPath;
+    }
+    if (usageLogPath.empty()) usageLogPath = "coolsolve_gui.log";
+
     // getSession: extract session from cookie, create if new
     auto getSession = [&sessionMgr](const httplib::Request& req, httplib::Response& res) -> std::shared_ptr<Session> {
         std::string sid = getCookieValue(req, "coolsolve_session");
@@ -1181,14 +1214,44 @@ int startServer(const ServerOptions& options) {
             session.cancelRequested.store(false);
             
             std::string confContent = session.confContent;
-            
+
             // Snapshot the lookup table CSVs for safe use in the background thread
             auto lookupCSVs = session.lookupTableCSVs;
 
+            // Usage-log bookkeeping: client IP, model name and attempt start
+            // time are captured here; the entry is appended once, after
+            // completion. The model name is snapshotted rather than read from
+            // the session in the worker thread: it is a plain std::string that
+            // HTTP handlers may reassign concurrently, and the log should name
+            // the model as it was when the solve started.
+            const std::string usageClientIp = getClientIP(req);
+            const std::string usageModelName = session.modelName;
+            const auto usageStart = std::chrono::steady_clock::now();
+
             // Launch solve in background thread
             std::thread([sessionPtr, tmpEes, tmpDir, enableTracing, deepSearch, confContent, eesSource,
-                         lookupCSVs]() {
+                         lookupCSVs, usageLogPath, usageClientIp, usageModelName, usageStart]() {
                 auto& session = *sessionPtr;
+
+                // Append the single usage-log line for this attempt. Called
+                // exactly once from every completion path below, i.e. after
+                // the solve has finished — zero impact on solving itself.
+                auto logAttempt = [&](const char* outcome, int equations, int maxBlock) {
+                    UsageLogEntry entry;
+                    entry.kind = deepSearch ? "tryharder" : "solve";
+                    entry.outcome = outcome;
+                    entry.durationMs = std::chrono::duration<double, std::milli>(
+                                          std::chrono::steady_clock::now() - usageStart)
+                                          .count();
+                    entry.modelBytes = eesSource.size();
+                    entry.equations = equations;
+                    entry.maxBlockSize = maxBlock;
+                    entry.modelName = usageModelName;
+                    entry.clientIp = usageClientIp;
+                    entry.version = COOLSOLVE_VERSION;
+                    appendUsageLog(usageLogPath, entry);
+                };
+
                 try {
                     {
                         json startEvt;
@@ -1291,7 +1354,9 @@ int startServer(const ServerOptions& options) {
                         finalEvt["message"] = errMsg.str();
                         finalEvt["result"] = resultJson;
                         session.addProgressEvent(finalEvt.dump());
-                        
+
+                        logAttempt("parse_error", -1, -1);
+
                         session.solving.store(false);
                         session.solveFinished.store(true);
                         session.progressCV.notify_all();
@@ -1476,12 +1541,22 @@ int startServer(const ServerOptions& options) {
                     finalEvt["message"] = solutionValid ? "Solve completed successfully" : "Solve failed";
                     finalEvt["result"] = resultJson;
                     session.addProgressEvent(finalEvt.dump());
-                    
+
+                    // Record the attempt in the usage log (success or failure)
+                    {
+                        const int eqCount = runner.isParseSuccess()
+                            ? static_cast<int>(runner.getIR().getEquationCount()) : -1;
+                        const int maxBlock = runner.isAnalysisSuccess()
+                            ? static_cast<int>(runner.getAnalysisResult().largestBlockSize) : -1;
+                        logAttempt(solutionValid ? "success" : "failed", eqCount, maxBlock);
+                    }
+
                 } catch (const std::exception& e) {
                     json errEvt;
                     errEvt["type"] = "error";
                     errEvt["message"] = std::string("Solve error: ") + e.what();
                     session.addProgressEvent(errEvt.dump());
+                    logAttempt("failed", -1, -1);
                 }
                 
                 session.solving.store(false);
@@ -1582,7 +1657,52 @@ int startServer(const ServerOptions& options) {
         json j = {{"success", true}, {"message", "Cancel requested"}};
         res.set_content(j.dump(), "application/json");
     });
-    
+
+    // ================================================================
+    // Usage log statistics (hidden dashboard at /stats)
+    // ================================================================
+    svr.Get("/api/v1/stats/log", [&usageLogPath](const httplib::Request&, httplib::Response& res) {
+        const auto stats = computeUsageLogStats(usageLogPath);
+
+        json daily = json::array();
+        for (const auto& [date, count] : stats.daily) {
+            daily.push_back({{"date", date},
+                             {"attempts", count.attempts},
+                             {"successes", count.successes}});
+        }
+
+        json edges = json::array();
+        for (double e : stats.histogramEdges) edges.push_back(e);
+        json counts = json::array();
+        for (long c : stats.histogramCounts) counts.push_back(c);
+
+        json topModels = json::array();
+        for (const auto& m : stats.topModels) topModels.push_back({{"name", m.name}, {"count", m.count}});
+        json topIps = json::array();
+        for (const auto& ip : stats.topIps) topIps.push_back({{"name", ip.name}, {"count", ip.count}});
+
+        json j = {
+            {"valid", stats.valid},
+            {"totalAttempts", stats.totalAttempts},
+            {"successes", stats.successes},
+            {"failures", stats.failures},
+            {"parseErrors", stats.parseErrors},
+            {"tryHarderAttempts", stats.tryHarderAttempts},
+            {"uniqueIps", stats.uniqueIps},
+            {"malformedLines", stats.malformedLines},
+            {"meanMs", stats.totalAttempts > 0 ? stats.totalDurationMs / stats.totalAttempts : 0.0},
+            {"medianMs", stats.medianMs},
+            {"p95Ms", stats.p95Ms},
+            {"daily", daily},
+            {"outcomes",
+             {{"success", stats.successes}, {"failed", stats.failures}, {"parse_error", stats.parseErrors}}},
+            {"durationHistogram", {{"edges", edges}, {"counts", counts}}},
+            {"topModels", topModels},
+            {"topIps", topIps},
+        };
+        res.set_content(j.dump(), "application/json");
+    });
+
     // ================================================================
     // Parametric study endpoint (synchronous — runs all grid points)
     // ================================================================

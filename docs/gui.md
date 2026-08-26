@@ -242,6 +242,62 @@ In addition, the `POST /api/v1/solve` `"done"` SSE event and
 the session on upload, so the Integral tab repopulates on a bundle round-trip
 (download → upload → same columns and rows).
 
+### 4.11 Usage Log & Statistics
+
+Every GUI solve attempt — a *Solve* click or a *Try Harder* run — appends one
+CSV line to a small log file. CLI runs are never logged, parametric studies are
+not logged (they are automated batches), and dynamic (`INTEGRAL`) models appear
+as ordinary solves.
+
+**Log file location** — resolved once at server start:
+
+1. `ServerOptions::usageLogFile` if set programmatically;
+2. else the `COOLSOLVE_GUI_LOG` environment variable;
+3. else `coolsolve_gui.log` in the server's working directory.
+
+The file is git-ignored. It is created with a header line on first write:
+
+```
+# timestamp,kind,outcome,duration_ms,model_bytes,equations,max_block,model,ip,version
+2026-08-26T12:12:34Z,solve,success,34.891,90,4,1,usage_api_test,127.0.0.1,0.3.0
+2026-08-26T12:12:39Z,tryharder,success,1.866,90,4,1,usage_api_test,127.0.0.1,0.3.0
+```
+
+| Field | Meaning |
+|-------|---------|
+| `timestamp` | UTC, ISO 8601 |
+| `kind` | `solve` or `tryharder` (Deep Search) |
+| `outcome` | `success`, `failed`, `parse_error` |
+| `duration_ms` | Wall-clock duration of the whole attempt |
+| `model_bytes` | Size of the `.eescode` source ("model length") |
+| `equations` / `max_block` | Equation count and largest block (-1 when unknown) |
+| `model` | Model name as of the start of the attempt; `(unnamed)` when empty; CSV-quoted when it contains `,` or `"`, with control characters replaced by spaces so a record is always one line |
+| `ip` | Client IP — honours `X-Forwarded-For` behind the Apache reverse proxy |
+| `version` | CoolSolve version |
+
+**Overhead**: the entry is written once, after the solve has finished, in the
+background solve thread (open → append → close, ≈2 µs measured). Nothing is
+added to the solver's hot paths and the CLI binary never executes this code.
+
+**Statistics endpoint**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/stats/log` | Aggregated statistics as JSON: totals per outcome/kind, per-day counts, logarithmic duration histogram (with `medianMs`/`p95Ms`), top models, top clients, unique client count |
+
+The aggregation streams the file in a single pass with bounded memory
+(model/IP maps are pruned to a fixed cap; durations live in a fixed-size
+logarithmic histogram). Results are cached and only recomputed when the file's
+size or modification time changes, so dashboard requests stay O(1) even for
+multi-megabyte logs (≈175 ms cold compute for 1 M lines, ≈10 µs cached —
+measured on a Linux desktop with a `-O2` build).
+
+**Hidden dashboard**: the SPA serves a statistics page at `/stats`
+(`gui/src/components/UsageStats.tsx`). It renders summary cards plus Plotly
+charts (attempts per day, outcome split, duration distribution, top models,
+top clients). No link points to it anywhere in the UI — it is reachable only
+by typing the URL.
+
 ---
 
 ## 5. Session Management
@@ -708,6 +764,7 @@ gui/
         ├── ParametricStudy.tsx    # Parametric sweep: variable selector, range inputs, 1D/2D plots, results table
         ├── LookupTableEditor.tsx  # Lookup table manager: list view + inline editable grid + CSV import/export
         ├── IntegralTable.tsx      # Read-only trajectory viewer for INTEGRAL models: table + Plotly plot + CSV export
+        ├── UsageStats.tsx         # Solve usage statistics dashboard (hidden /stats page)
         ├── SplitPane.tsx          # Reusable resizable split-pane (horizontal/vertical)
         └── PlotlyChart.tsx        # Thin Plotly wrapper component
 ```

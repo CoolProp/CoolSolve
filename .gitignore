@@ -5,3 +5,5 @@ CoolSolve_Installer.exe
 *.csv#
 # Auto-generated integral trajectories (equation-based dynamic models)
 *-integral.csv
+# GUI solve-attempt log (see include/coolsolve/usage_log.h)
+coolsolve_gui.log

@@ -1054,3 +1054,88 @@ body {
   color: var(--text-muted);
   margin-left: 6px;
 }
+
+/* ============================================================================
+   Usage Statistics (hidden /stats page)
+   ============================================================================ */
+.stats-page {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 24px;
+  gap: 14px;
+  overflow: auto;
+}
+.stats-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.stats-header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--text-primary);
+}
+.stats-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+.stat-card {
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.stat-value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.stats-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 12px;
+}
+.stats-chart-card {
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+.stats-chart-wide {
+  grid-column: span 2;
+}
+@media (max-width: 800px) {
+  .stats-chart-wide { grid-column: span 1; }
+}
+.stats-chart-card h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 6px 0;
+  color: var(--text-secondary);
+}
+.stats-chart-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 40px 0;
+}
+.stats-empty {
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.stats-empty-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+}

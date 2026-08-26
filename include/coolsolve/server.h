@@ -16,6 +16,8 @@ struct ServerOptions {
     std::string docsDir;                // If set, serve docs from filesystem (dev/fallback)
     std::string initialFile;            // If set, auto-open this file in the GUI on first load
     std::string examplesDir;            // If set, search here first for example .eescode files
+    std::string usageLogFile;           // Solve-attempt log path (empty = COOLSOLVE_GUI_LOG env
+                                        // var, else "coolsolve_gui.log" in the working directory)
 };
 
 /// Start the embedded HTTP server (blocking).

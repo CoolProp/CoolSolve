@@ -320,3 +320,40 @@ export interface LatexCompileRequest {
   compiler?: string;
   plots?: LatexPlotImage[];
 }
+
+// ============================================================================
+// Usage Log Statistics (hidden dashboard at /stats)
+// ============================================================================
+
+/** Per-day attempt counters (UTC) */
+export interface UsageDailyCount {
+  date: string;
+  attempts: number;
+  successes: number;
+}
+
+/** A "name → count" entry in a top-ranking (models, IPs) */
+export interface UsageNameCount {
+  name: string;
+  count: number;
+}
+
+/** Aggregated solve-attempt statistics from GET /api/v1/stats/log */
+export interface UsageStatsResponse {
+  valid: boolean;
+  totalAttempts: number;
+  successes: number;
+  failures: number;
+  parseErrors: number;
+  tryHarderAttempts: number;
+  uniqueIps: number;
+  malformedLines: number;
+  meanMs: number;
+  medianMs: number;
+  p95Ms: number;
+  daily: UsageDailyCount[];
+  outcomes: Record<string, number>;
+  durationHistogram: { edges: number[]; counts: number[] };
+  topModels: UsageNameCount[];
+  topIps: UsageNameCount[];
+}
