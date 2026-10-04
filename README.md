@@ -65,6 +65,8 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 | [Language Reference](docs/language_reference.md) | CoolSolve language syntax, built-in functions, and configuration keys |
 | [Dynamic Solving](docs/integral_table.md) | Equation-based `INTEGRAL` / `$IntegralTable` — algorithms, architecture, and limitations |
 | [Debugging Models](docs/debugging_models.md) | Diagnosing and fixing solver failures |
+| [Importing EES Models](docs/ees_import.md) | Reading binary EES files (equations, guesses, stored solution, tables, units) and importing/verifying them in CoolSolve |
+| [Model Library Support](docs/model_library_support.md) | CoolSolve features needed by the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) and register of EES gaps found while importing models |
 | [Solver Roadmap](docs/solver_roadmap.md) | Performance roadmap, algorithm details, and implementation status |
 | [Symbolic Block Reduction](docs/symbolic_redecomposition.md) | Symbolic block reduction algorithm |
 | [GUI & REST API](docs/gui.md) | Web interface, REST API, and parametric studies |
@@ -456,6 +458,7 @@ CoolSolve/
 │   ├── test_fluids.cpp         # CoolProp fluid property tests
 │   ├── test_examples.cpp       # Integration tests with example files
 │   └── test_kinsol.cpp         # KINSOL solver unit tests (3 modes + config)
+├── tools/                      # EES import helpers: ees_extract.py, compare_solution.py (see docs/ees_import.md)
 └── examples/                   # Example .eescode files for testing
 ```
 
@@ -492,7 +495,7 @@ For the full language syntax, built-in functions, and CoolProp integration detai
 
 ## Future Work
 
-Future features include a complete library of models embedded into coolsolve and improved plotting capabilities. 
+Future features include a complete library of models embedded into CoolSolve — the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library), see [Model Library Support](docs/model_library_support.md) — and improved plotting capabilities. 
 
 Planned improvements for the solver include a stiff ODE integrator (BDF), pseudo-arclength continuation, and an improved plotting interface. See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
 

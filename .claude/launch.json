@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "coolsolve-gui",
+      "runtimeExecutable": "/home/sylvain/svn/CoolSolve/build/coolsolve",
+      "runtimeArgs": ["--gui", "8551", "--no-browser"],
+      "port": 8551
+    }
+  ]
+}
