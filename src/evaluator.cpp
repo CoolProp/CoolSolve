@@ -1388,6 +1388,11 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         }
     }
     
+    // True when the pressure was injected below (single-input ideal-gas call): it is
+    // an internal constant of the ideal-gas model, not a user input, so it must be the
+    // same in every pass — never clamped, never checked against the unit hints.
+    bool pressureInjected = false;
+
     if (fluid->getType() == FluidType::IdealGas && inputs.size() == 1) {
         // For ideal gases, properties that depend only on temperature {T, h, u,
         // cp, cv} can be computed from any other member of this set without
@@ -1411,11 +1416,13 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             auto idealGas = std::dynamic_pointer_cast<IdealGasFluid>(fluid);
             double dummyP = idealGas ? idealGas->getDummyPressureSI() : 101325.0;
             inputs["p"] = ADValue::constant(UnitConverter::fromSI(dummyP, UnitType::Pressure, units.pressure), numVariables_);
+            pressureInjected = true;
         } else if (!fluid->propertyDependsOnPressure(funcName)) {
             // Output doesn't depend on pressure (old path for h(T), cp(T), etc.)
             auto idealGas = std::dynamic_pointer_cast<IdealGasFluid>(fluid);
             double dummyP = idealGas ? idealGas->getDummyPressureSI() : 101325.0;
             inputs["p"] = ADValue::constant(UnitConverter::fromSI(dummyP, UnitType::Pressure, units.pressure), numVariables_);
+            pressureInjected = true;
         } else {
             throw std::runtime_error("Ideal gas property '" + funcName + "' requires pressure input");
         }
@@ -1463,12 +1470,15 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     double val1 = inputValues[0].value;
     double val2 = inputValues[1].value;
 
-    checkThermoInputValueHint(diagnostics_, func.name + "()", units,
-                              thermoKindFromCoolProp(input1Param, inputNamesList[0]),
-                              inputNamesList[0], val1);
-    checkThermoInputValueHint(diagnostics_, func.name + "()", units,
-                              thermoKindFromCoolProp(input2Param, inputNamesList[1]),
-                              inputNamesList[1], val2);
+    // The injected ideal-gas pressure is not a user input: no unit hint for it.
+    if (!(pressureInjected && input1Param == CoolProp::iP))
+        checkThermoInputValueHint(diagnostics_, func.name + "()", units,
+                                  thermoKindFromCoolProp(input1Param, inputNamesList[0]),
+                                  inputNamesList[0], val1);
+    if (!(pressureInjected && input2Param == CoolProp::iP))
+        checkThermoInputValueHint(diagnostics_, func.name + "()", units,
+                                  thermoKindFromCoolProp(input2Param, inputNamesList[1]),
+                                  inputNamesList[1], val2);
     
     // Clamp quality inputs to [0, 1]: CoolProp returns -1 for subcooled and values >1 for
     // superheated states, but when quality is used as *input* to another CoolProp call
@@ -1595,6 +1605,9 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     
     auto clampInput = [&](CoolProp::parameters param, double& v,
                           std::vector<double>& grad) {
+        // The injected ideal-gas pressure (e.g. 100 Pa for H2O) is below P_MIN_SI by design:
+        // clamping it would change the result between the solve and the verification pass.
+        if (pressureInjected && param == CoolProp::iP) return;
         if (param == CoolProp::iP && v < P_MIN_SI) {
             v = P_MIN_SI;
             // Don't zero gradient: keep the derivative information so the solver

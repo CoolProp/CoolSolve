@@ -280,6 +280,19 @@ SulfurDioxide, SulfurHexafluoride, Xenon, Air_ha (real dry air).
 `Air`, `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`, `C2H6`, `C3H8`,
 `H2O` (as vapor, low pressure only).
 
+The properties that depend on temperature only (`enthalpy`, `intenergy`,
+`cp`, `cv`) can be called with `T` alone, as in EES — typically for mean
+specific heats:
+
+```ees
+c_bar_p = (enthalpy(CO2,T=T_p1) - enthalpy(CO2,T=T_p2)) / (T_p1 - T_p2)
+```
+
+CoolSolve evaluates them at an internal reference pressure (101325 Pa; 100 Pa
+for `H2O`, which keeps the vapor phase down to −20 °C). This pressure is part
+of the model: it is never clamped by the solver and is identical in the solve
+and in the final verification.
+
 ### Humid air
 
 `airH2O` — requires three state inputs.

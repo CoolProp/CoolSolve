@@ -18,6 +18,7 @@
 #include <fstream>
 #include <map>
 #include <string>
+#include <vector>
 
 using namespace coolsolve;
 using Catch::Matchers::WithinAbs;
@@ -33,6 +34,7 @@ struct ModelRun {
     bool solveOk = false;
     bool verified = false;   ///< every equation re-evaluated with the solution (rel. 1e-3)
     std::string message;     ///< first parse error, or the solver error
+    std::vector<std::string> warnings;   ///< messages of all warning diagnostics of the run
     std::map<std::string, double, CaseInsensitiveLess> vars;
 
     double operator[](const std::string& name) const { return vars.at(name); }
@@ -55,6 +57,8 @@ ModelRun runModel(const std::string& code) {
     options.tolerance = 1e-9;
     run.solveOk = runner.run(options);
     run.parseOk = runner.isParseSuccess();
+    for (const auto& d : runner.getDiagnostics().items())
+        if (d.severity == DiagnosticSeverity::Warning) run.warnings.push_back(d.message);
     if (!run.parseOk && !runner.getParseResult().errors.empty())
         run.message = runner.getParseResult().errors[0].message;
     if (run.solveOk) {
@@ -338,4 +342,68 @@ R_N2 = 8314/molarmass(N2)
 TEST_CASE("CS-BUG-MOLARMASS: unsupported fluids still report an error", "[library-gaps][molarmass]") {
     auto run = runModel("mm = molarmass(NoSuchFluid)\n");
     REQUIRE_FALSE(run.solveOk);
+}
+
+// ============================================================================
+// CS-BUG-SINGLE-INPUT-PAIR: single-input (ideal-gas) property calls
+// ============================================================================
+
+TEST_CASE("CS-BUG-SINGLE-INPUT-PAIR: reproducer of the register", "[library-gaps][single-input]") {
+    // EES pattern for mean specific heats; the unit-system-free form of the register
+    // reproducer (MOLARMASS is in kg/kmol now). Before the fix the solve pass used an
+    // internal pressure of 1000 Pa (clamped) and the verification pass 100 Pa: the
+    // equation failed the verification by 6.3e3, and no .sol was written.
+    auto pair = runModel(R"(
+MM_H2O = molarmass(H2O)
+dh_H2O = (enthalpy(H2O,T=200)-enthalpy(H2O,T=25))*MM_H2O
+)");
+    REQUIRE(pair.solveOk);
+    CHECK(pair.verified);
+
+    // The same with separate equations (the old workaround) gives the same number.
+    auto split = runModel(R"(
+MM_H2O = molarmass(H2O)
+h200 = enthalpy(H2O,T=200)
+h25 = enthalpy(H2O,T=25)
+dh_H2O = (h200-h25)*MM_H2O
+)");
+    REQUIRE(split.solveOk);
+    CHECK(split.verified);
+    CHECK_THAT(pair["dh_H2O"], WithinRel(split["dh_H2O"], 1e-12));
+    // ~ cp(H2O vapour) * 175 K * 18.015 kg/kmol, in J/kmol
+    CHECK_THAT(pair["dh_H2O"], WithinRel(5.98e6, 5e-3));
+}
+
+TEST_CASE("CS-BUG-SINGLE-INPUT-PAIR: the same pair with an unknown temperature", "[library-gaps][single-input]") {
+    // The temperature is solved by Newton iteration: every residual evaluation of the
+    // pair must agree with the verification pass.
+    auto run = runModel(R"(
+MM_H2O = molarmass(H2O)
+dh = 3e6
+dh = (enthalpy(H2O,T=T_x)-enthalpy(H2O,T=25))*MM_H2O
+MM_N2 = molarmass(N2)
+cbar_N2 = (enthalpy(N2,T=T_x)-enthalpy(N2,T=25))/(T_x-25)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["cbar_N2"], WithinRel(1040.0, 2e-2));
+}
+
+TEST_CASE("CS-BUG-SINGLE-INPUT-PAIR: the internal pressure raises no unit warning", "[library-gaps][single-input]") {
+    // The pressure injected for single-input ideal-gas calls (100 Pa for H2O) is not a
+    // user input: "p=100 is Pa, not kPa" was a spurious warning.
+    auto run = runModel("h = enthalpy(H2O,T=100)\ncp_N2 = cp(N2,T=50)\n");
+    REQUIRE(run.solveOk);
+    for (const auto& w : run.warnings)
+        CHECK(w.find("not kPa") == std::string::npos);
+}
+
+TEST_CASE("CS-BUG-SINGLE-INPUT-PAIR: user-supplied pressures are still checked", "[library-gaps][single-input]") {
+    // Negative test: an explicit P=100 (a typical kPa/Pa mix-up) keeps its unit hint.
+    auto run = runModel("h = enthalpy(N2,T=100,P=100)\n");
+    REQUIRE(run.solveOk);
+    bool hinted = false;
+    for (const auto& w : run.warnings)
+        if (w.find("not kPa") != std::string::npos) hinted = true;
+    CHECK(hinted);
 }
