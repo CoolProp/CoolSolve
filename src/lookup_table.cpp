@@ -619,6 +619,7 @@ LookupTableStore loadLookupTableForModel(const std::string& modelFilePath,
     LookupTableStore store;
     fs::path model(modelFilePath);
     fs::path dir = model.parent_path();
+    if (dir.empty()) dir = ".";   // bare file name: the model is in the current directory
     std::string stem = model.stem().string();
 
     // Scan the model's directory for every *.csv file whose stem starts with

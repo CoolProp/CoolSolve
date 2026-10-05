@@ -10,6 +10,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include "coolsolve/lookup_table.h"
 #include "coolsolve/parser.h"
 #include "coolsolve/runner.h"
 #include "coolsolve/solution_checker.h"
@@ -654,4 +655,24 @@ TEST_CASE("CS-GAP-MULTILINE-COMMENT: a comment that is never closed is reported"
     CHECK(ok.equationCount == 2);
     for (const auto& d : ok.diagnostics.items())
         CHECK(d.message.find("never closed") == std::string::npos);
+}
+
+// ============================================================================
+// CS-BUG-LOOKUP-PATH: companion tables with a bare model file name
+// ============================================================================
+
+TEST_CASE("CS-BUG-LOOKUP-PATH: companion tables are loaded for a bare file name", "[library-gaps][lookup-path]") {
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_lookup_path";
+    fs::create_directories(dir);
+    {
+        std::ofstream f(dir / "m-data.csv");
+        f << "x,y\n1,10\n2,20\n";
+    }
+    const fs::path previous = fs::current_path();
+    fs::current_path(dir);
+    // as in `cd examples && coolsolve lookup_demo.eescode`: no directory part
+    auto store = loadLookupTableForModel("m.eescode");
+    fs::current_path(previous);
+    fs::remove_all(dir);
+    REQUIRE(store.has("data"));
 }
