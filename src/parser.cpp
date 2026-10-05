@@ -150,7 +150,7 @@ public:
             lineNumber++;
 
             // Skip comments (also those spanning several lines) and blank lines
-            if (skipCommentLine(line, result)) continue;
+            if (skipCommentLine(line, lineNumber, result)) continue;
             std::string trimmed = trim(line);
 
             // Check for unsupported constructs (procedures, modules, etc.)
@@ -336,6 +336,12 @@ public:
             result.errors.push_back({lineNumber, 0, "Could not parse line", line});
         }
         
+        if (comments_.inQuote) {
+            result.diagnostics.push(DiagnosticSeverity::Warning, "P007",
+                "The comment opened by a '\"' at line " + std::to_string(comments_.quoteOpenLine) +
+                " is never closed: everything after it is ignored",
+                "parser", comments_.quoteOpenLine, 0);
+        }
         result.totalLines = lineNumber;
         // Success if no errors AND we found something valid
         bool somethingParsed = result.equationCount > 0 || result.commentCount > 0 || result.directiveCount > 0 || !result.program.statements.empty();
@@ -630,14 +636,37 @@ private:
     struct CommentState {
         bool inQuote = false;      // inside a multi-line "..." comment
         bool standalone = false;   // block opened by a line that is exactly `"`
+        int quoteOpenLine = 0;     // line that opened the multi-line "..." comment
         int braceDepth = 0;        // nesting depth of { } comments
     };
     CommentState comments_;
 
+    // Position of a `"` that opens a comment not closed on the same line (the comment
+    // continues on the next lines), or npos. Mirrors removeInlineComments(): single-quoted
+    // strings, `"[units]"` annotations and `//` comments are skipped.
+    static size_t findUnterminatedQuote(const std::string& line) {
+        bool inString = false;
+        for (size_t i = 0; i < line.size(); ++i) {
+            const char c = line[i];
+            if (c == '\'') { inString = !inString; continue; }
+            if (inString) continue;
+            if (c == '/' && i + 1 < line.size() && line[i + 1] == '/') return std::string::npos;
+            if (c != '"') continue;
+            if (i + 1 < line.size() && line[i + 1] == '[') {
+                const size_t units = line.find("]\"", i);
+                if (units != std::string::npos) { i = units + 1; continue; }
+            }
+            const size_t close = line.find('"', i + 1);
+            if (close == std::string::npos) return i;
+            i = close;
+        }
+        return std::string::npos;
+    }
+
     // Remove from `line` (in place) what belongs to multi-line comments and
     // update comments_. Returns true when nothing is left to parse on the line:
-    // it is blank or entirely inside a comment.
-    bool skipCommentLine(std::string& line, ParseResult& result) {
+    // it is blank or entirely inside a comment. `lineNumber` is the line of `line`.
+    bool skipCommentLine(std::string& line, int lineNumber, ParseResult& result) {
         // Multi-line quote comment " ... "
         if (comments_.inQuote) {
             if (trim(line) == "\"") {
@@ -665,16 +694,22 @@ private:
         const std::string trimmed = trim(line);
 
         // Start of multi-line quote: (1) line is exactly `"` (standalone delimiter), or
-        // (2) line starts with `"` and has no closing `"` on the same line (classic EES style).
+        // (2) a `"` with no closing `"` on the same line (classic EES style): the comment
+        // runs up to the first `"` of a later line. Code before the `"` is kept, so that
+        // `x = 1 "a comment <newline> continued here"` is the equation x = 1.
         if (trimmed == "\"") {
             comments_.inQuote = true;
             comments_.standalone = true;
+            comments_.quoteOpenLine = lineNumber;
             return true;
         }
-        if (trimmed.front() == '"' && trimmed.find('"', 1) == std::string::npos) {
+        const size_t open = findUnterminatedQuote(line);
+        if (open != std::string::npos) {
             comments_.inQuote = true;
             comments_.standalone = false;
-            return true;
+            comments_.quoteOpenLine = lineNumber;
+            line.erase(open);
+            return isEmptyOrWhitespace(line);
         }
         return false;
     }
@@ -788,7 +823,7 @@ private:
         std::string bodyLine;
         while (std::getline(stream, bodyLine)) {
             lineNumber++;
-            if (skipCommentLine(bodyLine, result)) continue;
+            if (skipCommentLine(bodyLine, lineNumber, result)) continue;
             std::string trimmedBody = trim(bodyLine);
             std::string upperBody = trimmedBody;
             std::transform(upperBody.begin(), upperBody.end(), upperBody.begin(), ::toupper);

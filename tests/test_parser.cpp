@@ -898,3 +898,25 @@ TEST_CASE("Parser builds IF-THEN-ELSE statements in function bodies", "[parser][
         for (const auto& s : bodyOf(result)) REQUIRE_FALSE(s->is<IfThenElse>());
     }
 }
+
+TEST_CASE("Parser: quote comment trailing an equation continues on the next lines", "[parser][comments]") {
+    coolsolve::EESParser parser;
+
+    SECTION("two lines") {
+        auto result = parser.parse("x = 1 \"a comment\nspanning two lines\"\ny = 2*x\n");
+        REQUIRE(result.success);
+        REQUIRE(result.equationCount == 2);
+    }
+
+    SECTION("a brace comment inside the multi-line comment is part of the comment") {
+        auto result = parser.parse("x = 1 \"a comment\n{ y = 7 } still comment\"\nz = 3\n");
+        REQUIRE(result.success);
+        REQUIRE(result.equationCount == 2);
+    }
+
+    SECTION("standalone quote comments over several lines still work") {
+        auto result = parser.parse("\"first line\nsecond line\"\nx = 1\n\"\nfree text with y = 5\n\"\nz = 2\n");
+        REQUIRE(result.success);
+        REQUIRE(result.equationCount == 2);
+    }
+}

@@ -8,7 +8,7 @@ Object,Category,Description,Implemented,Priority,Notes,
 - (unary),Core Syntax,Unary negation,Yes,1,src/autodiff_node.cpp,
 = (equation),Core Syntax,Equation definition (LHS = RHS),Yes,1,Parser creates Equation AST node,
 := (assignment),Core Syntax,Procedural assignment,Yes,1,Parser creates Assignment AST node inside FUNCTION/PROCEDURE,
-Quoted comment,Core Syntax,"Display comment ""...""",Yes,1,src/parser.cpp — three comment styles,
+Quoted comment,Core Syntax,"Display comment ""...""",Yes,1,"src/parser.cpp — three comment styles; a comment not closed on its line (alone or after an equation) continues up to the next quote, as in EES",
 {Brace comment},Core Syntax,"Hidden comment {...}, supports nesting",Yes,1,src/parser.cpp,
 // Line comment,Core Syntax,C-style line comment,Yes,2,Not standard EES, CoolSolve extension
 Variable naming,Core Syntax,"Case-insensitive for keywords, case-preserving for variables",Yes,1,src/parser.cpp,

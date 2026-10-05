@@ -33,9 +33,20 @@ Three comment styles are supported:
 
 | Syntax            | Kind                                                 |
 |:------------------|:-----------------------------------------------------|
-| `"..."` (dquote)  | Block or inline comment (may span multiple tokens)   |
+| `"..."` (dquote)  | Block or inline comment; may span several lines      |
 | `{...}`           | Brace comment (may span several lines, may nest)     |
 | `// ...`          | Single-line comment                                  |
+
+A `"` comment that is not closed on its line — after an equation or alone on
+a line — continues up to the next `"`, as in EES:
+
+```ees
+Q_dot = m_dot*(h_1 - h_2)   "heat flow rate of the evaporator,
+                             including the superheat"
+```
+
+The text of the comment is never parsed. A comment that is never closed hides
+the rest of the file: the parser warns (`P007`) with the line that opened it.
 
 ### Numbers and identifiers
 

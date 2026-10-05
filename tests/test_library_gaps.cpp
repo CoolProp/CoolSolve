@@ -584,3 +584,74 @@ TEST_CASE("CS-GAP-FORMATION-ENTHALPY: the cpbar library reproduces the EES test 
     CHECK_THAT(run["gamma"], WithinRel(1.394538, 2e-3));
     CHECK_THAT(run["MM_prod"], WithinRel(28.85006, 1e-4));
 }
+
+// ============================================================================
+// CS-GAP-MULTILINE-COMMENT: "..." comment trailing an equation, over several lines
+// ============================================================================
+
+TEST_CASE("CS-GAP-MULTILINE-COMMENT: reproducer of the register", "[library-gaps][multiline-comment]") {
+    auto run = runModel("x = 1 \"a comment\nspanning two lines\"\ny = 2*x\n");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["y"], WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-MULTILINE-COMMENT: the text of the comment is never parsed", "[library-gaps][multiline-comment]") {
+    // three lines, the middle one looks like an equation
+    auto run = runModel(R"EES(
+a = 5 "first line
+  b = 99
+  third line"
+c = a + 1
+T = 25 "[C]"
+d = 2*T "units annotations are not comments that continue
+  on the next line"
+e = 3 // it's a "quoted word: a C-style comment does not open anything
+f = e + 1
+)EES");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(50.0, 1e-12));
+    CHECK_THAT(run["f"], WithinAbs(4.0, 1e-12));
+    CHECK(run.vars.count("b") == 0);
+}
+
+TEST_CASE("CS-GAP-MULTILINE-COMMENT: inside function and procedure bodies", "[library-gaps][multiline-comment]") {
+    auto run = runModel(R"EES(
+FUNCTION g(x)
+  y = x + 1 "comment on the
+     next line: z = 99"
+  g = 2*y
+END
+PROCEDURE p(x : r)
+  r = x * 3     "wrapped comment of
+     a procedure"
+END
+a = g(1)
+CALL p(2 : b)
+)EES");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(4.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(6.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-MULTILINE-COMMENT: a comment that is never closed is reported", "[library-gaps][multiline-comment]") {
+    EESParser parser;
+    auto result = parser.parse("a = 1\nb = 2 \"never closed\nc = 3\nd = 4\n");
+    // the equations before the comment are kept, the rest is ignored...
+    CHECK(result.equationCount == 2);
+    // ...and the user is told
+    bool warned = false;
+    for (const auto& d : result.diagnostics.items())
+        if (d.severity == DiagnosticSeverity::Warning &&
+            d.message.find("opened by a '\"' at line 2 is never closed") != std::string::npos) warned = true;
+    CHECK(warned);
+
+    // a comment that is closed raises no warning
+    auto ok = parser.parse("a = 1 \"closed\non the next line\"\nb = 2\n");
+    CHECK(ok.equationCount == 2);
+    for (const auto& d : ok.diagnostics.items())
+        CHECK(d.message.find("never closed") == std::string::npos);
+}
