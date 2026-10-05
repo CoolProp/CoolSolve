@@ -6,10 +6,14 @@
 "  reliable convergence. Most solver configurations fail     "
 "  without initial values due to the complexity of the       "
 "  heat pump and PCM storage coupled equations.              "
+"  The pinch procedures pick the zones with IF-THEN-ELSE; the "
+"  .initials holds the converged solution of that formulation "
+"  (zone heat flows Q_dot_sc / Q_dot_tp / Q_dot_sh).          "
 "==========================================================="
 
 "==========================================================="
-"  Pinch point procedure for condenser (needs IF-THEN-ELSE) "
+"  Pinch point procedure for condenser (IF-THEN-ELSE selects  "
+"  the zones present: superheat / two-phase / subcooling)    "
 "==========================================================="
 Procedure q_dot_pinch_fun_cd(m_dot_h, h_h_in, h_h_x0, h_h_x1, h_h_out, T_h_in, T_h_x0, T_h_x1, T_h_out, T_c_in, T_c_x0, T_c_x1, T_c_out:Q_dot_sc, Q_dot_tp, Q_dot_sh, DT_min)
 
@@ -44,7 +48,8 @@ Endif
 End
 
 "==========================================================="
-"  Pinch point procedure for evaporator (needs IF-THEN-ELSE) "
+"  Pinch point procedure for evaporator (IF-THEN-ELSE selects"
+"  the zones present: subcooling / two-phase / superheat)    "
 "==========================================================="
 Procedure q_dot_pinch_fun_ev(m_dot_c, h_c_in, h_c_x0, h_c_x1, h_c_out, T_c_in, T_c_x0, T_c_x1, T_c_out, T_h_in, T_h_x0, T_h_x1, T_h_out:Q_dot_sc, Q_dot_tp, Q_dot_sh, DT_min)
 
