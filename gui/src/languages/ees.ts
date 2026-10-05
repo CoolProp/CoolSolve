@@ -32,7 +32,7 @@ export function registerEESLanguage(monaco: typeof Monaco) {
       'exp', 'ln', 'log', 'log10', 'sqrt', 'abs',
       'min', 'max', 'round', 'trunc', 'ceil', 'floor',
       'DELTAh_s', 'T_sat', 'P_sat', 'h_sat', 's_sat',
-      'convert',
+      'convert', 'unitsystem', 'error',
       // Lookup table functions
       'interpolate', 'interpolate1', 'interpolate2', 'interpolate2dm',
       'lookup', 'lookupcol', 'lookupcol1', 'lookupcellempty',
