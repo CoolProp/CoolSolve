@@ -187,16 +187,20 @@ double LookupTable::value(size_t row1, size_t col1) const {
 // ============================================================================
 
 size_t LookupTable::findInterval(size_t col0, double x) const {
-    // Returns lo such that data_[lo][col0] <= x < data_[lo+1][col0].
-    // Clamps to [0, n-2] so interpolation is always possible when n >= 2.
+    // Returns lo such that data_[lo][col0] <= x < data_[lo+1][col0] for an ascending
+    // column, data_[lo][col0] >= x > data_[lo+1][col0] for a descending one (EES accepts
+    // both orders). Clamps to [0, n-2] so interpolation is always possible when n >= 2.
     size_t n = data_.size();
     if (n < 2) return 0;
+
+    const bool descending = data_[0][col0] > data_[n - 1][col0];
 
     // Binary search
     size_t lo = 0, hi = n - 1;
     while (lo + 1 < hi) {
         size_t mid = (lo + hi) / 2;
-        if (data_[mid][col0] <= x) lo = mid;
+        const double xm = data_[mid][col0];
+        if (descending ? xm >= x : xm <= x) lo = mid;
         else hi = mid;
     }
     return lo;
@@ -239,25 +243,20 @@ ADValue LookupTable::interpolate1D(size_t xcol1, size_t ycol1,
     double dx = x1 - x0;
     double slope = (std::abs(dx) > 1e-300) ? (y1 - y0) / dx : 0.0;
 
-    // Clamp x to [x0, x1] for extrapolation: slope becomes 0 outside
-    double t;
-    double effectiveSlope;
-    if (x <= x0) {
-        t = 0.0;
-        effectiveSlope = 0.0; // flat extrapolation: derivative = 0
-    } else if (x >= x1) {
-        t = 1.0;
-        effectiveSlope = 0.0;
-    } else {
-        t = (x - x0) / dx;
-        effectiveSlope = slope;
-    }
-
+    // Clamp x to the interval for extrapolation: slope becomes 0 outside. In a
+    // descending column the interval runs from x1 (low) to x0 (high).
+    const bool descending = x1 < x0;
+    const double xLow = descending ? x1 : x0, yLow = descending ? y1 : y0;
+    const double xHigh = descending ? x0 : x1, yHigh = descending ? y0 : y1;
+    double effectiveSlope = slope;
     double yv = y0 + slope * (x - x0);
-    // Clamp output for flat extrapolation
-    if (x <= x0) yv = y0;
-    if (x >= x1) yv = y1;
-    (void)t; // used conceptually above
+    if (x <= xLow) {
+        yv = yLow;
+        effectiveSlope = 0.0; // flat extrapolation: derivative = 0
+    } else if (x >= xHigh) {
+        yv = yHigh;
+        effectiveSlope = 0.0;
+    }
 
     // Propagate gradient: dy/dx_input = effectiveSlope
     size_t ng = xval.gradient.size();

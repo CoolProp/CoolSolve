@@ -290,8 +290,9 @@ Worked example: §12, Example 3.
     CoolSolve only accepts its own positional form
     `INTERPOLATE('table','xcol','ycol',x)`, with the column roles reversed;
   - EES `INTERPOLATE` is cubic (`INTERPOLATE1` is linear); CoolSolve is linear;
-  - CoolSolve returns a **wrong value without error** when the x column is in
-    descending order (`CS-BUG-INTERP-DESC`);
+  - CoolSolve returned a **wrong value without error** when the x column is in
+    descending order: fixed after v0.3.0, both orders are accepted
+    (`CS-BUG-INTERP-DESC`);
   - companion tables were not loaded when the model was given as a bare file
     name on the command line (`coolsolve model.eescode`): fixed after v0.3.0
     (`CS-BUG-LOOKUP-PATH`); with older builds use `coolsolve ./model.eescode`.

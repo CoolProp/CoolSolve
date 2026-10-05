@@ -43,14 +43,23 @@ struct ModelRun {
 };
 
 /// Write `code` to a temporary model file, solve it and verify the solution.
-ModelRun runModel(const std::string& code) {
+/// `tables` maps a lookup-table name to its CSV text (written as `<model>-<name>.csv`).
+ModelRun runModel(const std::string& code,
+                  const std::map<std::string, std::string>& tables = {}) {
     static int counter = 0;
     const fs::path dir = fs::temp_directory_path() / "coolsolve_test_library_gaps";
     fs::create_directories(dir);
-    const fs::path file = dir / ("model_" + std::to_string(counter++) + ".eescode");
+    const std::string stem = "model_" + std::to_string(counter++);
+    const fs::path file = dir / (stem + ".eescode");
     {
         std::ofstream f(file);
         f << code;
+    }
+    std::vector<fs::path> tableFiles;
+    for (const auto& [name, csv] : tables) {
+        tableFiles.push_back(dir / (stem + "-" + name + ".csv"));
+        std::ofstream f(tableFiles.back());
+        f << csv;
     }
 
     ModelRun run;
@@ -73,6 +82,7 @@ ModelRun runModel(const std::string& code) {
         run.message = runner.getSolveResult().errorMessage;
     }
     fs::remove(file);
+    for (const auto& t : tableFiles) fs::remove(t);
     return run;
 }
 
@@ -655,6 +665,51 @@ TEST_CASE("CS-GAP-MULTILINE-COMMENT: a comment that is never closed is reported"
     CHECK(ok.equationCount == 2);
     for (const auto& d : ok.diagnostics.items())
         CHECK(d.message.find("never closed") == std::string::npos);
+}
+
+// ============================================================================
+// CS-BUG-INTERP-DESC: INTERPOLATE with a descending x column
+// ============================================================================
+
+TEST_CASE("CS-BUG-INTERP-DESC: reproducer of the register", "[library-gaps][interpolate]") {
+    // Compressor-map table of the two-shaft gas turbine: rows in descending order of N_rN.
+    // INTERPOLATE('t','N_rN','M',0.95) returned 370 instead of 420.
+    const std::map<std::string, std::string> tables = {{"t", "N_rN,M\n1,454\n0.95,420\n0.9,370\n"}};
+    auto run = runModel(R"(
+M_node = INTERPOLATE('t', 'N_rN', 'M', 0.95)
+M_mid = INTERPOLATE('t', 'N_rN', 'M', 0.925)
+M_top = INTERPOLATE('t', 'N_rN', 'M', 0.975)
+M_below = INTERPOLATE('t', 'N_rN', 'M', 0.5)
+M_above = INTERPOLATE('t', 'N_rN', 'M', 1.5)
+)", tables);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["M_node"], WithinAbs(420.0, 1e-9));
+    CHECK_THAT(run["M_mid"], WithinAbs(395.0, 1e-9));
+    CHECK_THAT(run["M_top"], WithinAbs(437.0, 1e-9));
+    // outside the table: flat extrapolation at the nearest end, whatever the order
+    CHECK_THAT(run["M_below"], WithinAbs(370.0, 1e-9));
+    CHECK_THAT(run["M_above"], WithinAbs(454.0, 1e-9));
+}
+
+TEST_CASE("CS-BUG-INTERP-DESC: ascending and descending tables give the same result", "[library-gaps][interpolate]") {
+    const std::map<std::string, std::string> asc = {{"t", "N_rN,M\n0.9,370\n0.95,420\n1,454\n"}};
+    const std::map<std::string, std::string> desc = {{"t", "N_rN,M\n1,454\n0.95,420\n0.9,370\n"}};
+    const std::string model = "y1 = INTERPOLATE('t', 'N_rN', 'M', 0.93)\ny2 = INTERPOLATE('t', 'N_rN', 'M', 0.9)\n"
+                              "y3 = INTERPOLATE('t', 'N_rN', 'M', 1)\n";
+    auto a = runModel(model, asc);
+    auto d = runModel(model, desc);
+    REQUIRE(a.solveOk);
+    REQUIRE(d.solveOk);
+    for (const char* v : {"y1", "y2", "y3"}) CHECK_THAT(d[v], WithinAbs(a[v], 1e-9));
+}
+
+TEST_CASE("CS-BUG-INTERP-DESC: the derivative of a descending table is right (Newton on the x column)", "[library-gaps][interpolate]") {
+    // Inverse lookup: find N_rN such that M = 395 -> 0.925. Needs d M / d N_rN from the table.
+    const std::map<std::string, std::string> tables = {{"t", "N_rN,M\n1,454\n0.95,420\n0.9,370\n"}};
+    auto run = runModel("INTERPOLATE('t', 'N_rN', 'M', N) = 395\n", tables);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["N"], WithinAbs(0.925, 1e-6));
 }
 
 // ============================================================================

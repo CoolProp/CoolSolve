@@ -546,8 +546,9 @@ h = INTERPOLATE('data', 'T_C', 'h_kJ_per_kg', T)
 ```
 
 Performs linear interpolation of column `h_kJ_per_kg` as a function of
-column `T_C` at value `T`.  Values outside the range are clamped to the
-nearest endpoint (flat extrapolation, zero derivative).
+column `T_C` at value `T`.  The rows of the `T_C` column must be sorted, in
+ascending **or descending** order (EES accepts both).  Values outside the range
+are clamped to the nearest endpoint (flat extrapolation, zero derivative).
 
 Equivalent aliases: `INTERPOLATE1('table', 'xcol', 'ycol', x)`.
 
