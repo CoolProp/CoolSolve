@@ -848,3 +848,53 @@ TEST_CASE("Parser thermo user-pattern warnings", "[parser][user-hints]") {
         REQUIRE(hasDiag(result, "P005", "placeholder"));
     }
 }
+
+TEST_CASE("Parser builds IF-THEN-ELSE statements in function bodies", "[parser][if-then-else]") {
+    using namespace coolsolve;
+    EESParser parser;
+
+    auto bodyOf = [](const ParseResult& r) -> const std::vector<StmtPtr>& {
+        return r.program.statements.front()->as<FunctionDefinition>().body;
+    };
+
+    SECTION("single-line IF with ELSE") {
+        auto result = parser.parse("FUNCTION f(v)\n IF (v>0) THEN f = 1 ELSE f = 2\nEND\n");
+        REQUIRE(result.success);
+        REQUIRE(bodyOf(result).size() == 1);
+        REQUIRE(bodyOf(result)[0]->is<IfThenElse>());
+        const auto& ite = bodyOf(result)[0]->as<IfThenElse>();
+        REQUIRE(ite.condition->is<BinaryOp>());
+        REQUIRE(ite.condition->as<BinaryOp>().op == ">");
+        REQUIRE(ite.thenBranch.size() == 1);
+        REQUIRE(ite.elseBranch.size() == 1);
+    }
+
+    SECTION("block IF, ELSE and ENDIF keep the following statements outside") {
+        auto result = parser.parse(
+            "FUNCTION f(v)\n IF (v>0) THEN\n a = 1\n b = 2\n ELSE\n a = 3\n ENDIF\n f = a\nEND\n");
+        REQUIRE(result.success);
+        REQUIRE(bodyOf(result).size() == 2);
+        const auto& ite = bodyOf(result)[0]->as<IfThenElse>();
+        REQUIRE(ite.thenBranch.size() == 2);
+        REQUIRE(ite.elseBranch.size() == 1);
+        REQUIRE(bodyOf(result)[1]->is<Equation>());
+    }
+
+    SECTION("conditions: logical operators bind AND tighter than OR, = and <> are relations") {
+        auto result = parser.parse(
+            "FUNCTION f(a, t$)\n IF (a = 1) OR (a <> 2) AND (t$ = 'N') THEN f = 1\nEND\n");
+        REQUIRE(result.success);
+        const auto& cond = bodyOf(result)[0]->as<IfThenElse>().condition->as<BinaryOp>();
+        REQUIRE(cond.op == "or");
+        REQUIRE(cond.left->as<BinaryOp>().op == "=");
+        REQUIRE(cond.right->as<BinaryOp>().op == "and");
+        REQUIRE(cond.right->as<BinaryOp>().left->as<BinaryOp>().op == "<>");
+    }
+
+    SECTION("multi-line brace comment containing IF lines yields no statement") {
+        auto result = parser.parse(
+            "FUNCTION f(v)\n {IF (v>0) THEN f = 5\n IF (v>0) THEN f = 6}\n f = 1\nEND\n");
+        REQUIRE(result.success);
+        for (const auto& s : bodyOf(result)) REQUIRE_FALSE(s->is<IfThenElse>());
+    }
+}

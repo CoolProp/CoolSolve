@@ -118,6 +118,8 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     // Lookup table demo (lookup_demo-data.csv + lookup_demo-watercp.csv loaded as companion tables)
     // Tests non-integer row interpolation: P midway between rows 2 and 3 = (198480+361300)/2
     {"lookup_demo.eescode",                     {"P_row2_5", 279890.0}},
+    // IF-THEN-ELSE in FUNCTION/PROCEDURE bodies: Blasius turbulent friction factor 0.316*Re^-0.25 at Re = 1e5
+    {"if_then_else_function.eescode",           {"f_turb", 0.017770}},
 };
 
 // Test result structure for reporting

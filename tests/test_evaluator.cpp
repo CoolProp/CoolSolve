@@ -1776,3 +1776,46 @@ TEST_CASE("CoolProp error messages mention default units", "[evaluator][errors]"
         REQUIRE(helpful);
     }
 }
+
+// ============================================================================
+// Comparison and logical operators of IF conditions
+// ============================================================================
+
+TEST_CASE("Evaluator comparison and logical operators of IF conditions", "[evaluator][if-then-else]") {
+    using namespace coolsolve;
+    ExpressionEvaluator eval(1);
+    eval.setVariable("a", ADValue::independent(3.0, 0, 1));
+    eval.setStringVariable("t$", "N");
+
+    auto truth = [&](const ExprPtr& e) { return eval.evaluate(e).value > 0.5; };
+    auto num = [](double v) { return makeNumber(v); };
+    auto a = makeVariable("a");
+
+    SECTION("numeric = and <>") {
+        REQUIRE(truth(makeBinaryOp("=", a, num(3.0))));
+        REQUIRE_FALSE(truth(makeBinaryOp("=", a, num(4.0))));
+        REQUIRE(truth(makeBinaryOp("<>", a, num(4.0))));
+        REQUIRE_FALSE(truth(makeBinaryOp("<>", a, num(3.0))));
+    }
+
+    SECTION("string = and <> are case-sensitive") {
+        auto t = makeVariable("t$");
+        REQUIRE(truth(makeBinaryOp("=", t, makeString("N"))));
+        REQUIRE_FALSE(truth(makeBinaryOp("=", t, makeString("n"))));
+        REQUIRE(truth(makeBinaryOp("<>", t, makeString("K"))));
+    }
+
+    SECTION("and / or") {
+        auto yes = makeBinaryOp(">", a, num(0.0));
+        auto no = makeBinaryOp("<", a, num(0.0));
+        REQUIRE(truth(makeBinaryOp("or", yes, no)));
+        REQUIRE_FALSE(truth(makeBinaryOp("and", yes, no)));
+        REQUIRE(truth(makeBinaryOp("and", yes, yes)));
+        REQUIRE_FALSE(truth(makeBinaryOp("or", no, no)));
+    }
+
+    SECTION("comparison results carry no derivative") {
+        auto r = eval.evaluate(makeBinaryOp(">", a, num(0.0)));
+        REQUIRE(r.gradient[0] == 0.0);
+    }
+}

@@ -34,7 +34,7 @@ Three comment styles are supported:
 | Syntax            | Kind                                                 |
 |:------------------|:-----------------------------------------------------|
 | `"..."` (dquote)  | Block or inline comment (may span multiple tokens)   |
-| `{...}`           | Brace comment (inline)                               |
+| `{...}`           | Brace comment (may span several lines, may nest)     |
 | `// ...`          | Single-line comment                                  |
 
 ### Numbers and identifiers
@@ -343,6 +343,35 @@ REPEAT
     x = x + 1
 UNTIL(x > 10)
 ```
+
+### IF-THEN-ELSE (inside functions and procedures)
+
+As in EES, `IF` statements exist only in the body of a `FUNCTION` or
+`PROCEDURE` (§7), where statements are executed in order. In the main program
+the equations are solved simultaneously: use the inline `if(a, b, c, d)`
+function there, an `IF ... THEN` statement is a parse error.
+
+```ees
+IF (T < 0) THEN f = 1 ELSE f = 2        "single line: no ENDIF"
+
+IF (Re < 2300) THEN                     "block form: closed by ENDIF"
+    f = 64/Re
+ELSE
+    f = 0.316*Re^(-0.25)
+ENDIF
+```
+
+- Only the branch selected by the condition is executed; the other one is
+  never evaluated (a division by zero in an untaken branch is harmless).
+- The condition compares numbers or strings with `=`, `<>`, `<`, `>`, `<=`,
+  `>=` (string comparison is case-sensitive: `fluid$ = 'R134a'`), and combines
+  relations with `AND`, `OR` and parentheses. The parentheses around the whole
+  condition are optional.
+- A branch holds any statements of a body, including other `IF` statements and
+  `DUPLICATE` / `REPEAT` loops; `ELSE IF (c) THEN ...` is an `IF` statement
+  inside the `ELSE` branch (a block-form `IF` always has its own `ENDIF`).
+- Derivatives are propagated through the branch taken, so the function can be
+  used on unknowns.
 
 ---
 

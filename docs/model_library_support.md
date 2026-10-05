@@ -241,7 +241,6 @@ convenience. Update the *Blocked models* column when you mark a model blocked.
 | `CS-BUG-SOL-STRING` | String variables appear twice in the `.sol` file: once as a number (`fluid$ = 0.0`) and once as a string (`fluid$ = 'R22'`). | any model with `fluid$ = 'R22'` | P3 |
 | `CS-DOC-TRIG` | [Language Reference §2](language_reference.md) says `sin/cos/tan` take radians; the implementation uses degrees (`sin(30) = 0.5`), consistent with EES `DEG`. Fix the documentation (and mention EES `RAD` files). | `s = sin(30)` | P2 |
 | `CS-DOC-EESCSV` | `ees_vs_coolsolve.csv` still lists `INTERPOLATE`, `LOOKUP`, `NLOOKUPROWS`… as *No* although they are implemented (Language Reference §11). | – | P3 |
-| `CS-BUG-IF-IGNORED` | The conditions of `IF (…) THEN … ELSE` statements inside `FUNCTION`/`PROCEDURE` bodies are ignored: **every branch executes**, later assignments overriding earlier ones (parameters and even literal-true conditions such as `IF (5>0)` never fire the THEN assignment). Wrong values without error; inputs for which an untaken branch is undefined (e.g. division by a zero parameter) fail with `SingularJacobian (residual=nan)`. | `FUNCTION f(v)` ⏎ `  f = -1` ⏎ `  IF (5>0) THEN f = 1` ⏎ `END` ⏎ `a = f(0)` → a = −1 (EES: 1). Block form `PROCEDURE p(v : r)` with `IF (v>0) THEN r = 1 ELSE r = -1` → `CALL p(5 : b)` gives b = −1 (EES: 1). Found with library model `CSL-0005` (cpbar library: `gamma`/`mmprod` always return the pure-air branch, `cpbar` mixes branches, and the pure-air call NaNs). | None (keep EES syntax, mark blocked) | P1 |
 | `CS-BUG-MOLARMASS` | `MOLARMASS(fluid)` returns kg/mol (CoolProp's `M`), while EES returns **kg/kmol** — silent 1000× error in any native EES code using it (gas constants in J/kmol·K, stoichiometric ratios, molar masses). | `mm = molarmass(CO2)` → 0.04401 (EES: 44.01 kg/kmol). Found with library model `CSL-0005` (its `f_st` computes to 68 instead of 0.068). | None that keeps native EES; blocked | P1 |
 | `CS-BUG-SINGLE-INPUT-PAIR` | Two **single-input** property calls of the same fluid in one expression, the EES pattern `enthalpy(X,T=T1) − enthalpy(X,T=T2)` for mean specific heats, evaluate inconsistently between the solve and the residual-verification passes (the assumed internal pressure seems state-dependent). In the main program the solver reports SUCCESS but the verification fails and **no `.sol` is written**. | `MM_H2O = 1000*molarmass(H2O)` ⏎ `dh_H2O = (enthalpy(H2O,T=200)-enthalpy(H2O,T=25))*MM_H2O` → *"Solver: SUCCESS"* then *"Solution Verification Failed … residual=6.33e+03"*, no `.sol`. Splitting `h200 = enthalpy(H2O,T=200)` and `h25 = enthalpy(H2O,T=25)` into separate equations passes. Found with library model `CSL-0005` (every c̄_p equation of the library). | None that keeps native EES; blocked | P1 |
 
@@ -259,3 +258,16 @@ convenience. Update the *Blocked models* column when you mark a model blocked.
 5. When a gap is closed: update `ees_vs_coolsolve.csv`, move the row to a
    *Closed* table with the CoolSolve version, and re-test the blocked models
    (the library's roadmap has a task for that).
+
+---
+
+## 7. Closed gaps and bugs
+
+Entries moved here when fixed (§6, step 5). *Fixed in* gives the CoolSolve
+version, the branch and the commit; the regression test lives in
+`tests/test_library_gaps.cpp` unless stated otherwise (run with
+`./coolsolve_tests "[library-gaps]"`).
+
+| ID | What was wrong | Fixed in | Regression test | Notes |
+|---|---|---|---|---|
+| `CS-BUG-IF-IGNORED` | Conditions of `IF … THEN … ELSE` inside FUNCTION/PROCEDURE bodies were ignored (every branch executed, later assignments overriding earlier ones). The parser never built `IfThenElse` nodes; multi-line `{…}` comments of bodies were not skipped either, so commented-out `IF` lines would now run. | post-v0.3.0, branch `fix/library-gaps`, commit pending | `CS-BUG-IF-IGNORED: …` (10 cases); example `if_then_else_function` | Single-line and block forms with `ENDIF`, nested IF, `=` `<>` `<` `>` `<=` `>=`, `AND`/`OR`, string conditions; an `IF … THEN` in the main program is now a parse error (EES allows it only in functions/procedures). Existing examples changed: `zorlu_heat_pump` (pinch procedures now work; COP unchanged), `engine_weibe_cycle` (`x_b`). See [language_reference §6](language_reference.md#6-control-flow). |

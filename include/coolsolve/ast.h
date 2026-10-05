@@ -290,6 +290,13 @@ inline StmtPtr makeDuplicate(const std::string& iteratorVar, ExprPtr start, Expr
     return stmt;
 }
 
+inline StmtPtr makeIfThenElse(ExprPtr condition, std::vector<StmtPtr> thenBranch, std::vector<StmtPtr> elseBranch, int line = 0) {
+    auto stmt = std::make_shared<Statement>();
+    stmt->node = IfThenElse{std::move(condition), std::move(thenBranch), std::move(elseBranch)};
+    stmt->sourceLineNumber = line;
+    return stmt;
+}
+
 inline StmtPtr makeRepeatUntil(std::vector<StmtPtr> body, ExprPtr condition, int line = 0) {
     auto stmt = std::make_shared<Statement>();
     stmt->node = RepeatUntil{std::move(body), std::move(condition)};

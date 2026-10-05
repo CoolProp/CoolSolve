@@ -29,7 +29,7 @@ AND,Operators,Logical AND,Yes,1,Used in IF conditions,
 OR,Operators,Logical OR,Yes,1,Used in IF conditions,
 NOT,Operators,Logical NOT,Yes,1,Used in IF conditions,
 # --- Control Flow ---,,,,,,
-IF-THEN-ELSE,Control Flow,Conditional execution in procedural blocks,Yes,1,src/parser.cpp + IfThenElse AST node,
+IF-THEN-ELSE,Control Flow,Conditional execution in procedural blocks,Yes,1,"FUNCTION/PROCEDURE bodies only (as in EES): single-line and block (ENDIF) forms; conditions = <> < > <= >= (numbers and strings) with AND/OR; src/parser.cpp + IfThenElse AST node",
 IFNOT-THEN-ELSE,Control Flow,Negated conditional execution,Yes,1,Variation of IF-THEN-ELSE,
 "IF(cond, true_val, false_val)",Control Flow,Inline conditional function (expression-level),Yes,1,src/autodiff_node.cpp — 3-arg IF function, cond>0 returns true_val
 "IF$(cond, true$, false$)",Control Flow,Inline conditional for string variables,No,3,String version of inline IF,

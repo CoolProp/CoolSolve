@@ -764,7 +764,28 @@ ADValue ExpressionEvaluator::evaluateUnaryOp(const UnaryOp& op) {
     throw std::runtime_error("Unknown unary operator: " + op.op);
 }
 
+// True for expressions that yield a string: 'literals', variables ending in '$'
+// and string-valued functions such as PHASE$().
+static bool isStringExpression(const ExprPtr& expr) {
+    if (expr->is<StringLiteral>()) return true;
+    if (expr->is<Variable>()) {
+        const std::string& n = expr->as<Variable>().name;
+        return !n.empty() && n.back() == '$';
+    }
+    if (expr->is<FunctionCall>()) {
+        const std::string& n = expr->as<FunctionCall>().name;
+        return !n.empty() && n.back() == '$';
+    }
+    return false;
+}
+
 ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
+    // Conditions of IF statements compare strings with = and <> (case-sensitive).
+    if ((op.op == "=" || op.op == "<>") && (isStringExpression(op.left) || isStringExpression(op.right))) {
+        const bool equal = evaluateString(op.left) == evaluateString(op.right);
+        return ADValue::constant(equal == (op.op == "=") ? 1.0 : -1.0, numVariables_);
+    }
+
     ADValue left = evaluate(op.left);
     ADValue right = evaluate(op.right);
     
@@ -786,6 +807,14 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
         return ADValue::constant(left.value >= right.value ? 1.0 : -1.0, left.gradient.size());
     } else if (op.op == "<=") {
         return ADValue::constant(left.value <= right.value ? 1.0 : -1.0, left.gradient.size());
+    } else if (op.op == "=") {
+        return ADValue::constant(left.value == right.value ? 1.0 : -1.0, left.gradient.size());
+    } else if (op.op == "<>") {
+        return ADValue::constant(left.value != right.value ? 1.0 : -1.0, left.gradient.size());
+    } else if (op.op == "and") {
+        return ADValue::constant(left.value > 0.5 && right.value > 0.5 ? 1.0 : -1.0, left.gradient.size());
+    } else if (op.op == "or") {
+        return ADValue::constant(left.value > 0.5 || right.value > 0.5 ? 1.0 : -1.0, left.gradient.size());
     }
     
     throw std::runtime_error("Unknown binary operator: " + op.op);

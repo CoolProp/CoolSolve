@@ -1,0 +1,26 @@
+"IF-THEN-ELSE in FUNCTION and PROCEDURE bodies"
+"Darcy friction factor: laminar (Hagen-Poiseuille) below Re = 2300, turbulent (Blasius) above."
+"IF statements exist only inside functions and procedures, where statements run in order;"
+"only the branch taken is executed. In the main program use the inline if(a, b, c, d)."
+
+"Block form: IF (...) THEN ... ELSE ... ENDIF"
+FUNCTION f_darcy(Re)
+    IF (Re < 2300) THEN
+        f_darcy = 64/Re
+    ELSE
+        f_darcy = 0.316*Re^(-0.25)
+    ENDIF
+END
+
+"Single-line form (no ENDIF); a commented-out IF inside a multi-line brace comment is ignored"
+PROCEDURE flow_regime(Re : flag, f)
+    {IF (Re > 0) THEN flag = 99
+     IF (Re > 0) THEN f = 99}
+    IF (Re < 2300) THEN flag = 0 ELSE flag = 1
+    f = f_darcy(Re)
+END
+
+Re_lam = 1000
+Re_turb = 1E5
+CALL flow_regime(Re_lam : flag_lam, f_lam)       "laminar:   flag = 0, f = 0.064"
+CALL flow_regime(Re_turb : flag_turb, f_turb)    "turbulent: flag = 1, f = 0.01777"

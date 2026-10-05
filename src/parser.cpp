@@ -145,63 +145,13 @@ public:
         int lineNumber = 0;
         
         bool unsupportedFound = false;
-        bool inMultiLineQuote = false;
-        bool inMultiLineQuoteStandalone = false;  // true if block started by a line that is exactly `"`
-        int braceCommentDepth = 0; // Track nested { } comments across lines
+        comments_ = CommentState{};
         while (std::getline(stream, line)) {
             lineNumber++;
-            
-            // Handle multi-line quote comments " ... "
-            if (inMultiLineQuote) {
-                std::string innerTrimmed = trim(line);
-                if (innerTrimmed == "\"") {
-                    // Standalone `"` always ends a quote block (and starts one when not in block).
-                    inMultiLineQuote = false;
-                    result.commentCount++;
-                    continue;
-                }
-                if (inMultiLineQuoteStandalone) {
-                    // Block started with standalone `"` -> only a standalone `"` can close it.
-                    continue;
-                }
-                // Classic style: block started with `"` on a line with no closing `"` -> first `"` on a line closes.
-                size_t quoteEnd = line.find('"');
-                if (quoteEnd != std::string::npos) {
-                    inMultiLineQuote = false;
-                    result.commentCount++;
-                    line = line.substr(quoteEnd + 1);
-                } else {
-                    continue;
-                }
-            }
 
-            // Strip nested brace comments that can span multiple lines.
-            // This is done before any further processing so that code inside
-            // `{ ... }` (including nested braces) is completely ignored.
-            line = stripBraceComments(line, braceCommentDepth, result);
-            if (braceCommentDepth > 0 && line.empty()) {
-                // Still inside a block comment and nothing else on this line.
-                continue;
-            }
-
-            // Skip empty lines
-            if (isEmptyOrWhitespace(line)) continue;
-            
+            // Skip comments (also those spanning several lines) and blank lines
+            if (skipCommentLine(line, result)) continue;
             std::string trimmed = trim(line);
-            if (trimmed.empty()) continue;
-
-            // Start of multi-line quote: (1) line is exactly `"` (standalone delimiter), or
-            // (2) line starts with `"` and has no closing `"` on the same line (classic EES style).
-            if (trimmed == "\"") {
-                inMultiLineQuote = true;
-                inMultiLineQuoteStandalone = true;
-                continue;
-            }
-            if (trimmed.front() == '"' && trimmed.find('"', 1) == std::string::npos) {
-                inMultiLineQuote = true;
-                inMultiLineQuoteStandalone = false;
-                continue;
-            }
 
             // Check for unsupported constructs (procedures, modules, etc.)
             std::string upper = trimmed;
@@ -229,7 +179,9 @@ public:
                 if (tryParseFunctionHeader(line, name, params)) {
                     std::vector<StmtPtr> body;
                     int startLine = lineNumber;
+                    procedureBodyDepth_++;
                     std::string term = parseBodyLines(stream, lineNumber, body, result);
+                    procedureBodyDepth_--;
                     if (term != "END") {
                         result.errors.push_back({startLine, 0, "Function '" + name + "' missing END", line});
                     } else {
@@ -246,7 +198,9 @@ public:
                 if (tryParseProcedureHeader(line, name, inputs, outputs)) {
                     std::vector<StmtPtr> body;
                     int startLine = lineNumber;
+                    procedureBodyDepth_++;
                     std::string term = parseBodyLines(stream, lineNumber, body, result);
+                    procedureBodyDepth_--;
                     if (term != "END") {
                         result.errors.push_back({startLine, 0, "Procedure '" + name + "' missing END", line});
                     } else {
@@ -254,6 +208,15 @@ public:
                     }
                     continue;
                 }
+            }
+
+            // IF ... THEN statements are not valid in the main program (EES)
+            if (isKeyword("IF") && findKeywordAtDepth0(trim(removeInlineComments(line)), "THEN") != std::string::npos) {
+                std::vector<StmtPtr> discarded;
+                const int ifLine = lineNumber;
+                parseIfStatement(trim(removeInlineComments(line)), stream, lineNumber, discarded, result, line);
+                result.errors.push_back({ifLine, 0, kIfOutsideProcedureMessage, line});
+                continue;
             }
 
             // Handle Procedure Call
@@ -395,6 +358,9 @@ private:
     // consumed (and cleared) by tryParseEquationOrAssignment to emit a
     // specific diagnostic instead of the generic "Could not parse line".
     std::string pendingExpressionError_;
+    // > 0 while the body of a FUNCTION/PROCEDURE is being parsed (IF ... THEN
+    // statements are only valid there).
+    int procedureBodyDepth_ = 0;
     
     // Known built-in math/utility functions (case-insensitive)
     static const std::unordered_set<std::string>& knownBuiltinFunctions() {
@@ -658,6 +624,60 @@ private:
         grammarValid_ = true;  // We'll use manual parsing
     }
 
+    // State of comments that span several lines. Shared by the main parse loop
+    // and the FUNCTION/PROCEDURE body parser, so that both skip them alike.
+    struct CommentState {
+        bool inQuote = false;      // inside a multi-line "..." comment
+        bool standalone = false;   // block opened by a line that is exactly `"`
+        int braceDepth = 0;        // nesting depth of { } comments
+    };
+    CommentState comments_;
+
+    // Remove from `line` (in place) what belongs to multi-line comments and
+    // update comments_. Returns true when nothing is left to parse on the line:
+    // it is blank or entirely inside a comment.
+    bool skipCommentLine(std::string& line, ParseResult& result) {
+        // Multi-line quote comment " ... "
+        if (comments_.inQuote) {
+            if (trim(line) == "\"") {
+                // Standalone `"` always ends a quote block (and starts one when not in block).
+                comments_.inQuote = false;
+                result.commentCount++;
+                return true;
+            }
+            // Block started with a standalone `"` -> only a standalone `"` can close it.
+            if (comments_.standalone) return true;
+            // Classic style: block started with `"` on a line with no closing `"` -> first `"` on a line closes.
+            const size_t quoteEnd = line.find('"');
+            if (quoteEnd == std::string::npos) return true;
+            comments_.inQuote = false;
+            result.commentCount++;
+            line = line.substr(quoteEnd + 1);
+        }
+
+        // Nested brace comments that can span multiple lines. Done before any
+        // further processing so that code inside `{ ... }` is completely ignored.
+        line = stripBraceComments(line, comments_.braceDepth, result);
+        if (comments_.braceDepth > 0 && line.empty()) return true;  // still inside a block comment
+
+        if (isEmptyOrWhitespace(line)) return true;
+        const std::string trimmed = trim(line);
+
+        // Start of multi-line quote: (1) line is exactly `"` (standalone delimiter), or
+        // (2) line starts with `"` and has no closing `"` on the same line (classic EES style).
+        if (trimmed == "\"") {
+            comments_.inQuote = true;
+            comments_.standalone = true;
+            return true;
+        }
+        if (trimmed.front() == '"' && trimmed.find('"', 1) == std::string::npos) {
+            comments_.inQuote = true;
+            comments_.standalone = false;
+            return true;
+        }
+        return false;
+    }
+
     // Strip brace-delimited comments `{ ... }` from a line, tracking nested
     // comments across lines via `braceDepth`. Text inside comments is removed,
     // while code outside comments is preserved. Braces appearing inside
@@ -751,18 +771,23 @@ private:
     }
 
     // ========================================================================
-    // Unified body parser for function/procedure/DUPLICATE/REPEAT bodies.
-    // Reads lines from 'stream', parsing comments, directives, DUPLICATE,
-    // REPEAT-UNTIL, equations/assignments, and procedure calls.
+    // Unified body parser for function/procedure/DUPLICATE/REPEAT/IF bodies.
+    // Reads lines from 'stream', parsing comments, directives, IF-THEN-ELSE,
+    // DUPLICATE, REPEAT-UNTIL, equations/assignments, and procedure calls.
     // Returns "END" if END keyword terminates, "UNTIL" if UNTIL(condition)
-    // terminates (conditionOut set), or "" on EOF.
+    // terminates (conditionOut set), "" on EOF, and — only when called for the
+    // block of an IF statement (inIfBlock) — "ELSE" (the text of the ELSE line
+    // is stored in *terminatorLine) or "ENDIF".
     // ========================================================================
     std::string parseBodyLines(std::istream& stream, int& lineNumber,
                                std::vector<StmtPtr>& body, ParseResult& result,
-                               ExprPtr* conditionOut = nullptr) {
+                               ExprPtr* conditionOut = nullptr,
+                               bool inIfBlock = false,
+                               std::string* terminatorLine = nullptr) {
         std::string bodyLine;
         while (std::getline(stream, bodyLine)) {
             lineNumber++;
+            if (skipCommentLine(bodyLine, result)) continue;
             std::string trimmedBody = trim(bodyLine);
             std::string upperBody = trimmedBody;
             std::transform(upperBody.begin(), upperBody.end(), upperBody.begin(), ::toupper);
@@ -793,6 +818,22 @@ private:
                 body.push_back(stmt);
             } else if (auto stmt = tryParseDirective(bodyLine, lineNumber)) {
                 body.push_back(stmt);
+            } else if (isBodyKeyword("IF")) {
+                const int ifLine = lineNumber;
+                std::string term = parseIfStatement(trim(removeInlineComments(bodyLine)),
+                                                    stream, lineNumber, body, result, bodyLine);
+                if (procedureBodyDepth_ == 0)  // e.g. inside a DUPLICATE of the main program
+                    result.errors.push_back({ifLine, 0, kIfOutsideProcedureMessage, bodyLine});
+                if (!term.empty()) return term;  // block ended prematurely (END/UNTIL)
+            } else if (isBodyKeyword("ELSE") || isBodyKeyword("ENDIF")) {
+                const bool isElse = isBodyKeyword("ELSE");
+                if (!inIfBlock) {
+                    result.errors.push_back({lineNumber, 0,
+                        std::string(isElse ? "ELSE" : "ENDIF") + " without a matching IF ... THEN", bodyLine});
+                    continue;
+                }
+                if (terminatorLine) *terminatorLine = trimmedBody;
+                return isElse ? "ELSE" : "ENDIF";
             } else if (isBodyKeyword("DUPLICATE")) {
                 // Parse nested DUPLICATE: DUPLICATE varName = startExpr, endExpr
                 std::string header = trim(trimmedBody.substr(9));
@@ -835,32 +876,224 @@ private:
                     result.errors.push_back({repStartLine, 0, "REPEAT missing UNTIL(condition)", bodyLine});
                 }
             } else {
-                auto segments = splitOnSemicolons(bodyLine);
-                bool handled = false;
-                if (segments.size() > 1) {
-                    for (const auto& seg : segments) {
-                        std::string segErr;
-                        if (auto s = tryParseEquationOrAssignment(seg, lineNumber, &segErr))
-                            body.push_back(s);
-                        else if (auto s = tryParseProcedureCall(seg, lineNumber))
-                            body.push_back(s);
-                        else if (!segErr.empty())
-                            result.errors.push_back({lineNumber, 0, segErr, bodyLine});
-                    }
-                    handled = true;
-                }
-                if (!handled) {
-                    std::string bodyErr;
-                    if (auto stmt = tryParseEquationOrAssignment(bodyLine, lineNumber, &bodyErr))
-                        body.push_back(stmt);
-                    else if (auto stmt = tryParseProcedureCall(bodyLine, lineNumber))
-                        body.push_back(stmt);
-                    else if (!bodyErr.empty())
-                        result.errors.push_back({lineNumber, 0, bodyErr, bodyLine});
-                }
+                parseSimpleStatements(bodyLine, lineNumber, body, result, bodyLine);
             }
         }
         return "";  // EOF
+    }
+
+    // Parse the equations/assignments and procedure calls of `text` (one line
+    // of a body, or one branch of a single-line IF), split on semicolons.
+    // `errorLine` is the source line reported with parse errors.
+    void parseSimpleStatements(const std::string& text, int lineNumber,
+                               std::vector<StmtPtr>& body, ParseResult& result,
+                               const std::string& errorLine) {
+        auto segments = splitOnSemicolons(text);
+        if (segments.size() > 1) {
+            for (const auto& seg : segments) {
+                std::string segErr;
+                if (auto s = tryParseEquationOrAssignment(seg, lineNumber, &segErr))
+                    body.push_back(s);
+                else if (auto s = tryParseProcedureCall(seg, lineNumber))
+                    body.push_back(s);
+                else if (!segErr.empty())
+                    result.errors.push_back({lineNumber, 0, segErr, errorLine});
+            }
+            return;
+        }
+        std::string bodyErr;
+        if (auto stmt = tryParseEquationOrAssignment(text, lineNumber, &bodyErr))
+            body.push_back(stmt);
+        else if (auto stmt = tryParseProcedureCall(text, lineNumber))
+            body.push_back(stmt);
+        else if (!bodyErr.empty())
+            result.errors.push_back({lineNumber, 0, bodyErr, errorLine});
+    }
+
+    // ------------------------------------------------------------------------
+    // IF ... THEN ... ELSE ... ENDIF (EES: only inside FUNCTION/PROCEDURE bodies)
+    //
+    //   IF (cond) THEN stmts [ELSE stmts]        single line, no ENDIF
+    //   IF (cond) THEN                           block form, closed by ENDIF
+    //       stmts
+    //   [ELSE [stmt]
+    //       stmts]
+    //   ENDIF
+    //
+    // The condition may use = <> < > <= >= (numbers or strings) combined with
+    // AND / OR and parentheses; the parentheses around the whole condition are
+    // optional. Branch statements may themselves be IF statements.
+    // ------------------------------------------------------------------------
+    static constexpr const char* kIfOutsideProcedureMessage =
+        "IF ... THEN statements are only allowed inside FUNCTION and PROCEDURE bodies "
+        "(in the main program use the IF(a, b, c, d) function)";
+
+    static bool isIdentChar(char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$' || c == '#';
+    }
+
+    // Position (>= from) of the whole-word, case-insensitive keyword `kw`
+    // (given in upper case) in `s`, at parenthesis depth 0 and outside 'strings',
+    // "comments" and {comments}; npos when absent.
+    static size_t findKeywordAtDepth0(const std::string& s, const std::string& kw, size_t from = 0) {
+        bool inSingle = false, inDouble = false;
+        int braceDepth = 0, depth = 0;
+        for (size_t i = 0; i < s.size(); ++i) {
+            const char c = s[i];
+            if (inSingle) { if (c == '\'') inSingle = false; continue; }
+            if (inDouble) { if (c == '"') inDouble = false; continue; }
+            if (braceDepth > 0) {
+                if (c == '{') braceDepth++;
+                else if (c == '}') braceDepth--;
+                continue;
+            }
+            if (c == '\'') { inSingle = true; continue; }
+            if (c == '"') { inDouble = true; continue; }
+            if (c == '{') { braceDepth++; continue; }
+            if (c == '(' || c == '[') { depth++; continue; }
+            if (c == ')' || c == ']') { depth--; continue; }
+            if (depth != 0 || i < from) continue;
+            if (i > 0 && isIdentChar(s[i - 1])) continue;
+            if (i + kw.size() > s.size()) continue;
+            bool match = true;
+            for (size_t k = 0; k < kw.size() && match; ++k)
+                match = std::toupper(static_cast<unsigned char>(s[i + k])) == kw[k];
+            if (match && (i + kw.size() == s.size() || !isIdentChar(s[i + kw.size()])))
+                return i;
+        }
+        return std::string::npos;
+    }
+
+    // True when the '(' at s[0] is closed by the last character of `s`.
+    static bool isFullyParenthesized(const std::string& s) {
+        if (s.size() < 2 || s.front() != '(' || s.back() != ')') return false;
+        bool inSingle = false;
+        int depth = 0;
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (s[i] == '\'') { inSingle = !inSingle; continue; }
+            if (inSingle) continue;
+            if (s[i] == '(') depth++;
+            else if (s[i] == ')') {
+                depth--;
+                if (depth == 0 && i + 1 < s.size()) return false;
+            }
+        }
+        return depth == 0;
+    }
+
+    // Parse the condition of an IF statement. Relations produce BinaryOp nodes
+    // with op "=", "<>", "<", ">", "<=" or ">="; "and"/"or" combine them
+    // (OR binds weaker than AND). Evaluates to +1 (true) / -1 (false).
+    ExprPtr parseCondition(const std::string& text, int lineNum) {
+        const std::string s = trim(text);
+        if (s.empty()) return nullptr;
+
+        for (const char* kw : {"OR", "AND"}) {
+            const size_t pos = findKeywordAtDepth0(s, kw);
+            if (pos == std::string::npos) continue;
+            auto left = parseCondition(s.substr(0, pos), lineNum);
+            auto right = parseCondition(s.substr(pos + std::string(kw).size()), lineNum);
+            if (!left || !right) return nullptr;
+            return makeBinaryOp(std::string(kw) == "OR" ? "or" : "and", left, right, lineNum);
+        }
+
+        if (isFullyParenthesized(s))
+            return parseCondition(s.substr(1, s.size() - 2), lineNum);
+
+        // Leftmost relational operator outside parentheses and strings.
+        bool inSingle = false;
+        int depth = 0;
+        for (size_t i = 0; i < s.size(); ++i) {
+            const char c = s[i];
+            if (c == '\'') { inSingle = !inSingle; continue; }
+            if (inSingle) continue;
+            if (c == '(' || c == '[') { depth++; continue; }
+            if (c == ')' || c == ']') { depth--; continue; }
+            if (depth != 0 || (c != '<' && c != '>' && c != '=')) continue;
+            std::string op(1, c);
+            if (i + 1 < s.size() && ((c == '<' && (s[i + 1] == '=' || s[i + 1] == '>')) ||
+                                     (c == '>' && s[i + 1] == '=')))
+                op += s[i + 1];
+            auto left = parseExpression(s.substr(0, i), lineNum);
+            auto right = parseExpression(s.substr(i + op.size()), lineNum);
+            if (!left || !right) return nullptr;
+            return makeBinaryOp(op, left, right, lineNum);
+        }
+        return parseExpression(s, lineNum);  // no relation: numeric truth value
+    }
+
+    // Parse one statement of a single-line IF branch: a nested IF statement or
+    // simple statements. Returns the terminator of a prematurely ended nested
+    // block (see parseIfStatement), "" otherwise.
+    std::string parseBranchText(const std::string& text, std::istream& stream, int& lineNumber,
+                                std::vector<StmtPtr>& branch, ParseResult& result,
+                                const std::string& srcLine) {
+        const std::string t = trim(text);
+        if (t.empty()) return "";
+        if (findKeywordAtDepth0(t, "IF") == 0)
+            return parseIfStatement(t, stream, lineNumber, branch, result, srcLine);
+        parseSimpleStatements(t, lineNumber, branch, result, srcLine);
+        return "";
+    }
+
+    // Parse an IF statement whose first line is `ifText` (comments removed,
+    // trimmed, starting with IF) and append it to `body`. For the block form the
+    // following lines are read from `stream` up to the matching ENDIF.
+    // Returns "" when the statement is complete, or the terminator ("END",
+    // "UNTIL") that ended the enclosing block before the ENDIF, which the caller
+    // must propagate.
+    std::string parseIfStatement(const std::string& ifText, std::istream& stream, int& lineNumber,
+                                 std::vector<StmtPtr>& body, ParseResult& result,
+                                 const std::string& srcLine) {
+        const int ifLine = lineNumber;
+        const size_t thenPos = findKeywordAtDepth0(ifText, "THEN", 2);
+        if (thenPos == std::string::npos) {
+            result.errors.push_back({ifLine, 0, "IF statement without THEN", srcLine});
+            return "";
+        }
+        const std::string condText = trim(ifText.substr(2, thenPos - 2));
+        ExprPtr cond = parseCondition(condText, ifLine);
+        if (!cond)
+            result.errors.push_back({ifLine, 0, "Could not parse IF condition '" + condText + "'", srcLine});
+
+        std::vector<StmtPtr> thenBranch, elseBranch;
+        std::string premature;
+        const std::string rest = trim(ifText.substr(thenPos + 4));
+        if (!rest.empty()) {
+            // Single-line form: IF (cond) THEN stmts [ELSE stmts]
+            const size_t elsePos = findKeywordAtDepth0(rest, "ELSE");
+            premature = parseBranchText(elsePos == std::string::npos ? rest : rest.substr(0, elsePos),
+                                        stream, lineNumber, thenBranch, result, srcLine);
+            if (premature.empty() && elsePos != std::string::npos)
+                premature = parseBranchText(rest.substr(elsePos + 4), stream, lineNumber,
+                                            elseBranch, result, srcLine);
+        } else {
+            // Block form: lines up to ENDIF, with an optional ELSE
+            std::vector<StmtPtr>* current = &thenBranch;
+            bool sawElse = false;
+            for (;;) {
+                std::string elseLine;
+                const std::string term = parseBodyLines(stream, lineNumber, *current, result,
+                                                        nullptr, /*inIfBlock=*/true, &elseLine);
+                if (term == "ENDIF") break;
+                if (term == "ELSE") {
+                    if (sawElse)
+                        result.errors.push_back({lineNumber, 0, "IF statement with two ELSE parts", elseLine});
+                    sawElse = true;
+                    current = &elseBranch;
+                    // Statements after ELSE on the same line, e.g. `ELSE x = 1` or `ELSE IF (c) THEN`
+                    premature = parseBranchText(removeInlineComments(elseLine).substr(4), stream,
+                                                lineNumber, *current, result, elseLine);
+                    if (!premature.empty()) break;
+                    continue;
+                }
+                result.errors.push_back({ifLine, 0, "IF ... THEN without a matching ENDIF", srcLine});
+                premature = term;  // END / UNTIL end the enclosing block; EOF ("") ends the program
+                break;
+            }
+        }
+        if (cond) body.push_back(makeIfThenElse(cond, std::move(thenBranch), std::move(elseBranch), ifLine));
+        return premature;
     }
 
     StmtPtr tryParseComment(const std::string& line, int lineNum) {
