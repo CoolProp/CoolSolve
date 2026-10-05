@@ -63,6 +63,9 @@ static CoolProp::input_pairs getInputPair(CoolProp::parameters p1,
     return CoolProp::generate_update_pair(p1, 0.0, p2, 0.0, out1, out2);
 }
 
+/// MOLARMASS is returned in kg/kmol (EES convention); CoolProp's "M" is in kg/mol.
+static constexpr double KG_PER_KMOL = 1000.0;
+
 /// Get a property value from an already-updated AbstractState.
 static double getOutputValue(CoolProp::AbstractState& state,
                              CoolProp::parameters param) {
@@ -1059,7 +1062,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 std::string cpFluidName = fluid->getCoolPropName();
                 try {
                     double mm = timedPropsSI("M", "T", 300, "P", 101325, cpFluidName);
-                    return ADValue::constant(mm, numVariables_);
+                    return ADValue::constant(mm * KG_PER_KMOL, numVariables_);
                 } catch (...) {
                     // Fallback or ignore if PropsSI fails
                 }
@@ -1657,6 +1660,13 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         else if (outputInfo.unitType == UnitType::SpecificEntropy)
             result += UnitConverter::fromSI(fluid->getReferenceState().s_offset, outputInfo.unitType, units.specific_entropy);
         
+        // EES returns the molar mass in kg/kmol, CoolProp in kg/mol
+        if (outputInfo.param == CoolProp::imolar_mass) {
+            result *= KG_PER_KMOL;
+            dResult_dInput1 *= KG_PER_KMOL;
+            dResult_dInput2 *= KG_PER_KMOL;
+        }
+
         // Volume inversion (density→specific volume)
         std::string lowerFuncName = func.name;
         std::transform(lowerFuncName.begin(), lowerFuncName.end(), lowerFuncName.begin(), ::tolower);

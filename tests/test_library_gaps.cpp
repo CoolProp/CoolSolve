@@ -310,3 +310,32 @@ TEST_CASE("CS-BUG-IF-IGNORED: malformed IF statements are reported", "[library-g
         REQUIRE(anyContains(errs, "Could not parse IF condition"));
     }
 }
+
+// ============================================================================
+// CS-BUG-MOLARMASS: MOLARMASS in kg/kmol, like EES
+// ============================================================================
+
+TEST_CASE("CS-BUG-MOLARMASS: molar masses are in kg/kmol", "[library-gaps][molarmass]") {
+    auto run = runModel(R"(
+mm_CO2 = molarmass(CO2)
+mm_N2 = molarmass(N2)
+mm_H2O = molarmass(H2O)
+mm_air = molarmass(Air_ha)
+fluid$ = 'R134a'
+mm_R134a = molarmass(fluid$)
+R_N2 = 8314/molarmass(N2)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["mm_CO2"], WithinRel(44.01, 1e-3));
+    CHECK_THAT(run["mm_N2"], WithinRel(28.013, 1e-3));
+    CHECK_THAT(run["mm_H2O"], WithinRel(18.015, 1e-3));
+    CHECK_THAT(run["mm_air"], WithinRel(28.965, 1e-3));
+    CHECK_THAT(run["mm_R134a"], WithinRel(102.03, 1e-3));
+    // gas constant in J/kg-K from the universal constant in J/kmol-K, the EES pattern
+    CHECK_THAT(run["R_N2"], WithinRel(296.8, 1e-3));
+}
+
+TEST_CASE("CS-BUG-MOLARMASS: unsupported fluids still report an error", "[library-gaps][molarmass]") {
+    auto run = runModel("mm = molarmass(NoSuchFluid)\n");
+    REQUIRE_FALSE(run.solveOk);
+}

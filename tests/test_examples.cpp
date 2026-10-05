@@ -64,7 +64,8 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     // Original models
     {"condenser_3zones.eescode",  {"epsilon_cd_tp", 0.952}},
     {"cooling_coil.eescode",      {"epsilon_c", 0.8111}},
-    {"cpbar.eescode",             {"c_bar_p", 1020.3}},
+    // EES reference (CSL-0005, EES 7.966): 1090.60 (0.24 % ideal-gas table difference)
+    {"cpbar.eescode",             {"c_bar_p", 1093.2}},
     {"exchangers1.eescode",       {"Q_dot", 134349}},
     {"exchangers2.eescode",       {"A", 7.378}},
     {"exchangers3.eescode",       {"DELTAT_w", 15.94}},

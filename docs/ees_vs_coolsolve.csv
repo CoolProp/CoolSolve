@@ -290,7 +290,7 @@ T_MELTING,Thermophysical,Melting temperature at given pressure,Partial,3,Recogni
 P_MELTING,Thermophysical,Melting pressure at given temperature,Partial,3,Recognized in parser,
 P_SUBLIMATION,Thermophysical,Sublimation pressure at given temperature,Partial,3,Recognized in parser,
 # --- Thermophysical Functions: Molar & Chemical ---,,,,,,
-MOLARMASS,Thermophysical,Molar mass of fluid [kg/mol or g/mol],Yes,1,"src/evaluator.cpp, aliases: mm",
+MOLARMASS,Thermophysical,Molar mass of fluid [kg/kmol = g/mol],Yes,1,"src/evaluator.cpp, aliases: mm; kg/kmol as in EES",
 MOLARMASS_SOLN,Thermophysical,Molar mass of a solution,Partial,3,Recognized in parser,
 ACENTRICFACTOR,Thermophysical,Acentric factor (Pitzer) (dimensionless),Partial,3,Recognized in parser, maps to CoolProp acentric
 COMPRESSIBILITYFACTOR,Thermophysical,Compressibility factor Z = Pv/(RT),Yes,2,"src/evaluator.cpp — CoolProp iZ"

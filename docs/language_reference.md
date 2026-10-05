@@ -176,7 +176,7 @@ J/(kg·K). See the warning at the top of this page.
 | `viscosity` / `mu`                   | Pa·s                       |
 | `conductivity` / `k`                 | W/(m·K)                    |
 | `speed_of_sound` / `soundspeed`      | m/s                        |
-| `molarmass` / `MM`                   | kg/mol (no state needed)   |
+| `molarmass` / `MM`                   | kg/kmol, as in EES (no state needed) |
 
 ### Saturation properties
 
