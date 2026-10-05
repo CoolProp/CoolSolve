@@ -141,6 +141,11 @@ Parser-level directives begin with `$` and span a single line:
 |:-----------------------------------|:--------------------------------------------|
 | `CONVERT('from', 'to')`            | Conversion factor so `1 [from] = factor [to]` |
 | `CONVERTTEMP('from', 'to', T)`     | Convert a temperature value between scales  |
+| `UNITSYSTEM('setting')`            | 1 if the unit setting is in use, 0 otherwise (`'SI'`, `'Eng'`, `'Mass'`, `'Molar'`, `'Deg'`, `'Rad'`, `'C'`, `'K'`, `'F'`, `'R'`, `'Pa'`, `'kPa'`, `'bar'`, `'MPa'`, `'psia'`, `'atm'`, `'J'`, `'kJ'`, `'Btu'`, `'kcal'`) — CoolSolve always answers 1 for `SI`, `Mass`, `Deg`, `C`, `Pa` and `J` |
+
+`UNITSYSTEM` lets EES library routines check the unit settings they were
+written for; in CoolSolve such a guard never fires (the unit system is fixed).
+An unknown setting name is an error.
 
 ---
 
@@ -413,6 +418,18 @@ CALL divmod(17, 5 : q, r)
 ```
 
 The `:` separates input arguments (left) from output variables (right).
+
+### CALL ERROR
+
+`CALL ERROR('message')` stops the calculation and reports the message — the
+EES way to reject inputs in a function or procedure, usually in an `IF`:
+
+```ees
+IF (T_p1 = T_p2) THEN CALL ERROR('T_p1 and T_p2 must differ', T_p1)
+```
+
+Additional numeric arguments are appended to the message in brackets. (`CALL
+WARNING` is not available yet.)
 
 ---
 

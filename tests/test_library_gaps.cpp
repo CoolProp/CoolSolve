@@ -407,3 +407,81 @@ TEST_CASE("CS-BUG-SINGLE-INPUT-PAIR: user-supplied pressures are still checked",
         if (w.find("not kPa") != std::string::npos) hinted = true;
     CHECK(hinted);
 }
+
+// ============================================================================
+// CS-GAP-UNITSYSTEM-FUNC: UNITSYSTEM('...') and CALL ERROR('...')
+// ============================================================================
+
+TEST_CASE("CS-GAP-UNITSYSTEM-FUNC: unit-system guards of EES library routines", "[library-gaps][unitsystem]") {
+    // The guards of the ULiege combustion library (CombCmHn_SI_PNG2003_V2.LIB), uncommented:
+    // CoolSolve works in degrees Celsius on a mass basis, so neither guard fires.
+    auto run = runModel(R"(
+FUNCTION g(x)
+  IF (unitsystem('K')=1)  THEN CALL error('Please, set C for temperature units!')
+  If (unitsystem('Molar')=1)  then CALL error('Please, set Mass basis!')
+  g = 2*x
+END
+a = g(3)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(6.0, 1e-12));
+    for (const auto& w : run.warnings) {
+        CHECK(w.find("Unknown function 'unitsystem'") == std::string::npos);
+        CHECK(w.find("Unknown function 'error'") == std::string::npos);
+    }
+}
+
+TEST_CASE("CS-GAP-UNITSYSTEM-FUNC: UNITSYSTEM reports the settings in use", "[library-gaps][unitsystem]") {
+    auto run = runModel(R"(
+u_SI = unitsystem('SI')
+u_Eng = unitsystem('Eng')
+u_Mass = unitsystem('Mass')
+u_Molar = unitsystem('Molar')
+u_Deg = unitsystem('Deg')
+u_Rad = unitsystem('Rad')
+u_C = unitsystem('C')
+u_K = unitsystem('K')
+u_F = unitsystem('F')
+u_Pa = unitsystem('Pa')
+u_kPa = unitsystem('kPa')
+u_bar = unitsystem('bar')
+u_J = unitsystem('J')
+u_kJ = unitsystem('kJ')
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run["u_SI"] == 1.0);   CHECK(run["u_Eng"] == 0.0);
+    CHECK(run["u_Mass"] == 1.0); CHECK(run["u_Molar"] == 0.0);
+    CHECK(run["u_Deg"] == 1.0);  CHECK(run["u_Rad"] == 0.0);
+    CHECK(run["u_C"] == 1.0);    CHECK(run["u_K"] == 0.0);   CHECK(run["u_F"] == 0.0);
+    CHECK(run["u_Pa"] == 1.0);   CHECK(run["u_kPa"] == 0.0); CHECK(run["u_bar"] == 0.0);
+    CHECK(run["u_J"] == 1.0);    CHECK(run["u_kJ"] == 0.0);
+}
+
+TEST_CASE("CS-GAP-UNITSYSTEM-FUNC: unknown unit setting is an error", "[library-gaps][unitsystem]") {
+    auto run = runModel("a = unitsystem('furlong')\n");
+    REQUIRE_FALSE(run.solveOk);
+    CHECK(run.message.find("unknown unit setting 'furlong'") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-UNITSYSTEM-FUNC: CALL ERROR stops the calculation with its message", "[library-gaps][unitsystem]") {
+    auto bad = runModel(R"(
+FUNCTION g(x)
+  IF (x < 0) THEN CALL error('x must be positive', x)
+  g = sqrt(x)
+END
+a = g(-4)
+)");
+    REQUIRE_FALSE(bad.solveOk);
+    CHECK(bad.message.find("CALL ERROR: x must be positive") != std::string::npos);
+    CHECK(bad.message.find("-4") != std::string::npos);   // the extra argument is reported
+
+    auto good = runModel(R"(
+FUNCTION g(x)
+  IF (x < 0) THEN CALL error('x must be positive', x)
+  g = sqrt(x)
+END
+a = g(4)
+)");
+    REQUIRE(good.solveOk);
+    CHECK_THAT(good["a"], WithinAbs(2.0, 1e-12));
+}

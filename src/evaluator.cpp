@@ -546,6 +546,16 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
     
     auto it = userProcedures_.find(call.name);
     if (it == userProcedures_.end()) {
+        // Built-in CALL ERROR('message' [, values]): stop the calculation (EES).
+        std::string lowerName = call.name;
+        std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
+        if (lowerName == "error") {
+            std::string message = call.inputArgs.empty() ? "" : evaluateString(call.inputArgs[0]);
+            for (size_t i = 1; i < call.inputArgs.size(); ++i)
+                message += (i == 1 ? " [" : ", ") + std::to_string(evaluate(call.inputArgs[i]).value);
+            if (call.inputArgs.size() > 1) message += "]";
+            throw std::runtime_error("CALL ERROR: " + message);
+        }
         throw std::runtime_error("Unknown procedure: " + call.name);
     }
     
@@ -767,6 +777,27 @@ ADValue ExpressionEvaluator::evaluateUnaryOp(const UnaryOp& op) {
     throw std::runtime_error("Unknown unary operator: " + op.op);
 }
 
+// UNITSYSTEM('setting'): 1 if the EES unit setting is the one in use, 0 otherwise.
+// CoolSolve works in SI on a mass basis with angles in degrees; temperature,
+// pressure and energy follow `units`.
+static bool unitSettingActive(const std::string& setting, const UnitSystem& units) {
+    auto lower = [](std::string t) {
+        for (auto& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return t;
+    };
+    const std::string s = lower(setting);
+    if (s == "si" || s == "mass" || s == "deg") return true;
+    if (s == "eng" || s == "molar" || s == "rad") return false;
+    for (const char* t : {"c", "k", "f", "r"})
+        if (s == t) return lower(units.temperature) == s;
+    for (const char* p : {"pa", "kpa", "mpa", "bar", "psia", "atm"})
+        if (s == p) return lower(units.pressure) == s;
+    for (const char* e : {"j", "kj", "btu", "kcal"})
+        if (s == e) return lower(units.energy) == s;
+    throw std::runtime_error("UNITSYSTEM: unknown unit setting '" + setting +
+        "' (expected SI, Eng, Mass, Molar, Deg, Rad, C, K, F, R, Pa, kPa, bar, MPa, psia, atm, J, kJ, Btu or kcal)");
+}
+
 // True for expressions that yield a string: 'literals', variables ending in '$'
 // and string-valued functions such as PHASE$().
 static bool isStringExpression(const ExprPtr& expr) {
@@ -929,6 +960,13 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
         double inSI = UnitConverter::toSI(val.value, UnitType::Temperature, fromUnit);
         double result = UnitConverter::fromSI(inSI, UnitType::Temperature, toUnit);
         return ADValue::constant(result, numVariables_);
+    }
+
+    // UNITSYSTEM('K') — 1 if that unit setting is in use, 0 otherwise (used by EES
+    // library routines to check the unit settings they were written for).
+    if (name == "unitsystem" && func.args.size() == 1 && func.namedArgs.empty()) {
+        const bool active = unitSettingActive(evaluateString(func.args[0]), coolpropConfig_.units);
+        return ADValue::constant(active ? 1.0 : 0.0, numVariables_);
     }
     
     std::vector<ADValue> args;

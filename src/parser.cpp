@@ -377,6 +377,7 @@ private:
             "nlookuprows", "nlookupcolumns",
             "sumlookup", "avglookup", "maxlookup", "minlookup", "stddevlookup",
             "lookupcol", "lookupcol1", "lookupcellempty",
+            "unitsystem", "error",  // UNITSYSTEM('K') and the built-in procedure CALL error('msg')
             "ntumethod", "effectivenessntu",
             "lmtd",
             "integral", "integralvalue",  // equation-based dynamic solver
