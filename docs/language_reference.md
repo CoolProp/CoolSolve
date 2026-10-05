@@ -92,20 +92,25 @@ Parser-level directives begin with `$` and span a single line:
 
 | Function                 | Meaning                               |
 |:-------------------------|:--------------------------------------|
-| `sin`, `cos`, `tan`      | Trigonometric (radians)               |
+| `sin`, `cos`, `tan`      | Trigonometric, argument in **degrees** (`sin(30) = 0.5`) |
 | `sinh`, `cosh`, `tanh`   | Hyperbolic                            |
-| `arcsin` / `asin`        | Inverse sine                          |
-| `arccos` / `acos`        | Inverse cosine                        |
-| `arctan` / `atan`        | Inverse tangent                       |
+| `arcsin` / `asin`        | Inverse sine, result in degrees       |
+| `arccos` / `acos`        | Inverse cosine, result in degrees     |
+| `arctan` / `atan`        | Inverse tangent, result in degrees    |
 | `arcsinh` / `asinh`      | Inverse hyperbolic sine               |
 | `arccosh` / `acosh`      | Inverse hyperbolic cosine             |
 | `arctanh` / `atanh`      | Inverse hyperbolic tangent            |
-| `atan2(y, x)`            | Two-argument arctangent               |
+| `atan2(y, x)`            | Two-argument arctangent, result in degrees |
 | `exp(x)`, `ln(x)`        | Natural exponential / logarithm       |
 | `log(x)` / `log10(x)`    | Base-10 logarithm                     |
 | `sqrt(x)`                | Square root                           |
 | `abs(x)`                 | Absolute value                        |
 | `pi` / `pi()`            | Mathematical constant π               |
+
+The trigonometric functions use **degrees**, like the default EES setting
+`$UnitSystem … DEG`; the hyperbolic functions have no angle. A model written
+for the EES `RAD` setting must convert its angles (`sin(x*180/pi)`,
+`arctan(y)*pi/180`), see [EES import §6](ees_import.md#6-unit-system--manual-conversion).
 
 ### Special functions
 
