@@ -5,6 +5,9 @@
 #include <vector>
 #include <memory>
 #include <map>
+#include <mutex>
+#include <optional>
+#include <shared_mutex>
 #include "coolsolve/units.h"
 
 namespace coolsolve {
@@ -32,8 +35,11 @@ public:
     virtual FluidType getType() const = 0;
     virtual int getMinInputs() const = 0;
     
-    // Get reference state offsets (EES - CoolProp)
-    virtual ReferenceState getReferenceState() const { return {0.0, 0.0}; }
+    // Get reference state offsets (EES - CoolProp) for the given CoolProp backend
+    virtual ReferenceState getReferenceState(const std::string& backend = "HEOS") const {
+        (void)backend;
+        return {0.0, 0.0};
+    }
     
     // Check if a property depends on pressure for this fluid
     virtual bool propertyDependsOnPressure(const std::string& prop) const {
@@ -56,11 +62,40 @@ private:
     std::string cpName_;
 };
 
+/**
+ * @brief Ideal-gas species of EES (N2, CO2, H2O, ...), evaluated with CoolProp.
+ *
+ * Optionally carries the standard enthalpy of formation, which makes the
+ * enthalpy of the species follow the EES/JANAF convention: h(25 °C) equals the
+ * enthalpy of formation (elements: 0), so that heats of reaction can be built
+ * from species enthalpies (see getReferenceState()).
+ */
 class IdealGasFluid : public Fluid {
 public:
+    /**
+     * @param dummyPressureSI    pressure injected in temperature-only calls [Pa]
+     * @param formationEnthalpy  standard enthalpy of formation at 25 °C [J/kmol];
+     *                           unset: CoolProp's own reference state is kept
+     */
     IdealGasFluid(const std::string& name, const std::string& cpName,
-                  double dummyPressureSI = 101325.0) 
-        : name_(name), cpName_(cpName), dummyPressure_(dummyPressureSI) {}
+                  double dummyPressureSI = 101325.0,
+                  std::optional<double> formationEnthalpy = std::nullopt)
+        : name_(name), cpName_(cpName), dummyPressure_(dummyPressureSI),
+          formationEnthalpy_(formationEnthalpy) {}
+
+    /// Standard enthalpy of formation at 25 °C [J/kmol], if the species has one.
+    std::optional<double> getFormationEnthalpy() const { return formationEnthalpy_; }
+
+    /**
+     * @brief Enthalpy offset (EES - CoolProp) so that h(25 °C) = enthalpy of formation.
+     *
+     * The offset is `dHf/M - h_CoolProp(25 °C, dummy pressure)`: it is computed once per
+     * backend (thread-safe) and added to every enthalpy / internal energy returned by
+     * CoolProp for this fluid; enthalpy / internal-energy inputs are corrected the other
+     * way round. Entropies keep CoolProp's reference state. Species without a formation
+     * enthalpy have no offset.
+     */
+    ReferenceState getReferenceState(const std::string& backend = "HEOS") const override;
         
     std::string getName() const override { return name_; }
     std::string getCoolPropName() const override { return cpName_; }
@@ -85,6 +120,9 @@ private:
     std::string name_;
     std::string cpName_;
     double dummyPressure_;
+    std::optional<double> formationEnthalpy_;
+    mutable std::shared_mutex offsetMutex_;
+    mutable std::map<std::string, double> hOffsetByBackend_;  // J/kg, per CoolProp backend
 };
 
 class HumidAirFluid : public Fluid {

@@ -1626,6 +1626,17 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         type2 == UnitType::SpecificEntropy ? units.specific_entropy :
         type2 == UnitType::Density ? units.density : "");
     
+    // Fluids with an EES reference state (ideal-gas enthalpy of formation): enthalpy-type
+    // inputs are given on the EES basis, CoolProp works on its own — shift them back.
+    // The same offset is added to the results (postProcess below).
+    const ReferenceState refState = fluid->getReferenceState(coolpropConfig_.getBackendString());
+    auto toCoolPropBasis = [&](CoolProp::parameters param, double& v) {
+        if (param == CoolProp::iHmass || param == CoolProp::iUmass) v -= refState.h_offset;
+        else if (param == CoolProp::iSmass) v -= refState.s_offset;
+    };
+    toCoolPropBasis(input1Param, val1);
+    toCoolPropBasis(input2Param, val2);
+
     // ── CoolProp input sanitization ──────────────────────────────────
     // During Newton iteration, the solver may evaluate trial points with
     // unphysical thermodynamic inputs (negative pressure, temperature below
@@ -1707,9 +1718,9 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         }
         // Reference state offsets
         if (outputInfo.unitType == UnitType::SpecificEnergy)
-            result += UnitConverter::fromSI(fluid->getReferenceState().h_offset, outputInfo.unitType, units.specific_energy);
+            result += UnitConverter::fromSI(refState.h_offset, outputInfo.unitType, units.specific_energy);
         else if (outputInfo.unitType == UnitType::SpecificEntropy)
-            result += UnitConverter::fromSI(fluid->getReferenceState().s_offset, outputInfo.unitType, units.specific_entropy);
+            result += UnitConverter::fromSI(refState.s_offset, outputInfo.unitType, units.specific_entropy);
         
         // EES returns the molar mass in kg/kmol, CoolProp in kg/mol
         if (outputInfo.param == CoolProp::imolar_mass) {

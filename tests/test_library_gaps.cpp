@@ -13,6 +13,7 @@
 #include "coolsolve/parser.h"
 #include "coolsolve/runner.h"
 #include "coolsolve/solution_checker.h"
+#include "CoolProp.h"
 
 #include <filesystem>
 #include <fstream>
@@ -81,6 +82,10 @@ std::vector<std::string> parseErrors(const std::string& code) {
     std::vector<std::string> messages;
     for (const auto& e : result.errors) messages.push_back(e.message);
     return messages;
+}
+
+double molarMassKgPerKmol(const std::string& coolPropFluid) {
+    return 1000.0 * CoolProp::PropsSI("M", "T", 300.0, "P", 101325.0, coolPropFluid);
 }
 
 bool anyContains(const std::vector<std::string>& messages, const std::string& text) {
@@ -484,4 +489,98 @@ a = g(4)
 )");
     REQUIRE(good.solveOk);
     CHECK_THAT(good["a"], WithinAbs(2.0, 1e-12));
+}
+
+// ============================================================================
+// CS-GAP-FORMATION-ENTHALPY: ideal-gas enthalpies include the heats of formation
+// ============================================================================
+
+TEST_CASE("CS-GAP-FORMATION-ENTHALPY: heats of combustion from species enthalpies", "[library-gaps][formation-enthalpy]") {
+    // The register reproducer: lower heating values built from the enthalpies of the species at
+    // the reference temperature. CoolProp's own reference states gave -5.53 MJ/kmol for CO.
+    auto run = runModel(R"(
+MM_CO = molarmass(CO) ; MM_O2 = molarmass(O2) ; MM_CO2 = molarmass(CO2)
+MM_H2 = molarmass(H2) ; MM_H2O = molarmass(H2O)
+T_ref = 25
+LHV_CO_mol = enthalpy(CO,T=T_ref)*MM_CO + 0.5*enthalpy(O2,T=T_ref)*MM_O2 - enthalpy(CO2,T=T_ref)*MM_CO2
+LHV_H2_mol = enthalpy(H2,T=T_ref)*MM_H2 + 0.5*enthalpy(O2,T=T_ref)*MM_O2 - enthalpy(H2O,T=T_ref)*MM_H2O
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // EES: 282 989.9 kJ/kmol (stored Q_4 of the cpbar test file of the ULiege library)
+    CHECK_THAT(run["LHV_CO_mol"], WithinRel(282.990e6, 1e-5));
+    CHECK_THAT(run["LHV_H2_mol"], WithinRel(241.820e6, 1e-5));
+}
+
+TEST_CASE("CS-GAP-FORMATION-ENTHALPY: h(25 C) is the enthalpy of formation", "[library-gaps][formation-enthalpy]") {
+    auto run = runModel(R"(
+hf_CO2 = enthalpy(CO2,T=25)*molarmass(CO2)
+hf_CO = enthalpy(CO,T=25)*molarmass(CO)
+hf_H2O = enthalpy(H2O,T=25)*molarmass(H2O)
+hf_CH4 = enthalpy(CH4,T=25)*molarmass(CH4)
+hf_C2H6 = enthalpy(C2H6,T=25)*molarmass(C2H6)
+hf_C3H8 = enthalpy(C3H8,T=25)*molarmass(C3H8)
+h_N2 = enthalpy(N2,T=25)
+h_O2 = enthalpy(O2,T=25)
+h_H2 = enthalpy(H2,T=25)
+u_CO2 = intenergy(CO2,T=25,P=101325)
+)");
+    REQUIRE(run.solveOk);
+    // J/kmol
+    CHECK_THAT(run["hf_CO2"], WithinRel(-393.52e6, 1e-9));
+    CHECK_THAT(run["hf_CO"], WithinRel(-110.53e6, 1e-9));
+    CHECK_THAT(run["hf_H2O"], WithinRel(-241.82e6, 1e-9));
+    CHECK_THAT(run["hf_CH4"], WithinRel(-74.85e6, 1e-9));
+    CHECK_THAT(run["hf_C2H6"], WithinRel(-84.68e6, 1e-9));
+    CHECK_THAT(run["hf_C3H8"], WithinRel(-103.85e6, 1e-9));
+    // elements in their standard state
+    CHECK_THAT(run["h_N2"], WithinAbs(0.0, 1e-3));
+    CHECK_THAT(run["h_O2"], WithinAbs(0.0, 1e-3));
+    CHECK_THAT(run["h_H2"], WithinAbs(0.0, 1e-3));
+    // the internal energy follows the same reference (u = h - R T)
+    CHECK(run["u_CO2"] < run["hf_CO2"] / molarMassKgPerKmol("CarbonDioxide"));
+}
+
+TEST_CASE("CS-GAP-FORMATION-ENTHALPY: enthalpy differences, inversion and entropy are untouched", "[library-gaps][formation-enthalpy]") {
+    // Only the reference of the enthalpy changes: enthalpy differences are CoolProp's, an enthalpy
+    // given as input is shifted back, and entropies keep CoolProp's reference state.
+    auto run = runModel(R"(
+dh_CO2 = enthalpy(CO2,T=200) - enthalpy(CO2,T=25)
+h_200 = enthalpy(CO2,T=200,P=101325)
+T_back = temperature(CO2,P=101325,h=h_200)
+s_CO2 = entropy(CO2,T=25,P=101325)
+h_air = enthalpy(Air,T=25,P=101325)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const double P = 100000.0 + 1325.0;
+    const double dhRef = CoolProp::PropsSI("H", "T", 473.15, "P", P, "CarbonDioxide") -
+                         CoolProp::PropsSI("H", "T", 298.15, "P", P, "CarbonDioxide");
+    CHECK_THAT(run["dh_CO2"], WithinRel(dhRef, 5e-4));   // 101325 Pa internal pressure vs the same
+    CHECK_THAT(run["T_back"], WithinAbs(200.0, 1e-6));
+    CHECK_THAT(run["s_CO2"], WithinRel(CoolProp::PropsSI("S", "T", 298.15, "P", P, "CarbonDioxide"), 1e-9));
+    // species without a formation enthalpy keep CoolProp's reference state
+    CHECK_THAT(run["h_air"], WithinRel(CoolProp::PropsSI("H", "T", 298.15, "P", P, "Air"), 1e-9));
+}
+
+TEST_CASE("CS-GAP-FORMATION-ENTHALPY: the cpbar library reproduces the EES test file", "[library-gaps][formation-enthalpy]") {
+    // examples/cpbar.eescode is the ULiege combustion library with the test program of the original
+    // EES file (CombCmHn_SI_PNG2003_V2_test.EES, EES 7.966). Stored EES solution, f = 0.07:
+    // c_bar_p 1090.598, Q_4 1.517249e8, x 0.9251884, e_min -0.3359375, e -0.02513201;
+    // pure air: gamma 1.394538, MM_prod 28.85006.
+    const fs::path example = fs::path("..") / "examples" / "cpbar.eescode";
+    if (!fs::exists(example)) SKIP("examples/cpbar.eescode not found (run from the build folder)");
+    std::ifstream in(example);
+    const std::string code((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+    auto run = runModel(code);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["c_bar_p"], WithinRel(1090.598, 3e-3));   // ideal-gas tables: EES vs CoolProp
+    CHECK_THAT(run["Q_4"], WithinRel(1.517249e8, 2e-3));     // needs the heats of formation
+    CHECK_THAT(run["x"], WithinRel(0.9251884, 1e-3));
+    CHECK_THAT(run["e_min"], WithinRel(-0.3359375, 1e-9));
+    CHECK_THAT(run["e"], WithinRel(-0.02513201, 2e-3));
+    CHECK_THAT(run["gamma"], WithinRel(1.394538, 2e-3));
+    CHECK_THAT(run["MM_prod"], WithinRel(28.85006, 1e-4));
 }

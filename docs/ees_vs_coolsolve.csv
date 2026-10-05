@@ -301,7 +301,7 @@ JOULETHOMSONCOEF,Thermophysical,Joule-Thomson coefficient [K/Pa],Partial,3,Recog
 VOLEXPCOEF,Thermophysical,Volume expansion coefficient [1/K],Partial,3,Recognized in parser,
 DIPOLE,Thermophysical,Dipole moment [C·m],Partial,4,Recognized in parser,
 # --- Thermophysical Functions: Energetic ---,,,,,,
-ENTHALPY_FORMATION,Thermophysical,Enthalpy of formation [J/mol],Partial,3,Recognized in parser,
+ENTHALPY_FORMATION,Thermophysical,Enthalpy of formation [J/mol],Partial,3,"Recognized in parser; the function itself is not evaluated, but ideal-gas enthalpies (N2 O2 H2 CO2 CO H2O CH4 C2H6 C3H8) include the heats of formation (EES convention)",
 ENTHALPY_FUSION,Thermophysical,Enthalpy of fusion [J/kg],Partial,3,Recognized in parser,
 ENTHALPY_VAPORIZATION,Thermophysical,Enthalpy of vaporization [J/kg],Partial,3,Recognized in parser,
 HIGHERHEATINGVALUE,Thermophysical,Higher heating value [J/kg],Partial,3,Recognized in parser,

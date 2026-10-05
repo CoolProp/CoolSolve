@@ -298,6 +298,29 @@ for `H2O`, which keeps the vapor phase down to −20 °C). This pressure is part
 of the model: it is never clamped by the solver and is identical in the solve
 and in the final verification.
 
+**Enthalpy reference state.** As in EES (JANAF convention), the enthalpy and
+internal energy of the species below include the standard enthalpy of
+formation: `h(25 °C)` equals the heat of formation (elements: 0), so heats of
+reaction can be written with species enthalpies:
+
+| Species | `h·M` at 25 °C [kJ/kmol] | Species | `h·M` at 25 °C [kJ/kmol] |
+|:--|--:|:--|--:|
+| `N2`, `O2`, `H2` | 0 | `CH4` | −74 850 |
+| `CO2` | −393 520 | `C2H6` | −84 680 |
+| `CO` | −110 530 | `C3H8` | −103 850 |
+| `H2O` (vapor) | −241 820 | | |
+
+```ees
+LHV_CO = enthalpy(CO,T=25)*molarmass(CO) + 0.5*enthalpy(O2,T=25)*molarmass(O2) - enthalpy(CO2,T=25)*molarmass(CO2)
+"= 282 990 kJ/kmol (in J/kmol: 2.8299e8)"
+```
+
+The reference applies to all calls, including `h=` given as an input
+(`temperature(CO2, P=P, h=h)`); enthalpy differences are unchanged. Entropies,
+and the enthalpies of `Air`, `He`, `Ar` and of the real fluids (`Water`,
+`CarbonDioxide`…), keep CoolProp's reference states. Values: Çengel & Boles,
+Table A-26, which reproduce the heats of combustion of EES.
+
 ### Humid air
 
 `airH2O` — requires three state inputs.
