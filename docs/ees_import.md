@@ -324,7 +324,14 @@ cannot be swept (`CS-GAP-PARAMETRIC`).
 ## 9. Functions, procedures and libraries
 
 - `FUNCTION` and `PROCEDURE` are supported; `MODULE`/`SUBPROGRAM` are not
-  (`CS-GAP-MODULE`).
+  (`CS-GAP-MODULE`) and are not planned in the near term: flatten their
+  equations into the main program, renaming the module's internal variables per
+  call (`<variable>_<tag>`), as the CoolSolve Library does (its workflow §6,
+  decision D10).
+- Property calls with the (T, H) input pair are not supported and not planned
+  (`CS-GAP-PROP-TH`): rewrite them with an equivalent (P, H) call (saturation
+  pressure from T for a two-phase state, or an auxiliary pressure unknown), as the
+  CoolSolve Library does (its workflow §6, decision D11).
 - The report lists the **functions called but not defined** in the file. Each
   must be either a CoolSolve built-in (see the
   [Language Reference](language_reference.md)) or a user-library function that
