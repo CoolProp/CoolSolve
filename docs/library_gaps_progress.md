@@ -121,8 +121,9 @@ Legend: ☐ to do · 🔄 in progress · ✅ done (commit) · ⏸ deferred.
 
 | # | Item(s) | Models | Fix | Commit | Library re-check |
 |---|---|---|---|---|---|
-| 1 | `CS-GAP-IF5` | 11: 0009, 0041, **0073**, 0074, 0075, 0080, 0081, 0153, **0155**, 0162, 0166 | ✅ | `59b2862` | 🔄 |
-| 1b | `CS-BUG-ARG-DROP` (new, P1 silent: unparsable positional argument dropped) + close `CS-GAP-UNIT-SUBEXPR` / `CS-GAP-UNIT-NAMEDARG` (already parse since `59b2862`; tests needed) | – | ☐ | | – |
+| 1 | `CS-GAP-IF5` | 11: 0009, 0041, **0073**, 0074, 0075, 0080, 0081, 0153, **0155**, 0162, 0166 | ✅ | `59b2862` | ✅ |
+| 1b | `CS-BUG-ARG-DROP` (new, P1 silent: unparsable positional argument dropped) + close `CS-GAP-UNIT-SUBEXPR` / `CS-GAP-UNIT-NAMEDARG` (already parse since `59b2862`; tests needed) + named-argument misparse `IF(a=5,1,2)` → *Unknown fluid ''* (§8 C-147) | – | 🔄 agent running | | – |
+| 2 (scope) | `CS-GAP-IF-DIRECTIVE` + `CS-BUG-STRING-CASE` (one shared case-insensitive string equality) — prompt ready in the session scratchpad (`prompt_2.md`) | | | | |
 | 2 | `CS-GAP-IF-DIRECTIVE` (`$if/$ifnot/$else/$endif`) | 10: 0012, 0040, 0081, 0116, 0119, 0150, 0151, 0161, 0162, 0166 | ☐ | | ☐ |
 | 3 | INTEGRAL family: `CS-GAP-INTEGRAL-LIMITS`, `CS-BUG-INTEGRAL-FACTOR`, `CS-BUG-INTEGRAL-TABLE-SEP`, `CS-BUG-INTEGRAL-MAXSTEPS`, `CS-BUG-INTEGRAL-TABLE-CASE` (then `CS-GAP-INTEGRAL-MULTIVAR`) | 0009, 0010, 0041, 0047, 0059, 0081 | ☐ | | ☐ |
 | 4 | `CS-GAP-LOOKUP-PROC` | 6: 0072, 0078, 0079, 0116, 0158, 0160 | ☐ | | ☐ |
@@ -140,3 +141,115 @@ Legend: ☐ to do · 🔄 in progress · ✅ done (commit) · ⏸ deferred.
 |---|---|---|
 | 2026-10-10 | Set-up | Branch `fix/library-gaps-2` created; baselines §2 recorded; frozen baseline binary in the session scratchpad (`coolsolve_baseline`). |
 | 2026-10-10 | #1 `CS-GAP-IF5` | Fixed (`59b2862`): 3- and 5-argument `if` in `evaluateStandardFunction`; also unit-annotated literal arguments (`3600[s]`) no longer dropped, and `INTEGRAL` base expressions evaluate built-in functions instead of 0. 13 tests. Suites: 424/424 unit, examples identical to baseline. Native CSL-0073 solves, identical to its variant `.sol`; CSL-0155 parses but fails on block 106 (151 vars, NaN at start, not IF-related). New §5 row `CS-BUG-ARG-DROP`. |
+| 2026-10-10 | #1 re-check | `CSL-0073` blocked → **verified** (native identical to the former variant, 34/34; EES max 2.71e-2 humid-air, unchanged), variant removed, native `.sol` added. `CSL-0155` blocked → **failing** (`missing_features` []): all IFs evaluate, block 106 (151 vars) does not converge even from CoolProp-consistent guesses; `.initials` rebuilt, non-runnable variant removed. 9 other models: IF5 removed from `missing_features`, README/history updated, none stops on IF5 any more. `build_index` 0 errors; `test_models` on the 11 ids OK except baseline `CSL-0153:coolsolve`. Library roadmap §1/§8 updated. Register: new `CS-GAP-REF-STATE` (EES R410A ASHRAE reference vs CoolProp IIR, offsets 142 244.6 J/kg / 773.6 J/kg·K confirmed), §8 C-147 resolved. |
+| 2026-10-10 | #1b | Fix agent dispatched (`prompt_1b.md`). |
+
+---
+
+## Appendix A. Full fix protocol (given to the fix agents)
+
+### Protocol for fixing a CoolSolve library gap (read fully before starting)
+
+Repositories:
+- CoolSolve: `/home/sylvain/svn/CoolSolve` (C++17, branch `fix/library-gaps-2`, Release build in `build/`).
+- CoolSolve Library: `/home/sylvain/svn/CoolSolve_Library` (do NOT touch it in a fix task; a separate re-check task handles it).
+
+Mandatory reading before coding:
+- `docs/contributing.md` (§1 principles, §2 workflow, §3 integration checklist). Follow it.
+- The register row(s) of your item in `docs/model_library_support.md` (§4 gaps, §5 bugs; grep the ID), and §7 (format of
+  closed entries).
+- `tests/test_library_gaps.cpp` (style of the existing regression tests: helpers, tags, names `"<ID>: <what>"`).
+
+Steps, in this order:
+1. **Reproduce** the register reproducer with `build/coolsolve` on a small file in your scratch folder
+   (`/tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/<item>/`).
+2. **Write the tests first** in `tests/test_library_gaps.cpp`, tag `[library-gaps][<short-tag>]`, names starting with the
+   register ID. Cover: the register reproducer with the EES value, the realistic usage found in the blocked library
+   models (look at the native `.eescode` files listed in the row — read-only), derivatives/Jacobian if the feature is
+   numeric (AD must be analytic, no finite differences), and **negative tests** (wrong arity, malformed input → a clear
+   error message). Build and check that the new tests FAIL before the fix.
+3. **Implement** the fix with the simplest design that reuses existing code (no duplication; look for similar
+   functionality first). Zero overhead for models not using the feature. Keep changes minimal and on-topic.
+4. Build (`cd build && cmake --build . -j$(nproc) 2>&1 | grep -E 'error|warning: unused' ; echo built`) and iterate until
+   `./coolsolve_tests "[library-gaps]"` passes.
+5. **Full suites** (both must pass; do NOT run `[solver-robustness]`, too slow):
+   `./coolsolve_tests` (baseline: all 379 test cases pass) and `./coolsolve_tests "[examples-comprehensive]"` (baseline:
+   the test case passes; compare the per-example lines with the baseline in
+   `/tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/baseline_examples.txt`
+   and `examples/test_examples.md` — no example may regress; report any change).
+6. **Documentation** (contributing §3.12 and the checklist items that apply):
+   - `docs/language_reference.md` for any new/changed syntax or built-in (only what is implemented and tested);
+   - `docs/ees_vs_coolsolve.csv` rows of the feature (support column);
+   - `gui/src/languages/ees.ts` for new built-in names/keywords (Monaco highlighting) — no GUI build needed;
+   - `docs/model_library_support.md`: **move** the row from §4/§5 to the §7 *Closed gaps and bugs* table (same
+     columns as the existing §7 rows: ID | What was wrong | Fixed in | Regression test | Notes). *Fixed in* =
+     `post-v0.3.0, branch \`fix/library-gaps-2\`` (the supervisor adds the commit hash later). In *Notes*, list what
+     changed for existing examples, and the library models that listed the ID (they are re-checked separately).
+     Delete the §4/§5 row. Keep any still-open part of the gap as a new, narrower §4/§5 row if the fix is partial.
+   - `README.md` only if a feature bullet / table changes.
+7. **Do not commit** (the supervisor reviews and commits). Do not touch `examples/test_examples.md` or
+   `examples/solver_robustness_report.md` beyond what the test run regenerates. Leave no stray files in the repo
+   (scratch files go to the scratch folder).
+
+Final report (concise, ≤ 40 lines): root cause; design of the fix and files changed; tests added (names) and evidence
+that they failed before and pass after; full-suite results (counts) and any example whose result changed; docs updated;
+anything left open, doubtful or out of scope (with a minimal reproducer).
+
+Rules: valid EES behaviour is the reference (the EES manual/register evidence). Never weaken an existing test to make it
+pass. If the fix turns out much larger than expected or needs a design decision, stop and report instead of improvising.
+
+## Appendix B. Full re-check protocol (given to the re-check agents)
+
+### Protocol for a library re-check after a CoolSolve fix (T-RECHECK) — read fully before starting
+
+Repositories:
+- CoolSolve Library: `/home/sylvain/svn/CoolSolve_Library` — you edit it. **Never commit** (rule D9), never delete
+  anything outside the model folders you are re-checking, never copy student names.
+- CoolSolve: `/home/sylvain/svn/CoolSolve` — **read-only** for you (docs and `tools/compare_solution.py`,
+  `tools/ees_extract.py`). Do NOT build CoolSolve. Use the frozen binary given in your task (absolute path).
+
+Mandatory reading: library `docs/model_workflow.md` §6 (gaps, blocked models, variants, re-checks) and §8 (definition of
+done); `README.md` and `model.json` of each model you re-check; an earlier re-check for the style:
+`models/fundamentals/combustion/cpbar_combustion_products/` (history action *"re-checked with CoolSolve fix/library-gaps
+(T-RECHECK): blocked -> verified …"*) and the roadmap §8 line *"T-RECHECK `CSL-0005`, `CSL-0006`"*.
+
+For every model listed in your task (all models whose `model.json` `missing_features` contains the closed ID):
+1. Remove the closed ID from `missing_features`.
+2. **If no gap is left**: copy the model folder to your scratch folder and solve the native main file there with the
+   frozen binary (`cd <copy> && <binary> ./<main>.eescode`; add `-d` only to diagnose). If it solves, compare it with
+   the reference the model was verified against (the `_coolsolve` variant's `.sol` on the common variables, and/or
+   `python3 /home/sylvain/svn/CoolSolve/tools/compare_solution.py` against the EES source when the README documents
+   it). If it agrees as well as the variant did:
+   - status `verified` (or `runs` if the model has no EES reference), `verification` block updated: `date`
+     2026-10-10, `coolsolve_version` = `0.3.0@<commit>` (strict format, the branch goes in `notes`), `max_rel_diff`, `reference`, `notes`
+     (state that the native file is now the verified file);
+   - write the native `.sol` into the model folder (the regression baseline; same format as produced by CoolSolve);
+     copy a `.initials` only if the native file needs one to converge;
+   - **clean the folder**: delete the `_coolsolve` variant files (`<name>_coolsolve.eescode/.sol/.initials`,
+     `<name>_coolsolve-*.csv`) when the native file reproduces what the variant gave; keep a variant only if it still
+     serves a purpose stated in the README (say which, in your report);
+   - README: status row (CoolSolve line), *How to run*, *Results* (if it described the variant), *Verification*,
+     *Conversion log* (add a line: re-checked with CoolSolve `fix/library-gaps-2` @ <commit>, gap closed, variant
+     removed), *Limitations and CoolSolve gaps* (the gap is closed). Keep the style and length of the README;
+   - `history`: append `{"date": "2026-10-10", "action": "re-checked with CoolSolve fix/library-gaps-2 @<commit>
+     (T-RECHECK, <ID> closed): blocked -> verified; native file verified, _coolsolve variant removed", "by": "Claude
+     (Sonnet) for S. Quoilin"}` (adapt the text to what you did).
+   If it does not solve or does not agree: keep `blocked`, keep the variant, and find out why (`-d` debug folder,
+   minimal reproducer in a scratch file). If the cause is a CoolSolve problem not yet in the register
+   (`/home/sylvain/svn/CoolSolve/docs/model_library_support.md` §4–§5), do NOT edit the register: describe it in your
+   final report with a minimal reproducer (≤ 10 lines) and the evidence; list the model's remaining problem in the
+   README *Limitations* section.
+3. **If other gaps remain**: keep `blocked` and the variant; update the README sentences that cite the closed ID (it is
+   now closed in CoolSolve `fix/library-gaps-2`) and the `history` (action *"re-checked … (<ID> closed); still blocked by
+   …"*). Optionally confirm by running the native file that the closed gap no longer triggers (the first error should
+   now come from a remaining gap) — report what you see.
+4. After all models: run `python3 tools/build_index.py` (must pass; it regenerates `library.csv`, `library.json`,
+   `CATALOG.md`, …) and `python3 tools/test_models.py --coolsolve <frozen binary> <the CSL ids you touched>` (every
+   target OK, except the pre-existing failures listed in your task).
+5. Add one line to the library `roadmap.md` §8 *Progress log* (end of the table): date 2026-10-10, step
+   `T-RECHECK <ID>`, result (models re-checked, status changes, variants removed, open problems). Update the counts of
+   roadmap §1 *Status at a glance* (verified / runs / blocked; blocked with a verified variant / not runnable) and the
+   *CoolSolve gaps and bugs open/closed* lines if your change affects them.
+
+Final report (≤ 40 lines): per model — before/after status, what was run, comparison result, files deleted/added;
+build_index/test_models results; any new CoolSolve problem with its reproducer.
