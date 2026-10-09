@@ -1055,3 +1055,434 @@ dydt = 1
         CHECK_THAT(run["y"], WithinAbs(5.0 + 4.0, 0.05));   // 1 < 2 -> 5
     }
 }
+
+
+// ============================================================================
+// CS-BUG-ARG-DROP: an argument that cannot be parsed is an error, not dropped
+// ============================================================================
+
+TEST_CASE("CS-BUG-ARG-DROP: reproducer of the register is a parse error", "[library-gaps][arg-drop]") {
+    // was SUCCESS with y = 2: the argument '3 4' was skipped and max(2) evaluated
+    auto run = runModel("y = max(3 4, 2)\n");
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "Could not parse argument 1 of 'max': '3 4'"));
+    CHECK(parseErrors("y = max(3 4, 2)\n") == std::vector<std::string>{"Could not parse argument 1 of 'max': '3 4'"});
+}
+
+TEST_CASE("CS-BUG-ARG-DROP: the message gives the position and the text of the argument", "[library-gaps][arg-drop]") {
+    using Messages = std::vector<std::string>;
+    CHECK(parseErrors("y = max(2, 3 4)\n") == Messages{"Could not parse argument 2 of 'max': '3 4'"});
+    CHECK(parseErrors("y = max(1, 2, 3 4, 5)\n") == Messages{"Could not parse argument 3 of 'max': '3 4'"});
+    // a user function; a thermophysical function (the position counts the named arguments too)
+    CHECK(parseErrors("y = f(1 2, 3)\n") == Messages{"Could not parse argument 1 of 'f': '1 2'"});
+    CHECK(parseErrors("h = enthalpy(Water, T=20, 3 4)\n") ==
+          Messages{"Could not parse argument 3 of 'enthalpy': '3 4'"});
+
+    // one error, reported on the line of the call; the other lines are not concerned
+    EESParser parser;
+    auto result = parser.parse("a = 1\nb = 2\ny = max(3 4, 2)\nc = 3\n");
+    CHECK_FALSE(result.success);
+    REQUIRE(result.errors.size() == 1);
+    CHECK(result.errors[0].line == 3);
+}
+
+TEST_CASE("CS-BUG-ARG-DROP: nested calls report the innermost faulty call", "[library-gaps][arg-drop]") {
+    using Messages = std::vector<std::string>;
+    CHECK(parseErrors("y = 1 + sqrt(max(3 4, 2))\n") == Messages{"Could not parse argument 1 of 'max': '3 4'"});
+    CHECK(parseErrors("y = sqrt(2 * max(1, 2 3)) + 1\n") == Messages{"Could not parse argument 2 of 'max': '2 3'"});
+    CHECK(parseErrors("y = x * (2 + abs(3 4))\n") == Messages{"Could not parse argument 1 of 'abs': '3 4'"});
+    // on the left-hand side
+    CHECK(parseErrors("max(3 4, 2) = y\n") == Messages{"Could not parse argument 1 of 'max': '3 4'"});
+    // several statements on one line: only the faulty one is refused
+    CHECK(parseErrors("a = 1 ; y = max(3 4, 2) ; b = 2\n") ==
+          Messages{"Could not parse argument 1 of 'max': '3 4'"});
+}
+
+TEST_CASE("CS-BUG-ARG-DROP: an empty argument is an error", "[library-gaps][arg-drop]") {
+    using Messages = std::vector<std::string>;
+    CHECK(parseErrors("y = max(3, )\n") == Messages{"Could not parse argument 2 of 'max': ''"});
+    CHECK(parseErrors("y = max(, 3)\n") == Messages{"Could not parse argument 1 of 'max': ''"});
+    CHECK(parseErrors("y = max(1,, 3)\n") == Messages{"Could not parse argument 2 of 'max': ''"});
+}
+
+TEST_CASE("CS-BUG-ARG-DROP: a call without argument is still valid", "[library-gaps][arg-drop]") {
+    // `FUNCTION g( )` and `PROCEDURE z( : r)` used to declare one parameter with an empty name
+    auto run = runModel(R"(
+FUNCTION g( )
+  g = 7
+END
+FUNCTION h()
+  h = 8
+END
+PROCEDURE z( : r)
+  r = 5
+END
+CALL z( : q)
+x = pi()
+y = pi( )
+z = g()
+w = g( ) + h()
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(3.14159265358979, 1e-12));
+    CHECK_THAT(run["y"], WithinAbs(3.14159265358979, 1e-12));
+    CHECK_THAT(run["z"], WithinAbs(7.0, 1e-12));
+    CHECK_THAT(run["w"], WithinAbs(15.0, 1e-12));
+    CHECK_THAT(run["q"], WithinAbs(5.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-ARG-DROP: the same defect in an array index", "[library-gaps][arg-drop]") {
+    using Messages = std::vector<std::string>;
+    // was x[3 4] -> the plain variable x (an index dropped without any message)
+    CHECK(parseErrors("y = x[3 4]\n") == Messages{"Could not parse index 1 of 'x': '3 4'"});
+    CHECK(parseErrors("y = A[1, 2 3]\n") == Messages{"Could not parse index 2 of 'A': '2 3'"});
+    CHECK(parseErrors("x[1 2] = 5\n") == Messages{"Could not parse index 1 of 'x': '1 2'"});
+    CHECK(parseErrors("y = x[1, ]\n") == Messages{"Could not parse index 2 of 'x': ''"});
+    // an index range is not an expression (only the $IntegralTable directive reads x[1..3])
+    CHECK(parseErrors("y = sum(x[1..3])\n") == Messages{"Could not parse index 1 of 'x': '1..3'"});
+    // an index inside a call argument: one message, the innermost
+    CHECK(parseErrors("y = max(x[3 4], 2)\n") == Messages{"Could not parse index 1 of 'x': '3 4'"});
+}
+
+TEST_CASE("CS-BUG-ARG-DROP: well-formed arguments and indices of every kind still work", "[library-gaps][arg-drop]") {
+    auto run = runModel(R"(
+DUPLICATE i=1,3
+  x[i] = 10*i
+END
+A[1,2] = 5
+fl$ = 'Water'
+y1 = x[2] + A[1, 2] + max(x[1], x[3])
+h1 = enthalpy(Water, T=20, P=1E5)
+h2 = enthalpy('Water', T=20, P=1E5)
+h3 = enthalpy(fl$, T=20, P=1E5)
+n1 = max(min(3, 4), abs(-5))
+n2 = max(1, 2) {a comment}
+n3 = max(1, 3) "another comment"
+n4 = max((1+2)*3, 2^3-1)
+n5 = max(-1, -2)
+n6 = max(1E-3, 1.5e+2)
+n7 = max(3600[s], 2)
+n8 = max( 1 , 2 )
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["y1"], WithinAbs(20.0 + 5.0 + 30.0, 1e-9));
+    CHECK_THAT(run["h1"], WithinRel(run["h2"], 1e-12));
+    CHECK_THAT(run["h3"], WithinRel(run["h2"], 1e-12));
+    CHECK_THAT(run["n1"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["n2"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["n3"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["n4"], WithinAbs(9.0, 1e-12));
+    CHECK_THAT(run["n5"], WithinAbs(-1.0, 1e-12));
+    CHECK_THAT(run["n6"], WithinAbs(150.0, 1e-12));
+    CHECK_THAT(run["n7"], WithinAbs(3600.0, 1e-12));
+    CHECK_THAT(run["n8"], WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-ARG-DROP: statements in FUNCTION/PROCEDURE bodies are checked too", "[library-gaps][arg-drop]") {
+    using Messages = std::vector<std::string>;
+    // was: the statement was dropped without any message (y = 1 !)
+    CHECK(parseErrors("FUNCTION f(a)\n  f = max(3 4, a)\nEND\ny = f(1)\n") ==
+          Messages{"Could not parse argument 1 of 'max': '3 4'"});
+    CHECK(parseErrors("PROCEDURE p(a : r)\n  IF (a > 0) THEN r = max(3 4, a) ELSE r = 0\nEND\nCALL p(1 : y)\n") ==
+          Messages{"Could not parse argument 1 of 'max': '3 4'"});
+    CHECK(parseErrors("PROCEDURE p(a : r)\n  r = x[3 4] ; r = a\nEND\nCALL p(1 : y)\n") ==
+          Messages{"Could not parse index 1 of 'x': '3 4'"});
+    // an IF condition names the faulty argument
+    CHECK(parseErrors("PROCEDURE p(a : r)\n  IF (max(3 4, a) > 0) THEN r = 1 ELSE r = 0\nEND\nCALL p(1 : y)\n") ==
+          Messages{"Could not parse IF condition '(max(3 4, a) > 0)': Could not parse argument 1 of 'max': '3 4'"});
+}
+
+TEST_CASE("CS-BUG-ARG-DROP: the same defect in the arguments of a CALL", "[library-gaps][arg-drop]") {
+    using Messages = std::vector<std::string>;
+    const std::string proc = "PROCEDURE p(a, b : c)\n  c = a + b\nEND\n";
+    // was: the argument was dropped and the call refused at solve time (or worse: not at all)
+    CHECK(parseErrors(proc + "CALL p(3 4, 2 : r)\n") == Messages{"Could not parse argument 1 of 'p': '3 4'"});
+    CHECK(parseErrors(proc + "CALL p(1, 2 3 : r)\n") == Messages{"Could not parse argument 2 of 'p': '2 3'"});
+    CHECK(parseErrors(proc + "CALL p(max(3 4, 2), 1 : r)\n") ==
+          Messages{"Could not parse argument 1 of 'max': '3 4'"});
+    // an output must be a variable
+    CHECK(anyContains(parseErrors(proc + "CALL p(1, 2 : 3)\n"), "Output 1 of 'p' must be a variable, not the expression '3'"));
+    CHECK(anyContains(parseErrors(proc + "CALL p(1, 2 : a+b)\n"), "Output 1 of 'p' must be a variable, not the expression 'a+b'"));
+    // (register CS-GAP-CALL-EXPR-OUT: EES accepts CALL BRINEPROP(... : c_p/1000); it was dropped silently)
+    CHECK(anyContains(parseErrors(proc + "CALL p(1, 2 : r, z/1000)\n"), "Output 2 of 'p' must be a variable"));
+    CHECK(parseErrors(proc + "CALL p(1, 2 : r, 3 4)\n") == Messages{"Could not parse output 2 of 'p': '3 4'"});
+    // in a procedure body
+    CHECK(parseErrors(proc + "PROCEDURE q(a : r)\n  CALL p(3 4, a : r)\nEND\nCALL q(1 : y)\n") ==
+          Messages{"Could not parse argument 1 of 'p': '3 4'"});
+
+    // well-formed calls: expressions, nested calls, array elements as inputs and outputs, strings
+    auto run = runModel(proc + R"(
+x[1] = 4
+CALL p(max(1, 2), x[1] + 1 : r)
+CALL p(1, 2 : y[2])
+CALL p(unitsystem('SI'), 2 : s)
+CALL p( 1 , 2 : t )
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["r"], WithinAbs(7.0, 1e-12));
+    CHECK_THAT(run["y[2]"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["s"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["t"], WithinAbs(3.0, 1e-12));
+}
+
+// ============================================================================
+// CS-BUG-ARG-DROP (named-argument part, register section 8, C-147): `name=value`
+// is a named argument only for the functions that take them
+// ============================================================================
+
+TEST_CASE("CS-BUG-ARG-DROP: IF(a=5, 1, 2) is a clear error, not 'Unknown fluid'", "[library-gaps][named-arg]") {
+    // was: parsed as a property call with a named argument 'a', solved with
+    // 'Unknown fluid: ""' (C-147). EES has no comparison inside the IF function.
+    auto run = runModel("a = 5\nt = IF(a=5, 1, 2)\n");
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "IF does not take named arguments ('a=5')"));
+    CHECK(anyContains({run.message}, "IF(A, B, X, Y, Z)"));
+    CHECK_FALSE(anyContains({run.message}, "Unknown fluid"));
+
+    // the text of the argument is reported as written, with the name of the function as written
+    CHECK(anyContains(parseErrors("t = if(a = 5, 1, 2)\n"), "if does not take named arguments ('a = 5')"));
+    // the 5-argument form too
+    CHECK(anyContains(parseErrors("t = IF(a=5, 1, 2, 3, 4)\n"), "IF does not take named arguments ('a=5')"));
+    // inside a FUNCTION body (the statement was dropped without any message)
+    CHECK(anyContains(parseErrors("FUNCTION f(a)\n  f = IF(a=5, 1, 2)\nEND\ny = f(5)\n"),
+                      "IF does not take named arguments ('a=5')"));
+}
+
+TEST_CASE("CS-BUG-ARG-DROP: the forms that do the test are accepted", "[library-gaps][named-arg]") {
+    // what the error message recommends: the 5-argument form tests A = B exactly
+    auto run = runModel(R"(
+a = 5
+t_eq = IF(a, 5, 2, 1, 2)
+t_lt = IF(a - 6, 1, 2)
+t_gt = IF(a - 4, 1, 2)
+t_cmp = IF(a < 6, 1, 2)
+t_cmp2 = IF(a >= 6, 1, 2)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["t_eq"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["t_lt"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["t_gt"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["t_cmp"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["t_cmp2"], WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-ARG-DROP: the other built-in functions take no named argument either", "[library-gaps][named-arg]") {
+    CHECK(anyContains(parseErrors("y = max(a=1, 2)\n"), "max does not take named arguments ('a=1')"));
+    CHECK(anyContains(parseErrors("y = sin(x=30)\n"), "sin does not take named arguments ('x=30')"));
+    CHECK(anyContains(parseErrors("y = 2 + sqrt(abs(a=1))\n"), "abs does not take named arguments ('a=1')"));
+    // the message says which functions do take them
+    CHECK(anyContains(parseErrors("y = max(a=1, 2)\n"), "thermophysical"));
+    // the error is the only one of the line
+    CHECK(parseErrors("y = max(a=1, 2)\n").size() == 1);
+}
+
+TEST_CASE("CS-BUG-ARG-DROP: the functions that take named arguments are untouched", "[library-gaps][named-arg]") {
+    // thermophysical property functions, also humid air, string-valued fluid, upper case
+    auto run = runModel(R"(
+fl$ = 'R134a'
+h1 = enthalpy(Water, T=20, P=1E5)
+h2 = ENTHALPY(fl$, T=20, x=1)
+w = humrat(AirH2O, T=25, P=101325, R=0.5)
+u = intenergy(Water, T=20, P=1E5)
+Ts = T_sat(Water, P=1E5)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["h1"], WithinAbs(CoolProp::PropsSI("H", "T", 293.15, "P", 1e5, "Water"), 1e-3));
+    CHECK_THAT(run["Ts"], WithinAbs(99.6, 0.1));
+    CHECK(run["w"] > 0.0);
+
+    // the indexed aggregation and the EES INTERPOLATE form carry `name=value` arguments: not
+    // refused by the parser (their evaluation is CS-GAP-SUM-INDEXED / CS-GAP-INTERP-EES)
+    CHECK(parseErrors("s = sum(x[i], i=1, 4)\n").empty());
+    CHECK(parseErrors("y = interpolate('t', 'x', 'y', x=3)\n").empty());
+}
+
+// ============================================================================
+// CS-GAP-UNIT-SUBEXPR / CS-GAP-UNIT-NAMEDARG: a number followed by [unit] inside an expression
+// ============================================================================
+// The annotation is documentation only: the number is used as written (no unit conversion).
+
+TEST_CASE("CS-GAP-UNIT-SUBEXPR: reproducer of the register", "[library-gaps][unit-literal]") {
+    // ULiege style: each term of an absolute temperature carries its unit
+    auto run = runModel(R"(
+T_A = 25.0[K]+273.15 [K]
+v_l = 1
+x = T_A - 273.15
+y = 2*x
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["T_A"], WithinAbs(298.15, 1e-12));
+    CHECK_THAT(run["x"], WithinAbs(25.0, 1e-12));
+    CHECK_THAT(run["y"], WithinAbs(50.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-UNIT-SUBEXPR: the annotation at the end of the right-hand side, as before", "[library-gaps][unit-literal]") {
+    auto run = runModel(R"(
+a = 25.0+273.15 [K]
+b = (25.0+273.15) [K]
+c = 25.0 [K] + 273.15
+P_in = 1E5 [Pa]
+d = 25 [C] + 3 [K] "[K]"
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(298.15, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(298.15, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(298.15, 1e-12));
+    CHECK_THAT(run["P_in"], WithinAbs(1e5, 1e-9));
+    CHECK_THAT(run["d"], WithinAbs(28.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-UNIT-SUBEXPR: annotation on each term, in parentheses, on products and powers", "[library-gaps][unit-literal]") {
+    auto run = runModel(R"(
+a = 1[m] + 2 [m] + 3[m]
+b = (25[C] + 273.15 [K]) * 2
+c = 2 * (3 [m] - 1[m])
+d = 3[kg/m^3] * 2[m^3]
+e = 4 [J/kg-K] + 1 [J/kg-K]
+f = 2[m]^2
+g = 10^2[m]
+h = 12[m] / 4 [s]
+i = max(3[m], 5 [m])
+j = 7[m] + a
+k = (25 + 273.15) [K] + 2 [K]
+l = 2 * (3 + 4) [m]
+m1 = ((1 + 2) [m] + 3) [m]
+n = (25[C] + 273.15 [K]) [K]
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(596.3, 1e-9));
+    CHECK_THAT(run["c"], WithinAbs(4.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["e"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["f"], WithinAbs(4.0, 1e-12));
+    CHECK_THAT(run["g"], WithinAbs(100.0, 1e-12));
+    CHECK_THAT(run["h"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["i"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["j"], WithinAbs(13.0, 1e-12));
+    CHECK_THAT(run["k"], WithinAbs(300.15, 1e-9));
+    CHECK_THAT(run["l"], WithinAbs(14.0, 1e-12));
+    CHECK_THAT(run["m1"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["n"], WithinAbs(298.15, 1e-9));
+}
+
+TEST_CASE("CS-GAP-UNIT-SUBEXPR: negative numbers and exponent notation with a space before the unit", "[library-gaps][unit-literal]") {
+    auto run = runModel(R"(
+a = -5[C]
+b = 3 * -5[C]
+c = 2 - 5[C]
+d = -5 [C] + 10[C]
+e = (-5[C])
+p = 1E5 [Pa]
+q = 1.5e-3 [m] * 2
+r = 2E+3 [W] + 1[W]
+s = 1E-3[m] + 2.5E+1 [m]
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(-5.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(-15.0, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(-3.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["e"], WithinAbs(-5.0, 1e-12));
+    CHECK_THAT(run["p"], WithinAbs(1e5, 1e-9));
+    CHECK_THAT(run["q"], WithinAbs(3e-3, 1e-15));
+    CHECK_THAT(run["r"], WithinAbs(2001.0, 1e-9));
+    CHECK_THAT(run["s"], WithinAbs(25.001, 1e-12));
+}
+
+TEST_CASE("CS-GAP-UNIT-SUBEXPR: the unit is documentation only, the number is not converted", "[library-gaps][unit-literal]") {
+    auto run = runModel(R"(
+T_k = 25[K]
+T_c = 25[C]
+P_b = 1[bar]
+m_g = 5[g]
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["T_k"], WithinAbs(25.0, 1e-12));
+    CHECK_THAT(run["T_c"], WithinAbs(25.0, 1e-12));
+    CHECK_THAT(run["P_b"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["m_g"], WithinAbs(5.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-UNIT-SUBEXPR: array elements are still indexed and malformed annotations are refused", "[library-gaps][unit-literal]") {
+    auto run = runModel(R"(
+x[1] = 4
+x[2] = 6
+y = x[2] + 3[m] + x[1]
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(13.0, 1e-12));
+
+    CHECK_FALSE(parseErrors("y = 5[m\n").empty());        // unclosed
+    CHECK_FALSE(parseErrors("y = 5[m]]\n").empty());       // extra closing bracket
+    CHECK_FALSE(parseErrors("y = 5[m] 3\n").empty());      // text after the annotation
+    CHECK_FALSE(parseErrors("y = 5[m] + 3 [\n").empty());
+    // a parenthesis followed by something else than an annotation is not a call of a function without a name
+    CHECK_FALSE(parseErrors("y = (1 + 2) 3\n").empty());
+    CHECK_FALSE(parseErrors("y = (1 + 2)(3 + 4)\n").empty());
+}
+
+TEST_CASE("CS-GAP-UNIT-NAMEDARG: reproducer of the register", "[library-gaps][unit-literal]") {
+    auto run = runModel("h = enthalpy(Water,P=1E5[Pa],T=20)\n");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    auto plain = runModel("h = enthalpy(Water,P=1E5,T=20)\n");
+    REQUIRE(plain.solveOk);
+    CHECK(run["h"] == plain["h"]);
+    CHECK_THAT(run["h"], WithinAbs(CoolProp::PropsSI("H", "T", 293.15, "P", 1e5, "Water"), 1e-3));
+}
+
+TEST_CASE("CS-GAP-UNIT-NAMEDARG: variants (space before the unit, both arguments, negative number, expression)", "[library-gaps][unit-literal]") {
+    auto run = runModel(R"(
+h_ref = enthalpy(Water,P=1E5,T=20)
+h1 = enthalpy(Water,P=1E5 [Pa],T=20 [C])
+h2 = enthalpy(Water,T=20[C],P=1E5[Pa])
+h3 = enthalpy(Water,P=1.0E+5 [Pa],T=15[C]+5 [K])
+h4 = enthalpy('Water',P=(1E5[Pa]),T=20[C])
+h5 = 2*enthalpy(Water,P=1E5[Pa],T=20 [C]) + 1[J/kg]
+hn_ref = enthalpy(R134a,T=-5,P=2E5)
+hn = enthalpy(R134a,T=-5[C],P=2E5[Pa])
+w_ref = humrat(AirH2O,T=25,P=101325,R=0.5)
+w = humrat(AirH2O,T=25[C],P=101325[Pa],R=0.5)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run["h1"] == run["h_ref"]);
+    CHECK(run["h2"] == run["h_ref"]);
+    CHECK(run["h3"] == run["h_ref"]);
+    CHECK(run["h4"] == run["h_ref"]);
+    CHECK_THAT(run["h5"], WithinAbs(2.0 * run["h_ref"] + 1.0, 1e-9));
+    CHECK(run["hn"] == run["hn_ref"]);
+    CHECK(run["w"] == run["w_ref"]);
+}
+
+TEST_CASE("CS-GAP-UNIT-NAMEDARG: a literal with its unit as a named argument of a coupled block (AD)", "[library-gaps][unit-literal]") {
+    // the unknown temperature is found by Newton through the property call whose other argument carries a unit
+    auto run = runModel(R"(
+h_t = enthalpy(Water, P=1E5[Pa], T=T_x)
+h_t = 1E5[J/kg]
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["T_x"], WithinAbs(CoolProp::PropsSI("T", "H", 1e5, "P", 1e5, "Water") - 273.15, 1e-6));
+}
+
+TEST_CASE("CS-GAP-UNIT-NAMEDARG: as in the ULiege files, the unit is not converted (1e2[kPa] is 100 Pa)", "[library-gaps][unit-literal]") {
+    auto run = runModel(R"(
+T_su_ref = 20
+h_a = enthalpy(Water,P=1e2[kPa],T=T_su_ref)
+h_pa = enthalpy(Water,P=100,T=T_su_ref)
+h_kpa = enthalpy(Water,P=1e5,T=T_su_ref)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run["h_a"] == run["h_pa"]);
+    CHECK(run["h_a"] != run["h_kpa"]);
+}

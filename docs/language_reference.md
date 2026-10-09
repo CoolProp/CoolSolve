@@ -76,9 +76,36 @@ The annotation is purely informational — it is **not** used to convert the
 value. The unit system is fixed (temperature in °C, pressure in Pa, energy in
 J, …); see the warning at the top of this page.
 
-A **numeric literal** inside an expression or a function call may carry its own
-annotation in brackets, `if(tau, 3600[s], 10000[W], 10000[W], 0[W])`; the
-number is used as written and the unit is dropped.
+A **numeric literal** (or a **parenthesised group**) inside an expression, a
+function call or the value of a named argument may carry its own annotation in
+brackets: `if(tau, 3600[s], 10000[W], 10000[W], 0[W])`,
+`T_A = 25.0[K] + 273.15 [K]`, `T = -5[C]`, `p = 1E5 [Pa]`, `(25 + 273.15) [K]`,
+`h = enthalpy(Water, P=1E5[Pa], T=20)`. The number is used as written and the
+unit is dropped: **nothing is converted** (`P=1e2[kPa]` is 100 Pa, not
+100 kPa). Only numbers carry such an annotation: `x [m]` is the array element
+`x[m]`.
+
+### Function arguments and indices
+
+An argument or an index that cannot be parsed is a parse error that names the
+function (or array), the position and the text; it is never skipped:
+
+```ees
+y = max(3 4, 2)      "Could not parse argument 1 of 'max': '3 4'"
+y = x[3 4]           "Could not parse index 1 of 'x': '3 4'"
+y = max(3, )         "Could not parse argument 2 of 'max': ''"
+```
+
+The same holds for the arguments of `CALL name(inputs : outputs)`. An output
+must be a variable: EES also accepts an expression there (`CALL p(a : b/1000)`),
+which CoolSolve refuses — write the result into a variable and scale it in a
+separate equation. A call without argument is written `f()`. Array ranges
+(`x[1..3]`) are not expression syntax, in `CALL` arguments neither.
+
+`name=value` arguments (`T=`, `P=`, `x=`, …) belong to the thermophysical
+property functions (§3). A built-in function that takes positional arguments
+only (`IF`, `max`, `sin`, …) refuses them with a parse error — in particular a
+comparison inside `IF(a=5, 1, 2)` is not valid (see *Inline selection* below).
 
 ### Directives
 
@@ -169,6 +196,11 @@ Q = if(tau, 3600, 10000, 10000, 0)      "10000 W until tau = 3600 s, then 0"
   selected must be computable too.
 - Any other number of arguments is an error that names the two accepted forms.
   The string form `IF$(...)` is not implemented.
+- There is no comparison inside the function: `IF(a=5, 1, 2)` is the parse
+  error *"IF does not take named arguments ('a=5'); …"* (the `=` would be read
+  as a named argument). Test an equality with the 5-argument form,
+  `IF(a, 5, 2, 1, 2)` (2 if `a < 5`, 1 if `a = 5`, 2 if `a > 5`), and a sign
+  with `IF(a - 5, X, Y)` (`X` if `a - 5 > 0`).
 
 ### String / number conversions
 
@@ -195,7 +227,8 @@ An unknown setting name is an error.
 
 All thermophysical functions take a fluid as the first positional argument
 and state specifications as **named arguments** (typically two state
-variables). Example:
+variables); they are the functions that accept `name=value` arguments (see
+*Function arguments and indices* in §1). Example:
 
 ```ees
 h_1 = enthalpy('Water', T=T_1, P=P_1)

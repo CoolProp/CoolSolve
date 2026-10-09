@@ -221,8 +221,13 @@ public:
 
             // Handle Procedure Call
             if (isKeyword("CALL")) {
-                if (auto stmt = tryParseProcedureCall(line, lineNumber)) {
+                std::string callError;
+                if (auto stmt = tryParseProcedureCall(line, lineNumber, &callError)) {
                     result.program.statements.push_back(stmt);
+                    continue;
+                }
+                if (!callError.empty()) {
+                    result.errors.push_back({lineNumber, 0, callError, line});
                     continue;
                 }
             }
@@ -360,10 +365,15 @@ private:
     peg::parser parser_;
     bool grammarValid_ = false;
     std::string lastError_;
-    // Set by parseFunctionCall when a named-argument value cannot be parsed;
-    // consumed (and cleared) by tryParseEquationOrAssignment to emit a
-    // specific diagnostic instead of the generic "Could not parse line".
+    // Set when an argument of a call, or an index, cannot be parsed (or when a named
+    // argument is given to a function that takes none); consumed (and cleared) by the
+    // statement parsers to emit a specific diagnostic instead of the generic
+    // "Could not parse line". The first message is kept: it is that of the innermost call.
     std::string pendingExpressionError_;
+
+    void setExpressionError(const std::string& message) {
+        if (pendingExpressionError_.empty()) pendingExpressionError_ = message;
+    }
     // > 0 while the body of a FUNCTION/PROCEDURE is being parsed (IF ... THEN
     // statements are only valid there).
     int procedureBodyDepth_ = 0;
@@ -391,6 +401,34 @@ private:
         return fns;
     }
     
+    // Built-in functions that take positional arguments only: for them `name=value` is
+    // not a named argument (typically the comparison of IF(a=5, 1, 2), which EES does not
+    // have). The indexed aggregations SUM(X[i], i=1, N) and the EES form of INTERPOLATE
+    // carry `name=value` arguments (CS-GAP-SUM-INDEXED, CS-GAP-INTERP-EES: not supported
+    // yet, they keep their own diagnostics). The thermophysical functions, user functions
+    // and unknown names are not listed here.
+    static bool isPositionalOnlyBuiltin(const std::string& name) {
+        static const std::unordered_set<std::string> takingNamedArguments = {
+            "sum", "sum2d", "average", "product", "stddev",
+            "interpolate", "interpolate1", "interpolate2", "interpolate2dm",
+        };
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        return knownBuiltinFunctions().count(lower) > 0 && takingNamedArguments.count(lower) == 0;
+    }
+
+    static std::string namedArgumentRefusedMessage(const std::string& function, const std::string& arg,
+                                                   const std::string& paramName, const std::string& paramValue) {
+        std::string lower = function;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        std::string message = function + " does not take named arguments ('" + arg + "'); ";
+        if (lower == "if")
+            return message + "to test an equality use the 5-argument form IF(A, B, X, Y, Z) "
+                   "(X if A<B, Y if A=B, Z if A>B), here IF(" + paramName + ", " + paramValue
+                   + ", X, Y, Z); IF(cond, a, b) tests cond > 0";
+        return message + "only the thermophysical property functions do, e.g. enthalpy(Water, T=20, P=1E5)";
+    }
+
     // Post-parse validation: check that all function calls reference either a
     // built-in, a CoolProp thermo function, or a user-defined function/procedure.
     void validateFunctionNames(ParseResult& result) {
@@ -930,7 +968,7 @@ private:
                 std::string segErr;
                 if (auto s = tryParseEquationOrAssignment(seg, lineNumber, &segErr))
                     body.push_back(s);
-                else if (auto s = tryParseProcedureCall(seg, lineNumber))
+                else if (auto s = tryParseProcedureCall(seg, lineNumber, &segErr))
                     body.push_back(s);
                 else if (!segErr.empty())
                     result.errors.push_back({lineNumber, 0, segErr, errorLine});
@@ -940,7 +978,7 @@ private:
         std::string bodyErr;
         if (auto stmt = tryParseEquationOrAssignment(text, lineNumber, &bodyErr))
             body.push_back(stmt);
-        else if (auto stmt = tryParseProcedureCall(text, lineNumber))
+        else if (auto stmt = tryParseProcedureCall(text, lineNumber, &bodyErr))
             body.push_back(stmt);
         else if (!bodyErr.empty())
             result.errors.push_back({lineNumber, 0, bodyErr, errorLine});
@@ -1088,9 +1126,11 @@ private:
             return "";
         }
         const std::string condText = trim(ifText.substr(2, thenPos - 2));
+        pendingExpressionError_.clear();
         ExprPtr cond = parseCondition(condText, ifLine);
         if (!cond)
-            result.errors.push_back({ifLine, 0, "Could not parse IF condition '" + condText + "'", srcLine});
+            result.errors.push_back({ifLine, 0, "Could not parse IF condition '" + condText + "'"
+                                     + (pendingExpressionError_.empty() ? "" : ": " + pendingExpressionError_), srcLine});
 
         std::vector<StmtPtr> thenBranch, elseBranch;
         std::string premature;
@@ -1381,7 +1421,10 @@ private:
         return true;
     }
 
-    StmtPtr tryParseProcedureCall(const std::string& line, int lineNum) {
+    // `errorMsg`, when given, receives the reason why a CALL statement was refused
+    // (an argument that cannot be parsed, an output that is not a variable).
+    StmtPtr tryParseProcedureCall(const std::string& line, int lineNum, std::string* errorMsg = nullptr) {
+        pendingExpressionError_.clear();
         std::string cleaned = removeInlineComments(line);
         cleaned = trim(cleaned);
         
@@ -1424,24 +1467,37 @@ private:
             inputsStr = argsStr;
         }
         
+        // A faulty argument refuses the whole statement (it is never skipped)
+        auto refuse = [&](const std::string& fallback) -> StmtPtr {
+            if (errorMsg) *errorMsg = pendingExpressionError_.empty() ? fallback : pendingExpressionError_;
+            return nullptr;
+        };
+
         std::vector<ExprPtr> inputArgs;
         std::vector<std::string> inputStrs = splitArguments(inputsStr);
-        for (const auto& s : inputStrs) {
-            auto expr = parseExpression(s, lineNum);
-            if (expr) inputArgs.push_back(expr);
+        for (size_t i = 0; i < inputStrs.size(); ++i) {
+            auto expr = parseExpression(inputStrs[i], lineNum);
+            if (!expr)
+                return refuse("Could not parse argument " + std::to_string(i + 1) + " of '" + name
+                              + "': '" + trim(inputStrs[i]) + "'");
+            inputArgs.push_back(expr);
         }
         
         std::vector<Variable> outputVars;
         std::vector<std::string> outputStrs = splitArguments(outputsStr);
-        for (const auto& s : outputStrs) {
-            std::string ts = trim(s);
+        for (size_t i = 0; i < outputStrs.size(); ++i) {
+            std::string ts = trim(outputStrs[i]);
             if (ts.empty()) continue;
             
             // Outputs must be variables (potentially array access)
             auto expr = parseExpression(ts, lineNum);
-            if (expr && expr->is<Variable>()) {
-                outputVars.push_back(expr->as<Variable>());
-            }
+            if (!expr)
+                return refuse("Could not parse output " + std::to_string(i + 1) + " of '" + name
+                              + "': '" + ts + "'");
+            if (!expr->is<Variable>())
+                return refuse("Output " + std::to_string(i + 1) + " of '" + name + "' must be a variable, not the expression '"
+                              + ts + "': write the result into a variable and use a separate equation");
+            outputVars.push_back(expr->as<Variable>());
         }
         
         return makeProcedureCall(name, std::move(inputArgs), std::move(outputVars), lineNum);
@@ -1510,8 +1566,10 @@ private:
         auto rhs = parseExpression(rhsStr, lineNum);
         
         // If RHS parsing failed, it might be due to unquoted units (e.g., 10 [m])
-        // Try stripping units in square brackets at the end
-        if (!rhs) {
+        // Try stripping units in square brackets at the end. Not when a specific
+        // reason was found (an argument or an index that cannot be parsed): `x[3 4]`
+        // is a faulty index, not the variable x annotated with a unit.
+        if (!rhs && pendingExpressionError_.empty()) {
             size_t lastBracket = rhsStr.rfind(']');
             if (lastBracket == rhsStr.size() - 1) {
                 size_t openBracket = rhsStr.rfind('[');
@@ -2006,14 +2064,17 @@ private:
             }
         }
         
-        // Number with a unit annotation in brackets: 3600[s], 0.05 [kg/s]. As for the
-        // annotation of a whole equation, the unit is documentation only (values are
-        // not converted): the number is kept and the annotation dropped.
+        // Number or parenthesized group with a unit annotation in brackets: 3600[s],
+        // 0.05 [kg/s], (25 + 273.15) [K]. As for the annotation of a whole equation,
+        // the unit is documentation only (values are not converted): the number or the
+        // group is kept and the annotation dropped.
         size_t bracketPos = trimmed.find('[');
-        if (bracketPos != std::string::npos && bracketPos > 0 && trimmed.back() == ']' &&
-            trimmed.find(']') == trimmed.size() - 1 &&
-            isNumber(trim(trimmed.substr(0, bracketPos)))) {
-            return parsePrimary(trimmed.substr(0, bracketPos), lineNum);
+        const size_t annotationPos = trimmed.rfind('[');
+        if (annotationPos != std::string::npos && annotationPos > 0 && trimmed.back() == ']' &&
+            trimmed.find(']', annotationPos) == trimmed.size() - 1) {
+            const std::string annotated = trim(trimmed.substr(0, annotationPos));
+            if (isNumber(annotated) || isFullyParenthesized(annotated))
+                return parsePrimary(annotated, lineNum);
         }
 
         // Function call or array access
@@ -2041,6 +2102,7 @@ private:
         if (parenStart == std::string::npos) return nullptr;
         
         std::string name = trim(expr.substr(0, parenStart));
+        if (name.empty()) return nullptr;   // "(a + b) c": a group, not a call
         
         // Find matching close paren
         size_t parenEnd = expr.size() - 1;
@@ -2061,8 +2123,8 @@ private:
         // Parse arguments
         std::vector<std::string> argStrings = splitArguments(argsStr);
         
-        for (const auto& argStr : argStrings) {
-            std::string arg = trim(argStr);
+        for (size_t argIndex = 0; argIndex < argStrings.size(); ++argIndex) {
+            std::string arg = trim(argStrings[argIndex]);
             
             // Check for named argument (e.g., T=value)
             size_t eqPos = arg.find('=');
@@ -2072,6 +2134,10 @@ private:
                 std::string paramValue = trim(arg.substr(eqPos + 1));
                 
                 if (isIdentifier(paramName)) {
+                    if (isPositionalOnlyBuiltin(name)) {
+                        setExpressionError(namedArgumentRefusedMessage(name, arg, paramName, paramValue));
+                        return nullptr;
+                    }
                     auto valueExpr = parseExpression(paramValue, lineNum);
                     if (valueExpr) {
                         fc.namedArgs.push_back({paramName, valueExpr});
@@ -2080,31 +2146,36 @@ private:
                     // Value expression is malformed — report a specific error and
                     // abort the whole function call so the equation fails to parse
                     // instead of silently continuing with a missing argument.
-                    pendingExpressionError_ = "Could not parse value for named argument '"
-                        + paramName + "': '" + paramValue + "'";
+                    setExpressionError("Could not parse value for named argument '"
+                        + paramName + "': '" + paramValue + "'");
                     return nullptr;
                 }
             }
             
             // Regular argument
             auto argExpr = parseExpression(arg, lineNum);
-            if (argExpr) {
-                // For thermophysical functions, convert unquoted first argument to string literal
-                // In EES, the first argument is always the fluid name (e.g., humrat(airH2O, ...) 
-                // or enthalpy(R134a, ...)) and quotes are optional
-                // Exception: string variables (ending with $) should remain as variables
-                // because they need to be resolved at runtime
-                if (isThermo && isFirstPositionalArg && argExpr->is<Variable>()) {
-                    const Variable& var = argExpr->as<Variable>();
-                    // Only convert if: simple variable (no array access) AND not a string variable (not ending with $)
-                    if (var.indices.empty() && !var.name.empty() && var.name.back() != '$') {
-                        // Convert the variable to a string literal (fluid name)
-                        argExpr = makeString(var.name, lineNum);
-                    }
-                }
-                fc.args.push_back(argExpr);
-                isFirstPositionalArg = false;
+            if (!argExpr) {
+                // Never skip an argument: the call would be evaluated with fewer
+                // arguments and the model solved with a wrong value.
+                setExpressionError("Could not parse argument " + std::to_string(argIndex + 1)
+                    + " of '" + name + "': '" + arg + "'");
+                return nullptr;
             }
+            // For thermophysical functions, convert unquoted first argument to string literal
+            // In EES, the first argument is always the fluid name (e.g., humrat(airH2O, ...) 
+            // or enthalpy(R134a, ...)) and quotes are optional
+            // Exception: string variables (ending with $) should remain as variables
+            // because they need to be resolved at runtime
+            if (isThermo && isFirstPositionalArg && argExpr->is<Variable>()) {
+                const Variable& var = argExpr->as<Variable>();
+                // Only convert if: simple variable (no array access) AND not a string variable (not ending with $)
+                if (var.indices.empty() && !var.name.empty() && var.name.back() != '$') {
+                    // Convert the variable to a string literal (fluid name)
+                    argExpr = makeString(var.name, lineNum);
+                }
+            }
+            fc.args.push_back(argExpr);
+            isFirstPositionalArg = false;
         }
         
         func->node = fc;
@@ -2129,11 +2200,14 @@ private:
         std::vector<ExprPtr> indices;
         std::vector<std::string> indexStrings = splitArguments(indexStr);
         
-        for (const auto& idx : indexStrings) {
-            auto indexExpr = parseExpression(idx, lineNum);
-            if (indexExpr) {
-                indices.push_back(indexExpr);
+        for (size_t i = 0; i < indexStrings.size(); ++i) {
+            auto indexExpr = parseExpression(indexStrings[i], lineNum);
+            if (!indexExpr) {
+                setExpressionError("Could not parse index " + std::to_string(i + 1)
+                    + " of '" + name + "': '" + trim(indexStrings[i]) + "'");
+                return nullptr;
             }
+            indices.push_back(indexExpr);
         }
         
         return makeArrayVariable(name, indices, lineNum);
@@ -2160,7 +2234,9 @@ private:
             current += c;
         }
         
-        if (!current.empty()) {
+        // No argument at all ("" or blanks: f(), f( )) gives an empty list; after a comma
+        // the last piece is kept even if empty, so that f(a, ) is not read as f(a).
+        if (!result.empty() || !trim(current).empty()) {
             result.push_back(current);
         }
         
