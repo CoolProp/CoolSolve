@@ -32,6 +32,7 @@ NOT,Operators,Logical NOT,Yes,1,Used in IF conditions,
 IF-THEN-ELSE,Control Flow,Conditional execution in procedural blocks,Yes,1,"FUNCTION/PROCEDURE bodies only (as in EES): single-line and block (ENDIF) forms; conditions = <> < > <= >= (numbers and strings) with AND/OR; src/parser.cpp + IfThenElse AST node",
 IFNOT-THEN-ELSE,Control Flow,Negated conditional execution,Yes,1,Variation of IF-THEN-ELSE,
 "IF(cond, true_val, false_val)",Control Flow,Inline conditional function (expression-level),Yes,1,src/autodiff_node.cpp — 3-arg IF function, cond>0 returns true_val
+"IF(A, B, X, Y, Z)",Control Flow,"Inline 3-way conditional (X if A<B, Y if A=B, Z if A>B)",Yes,1,src/autodiff_node.cpp — 5-arg form of the IF function; exact equality for A=B; derivative of the selected branch only (A and B are selectors); other arities are an error
 "IF$(cond, true$, false$)",Control Flow,Inline conditional for string variables,No,3,String version of inline IF,
 REPEAT-UNTIL,Control Flow,Loop that repeats until condition is true,Yes,1,src/parser.cpp + evaluator.cpp — REPEAT body UNTIL(condition) with max 10000 iterations,
 DUPLICATE i=1:N,Control Flow,"Array loop construct DUPLICATE i=1,N ... END",Yes,1,src/parser.cpp + evaluator.cpp — parsed and executed in procedural blocks,

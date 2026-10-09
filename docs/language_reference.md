@@ -76,6 +76,10 @@ The annotation is purely informational — it is **not** used to convert the
 value. The unit system is fixed (temperature in °C, pressure in Pa, energy in
 J, …); see the warning at the top of this page.
 
+A **numeric literal** inside an expression or a function call may carry its own
+annotation in brackets, `if(tau, 3600[s], 10000[W], 10000[W], 0[W])`; the
+number is used as written and the unit is dropped.
+
 ### Directives
 
 Parser-level directives begin with `$` and span a single line:
@@ -142,7 +146,29 @@ for the EES `RAD` setting must convert its angles (`sin(x*180/pi)`,
 
 ### Inline selection
 
-`if(cond, val_if_true, val_if_false)` — `cond > 0` selects the true branch.
+Two forms, selected by the number of arguments (case-insensitive, usable in the
+main program and inside `FUNCTION` / `PROCEDURE` bodies, nestable, also in
+`INTEGRAL` models):
+
+| Form | Result |
+|:-----|:-------|
+| `if(cond, a, b)` | `a` if `cond > 0`, otherwise `b` |
+| `IF(A, B, X, Y, Z)` | the EES 5-argument form: `X` if `A < B`, `Y` if `A = B`, `Z` if `A > B` |
+
+```ees
+Q = if(tau, 3600, 10000, 10000, 0)      "10000 W until tau = 3600 s, then 0"
+```
+
+- The test `A = B` is **exact** floating-point equality, as in EES (no
+  tolerance): `0.1 + 0.2` is greater than `0.3`.
+- The value and the derivatives are those of the selected branch (`X`, `Y` or
+  `Z`, or `a` / `b`); the tested arguments (`cond`, or `A` and `B`) are
+  piecewise-constant selectors and contribute no derivative. A branch may
+  therefore hold unknowns of a coupled block (`Q = if(Q_dry, Q_wet, Q_wet, Q_dry, Q_dry)`).
+- All arguments are evaluated, as for any function: the branch that is not
+  selected must be computable too.
+- Any other number of arguments is an error that names the two accepted forms.
+  The string form `IF$(...)` is not implemented.
 
 ### String / number conversions
 
@@ -405,8 +431,9 @@ UNTIL(x > 10)
 
 As in EES, `IF` statements exist only in the body of a `FUNCTION` or
 `PROCEDURE` (§7), where statements are executed in order. In the main program
-the equations are solved simultaneously: use the inline `if(a, b, c, d)`
-function there, an `IF ... THEN` statement is a parse error.
+the equations are solved simultaneously: use the inline `if(cond, a, b)` or
+`IF(A, B, X, Y, Z)` function there (§ Inline selection), an `IF ... THEN`
+statement is a parse error.
 
 ```ees
 IF (T < 0) THEN f = 1 ELSE f = 2        "single line: no ENDIF"

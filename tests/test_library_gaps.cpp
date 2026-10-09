@@ -10,6 +10,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include "coolsolve/autodiff_node.h"
+#include "coolsolve/ir.h"
 #include "coolsolve/lookup_table.h"
 #include "coolsolve/parser.h"
 #include "coolsolve/runner.h"
@@ -730,4 +732,326 @@ TEST_CASE("CS-BUG-LOOKUP-PATH: companion tables are loaded for a bare file name"
     fs::current_path(previous);
     fs::remove_all(dir);
     REQUIRE(store.has("data"));
+}
+
+// ============================================================================
+// CS-GAP-IF5: the 5-argument IF(A, B, X, Y, Z) of EES
+// ============================================================================
+
+TEST_CASE("CS-GAP-IF5: reproducer of the register and the three branches", "[library-gaps][if5]") {
+    // EES: IF(A,B,X,Y,Z) = X if A<B, Y if A=B, Z if A>B. Register reproducer: 18000 s is past
+    // the 3600 s switch, so the schedule gives its last value (0 W).
+    auto run = runModel(R"(
+tau = 18000
+Q = if(tau, 3600, 10000, 10000, 0)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["Q"], WithinAbs(0.0, 1e-9));
+
+    // distinct values for X, Y and Z tell the branches apart
+    auto below = runModel("a = 1000\ny = if(a, 3600, 11, 22, 33)\n");
+    auto equal = runModel("a = 3600\ny = if(a, 3600, 11, 22, 33)\n");
+    auto above = runModel("a = 7200\ny = if(a, 3600, 11, 22, 33)\n");
+    REQUIRE(below.solveOk);
+    REQUIRE(equal.solveOk);
+    REQUIRE(above.solveOk);
+    CHECK_THAT(below["y"], WithinAbs(11.0, 1e-12));   // A < B -> X
+    CHECK_THAT(equal["y"], WithinAbs(22.0, 1e-12));   // A = B -> Y
+    CHECK_THAT(above["y"], WithinAbs(33.0, 1e-12));   // A > B -> Z
+    CHECK(below.verified);
+    CHECK(equal.verified);
+    CHECK(above.verified);
+}
+
+TEST_CASE("CS-GAP-IF5: case-insensitive name, expressions as arguments", "[library-gaps][if5]") {
+    auto run = runModel(R"(
+a = 2
+b = 3
+y1 = IF(a, b, a + b, 0, -1)
+y2 = If(b*2, a*3, 100, 200, 300*a)
+y3 = iF(a - b, -1, 1, 2, 3) + 1
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["y1"], WithinAbs(5.0, 1e-12));     // 2 < 3
+    CHECK_THAT(run["y2"], WithinAbs(200.0, 1e-12));   // 6 = 6
+    CHECK_THAT(run["y3"], WithinAbs(3.0, 1e-12));     // -1 = -1 -> 2, plus 1
+}
+
+TEST_CASE("CS-GAP-IF5: nested IF5 and products of IF5 (vertical_ghes_refsim)", "[library-gaps][if5]") {
+    // the penalty function of CSL-0081: IF(n_b,4,0,0,IF(n_b,144,1,0,0)) * ...
+    const std::string model = R"(
+n_b = %N%
+lnt = %L%
+pen_n = IF(n_b,4,0,0,IF(n_b,144,1,0,0))
+pen_t = IF(lnt,-2,0,0,IF(lnt,3,1,0,0))
+f_penalty = IF(n_b,4,0,0,IF(n_b,144,1,0,0))*IF(lnt,-2,0,0,IF(lnt,3,1,0,0))
+)";
+    auto make = [&](const char* n, const char* l) {
+        std::string m = model;
+        m.replace(m.find("%N%"), 3, n);
+        m.replace(m.find("%L%"), 3, l);
+        return runModel(m);
+    };
+    auto inside = make("36", "1");
+    auto belowN = make("2", "1");
+    auto aboveN = make("200", "1");
+    auto belowT = make("36", "-5");
+    REQUIRE(inside.solveOk);
+    REQUIRE(belowN.solveOk);
+    REQUIRE(aboveN.solveOk);
+    REQUIRE(belowT.solveOk);
+    CHECK(inside.verified);
+    CHECK_THAT(inside["f_penalty"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(inside["pen_n"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(belowN["f_penalty"], WithinAbs(0.0, 1e-12));
+    CHECK_THAT(aboveN["pen_n"], WithinAbs(0.0, 1e-12));
+    CHECK_THAT(belowT["pen_t"], WithinAbs(0.0, 1e-12));
+    CHECK_THAT(belowT["f_penalty"], WithinAbs(0.0, 1e-12));
+
+    // nesting in any of the five positions (here in B and in X)
+    auto deep = runModel("a = 5\ny = if(a, if(a, 3, 10, 10, 20), if(a, 9, 1, 2, 3), 7, 8)\n");
+    REQUIRE(deep.solveOk);
+    // inner B = if(5,3,..) = 20 (5 > 3 -> Z); a=5 < 20 -> X = if(5,9,1,2,3) = 1
+    CHECK_THAT(deep["y"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-IF5: inside FUNCTION and PROCEDURE bodies", "[library-gaps][if5]") {
+    auto run = runModel(R"(
+FUNCTION sched(t)
+  sched = if(t, 3600, 10000, 5000, 0)
+END
+PROCEDURE pwr(t : P, flag)
+  P = IF(t, 3600, 10000, 5000, 0)
+  flag = IF(t, 3600, IF(t, 1800, -2, -1, 0), 1, 2)
+END
+Q1 = sched(1000)
+Q2 = sched(3600)
+Q3 = sched(7200)
+CALL pwr(7200 : P3, f3)
+CALL pwr(1000 : P1, f1)
+CALL pwr(1800 : P2, f2)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["Q1"], WithinAbs(10000.0, 1e-9));
+    CHECK_THAT(run["Q2"], WithinAbs(5000.0, 1e-9));
+    CHECK_THAT(run["Q3"], WithinAbs(0.0, 1e-9));
+    CHECK_THAT(run["P3"], WithinAbs(0.0, 1e-9));
+    CHECK_THAT(run["f3"], WithinAbs(2.0, 1e-9));     // t > 3600 -> 2
+    CHECK_THAT(run["P1"], WithinAbs(10000.0, 1e-9));
+    CHECK_THAT(run["f1"], WithinAbs(-2.0, 1e-9));    // t < 1800 -> -2
+    CHECK_THAT(run["f2"], WithinAbs(-1.0, 1e-9));    // t = 1800 -> -1
+}
+
+TEST_CASE("CS-GAP-IF5: the derivative is that of the selected branch (AD)", "[library-gaps][if5]") {
+    // x0 = 2, x1 = 3 (independent variables), n = 3 variables: a, b, c
+    auto a = ADValue::independent(2.0, 0, 3);
+    auto b = ADValue::independent(3.0, 1, 3);
+    auto c = ADValue::independent(5.0, 2, 3);
+    auto x = a * c;      // 10, d/da = 5, d/dc = 2
+    auto y = b + c;      // 8,  d/db = 1, d/dc = 1
+    auto z = c * c;      // 25, d/dc = 10
+
+    SECTION("A < B selects X; A and B contribute nothing") {
+        auto r = evaluateStandardFunction("if", {a, b, x, y, z});
+        CHECK(r.value == 10.0);
+        REQUIRE(r.gradient.size() == 3);
+        CHECK(r.gradient[0] == 5.0);
+        CHECK(r.gradient[1] == 0.0);
+        CHECK(r.gradient[2] == 2.0);
+    }
+    SECTION("A = B selects Y") {
+        auto r = evaluateStandardFunction("IF", {a, a, x, y, z});
+        CHECK(r.value == 8.0);
+        CHECK(r.gradient[0] == 0.0);
+        CHECK(r.gradient[1] == 1.0);
+        CHECK(r.gradient[2] == 1.0);
+    }
+    SECTION("A > B selects Z") {
+        auto r = evaluateStandardFunction("if", {b, a, x, y, z});
+        CHECK(r.value == 25.0);
+        CHECK(r.gradient[0] == 0.0);
+        CHECK(r.gradient[1] == 0.0);
+        CHECK(r.gradient[2] == 10.0);
+    }
+    SECTION("the equality test is exact, as in EES") {
+        auto s = ADValue::constant(0.1 + 0.2, 0);    // 0.30000000000000004
+        auto t = ADValue::constant(0.3, 0);
+        auto k = [](double v) { return ADValue::constant(v, 0); };
+        CHECK(evaluateStandardFunction("if", {s, t, k(1), k(2), k(3)}).value == 3.0);
+        CHECK(evaluateStandardFunction("if", {t, t, k(1), k(2), k(3)}).value == 2.0);
+    }
+    SECTION("the 3-argument form is unchanged (condition > 0)") {
+        auto k = [](double v) { return ADValue::constant(v, 3); };
+        CHECK(evaluateStandardFunction("if", {k(1), x, y}).value == 10.0);
+        CHECK(evaluateStandardFunction("if", {k(0), x, y}).value == 8.0);
+        CHECK(evaluateStandardFunction("if", {k(-1), x, y}).value == 8.0);
+        CHECK(evaluateStandardFunction("if", {k(1), x, y}).gradient[0] == 5.0);
+    }
+}
+
+TEST_CASE("CS-GAP-IF5: unknowns selected inside a coupled block (Jacobian)", "[library-gaps][if5]") {
+    // Q and Q_wet form a 2x2 block: Q = IF(...) picks Q_wet (X) or Q_dry (Z), Q_wet depends on Q.
+    // Newton needs dQ/dQ_wet = 1 on the X branch; a zero derivative would make the block singular.
+    const std::string model = R"(
+Q_dry = %QD%
+Q = if(Q_dry, Q_wet, Q_wet, Q_dry, Q_dry)
+Q_wet = 30 + 0.5*Q
+)";
+    auto make = [&](const char* qd) {
+        std::string m = model;
+        m.replace(m.find("%QD%"), 4, qd);
+        return runModel(m);
+    };
+    // Q_dry = 40: X branch, Q = 30 + 0.5 Q -> 60 (Q_wet = 60 > 40, consistent)
+    auto wet = make("40");
+    REQUIRE(wet.solveOk);
+    CHECK(wet.verified);
+    CHECK_THAT(wet["Q"], WithinAbs(60.0, 1e-6));
+    CHECK_THAT(wet["Q_wet"], WithinAbs(60.0, 1e-6));
+    // Q_dry = 80: Z branch, Q = 80 (Q_wet = 70 < 80, consistent)
+    auto dry = make("80");
+    REQUIRE(dry.solveOk);
+    CHECK(dry.verified);
+    CHECK_THAT(dry["Q"], WithinAbs(80.0, 1e-6));
+    CHECK_THAT(dry["Q_wet"], WithinAbs(70.0, 1e-6));
+}
+
+TEST_CASE("CS-GAP-IF5: the arguments A and B are structural incidences", "[library-gaps][if5]") {
+    EESParser parser;
+    auto parsed = parser.parse("y = if(a, b, x, z, w)\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    REQUIRE(ir.getEquations().size() == 1);
+    const auto& vars = ir.getEquations()[0].variables;
+    for (const char* v : {"y", "a", "b", "x", "z", "w"}) CHECK(vars.count(v) == 1);
+
+    // B is the only place where the unknown Q_wet appears: the block must still use it
+    auto run = runModel(R"(
+Q_dry = 40
+Q_wet = 30 + 0.25*Q
+Q = if(Q_dry, Q_wet, 1, 2, 3)*10
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // Q_wet = 37.5 < 40 -> A > B -> Z = 3 -> Q = 30 -> Q_wet = 37.5
+    CHECK_THAT(run["Q"], WithinAbs(30.0, 1e-6));
+    CHECK_THAT(run["Q_wet"], WithinAbs(37.5, 1e-6));
+}
+
+TEST_CASE("CS-GAP-IF5: unit annotations on the literal arguments", "[library-gaps][if5]") {
+    // EES style from the cooling-coil / DHW models: the literals carry their unit in brackets
+    auto run = runModel(R"(
+tau = 18000 [s]
+Q = if(tau, 3600[s], 10000[W], 10000[W], 0[W])
+Q2 = if(1800[s], 3600[s], 10000[W], 10000[W], 0[W])
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["Q"], WithinAbs(0.0, 1e-9));
+    CHECK_THAT(run["Q2"], WithinAbs(10000.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-IF5: the 3-argument IF still works", "[library-gaps][if5]") {
+    auto run = runModel(R"(
+x = 3
+y1 = if(x - 2, 10, 20)
+y2 = IF(x - 5, 10, 20)
+y3 = if(x - 3, 10, 20)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["y1"], WithinAbs(10.0, 1e-12));   // condition > 0
+    CHECK_THAT(run["y2"], WithinAbs(20.0, 1e-12));
+    CHECK_THAT(run["y3"], WithinAbs(20.0, 1e-12));   // 0 is not > 0
+}
+
+TEST_CASE("CS-GAP-IF5: IF with another number of arguments is rejected with the accepted forms", "[library-gaps][if5]") {
+    for (const char* call : {"if(1, 2)", "if(1, 2, 3, 4)", "if(1, 2, 3, 4, 5, 6)", "IF(1)"}) {
+        INFO(call);
+        auto run = runModel(std::string("y = ") + call + "\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "IF takes 3 or 5 arguments"));
+        CHECK(anyContains({run.message}, "IF(cond, a, b)"));
+        CHECK(anyContains({run.message}, "IF(A, B, X, Y, Z)"));
+    }
+    // the number of arguments received is reported
+    auto four = runModel("y = if(1, 2, 3, 4)\n");
+    CHECK(anyContains({four.message}, "got 4"));
+}
+
+TEST_CASE("CS-GAP-IF5: LaTeX rendering is that of the 3-argument form", "[library-gaps][if5]") {
+    EESParser parser;
+    auto parsed = parser.parse("y = if(tau, 3600, Q_a, Q_b, 0)\nz = if(tau, Q_a, Q_b)\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    const std::string five = coolsolve::expressionToLatex(ir.getEquations()[0].rhs);
+    const std::string three = coolsolve::expressionToLatex(ir.getEquations()[1].rhs);
+    CHECK(five.find("\\mathrm{if}") == 0);
+    CHECK(three.find("\\mathrm{if}") == 0);
+    // all five arguments are rendered, in order
+    CHECK(five.find("\\tau") != std::string::npos);
+    CHECK(five.find("3600") != std::string::npos);
+    CHECK(five.find("Q_{a}") != std::string::npos);
+    CHECK(five.find("Q_{b}") != std::string::npos);
+    size_t commas = 0;
+    for (char ch : five) if (ch == ',') ++commas;
+    CHECK(commas == 4);
+}
+
+TEST_CASE("CS-GAP-IF5: in a FUNCTION called with an unknown (Jacobian through a user function)", "[library-gaps][if5]") {
+    // f(x) = x^2 below 2, 3 x above: the derivative of the selected branch drives Newton
+    const std::string model = R"(
+FUNCTION f(x)
+  f = if(x, 2, x^2, 4, 3*x)
+END
+f(y) = %RHS%
+)";
+    auto make = [&](const char* rhs) {
+        std::string m = model;
+        m.replace(m.find("%RHS%"), 5, rhs);
+        return runModel(m);
+    };
+    auto lowBranch = make("2.25");
+    REQUIRE(lowBranch.solveOk);
+    CHECK_THAT(lowBranch["y"], WithinAbs(1.5, 1e-6));
+    auto highBranch = make("9");
+    REQUIRE(highBranch.solveOk);
+    CHECK_THAT(highBranch["y"], WithinAbs(3.0, 1e-6));
+}
+
+TEST_CASE("CS-GAP-IF5: in an INTEGRAL (dynamic) model", "[library-gaps][if5]") {
+    // schedule dy/dt = 3 until t = 2.2, then 0: y(4) = 6.6 (fixed step 0.01 -> error < 0.05)
+    SECTION("through a variable, evaluated by the algebraic solver at each step") {
+        auto run = runModel(R"(
+y = 0 + INTEGRAL(dydt, t, 0, 4, 0.01)
+dydt = if(t, 2.2, 3, 3, 0)
+)");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(6.6, 0.05));
+    }
+    SECTION("directly as the integrand expression") {
+        auto run = runModel(R"(
+y = 0 + INTEGRAL(if(t, 2.2, 3, 3, 0), t, 0, 4, 0.01)
+)");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(6.6, 0.05));
+    }
+    SECTION("other built-in functions in the integrand expression are evaluated as well (were 0)") {
+        auto run = runModel(R"(
+y = 0 + INTEGRAL(sqrt(t) + max(t, 1), t, 0, 4, 0.01)
+)");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(16.0 / 3.0 + 8.5, 0.05));
+    }
+    SECTION("in the initial value of the state") {
+        auto run = runModel(R"(
+y = if(1, 2, 5, 6, 7) + INTEGRAL(dydt, t, 0, 4, 0.01)
+dydt = 1
+)");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(5.0 + 4.0, 0.05));   // 1 < 2 -> 5
+    }
 }

@@ -22,6 +22,22 @@ ADValue evaluateStandardFunction(const std::string& funcName,
         return ADValue::constant(3.14159265358979323846, n);
     }
 
+    // Inline conditional (two EES forms, selected by the number of arguments):
+    //   IF(cond, a, b)      a if cond > 0, else b
+    //   IF(A, B, X, Y, Z)   X if A < B, Y if A = B (exact floating-point equality, as in EES), Z if A > B
+    // Value and gradient are those of the selected branch; the tested arguments (cond, or A and B)
+    // are piecewise-constant selectors and contribute no derivative.
+    if (name == "if") {
+        if (args.size() == 3) return (args[0].value > 0.0) ? args[1] : args[2];
+        if (args.size() == 5) {
+            const double a = args[0].value, b = args[1].value;
+            return (a < b) ? args[2] : (a == b) ? args[3] : args[4];
+        }
+        throw std::runtime_error("IF takes 3 or 5 arguments: IF(cond, a, b) (a if cond > 0, else b) or "
+                                 "IF(A, B, X, Y, Z) (X if A < B, Y if A = B, Z if A > B); got " +
+                                 std::to_string(args.size()));
+    }
+
     if (args.empty()) {
         throw std::runtime_error("Function " + funcName + " requires at least one argument");
     }
@@ -163,15 +179,6 @@ ADValue evaluateStandardFunction(const std::string& funcName,
                 z.gradient[i] = rad2deg * (y.value * x.gradient[i] - x.value * y.gradient[i]) / denom;
             }
             return z;
-        }
-    }
-    
-    // Three argument functions
-    if (args.size() == 3) {
-        // IF(condition, true_value, false_value)
-        if (name == "if") {
-            const ADValue& cond = args[0];
-            return (cond.value > 0.0) ? args[1] : args[2];
         }
     }
     

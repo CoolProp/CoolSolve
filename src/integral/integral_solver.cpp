@@ -13,6 +13,7 @@
  */
 #include "coolsolve/integral/integral_solver.h"
 
+#include "coolsolve/autodiff_node.h"
 #include "coolsolve/variable_inference.h"
 
 #include <algorithm>
@@ -179,11 +180,13 @@ double IntegralSolver::evalBaseExpr(
         if (b.op == "^") return std::pow(l, r);
     }
     if (expr->is<FunctionCall>()) {
-        std::string n = expr->as<FunctionCall>().name;
-        std::transform(n.begin(), n.end(), n.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (n == "pi") return M_PI;
-        if (n == "abs") return std::abs(evalBaseExpr(expr->as<FunctionCall>().args.at(0), vars));
+        // Built-in math functions (abs, pi, sqrt, min, IF in both forms, ...) share the
+        // evaluator of the algebraic solver; anything else throws "Unknown or unsupported
+        // function" instead of silently evaluating to 0.
+        std::vector<ADValue> args;
+        for (const auto& a : expr->as<FunctionCall>().args)
+            args.push_back(ADValue::constant(evalBaseExpr(a, vars), 0));
+        return evaluateStandardFunction(expr->as<FunctionCall>().name, args).value;
     }
     return 0.0;
 }

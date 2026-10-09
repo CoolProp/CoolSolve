@@ -962,7 +962,7 @@ private:
     // ------------------------------------------------------------------------
     static constexpr const char* kIfOutsideProcedureMessage =
         "IF ... THEN statements are only allowed inside FUNCTION and PROCEDURE bodies "
-        "(in the main program use the IF(a, b, c, d) function)";
+        "(in the main program use the IF(cond, a, b) or IF(A, B, X, Y, Z) function)";
 
     static bool isIdentChar(char c) {
         return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$' || c == '#';
@@ -2006,9 +2006,18 @@ private:
             }
         }
         
+        // Number with a unit annotation in brackets: 3600[s], 0.05 [kg/s]. As for the
+        // annotation of a whole equation, the unit is documentation only (values are
+        // not converted): the number is kept and the annotation dropped.
+        size_t bracketPos = trimmed.find('[');
+        if (bracketPos != std::string::npos && bracketPos > 0 && trimmed.back() == ']' &&
+            trimmed.find(']') == trimmed.size() - 1 &&
+            isNumber(trim(trimmed.substr(0, bracketPos)))) {
+            return parsePrimary(trimmed.substr(0, bracketPos), lineNum);
+        }
+
         // Function call or array access
         size_t parenPos = trimmed.find('(');
-        size_t bracketPos = trimmed.find('[');
         
         if (parenPos != std::string::npos && 
             (bracketPos == std::string::npos || parenPos < bracketPos)) {
