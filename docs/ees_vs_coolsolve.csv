@@ -15,7 +15,7 @@ Variable naming,Core Syntax,"Case-insensitive for keywords, case-preserving for 
 X[i] (array subscript),Core Syntax,1-D array subscript,Yes,1,Variable AST node supports indices,
 "X[i,j] (2-D array)",Core Syntax,2-D array subscript,Yes,2,Variable AST node supports multiple indices,
 var$ (string variable),Core Syntax,String variable (dollar suffix),Yes,1,src/parser.cpp recognizes $ variables,
-"Units annotation ""[unit]""",Core Syntax,"Unit annotation on values/equations, e.g. T = 300 [K]",Yes,1,"Equation AST node stores optional unit string; a number or parenthesised group followed by [unit] inside an expression, a function argument or a named argument is accepted (25.0[K]+273.15 [K], enthalpy(Water,P=1E5[Pa],T=20)); documentation only, no unit conversion; src/parser.cpp parsePrimary",
+"Units annotation ""[unit]""",Core Syntax,"Unit annotation on values/equations, e.g. T = 300 [K]",Yes,1,"Equation AST node stores optional unit string; a number, parenthesised group, function call or array element followed by [unit] inside an expression, a function argument or a named argument is accepted (25.0[K]+273.15 [K], enthalpy(Water,P=1E5[Pa],T=20), min(a,b) [W/K], x[1] [K]); any other text after the call or the element is a parse error (CS-BUG-TRAILING-TEXT); documentation only, no unit conversion; src/parser.cpp parsePrimary",
 Number literals,Core Syntax,"Integer, float, and scientific notation (1e5, 3.14, -2.5E-3)",Yes,1,PEG grammar NumericLiteral rule,
 String literals,Core Syntax,Single-quoted string literals for fluid names etc.,Yes,1,src/parser.cpp,
 # --- Comparison & Logical Operators ---,,,,,,

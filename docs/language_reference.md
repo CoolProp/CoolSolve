@@ -76,14 +76,30 @@ The annotation is purely informational — it is **not** used to convert the
 value. The unit system is fixed (temperature in °C, pressure in Pa, energy in
 J, …); see the warning at the top of this page.
 
-A **numeric literal** (or a **parenthesised group**) inside an expression, a
-function call or the value of a named argument may carry its own annotation in
-brackets: `if(tau, 3600[s], 10000[W], 10000[W], 0[W])`,
-`T_A = 25.0[K] + 273.15 [K]`, `T = -5[C]`, `p = 1E5 [Pa]`, `(25 + 273.15) [K]`,
-`h = enthalpy(Water, P=1E5[Pa], T=20)`. The number is used as written and the
-unit is dropped: **nothing is converted** (`P=1e2[kPa]` is 100 Pa, not
-100 kPa). Only numbers carry such an annotation: `x [m]` is the array element
-`x[m]`.
+A **numeric literal**, a **parenthesised group**, a **function call** or an
+**array element** inside an expression, a function call or the value of a named
+argument may carry its own annotation in brackets: `if(tau, 3600[s], 10000[W],
+10000[W], 0[W])`, `T_A = 25.0[K] + 273.15 [K]`, `T = -5[C]`, `p = 1E5 [Pa]`,
+`(25 + 273.15) [K]`, `h = enthalpy(Water, P=1E5[Pa], T=20)`, `Cmin = min(C_h,
+C_c) [W/K]`, `y = x[2] [K] + max(a, b) [kW]`. The annotation ends the term it
+follows, at the end of a right-hand side as well as inside an expression. The
+number (or the term) is used as written and the unit is dropped: **nothing is
+converted** (`P=1e2[kPa]` is 100 Pa, not 100 kPa). One annotation per term;
+after a call or an array element it must hold a unit, not a number (`f(x)[2]`
+and `A[1][2]` are not annotations, see below). A plain variable does not carry
+an annotation: `x [m]` is the array element `x[m]`.
+
+**Nothing else may follow** the closing parenthesis of a call or the closing
+bracket of an array element (nor the closing quote of a string): the text used
+to be ignored (`y = max(1,2) 3` gave 2, `y = x[1] 2` gave `x[1]`). It is a
+parse error that names the text and the call:
+
+```ees
+y = max(1,2) 3       "Unexpected text '3' after the call 'max(1,2)'"
+y = x[1] 2           "Unexpected text '2' after the array element 'x[1]'"
+y = A[1][2]          "Unexpected text '[2]' after the array element 'A[1]'"  (write A[1,2])
+CALL p(1 : r) 3      "Unexpected text '3' after the arguments of 'p'"
+```
 
 ### Function arguments and indices
 
@@ -504,6 +520,13 @@ END
 
 Functions return a single numeric value through the variable named after
 the function.
+
+In the body of a function or a procedure every statement is parsed as in the
+main program: a line that cannot be parsed is an error (*"Could not parse
+line"*, with its line number), it is never skipped. Comments of every form,
+blank lines and directives are not statements. The `END` that closes the
+body may be followed by a comment (`END // area`). `GOTO` and statement labels
+(`10:`) are not supported and are refused the same way.
 
 ### Procedures
 

@@ -873,7 +873,10 @@ private:
                 return !std::isalnum(static_cast<unsigned char>(next)) && next != '_';
             };
 
-            if (upperBody == "END") return "END";
+            // END, possibly followed by a comment ("END // end of the function")
+            std::string codeBody = trim(removeInlineComments(bodyLine));
+            std::transform(codeBody.begin(), codeBody.end(), codeBody.begin(), ::toupper);
+            if (codeBody == "END") return "END";
 
             // Check for UNTIL(condition)
             if (isBodyKeyword("UNTIL")) {
@@ -958,30 +961,27 @@ private:
 
     // Parse the equations/assignments and procedure calls of `text` (one line
     // of a body, or one branch of a single-line IF), split on semicolons.
-    // `errorLine` is the source line reported with parse errors.
+    // `errorLine` is the source line reported with parse errors. A statement that
+    // cannot be parsed is an error, as in the main program: it is never dropped
+    // (CS-BUG-BODY-LINE-DROP); only a segment that holds nothing but comments (or
+    // separators) is skipped.
     void parseSimpleStatements(const std::string& text, int lineNumber,
                                std::vector<StmtPtr>& body, ParseResult& result,
                                const std::string& errorLine) {
-        auto segments = splitOnSemicolons(text);
-        if (segments.size() > 1) {
-            for (const auto& seg : segments) {
-                std::string segErr;
-                if (auto s = tryParseEquationOrAssignment(seg, lineNumber, &segErr))
-                    body.push_back(s);
-                else if (auto s = tryParseProcedureCall(seg, lineNumber, &segErr))
-                    body.push_back(s);
-                else if (!segErr.empty())
-                    result.errors.push_back({lineNumber, 0, segErr, errorLine});
+        const auto segments = splitOnSemicolons(text);
+        for (const auto& seg : segments) {
+            std::string segErr;
+            StmtPtr stmt = tryParseEquationOrAssignment(seg, lineNumber, &segErr);
+            if (!stmt) stmt = tryParseProcedureCall(seg, lineNumber, &segErr);
+            if (stmt) {
+                body.push_back(stmt);
+            } else if (!segErr.empty()) {
+                result.errors.push_back({lineNumber, 0, segErr, errorLine});
+            } else if (!trim(removeInlineComments(seg)).empty()) {
+                result.errors.push_back({lineNumber, 0, segments.size() > 1
+                                         ? "Could not parse segment: " + seg : "Could not parse line", errorLine});
             }
-            return;
         }
-        std::string bodyErr;
-        if (auto stmt = tryParseEquationOrAssignment(text, lineNumber, &bodyErr))
-            body.push_back(stmt);
-        else if (auto stmt = tryParseProcedureCall(text, lineNumber, &bodyErr))
-            body.push_back(stmt);
-        else if (!bodyErr.empty())
-            result.errors.push_back({lineNumber, 0, bodyErr, errorLine});
     }
 
     // ------------------------------------------------------------------------
@@ -1439,8 +1439,29 @@ private:
         
         std::string name = trim(callContent.substr(0, parenStart));
         
-        size_t parenEnd = callContent.rfind(')');
-        if (parenEnd == std::string::npos || parenEnd <= parenStart) return nullptr;
+        const size_t parenEnd = findClosingBracket(callContent, parenStart);
+        if (parenEnd == std::string::npos || callContent[parenEnd] != ')') return nullptr;
+
+        // Nothing may follow the closing parenthesis but a statement separator or a "[unit]"
+        // comment, which the comment remover keeps (the text was ignored: CS-BUG-TRAILING-TEXT)
+        std::string trailing = trim(callContent.substr(parenEnd + 1));
+        for (bool more = true; more && !trailing.empty();) {
+            more = false;
+            if (trailing.back() == ';') {
+                trailing = trim(trailing.substr(0, trailing.size() - 1));
+                more = true;
+            } else if (trailing.front() == '"') {
+                const size_t close = trailing.find('"', 1);
+                if (close != std::string::npos) {
+                    trailing = trim(trailing.substr(close + 1));
+                    more = true;
+                }
+            }
+        }
+        if (!trailing.empty()) {
+            if (errorMsg) *errorMsg = unexpectedTextMessage(trailing, "the arguments of", name);
+            return nullptr;
+        }
         
         std::string argsStr = callContent.substr(parenStart + 1, parenEnd - parenStart - 1);
         
@@ -2045,11 +2066,15 @@ private:
             }
         }
         
-        // String literal
+        // String literal (the closing quote ends it)
         if (trimmed.front() == '\'') {
             size_t end = trimmed.find('\'', 1);
             if (end != std::string::npos) {
                 std::string value = trimmed.substr(1, end - 1);
+                if (end + 1 < trimmed.size()) {
+                    setExpressionError(unexpectedTextMessage(trimmed.substr(end + 1), "the string", value));
+                    return nullptr;
+                }
                 return makeString(value, lineNum);
             }
         }
@@ -2064,31 +2089,28 @@ private:
             }
         }
         
-        // Number or parenthesized group with a unit annotation in brackets: 3600[s],
-        // 0.05 [kg/s], (25 + 273.15) [K]. As for the annotation of a whole equation,
-        // the unit is documentation only (values are not converted): the number or the
-        // group is kept and the annotation dropped.
-        size_t bracketPos = trimmed.find('[');
+        // A unit annotation in brackets ends the term it follows: a number or a parenthesized
+        // group (3600[s], 0.05 [kg/s], (25 + 273.15) [K]), a function call or an array element
+        // (max(a, b) [kW], x[1] [K]). As for the annotation of a whole equation, the unit is
+        // documentation only (values are not converted): the term is kept and the annotation
+        // dropped. After a call or an element the annotation must hold a unit: a number
+        // between brackets (f(x)[2], A[1][2]) is an index, not a unit, and is refused below.
         const size_t annotationPos = trimmed.rfind('[');
         if (annotationPos != std::string::npos && annotationPos > 0 && trimmed.back() == ']' &&
             trimmed.find(']', annotationPos) == trimmed.size() - 1) {
             const std::string annotated = trim(trimmed.substr(0, annotationPos));
             if (isNumber(annotated) || isFullyParenthesized(annotated))
                 return parsePrimary(annotated, lineNum);
+            const std::string unit = trim(trimmed.substr(annotationPos + 1, trimmed.size() - annotationPos - 2));
+            if (!annotated.empty() && (annotated.back() == ')' || annotated.back() == ']') &&
+                !unit.empty() && !isNumber(unit))
+                return parseCallOrElement(annotated, lineNum);
         }
 
-        // Function call or array access
-        size_t parenPos = trimmed.find('(');
-        
-        if (parenPos != std::string::npos && 
-            (bracketPos == std::string::npos || parenPos < bracketPos)) {
-            return parseFunctionCall(trimmed, lineNum);
-        }
-        
-        if (bracketPos != std::string::npos) {
-            return parseArrayAccess(trimmed, lineNum);
-        }
-        
+        // Function call or array element
+        if (trimmed.find_first_of("([") != std::string::npos)
+            return parseCallOrElement(trimmed, lineNum);
+
         // Simple variable
         if (isIdentifier(trimmed)) {
             return makeVariable(trimmed, lineNum);
@@ -2096,7 +2118,46 @@ private:
         
         return nullptr;
     }
-    
+
+    // `expr` starts with a function name followed by '(', or with a variable name followed by
+    // '[' (whichever comes first): a function call or an array element. The text after the
+    // closing bracket is refused here (see parseFunctionCall, parseArrayAccess).
+    ExprPtr parseCallOrElement(const std::string& expr, int lineNum) {
+        const size_t parenPos = expr.find('(');
+        const size_t bracketPos = expr.find('[');
+        if (parenPos != std::string::npos && (bracketPos == std::string::npos || parenPos < bracketPos))
+            return parseFunctionCall(expr, lineNum);
+        if (bracketPos != std::string::npos)
+            return parseArrayAccess(expr, lineNum);
+        return nullptr;
+    }
+
+    // Position of the bracket that closes the '(' or '[' at s[open], the brackets of both kinds
+    // being counted and the 'strings' skipped; npos when it is never closed.
+    static size_t findClosingBracket(const std::string& s, size_t open) {
+        int depth = 0;
+        bool inString = false;
+        for (size_t i = open; i < s.size(); ++i) {
+            const char c = s[i];
+            if (c == '\'') { inString = !inString; continue; }
+            if (inString) continue;
+            if (c == '(' || c == '[') depth++;
+            else if (c == ')' || c == ']') {
+                if (--depth == 0) return i;
+            }
+        }
+        return std::string::npos;
+    }
+
+    // The text found after the end of a call, an array element or a string, where nothing may
+    // follow but a unit annotation (CS-BUG-TRAILING-TEXT): it was ignored.
+    static std::string unexpectedTextMessage(const std::string& text, const std::string& what,
+                                             const std::string& after) {
+        std::string t = text;
+        t.erase(0, t.find_first_not_of(" \t"));
+        return "Unexpected text '" + t + "' after " + what + " '" + after + "'";
+    }
+
     ExprPtr parseFunctionCall(const std::string& expr, int lineNum) {
         size_t parenStart = expr.find('(');
         if (parenStart == std::string::npos) return nullptr;
@@ -2104,11 +2165,17 @@ private:
         std::string name = trim(expr.substr(0, parenStart));
         if (name.empty()) return nullptr;   // "(a + b) c": a group, not a call
         
-        // Find matching close paren
-        size_t parenEnd = expr.size() - 1;
-        while (parenEnd > parenStart && expr[parenEnd] != ')') parenEnd--;
-        
-        if (expr[parenEnd] != ')') return nullptr;
+        // The parenthesis that closes the call: nothing but a unit annotation (handled by
+        // parsePrimary) may follow it
+        const size_t parenEnd = findClosingBracket(expr, parenStart);
+        if (parenEnd == std::string::npos || expr[parenEnd] != ')') return nullptr;
+        if (parenEnd + 1 < expr.size()) {
+            const std::string rest = trim(expr.substr(parenEnd + 1));
+            if (!rest.empty()) {
+                setExpressionError(unexpectedTextMessage(rest, "the call", trim(expr.substr(0, parenEnd + 1))));
+                return nullptr;
+            }
+        }
         
         std::string argsStr = expr.substr(parenStart + 1, parenEnd - parenStart - 1);
         
@@ -2192,8 +2259,17 @@ private:
         // Ensure the name is a valid identifier (to distinguish from units like 10[m])
         if (!isIdentifier(name)) return nullptr;
         
-        size_t bracketEnd = expr.rfind(']');
-        if (bracketEnd == std::string::npos || bracketEnd <= bracketStart) return nullptr;
+        // The bracket that closes the element: nothing but a unit annotation (handled by
+        // parsePrimary) may follow it
+        const size_t bracketEnd = findClosingBracket(expr, bracketStart);
+        if (bracketEnd == std::string::npos || expr[bracketEnd] != ']') return nullptr;
+        if (bracketEnd + 1 < expr.size()) {
+            const std::string rest = trim(expr.substr(bracketEnd + 1));
+            if (!rest.empty()) {
+                setExpressionError(unexpectedTextMessage(rest, "the array element", trim(expr.substr(0, bracketEnd + 1))));
+                return nullptr;
+            }
+        }
         
         std::string indexStr = expr.substr(bracketStart + 1, bracketEnd - bracketStart - 1);
         

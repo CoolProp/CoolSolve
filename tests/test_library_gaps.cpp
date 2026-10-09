@@ -1486,3 +1486,424 @@ h_kpa = enthalpy(Water,P=1e5,T=T_su_ref)
     CHECK(run["h_a"] == run["h_pa"]);
     CHECK(run["h_a"] != run["h_kpa"]);
 }
+
+// ============================================================================
+// CS-BUG-BODY-LINE-DROP: a statement that cannot be parsed in a FUNCTION/PROCEDURE
+// body is an error (it was dropped without any message)
+// ============================================================================
+
+TEST_CASE("CS-BUG-BODY-LINE-DROP: reproducer of the register is a parse error", "[library-gaps][body-line-drop]") {
+    // was SUCCESS with y = 1: the statement `f = 3 4` was gone
+    const std::string code = "FUNCTION f(a)\nf = 3 4\nEND\ny = f(1)\n";
+    auto run = runModel(code);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "Line 2: Could not parse line"));
+
+    EESParser parser;
+    auto result = parser.parse(code);
+    CHECK_FALSE(result.success);
+    REQUIRE(result.errors.size() == 1);
+    CHECK(result.errors[0].line == 2);   // the line number of the faulty statement
+    CHECK(result.errors[0].context == "f = 3 4");
+}
+
+TEST_CASE("CS-BUG-BODY-LINE-DROP: same message as in the main program, for every kind of unparsable line", "[library-gaps][body-line-drop]") {
+    using Messages = std::vector<std::string>;
+    const Messages main = parseErrors("y = 3 4\n");
+    REQUIRE(main == Messages{"Could not parse line"});
+
+    // in a FUNCTION body and in a PROCEDURE body
+    for (const std::string line : {"f = 3 4", "f", "f = ", "= 3", "3 4", "f 3", "f = a b + 1"}) {
+        INFO("body line: " << line);
+        CHECK(parseErrors("FUNCTION f(a)\n  " + line + "\nEND\ny = f(1)\n") == main);
+        CHECK(parseErrors("PROCEDURE p(a : r)\n  " + line + "\nEND\nCALL p(1 : y)\n") == main);
+    }
+
+    // the line number is that of the statement, whatever its position in the body
+    EESParser parser;
+    auto result = parser.parse("FUNCTION f(a)\n  s = 1\n  t = 2\n  f = s + t 5\n  u = 3\nEND\ny = f(1)\nz = 2\n");
+    REQUIRE(result.errors.size() == 1);
+    CHECK(result.errors[0].line == 4);
+}
+
+TEST_CASE("CS-BUG-BODY-LINE-DROP: faulty statements inside the blocks of a body", "[library-gaps][body-line-drop]") {
+    using Messages = std::vector<std::string>;
+    const Messages oneLine{"Could not parse line"};
+    const std::string tail = "END\ny = f(1)\n";
+    // single-line IF, both branches
+    CHECK(parseErrors("FUNCTION f(a)\n  IF (a > 0) THEN f = 3 4\n" + tail) == oneLine);
+    CHECK(parseErrors("FUNCTION f(a)\n  IF (a > 0) THEN f = 1 ELSE f = 3 4\n" + tail) == oneLine);
+    // block IF with ELSE
+    CHECK(parseErrors("FUNCTION f(a)\n  IF (a > 0) THEN\n    f = 3 4\n  ENDIF\n" + tail) == oneLine);
+    CHECK(parseErrors("FUNCTION f(a)\n  IF (a > 0) THEN\n    f = 1\n  ELSE\n    f = 3 4\n  ENDIF\n" + tail) == oneLine);
+    CHECK(parseErrors("FUNCTION f(a)\n  IF (a > 0) THEN\n    f = 1\n  ELSE f = 3 4\n  ENDIF\n" + tail) == oneLine);
+    // DUPLICATE and REPEAT ... UNTIL
+    CHECK(parseErrors("FUNCTION f(a)\n  DUPLICATE i = 1, 2\n    x[i] = 3 4\n  END\n  f = 1\n" + tail) == oneLine);
+    CHECK(parseErrors("FUNCTION f(a)\n  k := 0\n  REPEAT\n    k := k 1\n  UNTIL (k > 3)\n  f = k\n" + tail) == oneLine);
+    // several statements on one line: the faulty segment is named
+    CHECK(parseErrors("FUNCTION f(a)\n  s = 1 ; t = 3 4 ; f = s\n" + tail) ==
+          Messages{"Could not parse segment: t = 3 4"});
+    CHECK(parseErrors("FUNCTION f(a)\n  IF (a > 0) THEN s = 1 ; t = 3 4\n  f = s\n" + tail) ==
+          Messages{"Could not parse segment: t = 3 4"});
+    // the other lines are not concerned: one error only
+    EESParser parser;
+    auto result = parser.parse("FUNCTION f(a)\n  f = a\n  IF (a > 0) THEN\n    f = 3 4\n  ENDIF\nEND\ny = f(1)\n");
+    REQUIRE(result.errors.size() == 1);
+    CHECK(result.errors[0].line == 4);
+}
+
+TEST_CASE("CS-BUG-BODY-LINE-DROP: a specific message still wins over the generic one", "[library-gaps][body-line-drop]") {
+    using Messages = std::vector<std::string>;
+    CHECK(parseErrors("FUNCTION f(a)\n  f = max(3 4, a)\nEND\ny = f(1)\n") ==
+          Messages{"Could not parse argument 1 of 'max': '3 4'"});
+    CHECK(parseErrors("FUNCTION f(a)\n  f == 3\nEND\ny = f(1)\n") ==
+          Messages{"Invalid operator '=='. EES uses '=' for equations, not '=='"});
+}
+
+TEST_CASE("CS-BUG-BODY-LINE-DROP: every legitimate form of a body line is still accepted", "[library-gaps][body-line-drop]") {
+    // comments of all the EES forms (single-line and multi-line, braces, quotes, //), blank lines,
+    // directives, statements separated by semicolons (with a trailing separator or comment),
+    // assignments, CALL, single-line and block IF ... ELSE ... ENDIF, REPEAT ... UNTIL, DUPLICATE ... END
+    const std::string code = R"(
+PROCEDURE pp(a : r)
+  r = a + 100
+END
+
+FUNCTION g(a)
+{single-line brace comment}
+{multi-line brace
+ comment with x = 1 and a nested {brace}
+ 3 4 and f = (
+}
+"a quoted comment"
+"a multi-line quoted comment
+ that goes on, with 3 4 in it"
+"
+standalone-quote block comment
+3 4
+"
+// a C-style comment 3 4
+$COMMON a
+
+  s = 0 ; // a comment after a separator
+  t := 2 ; {brace after a separator} ;
+  u = 3 "trailing quote comment"
+  v = 4 {trailing brace comment}
+  w = 5 // trailing C comment
+  w2 = 6 ;
+  ;
+  z1 = 1 ; z2 = 2 ; z3 = 3 {last}
+  CALL pp(1 : r)
+  CALL pp(2 : r2) ; // procedure call followed by a comment
+  IF (a > 0) THEN s = 1 ELSE s = -1
+  IF (a > 5) THEN
+    s = s + 10 // comment
+  ELSE // comment
+    s = s + 20 {comment}
+  ENDIF "end of the test"
+  IF (a > 0) THEN
+    q = 1
+  ELSE
+    IF (a < 0) THEN
+      q = 2
+    ELSE
+      q = 3
+    ENDIF
+  ENDIF
+  IF (a > 0) THEN q = q + 1 ; q = q + 1
+  DUPLICATE i = 1, 3
+    x[i] = i
+  END
+  k := 0
+  REPEAT
+    k := k + 1
+  UNTIL (k > 3) // loop end
+  g = s + t + u + v + w + w2 + z1 + z2 + z3 + r + r2 + q + x[3] + k
+END // end of the function
+y = g(1)
+)";
+    // s = 1 then 21; t..w2 = 2+3+4+5+6; z = 6; r = 101, r2 = 102; q = 1 + 2; x[3] = 3; k = 4
+    auto run = runModel(code);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(21 + (2 + 3 + 4 + 5 + 6) + 6 + 101 + 102 + 3 + 3 + 4, 1e-12));
+    CHECK(parseErrors(code).empty());
+}
+
+TEST_CASE("CS-BUG-BODY-LINE-DROP: legitimate bodies of PROCEDURE with outputs and single-line forms", "[library-gaps][body-line-drop]") {
+    auto run = runModel(R"(
+PROCEDURE p(a : r, s)
+  "outputs"
+  r = a ; s = 2*a ; // two statements
+  IF (a > 100) THEN r = 0 ; s = 0
+END
+CALL p(3 : b, c)
+FUNCTION h(a) // header comment
+  h = a {the value}
+END // end
+d = h(4)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["b"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(4.0, 1e-12));
+}
+
+// ============================================================================
+// CS-BUG-TRAILING-TEXT: text after the closing ) of a call or the ] of an array element
+// is an error (it was ignored); a unit annotation [unit] is the only thing allowed there
+// ============================================================================
+
+TEST_CASE("CS-BUG-TRAILING-TEXT: reproducers of the register are parse errors", "[library-gaps][trailing-text]") {
+    using Messages = std::vector<std::string>;
+    // was SUCCESS with y = 2
+    auto run = runModel("y = max(1,2) 3\n");
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "Unexpected text '3' after the call 'max(1,2)'"));
+    CHECK(parseErrors("y = max(1,2) x\n") == Messages{"Unexpected text 'x' after the call 'max(1,2)'"});
+    // was y = x[1]
+    CHECK(parseErrors("x[1]=5\ny = x[1] 2\n") == Messages{"Unexpected text '2' after the array element 'x[1]'"});
+    auto run2 = runModel("x[1]=5\ny = x[1] 2\n");
+    CHECK_FALSE(run2.parseOk);
+    CHECK_FALSE(run2.solveOk);
+
+    // one error, on the line of the statement
+    EESParser parser;
+    auto result = parser.parse("a = 1\nb = 2\ny = max(1,2) 3\nc = 3\n");
+    CHECK_FALSE(result.success);
+    REQUIRE(result.errors.size() == 1);
+    CHECK(result.errors[0].line == 3);
+}
+
+TEST_CASE("CS-BUG-TRAILING-TEXT: calls of every kind, on either side, nested, in arguments", "[library-gaps][trailing-text]") {
+    using Messages = std::vector<std::string>;
+    // user function, thermophysical function with named arguments, no argument, several texts
+    CHECK(parseErrors("y = f(x) 3\n") == Messages{"Unexpected text '3' after the call 'f(x)'"});
+    CHECK(parseErrors("h = enthalpy(Water, T=20, P=1E5) 3\n") ==
+          Messages{"Unexpected text '3' after the call 'enthalpy(Water, T=20, P=1E5)'"});
+    CHECK(parseErrors("y = pi() 3\n") == Messages{"Unexpected text '3' after the call 'pi()'"});
+    CHECK(parseErrors("y = max(1,2) 3 z\n") == Messages{"Unexpected text '3 z' after the call 'max(1,2)'"});
+    // two calls, the matching parenthesis is the one of the first call, not the last in the text
+    CHECK(parseErrors("y = f(x)(z)\n") == Messages{"Unexpected text '(z)' after the call 'f(x)'"});
+    CHECK(parseErrors("y = f(x) g(z)\n") == Messages{"Unexpected text 'g(z)' after the call 'f(x)'"});
+    // an index written after a call
+    CHECK(parseErrors("y = f(x)[1]\n") == Messages{"Unexpected text '[1]' after the call 'f(x)'"});
+    // left-hand side
+    CHECK(parseErrors("max(1,2) 3 = y\n") == Messages{"Unexpected text '3' after the call 'max(1,2)'"});
+    // inside an expression, an argument, an index, a named argument
+    CHECK(parseErrors("y = 1 + max(1,2) 3\n") == Messages{"Unexpected text '3' after the call 'max(1,2)'"});
+    CHECK(parseErrors("y = max(1,2) 3 * 2\n") == Messages{"Unexpected text '3' after the call 'max(1,2)'"});
+    CHECK(parseErrors("y = sqrt(max(1,2) 3)\n") == Messages{"Unexpected text '3' after the call 'max(1,2)'"});
+    CHECK(parseErrors("y = x[max(1,2) 3]\n") == Messages{"Unexpected text '3' after the call 'max(1,2)'"});
+    CHECK(parseErrors("h = enthalpy(Water, T=max(1,2) 3, P=1E5)\n") ==
+          Messages{"Unexpected text '3' after the call 'max(1,2)'"});
+    // several statements on a line: only the faulty one is refused
+    CHECK(parseErrors("a = 1 ; y = max(1,2) 3 ; b = 2\n") == Messages{"Unexpected text '3' after the call 'max(1,2)'"});
+    // the innermost faulty call is named
+    CHECK(parseErrors("y = max(min(1,2) 3, 4)\n") == Messages{"Unexpected text '3' after the call 'min(1,2)'"});
+    // strings with parentheses inside do not confuse the matching
+    CHECK(parseErrors("y = f('a)', 'b(') 3\n") == Messages{"Unexpected text '3' after the call 'f('a)', 'b(')'"});
+}
+
+TEST_CASE("CS-BUG-TRAILING-TEXT: array elements and strings", "[library-gaps][trailing-text]") {
+    using Messages = std::vector<std::string>;
+    CHECK(parseErrors("y = x[1] 2\n") == Messages{"Unexpected text '2' after the array element 'x[1]'"});
+    CHECK(parseErrors("y = A[1,2] z\n") == Messages{"Unexpected text 'z' after the array element 'A[1,2]'"});
+    CHECK(parseErrors("y = x[i+1] 2\n") == Messages{"Unexpected text '2' after the array element 'x[i+1]'"});
+    CHECK(parseErrors("y = x[y[1]] 2\n") == Messages{"Unexpected text '2' after the array element 'x[y[1]]'"});
+    // an element indexed twice is not C: A[i,j] is the syntax (and [1] cannot be a unit)
+    CHECK(parseErrors("y = A[1][2]\n") == Messages{"Unexpected text '[2]' after the array element 'A[1]'"});
+    CHECK(parseErrors("y = x[1](2)\n") == Messages{"Unexpected text '(2)' after the array element 'x[1]'"});
+    CHECK(parseErrors("x[1] 2 = 5\n") == Messages{"Unexpected text '2' after the array element 'x[1]'"});
+    CHECK(parseErrors("y = 1 + x[1] 2\n") == Messages{"Unexpected text '2' after the array element 'x[1]'"});
+    CHECK(parseErrors("y = max(x[1] 2, 3)\n") == Messages{"Unexpected text '2' after the array element 'x[1]'"});
+    // a string literal (the closing quote ends it)
+    CHECK(parseErrors("fl$ = 'Water' 3\n") == Messages{"Unexpected text '3' after the string 'Water'"});
+    CHECK(parseErrors("fl$ = 'Water' x\n") == Messages{"Unexpected text 'x' after the string 'Water'"});
+    CHECK(parseErrors("h = enthalpy('Water' 3, T=20, P=1E5)\n") == Messages{"Unexpected text '3' after the string 'Water'"});
+}
+
+TEST_CASE("CS-BUG-TRAILING-TEXT: the rule applies in FUNCTION/PROCEDURE bodies, IF conditions and CALL", "[library-gaps][trailing-text]") {
+    using Messages = std::vector<std::string>;
+    const Messages call{"Unexpected text '3' after the call 'max(1,2)'"};
+    // was: the statement was kept with the call (or dropped)
+    CHECK(parseErrors("FUNCTION f(a)\n  f = max(1,2) 3\nEND\ny = f(1)\n") == call);
+    CHECK(parseErrors("PROCEDURE p(a : r)\n  IF (a > 0) THEN r = max(1,2) 3 ELSE r = 0\nEND\nCALL p(1 : y)\n") == call);
+    CHECK(parseErrors("PROCEDURE p(a : r)\n  r = x[1] 2 ; r = a\nEND\nCALL p(1 : y)\n") ==
+          Messages{"Unexpected text '2' after the array element 'x[1]'"});
+    CHECK(parseErrors("PROCEDURE p(a : r)\n  IF (max(1,2) 3 > 0) THEN r = 1 ELSE r = 0\nEND\nCALL p(1 : y)\n") ==
+          Messages{"Could not parse IF condition '(max(1,2) 3 > 0)': Unexpected text '3' after the call 'max(1,2)'"});
+
+    // the arguments of a CALL
+    const std::string proc = "PROCEDURE p(a, b : c)\n  c = a + b\nEND\n";
+    CHECK(parseErrors(proc + "CALL p(max(1,2) 3, 1 : r)\n") == call);
+    CHECK(parseErrors(proc + "CALL p(1, x[1] 2 : r)\n") == Messages{"Unexpected text '2' after the array element 'x[1]'"});
+    CHECK(parseErrors(proc + "CALL p(1, 2 : y[1] 3)\n") == Messages{"Unexpected text '3' after the array element 'y[1]'"});
+    // the text after the CALL itself (was ignored)
+    CHECK(parseErrors(proc + "CALL p(1, 2 : r) 3\n") == Messages{"Unexpected text '3' after the arguments of 'p'"});
+    CHECK(parseErrors(proc + "CALL p(1, 2 : r) x = 2\n") == Messages{"Unexpected text 'x = 2' after the arguments of 'p'"});
+    CHECK(parseErrors(proc + "PROCEDURE q(a : r)\n  CALL p(a, 1 : r) 3\nEND\nCALL q(1 : y)\n") ==
+          Messages{"Unexpected text '3' after the arguments of 'p'"});
+    // ... but a separator, comments and blanks are not text
+    auto run = runModel(proc + "CALL p(1, 2 : r);\nCALL p(3, 4 : s)  // a comment\nCALL p(5, 6 : t) \"a comment\" ;\n"
+                        "PROCEDURE q(a : r)\n  CALL p(a, 1 : r) ; r = r + 1\nEND\nCALL q(1 : u)\n"
+                        "CALL p(7, 8 : v) \"[kg/s]\"\nCALL p(1, 1 : w) \"[a]\" \"[b]\" ;\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["r"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["s"], WithinAbs(7.0, 1e-12));
+    CHECK_THAT(run["t"], WithinAbs(11.0, 1e-12));
+    CHECK_THAT(run["u"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["v"], WithinAbs(15.0, 1e-12));
+    CHECK_THAT(run["w"], WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-TRAILING-TEXT: a unit annotation after a call or an array element is accepted, at the end of the right-hand side", "[library-gaps][trailing-text]") {
+    // this is the layout of the ULiege and library files: `Cmin = min(C_h, C_c)     [W/K]`
+    auto run = runModel(R"(
+x[1] = 5
+x[2] = 7
+A[1,2] = 11
+FUNCTION f(a)
+  f = 2*a
+END
+y1 = max(1,2) [kW]
+y2 = x[1] [K]
+y3 = A[1,2] [kg/m^3]
+y4 = f(3) [J/kg-K]
+y5 = enthalpy(Water, T=20, P=1E5) [J/kg]
+y6 = max(1,2)[kW]
+y7 = x[2]   [K]
+y8 = f(x[1]) [W]
+y9 = max(x[1], x[2]) [-]
+y10 = x[ 2 ] [K]
+y11 = -max(1, 2) [K]
+y12 = sqrt(16) [m] "[m]"
+y13 = sqrt(16) "[m]"
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["y1"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["y2"], WithinAbs(5.0, 1e-12));    // was x (without the index) before CS-BUG-ARG-DROP
+    CHECK_THAT(run["y3"], WithinAbs(11.0, 1e-12));
+    CHECK_THAT(run["y4"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["y5"], WithinAbs(CoolProp::PropsSI("H", "T", 293.15, "P", 1e5, "Water"), 1e-3));
+    CHECK_THAT(run["y6"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["y7"], WithinAbs(7.0, 1e-12));
+    CHECK_THAT(run["y8"], WithinAbs(10.0, 1e-12));
+    CHECK_THAT(run["y9"], WithinAbs(7.0, 1e-12));
+    CHECK_THAT(run["y10"], WithinAbs(7.0, 1e-12));
+    CHECK_THAT(run["y11"], WithinAbs(-2.0, 1e-12));
+    CHECK_THAT(run["y12"], WithinAbs(4.0, 1e-12));
+    CHECK_THAT(run["y13"], WithinAbs(4.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-TRAILING-TEXT: a unit annotation after a call or an array element inside an expression", "[library-gaps][trailing-text]") {
+    // the annotation ends the term it follows, as 3600[s] and (...) [unit] do
+    auto run = runModel(R"(
+x[1] = 5
+x[2] = 7
+FUNCTION f(a)
+  f = 2*a
+END
+y1 = max(1,2) [kW] + 2
+y2 = 2 + x[1] [K] + x[2] [K]
+y3 = f(3) [kW] * 2 [-]
+y4 = 10 - f(1) [W] / 2
+y5 = f(2)[W]^2
+y6 = max(x[1] [K], 2 [K]) + f(x[2] [K]) [W]
+y7 = (max(1,2) [kW] + 1) [kW]
+y8 = x[1] [K] > 3
+y9 = if(max(1,2) [kW] - 1, 5, 6)
+y10 = enthalpy(Water, T=f(10) [K], P=1E5 [Pa]) [J/kg] - enthalpy(Water, T=20, P=1E5)
+y11 = -f(1) [W] + x[2] [K]
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["y1"], WithinAbs(4.0, 1e-12));
+    CHECK_THAT(run["y2"], WithinAbs(14.0, 1e-12));
+    CHECK_THAT(run["y3"], WithinAbs(12.0, 1e-12));
+    CHECK_THAT(run["y4"], WithinAbs(9.0, 1e-12));
+    CHECK_THAT(run["y5"], WithinAbs(16.0, 1e-12));
+    CHECK_THAT(run["y6"], WithinAbs(5.0 + 14.0, 1e-12));
+    CHECK_THAT(run["y7"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["y8"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["y9"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["y10"], WithinAbs(0.0, 1e-6));
+    CHECK_THAT(run["y11"], WithinAbs(5.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-TRAILING-TEXT: the annotation in FUNCTION/PROCEDURE bodies, CALL arguments and IF conditions", "[library-gaps][trailing-text]") {
+    auto run = runModel(R"(
+PROCEDURE p(a, b : c)
+  c = a + min(b, 1E9) [-]
+END
+FUNCTION g(a)
+  x[1] = 3
+  s = max(a, 1) [K] + x[1] [K]
+  IF (max(a, 1) [K] > 2) THEN s = s + 100 [K] ELSE s = s + 200
+  g = s
+END
+x[1] = 5
+CALL p(max(1,2) [kW], x[1] [K] : r)
+y = g(4)
+z = g(0)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["r"], WithinAbs(7.0, 1e-12));
+    CHECK_THAT(run["y"], WithinAbs(4.0 + 3.0 + 100.0, 1e-12));
+    CHECK_THAT(run["z"], WithinAbs(1.0 + 3.0 + 200.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-TRAILING-TEXT: what follows the annotation, an empty or numeric annotation, an unclosed one", "[library-gaps][trailing-text]") {
+    using Messages = std::vector<std::string>;
+    // text after the annotation
+    CHECK(parseErrors("y = max(1,2) [kW] 3\n") == Messages{"Unexpected text '[kW] 3' after the call 'max(1,2)'"});
+    CHECK_FALSE(parseErrors("x[1] = 5\ny = x[1] [K] 3\n").empty());
+    CHECK_FALSE(parseErrors("y = max(1,2) [kW] z\n").empty());
+    // a number between brackets is an index, not a unit
+    CHECK(parseErrors("y = max(1,2) [3]\n") == Messages{"Unexpected text '[3]' after the call 'max(1,2)'"});
+    CHECK(parseErrors("y = A[1] [2]\n") == Messages{"Unexpected text '[2]' after the array element 'A[1]'"});
+    // empty or unclosed
+    CHECK_FALSE(parseErrors("y = max(1,2) []\n").empty());
+    CHECK_FALSE(parseErrors("y = max(1,2) [kW\n").empty());
+    CHECK_FALSE(parseErrors("x[1] = 5\ny = x[1] [K\n").empty());
+    // an annotation does not make an unparsable argument or index valid
+    CHECK(parseErrors("y = max(3 4, 2) [kW]\n") == Messages{"Could not parse argument 1 of 'max': '3 4'"});
+    CHECK(parseErrors("y = x[3 4] [K]\n") == Messages{"Could not parse index 1 of 'x': '3 4'"});
+    CHECK(parseErrors("y = max(1,2) [kW] + x[3 4]\n") == Messages{"Could not parse index 1 of 'x': '3 4'"});
+}
+
+TEST_CASE("CS-BUG-TRAILING-TEXT: calls and elements without trailing text are untouched", "[library-gaps][trailing-text]") {
+    auto run = runModel(R"(
+x[1] = 5
+A[1,2] = 11
+fl$ = 'Water'
+n1 = max(1,2)
+n2 = x[1]
+n3 = A[1, 2] + max(x[1], 3)
+n4 = max( 1 , 2 )
+n5 = ( max(1,2) ) + ( x[1] )
+n6 = max(1,2) {a comment}
+n7 = max(1,2) "a comment"
+n8 = max(1,2) // a comment
+n9 = x[1] "[K]"
+h = enthalpy(fl$, T=20, P=1E5)
+w = max(max(1,2),x[1])
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["n1"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["n2"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["n3"], WithinAbs(16.0, 1e-12));
+    CHECK_THAT(run["n4"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["n5"], WithinAbs(7.0, 1e-12));
+    CHECK_THAT(run["n6"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["n7"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["n8"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["n9"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["w"], WithinAbs(5.0, 1e-12));
+}
