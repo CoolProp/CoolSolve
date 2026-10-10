@@ -99,8 +99,8 @@ CoolSolve uses several file formats for input and verification:
     - `multiStartNumCores`: Threads for concurrent multi-start candidates (default: `4`; `N`>1 or `0`=auto runs candidates in parallel, first-to-converge wins).
    - **Integration options** (equation-based `INTEGRAL` models — all inert by default; see [Language Reference §12](docs/language_reference.md#12-equation-based-integration-dynamicdae-solving)):
      - `integralMethod`: Integrator — `RK4` (default), `RK45` (adaptive), `EulerExplicit`, or `EulerImplicit`.
-     - `integralFixedStep`: Fixed step size (`0` ⇒ derive from `integralMaxSteps` for fixed methods, or adapt for RK45).
-     - `integralMaxSteps`: Upper bound on the number of integration steps (default: `1000`).
+     - `integralFixedStep`: Fixed step size when the `INTEGRAL` call gives none (`0` ⇒ `integralMaxSteps` steps for fixed methods, or adapt for RK45). A step given in the model (5th `INTEGRAL` argument) always wins.
+     - `integralMaxSteps`: Number of steps of a fixed-step method without an explicit step (default: `1000`); budget of RK45 (`4·integralMaxSteps` attempted steps). A march that stops before the upper limit is an error.
      - `integralRelTol` / `integralAbsTol`: RK45 error control (defaults `1e-6` / `1e-9`).
      - `integralMinStep` / `integralMaxStep`: Step-size bounds (`0` = auto).
      - `integralRichardson`: Richardson extrapolation on fixed-step methods (default: `false`).

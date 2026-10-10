@@ -26,6 +26,13 @@ variable that does **not** appear as the LHS of an integral equation is
 *algebraic* — it is solved at every time step by the existing algebraic
 `Solver`.
 
+More generally, as in EES, `INTEGRAL(f, t, lo, hi[, step])` is a **value** — the
+integral of `f` from `lo` to the current `t` — that may appear anywhere in an
+equation (`y = m_dot*INTEGRAL(…)`, `INTEGRAL(…)/3.6E6`, two calls in one equation…);
+at the end of the run every variable holds its value at `t = hi`. The plain additive
+form above makes `y` a state of the integrator; every other form gets an
+**auxiliary state** per call (§2.4).
+
 ### 1.2 Semi-explicit index-1 DAE
 
 The general form supported in this version is:
@@ -55,17 +62,22 @@ needed. Non-integral models take the standard algebraic path (zero overhead).
 The integral solve works as follows:
 
 1. **Extract** the `IntegralProblem` from the IR: walk all equations,
-   classify state vs. algebraic variables, partition blocks.
+   classify state vs. algebraic variables (one state per `INTEGRAL` call, user
+   or auxiliary — §2.4), partition blocks.
 2. **Build a reduced IR** (integral equations removed + driver equations
    added) and re-analyse it. This makes the algebraic subsystem square.
-3. **Compute the initial state** at `t = t0`: the integral term has
+3. **Resolve the interval**: constant limits and step are folded at extraction;
+   symbolic ones are read from the model solved at the initial point (§2.5).
+4. **Compute the initial state** at `t = t0`: the integral term has
    zero-width interval, so `y(t0)` falls out of the algebraic solve of the
    remaining equations.
-4. **March in time**: at each step, fix `(t, y)` as externals, call the
+5. **March in time**: at each step, fix `(t, y)` as externals, call the
    algebraic `Solver` on the reduced system to evaluate `f`, then advance
-   `y` using the chosen `Integrator`.
-5. **Record rows** into an `IntegralTable` honouring the output interval
-   from `$IntegralTable`.
+   `y` using the chosen `Integrator`. The number of steps is fixed by the model
+   step (or `integralMaxSteps` without one); a march that ends before `tf` is an
+   error, never a success.
+6. **Record rows** into an `IntegralTable` honouring the output interval
+   from `$IntegralTable` (columns matched to variables without regard to case).
 
 The key invariant: **`Solver` is called unmodified at each time step**.
 The integral layer only decides *when* to call it, *what* to fix as
@@ -105,6 +117,43 @@ Two non-obvious obstacles had to be overcome to reuse the algebraic
 The general Richardson combination is `(2^p·I_{h/2} − I_h)/(2^p − 1)`
 where `p` is the base method's order (the EES formula `(4·I_{h/2} − I_h)/3`
 is the `p = 2` special case).
+
+### 2.4 Auxiliary states (an `INTEGRAL` inside a larger expression)
+
+An equation is a *user state* when it has the plain additive form
+`y = base + INTEGRAL(...)` (one call, reached by additions and subtractions with a net
+plus sign) **and** its `base` is constant along the trajectory: the base does not use
+the integration variable, another state, or any variable that depends on them
+(checked on the reduced system's block structure: the dependents of the integration
+variable and of the states are the closure of those seeds through the blocks). The
+equation is then removed and `y` is driven by the integrator, exactly as above — this is
+the historical path, with unchanged cost and results.
+
+Every other form — `y = m_dot*INTEGRAL(...)`, `-INTEGRAL(...)`, `INTEGRAL(...)/3.6E6`,
+two calls in one equation, a call on the left-hand side, a base that varies — is handled
+by one **auxiliary state** `I_k` per call: an internal variable (`__integral_<k>`, named
+so that it cannot clash with the model's variables) with `I_k(lo) = 0` and
+`dI_k/dt = integrand_k`. The call is replaced by `I_k` in a copy of the equation, which
+stays in the algebraic subsystem as an ordinary equation (`y = m_dot*I_k`); the
+integrator owns `I_k` the way it owns a user state. An integrand that is not a plain
+variable gets an equation of its own (`__integrand_<k> = expr`), so it is evaluated by
+the algebraic solver like any other expression (arrays, property calls, user
+functions). Auxiliary states and these internal variables are removed from the final
+result: they are not in the `.sol`, the `-integral.csv`, the JSON or the GUI table; the
+default table shows the left-hand side `y` instead.
+
+### 2.5 Symbolic limits and step
+
+When a limit or the step of an `INTEGRAL` call is not a constant, the solver builds a
+second reduced system for the initial point: the states are pinned at their initial
+values (auxiliary states at 0), the integration variable is defined by the equation
+`t = <lower limit>`, and each limit / step is defined by an equation of its own
+(`__int_lo_k = <expr>`, `__int_hi_k`, `__int_step_k`), so that the algebraic solver
+evaluates them like any other variable. One solve gives `t0`, `tf` and the step.
+Because the limits must be the same along the whole integration, their structural
+dependence on the integration variable or on a state is checked on this system (same
+closure as §2.4) and rejected with a clear message. All calls must resolve to the same
+interval. Models with constant limits and step never build this system.
 
 ---
 
@@ -203,14 +252,20 @@ before:
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `integralMethod` | `RK4` | `RK4`, `RK45`, `EulerExplicit`, or `EulerImplicit` |
-| `integralFixedStep` | `0.0` | Fixed step size. `0` ⇒ derive from `integralMaxSteps` |
-| `integralMaxSteps` | `1000` | Upper bound on number of steps |
+| `integralFixedStep` | `0.0` | Fixed step size when the `INTEGRAL` call has none. `0` ⇒ `integralMaxSteps` steps (fixed methods) |
+| `integralMaxSteps` | `1000` | Number of steps of a fixed-step method without an explicit step; RK45 budget (`4·integralMaxSteps` attempted steps) |
 | `integralRelTol` | `1e-6` | RK45 local relative error control |
 | `integralAbsTol` | `1e-9` | RK45 absolute error floor |
 | `integralMinStep` | `0.0` | Minimum step (0 = auto) |
 | `integralMaxStep` | `0.0` | Maximum step (0 = auto) |
 | `integralRichardson` | `false` | Richardson extrapolation (fixed-step only) |
 | `integralOutputInterval` | `0.0` | Default `$IntegralTable` row interval (`0` = every step) |
+
+**Which step wins.** The step given in the model (5th `INTEGRAL` argument) is used as
+written, whatever `integralMaxSteps` says: the number of steps is `⌈(hi − lo)/step⌉`
+(the last one is shortened). Next comes `integralFixedStep`. Without either, a
+fixed-step method takes exactly `integralMaxSteps` steps and RK45 adapts within its
+budget. Stopping before `hi` is an error.
 
 The `$IntegralAutoStep` and `$IntegralStop` directives are recognised for
 EES compatibility but **not interpreted** — they emit a diagnostic pointing
@@ -231,6 +286,11 @@ After a successful integral solve, CoolSolve writes the trajectory to:
 | **GUI** | **Integral** tab in the bottom panel: scrollable columnar table, optional Plotly line plot, CSV export button. |
 | **ZIP bundle** | The CSV is exported in the ZIP bundle and restored on upload (round-trip identical to the parametric study). |
 
+The auxiliary states and internal variables of §2.4 appear in none of these outputs.
+`$IntegralTable` names are matched to the model's variables without regard to case (the
+header uses the model's spelling); a name that is not a variable is a warning and gives an
+empty column.
+
 ---
 
 ## 7. Limitations and future work
@@ -239,7 +299,12 @@ After a successful integral solve, CoolSolve writes the trajectory to:
 
 - **One integration variable and one interval per model.** All `INTEGRAL`
   calls must share the same `t` and `[t0, tf]`. Nested (multi-variable)
-  integration is detected and rejected.
+  integration and calls with different integration variables are detected and
+  rejected (`CS-GAP-INTEGRAL-MULTIVAR`).
+- **Increasing integration only**, and **no `INTEGRAL` inside a `DUPLICATE` loop**
+  (clear error).
+- **Limits and step must stay constant along the integration**: constants, variables
+  or expressions of the model that do not depend on `t` or on a state (§2.5).
 - **Semi-explicit index-1 DAE only.** Higher-index systems are detected
   and reported; index reduction is not yet implemented.
 - **2-arg table-based `INTEGRAL(integrand, var)`** is not supported — it

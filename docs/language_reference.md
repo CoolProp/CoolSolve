@@ -801,28 +801,46 @@ top-level `integral(...)` call, CoolSolve automatically routes it to the
 dynamic solver — no flag is needed — and **non-integral models are completely
 unaffected** (zero overhead).
 
-### 12.1 `INTEGRAL` — declaring a state variable
+### 12.1 `INTEGRAL` — a value, and the state variables it declares
 
 ```ees
-y = <base> + INTEGRAL(integrand, t, t0, tf)
-y = <base> + INTEGRAL(integrand, t, t0, tf, step)   "fixed-step form"
+y = <base> + INTEGRAL(integrand, t, lo, hi)
+y = <base> + INTEGRAL(integrand, t, lo, hi, step)   "fixed-step form"
 ```
+
+`INTEGRAL(integrand, t, lo, hi)` is a **value**: the integral of `integrand` with
+respect to `t` from `lo` to the current value of `t`. It may appear anywhere in an
+equation, as in EES — `y = m_dot*INTEGRAL(v, P, p_in, p_out, 1000)`,
+`Q = INTEGRAL(Q_dot, tau, 0, 18000, 1)/3.6E6`, `W = -N*INTEGRAL(P, v, v1, v2)`,
+`z = INTEGRAL(a, t, 0, 1) - 2*INTEGRAL(b, t, 0, 1)`. At the end of the run every
+variable holds its value at `t = hi`.
 
 | Argument | Meaning |
 |:---------|:--------|
-| `integrand` | The derivative expression (the `f` in `dy/dt = f`). Usually a named variable defined by its own equation. |
-| `t` | The integration variable (e.g. time). All `INTEGRAL` calls in a model must share the **same** `t`. |
-| `t0`, `tf` | Lower and upper limits. Must be constants (or constant-foldable). All calls must share the **same** `[t0, tf]`. |
-| `step` | Optional 5th argument: a **fixed** step size. Omit it to let the method choose (fixed default derived from `integralMaxSteps`, or adaptive for RK45). |
+| `integrand` | The derivative (the `f` in `dy/dt = f`): a named variable defined by its own equation, or any expression (it is evaluated by the algebraic solver at each step, so array elements, property calls and user functions are allowed). |
+| `t` | The integration variable (time, a pressure, a volume...). All `INTEGRAL` calls in a model must share the **same** `t` (names are not case-sensitive). |
+| `lo`, `hi` | Lower and upper limits: constants, variables or expressions (§12.7). All calls must share the **same** `[lo, hi]`; `hi` must be greater than `lo`. |
+| `step` | Optional 5th argument: the step size (a constant, a variable or an expression). `0`, or omitting it, lets the method choose (§12.5). |
 
-`<base>` is the non-integral part of the right-hand side; at `t = t0` the
-integral term is zero, so `y(t0)` is determined by the algebraic solve of the
-remaining equations (no separate initial-value extraction is needed).
+A call that is the whole right-hand side, or is added to / subtracted from the rest
+(`y = <base> + INTEGRAL(...)`), declares `y` a **state variable** owned by the
+integrator: `<base>` is the non-integral part, and at `t = lo` the integral term is
+zero, so `y(lo)` is determined by the algebraic solve of the remaining equations (no
+separate initial-value extraction is needed). This is the fast path, and it applies
+only when `<base>` is constant along the trajectory — a base that uses the integration
+variable, another state, or any variable that depends on them is not an initial value,
+and the equation is then treated like the forms below.
 
-The variable on the left-hand side of an integral equation is a **state
-variable** (owned by the integrator). Every other unknown is *algebraic* — it is
-solved from the remaining equations at each time step by the same algebraic
-solver used for static models.
+Any other form — a factor, a division, a function, two calls in one equation, a call on
+the left-hand side, a subtracted call — is an ordinary algebraic equation in which each
+call stands for its own **auxiliary state** (`I(lo) = 0`, `dI/dt = integrand`), created
+internally. Auxiliary states are an implementation detail: they never appear in the
+solution (`.sol`), in the trajectory table (`-integral.csv`, GUI) or in the variable
+list. The variable on the left-hand side is then an algebraic variable like any other;
+its column in the default table is its value along the trajectory.
+
+Every unknown that is not a state is *algebraic* — it is solved from the remaining
+equations at each time step by the same algebraic solver used for static models.
 
 ### 12.2 Coupled ODEs and algebraic variables
 
@@ -853,14 +871,22 @@ $IntegralTable t:0.1  y  z  dydt
 ```
 
 The directive lists the variables to record, with the integration variable
-first. An optional output interval follows the integration variable as
-`name:interval` (`t:0.1` → one row every 0.1 units); if omitted, a row is
-written at every step (or every `integralOutputInterval`, see §12.5). Array
-ranges expand with the `..` notation:
+first. Names are separated by spaces or, as in EES, by commas or semicolons
+(`$IntegralTable t:0.1; y; dydt` and `$IntegralTable t:0.1, y, dydt` are the same
+table). Names are not case-sensitive and the column header uses the spelling of the
+model. An optional output interval follows the integration variable as
+`name:interval` (`t:0.1` → one row every 0.1 units); the interval may also be a
+variable that holds a constant (`t:dt_out`). If omitted, a row is
+written at every step. Array ranges expand with the `..` notation:
 
 ```ees
 $IntegralTable t  X[1..5]    "records t and X[1]..X[5]"
 ```
+
+A name that is not a variable of the model is reported as a **warning** and its
+column stays empty; a name listed twice is kept once (warning). Without a
+`$IntegralTable` directive the table holds the integration variable, the variables
+defined by the `INTEGRAL` equations and their integrands.
 
 After a successful solve, CoolSolve writes the trajectory to a CSV named after
 the model — **`<modelname>-integral.csv`** — next to the `.eescode` file. The
@@ -889,14 +915,25 @@ uncomment only what you need; see `examples/coolsolve.conf`):
 | Key | Default | Meaning |
 |:----|:--------|:--------|
 | `integralMethod` | `RK4` | `RK4`, `RK45`, `EulerExplicit`, or `EulerImplicit` |
-| `integralFixedStep` | `0.0` | Fixed step size. `0` ⇒ derive from `integralMaxSteps` (fixed methods) or adapt (RK45) |
-| `integralMaxSteps` | `1000` | Upper bound on the number of steps |
+| `integralFixedStep` | `0.0` | Fixed step size (used when the `INTEGRAL` call gives none). `0` ⇒ `integralMaxSteps` steps (fixed methods) or adapt (RK45) |
+| `integralMaxSteps` | `1000` | Number of steps of a fixed-step method that has no explicit step; budget of RK45 (§12.5) |
 | `integralRelTol` | `1e-6` | RK45 local relative error control |
 | `integralAbsTol` | `1e-9` | RK45 absolute error floor |
 | `integralMinStep` | `0.0` | Minimum step (0 = auto) |
 | `integralMaxStep` | `0.0` | Maximum step (0 = auto) |
 | `integralRichardson` | `false` | Richardson extrapolation (fixed-step methods only) |
 | `integralOutputInterval` | `0.0` | Default row interval when `$IntegralTable` omits `:n`. `0` = every step |
+
+**Step size and number of steps.** A step given in the model — the 5th argument of
+`INTEGRAL`, as in EES — is used as written and the number of steps follows from
+`(hi - lo)/step` (the last step is shortened when the step does not divide the
+interval); `integralMaxSteps` does not apply. Without it, `integralFixedStep` is used
+the same way. With neither, a fixed-step method takes exactly `integralMaxSteps`
+steps (`(hi - lo)/integralMaxSteps` each), and RK45 chooses its own steps within a
+budget of `4·integralMaxSteps` attempted steps (accepted plus rejected; the explicit
+step of the model is then its first step). A run that stops before `hi` is an
+**error** (*"The integration stopped at … before reaching the upper limit …"*), never
+a truncated success.
 
 Method guidance:
 
@@ -937,11 +974,22 @@ t,y,dydt
 4,0.0183156,-0.0183156
 ```
 
-### 12.7 Limitations
+### 12.7 Limits, and limitations
+
+**Limits and step.** `lo`, `hi` and `step` may be constants, variables or expressions of
+the model (`t_1 = 0`, `t_2 = 18000`, `v1_bar = V1/N`, `v[2]` computed by a property
+call, `p_out`, ...). CoolSolve solves the model once at the initial point (`t = lo`,
+every integral zero) and reads them there; constant limits are folded without that
+solve and keep their cost. A limit may not depend on the integration variable or on a
+state — it must stay the same along the integration: such a model is rejected with
+*"The upper limit '…' of INTEGRAL() depends on the integration variable … or on a state
+of the model"*. All calls must resolve to the same interval.
 
 - **One integration variable and one interval per model.** All `INTEGRAL` calls
-  must share the same `t` and `[t0, tf]`. Nested (multi-variable) integration is
-  detected and rejected with a clear message.
+  must share the same `t` and `[lo, hi]`. Nested integrals and calls with different
+  integration variables are rejected with a clear message.
+- **Increasing integration only.** `hi` must be greater than `lo`.
+- **`INTEGRAL` inside a `DUPLICATE` loop** is rejected (write the equations one by one).
 - **Semi-explicit index-1 DAE only.** Higher-index systems (where an algebraic
   constraint couples to a derivative that must be differentiated to solve) are
   detected and reported; index reduction is not yet implemented. A *warning* that
@@ -953,5 +1001,3 @@ t,y,dydt
 - **Stiff systems.** An explicit method (RK4/RK45/EulerExplicit) may need many
   steps on a stiff system; use `EulerImplicit` as a workaround until a BDF/stiff
   integrator is added (see `docs/solver_roadmap.md` §9.4).
-
-

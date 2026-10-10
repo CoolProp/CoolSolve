@@ -237,17 +237,30 @@ The debug folder gains two extra files for these models:
 
 ### Common integration failures
 
-**`MaxSteps` reached (`integralMaxSteps`).** The march did not reach `tf` within
-the step budget. Typical causes: the step size collapsed (RK45 rejecting many
-steps on a stiff system), or the interval is large relative to the fixed step.
-Fixes:
+**"The integration stopped at … before reaching the upper limit" (`integralMaxSteps`).**
+Only an adaptive run (RK45) can end this way: it did not reach the upper limit within
+its budget of `4·integralMaxSteps` attempted steps (accepted + rejected). A fixed-step
+method always takes `(hi−lo)/step` steps (the step of the `INTEGRAL` call, else
+`integralFixedStep`, else `integralMaxSteps` equal steps), so a long interval with a
+small step is not an error — it only takes time. Typical causes: the step size
+collapsed (RK45 rejecting many steps on a stiff system), or the budget is small for the
+interval. Fixes:
 
 - For RK45 on a stiff system: this is the signal that a stiff (BDF) integrator
   is warranted (not yet available — see `docs/solver_roadmap.md` §9.4); as a
   workaround, raise `integralMaxSteps` and tighten `integralRelTol`/`integralAbsTol`
-  only if accuracy demands it.
-- For fixed-step methods: set an explicit `integralFixedStep` (or pass the 5th
-  `INTEGRAL` argument) so the step count is `(tf−t0)/step`.
+  only if accuracy demands it, or use `EulerImplicit`.
+- Give the step in the model (5th `INTEGRAL` argument) or set `integralFixedStep`:
+  the step count is then `(tf−t0)/step` whatever `integralMaxSteps` says.
+
+**"The upper limit '…' of INTEGRAL() depends on the integration variable … or on a
+state".** The limits and the step of `INTEGRAL` are read once, at the initial point:
+they may be variables or expressions of the model but must not depend on `t` or on a
+state. Compute them from parameters only.
+
+**`$IntegralTable: '…' is not a variable of the model` warning.** A name of the
+directive matches no variable (check the spelling; separators are spaces, `,` and
+`;`, case is ignored). Its column stays empty.
 
 **RK45 rejecting many steps.** The `rejectedSteps` count in `integral.md` is
 high. The error estimate exceeds the tolerance repeatedly, so the controller
@@ -268,8 +281,9 @@ derivative).
 **Inconsistent integration variable or limits.** All `INTEGRAL(...)` calls in a
 model must share the **same** integration variable and the **same** `[t0, tf]`
 interval. CoolSolve rejects multi-interval / multi-variable integration with a
-clear message. The limits must be constants (or constant-foldable expressions);
-time-varying limits are not supported.
+clear message. The limits and the step may be constants, variables or expressions of
+the model, but must not depend on the integration variable or on a state (they are
+read once, at the initial point); calls with different limits are rejected.
 
 **Non-convergence of the algebraic subsystem at a step.** If the per-step
 algebraic `Solver` fails (the same `LineSearchFailed` / `MaxIterations` errors
@@ -290,10 +304,10 @@ for monotonicity / energy-balance trends.
 
 | Symptom | Likely cause | Workaround |
 |---------|--------------|------------|
-| `Non-constant integration limits` | `INTEGRAL(..., tau_1, tau_2)` with non-literal bounds | Use numeric literals in the `INTEGRAL` call (`0`, `604800`, …) |
+| `The upper limit '…' of INTEGRAL() depends on the integration variable …` | A limit or the step uses `t` or a state (directly or through other equations) | Compute the limit from parameters only |
 | `lookup table '…' not found (no table store…)` | `INTERPOLATE` inside an integral model | Use analytic expressions, or see [Dynamic Solving §7.1](integral_table.md#71-current-limitations) (lookup store not yet wired into `IntegralSolver`) |
 | `Unknown or unsupported function: IF with 5 arguments` | EES multi-threshold `IF` | Rewrite with nested 3-arg `IF(cond, true, false)` where `cond > 0` |
-| Empty columns in `*-integral.csv` | Commas in `$IntegralTable` directive | Use **space-separated** column names: `$IntegralTable tau:600 T_in T_out` |
+| Empty column in `*-integral.csv` and a `$IntegralTable: '…' is not a variable of the model` warning | A name of the directive that matches no variable (typo, wrong array element) | Fix the name; separators (space, `,`, `;`) and case do not matter |
 | `PROCEDURE` / `CALL` fails at first step | Procedure-output block in reduced algebraic subsystem | Inline simple outputs, or debug with `-d` and `integral.md` |
 
 ## Summary Checklist

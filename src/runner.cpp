@@ -138,6 +138,7 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
             solveResult_.variables = integralResult_.algebraicResult.variables;
             solveResult_.stringVariables = integralResult_.algebraicResult.stringVariables;
             solveResult_.totalIterations = integralResult_.totalSteps;
+            solveResult_.diagnostics = integralResult_.diagnostics;
         } else {
             // ----- Algebraic path (unchanged) -----
             Solver solver(*ir_, analysisResult_, options.coolpropConfig);
@@ -597,10 +598,16 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         md << "- Integration variable: `" << ip.integrationVar << "`\n";
         md << "- Interval: [" << ip.lowerLimit << ", " << ip.upperLimit << "]";
         if (ip.fixedStep > 0.0) md << " (fixed step " << ip.fixedStep << ")";
+        if (!ip.limitsConstant || !ip.stepConstant)
+            md << " (limits resolved from the model at the initial point)";
         md << "\n- State variables (" << ip.states.size() << "): ";
         for (size_t i = 0; i < ip.states.size(); ++i) {
             if (i) md << ", ";
-            md << "`" << ip.states[i].name << "` (derivative `" << ip.states[i].integrandVar << "`)";
+            if (ip.states[i].auxiliary)   // INTEGRAL call inside a larger expression
+                md << "integral of `" << ip.states[i].integrandVar << "`" << " (auxiliary state"
+                   << (ip.states[i].tableName.empty() ? "" : ", in the equation of `" + ip.states[i].tableName + "`") << ")";
+            else
+                md << "`" << ip.states[i].name << "` (derivative `" << ip.states[i].integrandVar << "`)";
         }
         md << "\n- Algebraic variables: " << ip.algebraicVars.size() << "\n\n";
 

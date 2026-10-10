@@ -22,6 +22,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -2846,4 +2847,631 @@ $endif
     REQUIRE(run.solveOk);
     CHECK_THAT(run["z"], WithinAbs(1.0, 1e-12));
     CHECK_THAT(run["w"], WithinAbs(1.0, 1e-12));
+}
+
+
+// ============================================================================
+// Equation-based dynamic (INTEGRAL) models: CS-BUG-INTEGRAL-FACTOR,
+// CS-GAP-INTEGRAL-LIMITS, CS-BUG-INTEGRAL-MAXSTEPS, CS-BUG-INTEGRAL-TABLE-SEP,
+// CS-BUG-INTEGRAL-TABLE-CASE
+// ============================================================================
+
+namespace {
+
+/// Outcome of a run of an INTEGRAL model: result variables (at the upper limit), the trajectory table.
+struct IntegralRun {
+    bool parseOk = false;
+    bool solveOk = false;
+    std::string message;                 ///< solver (or parse) error
+    std::vector<std::string> warnings;   ///< warning diagnostics of the run
+    std::map<std::string, double, CaseInsensitiveLess> vars;
+    IntegralTable table;
+    int steps = 0;
+    int rejected = 0;
+
+    double operator[](const std::string& name) const { return vars.at(name); }
+    bool has(const std::string& name) const { return vars.count(name) > 0; }
+    /// Tabulated value of column `col` at row `row`.
+    double cell(const std::string& col, int row) const { return table.column(col).at(row); }
+    bool hasInternalVariable() const {
+        for (const auto& [name, value] : vars) {
+            (void)value;
+            if (name.rfind("__int", 0) == 0) return true;
+        }
+        return false;
+    }
+};
+
+IntegralRun runIntegral(const std::string& code,
+                        const std::function<void(SolverOptions&)>& configure = {}) {
+    static int counter = 0;
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_library_gaps_integral";
+    fs::create_directories(dir);
+    const fs::path file = dir / ("model_" + std::to_string(counter++) + ".eescode");
+    { std::ofstream f(file); f << code; }
+    IntegralRun run;
+    CoolSolveRunner runner(file.string());
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    if (configure) configure(options);
+    run.solveOk = runner.run(options);
+    run.parseOk = runner.isParseSuccess();
+    for (const auto& d : runner.getDiagnostics().items())
+        if (d.severity == DiagnosticSeverity::Warning) run.warnings.push_back(d.message);
+    if (!run.parseOk && !runner.getParseResult().errors.empty())
+        run.message = runner.getParseResult().errors[0].message;
+    run.message = run.message.empty() ? runner.getSolveResult().errorMessage : run.message;
+    run.vars = runner.getSolveResult().variables;
+    const auto& ires = runner.getIntegralResult();
+    run.table = ires.table;
+    run.steps = ires.totalSteps;
+    run.rejected = ires.rejectedSteps;
+    fs::remove(file);
+    return run;
+}
+
+/// The columns and the output interval of the $IntegralTable directive of `code` (parse only).
+IntegralTableSpec parseTableSpec(const std::string& body) {
+    auto pr = parseFull("$IntegralTable " + body + "\n");
+    for (const auto& st : pr.program.statements)
+        if (st->is<Directive>() && st->as<Directive>().hasIntegralTableSpec)
+            return st->as<Directive>().integralTableSpec;
+    return IntegralTableSpec{};
+}
+
+using Columns = std::vector<std::string>;
+
+}  // namespace
+
+// ---- CS-BUG-INTEGRAL-FACTOR -------------------------------------------------
+
+TEST_CASE("CS-BUG-INTEGRAL-FACTOR: register reproducer (m_dot*integral) returns m_dot times the integral",
+          "[library-gaps][integral-factor]") {
+    // was: y = 20 (the factor was dropped); EES: 0.15 * 20 = 3
+    auto run = runIntegral("m_dot = 0.15\ny = m_dot*integral(v, P, 0, 10, 1)\nv = 2\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(3.0, 1e-9));
+    CHECK_THAT(run["P"], WithinAbs(10.0, 1e-12));   // every variable holds its value at the upper limit
+    // the split form (the workaround of the variants) gives the same
+    auto split = runIntegral("m_dot = 0.15\nw = 0 + integral(v, P, 0, 10, 1)\ny = m_dot*w\nv = 2\n");
+    REQUIRE(split.solveOk);
+    CHECK_THAT(split["y"], WithinAbs(3.0, 1e-9));
+    // the trajectory: columns of the default table, y(P) = 0.3*P
+    CHECK(run.table.columns() == Columns{"P", "y", "v"});
+    REQUIRE(run.table.numRows() == 11);
+    CHECK_THAT(run.cell("y", 5), WithinAbs(1.5, 1e-9));
+    CHECK_THAT(run.cell("P", 5), WithinAbs(5.0, 1e-12));
+    // the auxiliary state of the call is internal: not in the results
+    CHECK_FALSE(run.hasInternalVariable());
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-FACTOR: every form of an INTEGRAL call inside an equation", "[library-gaps][integral-factor]") {
+    struct Form { const char* name; const char* code; double expected; };
+    const Form forms[] = {
+        {"division", "v = 7.2E6\ny = integral(v, t, 0, 10, 1)/3.6E6\n", 20.0},
+        {"negative factor", "N = 0.2\nv = 3\ny = -N*integral(v, P, 1, 5, 0.5)\n", -2.4},
+        {"unary minus", "v = 3\ny = -integral(v, P, 1, 5, 0.5)\n", -12.0},
+        {"a + b*integral", "a = 10\nb = 2\nv = 3\ny = a + b*integral(v, P, 1, 5, 0.5)\n", 34.0},
+        {"a - integral", "a = 5\nv = 2\ny = a - integral(v, t, 0, 1, 0.1)\n", 3.0},
+        {"integral - a (still additive)", "w = 1\nv = 3\ny = integral(v, t, 0, 2, 0.5) - w\n", 5.0},
+        {"two calls in one equation", "f1 = 2\nf2 = t\ny = integral(f1, t, 0, 4, 0.5) - 2*integral(f2, t, 0, 4, 0.5)\n", -8.0},
+        {"product of two integrals", "a = 1\nb = 3\ny = integral(a, t, 0, 2, 0.5)*integral(b, t, 0, 2, 0.5)\n", 12.0},
+        {"function of the integral", "v = 3\ny = sqrt(integral(v, t, 0, 4, 0.5))\n", std::sqrt(12.0)},
+        {"scaled left-hand side", "f1 = 2\n2*y = integral(f1, t, 0, 4, 0.5)\n", 4.0},
+        {"call on the left-hand side", "f1 = 2\nintegral(f1, t, 0, 4, 0.5) = y\n", 8.0},
+        {"array element on the left", "f1 = 2\ny[1] = 3*integral(f1, t, 0, 1, 0.1)\ny = y[1]\n", 6.0},
+        {"integrand that is not a variable", "y = 5 - integral(2, t, 0, 1, 0.1)\n", 3.0},
+        {"integrand with an array element", "x[2] = 3\ny = 2*integral(x[2], t, 0, 4, 0.5)\n", 24.0},
+        {"integrand expression, factor", "y = 0.5*integral(x^2, x, 0, 3, 0.1)\n", 4.5},
+    };
+    for (const auto& f : forms) {
+        INFO(f.name);
+        auto run = runIntegral(f.code);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(f.expected, 1e-6));
+        CHECK_FALSE(run.hasInternalVariable());
+    }
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-FACTOR: the integral feeds back into its own integrand", "[library-gaps][integral-factor]") {
+    // y = 2*I, dI/dt = 1 - y  =>  y(t) = 1 - exp(-2 t)
+    auto run = runIntegral("y = 2*integral(dydt, t, 0, 1, 0.01)\ndydt = 1 - y\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(1.0 - std::exp(-2.0), 1e-6));
+    CHECK_THAT(run.table.interpolate("y", 0.5), WithinAbs(1.0 - std::exp(-1.0), 1e-6));
+    // the integrand is a constant expression of the state: dI/dt = -I, I(0) = 0 (an equation of its own)
+    auto dec = runIntegral("y = 3 + 2*integral(-z, t, 0, 1, 0.01)\nz = y - 3\n");
+    REQUIRE(dec.solveOk);
+    CHECK_THAT(dec["y"], WithinAbs(3.0, 1e-9));   // I stays 0
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-FACTOR: a base that varies along the trajectory is not an initial value", "[library-gaps][integral-factor]") {
+    // EES: y(t) = 2 t + t = 3 at t = 1. The base was evaluated once at t0 (y = 1).
+    SECTION("the base uses the integration variable") {
+        auto run = runIntegral("y = 2*t + integral(dydt, t, 0, 1, 0.1)\ndydt = 1\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(3.0, 1e-9));
+    }
+    SECTION("the base depends on t through an algebraic equation") {
+        auto run = runIntegral("a = 2*t\ny = a + integral(dydt, t, 0, 1, 0.1)\ndydt = 1\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(3.0, 1e-9));
+        CHECK_THAT(run["a"], WithinAbs(2.0, 1e-9));
+    }
+    SECTION("the base is another state: y2(1) = y1(1) + 1") {
+        auto run = runIntegral("y1 = 1 + integral(d1, t, 0, 1, 0.1)\nd1 = 1\ny2 = y1 + integral(d2, t, 0, 1, 0.1)\nd2 = 1\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y1"], WithinAbs(2.0, 1e-9));
+        CHECK_THAT(run["y2"], WithinAbs(3.0, 1e-9));
+    }
+    SECTION("a constant base keeps the plain state form") {
+        auto run = runIntegral("y0 = 4\ny = y0 + integral(dydt, t, 0, 1, 0.1)\ndydt = -y\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(4.0 * std::exp(-1.0), 1e-5));
+    }
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-FACTOR: negative tests", "[library-gaps][integral-factor]") {
+    SECTION("wrong arity") {
+        auto run = runIntegral("y = 2*integral(dydt, t)\ndydt = 1\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "4 or 5 arguments"));
+    }
+    SECTION("nested call") {
+        auto run = runIntegral("y = 2*integral(integral(a, t, 0, 1), t, 0, 1)\na = 1\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "Nested INTEGRAL"));
+    }
+    SECTION("a call in a limit") {
+        auto run = runIntegral("w = integral(a, t, 0, 1)\ny = integral(a, t, 0, 2*integral(a, t, 0, 1))\na = 1\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "Nested INTEGRAL"));
+    }
+    SECTION("different integration variables are still rejected (CS-GAP-INTEGRAL-MULTIVAR)") {
+        auto run = runIntegral("p = 1\ny = 2*integral(p, v1, 0, 1, 0.1)\nz = 3*integral(p, v2, 0, 1, 0.1)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "same integration variable"));
+    }
+    SECTION("a negative step") {
+        auto run = runIntegral("y = 2*integral(1, t, 0, 1, -0.1)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "step must be positive"));
+    }
+    SECTION("an equation of a DUPLICATE loop is a clear error, not a wrong value") {
+        auto run = runIntegral("DUPLICATE i=1,2\n y[i] = 1 + integral(dydt[i], t, 0, 1, 0.1)\n dydt[i] = -i*y[i]\nEND\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "DUPLICATE"));
+    }
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-FACTOR: default table of an equation with a factor", "[library-gaps][integral-factor]") {
+    auto run = runIntegral("y = 2*integral(dydt, t, 0, 1, 0.25)\ndydt = 4*t\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.table.columns() == Columns{"t", "y", "dydt"});
+    CHECK_THAT(run["y"], WithinAbs(4.0, 1e-9));
+    CHECK_THAT(run.table.interpolate("y", 0.5), WithinAbs(1.0, 1e-9));
+    CHECK(run.steps == 4);
+}
+
+// ---- CS-GAP-INTEGRAL-LIMITS ---------------------------------------------------
+
+TEST_CASE("CS-GAP-INTEGRAL-LIMITS: register reproducer (limits that are variables)", "[library-gaps][integral-limits]") {
+    auto run = runIntegral("t_1 = 0\nt_2 = 4\ny = 1 + integral(dydt, t, t_1, t_2)\ndydt = -y\n",
+                           [](SolverOptions& o) { o.integralMaxSteps = 400; });
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(std::exp(-4.0), 1e-5));
+    CHECK_THAT(run["t"], WithinAbs(4.0, 1e-12));
+    CHECK(run.steps == 400);
+    CHECK_FALSE(run.hasInternalVariable());
+    CHECK(run.table.columns() == Columns{"t", "y", "dydt"});
+}
+
+TEST_CASE("CS-GAP-INTEGRAL-LIMITS: constant expressions and the library model CSL-0047", "[library-gaps][integral-limits]") {
+    // the native file of CSL-0047: limits are expressions of constants, factor -N in front of the call
+    auto run = runIntegral(R"(
+N = 0.2
+V1 = 2
+V2 = V1*2
+T_K = 350
+R = 8314
+v1_bar = V1/N
+v2_bar = V2/N
+k = 1E4
+v_bar*(P + k/v_bar^2) = R*T_K
+W_b_EES = -N*integral(P, v_bar, v1_bar, v2_bar, 0.01)
+W_b_hand = -N*(R*T_K*ln(v2_bar/v1_bar) + k*(1/v2_bar - 1/v1_bar))
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["W_b_hand"], WithinAbs(-403297.8, 0.1));          // EES value of the README
+    CHECK_THAT(run["W_b_EES"], WithinRel(run["W_b_hand"], 1e-8));    // was +2 016 489 J (no -N, limits rejected)
+    CHECK_THAT(run["v_bar"], WithinAbs(20.0, 1e-9));                  // at the upper limit
+    CHECK_THAT(run["P"], WithinRel(8314.0*350.0/20.0 - 1e4/400.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-INTEGRAL-LIMITS: limits from expressions, a lower limit that is not zero", "[library-gaps][integral-limits]") {
+    SECTION("lower limit and upper limit are computed") {
+        auto run = runIntegral("t_lo = 1\nt_hi = t_lo + 2\ny = integral(2*t, t, t_lo, t_hi, 0.1)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(8.0, 1e-9));    // t^2 from 1 to 3
+        CHECK_THAT(run["t"], WithinAbs(3.0, 1e-12));
+        REQUIRE(run.table.numRows() > 1);
+        CHECK_THAT(run.cell("t", 0), WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run.cell("y", 0), WithinAbs(0.0, 1e-12));
+    }
+    SECTION("array elements as limits (the Stirling cycle model)") {
+        auto run = runIntegral("v[1] = 1\nv[2] = 3*v[1]\ny = integral(1/v12, v12, v[1], v[2], 0.01)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(std::log(3.0), 1e-9));
+    }
+    SECTION("limits from a user function") {
+        auto run = runIntegral("FUNCTION twice(x)\n twice = 2*x\nEND\nhi = twice(2)\ny = integral(t, t, 0, hi, 0.1)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(8.0, 1e-9));
+    }
+    SECTION("the limit is the solution of a nonlinear equation") {
+        auto run = runIntegral("a*exp(a/10) = 3*exp(0.3)\ny = integral(1, x, 0, a, 0.1)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(3.0, 1e-7));
+        CHECK_THAT(run["y"], WithinAbs(3.0, 1e-7));
+    }
+    SECTION("the limit is read from a coupled system, the integration variable has no other equation") {
+        auto run = runIntegral("x + y = 7\nx - y = 1\nz = integral(2, s, 0, x, 0.5)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["z"], WithinAbs(8.0, 1e-9));    // x = 4
+    }
+    SECTION("symbolic limits of a state equation with an additive base and a factor") {
+        auto run = runIntegral("tf = 2\nTw = 20 + integral(dTdt, t, 0, tf, 0.01)\ndTdt = -0.5*(Tw - 10)\nQ = 3*integral(dTdt, t, 0, tf, 0.01)\n");
+        REQUIRE(run.solveOk);
+        const double Tend = 10.0 + 10.0*std::exp(-1.0);
+        CHECK_THAT(run["Tw"], WithinAbs(Tend, 1e-6));
+        CHECK_THAT(run["Q"], WithinAbs(3.0*(Tend - 20.0), 1e-6));
+    }
+}
+
+TEST_CASE("CS-GAP-INTEGRAL-LIMITS: steady quadrature, the integration variable is a pressure (CSL-0010)", "[library-gaps][integral-limits]") {
+    // isothermal compression of an ideal gas: w = R*T*ln(p_out/p_in), W = m_dot*w
+    auto run = runIntegral(R"(
+m_dot = 0.5
+R = 287
+T = 300
+p_in = 1E5
+p_out = 6.25E5
+v_isoT = R*T/P
+W_dot_isoT = m_dot*integral(v_isoT, P, p_in, p_out, 1000)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["W_dot_isoT"], WithinRel(0.5*287.0*300.0*std::log(6.25), 1e-8));
+    CHECK_THAT(run["P"], WithinAbs(6.25E5, 1e-6));
+    CHECK(run.steps == 525);   // (6.25E5 - 1E5)/1000
+}
+
+TEST_CASE("CS-GAP-INTEGRAL-LIMITS: the step may be a variable or an expression", "[library-gaps][integral-limits]") {
+    SECTION("a variable") {
+        auto run = runIntegral("h = 0.25\ny = integral(2*t, t, 0, 1, h)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.steps == 4);
+        CHECK_THAT(run["y"], WithinAbs(1.0, 1e-12));
+    }
+    SECTION("an expression") {
+        auto run = runIntegral("dt = 0.5\ny = integral(2*t, t, 0, 1, dt/2)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.steps == 4);
+    }
+    SECTION("symbolic limits and a constant step") {
+        auto run = runIntegral("hi = 1\ny = integral(2*t, t, 0, hi, 0.1)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.steps == 10);
+    }
+}
+
+TEST_CASE("CS-GAP-INTEGRAL-LIMITS: several calls share the interval, defined by variables", "[library-gaps][integral-limits]") {
+    auto run = runIntegral("t_1 = 0\nt_2 = 2\ny = 2*integral(a, t, t_1, t_2, 0.5)\nz = integral(b, t, 0, 2, 0.5)\nw = integral(a, t, 0, t_2, 0.5)\na = 1\nb = 2\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(4.0, 1e-9));
+    CHECK_THAT(run["z"], WithinAbs(4.0, 1e-9));
+    CHECK_THAT(run["w"], WithinAbs(2.0, 1e-9));
+    // different intervals are an error, whether the limits are constants or variables
+    auto differ = runIntegral("a = 1\nb = 2\ny = integral(1, t, 0, a, 0.1)\nz = integral(1, t, 0, b, 0.1)\n");
+    CHECK_FALSE(differ.solveOk);
+    CHECK(anyContains({differ.message}, "same [lo, hi] interval"));
+    auto constants = runIntegral("y = integral(1, t, 0, 1, 0.1)\nz = integral(1, t, 0, 2, 0.1)\n");
+    CHECK_FALSE(constants.solveOk);
+    CHECK(anyContains({constants.message}, "same [lo, hi] interval"));
+}
+
+TEST_CASE("CS-GAP-INTEGRAL-LIMITS: a limit that changes along the trajectory is an error", "[library-gaps][integral-limits]") {
+    SECTION("the upper limit depends on the integration variable") {
+        auto run = runIntegral("tf = 2 + t\ny = 1 + integral(dydt, t, 0, tf)\ndydt = -y\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "upper limit 'tf'"));
+        CHECK(anyContains({run.message}, "depends on the integration variable"));
+    }
+    SECTION("the upper limit depends on a state") {
+        auto run = runIntegral("tf = 2 + y\ny = 1 + integral(dydt, t, 0, tf)\ndydt = -y\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "depends on the integration variable"));
+    }
+    SECTION("the lower limit depends on a state") {
+        auto run = runIntegral("t0 = 0.1*y\ny = 1 + integral(dydt, t, t0, 2)\ndydt = -y\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "lower limit"));
+    }
+    SECTION("the step depends on a state") {
+        auto run = runIntegral("h = 0.1*y\ny = 1 + integral(dydt, t, 0, 2, h)\ndydt = -y\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "step"));
+    }
+    SECTION("through an algebraic loop containing the integration variable") {
+        auto run = runIntegral("hi = 1 + 0.5*v\nv = 2 - 0.5*t + 0*hi\ny = integral(1, t, 0, hi, 0.1)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "depends on the integration variable"));
+    }
+}
+
+TEST_CASE("CS-GAP-INTEGRAL-LIMITS: interval errors", "[library-gaps][integral-limits]") {
+    SECTION("upper limit below the lower limit") {
+        auto run = runIntegral("a = 2\nb = 1\ny = integral(1, t, a, b, 0.1)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "Invalid integration interval"));
+    }
+    SECTION("a limit that nothing defines") {
+        auto run = runIntegral("y = integral(1, t, 0, hi_undefined, 0.1)\nz = 2\n");
+        CHECK_FALSE(run.solveOk);
+    }
+    SECTION("the equations that define the limit cannot be solved") {
+        auto run = runIntegral("a = sqrt(0 - 1)\ny = integral(1, t, 0, a, 0.1)\n");
+        CHECK_FALSE(run.solveOk);
+    }
+}
+
+// ---- CS-BUG-INTEGRAL-MAXSTEPS ----------------------------------------------
+
+TEST_CASE("CS-BUG-INTEGRAL-MAXSTEPS: register reproducer, the explicit step of the model wins", "[library-gaps][integral-maxsteps]") {
+    // was: SUCCESS after 4*integralMaxSteps = 4000 steps, trajectory and .sol at t = 4000
+    auto run = runIntegral("y = 1 + integral(dydt, t, 0, 5000, 1)\ndydt = -y\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.steps == 5000);
+    CHECK_THAT(run["t"], WithinAbs(5000.0, 1e-9));
+    REQUIRE(run.table.numRows() == 5001);
+    CHECK_THAT(run.cell("t", 5000), WithinAbs(5000.0, 1e-9));
+    CHECK_THAT(run.cell("t", 4000), WithinAbs(4000.0, 1e-9));
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-MAXSTEPS: the number of steps follows from (hi - lo)/step", "[library-gaps][integral-maxsteps]") {
+    const char* model = "y = integral(2, t, 0, 1, 0.1)\n";
+    for (int maxSteps : {3, 10, 1000}) {
+        INFO("integralMaxSteps = " << maxSteps);
+        auto run = runIntegral(model, [&](SolverOptions& o) { o.integralMaxSteps = maxSteps; });
+        REQUIRE(run.solveOk);
+        CHECK(run.steps == 10);
+        CHECK_THAT(run["y"], WithinAbs(2.0, 1e-12));
+    }
+    SECTION("a step that does not divide the interval: the last step is shorter") {
+        auto run = runIntegral("y = integral(2, t, 0, 1, 0.3)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.steps == 4);
+        CHECK_THAT(run["t"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["y"], WithinAbs(2.0, 1e-12));
+        REQUIRE(run.table.numRows() == 5);
+        CHECK_THAT(run.cell("t", 3), WithinAbs(0.9, 1e-12));
+    }
+    SECTION("a step larger than the interval takes one step") {
+        auto run = runIntegral("y = integral(2, t, 0, 1, 5)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.steps == 1);
+        CHECK_THAT(run["y"], WithinAbs(2.0, 1e-12));
+    }
+    SECTION("accumulated rounding does not add a spurious step") {
+        auto run = runIntegral("y = integral(2, t, 0, 1, 0.01)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.steps == 100);
+        auto big = runIntegral("y = integral(2, P, 1E5, 6.25E5, 1000)\n");
+        REQUIRE(big.solveOk);
+        CHECK(big.steps == 525);
+    }
+    SECTION("the fixed step of the configuration is explicit as well") {
+        auto run = runIntegral("y = integral(2, t, 0, 1)\n",
+                               [](SolverOptions& o) { o.integralFixedStep = 0.2; o.integralMaxSteps = 3; });
+        REQUIRE(run.solveOk);
+        CHECK(run.steps == 5);
+    }
+    SECTION("the step of the model wins over the configuration") {
+        auto run = runIntegral("y = integral(2, t, 0, 1, 0.5)\n",
+                               [](SolverOptions& o) { o.integralFixedStep = 0.2; });
+        REQUIRE(run.solveOk);
+        CHECK(run.steps == 2);
+    }
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-MAXSTEPS: without a step, integralMaxSteps is the number of steps", "[library-gaps][integral-maxsteps]") {
+    for (const char* method : {"RK4", "EulerExplicit", "EulerImplicit"}) {
+        INFO(method);
+        auto run = runIntegral("y = integral(2, t, 0, 1)\n",
+                               [&](SolverOptions& o) { o.integralMethod = method; o.integralMaxSteps = 50; });
+        REQUIRE(run.solveOk);
+        CHECK(run.steps == 50);
+        CHECK_THAT(run["t"], WithinAbs(1.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-MAXSTEPS: an adaptive run that exhausts its budget is an error, not a success", "[library-gaps][integral-maxsteps]") {
+    // dy/dt = -50 y needs ~150 RK45 steps over [0, 10]; the budget is 4*integralMaxSteps attempts
+    const char* model = "y = 1 + integral(dydt, t, 0, 10)\ndydt = -50*y\n";
+    auto starved = runIntegral(model, [](SolverOptions& o) {
+        o.integralMethod = "RK45";
+        o.integralMaxSteps = 3;
+    });
+    CHECK_FALSE(starved.solveOk);
+    CHECK(anyContains({starved.message}, "integralMaxSteps"));
+    CHECK(anyContains({starved.message}, "before reaching the upper limit"));
+    // with a sufficient budget the same model succeeds
+    auto fed = runIntegral(model, [](SolverOptions& o) {
+        o.integralMethod = "RK45";
+        o.integralMaxSteps = 1000;
+    });
+    REQUIRE(fed.solveOk);
+    CHECK_THAT(fed["t"], WithinAbs(10.0, 1e-9));
+    CHECK(std::abs(fed["y"]) < 1e-6);
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-MAXSTEPS: an absurd number of steps is refused up front", "[library-gaps][integral-maxsteps]") {
+    auto run = runIntegral("y = integral(2, t, 0, 1, 1E-12)\n");
+    CHECK_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "more than 2e9 steps"));
+}
+
+// ---- CS-BUG-INTEGRAL-TABLE-SEP -------------------------------------------------
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-SEP: register reproducer, columns separated by ;", "[library-gaps][integral-table]") {
+    // was: header "t,y;,dydt" and an empty y column
+    auto run = runIntegral("y = 1 + integral(dydt, t, 0, 4)\ndydt = -y\n$IntegralTable t:0.5; y; dydt\n",
+                           [](SolverOptions& o) { o.integralMaxSteps = 400; });
+    REQUIRE(run.solveOk);
+    CHECK(run.table.columns() == Columns{"t", "y", "dydt"});
+    CHECK_THAT(run.table.interpolate("y", 0.5), WithinAbs(std::exp(-0.5), 1e-6));
+    CHECK_THAT(run.table.interpolate("dydt", 0.5), WithinAbs(-std::exp(-0.5), 1e-6));
+    CHECK(run.warnings.empty());
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-SEP: spaces, commas and semicolons, in any mix", "[library-gaps][integral-table]") {
+    const Columns expected{"t", "y", "dydt", "z"};
+    for (const char* body : {"t:0.5 y dydt z", "t:0.5; y; dydt; z", "t:0.5, y, dydt, z", "t:0.5,y,dydt,z",
+                             "t:0.5;y;dydt;z", "t:0.5, y; dydt z", "t:0.5 ,y ;dydt, z", "  t:0.5\ty,\tdydt;z  ",
+                             "t:0.5, y, dydt, z,", "t:0.5; y; dydt; z;", "t:0.5,, y;; dydt, z"}) {
+        INFO("$IntegralTable " << body);
+        auto spec = parseTableSpec(body);
+        CHECK(spec.valid);
+        CHECK(spec.columns == expected);
+        CHECK_THAT(spec.outputInterval, WithinAbs(0.5, 1e-12));
+    }
+    // no output interval
+    CHECK(parseTableSpec("t, y; dydt").columns == Columns{"t", "y", "dydt"});
+    CHECK(parseTableSpec("t, y; dydt").outputInterval == 0.0);
+    // array ranges and subscripts: a delimiter inside brackets belongs to the subscript
+    CHECK(parseTableSpec("t; X[1..3], z").columns == Columns{"t", "X[1]", "X[2]", "X[3]", "z"});
+    CHECK(parseTableSpec("t, A[1,2], B[ 3, 4 ]; C").columns == Columns{"t", "A[1,2]", "B[3,4]", "C"});
+    // names of the EES models of the collection
+    CHECK(parseTableSpec("tau:1; dU\\dtau; Q_dot_tap; t_tank").columns ==
+          Columns{"tau", "dU\\dtau", "Q_dot_tap", "t_tank"});
+    CHECK(parseTableSpec("tau:10,  x_ice, u, t_w, DELTAu").columns ==
+          Columns{"tau", "x_ice", "u", "t_w", "DELTAu"});
+    // a comment after the list is not a column
+    CHECK(parseTableSpec("t:0.5; y {the state}").columns == Columns{"t", "y"});
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-SEP: the same trajectory whatever the separator", "[library-gaps][integral-table]") {
+    const std::string model = "y = 1 + integral(dydt, t, 0, 2)\ndydt = -y\nz = 3*y\n";
+    auto space = runIntegral(model + "$IntegralTable t:0.5 y dydt z\n", [](SolverOptions& o) { o.integralMaxSteps = 200; });
+    auto semi = runIntegral(model + "$IntegralTable t:0.5; y; dydt; z\n", [](SolverOptions& o) { o.integralMaxSteps = 200; });
+    auto comma = runIntegral(model + "$IntegralTable t:0.5,y,dydt,z\n", [](SolverOptions& o) { o.integralMaxSteps = 200; });
+    REQUIRE(space.solveOk);
+    REQUIRE(semi.solveOk);
+    REQUIRE(comma.solveOk);
+    CHECK(semi.table.toCSV() == space.table.toCSV());
+    CHECK(comma.table.toCSV() == space.table.toCSV());
+    CHECK(space.table.numRows() == 5);
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-SEP: an unknown column is reported, not silently empty", "[library-gaps][integral-table]") {
+    auto run = runIntegral("y = 1 + integral(dydt, t, 0, 1)\ndydt = -y\n$IntegralTable t:0.5; y; nothere; dydt\n",
+                           [](SolverOptions& o) { o.integralMaxSteps = 100; });
+    REQUIRE(run.solveOk);
+    CHECK(run.warnings.size() == 1);
+    CHECK(anyContains(run.warnings, "'nothere' is not a variable of the model"));
+    // the known columns are filled, the unknown one stays empty and keeps its place
+    CHECK(run.table.columns() == Columns{"t", "y", "nothere", "dydt"});
+    CHECK_THAT(run.cell("y", 0), WithinAbs(1.0, 1e-12));
+    CHECK(std::isnan(run.cell("nothere", 0)));
+    // the separator typo of the register is reported the same way (a name that is not a variable)
+    auto typo = runIntegral("y = 1 + integral(dydt, t, 0, 1)\ndydt = -y\n$IntegralTable t:0.5 y: dydt\n",
+                            [](SolverOptions& o) { o.integralMaxSteps = 100; });
+    REQUIRE(typo.solveOk);
+    CHECK(anyContains(typo.warnings, "'y:' is not a variable of the model"));
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-SEP: a column listed twice, the output interval as a variable", "[library-gaps][integral-table]") {
+    SECTION("a column listed twice is kept once") {
+        auto run = runIntegral("y = 1 + integral(dydt, t, 0, 1)\ndydt = -y\n$IntegralTable t:0.5 y Y dydt y\n",
+                               [](SolverOptions& o) { o.integralMaxSteps = 100; });
+        REQUIRE(run.solveOk);
+        CHECK(run.table.columns() == Columns{"t", "y", "dydt"});
+        CHECK(anyContains(run.warnings, "listed twice"));
+        CHECK(run.table.numRows() == 3);
+    }
+    SECTION("the output interval may be a variable holding a constant (EES)") {
+        auto run = runIntegral("dt_out = 0.5\ny = 1 + integral(dydt, t, 0, 2)\ndydt = -y\n$IntegralTable t:dt_out, y\n",
+                               [](SolverOptions& o) { o.integralMaxSteps = 200; });
+        REQUIRE(run.solveOk);
+        CHECK(run.table.numRows() == 5);
+        CHECK(run.warnings.empty());
+        auto spec = parseTableSpec("tau:DELTAtau_table,tau_summer,time_day");
+        CHECK(spec.valid);
+        CHECK(spec.columns == Columns{"tau", "tau_summer", "time_day"});
+    }
+    SECTION("an output interval that is not a variable is reported") {
+        auto run = runIntegral("y = 1 + integral(dydt, t, 0, 1)\ndydt = -y\n$IntegralTable t:nothere y\n",
+                               [](SolverOptions& o) { o.integralMaxSteps = 10; });
+        REQUIRE(run.solveOk);
+        CHECK(anyContains(run.warnings, "output interval 'nothere'"));
+        CHECK(run.table.numRows() == 11);   // every step
+    }
+    SECTION("an invalid output interval is a warning of the parser") {
+        auto spec = parseTableSpec("t:%$ y");
+        CHECK_FALSE(spec.valid);
+        CHECK(anyContains({spec.errorMessage}, "invalid output interval"));
+    }
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-SEP: the first name must be the integration variable", "[library-gaps][integral-table]") {
+    auto run = runIntegral("y = 1 + integral(dydt, t, 0, 1)\ndydt = -y\n$IntegralTable y:0.5 t\n",
+                           [](SolverOptions& o) { o.integralMaxSteps = 100; });
+    REQUIRE(run.solveOk);
+    CHECK(anyContains(run.warnings, "is not the integration variable"));
+}
+
+// ---- CS-BUG-INTEGRAL-TABLE-CASE ---------------------------------------------
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-CASE: register reproducer (t_w in the table, T_w in the equations)", "[library-gaps][integral-table]") {
+    // was: the t_w column empty
+    auto run = runIntegral("u = 0 + INTEGRAL(u_dot, tau, 0, 10)\nu_dot = 1\nq = 5*(5 - T_w)\nt_w = 20\n$IntegralTable tau:10 t_w u\n",
+                           [](SolverOptions& o) { o.integralMaxSteps = 10; });
+    REQUIRE(run.solveOk);
+    REQUIRE(run.table.numRows() == 2);
+    CHECK(run.table.columns() == Columns{"tau", "T_w", "u"});   // header: spelling of the model
+    CHECK_THAT(run.cell("T_w", 0), WithinAbs(20.0, 1e-12));
+    CHECK_THAT(run.cell("T_w", 1), WithinAbs(20.0, 1e-12));
+    CHECK_THAT(run.cell("u", 1), WithinAbs(10.0, 1e-9));
+    CHECK(run.warnings.empty());
+    // the solution file holds the variable once, with the spelling of the model
+    CHECK(run.has("T_w"));
+    CHECK_THAT(run["t_w"], WithinAbs(20.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-CASE: state, derivative, integration variable and algebraic columns in any case", "[library-gaps][integral-table]") {
+    const std::string model = "Y = 1 + integral(Dydt, TAU, 0, 2)\ndydt = -y\nZ = 3*y\n";
+    auto run = runIntegral(model + "$IntegralTable tau:0.5 y DYDT z\n", [](SolverOptions& o) { o.integralMaxSteps = 200; });
+    REQUIRE(run.solveOk);
+    REQUIRE(run.table.numRows() == 5);
+    CHECK(run.table.columns() == Columns{"TAU", "Y", "Dydt", "Z"});
+    CHECK_THAT(run.cell("TAU", 2), WithinAbs(1.0, 1e-9));
+    CHECK_THAT(run.cell("Y", 4), WithinAbs(std::exp(-2.0), 1e-6));
+    CHECK_THAT(run.cell("Dydt", 4), WithinAbs(-std::exp(-2.0), 1e-6));
+    CHECK_THAT(run.cell("Z", 4), WithinAbs(3.0*std::exp(-2.0), 1e-6));
+    CHECK(run.warnings.empty());
+    // the default table (no directive) is unchanged
+    auto plain = runIntegral(model, [](SolverOptions& o) { o.integralMaxSteps = 200; });
+    REQUIRE(plain.solveOk);
+    CHECK(plain.table.columns() == Columns{"TAU", "Y", "Dydt"});
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-CASE: the integration variable is the same whatever its case in the calls", "[library-gaps][integral-table]") {
+    // EES names are case-insensitive: INTEGRAL(..., T, ...) and INTEGRAL(..., t, ...) share one variable
+    auto run = runIntegral("y = integral(a, T, 0, 2, 0.5)\nz = integral(b, t, 0, 2, 0.5)\na = 1\nb = 2\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(2.0, 1e-9));
+    CHECK_THAT(run["z"], WithinAbs(4.0, 1e-9));
+    // genuinely different variables are still rejected
+    auto other = runIntegral("y = integral(a, T, 0, 2, 0.5)\nz = integral(b, s, 0, 2, 0.5)\na = 1\nb = 2\n");
+    CHECK_FALSE(other.solveOk);
+    CHECK(anyContains({other.message}, "same integration variable"));
 }

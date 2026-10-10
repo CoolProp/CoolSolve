@@ -447,10 +447,14 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
           + 'Ignored for non-integral models.' },
       { key: 'integralFixedStep', label: 'Fixed step', type: 'number', defaultVal: '0',
         description:
-          'Fixed time step. 0 ⇒ derive the step from integralMaxSteps and the integration interval. '
+          'Fixed time step, used when the INTEGRAL() call has no step of its own (a step given as the 5th '
+          + 'argument of INTEGRAL always wins). 0 ⇒ derive the step from integralMaxSteps and the integration interval. '
           + 'Used by EulerExplicit, EulerImplicit, RK4 (and by RK45 as the initial step guess).' },
       { key: 'integralMaxSteps', label: 'Max steps', type: 'number', defaultVal: '1000',
-        description: 'Upper bound on the number of integration steps. The march aborts if exceeded.' },
+        description:
+          'Number of steps of a fixed-step method that has no explicit step (the step is then interval/maxSteps); '
+          + 'it does not apply when the model gives a step. For RK45 it is the budget: 4·maxSteps attempted steps. '
+          + 'A run that stops before the upper limit is reported as an error.' },
       { key: 'integralRelTol', label: 'Relative tol.', type: 'number', defaultVal: '1e-6',
         description:
           'RK45 local-error control (relative component). '

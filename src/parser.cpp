@@ -1387,16 +1387,33 @@ private:
 
     // Parse the body of a `$IntegralTable` directive into an IntegralTableSpec.
     // EES syntax:  $IntegralTable t:0.1  y  dydt  X[1..5]
-    //   - first token: integration variable, optionally followed by ":interval"
-    //   - remaining tokens: tabulated variables; "X[lo..hi]" ranges are expanded
+    //   - first name: integration variable, optionally followed by ":interval" (a number, or
+    //     the name of a variable that holds a constant, read at the initial point)
+    //   - remaining names: tabulated variables; "X[lo..hi]" ranges are expanded
     //     to X[1], X[2], ... at parse time so the rest of the pipeline sees a
     //     flat column list (additive — only active inside this directive parser).
+    //   - names are separated by spaces or by the EES list delimiters `,` and `;`
+    //     (`t:0.5; y; dydt`, `t:0.5, y, dydt`); a delimiter inside brackets belongs to the
+    //     array subscript (`X[1,2]`).
     static IntegralTableSpec parseIntegralTableContent(const std::string& content) {
         IntegralTableSpec spec;
-        std::istringstream iss(content);
         std::vector<std::string> tokens;
-        std::string tok;
-        while (iss >> tok) tokens.push_back(tok);
+        {
+            std::string cur;
+            int depth = 0;
+            for (char c : content) {
+                if (c == '[') ++depth;
+                else if (c == ']' && depth > 0) --depth;
+                const bool space = std::isspace(static_cast<unsigned char>(c)) != 0;
+                if (depth == 0 && (space || c == ',' || c == ';')) {
+                    if (!cur.empty()) tokens.push_back(cur);
+                    cur.clear();
+                } else if (!(depth > 0 && space)) {   // blanks inside a subscript are dropped
+                    cur += c;
+                }
+            }
+            if (!cur.empty()) tokens.push_back(cur);
+        }
         if (tokens.empty()) {
             spec.errorMessage = "no integration variable specified";
             return spec;
@@ -1406,10 +1423,23 @@ private:
         size_t colon = first.find(':');
         if (colon != std::string::npos) {
             spec.integrationVar = first.substr(0, colon);
+            const std::string interval = first.substr(colon + 1);
+            size_t used = 0;
+            double value = 0.0;
+            bool isNumber = false;
             try {
-                spec.outputInterval = std::stod(first.substr(colon + 1));
+                value = std::stod(interval, &used);
+                isNumber = used == interval.size();
             } catch (...) {
-                spec.errorMessage = "invalid output interval '" + first.substr(colon + 1) + "'";
+                isNumber = false;
+            }
+            if (isNumber) {
+                spec.outputInterval = value;
+            } else if (!interval.empty() &&
+                       (std::isalpha(static_cast<unsigned char>(interval[0])) || interval[0] == '_')) {
+                spec.outputIntervalVar = interval;   // a variable set to a constant (EES)
+            } else {
+                spec.errorMessage = "invalid output interval '" + interval + "'";
                 return spec;
             }
         } else {

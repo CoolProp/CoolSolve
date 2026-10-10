@@ -26,7 +26,7 @@ struct Diagnostic {
     int line   = 0;         // Source line (0 = not applicable)
     int column = 0;         // Source column (0 = not applicable)
     std::string source;     // Subsystem: "parser", "evaluator", "solver",
-                            //            "coolprop", "checker"
+                            //            "coolprop", "checker", "integral"
 };
 
 // ============================================================================
