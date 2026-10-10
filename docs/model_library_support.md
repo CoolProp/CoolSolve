@@ -450,17 +450,20 @@ models (148): 98 verified / 7 runs / 43 blocked before, 105 verified / 8 runs /
 - *Baselines*: examples not solving: `cooling_tower2`,
   `internal_combustion_engine_cpbar`, `orc_complex`, `simple_centrifugal_compressor`,
   `turbocompressor_interpolate`, `water_libr`. Library regression: 151 targets
-  with 7 failures that predate the campaign (`CSL-0114`, `CSL-0038`, `CSL-0019`,
-  `CSL-0039`, `CSL-0153:coolsolve`, `CSL-0158:coolsolve`, `CSL-0124:coolsolve`: their
-  `.sol` come from another CoolProp build; re-baseline them at the end).
+  with 5 failures that predate the campaign (`CSL-0114`, `CSL-0038`, `CSL-0019`,
+  `CSL-0039`, `CSL-0158:coolsolve`): their `.sol` were solved with a CoolProp `master`
+  newer than the pin (≥ `babba366`, 2026-09-27, which brings the Perkins–Huber–Assael
+  2016 R245fa viscosity and conductivity; the pin and every CoolProp release up to 8.0.0
+  give R245fa vapour values 14–25 % above NIST/REFPROP 10). Conversely the
+  `CSL-0124:coolsolve` and `CSL-0153:coolsolve` `.sol`, re-baselined on 2026-10-10
+  with the pin, carry the old R245fa transport values: re-baseline them again after
+  unpinning.
 
 **Queue** (next first):
 0. `CSL-0118` (air nozzle/ejector): its isentropic nozzle/diffuser relations are written as ratios of
    absolute enthalpies, valid only with EES's "h = 0 at 0 K" reference of `Air`; rewrite them with
    absolute-temperature ratios (same physics, any reference), remove `CS-GAP-AIR-ENTHALPY-REF` from
-   §4 and from the model, and re-check the native file (other gap: `CS-GAP-CALL-WARNING`). Outside
-   CoolSolve: investigate the jump of the R245fa transport properties in CoolProp 7 (vapour viscosity
-   and conductivity +15–25 % vs the older build and REFPROP 8); CoolProp issue to file if confirmed.
+   §4 and from the model, and re-check the native file (other gap: `CS-GAP-CALL-WARNING`).
 1. BrineProp family: `CS-GAP-ELSEIF-CHAIN`, `CS-GAP-UPPERCASE` (with the cheap EES
    string functions, `CS-GAP-STRINGPOS`), `CS-GAP-STRING-ARRAY`; settle the §8 note on
    one-word `ELSEIF` (silently ignored condition). Expected to free `CSL-0079` and
@@ -481,7 +484,10 @@ models (148): 98 verified / 7 runs / 43 blocked before, 105 verified / 8 runs /
 5. `CS-GAP-INCLUDE` / `CS-FEAT-IMPORT` (§2.3), a feature of its own; serving the
    library dashboard `library.html` in the GUI (§2.1–§2.2) belongs to the same
    integration work.
-6. Close-out: unpin CoolProp, re-baseline the library `.sol`, merge the branch.
+6. Close-out: move CoolProp to a `master` ≥ `babba366` (R245fa transport, R1233zd(E) transport
+   restored by #3335); before, check the examples and the library against #3333 (breaking change,
+   2026-08-29) and `da48a3ee` (#3446: viscosity/conductivity throw for 0 < quality < 1); then
+   re-baseline the library `.sol` (at least `CSL-0124`, `CSL-0153` variants) and merge the branch.
 
 **Library follow-ups for the maintainer** (decisions, not CoolSolve fixes):
 `CSL-0078`'s native file fixes `P_ev`, `P_cd`, `M_dot_r` at the stored EES values
