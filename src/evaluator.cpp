@@ -28,6 +28,21 @@ namespace coolsolve {
 // AbstractState Cache (thread-local for thread safety)
 // ============================================================================
 
+/// A new AbstractState for a CoolProp fluid name; a mixture `A[x]&B[y]` (see MixtureFluid) is built
+/// from its components, with its mole fractions set.
+static std::shared_ptr<CoolProp::AbstractState> createState(const std::string& backend,
+                                                            const std::string& fluidName) {
+    if (fluidName.find('&') == std::string::npos)
+        return std::shared_ptr<CoolProp::AbstractState>(CoolProp::AbstractState::factory(backend, fluidName));
+    std::string reason;
+    auto mixture = std::dynamic_pointer_cast<MixtureFluid>(FluidRegistry::getFluid(fluidName, &reason));
+    if (!mixture) throw std::runtime_error(reason.empty() ? "Unknown mixture: " + fluidName : reason);
+    std::shared_ptr<CoolProp::AbstractState> state(
+        CoolProp::AbstractState::factory(backend, mixture->getComponentList()));
+    state->set_mole_fractions(mixture->getMoleFractions());
+    return state;
+}
+
 /// Per-thread cache of AbstractState objects keyed by "backend::fluidName".
 /// Avoids repeated string parsing, fluid lookup, and EOS initialisation that
 /// PropsSI performs on every call.
@@ -45,8 +60,7 @@ struct AbstractStateCache {
             return it->second;
         }
         ++misses;
-        auto state = std::shared_ptr<CoolProp::AbstractState>(
-            CoolProp::AbstractState::factory(backend, fluidName));
+        auto state = createState(backend, fluidName);
         states[key] = state;
         return state;
     }
@@ -399,6 +413,16 @@ static std::string paramToString(CoolProp::parameters param) {
     }
 }
 
+/// The fluid of a property call. An unknown name, or an invalid mixture string, is an error that says
+/// why; a mixture also gets its once-per-run warning (its properties are predictive).
+static std::shared_ptr<Fluid> resolveFluid(const std::string& name, DiagnosticCollector* diag) {
+    std::string reason;
+    auto fluid = FluidRegistry::getFluid(name, &reason);
+    if (!fluid) throw std::runtime_error(reason.empty() ? unknownFluidErrorMessage(name) : reason);
+    if (fluid->getType() == FluidType::Mixture) warnMixtureFluid(diag, fluid->getName());
+    return fluid;
+}
+
 // ============================================================================
 // ExpressionEvaluator Implementation
 // ============================================================================
@@ -669,10 +693,7 @@ std::string ExpressionEvaluator::evaluateString(const ExprPtr& expr) {
                     }
                 }
             }
-            auto fluid = FluidRegistry::getFluid(eesFluidName);
-            if (!fluid) {
-                throw std::runtime_error(unknownFluidErrorMessage(eesFluidName));
-            }
+            auto fluid = resolveFluid(eesFluidName, diagnostics_);
             if (fluid->getType() == FluidType::HumidAir) {
                 return "gas";
             }
@@ -983,6 +1004,7 @@ ExpressionEvaluator ExpressionEvaluator::makeBodyEvaluator(const char* kind, con
     body.userFunctions_ = userFunctions_;
     body.userProcedures_ = userProcedures_;
     body.lookupTableStore_ = lookupTableStore_;
+    body.diagnostics_ = diagnostics_;   // warnings raised in a body (mixtures, CoolProp errors) are reported too
     body.routine_ = std::string(kind) + " '" + name + "'";
     return body;
 }
@@ -1034,10 +1056,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         }
     }
     
-    auto fluid = FluidRegistry::getFluid(eesFluidName);
-    if (!fluid) {
-        throw std::runtime_error(unknownFluidErrorMessage(eesFluidName));
-    }
+    auto fluid = resolveFluid(eesFluidName, diagnostics_);
     
     // Derived thermophysical properties — compute by combining base CoolProp calls
     // entirely in AD space so gradients are correct.
@@ -1077,11 +1096,15 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             if (inputs.empty()) {
                 return ADValue::constant(28.966, numVariables_);
             }
-        } else if (fluid->getType() != FluidType::Unknown && fluid->getType() != FluidType::Mixture) {
+        } else if (fluid->getType() != FluidType::Unknown) {
             // For pure fluids or incompressible, molar mass is constant
             if (inputs.empty()) {
                 std::string cpFluidName = fluid->getCoolPropName();
                 try {
+                    if (fluid->getType() == FluidType::Mixture) {   // mole-weighted, no state needed
+                        auto state = g_abstractStateCache.getOrCreate(coolpropConfig_.getBackendString(), cpFluidName);
+                        return ADValue::constant(state->molar_mass() * KG_PER_KMOL, numVariables_);
+                    }
                     double mm = timedPropsSI("M", "T", 300, "P", 101325, cpFluidName);
                     return ADValue::constant(mm * KG_PER_KMOL, numVariables_);
                 } catch (...) {
@@ -1352,10 +1375,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     }
     
     // --- Standard CoolProp Handling ---
-    if (fluid->getType() == FluidType::Mixture) {
-        throw std::runtime_error("Fluid '" + eesFluidName + "' (mixture) is not available. "
-            "Use REFPROP or an external correlation.");
-    } else if (fluid->getType() == FluidType::Unknown) {
+    if (fluid->getType() == FluidType::Unknown) {
         auto unsupported = std::dynamic_pointer_cast<UnsupportedFluid>(fluid);
         throw std::runtime_error("Fluid '" + eesFluidName + "' is not supported: " + (unsupported ? unsupported->getReason() : "Unknown reason"));
     }
@@ -1455,6 +1475,11 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         std::string lowerName = funcName;
         std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
         if (lowerName == "t_sat" || lowerName == "p_sat" || lowerName == "tsat" || lowerName == "psat") {
+            if (fluid->getType() == FluidType::Mixture) {
+                throw std::runtime_error(func.name + "() is not defined for the mixture '" + fluid->getName() +
+                    "': it has a bubble and a dew point, not one saturation point. Use temperature(fluid, P=..., x=0) "
+                    "for the bubble point and x=1 for the dew point (pressure(fluid, T=..., x=0 or 1) at given T)");
+            }
             inputs["q"] = ADValue::constant(0.5, numVariables_);
         }
     }
@@ -1884,8 +1909,20 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 // else: residualOnly_ → derivatives stay 0
                 
                 usedAbstractState = true;
-            } catch (...) {
+            } catch (const std::exception& e) {
+                // A mixture has no other path (PropsSI would only return Inf and lose the reason)
+                if (fluid->getType() == FluidType::Mixture) {
+                    const std::string what = e.what();
+                    if (what.find("with inputs:") != std::string::npos) throw;   // already says which call
+                    std::ostringstream oss;
+                    oss << what << " [" << outputStr << "(" << cpFluidName << ") with inputs: "
+                        << input1Str << "=" << val1 << siUnitLabel(input1Param) << ", "
+                        << input2Str << "=" << val2 << siUnitLabel(input2Param) << "]";
+                    throw std::runtime_error(oss.str());
+                }
                 // AbstractState failed — fall through to PropsSI below
+                usedAbstractState = false;
+            } catch (...) {
                 usedAbstractState = false;
             }
         }

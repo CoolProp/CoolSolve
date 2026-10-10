@@ -49,12 +49,13 @@ static bool nearValue(double v, double target, double tol) {
 static void emitHint(DiagnosticCollector* diag,
                      const std::string& key,
                      const std::string& message,
-                     int line) {
+                     int line,
+                     const char* code = "C002") {
     if (!diag || g_thermoHintKeys.count(key)) return;
     g_thermoHintKeys.insert(key);
     Diagnostic d;
     d.severity = DiagnosticSeverity::Warning;
-    d.code = "C002";
+    d.code = code;
     d.message = message;
     d.source = "user_hints";
     d.line = line;
@@ -347,6 +348,15 @@ void checkThermoInputValueHint(DiagnosticCollector* diag,
             hintRelativeHumidity(diag, context, paramName, modelValue, line);
             break;
     }
+}
+
+void warnMixtureFluid(DiagnosticCollector* diag, const std::string& mixtureName) {
+    emitHint(diag, "mixture:" + mixtureName,
+             "Fluid '" + mixtureName + "' is a CoolProp mixture: its properties come from CoolProp's mixture model, "
+             "which is predictive (mixing rules with binary interaction parameters) and may be unreliable, "
+             "especially for two-phase (bubble/dew) states and for transport properties (viscosity, conductivity). "
+             "Check the results against measurements or REFPROP.",
+             0, "C003");
 }
 
 std::string coolPropUnitsReminder(const UnitSystem& units) {

@@ -507,6 +507,42 @@ rho = density('MEG', 30, T=10, P=101325)   "30 % MEG at 10 °C"
 cp  = cp('EthyleneGlycol', T=10, P=101325, C=30)
 ```
 
+### CoolProp mixtures
+
+A **mixture** is written in CoolProp's syntax `A[x]&B[y]`: two or more components, each followed by
+its **mole fraction** in brackets. It is used as any fluid, as a literal or in a string variable,
+and the properties are computed by CoolProp's mixture model:
+
+```ees
+fl$ = 'R245fa[0.5]&R134a[0.5]'
+h_1 = enthalpy(fl$, T=50, P=5E5)
+T_bub = temperature(fl$, P=5E5, x=0)    "bubble point, 32.9 °C"
+T_dew = temperature(fl$, P=5E5, x=1)    "dew point, 46.2 °C: a glide of 13 K"
+M = molarmass(fl$)                      "mole-weighted, in kg/kmol: 118.04"
+```
+
+- The mole fractions are plain numbers (no expressions, no variables) and must sum to 1 (within
+  1e-6); the composition is part of the string. An optional `HEOS::` prefix is accepted. Other
+  backends (`REFPROP::…`) are not.
+- The components are CoolProp fluid names (the names of the registry above, such as `R718` or `Steam`,
+  are accepted too, in any case). A malformed string, fractions not summing to 1, an unknown component
+  (the error names it) or a pair for which CoolProp has no binary interaction parameters is an
+  evaluation error that says why.
+- A component with a zero fraction is dropped, as CoolProp does: `'R245fa[1]&R134a[0]'` **is** pure
+  R245fa (same values, no warning). This makes a composition parameter usable down to its end points.
+- All the functions of this section work on mixtures with the inputs that CoolProp supports for them
+  (`T,P`, `T,x`, `P,x`, …), with analytical derivatives where CoolProp provides them and finite
+  differences inside the two-phase glide, as for the pure fluids. A property or input pair that CoolProp
+  cannot compute for a mixture (e.g. `SURFACETENSION`) is reported as for any property error.
+  `T_SAT` / `P_SAT` and the fluid constants (`T_CRIT`, …) are not defined for a mixture (use the
+  bubble and dew points above).
+- **Warning.** Mixture properties are *predictive*: they come from CoolProp's mixture model, with
+  binary interaction parameters, not from data of the mixture itself, and may be unreliable,
+  especially in two-phase (bubble/dew) states and for transport properties (viscosity,
+  conductivity). CoolSolve says so with a warning (code `C003`, in the CLI and in the GUI console),
+  once per mixture and run.
+- The saturation dome of the GUI diagrams is not drawn for mixtures.
+
 ### Unsupported EES fluids
 
 Some EES fluids are not modelled by CoolProp. Attempting to use them
@@ -516,8 +552,9 @@ suggestion:
 `NH3H2O`, `LiBrH2O`, `Acetylene`, `Chlorine`, `Chloroethene`,
 `EthyleneOxide`, `Helium3`, `Potassium`, `Sodium`.
 
-Use `REFPROP::Fluid1&Fluid2` backends or external correlations for the
-ammonia-water / lithium-bromide-water systems.
+For the ammonia-water and lithium-bromide-water systems, use external
+correlations written as `FUNCTION`s (the REFPROP library is not available in
+CoolSolve).
 
 ---
 

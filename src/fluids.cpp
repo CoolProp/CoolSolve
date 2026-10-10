@@ -2,6 +2,10 @@
 #include "AbstractState.h"
 #include "DataStructures.h"
 #include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <limits>
+#include <locale>
 #include <stdexcept>
 #include <set>
 
@@ -9,6 +13,8 @@ namespace coolsolve {
 
 std::map<std::string, std::shared_ptr<Fluid>> FluidRegistry::registry_;
 bool FluidRegistry::initialized_ = false;
+std::map<std::string, std::shared_ptr<Fluid>> FluidRegistry::mixtures_;
+std::shared_mutex FluidRegistry::mixturesMutex_;
 
 void FluidRegistry::initialize() {
     if (initialized_) return;
@@ -251,7 +257,7 @@ void FluidRegistry::initialize() {
     initialized_ = true;
 }
 
-std::shared_ptr<Fluid> FluidRegistry::getFluid(const std::string& name) {
+std::shared_ptr<Fluid> FluidRegistry::getFluid(const std::string& name, std::string* error) {
     if (!initialized_) initialize();
     
     std::string lower = name;
@@ -262,9 +268,144 @@ std::shared_ptr<Fluid> FluidRegistry::getFluid(const std::string& name) {
         return it->second;
     }
     
-    // If not found, we could try to see if it's a valid CoolProp fluid directly
-    // but for now, we only support the ones in the registry.
+    // Not in the registry: a CoolProp mixture `A[x]&B[y]` is built from the string. Any other
+    // CoolProp fluid is only reachable through the registry.
+    if (name.find('&') != std::string::npos) return getMixture(name, error);
     return nullptr;
+}
+
+namespace {
+
+std::string trimmed(const std::string& s) {
+    const auto first = s.find_first_not_of(" \t");
+    if (first == std::string::npos) return {};
+    return s.substr(first, s.find_last_not_of(" \t") - first + 1);
+}
+
+bool equalsNoCase(const std::string& a, const std::string& b) {
+    return a.size() == b.size() &&
+           std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) { return std::tolower(x) == std::tolower(y); });
+}
+
+std::string numberText(double v, int digits) {
+    std::ostringstream oss;
+    oss.imbue(std::locale::classic());
+    oss << std::setprecision(digits) << v;
+    return oss.str();
+}
+
+/// Mole fraction written in brackets: a plain number, nothing else.
+bool parseMoleFraction(const std::string& text, double& value) {
+    std::istringstream iss(trimmed(text));
+    iss.imbue(std::locale::classic());
+    iss >> value;
+    return !iss.fail() && iss.eof() && std::isfinite(value);
+}
+
+}  // namespace
+
+std::string MixtureFluid::getComponentList() const {
+    std::string list;
+    for (const auto& c : components_) list += (list.empty() ? "" : "&") + c;
+    return list;
+}
+
+std::shared_ptr<Fluid> FluidRegistry::getMixture(const std::string& name, std::string* error) {
+    {
+        std::shared_lock<std::shared_mutex> lock(mixturesMutex_);
+        auto it = mixtures_.find(name);
+        if (it != mixtures_.end()) return it->second;
+    }
+    auto fail = [&](const std::string& reason) -> std::shared_ptr<Fluid> {
+        if (error) *error = "Invalid mixture '" + name + "': " + reason;
+        return nullptr;
+    };
+
+    // Optional backend prefix: only the default backend, HEOS, is accepted
+    std::string text = trimmed(name);
+    const auto colons = text.find("::");
+    if (colons != std::string::npos) {
+        const std::string prefix = trimmed(text.substr(0, colons));
+        if (!equalsNoCase(prefix, "HEOS"))
+            return fail("the backend prefix '" + prefix + "::' is not supported (use 'HEOS::' or none)");
+        text = trimmed(text.substr(colons + 2));
+    }
+
+    // Components with their mole fractions: NAME[x]
+    std::vector<std::string> written, components;
+    std::vector<double> fractions;
+    for (size_t start = 0;;) {
+        const auto amp = text.find('&', start);
+        const std::string part = trimmed(text.substr(start, amp == std::string::npos ? amp : amp - start));
+        if (part.empty()) return fail("empty component (stray '&')");
+        const auto open = part.find('[');
+        if (open == std::string::npos)
+            return fail("component '" + part + "' has no mole fraction (write 'A[x]&B[y]', e.g. 'R245fa[0.5]&R134a[0.5]')");
+        const std::string compName = trimmed(part.substr(0, open));
+        if (compName.empty()) return fail("component name missing before '" + part.substr(open) + "'");
+        if (part.back() != ']')
+            return fail("the mole fraction of component '" + compName + "' is not closed by ']'");
+        double x = 0.0;
+        const std::string xText = part.substr(open + 1, part.size() - open - 2);
+        if (!parseMoleFraction(xText, x))
+            return fail("the mole fraction '" + xText + "' of component '" + compName + "' is not a number");
+        if (x < 0.0 || x > 1.0)
+            return fail("the mole fraction " + numberText(x, 10) + " of component '" + compName +
+                        "' must be between 0 and 1");
+        written.push_back(compName);
+        fractions.push_back(x);
+        if (amp == std::string::npos) break;
+        start = amp + 1;
+    }
+    double sum = 0.0;
+    for (double x : fractions) sum += x;
+    if (std::abs(sum - 1.0) > 1e-6)
+        return fail("the mole fractions sum to " + numberText(sum, 10) + ", not 1");
+    for (double& x : fractions) x /= sum;
+
+    // Components: CoolProp names (the EES names of the registry, case-insensitive, are accepted too)
+    for (const auto& compName : written) {
+        std::string cpName = compName;
+        auto known = getFluid(compName);
+        if (known && known->getType() == FluidType::Real) cpName = known->getCoolPropName();
+        try {
+            std::unique_ptr<CoolProp::AbstractState> probe(CoolProp::AbstractState::factory("HEOS", cpName));
+        } catch (const std::exception&) {
+            return fail("unknown component '" + compName + "', not a CoolProp fluid name");
+        }
+        if (std::find(components.begin(), components.end(), cpName) != components.end())
+            return fail("component '" + compName + "' appears twice");
+        components.push_back(cpName);
+    }
+
+    // Like CoolProp, drop the components with a zero mole fraction: a pure composition (MM = 1 in
+    // 'A[1]&B[0]') is the pure fluid, with exactly its properties and its functions
+    for (size_t i = components.size(); i-- > 0;) {
+        if (fractions[i] > 10 * std::numeric_limits<double>::epsilon()) continue;
+        components.erase(components.begin() + i);
+        fractions.erase(fractions.begin() + i);
+    }
+    if (components.size() == 1) {
+        auto pure = std::make_shared<RealFluid>(components[0], components[0]);
+        std::unique_lock<std::shared_mutex> lock(mixturesMutex_);
+        return mixtures_.emplace(name, pure).first->second;
+    }
+
+    std::string canonical;
+    for (size_t i = 0; i < components.size(); ++i)
+        canonical += (i ? "&" : "") + components[i] + "[" + numberText(fractions[i], 15) + "]";
+    auto mixture = std::make_shared<MixtureFluid>(canonical, components, fractions);
+    try {   // binary interaction parameters of every pair, among others
+        std::unique_ptr<CoolProp::AbstractState> probe(
+            CoolProp::AbstractState::factory("HEOS", mixture->getComponentList()));
+        probe->set_mole_fractions(fractions);
+    } catch (const std::exception& e) {
+        return fail(std::string("CoolProp cannot build it: ") + e.what());
+    }
+
+    std::unique_lock<std::shared_mutex> lock(mixturesMutex_);
+    mixtures_.emplace(canonical, mixture);
+    return mixtures_.emplace(name, mixtures_.at(canonical)).first->second;
 }
 
 void FluidRegistry::addFluid(std::shared_ptr<Fluid> fluid) {

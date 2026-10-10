@@ -166,16 +166,37 @@ private:
     bool isSolution_;
 };
 
+/**
+ * @brief A CoolProp mixture written `A[x]&B[y]` (mole fractions in brackets, two or more
+ * components, optional `HEOS::` prefix), e.g. `'R245fa[0.5]&R134a[0.5]'`.
+ *
+ * Not in the fixed registry: created and checked by FluidRegistry::getFluid() from the string.
+ * The name (also the CoolProp name) is the canonical form `A[x]&B[y]` without prefix, spaces
+ * and EES aliases; the properties come from CoolProp's mixture model. Components with a zero
+ * mole fraction are dropped, as CoolProp does: a pure composition is a RealFluid, not a
+ * MixtureFluid, so a MixtureFluid always has two or more components.
+ */
 class MixtureFluid : public Fluid {
 public:
-    MixtureFluid(const std::string& name) : name_(name) {}
+    MixtureFluid(std::string name, std::vector<std::string> components, std::vector<double> moleFractions)
+        : name_(std::move(name)), components_(std::move(components)),
+          moleFractions_(std::move(moleFractions)) {}
     std::string getName() const override { return name_; }
     std::string getCoolPropName() const override { return name_; }
     FluidType getType() const override { return FluidType::Mixture; }
     int getMinInputs() const override { return 2; }
 
+    /// CoolProp names of the components, in the order of the string.
+    const std::vector<std::string>& getComponents() const { return components_; }
+    /// Mole fractions (sum 1), in the order of the components.
+    const std::vector<double>& getMoleFractions() const { return moleFractions_; }
+    /// Component names joined by '&', the fluid name of CoolProp's AbstractState factory.
+    std::string getComponentList() const;
+
 private:
     std::string name_;
+    std::vector<std::string> components_;
+    std::vector<double> moleFractions_;
 };
 
 class UnsupportedFluid : public Fluid {
@@ -195,13 +216,27 @@ private:
 
 class FluidRegistry {
 public:
-    static std::shared_ptr<Fluid> getFluid(const std::string& name);
+    /**
+     * @brief Look a fluid up by name (case-insensitive); a name containing '&' is a CoolProp mixture.
+     *
+     * Mixtures are parsed, checked against CoolProp (components, binary parameters) and cached by
+     * string, once per process; pure fluids pay nothing for it.
+     *
+     * @param error  when given, receives the reason why a mixture string was rejected (fractions
+     *               not summing to 1, unknown component, ...); left empty for other unknown names
+     * @return the fluid, or nullptr when the name is unknown or the mixture is invalid
+     */
+    static std::shared_ptr<Fluid> getFluid(const std::string& name, std::string* error = nullptr);
     static void addFluid(std::shared_ptr<Fluid> fluid);
     static std::vector<std::shared_ptr<Fluid>> getAllFluids();
     
 private:
+    static std::shared_ptr<Fluid> getMixture(const std::string& name, std::string* error);
+
     static std::map<std::string, std::shared_ptr<Fluid>> registry_;
     static bool initialized_;
+    static std::map<std::string, std::shared_ptr<Fluid>> mixtures_;   ///< by string as written and by canonical name
+    static std::shared_mutex mixturesMutex_;
     static void initialize();
 };
 

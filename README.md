@@ -42,7 +42,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
   - **Symbolic Block Reduction** (explicit extraction, CoolProp call inversion, equation substitution)
   - **Multi-Start** fallback (CoolProp-consistent starting points for thermo blocks, scale factors for algebraic blocks; parallel execution available; engageable always, never, or only on Deep Search)
 
-- **CoolProp Integration**: Thermodynamic property calculations via the low-level `AbstractState` API (2–5× faster than `PropsSI`), with analytical derivatives and thread-local caching.
+- **CoolProp Integration**: Thermodynamic property calculations via the low-level `AbstractState` API (2–5× faster than `PropsSI`), with analytical derivatives and thread-local caching. CoolProp mixtures are accepted as fluids (`'R245fa[0.5]&R134a[0.5]'`, with a warning that mixture properties are predictive).
 
 - **Lookup Tables**: 1D/2D interpolation, cell access, and aggregate functions from external CSV files, usable in equations, in `FUNCTION`/`PROCEDURE` bodies and in `INTEGRAL` models. A GUI panel lets you create and edit tables in-browser.
 

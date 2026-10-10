@@ -5535,3 +5535,504 @@ TEST_CASE("CS-GAP-NAME-SYMBOL: LaTeX of a whole report with every kind of name c
     INFO(log);
     CHECK(pdflatexCompiles(tex, &log));
 }
+
+// ============================================================================
+// CS-GAP-FLUIDS-MIXTURE: CoolProp mixture fluids `A[x]&B[y]` in property calls
+// ============================================================================
+
+namespace {
+
+constexpr const char* kMix = "R245fa[0.5]&R134a[0.5]";
+
+/// Number as model text, with all its digits.
+std::string numText(double v) {
+    std::ostringstream o;
+    o << std::setprecision(17) << v;
+    return o.str();
+}
+
+/// Value and derivatives of a property call `call` (written with the variables Tv, Pv) at (T [C], P [Pa]).
+struct MixtureCall { double value, dT, dP; };
+
+MixtureCall evalMixtureCall(const std::string& call, double T_C, double P_Pa, const CoolPropConfig& cfg) {
+    EESParser parser;
+    auto parsed = parser.parse("y = " + call + "\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    ExpressionEvaluator ev(2, cfg);
+    ev.setVariable("Tv", ADValue::independent(T_C, 0, 2));
+    ev.setVariable("Pv", ADValue::independent(P_Pa, 1, 2));
+    ADValue r = ev.evaluate(ir.getEquations()[0].rhs);
+    return {r.value, r.gradient[0], r.gradient[1]};
+}
+
+/// Warnings of a run that talk about a mixture.
+size_t mixtureWarnings(const ModelRun& run) {
+    size_t n = 0;
+    for (const auto& w : run.warnings)
+        if (w.find("mixture") != std::string::npos) ++n;
+    return n;
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: register reproducer, enthalpy of a R245fa/R134a mixture", "[library-gaps][fluids-mixture]") {
+    auto run = runModel(R"(
+fl$ = 'R245fa[0.5]&R134a[0.5]'
+h = enthalpy(fl$, T=50, P=5E5)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["h"], WithinRel(439716.94640022865, 1e-9));   // CoolProp 7.2, as PropsSI
+    CHECK_THAT(run["h"], WithinRel(CoolProp::PropsSI("H", "T", 323.15, "P", 5e5, kMix), 1e-9));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: writing the fluid as a literal, with HEOS:: prefix, spaces, EES name case", "[library-gaps][fluids-mixture]") {
+    auto run = runModel(R"(
+h1 = enthalpy('R245fa[0.5]&R134a[0.5]', T=50, P=5E5)
+h2 = enthalpy('HEOS::R245fa[0.5]&R134a[0.5]', T=50, P=5E5)
+h3 = enthalpy(' r245fa[ 0.5 ] & R134a[0.5] ', T=50, P=5E5)
+fl$ = 'heos::R245fa[0.5]&R134a[0.5]'
+h4 = enthalpy(fl$, T=50, P=5E5)
+h5 = enthalpy('R245fa[5E-1]&R134a[.5]', T=50, P=5E5)
+hw1 = enthalpy('Water[0.5]&Ethanol[0.5]', T=50, P=1E5)
+hw2 = enthalpy('Steam[0.5]&Ethanol[0.5]', T=50, P=1E5)
+hw3 = enthalpy('R718[0.5]&Ethanol[0.5]', T=50, P=1E5)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const char* v : {"h2", "h3", "h4", "h5"})
+        CHECK_THAT(run[v], WithinRel(run["h1"], 1e-12));
+    CHECK_THAT(run["h1"], WithinRel(439716.94640022865, 1e-9));
+    CHECK_THAT(run["hw2"], WithinRel(run["hw1"], 1e-12));   // EES aliases of the registry name the same component
+    CHECK_THAT(run["hw3"], WithinRel(run["hw1"], 1e-12));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: the pure end points equal the pure fluids", "[library-gaps][fluids-mixture]") {
+    auto run = runModel(R"(
+mixA$ = 'R245fa[1]&R134a[0]'
+mixB$ = 'R245fa[0]&R134a[1]'
+hA = enthalpy(mixA$, T=50, P=5E5)
+hB = enthalpy(mixB$, T=50, P=5E5)
+hA_pure = enthalpy('R245fa', T=50, P=5E5)
+hB_pure = enthalpy('R134a', T=50, P=5E5)
+TA = temperature(mixA$, P=5E5, x=0)
+TB = temperature(mixB$, P=5E5, x=0)
+TA_pure = temperature('R245fa', P=5E5, x=0)
+TB_pure = temperature('R134a', P=5E5, x=0)
+TdA = temperature(mixA$, P=5E5, x=1)
+rhoA = density(mixA$, T=20, P=5E5)
+rhoA_pure = density('R245fa', T=20, P=5E5)
+h_nopair = enthalpy('R245fa[1]&Water[0]', T=50, P=5E5)
+Tsat_pure = T_sat('R245fa[1]&R134a[0]', P=5E5)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["hA"], WithinRel(266776.2, 1e-6));        // values given by CoolProp 7.2
+    CHECK_THAT(run["hB"], WithinRel(440111.7, 1e-6));
+    CHECK_THAT(run["TA"] + 273.15, WithinAbs(335.913, 1e-3));
+    CHECK_THAT(run["TB"] + 273.15, WithinAbs(288.885, 1e-3));
+    CHECK_THAT(run["hA"], WithinRel(run["hA_pure"], 1e-6));
+    CHECK_THAT(run["hB"], WithinRel(run["hB_pure"], 1e-6));
+    CHECK_THAT(run["TA"], WithinAbs(run["TA_pure"], 1e-4));
+    CHECK_THAT(run["TB"], WithinAbs(run["TB_pure"], 1e-4));
+    CHECK_THAT(run["TdA"], WithinAbs(run["TA"], 1e-4));      // no glide for a pure composition
+    CHECK_THAT(run["rhoA"], WithinRel(run["rhoA_pure"], 1e-6));
+    // a zero fraction drops the component, so a pair without binary parameters is no problem either,
+    // and the result is the pure fluid in every respect: its functions (T_sat), and no mixture warning
+    CHECK_THAT(run["h_nopair"], WithinRel(run["hA_pure"], 1e-12));
+    CHECK_THAT(run["Tsat_pure"], WithinAbs(run["TA_pure"], 1e-9));
+    CHECK(mixtureWarnings(run) == 0);
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: bubble and dew temperatures at 5 bar show the glide", "[library-gaps][fluids-mixture]") {
+    auto run = runModel(R"(
+fl$ = 'R245fa[0.5]&R134a[0.5]'
+Tb = temperature(fl$, P=5E5, x=0)
+Td = temperature(fl$, P=5E5, x=1)
+Tmid = temperature(fl$, P=5E5, x=0.5)
+rho_b = density(fl$, P=5E5, x=0)
+rho_d = density(fl$, P=5E5, x=1)
+rho_pureA = density('R245fa', T=Tb, x=0)
+rho_pureB = density('R134a', T=Tb, x=0)
+Pb = pressure(fl$, T=20, x=0)
+Pd = pressure(fl$, T=20, x=1)
+q = quality(fl$, T=40, P=5E5)
+h_b = enthalpy(fl$, P=5E5, x=0)
+h_d = enthalpy(fl$, P=5E5, x=1)
+h_m = enthalpy(fl$, P=5E5, x=0.5)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["Tb"] + 273.15, WithinRel(306.0, 1e-3));      // values given by CoolProp 7.2
+    CHECK_THAT(run["Td"] + 273.15, WithinRel(319.4, 1e-3));
+    CHECK_THAT(run["Tb"] + 273.15, WithinRel(306.0143512292315, 1e-9));
+    CHECK_THAT(run["Td"] + 273.15, WithinRel(319.39495958183375, 1e-9));
+    CHECK(run["Td"] - run["Tb"] > 10.0);                          // glide of 13 K
+    CHECK(run["Tmid"] > run["Tb"]);
+    CHECK(run["Tmid"] < run["Td"]);
+    // liquid density between the pure-component values at the same temperature
+    CHECK(run["rho_b"] > std::min(run["rho_pureA"], run["rho_pureB"]));
+    CHECK(run["rho_b"] < std::max(run["rho_pureA"], run["rho_pureB"]));
+    CHECK(run["rho_d"] < run["rho_b"] / 10.0);
+    CHECK(run["Pb"] > run["Pd"]);                                 // bubble pressure above dew pressure
+    CHECK_THAT(run["Pb"], WithinRel(CoolProp::PropsSI("P", "T", 293.15, "Q", 0, kMix), 1e-9));
+    CHECK_THAT(run["Pd"], WithinRel(CoolProp::PropsSI("P", "T", 293.15, "Q", 1, kMix), 1e-9));
+    CHECK_THAT(run["q"], WithinRel(CoolProp::PropsSI("Q", "T", 313.15, "P", 5e5, kMix), 1e-9));   // two-phase in the glide
+    CHECK(run["q"] > 0.0);
+    CHECK(run["q"] < 1.0);
+    CHECK(run["h_b"] < run["h_m"]);
+    CHECK(run["h_m"] < run["h_d"]);
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: the property functions of a mixture", "[library-gaps][fluids-mixture]") {
+    auto run = runModel(R"(
+fl$ = 'R245fa[0.5]&R134a[0.5]'
+h = enthalpy(fl$, T=50, P=5E5)
+s = entropy(fl$, T=50, P=5E5)
+rho = density(fl$, T=50, P=5E5)
+v = volume(fl$, T=50, P=5E5)
+c_p = cp(fl$, T=50, P=5E5)
+c_v = cv(fl$, T=50, P=5E5)
+u = intenergy(fl$, T=50, P=5E5)
+mu = viscosity(fl$, T=50, P=5E5)
+lambda = conductivity(fl$, T=50, P=5E5)
+Pr = prandtl(fl$, T=50, P=5E5)
+a = soundspeed(fl$, T=50, P=5E5)
+Z = compressibilityfactor(fl$, T=50, P=5E5)
+P_back = pressure(fl$, T=50, rho=rho)
+rho_l = density(fl$, T=20, P=5E5)
+mu_l = viscosity(fl$, T=20, P=5E5)
+lambda_l = conductivity(fl$, T=20, P=5E5)
+mu_sat = viscosity(fl$, P=5E5, x=1)
+nu = kinematicviscosity(fl$, T=50, P=5E5)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const double T = 323.15, P = 5e5;
+    auto ps = [&](const char* out, double T_K = 323.15) { return CoolProp::PropsSI(out, "T", T_K, "P", P, kMix); };
+    CHECK_THAT(run["h"], WithinRel(ps("H"), 1e-9));
+    CHECK_THAT(run["s"], WithinRel(ps("S"), 1e-9));
+    CHECK_THAT(run["rho"], WithinRel(ps("D"), 1e-9));
+    CHECK_THAT(run["v"], WithinRel(1.0 / ps("D"), 1e-9));
+    CHECK_THAT(run["c_p"], WithinRel(ps("C"), 1e-9));
+    CHECK_THAT(run["c_v"], WithinRel(ps("CVMASS"), 1e-9));
+    CHECK_THAT(run["u"], WithinRel(ps("U"), 1e-9));
+    CHECK_THAT(run["mu"], WithinRel(ps("V"), 1e-9));
+    CHECK_THAT(run["lambda"], WithinRel(ps("L"), 1e-9));
+    CHECK_THAT(run["Pr"], WithinRel(ps("Prandtl"), 1e-9));
+    CHECK_THAT(run["a"], WithinRel(ps("A"), 1e-9));
+    CHECK_THAT(run["Z"], WithinRel(ps("Z"), 1e-9));
+    CHECK_THAT(run["P_back"], WithinRel(P, 1e-6));
+    CHECK_THAT(run["rho_l"], WithinRel(ps("D", 293.15), 1e-9));
+    CHECK_THAT(run["mu_l"], WithinRel(ps("V", 293.15), 1e-9));
+    CHECK_THAT(run["lambda_l"], WithinRel(ps("L", 293.15), 1e-9));
+    CHECK_THAT(run["mu_sat"], WithinRel(CoolProp::PropsSI("V", "P", P, "Q", 1, kMix), 1e-9));
+    CHECK_THAT(run["nu"], WithinRel(ps("V") / ps("D"), 1e-9));
+    (void)T;
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: a mixture of three components", "[library-gaps][fluids-mixture]") {
+    const std::string ng = "Methane[0.7]&Ethane[0.2]&Propane[0.1]";
+    auto run = runModel("fl$ = '" + ng + "'\nrho = density(fl$, T=27, P=1E6)\nh = enthalpy(fl$, T=27, P=1E6)\nM = molarmass(fl$)\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["rho"], WithinRel(CoolProp::PropsSI("D", "T", 300.15, "P", 1e6, ng), 1e-9));
+    CHECK_THAT(run["h"], WithinRel(CoolProp::PropsSI("H", "T", 300.15, "P", 1e6, ng), 1e-9));
+    CHECK_THAT(run["M"], WithinRel(0.7 * molarMassKgPerKmol("Methane") + 0.2 * molarMassKgPerKmol("Ethane") +
+                                   0.1 * molarMassKgPerKmol("Propane"), 1e-9));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: the molar mass is mole-weighted, in kg/kmol", "[library-gaps][fluids-mixture]") {
+    auto run = runModel(R"(
+fl$ = 'R245fa[0.3]&R134a[0.7]'
+M = molarmass(fl$)
+M_lit = molarmass('R245fa[0.3]&R134a[0.7]')
+M_state = molarmass(fl$, T=50, P=5E5)
+M_A = molarmass('R245fa')
+M_B = molarmass('R134a')
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const double expected = 0.3 * molarMassKgPerKmol("R245fa") + 0.7 * molarMassKgPerKmol("R134a");
+    CHECK_THAT(run["M"], WithinRel(expected, 1e-9));
+    CHECK_THAT(run["M_lit"], WithinRel(expected, 1e-9));
+    CHECK_THAT(run["M_state"], WithinRel(expected, 1e-9));
+    CHECK_THAT(run["M"], WithinRel(0.3 * run["M_A"] + 0.7 * run["M_B"], 1e-9));
+    CHECK(run["M"] > 100.0);   // kg/kmol, not kg/mol
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: a mixture in FUNCTION and PROCEDURE bodies", "[library-gaps][fluids-mixture]") {
+    auto run = runModel(R"(
+FUNCTION hmix(fl$, T, P)
+  hmix = enthalpy(fl$, T=T, P=P)
+END
+FUNCTION hlit(T, P)
+  hlit = enthalpy('R245fa[0.5]&R134a[0.5]', T=T, P=P)
+END
+PROCEDURE props(fl$, T, P : rho, mu)
+  rho = density(fl$, T=T, P=P)
+  mu = viscosity('R245fa[0.5]&R134a[0.5]', T=T, P=P)
+END
+fl$ = 'R245fa[0.5]&R134a[0.5]'
+h1 = hmix(fl$, 50, 5E5)
+h2 = hlit(50, 5E5)
+h3 = hmix('R245fa[0.5]&R134a[0.5]', 50, 5E5)
+CALL props(fl$, 20, 5E5 : rho, mu)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["h1"], WithinRel(439716.94640022865, 1e-9));
+    CHECK_THAT(run["h2"], WithinRel(run["h1"], 1e-12));
+    CHECK_THAT(run["h3"], WithinRel(run["h1"], 1e-12));
+    CHECK_THAT(run["rho"], WithinRel(CoolProp::PropsSI("D", "T", 293.15, "P", 5e5, kMix), 1e-9));
+    CHECK_THAT(run["mu"], WithinRel(CoolProp::PropsSI("V", "T", 293.15, "P", 5e5, kMix), 1e-9));
+    CHECK(mixtureWarnings(run) == 1);   // the same mixture in the equations, a FUNCTION and a PROCEDURE: one warning
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: a mixture used only inside a FUNCTION body still warns", "[library-gaps][fluids-mixture]") {
+    auto run = runModel(R"(
+FUNCTION hlit(T, P)
+  hlit = enthalpy('R245fa[0.5]&R134a[0.5]', T=T, P=P)
+END
+h = hlit(50, 5E5)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(mixtureWarnings(run) == 1);
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: the warning is emitted once per mixture and run", "[library-gaps][fluids-mixture]") {
+    SECTION("one mixture used many times: one warning, saying that the properties are predictive and unreliable") {
+        auto run = runModel(R"(
+fl$ = 'R245fa[0.5]&R134a[0.5]'
+h1 = enthalpy(fl$, T=50, P=5E5)
+h2 = enthalpy(fl$, T=40, P=5E5)
+s1 = entropy('R245fa[0.5]&R134a[0.5]', T=50, P=5E5)
+T1 = temperature(fl$, P=5E5, x=0)
+rho = density(fl$, T=T1, x=1)
+)");
+        REQUIRE(run.solveOk);
+        REQUIRE(mixtureWarnings(run) == 1);
+        for (const auto& w : run.warnings) {
+            if (w.find("mixture") == std::string::npos) continue;
+            CHECK(w.find("R245fa[0.5]&R134a[0.5]") != std::string::npos);
+            CHECK(w.find("CoolProp") != std::string::npos);
+            CHECK(w.find("unreliable") != std::string::npos);
+            CHECK(w.find("two-phase") != std::string::npos);
+            CHECK(w.find("transport") != std::string::npos);
+        }
+    }
+    SECTION("two different mixtures: two warnings; a pure fluid: none") {
+        auto run = runModel(R"(
+h1 = enthalpy('R245fa[0.5]&R134a[0.5]', T=50, P=5E5)
+h2 = enthalpy('R245fa[0.2]&R134a[0.8]', T=50, P=5E5)
+h3 = enthalpy('R245fa', T=50, P=5E5)
+)");
+        REQUIRE(run.solveOk);
+        CHECK(mixtureWarnings(run) == 2);
+    }
+    SECTION("pure fluids only: no warning") {
+        auto run = runModel("h = enthalpy('R245fa', T=50, P=5E5)\nrho = density('Water', T=50, P=1E5)\n");
+        REQUIRE(run.solveOk);
+        CHECK(mixtureWarnings(run) == 0);
+    }
+    SECTION("the warning comes again in the next run") {
+        const std::string code = "h = enthalpy('R245fa[0.5]&R134a[0.5]', T=50, P=5E5)\n";
+        CHECK(mixtureWarnings(runModel(code)) == 1);
+        CHECK(mixtureWarnings(runModel(code)) == 1);
+    }
+    SECTION("no unit or fluid-name hint fires on the mixture string") {
+        auto run = runModel("fl$ = 'R245fa[0.5]&R134a[0.5]'\nh = enthalpy(fl$, T=50, P=5E5)\n"
+                            "h2 = enthalpy('R134a[0.5]&R245fa[0.5]', T=50, P=5E5)\n"
+                            "h3 = enthalpy('Water[0.5]&Ethanol[0.5]', T=50, P=1E5)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.warnings.size() == mixtureWarnings(run));   // the mixture warnings are the only ones
+        CHECK(run.warnings.size() == 3);
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: Newton solves an unknown temperature through a mixture property", "[library-gaps][fluids-mixture]") {
+    SECTION("single-phase vapor") {
+        auto run = runModel(R"(
+fl$ = 'R245fa[0.5]&R134a[0.5]'
+h1 = 439716.94640022865
+h1 = enthalpy(fl$, T=T1, P=5E5)
+)");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["T1"], WithinAbs(50.0, 1e-6));
+    }
+    SECTION("inside the glide (two-phase), and subcooled liquid") {
+        const double hGlide = CoolProp::PropsSI("H", "T", 313.15, "P", 5e5, kMix);
+        const double hLiquid = CoolProp::PropsSI("H", "T", 293.15, "P", 5e5, kMix);
+        auto run = runModel(
+            "fl$ = 'R245fa[0.5]&R134a[0.5]'\n"
+            "hg = " + numText(hGlide) + "\nhg = enthalpy(fl$, T=Tg, P=5E5)\n"
+            "hl = " + numText(hLiquid) + "\nhl = enthalpy(fl$, T=Tl, P=5E5)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["Tg"], WithinAbs(40.0, 1e-5));
+        CHECK_THAT(run["Tl"], WithinAbs(20.0, 1e-5));
+    }
+    SECTION("two unknowns: pressure and temperature of a state given by density and enthalpy-type equations") {
+        const double rho = CoolProp::PropsSI("D", "T", 323.15, "P", 5e5, kMix);
+        const double h = CoolProp::PropsSI("H", "T", 323.15, "P", 5e5, kMix);
+        auto run = runModel(
+            "fl$ = 'R245fa[0.5]&R134a[0.5]'\n"
+            "rho0 = " + numText(rho) + "\nh0 = " + numText(h) + "\n"
+            "rho0 = density(fl$, T=Tx, P=Px)\nh0 = enthalpy(fl$, T=Tx, P=Px)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["Tx"], WithinAbs(50.0, 1e-4));
+        CHECK_THAT(run["Px"], WithinRel(5e5, 1e-6));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: derivatives of mixture properties are analytic and agree with finite differences", "[library-gaps][fluids-mixture]") {
+    CoolPropConfig analytic;                       // AbstractState + CoolProp's first_partial_deriv()
+    analytic.useAbstractState = true;
+    analytic.enableAnalyticalDerivatives = true;
+    auto central = [&](const std::string& call, double T, double P, double& dT, double& dP) {
+        const double hT = 1e-3, hP = 1.0;           // K, Pa
+        dT = (evalMixtureCall(call, T + hT, P, analytic).value - evalMixtureCall(call, T - hT, P, analytic).value) / (2 * hT);
+        dP = (evalMixtureCall(call, T, P + hP, analytic).value - evalMixtureCall(call, T, P - hP, analytic).value) / (2 * hP);
+    };
+    struct State { const char* label; double T_C, P; };
+    // vapor, subcooled liquid, and inside the glide (two-phase)
+    for (const State& st : {State{"vapor", 50.0, 5e5}, State{"liquid", 20.0, 5e5}, State{"glide", 40.0, 5e5}}) {
+        for (const char* fn : {"enthalpy", "density", "entropy", "cp"}) {
+            const std::string call = std::string(fn) + "('" + kMix + "', T=Tv, P=Pv)";
+            INFO(st.label << " " << call);
+            MixtureCall a = evalMixtureCall(call, st.T_C, st.P, analytic);
+            double dT, dP;
+            central(call, st.T_C, st.P, dT, dP);
+            CHECK_THAT(a.dT, WithinRel(dT, 2e-3));
+            CHECK_THAT(a.dP, WithinRel(dP, 2e-3));
+            CHECK(std::abs(a.dT) > 0.0);
+        }
+    }
+    // the PropsSI path (no AbstractState) gives the same values
+    CoolPropConfig propsSI;
+    propsSI.useAbstractState = false;
+    propsSI.enableAnalyticalDerivatives = false;
+    MixtureCall viaAS = evalMixtureCall(std::string("enthalpy('") + kMix + "', T=Tv, P=Pv)", 50.0, 5e5, analytic);
+    MixtureCall viaPS = evalMixtureCall(std::string("enthalpy('") + kMix + "', T=Tv, P=Pv)", 50.0, 5e5, propsSI);
+    CHECK_THAT(viaPS.value, WithinRel(viaAS.value, 1e-9));
+    CHECK_THAT(viaPS.dT, WithinRel(viaAS.dT, 1e-3));
+    CHECK_THAT(viaPS.dP, WithinRel(viaAS.dP, 1e-3));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: PHASE$ of a mixture", "[library-gaps][fluids-mixture]") {
+    auto phase = [](double T_C) {
+        EESParser parser;
+        auto parsed = parser.parse("ph$ = PHASE$('R245fa[0.5]&R134a[0.5]', T=" + numText(T_C) + ", P=5E5)\n");
+        REQUIRE(parsed.success);
+        IR ir = IR::fromAST(parsed.program);
+        ExpressionEvaluator ev(1);
+        return ev.evaluateString(ir.getEquations()[0].rhs);
+    };
+    CHECK(phase(50.0) == "gas");
+    CHECK(phase(20.0) == "liquid");
+    CHECK(phase(40.0) == "twophase");   // inside the glide
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: pure fluids and other fluid types are unaffected", "[library-gaps][fluids-mixture]") {
+    auto run = runModel(R"(
+h = enthalpy('R245fa', T=50, P=5E5)
+rho = density(Water, T=20, P=1E5)
+hN2 = enthalpy('N2', T=25)
+rho_air = density('AirH2O', T=25, P=101325, R=0.5)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["h"], WithinRel(266776.2, 1e-6));
+    CHECK_THAT(run["rho"], WithinRel(CoolProp::PropsSI("D", "T", 293.15, "P", 1e5, "Water"), 1e-9));
+    CHECK(mixtureWarnings(run) == 0);
+    auto unknown = runModel("h = enthalpy('NoSuchFluid', T=50, P=5E5)\n");
+    CHECK_FALSE(unknown.solveOk);
+    CHECK(anyContains({unknown.message}, "Unknown fluid"));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: negative tests, the mixture string is checked with a clear error", "[library-gaps][fluids-mixture]") {
+    auto fails = [](const std::string& fluid, const std::string& needle, const std::string& call = "enthalpy") {
+        auto run = runModel("h = " + call + "('" + fluid + "', T=50, P=5E5)\n");
+        INFO(fluid << " -> " << run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, needle));
+        CHECK_FALSE(anyContains({run.message}, "Unknown fluid"));
+    };
+    SECTION("fractions that do not sum to 1") {
+        fails("R245fa[0.5]&R134a[0.3]", "sum");
+        fails("R245fa[0.5]&R134a[0.3]", "0.8");
+        fails("R245fa[0.6]&R134a[0.6]", "sum");
+        fails("R245fa[0.5]&R134a[0.5000015]", "sum");   // beyond the 1e-6 tolerance
+    }
+    SECTION("a fraction that is negative, larger than 1 or not a number") {
+        fails("R245fa[1.5]&R134a[-0.5]", "mole fraction");
+        fails("R245fa[-0.2]&R134a[1.2]", "mole fraction");
+        fails("R245fa[x]&R134a[0.5]", "not a number");
+        fails("R245fa[]&R134a[0.5]", "not a number");
+    }
+    SECTION("an unknown component names the component") {
+        fails("R245fa[0.5]&Foo[0.5]", "'Foo'");
+        fails("Bar[0.5]&R134a[0.5]", "'Bar'");
+        fails("R245fa[0.5]&R134a[0.3]&Baz[0.2]", "'Baz'");
+    }
+    SECTION("a pair without binary parameters is reported by CoolProp") {
+        fails("R245fa[0.5]&Water[0.5]", "binary pair");
+        fails("R245fa[0.5]&R245fa[0.5]", "twice");
+    }
+    SECTION("malformed strings") {
+        fails("R245fa[0.5]&", "empty");
+        fails("&R134a[0.5]", "empty");
+        fails("R245fa[0.5]&&R134a[0.5]", "empty");
+        fails("R245fa&R134a", "mole fraction");              // fractions are required
+        fails("R245fa[0.5]&R134a", "mole fraction");
+        fails("R245fa[0.5&R134a[0.5]", "mole fraction");     // unbalanced brackets
+        fails("R245fa[0.5]]&R134a[0.5]", "mole fraction");
+        fails("[0.5]&R134a[0.5]", "component");
+        fails("REFPROP::R245fa[0.5]&R134a[0.5]", "HEOS");   // other backends are not accepted
+    }
+    SECTION("the same errors reach every property function and a string variable") {
+        fails("R245fa[0.5]&R134a[0.3]", "sum", "density");
+        fails("R245fa[0.5]&Foo[0.5]", "'Foo'", "molarmass");
+        auto run = runModel("fl$ = 'R245fa[0.5]&Foo[0.5]'\nh = enthalpy(fl$, T=50, P=5E5)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "'Foo'"));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: what CoolProp cannot do for a mixture gives a clear error", "[library-gaps][fluids-mixture]") {
+    SECTION("T_sat and P_sat: a mixture has bubble and dew points, not one saturation point") {
+        auto run = runModel("T = T_sat('R245fa[0.5]&R134a[0.5]', P=5E5)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "mixture"));
+        CHECK(anyContains({run.message}, "x=0"));
+        auto run2 = runModel("P = P_sat('R245fa[0.5]&R134a[0.5]', T=20)\n");
+        CHECK_FALSE(run2.solveOk);
+        CHECK(anyContains({run2.message}, "mixture"));
+    }
+    SECTION("fluid constants such as T_crit") {
+        auto run = runModel("T = T_crit('R245fa[0.5]&R134a[0.5]')\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "'R245fa[0.5]&R134a[0.5]'"));
+        CHECK(anyContains({run.message}, "not available"));
+    }
+    SECTION("surface tension is not implemented for mixtures: CoolProp's message is reported") {
+        auto run = runModel("sigma = surfacetension('R245fa[0.5]&R134a[0.5]', T=20, x=0)\n");
+        CHECK_FALSE(run.verified);
+        bool reported = false;
+        for (const auto& w : run.warnings)
+            if (w.find("CoolProp error in surfacetension()") != std::string::npos &&
+                w.find("not implemented for mixtures") != std::string::npos) reported = true;
+        CHECK(reported);
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-MIXTURE: LaTeX report of a model with a mixture compiles", "[library-gaps][fluids-mixture][latex]") {
+    if (!havePdflatex()) SKIP("pdflatex is not installed");
+    const std::string tex = latexOf("fl$ = 'R245fa[0.5]&R134a[0.5]'\nh = enthalpy(fl$, T=50, P=5E5)\n"
+                                    "rho = density('R245fa[0.5]&R134a[0.5]', T=T1, P=5E5)\nT1 = 30\n");
+    std::string log;
+    INFO(log);
+    CHECK(pdflatexCompiles(tex, &log));
+}

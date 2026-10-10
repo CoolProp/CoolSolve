@@ -36,6 +36,12 @@ void checkThermoInputValueHint(DiagnosticCollector* diag,
                                double modelValue,
                                int line = 0);
 
+/**
+ * @brief Emit a C003 warning, once per mixture and run, that the properties of a CoolProp mixture
+ * fluid (`A[x]&B[y]`) are predictive and may be unreliable.
+ */
+void warnMixtureFluid(DiagnosticCollector* diag, const std::string& mixtureName);
+
 std::string coolPropUnitsReminder(const UnitSystem& units);
 
 std::string unknownFluidErrorMessage(const std::string& eesFluidName);
