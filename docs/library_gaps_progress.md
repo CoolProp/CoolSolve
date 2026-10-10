@@ -126,7 +126,7 @@ Legend: ☐ to do · 🔄 in progress · ✅ done (commit) · ⏸ deferred.
 | 1c | `CS-BUG-BODY-LINE-DROP` (unparsable body line dropped) + `CS-BUG-TRAILING-TEXT` (text after `)`/`]` ignored) — both new, P1 silent, found in #1b | – | ✅ | `8238a94` | `CSL-0103` comment fix (see log) |
 | 2 (scope) | `CS-GAP-IF-DIRECTIVE` + `CS-BUG-STRING-CASE` (one shared case-insensitive string equality) | see #2 | ✅ | `9423934` | ✅ |
 | 2 | `CS-GAP-IF-DIRECTIVE` (`$if/$ifnot/$else/$endif`) | 10: 0012, 0040, 0081, 0116, 0119, 0150, 0151, 0161, 0162, 0166 | ☐ | | ☐ |
-| 3 🔄 | INTEGRAL family: `CS-GAP-INTEGRAL-LIMITS`, `CS-BUG-INTEGRAL-FACTOR`, `CS-BUG-INTEGRAL-TABLE-SEP`, `CS-BUG-INTEGRAL-MAXSTEPS`, `CS-BUG-INTEGRAL-TABLE-CASE` (then `CS-GAP-INTEGRAL-MULTIVAR`) | 0009, 0010, 0041, 0047, 0059, 0081 | ☐ | | ☐ |
+| 3 | INTEGRAL family: `CS-GAP-INTEGRAL-LIMITS`, `CS-BUG-INTEGRAL-FACTOR`, `CS-BUG-INTEGRAL-TABLE-SEP`, `CS-BUG-INTEGRAL-MAXSTEPS`, `CS-BUG-INTEGRAL-TABLE-CASE` (then `CS-GAP-INTEGRAL-MULTIVAR`) | ✅ | `4cd0ca5` | 🔄 |
 | 4 | `CS-GAP-LOOKUP-PROC` + `CS-GAP-INTEGRAL-LOOKUP` (same root cause: table store not wired; frees CSL-0042, example `building_rc_network`) | 6: 0072, 0078, 0079, 0116, 0158, 0160 | ☐ | | ☐ |
 | 5 | `CS-GAP-CALL-EXPR-OUT` + `CS-BUG-STRING-CALL-OUT` (CSL-0166) | 5: 0072, 0078, 0161, 0162, 0163 | ☐ | | ☐ |
 | 6 | Identifier characters: `CS-GAP-NAME-SYMBOL` (`C%`), `CS-GAP-NAME-PIPE` (`K\|star`), `CS-GAP-ACCENTED-IDENT` | 0040, 0074, 0080, 0116, 0150, 0151, 0152, 0158, 0163 | ☐ | | ☐ |
@@ -143,7 +143,8 @@ Legend: ☐ to do · 🔄 in progress · ✅ done (commit) · ⏸ deferred.
 | 2026-10-10 | Set-up | Branch `fix/library-gaps-2` created; baselines §2 recorded; frozen baseline binary in the session scratchpad (`coolsolve_baseline`). |
 | 2026-10-10 | #1 `CS-GAP-IF5` | Fixed (`59b2862`): 3- and 5-argument `if` in `evaluateStandardFunction`; also unit-annotated literal arguments (`3600[s]`) no longer dropped, and `INTEGRAL` base expressions evaluate built-in functions instead of 0. 13 tests. Suites: 424/424 unit, examples identical to baseline. Native CSL-0073 solves, identical to its variant `.sol`; CSL-0155 parses but fails on block 106 (151 vars, NaN at start, not IF-related). New §5 row `CS-BUG-ARG-DROP`. |
 | 2026-10-10 | #1 re-check | `CSL-0073` blocked → **verified** (native identical to the former variant, 34/34; EES max 2.71e-2 humid-air, unchanged), variant removed, native `.sol` added. `CSL-0155` blocked → **failing** (`missing_features` []): all IFs evaluate, block 106 (151 vars) does not converge even from CoolProp-consistent guesses; `.initials` rebuilt, non-runnable variant removed. 9 other models: IF5 removed from `missing_features`, README/history updated, none stops on IF5 any more. `build_index` 0 errors; `test_models` on the 11 ids OK except baseline `CSL-0153:coolsolve`. Library roadmap §1/§8 updated. Register: new `CS-GAP-REF-STATE` (EES R410A ASHRAE reference vs CoolProp IIR, offsets 142 244.6 J/kg / 773.6 J/kg·K confirmed), §8 C-147 resolved. |
-| 2026-10-10 | #3 | Fix agent dispatched; interrupted by an API usage limit mid-implementation (partial diff ≈1800 lines left in the working tree, uncommitted); resumed with its context after the reset. |
+| 2026-10-10 | #3 | Fixed (`4cd0ca5`): FACTOR (fast path for `y = base + INTEGRAL`, auxiliary states `__integral_k` otherwise, expression integrands get their own equation, internal names hidden), symbolic LIMITS (solved at the initial point), MAXSTEPS (explicit step honoured, early stop = error), TABLE-SEP/CASE (`, ;` separators, case-insensitive, I001 warning). 35 tests; 521/521 unit; examples identical (ice_storage_tank `-integral.csv` T_w column now filled); `test_integral_api.py --auto` 14/14; library regression 150 / same 7; CSL-0009:coolsolve 1m20 before/after. Natives: CSL-0047, CSL-0010, CSL-0009 solve, identical to their variants; CSL-0041 stops on WATER-NEAR-FREEZING; CSL-0059 on MULTIVAR (+ new DECREASING); CSL-0081 on GOTO. New rows `CS-GAP-INTEGRAL-DECREASING`, `CS-GAP-INTEGRAL-DUPLICATE`, `CS-BUG-INTEGRAL-OUTPUT-INTERVAL`. |
+| 2026-10-10 | #3 (earlier) | Fix agent dispatched; interrupted by an API usage limit mid-implementation (partial diff ≈1800 lines left in the working tree, uncommitted); resumed with its context after the reset. |
 | 2026-10-10 | #2 re-check | 11 models (+ CSL-0074, CSL-0153 for CALL-EXPR-OUT): none freed, all stay blocked; closed IDs removed, `CS-GAP-IF-NO-CONSTANT` added to CSL-0040/0166, `CS-GAP-CALL-EXPR-OUT` added to CSL-0074/0153; READMEs say where a variant's `$IF` workaround is no longer needed. Evidence: CSL-0075 native solves identically to the variant once its 2 humid-air rewrites are applied; CSL-0151 solves once `é`→`e`; CSL-0161 once `Nu#_f` renamed; CSL-0119 identical with `nDay_`→338. Gaps reached only on alternate branches kept (CSL-0150 NAME-SYMBOL on `'Oil'`, CSL-0161 CALL-EXPR-OUT on `'EG'`). build_index 0 errors; test_models OK (only baseline CSL-0153:coolsolve). **Pending cleanup** (give to the next re-check): native-file header comments still cite closed gaps — `CS-GAP-IF5` in 6 natives (boiler_modulating, glycol_runaround, iso5167, dhw_tank, ice_storage, orc_whr_refprop_cost), `CS-GAP-IF-DIRECTIVE` in 8 natives (thermal_comfort, boiler_modulating, glycol_runaround, plate_hx_thermal_resistances, adiabatic_flame, orc_biomass, engine_derating, solar_geometry); protocol B now requires the header update. |
 | 2026-10-10 | #2 | Fixed (`9423934`): `$IF/$IFNOT/$ELSE/$ENDIF` resolved while parsing (removed branches skipped unparsed, main program and bodies; EES help semantics: string constant set before the directive, case-insensitive, AND/OR, EES flags; errors for non-constant strings, unknown conditions, unbalanced directives; `report.md` table); `eesStringEqual` (case-insensitive incl. Latin-1 accents) for IF statements and `$IF`. New files `src/conditional_directives.cpp`, `src/ees_string.cpp` (+ headers). 24 tests; 486/486 unit (one old test asserted case-sensitivity); examples identical; library regression 151 / same 7. No model freed by #2 alone: CSL-0012 → `LOOKUP$ROW`, 0119 → `nDay_`, 0151 → accented names, 0161 → `#` names, 0081 → GOTO, 0116 → `=>`, 0150 → not square (CHEM-EQUIL/NASA), 0162 → CALL-EXPR-OUT, 0040 → Diagram-window strings (new `CS-GAP-IF-NO-CONSTANT`) + `C%`, 0166 → `regime$` from a CALL (`CS-GAP-IF-NO-CONSTANT`), 0075 → now AirH2O branch, SingularJacobian block 16 (ISIDEALGAS/HUMIDAIR-PROPS open). PARAMETRICTABLE stays false in GUI parametric studies (documented). |
 | 2026-10-10 | #1c | Fixed (`8238a94`): unparsable body lines reported ("Could not parse line"), `END // comment` closes a body, text after `)`/`]`/string is an error, unit annotation after a call/element accepted explicitly (also inside expressions). 15 tests; 462/462 unit; examples identical. AST comparison: 6 files gain errors on previously dropped lines — `orc_solar_complex` example (`Nu#_` names), blocked natives CSL-0081 (GOTO), CSL-0153/0160 (`END procedure`/`END name`), CSL-0158 (`°` names) — and **CSL-0103 (verified)**: six `!` comment lines in `FUNCTION dP_Kern` (not an EES comment form, silently dropped before) → fixed in the library as `//` comments, regression OK, history entry added. Register: GOTO and HASH-IDENT now loud (P1→P3); new rows `CS-BUG-VAR-ANNOTATION` (silent in bodies), `CS-BUG-MAIN-SEMICOLON`, `CS-BUG-DUPLICATE-HEADER-COMMENT` → item 9. |
@@ -265,84 +266,6 @@ build_index/test_models results; any new CoolSolve problem with its reproducer.
 ## Appendix C. Prepared prompts of the open items
 
 Each prompt is removed when its item is done. The fix protocol it refers to is Appendix A (save it as `fix_protocol.md` in the session scratchpad and adapt the paths).
-
-### C.3 — `prompt_3.md`
-
-````text
-You are fixing CoolSolve items. First read and follow the protocol file:
-/tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/fix_protocol.md
-(The build tree is configured with CoolProp pinned (`COOLSOLVE_COOLPROP_TAG=5b9c32ac`); never re-run cmake with another
-tag. Take the current `./coolsolve_tests` pass count as your baseline before you start (it includes `[library-gaps]`);
-the `[examples-comprehensive]` per-example table must stay identical to
-/tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/baseline_test_examples.md
-except where an INTEGRAL example intentionally changes — report and justify any change. Also run the integral-specific
-tests: `./coolsolve_tests "[integral]"` or whatever tags `tests/test_integral_*.cpp` use, and the Python API test
-`tests/test_integral_api.py` if it runs without a server set-up — check how.)
-
-Also read `docs/integral_table.md` (architecture, §7 limitations) and `docs/language_reference.md` §12 before designing.
-Code: `src/integral/integral_extraction.cpp` (IR → IntegralProblem: today the state is the LHS of an equation
-`y = base + INTEGRAL(f, t, lo, hi[, step])`, the base is the RHS with the INTEGRAL call replaced by 0, limits must be
-constant), `src/integral/integral_solver.cpp` (time march), `src/integral/integral_table.cpp`, the `$IntegralTable`
-directive parser in `src/parser.cpp` (`parseIntegralTableContent`), and the runner wiring.
-
-Items (register /home/sylvain/svn/CoolSolve/docs/model_library_support.md, §4 and §5) — EES semantics: an
-`INTEGRAL(f, t, lo, hi[, step])` call is a **value** (∫ from lo to the current t of f dt) that may appear anywhere in an
-equation; at the end of the run every variable holds its value at t = hi:
-
-1. `CS-BUG-INTEGRAL-FACTOR` (P1 silent): `y = m_dot*integral(v, P, 0, 10, 1)` returns ∫v dP instead of m_dot·∫v dP
-   (the factor is lost because the base expression blanks the call to 0). Also `y = integral(…)/3.6E6`,
-   `y = -N*integral(…)`, `y = -integral(…)`, `y = a + b*integral(…)`, two INTEGRAL calls in one equation, and an
-   INTEGRAL whose LHS is not a plain variable must either work with EES semantics or be a clear error — never a silent
-   wrong value. Suggested design (you may choose another, explain): keep the existing fast path for the plain additive
-   form `y = base + INTEGRAL(...)` (base free of INTEGRAL), and for any other form introduce an **auxiliary state** per
-   INTEGRAL call (internal name that cannot clash with user names, I(lo) = 0, dI/dt = integrand) and turn the equation
-   into an ordinary algebraic equation with the call replaced by the auxiliary state. The auxiliary states must not
-   appear in user outputs (`.sol`, `-integral.csv`, GUI) unless that is harmless — decide and document.
-2. `CS-GAP-INTEGRAL-LIMITS` (P3, but blocks 6 models): limits that are variables or expressions (`t_1 = 0`, `t_2 =
-   18000`, `v1_bar = V1/N`, `v[1]`/`v[2]` computed by property calls in the Stirling model CSL-0059, `p_in`/`p_out`).
-   Suggested design: determine the limits from the solution of the algebraic system at the initial point — e.g. add
-   the equation `t = <lower-limit expression>` to the initial solve (where the states take their base values / the
-   auxiliary integrals are 0), then evaluate the upper limit and the step from that solution; error if a limit depends
-   on the integration variable or on a state (it would change along the trajectory). Constant limits must keep the
-   current behaviour and cost. Check what EES requires/does if you can (fchart.com/ees/eeshelp).
-3. `CS-BUG-INTEGRAL-MAXSTEPS` (P1 silent): the step loop stops after `4·integralMaxSteps` steps while t < tf and still
-   reports SUCCESS (truncated trajectory, `.sol` at the wrong time). EES honours the step given as 5th argument. Make the
-   explicit step of the model win (the number of steps follows from (hi−lo)/step), keep `integralMaxSteps` as a guard
-   for adaptive/auto steps, and make any premature stop an **error** (or at least a failure status with a message),
-   never a SUCCESS. Check the config docs (`examples/coolsolve.conf`, README, `docs/integral_table.md`) and the GUI
-   ConfigEditor description of `integralMaxSteps` and update them if the meaning changes.
-4. `CS-BUG-INTEGRAL-TABLE-SEP` (P1): `$IntegralTable t:0.5; y; dydt` — columns separated by `;` or `,` (accepted by EES)
-   end up in the name (`y;`) and the column is silently empty. Accept space, `,` and `;` separators; an unknown column
-   name must be a warning/error, not a silently empty column.
-5. `CS-BUG-INTEGRAL-TABLE-CASE` (P1): `$IntegralTable` column names are matched case-sensitively against the casing of
-   the variable's first occurrence (`T_w` vs `t_w`): EES names are case-insensitive. Match case-insensitively.
-
-Out of scope (report only): `CS-GAP-INTEGRAL-MULTIVAR` (several INTEGRAL calls with different integration variables —
-the Stirling model CSL-0059 needs it too; if your auxiliary-state design makes a clean extension obvious, describe it in
-your report, do not implement), `CS-GAP-INTEGRALVALUE`, `CS-GAP-INTEGRAL-LOOKUP`.
-
-Blocked library models (read-only; do not edit the library) — run the native files with your build in a scratch copy
-of their folders before/after and report the first remaining error (other gaps are expected, see `missing_features`):
-`CSL-0047` nonideal_gas_isothermal_work (blocked only by LIMITS + FACTOR: expected to solve now; compare with its
-`_coolsolve` variant's `.sol` and with the EES value in its README), `CSL-0010` two_stage_steam_compressor_intercooling
-(LIMITS + FACTOR + OPTIM — OPTIM only means "shipped at the optimum", so it may solve: compare with the variant),
-`CSL-0009` dhw_tank_dynamic (now IF5 fixed; LIMITS, TABLE-SEP, MAXSTEPS: expected to solve; it takes minutes with
-1-s steps over 18000 s — run it once in the background), `CSL-0041` ice_storage_tank_discharge_phase_change (also
-needs `CS-BUG-WATER-NEAR-FREEZING`), `CSL-0059` stirling (needs MULTIVAR), `CSL-0081` (many other gaps). Find them with
-`grep -l '<ID>' /home/sylvain/svn/CoolSolve_Library/models/*/*/*/model.json`.
-
-Tests: tags `[library-gaps][integral-factor]`, `[integral-limits]`, `[integral-maxsteps]`, `[integral-table]`:
-register reproducers with EES values, the forms listed above, symbolic limits (constant variable, constant expression,
-limit from a nonlinear equation), a limit depending on t (error), a step not dividing the interval, the truncation case
-(error, not success), separators and case in `$IntegralTable`, and a steady quadrature model (integration variable P,
-not time, as CSL-0010). Also run the library regression at the end (≈ 4 min):
-`cd /home/sylvain/svn/CoolSolve_Library && python3 tools/test_models.py --coolsolve /home/sylvain/svn/CoolSolve/build/coolsolve --exclude CSL-0009:coolsolve`
-then `CSL-0009:coolsolve` alone (3 min). Pre-existing failures to ignore: CSL-0114, CSL-0038, CSL-0019,
-CSL-0153:coolsolve, CSL-0039, CSL-0158:coolsolve, CSL-0124:coolsolve. The dynamic library models and their variants
-(CSL-0009:coolsolve, CSL-0041:coolsolve, CSL-0042:coolsolve, CSL-0047:coolsolve, CSL-0010:coolsolve, CSL-0059:coolsolve
-…) must give the same results as before (they use the split form that already worked) — performance too: report
-the run time of CSL-0009:coolsolve before/after.
-````
 
 ### C.4 — `prompt_4.md`
 
