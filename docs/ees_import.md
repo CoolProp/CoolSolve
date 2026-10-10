@@ -378,7 +378,7 @@ README. Tolerances:
 | Real-fluid properties, same equation of state | ≤ 0.1 % |
 | Real-fluid properties, different equation of state (EES vs CoolProp) | ≤ 0.5 % typical |
 | Older EES fluid models (e.g. R22 in EES 7) or near the critical point | up to a few %, **explain it** |
-| Absolute enthalpy/entropy | may differ by a reference-state offset: compare differences and derived results (powers, efficiencies, COP, temperatures) |
+| Absolute enthalpy/entropy | may differ by a reference-state offset: compare differences and derived results (powers, efficiencies, COP, temperatures). Examples: EES uses the ASHRAE reference (h = s = 0 for the saturated liquid at −40 °C) for R410A and R134a, CoolProp the IIR one: CoolProp − EES = 142.2 kJ/kg and 0.774 kJ/kg·K for R410A, 148.1 kJ/kg and 0.796 kJ/kg·K for R134a. Shift EES enthalpies/entropies by these offsets before using them as `.initials` |
 
 A model is *verified* when all derived results agree within these tolerances;
 the comparison and any explained deviation are recorded in the README.
