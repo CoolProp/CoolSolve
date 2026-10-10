@@ -74,8 +74,9 @@ def to_coolsolve_units(name, value, units):
     u = (units or "").strip()
     if u == "K" and name[:1] in "Tt":            # absolute temperature (DELTAT_... starts with D)
         return value - 273.15, "K->C"
+    numerator = u.split("/")[0]   # a prefixed unit in a denominator (eur/kW) is kept as written by the model
     for unit, factor in _SCALE:
-        if re.search(r"(?<![A-Za-z])%s(?![A-Za-z])" % unit, u):
+        if re.search(r"(?<![A-Za-z])%s(?![A-Za-z])" % unit, numerator):
             return value * factor, "%s x%g" % (unit, factor)
     return value, ""
 
