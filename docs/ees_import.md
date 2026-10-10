@@ -337,6 +337,15 @@ cannot be swept (`CS-GAP-PARAMETRIC`).
   (`CS-GAP-PROP-TH`): rewrite them with an equivalent (P, H) call (saturation
   pressure from T for a two-phase state, or an auxiliary pressure unknown), as the
   CoolSolve Library does (its workflow §6, decision D11).
+- The built-in `CALL NASA(Species$, T : cp, h, s)` is not a CoolSolve procedure and is
+  not planned (`CS-GAP-NASA`, not a gap): rewrite it with ideal-gas property calls,
+  `h = MolarMass(X$)*enthalpy(X$,T=T)` and `cp = MolarMass(X$)*cp(X$,T=T)` [J/kmol,
+  J/kmol-K] for the species `Air`, `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`,
+  `C2H6`, `C3H8`, `H2O` (the enthalpy includes the formation enthalpy, as NASA's; the
+  entropy offsets are listed in the
+  [Language Reference](language_reference.md#ideal-gases)), as the CoolSolve Library
+  does (its workflow §6, decision D12). A species of the NASA database that CoolProp
+  lacks (`OH`, `H`, `O`, `N`, `NO`, `NO2`) is a gap (`CS-GAP-FLUIDS-NASA-SPECIES`).
 - The report lists the **functions called but not defined** in the file. Each
   must be either a CoolSolve built-in (see the
   [Language Reference](language_reference.md)) or a user-library function that

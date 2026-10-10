@@ -6306,3 +6306,142 @@ TEST_CASE("CS-BUG-COMMON-PROC: a $COMMON line outside a FUNCTION or PROCEDURE is
     REQUIRE(run.solveOk);
     CHECK_THAT(run["y"], WithinAbs(22.0, 1e-9));
 }
+
+// ============================================================================
+// CS-GAP-NASA: the EES `CALL NASA(X$, T : cp, h, s)` is not a CoolSolve procedure; models use the
+// ideal-gas species as fluids (h = MolarMass(X$)*enthalpy(X$,T=T), J/kmol). These tests pin the
+// values of that rewrite against the JANAF tables.
+//
+// Reference: NIST-JANAF Thermochemical Tables, 4th ed. (M. W. Chase, J. Phys. Chem. Ref. Data,
+// Monograph 9, 1998), as reproduced by the Shomate fits of the NIST Chemistry WebBook:
+// H(2400 K) - H(298.15 K) in kJ/mol N2 70.640, O2 74.453, CO2 115.779, H2O 93.744, CO 71.327,
+// H2 66.928; cp(2400 K) in J/mol-K N2 36.510, O2 38.632, CO2 61.277, H2O 53.438, CO 36.702,
+// H2 35.559. 2400 K = 2126.85 degC.
+// ============================================================================
+
+TEST_CASE("CS-GAP-NASA: molar enthalpy rise of the combustion species against JANAF", "[library-gaps][nasa]") {
+    // h = MolarMass(X)*enthalpy(X,T=T) [J/kmol] replaces CALL NASA(X$,T:cp,h,s) (h in kJ/kmol)
+    auto run = runModel(R"(
+T_hot = 2126.85
+T_ref = 25
+dH_N2 = MolarMass(N2)*(enthalpy(N2,T=T_hot)-enthalpy(N2,T=T_ref))
+dH_O2 = MolarMass(O2)*(enthalpy(O2,T=T_hot)-enthalpy(O2,T=T_ref))
+dH_CO2 = MolarMass(CO2)*(enthalpy(CO2,T=T_hot)-enthalpy(CO2,T=T_ref))
+dH_H2O = MolarMass(H2O)*(enthalpy(H2O,T=T_hot)-enthalpy(H2O,T=T_ref))
+dH_CO = MolarMass(CO)*(enthalpy(CO,T=T_hot)-enthalpy(CO,T=T_ref))
+dH_H2 = MolarMass(H2)*(enthalpy(H2,T=T_hot)-enthalpy(H2,T=T_ref))
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // J/kmol, tolerance 0.2 % (CoolProp's ideal-gas parts deviate by 0.01 to 0.10 %)
+    CHECK_THAT(run["dH_N2"], WithinRel(70.640e6, 2e-3));
+    CHECK_THAT(run["dH_O2"], WithinRel(74.453e6, 2e-3));
+    CHECK_THAT(run["dH_CO2"], WithinRel(115.779e6, 2e-3));
+    CHECK_THAT(run["dH_H2O"], WithinRel(93.744e6, 2e-3));
+    CHECK_THAT(run["dH_CO"], WithinRel(71.327e6, 2e-3));
+    CHECK_THAT(run["dH_H2"], WithinRel(66.928e6, 2e-3));
+}
+
+TEST_CASE("CS-GAP-NASA: the molar enthalpy at 25 C is the enthalpy of formation, in J/kmol", "[library-gaps][nasa]") {
+    // NASA returns h of formation at 298.15 K (elements 0), the reference of the heats of reaction
+    auto run = runModel(R"(
+hf_CO2 = MolarMass(CO2)*enthalpy(CO2,T=25)
+hf_H2O = MolarMass(H2O)*enthalpy(H2O,T=25)
+hf_CO = MolarMass(CO)*enthalpy(CO,T=25)
+hf_CH4 = MolarMass(CH4)*enthalpy(CH4,T=25)
+hf_N2 = MolarMass(N2)*enthalpy(N2,T=25)
+hf_O2 = MolarMass(O2)*enthalpy(O2,T=25)
+hf_H2 = MolarMass(H2)*enthalpy(H2,T=25)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["hf_CO2"], WithinRel(-393.520e6, 1e-9));
+    CHECK_THAT(run["hf_H2O"], WithinRel(-241.820e6, 1e-9));
+    CHECK_THAT(run["hf_CO"], WithinRel(-110.530e6, 1e-9));
+    CHECK_THAT(run["hf_CH4"], WithinRel(-74.850e6, 1e-9));
+    CHECK_THAT(run["hf_N2"], WithinAbs(0.0, 1.0));
+    CHECK_THAT(run["hf_O2"], WithinAbs(0.0, 1.0));
+    CHECK_THAT(run["hf_H2"], WithinAbs(0.0, 1.0));
+}
+
+TEST_CASE("CS-GAP-NASA: molar specific heat against JANAF", "[library-gaps][nasa]") {
+    // cp = MolarMass(X)*cp(X,T=T) [J/kmol-K] replaces the cp output of CALL NASA (kJ/kmol-K)
+    auto run = runModel(R"(
+T_hot = 2126.85
+cp_N2 = MolarMass(N2)*cp(N2,T=T_hot)
+cp_O2 = MolarMass(O2)*cp(O2,T=T_hot)
+cp_CO2 = MolarMass(CO2)*cp(CO2,T=T_hot)
+cp_H2O = MolarMass(H2O)*cp(H2O,T=T_hot)
+cp_CO = MolarMass(CO)*cp(CO,T=T_hot)
+cp_H2 = MolarMass(H2)*cp(H2,T=T_hot)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["cp_N2"], WithinRel(36.510e3, 5e-3));
+    CHECK_THAT(run["cp_O2"], WithinRel(38.632e3, 5e-3));
+    CHECK_THAT(run["cp_CO2"], WithinRel(61.277e3, 5e-3));
+    CHECK_THAT(run["cp_H2O"], WithinRel(53.438e3, 5e-3));
+    CHECK_THAT(run["cp_CO"], WithinRel(36.702e3, 5e-3));
+    CHECK_THAT(run["cp_H2"], WithinRel(35.559e3, 5e-3));
+}
+
+TEST_CASE("CS-GAP-NASA: the species name from a string variable", "[library-gaps][nasa]") {
+    // the CSL-0150 pattern with the species held in string variables; Prod$[i] (a string-array
+    // element as fluid argument) is not accepted by CoolSolve, see CS-GAP-STRING-ARRAY
+    auto run = runModel(R"(
+Sp1$ = 'CO2'
+Sp2$ = 'H2O'
+T_hot = 2126.85
+T_ref = 25
+H_ref1 = MolarMass(Sp1$)*enthalpy(Sp1$,T=T_ref)
+H_hot1 = MolarMass(Sp1$)*enthalpy(Sp1$,T=T_hot)
+H_ref2 = MolarMass(Sp2$)*enthalpy(Sp2$,T=T_ref)
+H_hot2 = MolarMass(Sp2$)*enthalpy(Sp2$,T=T_hot)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["H_ref1"], WithinRel(-393.520e6, 1e-9));
+    CHECK_THAT(run["H_hot1"] - run["H_ref1"], WithinRel(115.779e6, 2e-3));
+    CHECK_THAT(run["H_ref2"], WithinRel(-241.820e6, 1e-9));
+    CHECK_THAT(run["H_hot2"] - run["H_ref2"], WithinRel(93.744e6, 2e-3));
+}
+
+TEST_CASE("CS-GAP-NASA: adiabatic flame temperature of CH4 with the rewritten species enthalpies", "[library-gaps][nasa]") {
+    // CSL-0150 without dissociation (CH4, 20 % excess air, reactants at 288 K), species enthalpies from
+    // property calls. Hand balance with the JANAF enthalpies and the heats of formation of the
+    // language reference: H_react = -78.593 MJ/kmol fuel, T_adiab = 2061.6 K = 1788.5 degC.
+    auto run = runModel(R"(
+m = 1 ; n = 4 ; e = 0.2
+T_fuel = 14.85 ; T_air = 14.85
+H_react = molarmass(CH4)*enthalpy(CH4,T=T_fuel)+(m+n/4)*(1+e)*(molarmass(O2)*enthalpy(O2,T=T_air)+(79/21)*molarmass(N2)*enthalpy(N2,T=T_air))
+nkmol[1] = m ; nkmol[2] = n/2 ; nkmol[3] = (m+n/4)*e ; nkmol[4] = (m+n/4)*(79/21)*(1+e)
+H_prod = nkmol[1]*molarmass(CO2)*enthalpy(CO2,T=T_adiab)+nkmol[2]*molarmass(H2O)*enthalpy(H2O,T=T_adiab)+nkmol[3]*molarmass(O2)*enthalpy(O2,T=T_adiab)+nkmol[4]*molarmass(N2)*enthalpy(N2,T=T_adiab)
+H_react = H_prod
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["H_react"], WithinRel(-78.593e6, 2e-3));
+    CHECK_THAT(run["T_adiab"], WithinAbs(1788.5, 2.0));
+}
+
+TEST_CASE("CS-GAP-NASA: the species of the NASA database that CoolProp lacks are unknown fluids", "[library-gaps][nasa]") {
+    // CS-GAP-FLUIDS-NASA-SPECIES: EES evaluates enthalpy(OH, T=2000) from its NASA database
+    for (const std::string species : {"OH", "H", "O", "N", "NO", "NO2"}) {
+        auto run = runModel("h = enthalpy(" + species + ", T=2000)\n");
+        INFO(species);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("Unknown fluid: '" + species + "'") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-GAP-NASA: CALL NASA is not a CoolSolve procedure", "[library-gaps][nasa]") {
+    // the model is rewritten with property calls; the call must not be silently ignored
+    auto run = runModel(R"(
+T = 2000
+CALL NASA('CO2',T:CP,H,S)
+)");
+    CHECK_FALSE(run.solveOk);
+    CHECK(run.message.find("Unknown procedure: NASA") != std::string::npos);
+}

@@ -478,6 +478,14 @@ and the enthalpies of `Air`, `He`, `Ar` and of the real fluids (`Water`,
 `CarbonDioxide`…), keep CoolProp's reference states. Values: Çengel & Boles,
 Table A-26, which reproduce the heats of combustion of EES.
 
+The entropies of the ideal gases are not the absolute (third-law) entropies of
+the JANAF/NASA tables: they carry a constant offset per species (CoolProp's
+reference state; −0.02 kJ/kmol-K for `N2`, `O2`, `Ar`, between −14 (`He`) and
+−145 (`C3H8`) kJ/kmol-K for the others), so entropy differences of one species
+are right, but a quantity that combines the entropies of different species
+(entropy of reaction, Gibbs energy, equilibrium constant) needs the absolute
+values.
+
 ### Humid air
 
 `airH2O` — requires three state inputs.
