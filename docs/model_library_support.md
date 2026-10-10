@@ -444,22 +444,30 @@ models (148): 98 verified / 7 runs / 43 blocked before, 105 verified / 8 runs /
   **as if the model had always worked** (no history of the problem); otherwise
   update the gap list; then `tools/build_index.py`, `tools/test_models.py` and one
   line in the library roadmap §8.
-- *Build*: CoolProp is pinned for the campaign to the baseline commit
-  (`cmake -DCOOLSOLVE_COOLPROP_TAG=5b9c32ac ..` in `build/`); the default `master`
-  drifts and changes failing examples. New `.cpp` files need `cmake .`.
-- *Baselines*: examples not solving: `cooling_tower2`,
-  `internal_combustion_engine_cpbar`, `orc_complex`, `simple_centrifugal_compressor`,
-  `turbocompressor_interpolate`, `water_libr`. Library regression: 151 targets
-  with 5 failures that predate the campaign (`CSL-0114`, `CSL-0038`, `CSL-0019`,
-  `CSL-0039`, `CSL-0158:coolsolve`): their `.sol` were solved with a CoolProp `master`
-  newer than the pin (≥ `babba366`, 2026-09-27, which brings the Perkins–Huber–Assael
-  2016 R245fa viscosity and conductivity; the pin and every CoolProp release up to 8.0.0
-  give R245fa vapour values 14–25 % above NIST/REFPROP 10). Conversely the
-  `CSL-0124:coolsolve` and `CSL-0153:coolsolve` `.sol`, re-baselined on 2026-10-10
-  with the pin, carry the old R245fa transport values: re-baseline them again after
-  unpinning.
+- *Build*: CoolProp is pinned in `CMakeLists.txt` (`COOLSOLVE_COOLPROP_PINNED_TAG` =
+  `75af7816`, master of 2026-10-09, 8.1.0dev); `cmake` warns when a build directory
+  caches another tag (`cmake -DCOOLSOLVE_COOLPROP_TAG=75af7816 ..` aligns it) and
+  `coolsolve --version` prints the CoolProp revision linked. A bump is deliberate
+  ([contributing.md](contributing.md#pinned-coolprop-version)). New `.cpp` files need `cmake .`.
+- *Baselines* (pin `75af7816`): unit suite 603 test cases; examples 40/46 solve, not solving
+  `cooling_tower2`, `internal_combustion_engine_cpbar`, `orc_complex`,
+  `simple_centrifugal_compressor`, `turbocompressor_interpolate`, `water_libr`; library
+  regression 151 targets, 0 failures (`tools/test_models.py` records the CoolProp baseline
+  and warns when the binary differs). Versus the former pin `5b9c32ac`: R245fa transport
+  (#3352, #3403: vapour viscosity and conductivity 12–18 % lower, liquid within ±5 %) and ammonia
+  conductivity (#3404) moved `CSL-0114`, `CSL-0019`, `CSL-0158:coolsolve`, `orc_simple`
+  and `orc_r245fa`; `CSL-0038`, `CSL-0039` differ only by `balance` residuals below 2e-9;
+  the `CSL-0124` and `CSL-0153` `.sol` were re-baselined. Known: `air_screw_compressor`
+  does not solve from the CLI at the default `tolerance = 1e-9` (solves from 1e-8, and in
+  the suite at 1e-6): bisected to CoolProp `3f06ccf7` (#3360, p,T flash rework), mechanism not analysed.
 
 **Queue** (next first):
+Decided 2026-10-10, in this order: (a) `$COMMON` is not supported: CoolSolve rejects it with an error
+naming the variables to pass as arguments; `CSL-0080`, `CSL-0124`, `CSL-0153` pass them as arguments
+(`CS-BUG-COMMON-PROC` closed; also refresh the result values quoted in the `CSL-0124`/`CSL-0153`
+READMEs). (b) `CALL NASA` is rewritten as ideal-gas property calls (`h = MolarMass(X$)*enthalpy(X$,T=T)`),
+`CS-GAP-NASA` becomes *not a gap*, new gap for the species CoolProp lacks (OH, H, O, N, NO, NO2), `CSL-0150`
+rewritten. Then:
 0. `CSL-0118` (air nozzle/ejector): its isentropic nozzle/diffuser relations are written as ratios of
    absolute enthalpies, valid only with EES's "h = 0 at 0 K" reference of `Air`; rewrite them with
    absolute-temperature ratios (same physics, any reference), remove `CS-GAP-AIR-ENTHALPY-REF` from
@@ -484,10 +492,10 @@ models (148): 98 verified / 7 runs / 43 blocked before, 105 verified / 8 runs /
 5. `CS-GAP-INCLUDE` / `CS-FEAT-IMPORT` (§2.3), a feature of its own; serving the
    library dashboard `library.html` in the GUI (§2.1–§2.2) belongs to the same
    integration work.
-6. Close-out: move CoolProp to a `master` ≥ `babba366` (R245fa transport, R1233zd(E) transport
-   restored by #3335); before, check the examples and the library against #3333 (breaking change,
-   2026-08-29) and `da48a3ee` (#3446: viscosity/conductivity throw for 0 < quality < 1); then
-   re-baseline the library `.sol` (at least `CSL-0124`, `CSL-0153` variants) and merge the branch.
+6. Close-out (the CoolProp move is done, see *Build*; the former pin differs only by the changes
+   listed there, #3333 and #3446 included): merge the branch; decide on `air_screw_compressor` (tolerance-1e-9 failure
+   above); the `CSL-0124` and `CSL-0153` READMEs still quote the former `.sol` values
+   (results tables).
 
 **Library follow-ups for the maintainer** (decisions, not CoolSolve fixes):
 `CSL-0078`'s native file fixes `P_ev`, `P_cd`, `M_dot_r` at the stored EES values

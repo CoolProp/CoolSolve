@@ -140,7 +140,7 @@ CoolSolve is a **standalone library** that automatically downloads all its depen
 | **Eigen** | Linear algebra |
 | **Catch2** | Unit testing |
 
-Dependencies are cached in `.fetchcontent_cache/` at the project root. This cache **persists across build folder deletions**, so you won't need to re-download dependencies if you clean and rebuild. The first `cmake` run will take several minutes to fetch CoolProp and its submodules; subsequent runs take only a few seconds.
+Dependencies are cached in `.fetchcontent_cache/` at the project root. This cache **persists across build folder deletions**, so you won't need to re-download dependencies if you clean and rebuild. The first `cmake` run will take several minutes to fetch CoolProp (full history, as the pinned commit is not a branch tip) and its submodules; subsequent runs take only a few seconds.
 
 ### Build Steps
 
@@ -224,15 +224,20 @@ grep CMAKE_BUILD_TYPE CMakeCache.txt
 
 ### Updating CoolProp Version
 
-By default, CoolSolve fetches the latest `master` branch of CoolProp. To use a specific version:
+CoolSolve is built with **one pinned CoolProp commit**, recorded in `CMakeLists.txt`
+(`COOLSOLVE_COOLPROP_PINNED_TAG`): a CoolSolve commit therefore determines the property
+library its results come from. `coolsolve --version` prints the CoolProp version and git
+revision actually linked. To build with another CoolProp (tag, branch or commit):
 
 ```bash
-# Use a specific tag or commit
-cmake -DCOOLSOLVE_COOLPROP_TAG=v6.6.0 ..
-
-# Or a specific commit hash
-cmake -DCOOLSOLVE_COOLPROP_TAG=abc123def ..
+cmake -DCOOLSOLVE_COOLPROP_TAG=v6.6.0 ..      # a tag
+cmake -DCOOLSOLVE_COOLPROP_TAG=abc123def ..   # or a commit hash
 ```
+
+An existing build directory keeps the value it cached: when it differs from the pin,
+`cmake` prints a warning with the command that aligns it
+(`cmake -DCOOLSOLVE_COOLPROP_TAG=<pin> ..`). Bumping the pin is a deliberate change, see
+[Contributing](docs/contributing.md#pinned-coolprop-version).
 
 ### Cleaning the Build
 
@@ -301,6 +306,7 @@ The debug folder contains:
 | `-g, --guess` | Update .initials file with solution on success |
 | `--no-sol` | Disable generation of .sol file |
 | `--no-superancillary` | Disable CoolProp superancillary functions (faster VLE solving) |
+| `--version` | Print the CoolSolve version and the CoolProp version and git revision |
 | `-h, --help` | Show help message |
 
 ### Performance Options
@@ -416,6 +422,7 @@ CoolSolve/
 │   ├── evaluator.h             # Block and system evaluators
 │   ├── solution_checker.h      # Post-solve solution verification
 │   ├── usage_log.h             # GUI solve-attempt log (append + aggregated stats)
+│   ├── version.h               # CoolSolve / CoolProp version info (`--version`)
 │   └── solver.h                # Solver pipeline, all SolverOptions declarations
 ├── include/coolsolve/integral/
 │   └── *.h                     # Equation-based dynamic solver (IntegralProblem, IntegralTable, Integrator, IntegralSolver)
@@ -443,6 +450,7 @@ CoolSolve/
 │   ├── solver_symbolic.cpp     # Symbolic block reduction preprocessing
 │   ├── solver_trust_region.cpp # Trust-region dogleg solver
 │   ├── usage_log.cpp           # GUI solve-attempt log: CSV append + cached statistics
+│   ├── version.cpp             # CoolSolve and CoolProp (version, git revision) at run time
 │   └── solution_checker.cpp    # Post-solve equation-by-equation verification
 ├── tests/
 │   ├── test_parser.cpp         # Parser/IR unit tests (Catch2)

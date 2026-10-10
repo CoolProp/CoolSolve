@@ -333,10 +333,44 @@ immediately visible to users.
       (e.g. resource files).
 - [ ] If you add a dependency, prefer `FetchContent` and pin a tag.
       Update the *Dependencies* table in `README.md`.
+- [ ] CoolProp is pinned to one commit, never `master` (see *Pinned CoolProp
+      version* below).
 - [ ] Verify the **Windows build path** still works: `build_installer.bat`
       and `coolsolve.nsi` should not need changes for normal feature
       additions, but should be regenerated and tested for installer-level
       changes.
+
+#### Pinned CoolProp version
+
+CoolProp changes fluid models and transport correlations, so it moves model
+results. CoolSolve is therefore built with **one CoolProp commit**, set by
+`COOLSOLVE_COOLPROP_PINNED_TAG` in `CMakeLists.txt` (the default of the cache
+variable `COOLSOLVE_COOLPROP_TAG`): a CoolSolve commit determines its CoolProp
+commit, on every branch, in the build scripts (`build_gui.sh`,
+`build_installer.bat`) and for every developer. `coolsolve --version` prints
+the CoolProp version and git revision actually linked, and the library
+regression (`tools/test_models.py`, model library) warns when it is not the
+revision of its baselines.
+
+An existing build directory keeps the `COOLSOLVE_COOLPROP_TAG` it cached, so
+`cmake` prints a **warning** when it differs from the pin. Align the directory
+with `cmake -DCOOLSOLVE_COOLPROP_TAG=<pin> ..` (the `.fetchcontent_cache/`
+checkout is reused). A commit hash is cloned with its full history (a shallow
+clone only holds the branch tips); a branch or tag name stays shallow.
+
+**Bumping the pin is a deliberate change**, made in its own commit:
+
+1. Change `COOLSOLVE_COOLPROP_PINNED_TAG`, then reconfigure
+   (`cmake -DCOOLSOLVE_COOLPROP_TAG=<new> ..`) and rebuild; check
+   `coolsolve --version`.
+2. Run `./coolsolve_tests` and `./coolsolve_tests "[examples-comprehensive]"`.
+   Explain every test or example whose result changes (which CoolProp commit,
+   or a CoolSolve problem); an expected value is edited only with the CoolProp
+   commit and the reference value that justify it.
+3. In the model library: set `COOLPROP_BASELINE` in `tools/test_models.py`, run
+   the regression, and re-baseline only the targets whose differences are
+   explained by CoolProp (library `docs/model_workflow.md`).
+4. At a release, record the commit in [`versions.md`](versions.md) (§9.5).
 
 ---
 
@@ -477,7 +511,7 @@ concern lives.
 If you find a bug but do not have time to fix it, please file an issue
 that includes:
 
-1. The CoolSolve version (`./coolsolve --help` shows it on the first line).
+1. The CoolSolve and CoolProp versions (`./coolsolve --version`).
 2. The minimal `.eescode` reproducer (and `.initials` if relevant).
 3. The output of `./coolsolve -d <model>.eescode` — the debug folder is
    the single most useful artefact for triage. Attach it as a ZIP.
@@ -541,9 +575,11 @@ Programs entry) derive the version automatically from these three files.
 
 ### 9.3 Verify the CoolProp version
 
-Check which CoolProp commit is included in this build:
+Check which CoolProp commit is included in this build (it must be the pinned
+one, see *Pinned CoolProp version* in §3.13):
 
 ```bash
+./coolsolve --version
 cd .fetchcontent_cache/coolprop-src
 git log --oneline -1
 git describe --tags

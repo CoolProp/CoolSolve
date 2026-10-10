@@ -21,7 +21,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # --- Build Options ---
 option(COOLSOLVE_USE_SYSTEM_COOLPROP "Use system-installed CoolProp instead of fetching" OFF)
 option(COOLSOLVE_BUILD_GUI "Build embedded GUI server (requires cpp-httplib)" ON)
-set(COOLSOLVE_COOLPROP_TAG "master" CACHE STRING "CoolProp git tag/branch/commit to use")
+# CoolProp is pinned to ONE commit: a CoolSolve commit therefore determines the
+# property library it is built with (CoolProp changes fluid models and transport
+# correlations, which moves model results). Bump it deliberately -- see
+# docs/contributing.md ("Pinned CoolProp version"). `coolsolve --version`
+# prints the CoolProp version and git revision actually linked.
+set(COOLSOLVE_COOLPROP_PINNED_TAG "75af7816")
+set(COOLSOLVE_COOLPROP_TAG "${COOLSOLVE_COOLPROP_PINNED_TAG}" CACHE STRING "CoolProp git tag/branch/commit to use (default: the pinned commit)")
 
 # --- Fetch Dependencies ---
 include(FetchContent)
@@ -97,12 +103,28 @@ if(COOLSOLVE_USE_SYSTEM_COOLPROP)
 else()
     # Fetch CoolProp from GitHub
     message(STATUS "Fetching CoolProp from GitHub (tag: ${COOLSOLVE_COOLPROP_TAG})")
-    
+    # An existing build directory keeps the value it cached: warn when it is not the pin.
+    if(NOT "${COOLSOLVE_COOLPROP_TAG}" STREQUAL "${COOLSOLVE_COOLPROP_PINNED_TAG}")
+        message(WARNING
+            "COOLSOLVE_COOLPROP_TAG is '${COOLSOLVE_COOLPROP_TAG}' but this CoolSolve is pinned to "
+            "CoolProp '${COOLSOLVE_COOLPROP_PINNED_TAG}' (CMakeLists.txt). Results may differ from "
+            "the reference results (property-library differences). To align this build directory: "
+            "cmake -DCOOLSOLVE_COOLPROP_TAG=${COOLSOLVE_COOLPROP_PINNED_TAG} ..")
+    endif()
+
+    # A shallow clone only holds the branch tips: it cannot check out a pinned commit
+    # once master has moved on. Shallow is therefore kept for branch/tag names only.
+    if(COOLSOLVE_COOLPROP_TAG MATCHES "^[0-9a-fA-F]+$")
+        set(COOLSOLVE_COOLPROP_SHALLOW FALSE)
+    else()
+        set(COOLSOLVE_COOLPROP_SHALLOW TRUE)
+    endif()
+
     FetchContent_Declare(
         coolprop
         GIT_REPOSITORY https://github.com/CoolProp/CoolProp.git
         GIT_TAG ${COOLSOLVE_COOLPROP_TAG}
-        GIT_SHALLOW TRUE
+        GIT_SHALLOW ${COOLSOLVE_COOLPROP_SHALLOW}
         GIT_PROGRESS TRUE
     )
     
