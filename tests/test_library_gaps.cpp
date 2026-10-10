@@ -564,9 +564,9 @@ u_CO2 = intenergy(CO2,T=25,P=101325)
     CHECK(run["u_CO2"] < run["hf_CO2"] / molarMassKgPerKmol("CarbonDioxide"));
 }
 
-TEST_CASE("CS-GAP-FORMATION-ENTHALPY: enthalpy differences, inversion and entropy are untouched", "[library-gaps][formation-enthalpy]") {
-    // Only the reference of the enthalpy changes: enthalpy differences are CoolProp's, an enthalpy
-    // given as input is shifted back, and entropies keep CoolProp's reference state.
+TEST_CASE("CS-GAP-FORMATION-ENTHALPY: enthalpy differences and inversion are untouched", "[library-gaps][formation-enthalpy]") {
+    // Only the reference of the enthalpy changes: enthalpy differences are CoolProp's and an enthalpy
+    // given as input is shifted back. (The entropy has its own absolute reference, see CS-GAP-IDEAL-ENTROPY.)
     auto run = runModel(R"(
 dh_CO2 = enthalpy(CO2,T=200) - enthalpy(CO2,T=25)
 h_200 = enthalpy(CO2,T=200,P=101325)
@@ -581,7 +581,9 @@ h_air = enthalpy(Air,T=25,P=101325)
                          CoolProp::PropsSI("H", "T", 298.15, "P", P, "CarbonDioxide");
     CHECK_THAT(run["dh_CO2"], WithinRel(dhRef, 5e-4));   // 101325 Pa internal pressure vs the same
     CHECK_THAT(run["T_back"], WithinAbs(200.0, 1e-6));
-    CHECK_THAT(run["s_CO2"], WithinRel(CoolProp::PropsSI("S", "T", 298.15, "P", P, "CarbonDioxide"), 1e-9));
+    // the entropy is the third-law one: s(25 C, 1 atm) = s0(1 bar) - R ln(1.01325) = 213.786 - 0.109 kJ/kmol-K,
+    // minus the real-gas residual of CO2 at 1 atm (0.1 kJ/kmol-K, CoolProp's equation of state)
+    CHECK_THAT(run["s_CO2"] * molarMassKgPerKmol("CarbonDioxide") / 1000.0, WithinAbs(213.786 - 0.109, 0.2));
     // species without a formation enthalpy keep CoolProp's reference state
     CHECK_THAT(run["h_air"], WithinRel(CoolProp::PropsSI("H", "T", 298.15, "P", P, "Air"), 1e-9));
 }
@@ -606,6 +608,178 @@ TEST_CASE("CS-GAP-FORMATION-ENTHALPY: the cpbar library reproduces the EES test 
     CHECK_THAT(run["e"], WithinRel(-0.02513201, 2e-3));
     CHECK_THAT(run["gamma"], WithinRel(1.394538, 2e-3));
     CHECK_THAT(run["MM_prod"], WithinRel(28.85006, 1e-4));
+}
+
+// ============================================================================
+// CS-GAP-IDEAL-ENTROPY: the ideal gases have absolute (third-law) entropies
+// ============================================================================
+
+namespace {
+
+/// Standard molar entropy at 298.15 K and 1 bar [kJ/kmol-K], NASA-Glenn thermodynamic data
+/// (McBride, Zehe, Gordon, NASA/TP-2002-211556; github.com/nasa/cea data/thermo.inp, R = 8.314462618).
+/// NIST-JANAF differs by at most 0.12 (CH4); EES is built on the same NASA data.
+struct StandardEntropy {
+    const char* ees;        ///< EES name of the ideal gas
+    const char* coolProp;   ///< CoolProp fluid behind it
+    double s0;              ///< [kJ/kmol-K]
+};
+const StandardEntropy kStandardEntropies[] = {
+    {"N2", "Nitrogen", 191.6086},    {"O2", "Oxygen", 205.1483},     {"H2", "Hydrogen", 130.6803},
+    {"He", "Helium", 126.1530},      {"Ar", "Argon", 154.8458},      {"CO2", "CarbonDioxide", 213.7862},
+    {"CO", "CarbonMonoxide", 197.6587}, {"CH4", "Methane", 186.3700}, {"C2H6", "Ethane", 229.2198},
+    {"C3H8", "Propane", 270.3133},   {"H2O", "Water", 188.8280},
+};
+constexpr double kGasConstant = 8.314462618;   // [kJ/kmol-K]
+
+const StandardEntropy& standardEntropy(const std::string& ees) {
+    for (const auto& e : kStandardEntropies)
+        if (ees == e.ees) return e;
+    FAIL("no standard entropy for " << ees);
+    return kStandardEntropies[0];
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-IDEAL-ENTROPY: s(25 C) of the 11 species is the third-law entropy minus R ln(P/1 bar)", "[library-gaps][ideal-entropy]") {
+    // Low pressure (1500 Pa, above the 1 kPa input floor, H2O is vapour at 25 C below 3.17 kPa): the real-gas
+    // residual of CoolProp's equation of state vanishes (<= 0.03 kJ/kmol-K, H2O), what is left is the reference.
+    // The molar entropy is M*s [kJ/kmol-K]. The CoolProp reference states were 14 to 145 kJ/kmol-K away
+    // (H2 -23, He -14, CO -85.5, CO2 -93.2, CH4 -79.1, C2H6 -126.9, C3H8 -144.8, H2O -63.3).
+    std::string code;
+    for (const auto& e : kStandardEntropies) {
+        const std::string n = e.ees;
+        code += "s_" + n + " = molarmass(" + n + ")*entropy(" + n + ",T=25,P=1500)/1000\n";
+    }
+    auto run = runModel(code);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const auto& e : kStandardEntropies) {
+        INFO("species " << e.ees);
+        const double expected = e.s0 - kGasConstant * std::log(1500.0 / 1.0e5);
+        CHECK_THAT(run[std::string("s_") + e.ees], WithinAbs(expected, 0.05));
+    }
+}
+
+TEST_CASE("CS-GAP-IDEAL-ENTROPY: at 1 bar the residual of the real-gas equation of state is the only difference", "[library-gaps][ideal-entropy]") {
+    // N2, O2, Ar, CO2, ... evaluated with CoolProp's real-gas equation of state at 1 bar: s differs from the
+    // ideal-gas standard entropy by the (negative) residual entropy, 0.02 (N2) to 0.29 (C3H8) kJ/kmol-K.
+    // H2O is liquid at 25 C and 1 bar (the ideal vapour is called at low pressure, previous test).
+    std::string code;
+    for (const auto& e : kStandardEntropies) {
+        if (std::string(e.ees) == "H2O") continue;
+        const std::string n = e.ees;
+        code += "s_" + n + " = molarmass(" + n + ")*entropy(" + n + ",T=25,P=1E5)/1000\n";
+    }
+    auto run = runModel(code);
+    REQUIRE(run.solveOk);
+    for (const auto& e : kStandardEntropies) {
+        if (std::string(e.ees) == "H2O") continue;
+        INFO("species " << e.ees);
+        const double s = run[std::string("s_") + e.ees];
+        CHECK(s <= e.s0 + 0.01);
+        CHECK(s >= e.s0 - 0.35);
+    }
+}
+
+TEST_CASE("CS-GAP-IDEAL-ENTROPY: entropy of the ideal gases depends on the pressure as -R ln(P)", "[library-gaps][ideal-entropy]") {
+    auto run = runModel(R"(
+M_He = molarmass(He)
+M_CO2 = molarmass(CO2)
+M_CH4 = molarmass(CH4)
+ds_He = M_He*(entropy(He,T=100,P=1E6) - entropy(He,T=100,P=1E5))/1000
+ds_CO2 = M_CO2*(entropy(CO2,T=25,P=6000) - entropy(CO2,T=25,P=1500))/1000
+ds_CH4 = M_CH4*(entropy(CH4,T=25,P=6000) - entropy(CH4,T=25,P=1500))/1000
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["ds_He"], WithinAbs(-kGasConstant * std::log(10.0), 0.01));   // real-gas residual of He at 10 bar: 0.004
+    CHECK_THAT(run["ds_CO2"], WithinAbs(-kGasConstant * std::log(4.0), 0.01));
+    CHECK_THAT(run["ds_CH4"], WithinAbs(-kGasConstant * std::log(4.0), 0.01));
+}
+
+TEST_CASE("CS-GAP-IDEAL-ENTROPY: isentropic round trip with the entropy as an input", "[library-gaps][ideal-entropy]") {
+    // temperature(X, s=, P=) and enthalpy(X, s=, P=): the entropy given as input is on the absolute basis, and
+    // the temperature of the isentropic state is CoolProp's, whatever the reference.
+    auto run = runModel(R"(
+s_CO2 = entropy(CO2,T=25,P=1E5)
+T_CO2 = temperature(CO2,s=s_CO2,P=3E5)
+h_CO2 = enthalpy(CO2,s=s_CO2,P=3E5)
+h_CO2_T = enthalpy(CO2,T=T_CO2,P=3E5)
+s_back_CO2 = entropy(CO2,T=T_CO2,P=3E5)
+s_H2O = entropy(H2O,T=150,P=5000)
+T_H2O = temperature(H2O,s=s_H2O,P=10000)
+h_H2O = enthalpy(H2O,s=s_H2O,P=10000)
+h_H2O_T = enthalpy(H2O,T=T_H2O,P=10000)
+s_back_H2O = entropy(H2O,T=T_H2O,P=10000)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // the isentropic temperatures, from CoolProp on its own basis
+    const double sCO2 = CoolProp::PropsSI("S", "T", 298.15, "P", 1e5, "CarbonDioxide");
+    CHECK_THAT(run["T_CO2"] + 273.15, WithinAbs(CoolProp::PropsSI("T", "S", sCO2, "P", 3e5, "CarbonDioxide"), 1e-6));
+    const double sH2O = CoolProp::PropsSI("S", "T", 423.15, "P", 5000.0, "Water");
+    CHECK_THAT(run["T_H2O"] + 273.15, WithinAbs(CoolProp::PropsSI("T", "S", sH2O, "P", 10000.0, "Water"), 1e-6));
+    // enthalpy and entropy of the recovered state are the ones of the input state
+    CHECK_THAT(run["h_CO2"], WithinRel(run["h_CO2_T"], 1e-9));
+    CHECK_THAT(run["s_back_CO2"], WithinRel(run["s_CO2"], 1e-9));
+    CHECK_THAT(run["h_H2O"], WithinRel(run["h_H2O_T"], 1e-9));
+    CHECK_THAT(run["s_back_H2O"], WithinRel(run["s_H2O"], 1e-9));
+}
+
+TEST_CASE("CS-GAP-IDEAL-ENTROPY: a literal absolute entropy as input", "[library-gaps][ideal-entropy]") {
+    // He is almost ideal at 1 bar: the third-law entropy of the tables (126.153 kJ/kmol-K at 298.15 K, 1 bar)
+    // gives 25 C back, and a state at 100 C the entropy of the tables there.
+    const double M = molarMassKgPerKmol("Helium");
+    std::ostringstream code;
+    code << std::setprecision(12)
+         << "T_25 = temperature(He, s=" << 126.1530e3 / M << ", P=1E5)\n"
+         << "s_100 = molarmass(He)*entropy(He,T=100,P=1E5)/1000\n";
+    auto run = runModel(code.str());
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["T_25"], WithinAbs(25.0, 0.02));   // real-gas residual of He at 1 bar: 0.0004 kJ/kmol-K = 0.006 K
+    // cp = 5/2 R: s(373.15 K) = s(298.15 K) + 5/2 R ln(373.15/298.15)
+    CHECK_THAT(run["s_100"], WithinAbs(126.1530 + 2.5 * kGasConstant * std::log(373.15 / 298.15), 5e-3));
+}
+
+TEST_CASE("CS-GAP-IDEAL-ENTROPY: entropy and Gibbs energy of the reaction CH4 + 2 O2 -> CO2 + 2 H2O", "[library-gaps][ideal-entropy]") {
+    // Species entropies are combined: 25 C, every species at the same pressure (2000 Pa, where H2O is a vapour),
+    // 3 mol of gas on each side so that the entropy of reaction does not depend on the pressure.
+    // NASA: dS0 = -5.224 kJ/kmol-K (NIST-JANAF -5.08); the CoolProp references gave about -146.
+    // Gibbs energy dG0 = dH0 - T dS0 with the heats of formation of the species enthalpies:
+    // tabulated dG0f: CO2 -394.359, H2O(g) -228.572, CH4 -50.72 kJ/mol -> -800.78 MJ/kmol.
+    auto run = runModel(R"(
+P = 2000
+T = 25
+MM_CH4 = molarmass(CH4) ; MM_O2 = molarmass(O2) ; MM_CO2 = molarmass(CO2) ; MM_H2O = molarmass(H2O)
+dS = (MM_CO2*entropy(CO2,T=T,P=P) + 2*MM_H2O*entropy(H2O,T=T,P=P) - MM_CH4*entropy(CH4,T=T,P=P) - 2*MM_O2*entropy(O2,T=T,P=P))/1000
+dH = MM_CO2*enthalpy(CO2,T=T) + 2*MM_H2O*enthalpy(H2O,T=T) - MM_CH4*enthalpy(CH4,T=T) - 2*MM_O2*enthalpy(O2,T=T)
+dG = dH - (T+273.15)*dS*1000
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["dS"], WithinAbs(-5.224, 0.2));      // kJ/kmol-K
+    CHECK_THAT(run["dH"], WithinRel(-802.31e6, 1e-6));  // J/kmol, heats of formation (Cengel & Boles)
+    CHECK_THAT(run["dG"], WithinRel(-800.78e6, 1e-4));  // J/kmol
+}
+
+TEST_CASE("CS-GAP-IDEAL-ENTROPY: Air, real fluids and humid air keep CoolProp's reference state", "[library-gaps][ideal-entropy]") {
+    // Air is not a third-law species in EES either; Air_ha, the real fluids and AirH2O are not ideal-gas species.
+    const double P = 101325.0;
+    auto run = runModel(R"(
+s_air = entropy(Air,T=25,P=101325)
+s_air_ha = entropy(Air_ha,T=25,P=101325)
+s_N2_real = entropy(Nitrogen,T=25,P=101325)
+s_CO2_real = entropy(CarbonDioxide,T=25,P=101325)
+s_water = entropy(Water,T=25,P=101325)
+h_air = enthalpy(Air,T=25,P=101325)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["s_air"], WithinRel(CoolProp::PropsSI("S", "T", 298.15, "P", P, "Air"), 1e-9));
+    CHECK_THAT(run["s_air_ha"], WithinRel(CoolProp::PropsSI("S", "T", 298.15, "P", P, "Air"), 1e-9));
+    CHECK_THAT(run["s_N2_real"], WithinRel(CoolProp::PropsSI("S", "T", 298.15, "P", P, "Nitrogen"), 1e-9));
+    CHECK_THAT(run["s_CO2_real"], WithinRel(CoolProp::PropsSI("S", "T", 298.15, "P", P, "CarbonDioxide"), 1e-9));
+    CHECK_THAT(run["s_water"], WithinRel(CoolProp::PropsSI("S", "T", 298.15, "P", P, "Water"), 1e-9));
+    CHECK_THAT(run["h_air"], WithinRel(CoolProp::PropsSI("H", "T", 298.15, "P", P, "Air"), 1e-9));
 }
 
 // ============================================================================

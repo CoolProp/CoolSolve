@@ -507,18 +507,54 @@ LHV_CO = enthalpy(CO,T=25)*molarmass(CO) + 0.5*enthalpy(O2,T=25)*molarmass(O2) -
 ```
 
 The reference applies to all calls, including `h=` given as an input
-(`temperature(CO2, P=P, h=h)`); enthalpy differences are unchanged. Entropies,
-and the enthalpies of `Air`, `He`, `Ar` and of the real fluids (`Water`,
-`CarbonDioxide`…), keep CoolProp's reference states. Values: Çengel & Boles,
+(`temperature(CO2, P=P, h=h)`); enthalpy differences are unchanged. The
+enthalpies of `Air`, `He`, `Ar` and of the real fluids (`Water`,
+`CarbonDioxide`…) keep CoolProp's reference states. Values: Çengel & Boles,
 Table A-26, which reproduce the heats of combustion of EES.
 
-The entropies of the ideal gases are not the absolute (third-law) entropies of
-the JANAF/NASA tables: they carry a constant offset per species (CoolProp's
-reference state; −0.02 kJ/kmol-K for `N2`, `O2`, `Ar`, between −14 (`He`) and
-−145 (`C3H8`) kJ/kmol-K for the others), so entropy differences of one species
-are right, but a quantity that combines the entropies of different species
-(entropy of reaction, Gibbs energy, equilibrium constant) needs the absolute
-values.
+**Entropy reference state.** `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`,
+`C2H6`, `C3H8` and `H2O` (vapor) have the **absolute (third-law) entropy** of the
+JANAF/NASA tables, as in EES: the ideal-gas entropy at 25 °C and **1 bar** is the
+standard molar entropy `s°` below, and it depends on the pressure as
+`−R ln(P/1 bar)`. Entropies of different species can therefore be combined:
+entropy of reaction, Gibbs energy, equilibrium constant, exergy of combustion.
+
+| Species | `s°` (25 °C, 1 bar) [kJ/kmol-K] | Species | `s°` [kJ/kmol-K] |
+|:--|--:|:--|--:|
+| `N2` | 191.609 | `CO` | 197.659 |
+| `O2` | 205.148 | `CH4` | 186.370 |
+| `H2` | 130.680 | `C2H6` | 229.220 |
+| `He` | 126.153 | `C3H8` | 270.313 |
+| `Ar` | 154.846 | `H2O` (vapor) | 188.828 |
+| `CO2` | 213.786 | | |
+
+(NASA-Glenn thermodynamic data, McBride, Zehe and Gordon, NASA/TP-2002-211556, the
+source of the EES ideal gases; NIST-JANAF differs by at most 0.12 kJ/kmol-K. EES itself
+uses R = 8.314, which puts its values about 6e-5 lower. For `He` EES documents a
+different convention, zero at 25 °C and 101.3 kPa: CoolSolve gives the third-law value.)
+
+```ees
+"entropy of reaction CH4 + 2 O2 -> CO2 + 2 H2O(g) at 25 C (3 mol of gas on each side: any pressure, 2000 Pa keeps H2O a vapor)"
+dS = (molarmass(CO2)*entropy(CO2,T=25,P=2000) + 2*molarmass(H2O)*entropy(H2O,T=25,P=2000) - molarmass(CH4)*entropy(CH4,T=25,P=2000) - 2*molarmass(O2)*entropy(O2,T=25,P=2000))/1000
+"= -5.2 kJ/kmol-K"
+```
+
+Entropies given as input (`temperature(CO2, s=s, P=P)`, `enthalpy(CO2, s=s, P=P)`) are on the
+same absolute basis, and isentropic calculations are unchanged. CoolSolve evaluates the
+species with CoolProp's real-gas equations of state, so `entropy(X, T, P)` is the
+third-law ideal-gas value plus CoolProp's residual entropy: it is 0.02 (`N2`) to 0.3 (`C3H8`)
+kJ/kmol-K below `s°` at 1 bar and tends to the ideal-gas value at low pressure (EES gives
+the ideal-gas value at any pressure). `H2O` is a vapor for CoolProp only below its saturation
+pressure: at 25 °C and 1 bar `entropy(H2O,T=25,P=1E5)` is the entropy of liquid water, so evaluate
+the vapor at a lower pressure (at least 1 kPa) and add `−R ln(P/P_low)`.
+
+**`Air` keeps CoolProp's reference state for the entropy** (as for the enthalpy). EES's `Air` is not
+a third-law species either ("`Air` does NOT use the JANAF table reference states", EES help): its
+entropy differs from CoolSolve's by a constant (+1815 J/kg-K for EES), so absolute entropies of
+`Air` cannot be compared with EES or combined with those of the species above; entropy differences
+and isentropic relations are right. For combustion, use a mixture of `O2` and `N2` instead
+of `Air`, as the EES help recommends. `Air_ha`, `AirH2O` and the real fluids (`Water`,
+`CarbonDioxide`, `Nitrogen`…) also keep their own CoolProp reference states.
 
 ### Humid air
 

@@ -161,10 +161,18 @@ void FluidRegistry::initialize() {
     // Standard enthalpies of formation at 25 °C [J/kmol] (EES/JANAF convention: elements are 0;
     // Cengel & Boles, table A-26). They reproduce the heats of combustion of EES, e.g. the
     // lower heating value of CO, 282 990 kJ/kmol. Species without a value keep CoolProp's
-    // reference state.
+    // enthalpy reference state.
+    //
+    // Standard molar entropies of the ideal gas at 298.15 K and 1 bar [J/kmol-K] (third law, the
+    // JANAF/NASA convention of EES): NASA-Glenn thermodynamic data (McBride, Zehe, Gordon,
+    // NASA/TP-2002-211556; github.com/nasa/cea, data/thermo.inp, 9-coefficient polynomials evaluated
+    // with R = 8.314462618 J/mol-K), the source of the EES ideal gases. NIST-JANAF differs by at most
+    // 120 J/kmol-K (CH4). `Air` has none: EES's Air is not a third-law species, it keeps CoolProp's
+    // entropy reference (as its enthalpy).
     auto addIdeal = [](const std::string& name, const std::string& cpName,
-                       std::optional<double> formationEnthalpy = std::nullopt) {
-        auto fluid = std::make_shared<IdealGasFluid>(name, cpName, 101325.0, formationEnthalpy);
+                       std::optional<double> formationEnthalpy = std::nullopt,
+                       std::optional<double> standardEntropy = std::nullopt) {
+        auto fluid = std::make_shared<IdealGasFluid>(name, cpName, 101325.0, formationEnthalpy, standardEntropy);
         registry_[name] = fluid;
         std::string lower = name;
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
@@ -172,22 +180,22 @@ void FluidRegistry::initialize() {
     };
     
     addIdeal("Air", "Air");
-    addIdeal("N2", "Nitrogen", 0.0);
-    addIdeal("O2", "Oxygen", 0.0);
-    addIdeal("H2", "Hydrogen", 0.0);
-    addIdeal("He", "Helium");
-    addIdeal("Ar", "Argon");
-    addIdeal("CO2", "CarbonDioxide", -393520e3);
-    addIdeal("CO", "CarbonMonoxide", -110530e3);
-    addIdeal("CH4", "Methane", -74850e3);
-    addIdeal("C2H6", "Ethane", -84680e3);
-    addIdeal("C3H8", "Propane", -103850e3);
+    addIdeal("N2", "Nitrogen", 0.0, 191608.6);
+    addIdeal("O2", "Oxygen", 0.0, 205148.3);
+    addIdeal("H2", "Hydrogen", 0.0, 130680.3);
+    addIdeal("He", "Helium", std::nullopt, 126153.0);
+    addIdeal("Ar", "Argon", std::nullopt, 154845.8);
+    addIdeal("CO2", "CarbonDioxide", -393520e3, 213786.2);
+    addIdeal("CO", "CarbonMonoxide", -110530e3, 197658.7);
+    addIdeal("CH4", "Methane", -74850e3, 186370.0);
+    addIdeal("C2H6", "Ethane", -84680e3, 229219.8);
+    addIdeal("C3H8", "Propane", -103850e3, 270313.3);
     
-    // H2O as ideal gas (water vapor for combustion/chemistry): formation enthalpy of the vapor.
+    // H2O as ideal gas (water vapor for combustion/chemistry): formation enthalpy and entropy of the vapor.
     // Use a low dummy pressure (100 Pa) so CoolProp stays in the gas phase
     // even at low temperatures (saturation T at 100 Pa ≈ −23 °C).
     {
-        auto fluid = std::make_shared<IdealGasFluid>("H2O", "Water", 100.0, -241820e3);
+        auto fluid = std::make_shared<IdealGasFluid>("H2O", "Water", 100.0, -241820e3, 188828.0);
         registry_["h2o"] = fluid;
     }
     
@@ -430,28 +438,50 @@ std::vector<std::shared_ptr<Fluid>> FluidRegistry::getAllFluids() {
 }
 
 ReferenceState IdealGasFluid::getReferenceState(const std::string& backend) const {
-    if (!formationEnthalpy_) return {0.0, 0.0};
+    if (!formationEnthalpy_ && !standardEntropy_) return {0.0, 0.0};
     {
         std::shared_lock<std::shared_mutex> lock(offsetMutex_);
-        auto it = hOffsetByBackend_.find(backend);
-        if (it != hOffsetByBackend_.end()) return {it->second, 0.0};
+        auto it = referenceByBackend_.find(backend);
+        if (it != referenceByBackend_.end()) return it->second;
     }
-    // The formation enthalpy applies at 25 °C, 1 atm; temperature-only calls use the dummy pressure.
-    constexpr double T_FORMATION_K = 298.15;
-    double offset = 0.0;
+    // The formation enthalpy and the standard entropy apply at 25 °C (1 atm, resp. 1 bar).
+    constexpr double T_REFERENCE_K = 298.15;
+    constexpr double P_STANDARD_PA = 1.0e5;          // standard-state pressure of the entropy tables
+    constexpr double P_IDEAL_LIMIT_PA = 100.0;       // CoolProp's equation of state is an ideal gas here
+    ReferenceState reference;
     try {
         std::unique_ptr<CoolProp::AbstractState> state(
             CoolProp::AbstractState::factory(backend, cpName_));
-        state->update(CoolProp::PT_INPUTS, dummyPressure_, T_FORMATION_K);
-        const double formationPerKg = *formationEnthalpy_ / (1000.0 * state->molar_mass());
-        offset = formationPerKg - state->hmass();
+        if (formationEnthalpy_) {
+            // temperature-only calls use the dummy pressure
+            state->update(CoolProp::PT_INPUTS, dummyPressure_, T_REFERENCE_K);
+            const double formationPerKg = *formationEnthalpy_ / (1000.0 * state->molar_mass());
+            reference.h_offset = formationPerKg - state->hmass();
+        }
+        if (standardEntropy_) {
+            // Third-law entropy at (T, p) of the ideal gas: s0 - R ln(p/1 bar). Compared with CoolProp at a
+            // pressure low enough for the residual entropy to vanish, so that the offset is a pure reference
+            // constant; at any pressure, CoolProp then adds its real-gas residual to the ideal-gas entropy.
+            // A backend that refuses 100 Pa (tabular tables) is called at the dummy pressure instead.
+            double p = P_IDEAL_LIMIT_PA;
+            try {
+                state->update(CoolProp::PT_INPUTS, p, T_REFERENCE_K);
+            } catch (const std::exception&) {
+                p = dummyPressure_;
+                state->update(CoolProp::PT_INPUTS, p, T_REFERENCE_K);
+            }
+            const double molarMass = state->molar_mass();                              // kg/mol
+            const double s0PerMolK = *standardEntropy_ / 1000.0;                       // J/(mol K)
+            const double idealPerMolK = s0PerMolK - state->gas_constant() * std::log(p / P_STANDARD_PA);
+            reference.s_offset = idealPerMolK / molarMass - state->smass();
+        }
     } catch (const std::exception& e) {
-        throw std::runtime_error("Cannot compute the enthalpy of formation reference state of '" +
+        throw std::runtime_error("Cannot compute the reference state (enthalpy of formation, standard entropy) of '" +
                                  name_ + "' with backend '" + backend + "': " + e.what());
     }
     std::unique_lock<std::shared_mutex> lock(offsetMutex_);
-    hOffsetByBackend_.emplace(backend, offset);
-    return {offset, 0.0};
+    referenceByBackend_.emplace(backend, reference);
+    return reference;
 }
 
 } // namespace coolsolve
