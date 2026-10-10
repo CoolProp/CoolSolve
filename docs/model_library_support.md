@@ -472,6 +472,12 @@ models (148): 98 verified / 7 runs / 43 blocked before, 105 verified / 8 runs /
   the suite at 1e-6): bisected to CoolProp `3f06ccf7` (#3360, p,T flash rework), mechanism not analysed.
 
 **Queue** (next first):
+Decided 2026-10-10 (afternoon), in this order: (a) verify every §8 note (real ones become §4/§5 items and
+join this queue); (b) string arrays are not supported (error); strings go into a lookup table and the array holds
+the index: implement `LOOKUP$('table', row, col)` and string expressions as the fluid argument, rewrite `CSL-0150`
+and the BrineProp family (library decision D14); (c) absolute (third-law) entropies of the ideal gases: review
+every use first, implement only if nothing breaks; (d) `air_screw_compressor` (fails at `tolerance = 1e-9` since
+CoolProp `75af7816`; CoolSolve has no per-model setting for a file of `examples/`): decision pending.
 0. `CSL-0118` (air nozzle/ejector): its isentropic nozzle/diffuser relations are written as ratios of
    absolute enthalpies, valid only with EES's "h = 0 at 0 K" reference of `Air`; rewrite them with
    absolute-temperature ratios (same physics, any reference), remove `CS-GAP-AIR-ENTHALPY-REF` from
