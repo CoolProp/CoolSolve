@@ -128,12 +128,12 @@ Legend: ☐ to do · 🔄 in progress · ✅ done (commit) · ⏸ deferred.
 | 2 | `CS-GAP-IF-DIRECTIVE` (`$if/$ifnot/$else/$endif`) | 10: 0012, 0040, 0081, 0116, 0119, 0150, 0151, 0161, 0162, 0166 | ☐ | | ☐ |
 | 3 | INTEGRAL family: `CS-GAP-INTEGRAL-LIMITS`, `CS-BUG-INTEGRAL-FACTOR`, `CS-BUG-INTEGRAL-TABLE-SEP`, `CS-BUG-INTEGRAL-MAXSTEPS`, `CS-BUG-INTEGRAL-TABLE-CASE` (then `CS-GAP-INTEGRAL-MULTIVAR`) | ✅ | `4cd0ca5` | ✅ |
 | 4 | `CS-GAP-LOOKUP-PROC` + `CS-GAP-INTEGRAL-LOOKUP` (same root cause: table store not wired; frees CSL-0042, example `building_rc_network`) | ✅ | `d5d6b37` | ✅ |
-| 5 | `CS-GAP-CALL-EXPR-OUT` + `CS-BUG-STRING-CALL-OUT` (CSL-0166) | 5: 0072, 0078, 0161, 0162, 0163 | ☐ | | ☐ |
-| 6 | Identifier characters: `CS-GAP-NAME-SYMBOL` (`C%`), `CS-GAP-NAME-PIPE` (`K\|star`), `CS-GAP-ACCENTED-IDENT` | 0040, 0074, 0080, 0116, 0150, 0151, 0152, 0158, 0163 | ☐ | | ☐ |
+| 5 | `CS-GAP-CALL-EXPR-OUT` + `CS-BUG-STRING-CALL-OUT` (CSL-0166) | ✅ | `57b22d3` | 🔄 |
+| 6 | Identifier characters: `CS-GAP-NAME-SYMBOL` (`C%`), `CS-GAP-NAME-PIPE` (`K\|star`), `CS-GAP-ACCENTED-IDENT`, `CS-BUG-HASH-IDENT` (`Nu#_f`, moved from item 9) | 0040, 0074, 0080, 0116, 0150, 0151, 0152, 0158, 0163 | ☐ | | ☐ |
 | 7 | BrineProp family: `CS-GAP-ELSEIF-CHAIN`, `CS-GAP-UPPERCASE`, `CS-GAP-STRING-ARRAY` | 0072, 0078, 0079 | ☐ | | ☐ |
 | 8 | `CS-GAP-INTERP-EES` + `CS-GAP-INTERP-EXTRAP` (silent) | 0011, 0035, 0149 | ☐ | | ☐ |
 | 9 | Silent P1 bugs: `CS-BUG-VAR-ANNOTATION` (new, silent in bodies; needs EES evidence of `a [kW]`), `CS-BUG-MAIN-SEMICOLON` + `CS-BUG-DUPLICATE-HEADER-COMMENT` (new, P3, parser hygiene, same family), `CS-BUG-PI-FUNCTION`, `CS-BUG-CONVERT-UNIT`, `CS-BUG-HASH-IDENT`, `CS-BUG-COMMON-PROC`, `CS-BUG-IMPLICIT-PROC`, `CS-BUG-LOOKUP-COL-ARG`, `CS-BUG-LOOKUP-COLNAME`, `CS-BUG-DUPLICATE-VAR-BOUND`, `CS-BUG-DUPLICATE-INDEX-EXPR`, `CS-GAP-GOTO`, `CS-BUG-HUMIDAIR-PROPS`, `CS-GAP-AIR-ENTHALPY-REF`, `CS-BUG-STRING-CASE` | 0075, 0080, 0081, 0118, 0123, 0124, 0127, 0129, 0131, 0157, 0158, 0159, 0161 | ☐ | | ☐ |
-| 10 | Single-model items (by register priority): `CS-GAP-PSYCHRO-SAT`, `CS-GAP-FLUIDS-C8H18`, `CS-GAP-FLUIDS-ALIAS`, `CS-GAP-INTEGRAL-LOOKUP`, `CS-GAP-REPEAT-UNTIL-BARE`, `CS-BUG-LOOKUP-WRITE`, `CS-GAP-CALL-WARNING`, `CS-GAP-NDAY`, `CS-GAP-END-PROCEDURE`, `CS-GAP-CONVERT-UNQUOTED`, `CS-GAP-LOOKUPROW`, `CS-BUG-LOOKUP-STRING`, `CS-GAP-IFSTR`, `CS-GAP-ISIDEALGAS`, `CS-GAP-SUM-INDEXED`, `CS-GAP-GE-ARROW`, … | – | ☐ | | ☐ |
+| 10 | Cosmetic: one convention for internal variables (`__…` names hidden from `.sol`/JSON/GUI/debug, as the INTEGRAL auxiliaries already are; `__out…` of #5 visible). Single-model items (by register priority): `CS-GAP-PSYCHRO-SAT`, `CS-GAP-FLUIDS-C8H18`, `CS-GAP-FLUIDS-ALIAS`, `CS-GAP-INTEGRAL-LOOKUP`, `CS-GAP-REPEAT-UNTIL-BARE`, `CS-BUG-LOOKUP-WRITE`, `CS-GAP-CALL-WARNING`, `CS-GAP-NDAY`, `CS-GAP-END-PROCEDURE`, `CS-GAP-CONVERT-UNQUOTED`, `CS-GAP-LOOKUPROW`, `CS-BUG-LOOKUP-STRING`, `CS-GAP-IFSTR`, `CS-GAP-ISIDEALGAS`, `CS-GAP-SUM-INDEXED`, `CS-GAP-GE-ARROW`, … | – | ☐ | | ☐ |
 | 11 | `CS-GAP-INCLUDE` / `CS-FEAT-IMPORT` (separate feature) | 0011, 0074, 0116, 0149, 0162, 0163 | ⏸ | | |
 
 ## 5. Log
@@ -143,6 +143,7 @@ Legend: ☐ to do · 🔄 in progress · ✅ done (commit) · ⏸ deferred.
 | 2026-10-10 | Set-up | Branch `fix/library-gaps-2` created; baselines §2 recorded; frozen baseline binary in the session scratchpad (`coolsolve_baseline`). |
 | 2026-10-10 | #1 `CS-GAP-IF5` | Fixed (`59b2862`): 3- and 5-argument `if` in `evaluateStandardFunction`; also unit-annotated literal arguments (`3600[s]`) no longer dropped, and `INTEGRAL` base expressions evaluate built-in functions instead of 0. 13 tests. Suites: 424/424 unit, examples identical to baseline. Native CSL-0073 solves, identical to its variant `.sol`; CSL-0155 parses but fails on block 106 (151 vars, NaN at start, not IF-related). New §5 row `CS-BUG-ARG-DROP`. |
 | 2026-10-10 | #1 re-check | `CSL-0073` blocked → **verified** (native identical to the former variant, 34/34; EES max 2.71e-2 humid-air, unchanged), variant removed, native `.sol` added. `CSL-0155` blocked → **failing** (`missing_features` []): all IFs evaluate, block 106 (151 vars) does not converge even from CoolProp-consistent guesses; `.initials` rebuilt, non-runnable variant removed. 9 other models: IF5 removed from `missing_features`, README/history updated, none stops on IF5 any more. `build_index` 0 errors; `test_models` on the 11 ids OK except baseline `CSL-0153:coolsolve`. Library roadmap §1/§8 updated. Register: new `CS-GAP-REF-STATE` (EES R410A ASHRAE reference vs CoolProp IIR, offsets 142 244.6 J/kg / 773.6 J/kg·K confirmed), §8 C-147 resolved. |
+| 2026-10-10 | #5 | Fixed (`57b22d3`): expression CALL outputs lowered to an auxiliary output + equation (solved-for form for one variable under + - * /), error inside bodies; strings set by CALLs published after each block (zero cost otherwise), string-producing CALLs first in a block. 16 tests; 552/552 unit; examples identical; library regression 151 / same 7. Natives: CSL-0074/0163 CALL lines parse (next: `K\|star`), CSL-0162 parses and is square (next: INCLUDE BRINEPROP, then NEWTON-CYCLE), CSL-0166 with `$if` resolved by hand = variant to 8.2e-7, CSL-0072 with BRINEPROP rewritten = variant to 2.1e-10. New rows `CS-GAP-CALL-OUT-OMITTED`, `CS-BUG-STRING-ALIAS`, `CS-BUG-DUPLICATE-CALL-BLOCK`. Auxiliary `__out…` variables are visible in outputs (item 3 hides its `__integral_k`): queued a cosmetic unification in item 10. |
 | 2026-10-10 | #4 re-check | **Freed: CSL-0042 blocked → verified** (native = variant on 56 vars, max 5e-12; independent RK4 9.8e-5; variant + `clamp01` tables removed) and **CSL-0123 blocked → runs** (native = variant on 13 vars; no independent reference: the stored EES run used a lost table version, as the README says). LOOKUP-PROC removed from CSL-0072/0078/0079/0116/0158/0160 (BRINEPROP lookups verified in scratch: ≤ 5e-10). Register: `CS-BUG-LOOKUP-COLNAME` closed (part a not reproducible even at baseline — checked by the supervisor; part b fixed in `d5d6b37`), removed from CSL-0158; §8 C-83 (CSL-0078 "redundant equations") resolved — see §6. Library roadmap §1: 103 verified / 8 runs / 36 blocked / 1 failing. |
 | 2026-10-10 | #4 | Fixed (`d5d6b37`): table store wired into PROCEDURE bodies (`makeBodyEvaluator`), IntegralSolver, debug report, server parametric fast path; + `CS-BUG-LOOKUP-COL-ARG` (string column argument read as a number — would have become silent in bodies; CSL-0123 native now equals its variant). 15 tests; 536/536 unit; example `building_rc_network` now solves (T_in 30.6825, = CSL-0042 variant; EXPECTED_SOLUTIONS added; examples 40/46, baseline copy updated); integral API 14/14; library regression 151 / same 7. Library natives: CSL-0042 now solves; CSL-0079 and CSL-0072 lookups verified in scratch copies (≤ 5e-10 vs variants) but still blocked by ELSEIF-CHAIN/UPPERCASE/STRING-ARRAY/CALL-EXPR-OUT; CSL-0078 non-square; CSL-0116/0158/0160 parse errors first. New row `CS-GAP-INTEGRAL-BASE-CALL`. |
 | 2026-10-10 | #3 re-check | **Freed: CSL-0047, CSL-0010, CSL-0009 blocked → verified** (natives identical to their variants; vs EES: 0047 max 9e-8, 0010 max 4.5e-6 = EES trapezoid vs CoolSolve quadrature, 0009 ≤ 6.1e-5 on curves decoded from the EES plots); variants (and 0009's `coolsolve.conf`) removed, native `.sol` added; CSL-0010 keeps `CS-GAP-OPTIM` for information. CSL-0041 now blocked only by `CS-BUG-WATER-NEAR-FREEZING` (solves with the 3 Water calls replaced). CSL-0059: MULTIVAR + DECREASING. CSL-0081: GOTO + INTEGRALVALUE. Header catch-up cleanup done (IF5/IF-DIRECTIVE mentions). Library roadmap §1: 102 verified / 7 runs / 38 blocked / 1 failing. Register §8: `$IntegralTable` interval rounding note (unverified). |
@@ -277,7 +278,7 @@ build_index/test_models results; any new CoolSolve problem with its reproducer.
 
 Each prompt is removed when its item is done. The fix protocol it refers to is Appendix A (save it as `fix_protocol.md` in the session scratchpad and adapt the paths).
 
-### C.5 — `prompt_5.md`
+### C.6 — `prompt_6.md`
 
 ````text
 You are fixing CoolSolve items. First read and follow the protocol file:
@@ -288,38 +289,47 @@ your baseline; the `[examples-comprehensive]` per-example table must stay identi
 /tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/baseline_test_examples.md,
 except for intended improvements that you report.)
 
-Items (register /home/sylvain/svn/CoolSolve/docs/model_library_support.md §4–§5) — both about the outputs of `CALL`:
+Items (register /home/sylvain/svn/CoolSolve/docs/model_library_support.md §4–§5) — one family: **characters that EES
+accepts in variable names and CoolSolve does not**. Each row has valid-EES evidence (files that EES solved):
+1. `CS-GAP-NAME-SYMBOL` — `%` in names: `C%`, `H%`, `O%` (fuel mass fractions; CSL-0040, CSL-0080, CSL-0150,
+   CSL-0152, example `orc_complex`).
+2. `CS-GAP-NAME-PIPE` — `|` in names: `K|star_r_n`, `K|star_r` (CSL-0074, CSL-0116, CSL-0163).
+3. `CS-GAP-ACCENTED-IDENT` — non-ASCII letters (UTF-8) and `°` in names: `T_a_réf`, `p_atm_réf`, `n°_90°elbow_reg`
+   (CSL-0151, CSL-0158).
+4. `CS-BUG-HASH-IDENT` — `#` inside a name (`Nu#_f`, beyond the built-in constants `g#`, `pi#`…) (CSL-0161, CSL-0111).
+Check also, and report (fix if trivial and safe): `\` in names (`dU\dtau`, `time_h\day` — probably already supported),
+a name starting with a non-ASCII letter (`é_x`), and `'` in names if EES allows it (probably not: it opens a string).
+Find out the EES rule (EES help "Variable names" / "Variable information" — WebFetch
+`https://fchartsoftware.com/ees/eeshelp/` pages; fchart.com may return 403) and implement the characters it allows
+that do not conflict with CoolSolve's syntax; document the rule in `docs/language_reference.md` (identifiers section).
+Names stay **case-insensitive** (EES), including accented letters if the helper `eesStringEqual` / the existing
+case-insensitive comparator can do it consistently — check how variable names are lower-cased (IR, `CaseInsensitiveLess`)
+and make sure `T_a_réf` and `T_A_RÉF` are the same variable or explain why not.
 
-1. `CS-GAP-CALL-EXPR-OUT` (P3 in the register, but listed by 7 library models): an **expression as a CALL output**,
-   e.g. `CALL BRINEPROP('Specheat',brine$,X_brine,t_su_pump : c_p_pump/1000)` — EES equates the procedure's output to
-   the expression (the stored solution of CSL-0072's source confirms `c_p_pump` = 1000 × the output). Since commit
-   `6c36a30` CoolSolve reports *"Output N of 'p' must be a variable, not the expression '…'"*. Implement the EES
-   semantics: e.g. an auxiliary output variable (internal name that cannot clash with user names, not shown in user
-   outputs unless harmless — decide and document) plus the equation `<expression> = <auxiliary>`, so that the unknown
-   inside the expression is solved by the system like any implicit equation (Jacobian through AD). Cases: `c_p/1000`,
-   `mu*1000`, `-x`, an array element expression `T[2]+273.15`, several expression outputs in one CALL, a CALL inside
-   a FUNCTION/PROCEDURE body (there statements run in order: check what EES allows; if an expression output cannot be
-   inverted in a body, make it a clear error), and a CALL in a DUPLICATE loop of the main program. Keep a plain
-   variable output unchanged (no overhead).
-2. `CS-BUG-STRING-CALL-OUT` (P2): a string variable produced only as the output of a `CALL` is not found when passed
-   to another procedure (*"String variable not found: r$"*). Read the register row; write a minimal reproducer that
-   does not depend on `LOOKUP$` writes (another open bug, `CS-BUG-LOOKUP-WRITE`), e.g. `PROCEDURE gen(x:r$)` …
-   `PROCEDURE use(s$:y)` `IF (s$='BIG') THEN y=1 ELSE y=2` … `CALL gen(2:r$)` ⏎ `CALL use(r$:z)`, check the register's
-   reproducer too, and fix the propagation of string outputs between CALLs (block ordering / string variable store).
-   Also a string CALL output used in a main-program string equation and in a property call as fluid name, if supported.
+Every place that handles a variable name must accept them: the parser (`isIdentChar`, `isIdentifier`, the PEG grammar
+if used, keyword detection at word boundaries, `$IF` conditions, CALL arguments, DUPLICATE, array names `X%[i]`,
+string variables `name$`), the IR/structural analysis, the evaluator, `.initials` reading, `.sol` writing, the
+`-integral.csv`/JSON/CSV outputs, the GUI/server JSON (UTF-8), the debug folder (`variables.md`, `incidence.md`…), and
+**LaTeX output** (`src/ir.cpp` LaTeX rendering and `src/latex_report.cpp`: `%`, `#`, `|`, `\`, `°` and accents must be
+escaped or rendered so that `pdflatex` compiles — `tests/test_latex_report.cpp` + compile one generated report with
+`pdflatex -interaction=nonstopmode` if pdflatex is installed). Diagram/plot code that splits names (state suffixes) must
+not break.
 
-Blocked library models to look at (read-only, do not edit the library): CALL-EXPR-OUT → CSL-0072, CSL-0074,
-CSL-0078, CSL-0153, CSL-0161, CSL-0162, CSL-0163; STRING-CALL-OUT → CSL-0166. Find them with
-`grep -l '<ID>' /home/sylvain/svn/CoolSolve_Library/models/*/*/*/model.json`. Run each native file (scratch copy of its
-folder) before/after; report whether the CALL lines now work and the first remaining error. Where a `_coolsolve`
-variant differs from the native file only by the auxiliary output variables of this gap, check that the native file
-gives the same values as the variant's `.sol`.
+Blocked library models to look at (read-only; do not edit the library): CSL-0040, CSL-0074, CSL-0080, CSL-0111 (verified;
+its README says a local `Nu#_f` was renamed — check the native/original form if documented), CSL-0116, CSL-0150, CSL-0151,
+CSL-0152, CSL-0158, CSL-0161, CSL-0163. Find them with `grep -l '<ID>' /home/sylvain/svn/CoolSolve_Library/models/*/*/*/model.json`.
+Run each native file (scratch copy of its folder) before/after and report the first remaining error; where a model was
+blocked only by these gaps (the previous re-check found CSL-0151 solves once `é` is replaced and CSL-0161 once `Nu#_f` is
+renamed), check that the native file now gives the variant's `.sol` values.
 
-Tests: tags `[library-gaps][call-expr-out]` and `[library-gaps][string-call-out]`: register reproducers with the EES
-values, the cases above, Jacobian/convergence when the expression's variable is an unknown of a coupled block, the
-debug folder / `.sol` contents (no internal name leaked unless documented), negative tests.
+Tests: tags `[library-gaps][name-symbol]`, `[name-pipe]`, `[accented-ident]`, `[hash-ident]`: register reproducers with
+EES values, names in every position (LHS, RHS, function/procedure arguments and locals, CALL outputs, arrays, `$IF`,
+INTEGRAL state, `.initials`), case-insensitivity, `.sol` round trip, LaTeX escaping, and negative tests (characters that
+remain invalid give a clear error).
 
-Library regression at the end: `cd /home/sylvain/svn/CoolSolve_Library && python3 tools/test_models.py --coolsolve
-/home/sylvain/svn/CoolSolve/build/coolsolve` (pre-existing failures to ignore are given in your task message).
+**Extra regression check (parser change):** library regression `cd /home/sylvain/svn/CoolSolve_Library && python3
+tools/test_models.py --coolsolve /home/sylvain/svn/CoolSolve/build/coolsolve` (pre-existing failures to ignore are given
+in your task message) and a parse comparison (statement list / first error) of every `.eescode` of the library
+(`models/**`), `examples/` and `tests/` between the "before" binary and your build — every change must be explained
+(the previous agents built an AST dumper in the scratchpad `item1b/` and `item1c/pd/` — reuse it if convenient).
 ````
-
