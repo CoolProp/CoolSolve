@@ -455,12 +455,12 @@ models (148): 98 verified / 7 runs / 43 blocked before, 105 verified / 8 runs /
   `.sol` come from another CoolProp build; re-baseline them at the end).
 
 **Queue** (next first):
-0. `CS-GAP-FLUIDS-MIXTURE`: accept CoolProp mixture fluids `A[x]&B[y]` with a warning that
-   mixture properties are predictive (maintainer decision, 2026-10-10; CoolProp 7.2 has fitted
-   R245fa/R134a parameters and sensible values); then remove the gap from `CSL-0124`/`CSL-0153`.
-   In parallel, outside CoolSolve: investigate the jump of the R245fa transport properties in
-   CoolProp 7 (vapour viscosity and conductivity +15–25 % vs the older build and REFPROP 8;
-   CoolProp issue to file if confirmed).
+0. `CSL-0118` (air nozzle/ejector): its isentropic nozzle/diffuser relations are written as ratios of
+   absolute enthalpies, valid only with EES's "h = 0 at 0 K" reference of `Air`; rewrite them with
+   absolute-temperature ratios (same physics, any reference), remove `CS-GAP-AIR-ENTHALPY-REF` from
+   §4 and from the model, and re-check the native file (other gap: `CS-GAP-CALL-WARNING`). Outside
+   CoolSolve: investigate the jump of the R245fa transport properties in CoolProp 7 (vapour viscosity
+   and conductivity +15–25 % vs the older build and REFPROP 8); CoolProp issue to file if confirmed.
 1. BrineProp family: `CS-GAP-ELSEIF-CHAIN`, `CS-GAP-UPPERCASE` (with the cheap EES
    string functions, `CS-GAP-STRINGPOS`), `CS-GAP-STRING-ARRAY`; settle the §8 note on
    one-word `ELSEIF` (silently ignored condition). Expected to free `CSL-0079` and
@@ -472,7 +472,7 @@ models (148): 98 verified / 7 runs / 43 blocked before, 105 verified / 8 runs /
    `CS-BUG-DUPLICATE-INDEX-EXPR`, `CS-BUG-DUPLICATE-CALL-BLOCK`, `CS-BUG-STRING-ALIAS`,
    `CS-GAP-GOTO`, `CS-BUG-HUMIDAIR-PROPS`, `CS-GAP-AIR-ENTHALPY-REF`; parser hygiene
    `CS-BUG-MAIN-SEMICOLON`, `CS-BUG-DUPLICATE-HEADER-COMMENT`.
-4. Single-model items by priority (`CS-GAP-FLUIDS-MIXTURE` (2 models), `CS-GAP-IF-NO-CONSTANT`, `CS-GAP-FLUIDS-C8H18`,
+4. Single-model items by priority (`CS-GAP-IF-NO-CONSTANT`, `CS-GAP-FLUIDS-C8H18`,
    `CS-GAP-GE-ARROW`, `CS-GAP-REPEAT-UNTIL-BARE`, `CS-GAP-ARRAY-ARG`, `CS-GAP-NDAY`,
    `CS-GAP-LOOKUPROW`, `CS-GAP-END-PROCEDURE`, `CS-GAP-ISIDEALGAS`,
    `CS-GAP-INTEGRAL-MULTIVAR` + `-DECREASING`, …); cosmetic: hide internal `__…`
