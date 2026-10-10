@@ -127,8 +127,8 @@ Legend: ☐ to do · 🔄 in progress · ✅ done (commit) · ⏸ deferred.
 | 2 (scope) | `CS-GAP-IF-DIRECTIVE` + `CS-BUG-STRING-CASE` (one shared case-insensitive string equality) | see #2 | ✅ | `9423934` | ✅ |
 | 2 | `CS-GAP-IF-DIRECTIVE` (`$if/$ifnot/$else/$endif`) | 10: 0012, 0040, 0081, 0116, 0119, 0150, 0151, 0161, 0162, 0166 | ☐ | | ☐ |
 | 3 🔄 | INTEGRAL family: `CS-GAP-INTEGRAL-LIMITS`, `CS-BUG-INTEGRAL-FACTOR`, `CS-BUG-INTEGRAL-TABLE-SEP`, `CS-BUG-INTEGRAL-MAXSTEPS`, `CS-BUG-INTEGRAL-TABLE-CASE` (then `CS-GAP-INTEGRAL-MULTIVAR`) | 0009, 0010, 0041, 0047, 0059, 0081 | ☐ | | ☐ |
-| 4 | `CS-GAP-LOOKUP-PROC` | 6: 0072, 0078, 0079, 0116, 0158, 0160 | ☐ | | ☐ |
-| 5 | `CS-GAP-CALL-EXPR-OUT` | 5: 0072, 0078, 0161, 0162, 0163 | ☐ | | ☐ |
+| 4 | `CS-GAP-LOOKUP-PROC` + `CS-GAP-INTEGRAL-LOOKUP` (same root cause: table store not wired; frees CSL-0042, example `building_rc_network`) | 6: 0072, 0078, 0079, 0116, 0158, 0160 | ☐ | | ☐ |
+| 5 | `CS-GAP-CALL-EXPR-OUT` + `CS-BUG-STRING-CALL-OUT` (CSL-0166) | 5: 0072, 0078, 0161, 0162, 0163 | ☐ | | ☐ |
 | 6 | Identifier characters: `CS-GAP-NAME-SYMBOL` (`C%`), `CS-GAP-NAME-PIPE` (`K\|star`), `CS-GAP-ACCENTED-IDENT` | 0040, 0074, 0080, 0116, 0150, 0151, 0152, 0158, 0163 | ☐ | | ☐ |
 | 7 | BrineProp family: `CS-GAP-ELSEIF-CHAIN`, `CS-GAP-UPPERCASE`, `CS-GAP-STRING-ARRAY` | 0072, 0078, 0079 | ☐ | | ☐ |
 | 8 | `CS-GAP-INTERP-EES` + `CS-GAP-INTERP-EXTRAP` (silent) | 0011, 0035, 0149 | ☐ | | ☐ |
@@ -143,6 +143,7 @@ Legend: ☐ to do · 🔄 in progress · ✅ done (commit) · ⏸ deferred.
 | 2026-10-10 | Set-up | Branch `fix/library-gaps-2` created; baselines §2 recorded; frozen baseline binary in the session scratchpad (`coolsolve_baseline`). |
 | 2026-10-10 | #1 `CS-GAP-IF5` | Fixed (`59b2862`): 3- and 5-argument `if` in `evaluateStandardFunction`; also unit-annotated literal arguments (`3600[s]`) no longer dropped, and `INTEGRAL` base expressions evaluate built-in functions instead of 0. 13 tests. Suites: 424/424 unit, examples identical to baseline. Native CSL-0073 solves, identical to its variant `.sol`; CSL-0155 parses but fails on block 106 (151 vars, NaN at start, not IF-related). New §5 row `CS-BUG-ARG-DROP`. |
 | 2026-10-10 | #1 re-check | `CSL-0073` blocked → **verified** (native identical to the former variant, 34/34; EES max 2.71e-2 humid-air, unchanged), variant removed, native `.sol` added. `CSL-0155` blocked → **failing** (`missing_features` []): all IFs evaluate, block 106 (151 vars) does not converge even from CoolProp-consistent guesses; `.initials` rebuilt, non-runnable variant removed. 9 other models: IF5 removed from `missing_features`, README/history updated, none stops on IF5 any more. `build_index` 0 errors; `test_models` on the 11 ids OK except baseline `CSL-0153:coolsolve`. Library roadmap §1/§8 updated. Register: new `CS-GAP-REF-STATE` (EES R410A ASHRAE reference vs CoolProp IIR, offsets 142 244.6 J/kg / 773.6 J/kg·K confirmed), §8 C-147 resolved. |
+| 2026-10-10 | #3 | Fix agent dispatched; interrupted by an API usage limit mid-implementation (partial diff ≈1800 lines left in the working tree, uncommitted); resumed with its context after the reset. |
 | 2026-10-10 | #2 re-check | 11 models (+ CSL-0074, CSL-0153 for CALL-EXPR-OUT): none freed, all stay blocked; closed IDs removed, `CS-GAP-IF-NO-CONSTANT` added to CSL-0040/0166, `CS-GAP-CALL-EXPR-OUT` added to CSL-0074/0153; READMEs say where a variant's `$IF` workaround is no longer needed. Evidence: CSL-0075 native solves identically to the variant once its 2 humid-air rewrites are applied; CSL-0151 solves once `é`→`e`; CSL-0161 once `Nu#_f` renamed; CSL-0119 identical with `nDay_`→338. Gaps reached only on alternate branches kept (CSL-0150 NAME-SYMBOL on `'Oil'`, CSL-0161 CALL-EXPR-OUT on `'EG'`). build_index 0 errors; test_models OK (only baseline CSL-0153:coolsolve). **Pending cleanup** (give to the next re-check): native-file header comments still cite closed gaps — `CS-GAP-IF5` in 6 natives (boiler_modulating, glycol_runaround, iso5167, dhw_tank, ice_storage, orc_whr_refprop_cost), `CS-GAP-IF-DIRECTIVE` in 8 natives (thermal_comfort, boiler_modulating, glycol_runaround, plate_hx_thermal_resistances, adiabatic_flame, orc_biomass, engine_derating, solar_geometry); protocol B now requires the header update. |
 | 2026-10-10 | #2 | Fixed (`9423934`): `$IF/$IFNOT/$ELSE/$ENDIF` resolved while parsing (removed branches skipped unparsed, main program and bodies; EES help semantics: string constant set before the directive, case-insensitive, AND/OR, EES flags; errors for non-constant strings, unknown conditions, unbalanced directives; `report.md` table); `eesStringEqual` (case-insensitive incl. Latin-1 accents) for IF statements and `$IF`. New files `src/conditional_directives.cpp`, `src/ees_string.cpp` (+ headers). 24 tests; 486/486 unit (one old test asserted case-sensitivity); examples identical; library regression 151 / same 7. No model freed by #2 alone: CSL-0012 → `LOOKUP$ROW`, 0119 → `nDay_`, 0151 → accented names, 0161 → `#` names, 0081 → GOTO, 0116 → `=>`, 0150 → not square (CHEM-EQUIL/NASA), 0162 → CALL-EXPR-OUT, 0040 → Diagram-window strings (new `CS-GAP-IF-NO-CONSTANT`) + `C%`, 0166 → `regime$` from a CALL (`CS-GAP-IF-NO-CONSTANT`), 0075 → now AirH2O branch, SingularJacobian block 16 (ISIDEALGAS/HUMIDAIR-PROPS open). PARAMETRICTABLE stays false in GUI parametric studies (documented). |
 | 2026-10-10 | #1c | Fixed (`8238a94`): unparsable body lines reported ("Could not parse line"), `END // comment` closes a body, text after `)`/`]`/string is an error, unit annotation after a call/element accepted explicitly (also inside expressions). 15 tests; 462/462 unit; examples identical. AST comparison: 6 files gain errors on previously dropped lines — `orc_solar_complex` example (`Nu#_` names), blocked natives CSL-0081 (GOTO), CSL-0153/0160 (`END procedure`/`END name`), CSL-0158 (`°` names) — and **CSL-0103 (verified)**: six `!` comment lines in `FUNCTION dP_Kern` (not an EES comment form, silently dropped before) → fixed in the library as `//` comments, regression OK, history entry added. Register: GOTO and HASH-IDENT now loud (P1→P3); new rows `CS-BUG-VAR-ANNOTATION` (silent in bodies), `CS-BUG-MAIN-SEMICOLON`, `CS-BUG-DUPLICATE-HEADER-COMMENT` → item 9. |
@@ -342,3 +343,101 @@ CSL-0153:coolsolve, CSL-0039, CSL-0158:coolsolve, CSL-0124:coolsolve. The dynami
 …) must give the same results as before (they use the split form that already worked) — performance too: report
 the run time of CSL-0009:coolsolve before/after.
 ````
+
+### C.4 — `prompt_4.md`
+
+````text
+You are fixing CoolSolve items. First read and follow the protocol file:
+/tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/fix_protocol.md
+(The build tree is configured with CoolProp pinned (`COOLSOLVE_COOLPROP_TAG=5b9c32ac`); never re-run cmake with another
+tag; if you add .cpp files, `cmake .` in `build/` keeps the cached tag. Take the current `./coolsolve_tests` pass count as
+your baseline. The `[examples-comprehensive]` per-example table must stay identical to
+/tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/baseline_test_examples.md
+**except `building_rc_network`, which is expected to start solving with this item** — then give it an
+`EXPECTED_SOLUTIONS` entry in `tests/test_examples.cpp` (contributing §3.11) with a value you can justify (its header
+and the library model CSL-0042 README give the reference).)
+
+Items (register /home/sylvain/svn/CoolSolve/docs/model_library_support.md §4) — one root cause, the lookup-table store
+(`LookupTableStore`, companion tables `<model>-<table>.csv`) is only given to the main-program evaluators:
+
+1. `CS-GAP-LOOKUP-PROC` (P2, blocks 6 models): `LOOKUP` (and `INTERPOLATE`, `LOOKUPROW`-style table functions,
+   `NLOOKUPROWS`/`NLOOKUPCOLS` if they exist — check `src/evaluator.cpp` around the message *"no table store is
+   available in this context"*) **inside a FUNCTION/PROCEDURE body** fails although the same call works in the main
+   program. Reproducer (valid EES; companion `probe-Brine2.csv` = `Column1,Column2` ⏎ `38.1615,6.3333`):
+   `PROCEDURE pk(r:y)` ⏎ `y=lookup('Brine2',r,2)` ⏎ `END` ⏎ `CALL pk(1:yv)` ⏎ `z=yv` → evaluation error; expected 6.3333.
+   Also in a FUNCTION, in a function called from a procedure (nested), in REPEAT/DUPLICATE loops of a body, in IF
+   conditions, with the derivative w.r.t. an argument that feeds the row/interpolation variable (Newton must converge
+   when the procedure output is an unknown of a block).
+2. `CS-GAP-INTEGRAL-LOOKUP` (P2): lookup functions inside an `INTEGRAL` model — the store is not wired into the
+   `IntegralSolver` (`docs/integral_table.md` §7.1). CoolSolve example `examples/building_rc_network.eescode` (fails at
+   baseline: analysis/solve) and library model CSL-0042 `building_rc_network_3r2c` (native file blocked only by this
+   gap; its `_coolsolve` variant reconstructs the table with a `clamp01` FUNCTION and is the verified reference: compare
+   the native file's results with the variant's `.sol` after your fix).
+Design: one consistent way to give the store to every evaluation context (main blocks, function/procedure
+interpreter, integral solver, solution checker, parametric runs, GUI/server runner) — look for the simplest wiring
+(e.g. the store owned by the runner and passed down where `setLookupTableStore` already exists), no global mutable
+state if avoidable, zero cost when there is no table. Check `$IntegralTable` output and the debug folder still work.
+
+Blocked library models to look at (read-only, do not edit the library): CSL-0072, CSL-0078, CSL-0079, CSL-0116,
+CSL-0158, CSL-0160 (LOOKUP-PROC; the BrineProp `.lib` family reads coefficient rows inside `PROCEDURE BRINEPROP`) and
+CSL-0042 (INTEGRAL-LOOKUP). Find them with `grep -l '<ID>' /home/sylvain/svn/CoolSolve_Library/models/*/*/*/model.json`.
+Run each native file (scratch copy of its folder, with its companion tables) before/after and report whether the lookup
+part now works and the first remaining error. For CSL-0079 (`brineprop_secondary_refrigerants`, a function library) a
+direct check of `BRINEPROP` values against its variant's `.sol` is the most valuable evidence.
+
+Tests: tags `[library-gaps][lookup-proc]` and `[library-gaps][integral-lookup]`: register reproducers, the forms above,
+negative tests (unknown table inside a body → clear error naming the table and the routine). Use temporary folders with
+companion CSV files as the existing `CS-BUG-LOOKUP-PATH` / `[lookup]` tests do.
+
+Library regression at the end (≈ 4 min + 3 min): `cd /home/sylvain/svn/CoolSolve_Library && python3 tools/test_models.py
+--coolsolve /home/sylvain/svn/CoolSolve/build/coolsolve` — pre-existing failures to ignore: CSL-0114, CSL-0038, CSL-0019,
+CSL-0153:coolsolve, CSL-0039, CSL-0158:coolsolve, CSL-0124:coolsolve (check the progress note of the supervisor's
+prompt for any update of that list).
+````
+
+### C.5 — `prompt_5.md`
+
+````text
+You are fixing CoolSolve items. First read and follow the protocol file:
+/tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/fix_protocol.md
+(The build tree is configured with CoolProp pinned (`COOLSOLVE_COOLPROP_TAG=5b9c32ac`); never re-run cmake with another
+tag; if you add .cpp files, `cmake .` in `build/` keeps the cached tag. Take the current `./coolsolve_tests` pass count as
+your baseline; the `[examples-comprehensive]` per-example table must stay identical to
+/tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/baseline_test_examples.md,
+except for intended improvements that you report.)
+
+Items (register /home/sylvain/svn/CoolSolve/docs/model_library_support.md §4–§5) — both about the outputs of `CALL`:
+
+1. `CS-GAP-CALL-EXPR-OUT` (P3 in the register, but listed by 7 library models): an **expression as a CALL output**,
+   e.g. `CALL BRINEPROP('Specheat',brine$,X_brine,t_su_pump : c_p_pump/1000)` — EES equates the procedure's output to
+   the expression (the stored solution of CSL-0072's source confirms `c_p_pump` = 1000 × the output). Since commit
+   `6c36a30` CoolSolve reports *"Output N of 'p' must be a variable, not the expression '…'"*. Implement the EES
+   semantics: e.g. an auxiliary output variable (internal name that cannot clash with user names, not shown in user
+   outputs unless harmless — decide and document) plus the equation `<expression> = <auxiliary>`, so that the unknown
+   inside the expression is solved by the system like any implicit equation (Jacobian through AD). Cases: `c_p/1000`,
+   `mu*1000`, `-x`, an array element expression `T[2]+273.15`, several expression outputs in one CALL, a CALL inside
+   a FUNCTION/PROCEDURE body (there statements run in order: check what EES allows; if an expression output cannot be
+   inverted in a body, make it a clear error), and a CALL in a DUPLICATE loop of the main program. Keep a plain
+   variable output unchanged (no overhead).
+2. `CS-BUG-STRING-CALL-OUT` (P2): a string variable produced only as the output of a `CALL` is not found when passed
+   to another procedure (*"String variable not found: r$"*). Read the register row; write a minimal reproducer that
+   does not depend on `LOOKUP$` writes (another open bug, `CS-BUG-LOOKUP-WRITE`), e.g. `PROCEDURE gen(x:r$)` …
+   `PROCEDURE use(s$:y)` `IF (s$='BIG') THEN y=1 ELSE y=2` … `CALL gen(2:r$)` ⏎ `CALL use(r$:z)`, check the register's
+   reproducer too, and fix the propagation of string outputs between CALLs (block ordering / string variable store).
+   Also a string CALL output used in a main-program string equation and in a property call as fluid name, if supported.
+
+Blocked library models to look at (read-only, do not edit the library): CALL-EXPR-OUT → CSL-0072, CSL-0074,
+CSL-0078, CSL-0153, CSL-0161, CSL-0162, CSL-0163; STRING-CALL-OUT → CSL-0166. Find them with
+`grep -l '<ID>' /home/sylvain/svn/CoolSolve_Library/models/*/*/*/model.json`. Run each native file (scratch copy of its
+folder) before/after; report whether the CALL lines now work and the first remaining error. Where a `_coolsolve`
+variant differs from the native file only by the auxiliary output variables of this gap, check that the native file
+gives the same values as the variant's `.sol`.
+
+Tests: tags `[library-gaps][call-expr-out]` and `[library-gaps][string-call-out]`: register reproducers with the EES
+values, the cases above, Jacobian/convergence when the expression's variable is an unknown of a coupled block, the
+debug folder / `.sol` contents (no internal name leaked unless documented), negative tests.
+
+Library regression at the end: `cd /home/sylvain/svn/CoolSolve_Library && python3 tools/test_models.py --coolsolve
+/home/sylvain/svn/CoolSolve/build/coolsolve` (pre-existing failures to ignore are given in your task message).
+````
+
