@@ -12,6 +12,7 @@
 
 #include "coolsolve/autodiff_node.h"
 #include "coolsolve/ees_string.h"
+#include "coolsolve/evaluator.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/lookup_table.h"
 #include "coolsolve/parser.h"
@@ -2882,13 +2883,22 @@ struct IntegralRun {
     }
 };
 
+/// `tables` maps a lookup-table name to its CSV text (written as `<model>-<name>.csv`).
 IntegralRun runIntegral(const std::string& code,
-                        const std::function<void(SolverOptions&)>& configure = {}) {
+                        const std::function<void(SolverOptions&)>& configure = {},
+                        const std::map<std::string, std::string>& tables = {}) {
     static int counter = 0;
     const fs::path dir = fs::temp_directory_path() / "coolsolve_test_library_gaps_integral";
     fs::create_directories(dir);
-    const fs::path file = dir / ("model_" + std::to_string(counter++) + ".eescode");
+    const std::string stem = "model_" + std::to_string(counter++);
+    const fs::path file = dir / (stem + ".eescode");
     { std::ofstream f(file); f << code; }
+    std::vector<fs::path> tableFiles;
+    for (const auto& [name, csv] : tables) {
+        tableFiles.push_back(dir / (stem + "-" + name + ".csv"));
+        std::ofstream f(tableFiles.back());
+        f << csv;
+    }
     IntegralRun run;
     CoolSolveRunner runner(file.string());
     SolverOptions options;
@@ -2907,6 +2917,7 @@ IntegralRun runIntegral(const std::string& code,
     run.steps = ires.totalSteps;
     run.rejected = ires.rejectedSteps;
     fs::remove(file);
+    for (const auto& t : tableFiles) fs::remove(t);
     return run;
 }
 
@@ -3474,4 +3485,548 @@ TEST_CASE("CS-BUG-INTEGRAL-TABLE-CASE: the integration variable is the same what
     auto other = runIntegral("y = integral(a, T, 0, 2, 0.5)\nz = integral(b, s, 0, 2, 0.5)\na = 1\nb = 2\n");
     CHECK_FALSE(other.solveOk);
     CHECK(anyContains({other.message}, "same integration variable"));
+}
+
+// ============================================================================
+// CS-GAP-LOOKUP-PROC: lookup functions inside FUNCTION / PROCEDURE bodies
+// ============================================================================
+
+namespace {
+
+/// `Brine2` of the register reproducer (BrineProp mean concentration and temperature of EG).
+const std::map<std::string, std::string> kBrine2Table = {{"Brine2", "Column1,Column2\n38.1615,6.3333\n"}};
+
+/// Table `t`: x = 1, 2, 3; y = 10 x; z = 100 x^2 (in rows 1 to 3).
+const std::string kXyzCsv = "x,y,z\n1,10,100\n2,20,400\n3,30,900\n";
+const std::map<std::string, std::string> kXyzTable = {{"t", kXyzCsv}};
+
+struct ValueAndSlope { double value; double slope; };
+
+/// Evaluate the first equation of `code` (`name = expression` or a CALL whose output is `result`)
+/// with the table `t` loaded and the variable `r` independent (value `rv`): the value and the
+/// derivative with respect to `r`, straight from the automatic differentiation.
+ValueAndSlope evalWithSlope(const std::string& code, const std::string& csv, double rv,
+                            const std::string& result = "") {
+    EESParser parser;
+    auto parsed = parser.parse(code);
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    LookupTableStore store;
+    store.add(LookupTable::fromCSV("t", csv));
+    ExpressionEvaluator ev(1);
+    ev.setLookupTableStore(&store);
+    for (const auto& f : ir.getFunctions()) ev.registerFunction(f);
+    for (const auto& p : ir.getProcedures()) ev.registerProcedure(p);
+    ev.setVariable("r", ADValue::independent(rv, 0, 1));
+    const auto& eq = ir.getEquations().at(0);
+    ADValue v;
+    if (eq.procedureCall) {
+        ev.evaluateProcedureCall(*eq.procedureCall);
+        v = ev.getVariable(result);
+    } else {
+        v = ev.evaluate(eq.rhs);
+    }
+    return {v.value, v.gradient[0]};
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-LOOKUP-PROC: register reproducer, LOOKUP inside a PROCEDURE", "[library-gaps][lookup-proc]") {
+    // was: "lookup(): lookup table 'Brine2' not found (no table store is available in this context)"
+    auto run = runModel(R"(
+PROCEDURE pk(r:y)
+y=lookup('Brine2',r,2)
+END
+CALL pk(1:yv)
+z=yv
+w=lookup('Brine2',1,2)
+)", kBrine2Table);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["z"], WithinAbs(6.3333, 1e-12));
+    CHECK_THAT(run["w"], WithinAbs(6.3333, 1e-12));   // the main program always worked
+    CHECK(run.warnings.empty());
+}
+
+TEST_CASE("CS-GAP-LOOKUP-PROC: FUNCTION, nested routines, table name given as an argument", "[library-gaps][lookup-proc]") {
+    auto run = runModel(R"(
+FUNCTION g(r)
+  g = lookup('t', r, 2)
+END
+FUNCTION h(r)
+  h = 2*g(r) + 1
+END
+PROCEDURE inner(r : y)
+  y = lookup('t', r, 'z')
+END
+PROCEDURE outer(r : y1, y2, y3)
+  CALL inner(r : y1)
+  y2 = g(r)
+  y3 = h(r)
+END
+FUNCTION tv(tab$, r)
+  tv = lookup(tab$, r, 2)
+END
+FUNCTION local_name(r)
+  tab$ = 't'
+  local_name = lookup(tab$, r, 3)
+END
+a = g(2.5)
+b = h(2.5)
+CALL outer(2.5 : c1, c2, c3)
+d = tv('t', 2.5)
+e = local_name(2)
+)", kXyzTable);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(25.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(51.0, 1e-12));
+    CHECK_THAT(run["c1"], WithinAbs(650.0, 1e-9));   // procedure called from a procedure
+    CHECK_THAT(run["c2"], WithinAbs(25.0, 1e-12));   // function called from a procedure
+    CHECK_THAT(run["c3"], WithinAbs(51.0, 1e-12));   // function called from a function called from a procedure
+    CHECK_THAT(run["d"], WithinAbs(25.0, 1e-12));
+    CHECK_THAT(run["e"], WithinAbs(400.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUP-PROC: REPEAT and DUPLICATE loops and IF conditions of a body (the BrineProp pattern)",
+          "[library-gaps][lookup-proc]") {
+    // the structure of PROCEDURE BRINEPROP of the ULiege Brineprop.lib: the coefficient rows are read
+    // in a REPEAT loop (c[k] = lookup('Brine1', Row[k], Pr)) and the mean values from 'Brine2'
+    const std::map<std::string, std::string> tables = {
+        {"Brine1", "p1,p2\n1,10\n2,20\n3,30\n4,40\n"},    // 2 fluids x 2 coefficients, 2 properties
+        {"Brine2", "xm,ym\n5,6\n7,8\n"}};
+    auto run = runModel(R"(
+PROCEDURE brinemini(Fl, Pr, Temp : output)
+  k = 0
+  REPEAT
+    k = k + 1
+    Row[k] = k + (Fl-1)*2
+    c[k] = lookup('Brine1', Row[k], Pr)
+  UNTIL (k >= 2)
+  xm = lookup('Brine2', Fl, 1)
+  ym = lookup('Brine2', Fl, 2)
+  y = Temp - ym
+  output = c[1] + c[2]*y + xm
+END
+PROCEDURE sumcol(n : s)
+  s = 0
+  DUPLICATE i = 1, 4
+    v[i] = lookup('Brine1', i, 2)
+  END
+  s = v[1] + v[2] + v[3] + v[4]
+END
+PROCEDURE pick(r : y)
+  IF (lookup('Brine1', r, 1) > 2.5) THEN
+    y = 1
+  ELSE
+    y = 2
+  ENDIF
+END
+FUNCTION pick1(r)
+  pick1 = 2
+  IF (lookup('Brine2', r, 1) > 6) THEN pick1 = 1
+END
+CALL brinemini(2, 2, 10 : out)
+CALL sumcol(0 : total)
+CALL pick(1 : lo)
+CALL pick(4 : hi)
+f1 = pick1(1)
+f2 = pick1(2)
+)", tables);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // Fl = 2, Pr = 2: rows 3 and 4 of column 2 (30, 40), xm = 7, ym = 8, y = 2: 30 + 40*2 + 7
+    CHECK_THAT(run["out"], WithinAbs(117.0, 1e-9));
+    CHECK_THAT(run["total"], WithinAbs(100.0, 1e-9));
+    CHECK_THAT(run["lo"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["hi"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["f1"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["f2"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUP-PROC: every table function works inside a body, as in the main program", "[library-gaps][lookup-proc]") {
+    const std::map<std::string, std::string> tables = {
+        {"t", kXyzCsv},
+        {"g", "x,y,z\n1,1,11\n2,1,12\n1,2,21\n2,2,22\n"}};
+    auto run = runModel(R"(
+PROCEDURE all(r : a, b, c, d, e, f, g1, h, i, j, k, l)
+  a = lookup('t', r, 2)
+  b = tablevalue('t', r, 'z')
+  c = interpolate('t', 'x', 'z', r)
+  d = nlookuprows('t')
+  e = nlookupcolumns('t')
+  f = lookupcol('t', 'z')
+  g1 = sumlookup('t', 'y')
+  h = maxlookup('t', 'z')
+  i = minlookup('t', 2)
+  j = avglookup('t', 'y')
+  k = interpolate2('g', 'x', 'y', 'z', 1.5, 1.5)
+  l = lookupcellempty('t', 1, 2)
+END
+CALL all(2.5 : a1, b1, c1, d1, e1, f1, g1, h1, i1, j1, k1, l1)
+a2 = lookup('t', 2.5, 2)
+b2 = tablevalue('t', 2.5, 'z')
+c2 = interpolate('t', 'x', 'z', 2.5)
+d2 = nlookuprows('t')
+e2 = nlookupcolumns('t')
+f2 = lookupcol('t', 'z')
+g2 = sumlookup('t', 'y')
+h2 = maxlookup('t', 'z')
+i2 = minlookup('t', 2)
+j2 = avglookup('t', 'y')
+k2 = interpolate2('g', 'x', 'y', 'z', 1.5, 1.5)
+l2 = lookupcellempty('t', 1, 2)
+)", tables);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const double expected[] = {25.0, 650.0, 650.0, 3.0, 3.0, 3.0, 60.0, 900.0, 10.0, 20.0, 16.5, 0.0};
+    const char* suffix[] = {"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"};
+    for (int n = 0; n < 12; ++n) {
+        INFO("function #" << n + 1);
+        CHECK_THAT(run[std::string(suffix[n]) + "1"], WithinAbs(expected[n], 1e-9));
+        CHECK_THAT(run[std::string(suffix[n]) + "2"], WithinAbs(expected[n], 1e-9));
+    }
+}
+
+TEST_CASE("CS-GAP-LOOKUP-PROC: the derivative through a routine is analytic", "[library-gaps][lookup-proc]") {
+    // LOOKUP at a fractional row interpolates: the slope of column y is 10, of column z 500 in [2, 3]
+    const std::string proc = "PROCEDURE pk(r : y)\n  y = lookup('t', r, 'z')\nEND\nCALL pk(r : yv)\n";
+    auto viaProc = evalWithSlope(proc, kXyzCsv, 2.5, "yv");
+    CHECK_THAT(viaProc.value, WithinAbs(650.0, 1e-9));
+    CHECK_THAT(viaProc.slope, WithinAbs(500.0, 1e-9));
+    const std::string func = "FUNCTION g(r)\n  g = interpolate('t', 'x', 'y', 2*r)\nEND\nz = g(r)\n";
+    auto viaFunc = evalWithSlope(func, kXyzCsv, 1.25, "");
+    CHECK_THAT(viaFunc.value, WithinAbs(25.0, 1e-9));
+    CHECK_THAT(viaFunc.slope, WithinAbs(20.0, 1e-9));
+    // nested: the chain rule crosses a procedure and a function
+    const std::string nested =
+        "FUNCTION g(r)\n  g = lookup('t', r, 'y')\nEND\n"
+        "PROCEDURE pk(r : y)\n  y = 3*g(r)\nEND\nCALL pk(r : yv)\n";
+    auto viaBoth = evalWithSlope(nested, kXyzCsv, 1.5, "yv");
+    CHECK_THAT(viaBoth.value, WithinAbs(45.0, 1e-9));
+    CHECK_THAT(viaBoth.slope, WithinAbs(30.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-LOOKUP-PROC: Newton converges when the routine output is an unknown of a block", "[library-gaps][lookup-proc]") {
+    // r is found from the output of a routine that interpolates a table
+    auto viaProc = runModel(R"(
+PROCEDURE pk(r : y)
+  y = lookup('t', r, 'y')
+END
+CALL pk(r : yv)
+yv = 25
+)", kXyzTable);
+    REQUIRE(viaProc.solveOk);
+    CHECK(viaProc.verified);
+    CHECK_THAT(viaProc["r"], WithinAbs(2.5, 1e-9));
+
+    auto viaFunc = runModel(R"(
+FUNCTION g(x)
+  g = interpolate('t', 'x', 'z', x)
+END
+v = g(x)
+v = 650
+)", kXyzTable);
+    REQUIRE(viaFunc.solveOk);
+    CHECK(viaFunc.verified);
+    CHECK_THAT(viaFunc["x"], WithinAbs(2.5, 1e-9));
+
+    // a coupled block: the table value and a linear equation, two unknowns solved together
+    auto coupled = runModel(R"(
+PROCEDURE pk(r : y)
+  y = lookup('t', r, 'y')
+END
+CALL pk(r : yv)
+yv + r = 27
+)", kXyzTable);
+    REQUIRE(coupled.solveOk);
+    CHECK(coupled.verified);
+    CHECK_THAT(coupled["r"], WithinAbs(27.0 / 11.0, 1e-9));   // 10 r + r = 27
+    CHECK_THAT(coupled["yv"], WithinAbs(270.0 / 11.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-LOOKUP-PROC: the table store given to a Solver reaches the routines", "[library-gaps][lookup-proc]") {
+    // what the parametric study does: its own Solver with a store built from the session tables
+    EESParser parser;
+    auto parsed = parser.parse("PROCEDURE pk(r : y)\n  y = lookup('t', r, 'y')\nEND\nCALL pk(2.5 : yv)\nw = 2*yv\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    auto analysis = StructuralAnalyzer::analyze(ir);
+    REQUIRE(analysis.success);
+    LookupTableStore store;
+    store.add(LookupTable::fromCSV("t", kXyzCsv));
+    SolverOptions options;
+    Solver solver(ir, analysis, options.coolpropConfig);
+    solver.setLookupTableStore(&store);
+    auto result = solver.solve(options, false);
+    REQUIRE(result.success);
+    CHECK_THAT(result.variables.at("w"), WithinAbs(50.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-LOOKUP-PROC: negative tests, errors name the table and the routine", "[library-gaps][lookup-proc]") {
+    SECTION("unknown table in a PROCEDURE") {
+        auto run = runModel("PROCEDURE pk(r : y)\n  y = lookup('nope', r, 2)\nEND\nCALL pk(1 : yv)\n", kBrine2Table);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "lookup table 'nope' not found"));
+        CHECK(anyContains({run.message}, "PROCEDURE 'pk'"));
+    }
+    SECTION("unknown table in a FUNCTION") {
+        auto run = runModel("FUNCTION gf(r)\n  gf = interpolate('nope', 'x', 'y', r)\nEND\nz = gf(1)\n", kXyzTable);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "lookup table 'nope' not found"));
+        CHECK(anyContains({run.message}, "FUNCTION 'gf'"));
+    }
+    SECTION("unknown table in a nested routine: the innermost one is named") {
+        auto run = runModel(
+            "FUNCTION inner_f(r)\n  inner_f = lookup('nope', r, 1)\nEND\n"
+            "PROCEDURE outer_p(r : y)\n  y = inner_f(r)\nEND\nCALL outer_p(1 : yv)\n", kXyzTable);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "lookup table 'nope' not found"));
+        CHECK(anyContains({run.message}, "FUNCTION 'inner_f'"));
+    }
+    SECTION("the file name to provide is the one the loader expects") {
+        auto run = runModel("PROCEDURE pk(r : y)\n  y = lookup('nope', r, 2)\nEND\nCALL pk(1 : yv)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "-nope.csv"));
+    }
+    SECTION("unknown column in a body") {
+        auto run = runModel("PROCEDURE pk(r : y)\n  y = lookup('t', r, 'nocol')\nEND\nCALL pk(1 : yv)\n", kXyzTable);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "column 'nocol' not found in table 't'"));
+        CHECK(anyContains({run.message}, "PROCEDURE 'pk'"));
+    }
+    SECTION("wrong number of arguments, in a body and in the main program") {
+        auto inBody = runModel("PROCEDURE pk(r : y)\n  y = lookup('t', r)\nEND\nCALL pk(1 : yv)\n", kXyzTable);
+        CHECK_FALSE(inBody.solveOk);
+        CHECK(anyContains({inBody.message}, "expects 3 arguments"));
+        CHECK(anyContains({inBody.message}, "PROCEDURE 'pk'"));
+        auto inMain = runModel("z = lookup('t', 1)\n", kXyzTable);   // was: "Unknown expression type"
+        CHECK_FALSE(inMain.solveOk);
+        CHECK(anyContains({inMain.message}, "expects 3 arguments"));
+        auto interp = runModel("FUNCTION gf(r)\n  gf = interpolate('t', 'x', r)\nEND\nz = gf(1)\n", kXyzTable);
+        CHECK_FALSE(interp.solveOk);
+        CHECK(anyContains({interp.message}, "expects 4 arguments"));
+        CHECK(anyContains({interp.message}, "FUNCTION 'gf'"));
+    }
+    SECTION("an evaluator without table store says so and names the routine") {
+        EESParser parser;
+        auto parsed = parser.parse("PROCEDURE pk(r : y)\n  y = lookup('t', r, 2)\nEND\nCALL pk(1 : yv)\n");
+        REQUIRE(parsed.success);
+        IR ir = IR::fromAST(parsed.program);
+        ExpressionEvaluator ev(0);
+        for (const auto& p : ir.getProcedures()) ev.registerProcedure(p);
+        try {
+            ev.evaluateProcedureCall(*ir.getEquations().at(0).procedureCall);
+            FAIL("expected an error");
+        } catch (const std::runtime_error& e) {
+            const std::string msg = e.what();
+            CHECK(msg.find("no table store is available") != std::string::npos);
+            CHECK(msg.find("PROCEDURE 'pk'") != std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-LOOKUP-PROC: debug folder evaluates the lookups of the residual report", "[library-gaps][lookup-proc]") {
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_library_gaps_lookup_debug";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const std::string code =
+        "PROCEDURE pk(r : y)\n  y = lookup('t', r, 'y')\nEND\n"
+        "CALL pk(2.5 : yv)\n"
+        "a = lookup('t', 2.5, 'z')\n";
+    const fs::path file = dir / "model.eescode";
+    { std::ofstream f(file); f << code; }
+    { std::ofstream f(dir / "model-t.csv"); f << kXyzCsv; }
+    CoolSolveRunner runner(file.string());
+    SolverOptions options;
+    REQUIRE(runner.run(options));
+    runner.generateDebugOutput((dir / "debug").string(), code);
+    std::ifstream in(dir / "debug" / "coolsolve_residuals.md");
+    REQUIRE(in.good());
+    std::string line, aRow, callRow;
+    while (std::getline(in, line)) {
+        if (line.find("a = lookup") != std::string::npos) aRow = line;
+        if (line.find("CALL pk") != std::string::npos) callRow = line;
+    }
+    // was: "| - | - | -" on both rows (the evaluator of the report had no table store)
+    REQUIRE_FALSE(aRow.empty());
+    CHECK(aRow.find("| - | - | -") == std::string::npos);
+    CHECK(aRow.find("6.5000e+02") != std::string::npos);
+    REQUIRE_FALSE(callRow.empty());
+    CHECK(callRow.find("| - | - | -") == std::string::npos);
+    fs::remove_all(dir);
+}
+
+// ============================================================================
+// CS-BUG-LOOKUP-COL-ARG: a column named by a string variable (found when the routines could read tables)
+// ============================================================================
+
+TEST_CASE("CS-BUG-LOOKUP-COL-ARG: register reproducer, the column name comes through an argument", "[library-gaps][lookup-col-arg]") {
+    // was: x1 = 38.16 (the first column, silently) instead of 6.33
+    const std::map<std::string, std::string> tab = {{"tab", "W,M\n38.16,6.33\n"}};
+    auto run = runModel(R"(
+FUNCTION g1(tab$, col$, r)
+  g1 = lookup(tab$, r, col$)
+END
+x1 = g1('tab', 'M', 1)
+x2 = lookup('tab', 1, 'M')
+)", tab);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x1"], WithinAbs(6.33, 1e-12));
+    CHECK_THAT(run["x2"], WithinAbs(6.33, 1e-12));
+}
+
+TEST_CASE("CS-BUG-LOOKUP-COL-ARG: string variables as column names, in the main program and in bodies", "[library-gaps][lookup-col-arg]") {
+    auto run = runModel(R"(
+PROCEDURE rd(pipe$, r : v)
+  v = lookup('t', r, pipe$)
+END
+FUNCTION local_col(r)
+  c$ = 'z'
+  local_col = lookup('t', r, c$)
+END
+FUNCTION interp(xc$, yc$, x)
+  interp = interpolate('t', xc$, yc$, x)
+END
+FUNCTION agg(c$)
+  agg = sumlookup('t', c$)
+END
+col$ = 'Y'
+a = lookup('t', 2, col$)
+CALL rd('Z', 3 : b)
+c = local_col(2)
+d = interp('x', 'z', 2.5)
+e = agg('y')
+f = lookup('t', 2, 'y')
+g = lookup('t', 2, 2)
+)", kXyzTable);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(20.0, 1e-12));    // main program, string variable (was the first column: 2)
+    CHECK_THAT(run["b"], WithinAbs(900.0, 1e-12));   // table literal, column in a string argument (the Pipedata pattern)
+    CHECK_THAT(run["c"], WithinAbs(400.0, 1e-12));   // string variable local to the body
+    CHECK_THAT(run["d"], WithinAbs(650.0, 1e-12));   // INTERPOLATE with both columns by name
+    CHECK_THAT(run["e"], WithinAbs(60.0, 1e-12));    // aggregate
+    CHECK_THAT(run["f"], WithinAbs(20.0, 1e-12));    // literal name, any case
+    CHECK_THAT(run["g"], WithinAbs(20.0, 1e-12));    // numeric column unchanged
+    // part (b) of CS-BUG-LOOKUP-COLNAME: the Pipedata layout, accented column names, name in a string variable
+    auto pipe = runModel(R"(
+pipe$ = 'ø88.9 Steel Seamless'
+x = lookup('pipedata', 1, pipe$)
+y = lookup('pipedata', 1, 'ø88.9 Steel Seamless')
+)", {{"pipedata", "ø101.6 Steel Seamless,ø88.9 Steel Seamless\n76.1,88.9\n3.2,3.2\n"}});
+    REQUIRE(pipe.solveOk);
+    CHECK_THAT(pipe["x"], WithinAbs(88.9, 1e-12));   // was the first column, 76.1
+    CHECK_THAT(pipe["y"], WithinAbs(88.9, 1e-12));
+    // a name that is not a column is an error naming it, not a silent first column
+    auto bad = runModel("FUNCTION g(c$)\n  g = lookup('t', 1, c$)\nEND\nx = g('nocol')\n", kXyzTable);
+    CHECK_FALSE(bad.solveOk);
+    CHECK(anyContains({bad.message}, "column 'nocol' not found in table 't'"));
+    CHECK(anyContains({bad.message}, "FUNCTION 'g'"));
+}
+
+// ============================================================================
+// CS-GAP-INTEGRAL-LOOKUP: lookup functions inside an INTEGRAL model
+// ============================================================================
+
+TEST_CASE("CS-GAP-INTEGRAL-LOOKUP: INTERPOLATE as the forcing of a state", "[library-gaps][integral-lookup]") {
+    // was: "Initial algebraic solve failed: ... INTERPOLATE(): lookup table 'f' not found (no table
+    // store is available in this context)". dy/dt = v(t) = 2 t, y(0) = 0: y(10) = 100 (RK4 integrates it exactly).
+    const std::map<std::string, std::string> tables = {{"f", "t,v\n0,0\n5,10\n10,20\n"}};
+    auto run = runIntegral(
+        "y = 0 + integral(dydt, t, 0, 10, 0.5)\n"
+        "dydt = interpolate('f', 't', 'v', t)\n"
+        "$IntegralTable t:2.5 y dydt\n",
+        [](SolverOptions& o) { o.integralMethod = "RK4"; }, tables);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(100.0, 1e-9));
+    CHECK_THAT(run["t"], WithinAbs(10.0, 1e-12));
+    CHECK(run.warnings.empty());
+    // the trajectory carries the table-driven derivative: y(5) = 25 and dy/dt(5) = 10
+    REQUIRE(run.table.numRows() == 5);
+    CHECK_THAT(run.cell("t", 2), WithinAbs(5.0, 1e-9));
+    CHECK_THAT(run.cell("y", 2), WithinAbs(25.0, 1e-9));
+    CHECK_THAT(run.cell("dydt", 2), WithinAbs(10.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-INTEGRAL-LOOKUP: a weather table drives a thermal state (the pattern of building_rc_network)",
+          "[library-gaps][integral-lookup]") {
+    // dT/dt = (T_out(t) - T)/10 with T_out(t) = 30 for the whole table: T(t) = 30 - 10 exp(-t/10)
+    const std::map<std::string, std::string> tables = {{"week", "tau,T_out,f\n0,30,0\n20,30,1\n40,30,0\n"}};
+    auto run = runIntegral(
+        "T = 20 + integral(dTdt, tau, 0, 40, 0.1)\n"
+        "dTdt = (T_out - T)/10\n"
+        "T_out = INTERPOLATE('week', 'tau', 'T_out', tau)\n"
+        "f_occ = INTERPOLATE('week', 'tau', 'f', tau)\n"
+        "$IntegralTable tau:20 T T_out f_occ\n",
+        [](SolverOptions& o) { o.integralMethod = "RK4"; }, tables);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["T"], WithinAbs(30.0 - 10.0 * std::exp(-4.0), 1e-5));
+    CHECK_THAT(run["T_out"], WithinAbs(30.0, 1e-12));
+    REQUIRE(run.table.numRows() == 3);
+    CHECK(run.table.columns() == Columns{"tau", "T", "T_out", "f_occ"});
+    CHECK_THAT(run.cell("T", 1), WithinAbs(30.0 - 10.0 * std::exp(-2.0), 1e-5));
+    CHECK_THAT(run.cell("f_occ", 1), WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run.cell("f_occ", 2), WithinAbs(0.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-INTEGRAL-LOOKUP: lookups in routines of an INTEGRAL model, and in its limits", "[library-gaps][integral-lookup]") {
+    const std::map<std::string, std::string> tables = {
+        {"f", "t,v\n0,0\n5,10\n10,20\n"},
+        {"cfg", "tf,step\n8,0.5\n"}};
+    // the forcing is read inside a FUNCTION and inside a PROCEDURE (the two kinds of body)
+    auto viaFunc = runIntegral(
+        "FUNCTION force(x)\n  force = interpolate('f', 't', 'v', x)\nEND\n"
+        "y = integral(dydt, t, 0, 10, 0.5)\n"
+        "dydt = force(t)\n", {}, tables);
+    REQUIRE(viaFunc.solveOk);
+    CHECK_THAT(viaFunc["y"], WithinAbs(100.0, 1e-6));
+    auto viaProc = runIntegral(
+        "PROCEDURE force(x : v)\n  v = lookup('f', 1 + x/5, 'v')\nEND\n"
+        "y = integral(dydt, t, 0, 10, 0.5)\n"
+        "CALL force(t : dydt)\n", {}, tables);
+    REQUIRE(viaProc.solveOk);
+    CHECK_THAT(viaProc["y"], WithinAbs(100.0, 1e-6));
+    // the limit and the step are read from a table: they are solved on a second algebraic system
+    auto limits = runIntegral(
+        "tf = lookup('cfg', 1, 'tf')\n"
+        "dt = lookup('cfg', 1, 'step')\n"
+        "y = integral(v, t, 0, tf, dt)\n"
+        "v = 2\n", {}, tables);
+    REQUIRE(limits.solveOk);
+    CHECK_THAT(limits["y"], WithinAbs(16.0, 1e-9));
+    CHECK_THAT(limits["t"], WithinAbs(8.0, 1e-12));
+    CHECK(limits.steps == 16);
+}
+
+TEST_CASE("CS-GAP-INTEGRAL-LOOKUP: negative tests", "[library-gaps][integral-lookup]") {
+    // an unknown table is reported with its name (not silently ignored), in the model and in a routine
+    auto direct = runIntegral("y = integral(dydt, t, 0, 1, 0.5)\ndydt = interpolate('nope', 't', 'v', t)\n");
+    CHECK_FALSE(direct.solveOk);
+    CHECK(anyContains({direct.message}, "lookup table 'nope' not found"));
+    auto inFunc = runIntegral(
+        "FUNCTION force(x)\n  force = lookup('nope', x, 1)\nEND\n"
+        "y = integral(dydt, t, 0, 1, 0.5)\ndydt = force(t)\n");
+    CHECK_FALSE(inFunc.solveOk);
+    CHECK(anyContains({inFunc.message}, "lookup table 'nope' not found"));
+    CHECK(anyContains({inFunc.message}, "FUNCTION 'force'"));
+    // a column that does not exist
+    const std::map<std::string, std::string> tables = {{"f", "t,v\n0,0\n10,20\n"}};
+    auto column = runIntegral("y = integral(dydt, t, 0, 1, 0.5)\ndydt = interpolate('f', 't', 'nocol', t)\n", {}, tables);
+    CHECK_FALSE(column.solveOk);
+    CHECK(anyContains({column.message}, "column 'nocol' not found in table 'f'"));
+    // a lookup written inline in the initial value of a state is refused (it is not evaluated by the
+    // algebraic solver); the value written as a variable works
+    const std::map<std::string, std::string> init = {{"c", "a,b\n5,7\n"}};
+    auto inlineBase = runIntegral("y = lookup('c', 1, 1) + integral(dydt, t, 0, 2, 0.5)\ndydt = 3\n", {}, init);
+    CHECK_FALSE(inlineBase.solveOk);
+    CHECK(anyContains({inlineBase.message}, "Initial value of a state"));
+    auto viaVariable = runIntegral("y0 = lookup('c', 1, 1)\ny = y0 + integral(dydt, t, 0, 2, 0.5)\ndydt = 3\n", {}, init);
+    REQUIRE(viaVariable.solveOk);
+    CHECK_THAT(viaVariable["y"], WithinAbs(11.0, 1e-9));
+    // the table of an INTEGRAL model without any lookup is untouched
+    auto plain = runIntegral("y = integral(dydt, t, 0, 1, 0.5)\ndydt = 2\n");
+    REQUIRE(plain.solveOk);
+    CHECK_THAT(plain["y"], WithinAbs(2.0, 1e-9));
 }

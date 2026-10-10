@@ -305,7 +305,7 @@ for monotonicity / energy-balance trends.
 | Symptom | Likely cause | Workaround |
 |---------|--------------|------------|
 | `The upper limit '…' of INTEGRAL() depends on the integration variable …` | A limit or the step uses `t` or a state (directly or through other equations) | Compute the limit from parameters only |
-| `lookup table '…' not found (no table store…)` | `INTERPOLATE` inside an integral model | Use analytic expressions, or see [Dynamic Solving §7.1](integral_table.md#71-current-limitations) (lookup store not yet wired into `IntegralSolver`) |
+| `lookup table '…' not found (in PROCEDURE 'name')` | The table is not loaded: the message names the `FUNCTION`/`PROCEDURE` whose body made the call (none for the main program) | Put `<model>-<table>.csv` next to the model file (or load the table in the GUI *Lookup Tables* tab); the table name is the part after the first hyphen |
 | `Unknown or unsupported function: IF with 5 arguments` | EES multi-threshold `IF` | Rewrite with nested 3-arg `IF(cond, true, false)` where `cond > 0` |
 | Empty column in `*-integral.csv` and a `$IntegralTable: '…' is not a variable of the model` warning | A name of the directive that matches no variable (typo, wrong array element) | Fix the name; separators (space, `,`, `;`) and case do not matter |
 | `PROCEDURE` / `CALL` fails at first step | Procedure-output block in reduced algebraic subsystem | Inline simple outputs, or debug with `-d` and `integral.md` |

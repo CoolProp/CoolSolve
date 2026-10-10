@@ -669,7 +669,8 @@ Additional tables can be loaded via:
 
 If a lookup function references a table name that has not been loaded,
 CoolSolve reports an error (`L002`) and the solve fails with a descriptive
-message.
+message that names the table (and the `FUNCTION`/`PROCEDURE` the call is in,
+see §11.7).
 
 Each CSV must have a header row with column names (case-insensitive).
 
@@ -779,6 +780,34 @@ P_last = LOOKUP('data', 99, 2)                    "P_last = 1554900 Pa (clamped)
 The **Lookup Tables** tab in the GUI lets you create, view, and edit tables
 directly in the browser — no need to manage CSV files manually.
 
+### 11.7 Lookups inside routines and `INTEGRAL` models
+
+Every lookup function above can be called from the body of a `FUNCTION` or a
+`PROCEDURE` (also from a routine called by another routine, in `REPEAT` /
+`DUPLICATE` loops and in `IF` conditions), and from the equations of an
+`INTEGRAL` model (§12), where the table is read at each integration step. This is
+how EES libraries read their coefficient tables, e.g. the brine properties of the
+ULiège `Brineprop.lib`:
+
+```ees
+PROCEDURE brinemini(Fl, Pr, Temp : output)
+  k = 0
+  REPEAT
+    k = k + 1
+    Row[k] = k + (Fl-1)*2
+    c[k] = LOOKUP('Brine1', Row[k], Pr)     {coefficient rows of table Brine1}
+  UNTIL (k >= 2)
+  xm = LOOKUP('Brine2', Fl, 1)
+  output = c[1] + c[2]*(Temp - LOOKUP('Brine2', Fl, 2)) + xm
+END
+```
+
+The derivative of a lookup with respect to its row / interpolation argument is
+analytic, so a routine output that is an unknown of a block still converges with
+Newton. A wrong call is an error that names the table and the routine, e.g.
+`lookup(): lookup table 'Brine1' not found (in PROCEDURE 'brinemini')`; `LOOKUP`
+needs 3 arguments, `INTERPOLATE` 4, `INTERPOLATE2` 6.
+
 ---
 
 ## 12. Equation-based integration (dynamic/DAE solving)
@@ -817,7 +846,7 @@ variable holds its value at `t = hi`.
 
 | Argument | Meaning |
 |:---------|:--------|
-| `integrand` | The derivative (the `f` in `dy/dt = f`): a named variable defined by its own equation, or any expression (it is evaluated by the algebraic solver at each step, so array elements, property calls and user functions are allowed). |
+| `integrand` | The derivative (the `f` in `dy/dt = f`): a named variable defined by its own equation, or any expression (it is evaluated by the algebraic solver at each step, so array elements, property calls, lookup tables (§11.7) and user functions are allowed). |
 | `t` | The integration variable (time, a pressure, a volume...). All `INTEGRAL` calls in a model must share the **same** `t` (names are not case-sensitive). |
 | `lo`, `hi` | Lower and upper limits: constants, variables or expressions (§12.7). All calls must share the **same** `[lo, hi]`; `hi` must be greater than `lo`. |
 | `step` | Optional 5th argument: the step size (a constant, a variable or an expression). `0`, or omitting it, lets the method choose (§12.5). |

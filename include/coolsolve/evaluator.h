@@ -225,6 +225,9 @@ private:
     bool disableClamping_ = false;
     DiagnosticCollector* diagnostics_ = nullptr;
     const LookupTableStore* lookupTableStore_ = nullptr;
+    /// "FUNCTION 'name'" / "PROCEDURE 'name'" when this evaluator runs the body of a user routine
+    /// (empty in the main program); only used to say where a lookup error comes from.
+    std::string routine_;
     std::map<std::string, ADValue, CaseInsensitiveLess> variables_;
     std::map<std::string, std::string, CaseInsensitiveLess> stringVariables_;
     std::map<std::string, FunctionDefinition, CaseInsensitiveLess> userFunctions_;
@@ -241,6 +244,11 @@ private:
     
     // User-defined function evaluation
     ADValue evaluateUserFunction(const FunctionDefinition& func, const FunctionCall& call);
+
+    /// Evaluator for the body of the user routine `kind` (FUNCTION / PROCEDURE) `name` called from
+    /// here. Variables are local to a body (only the arguments cross the boundary); what it
+    /// inherits is the context every expression needs: the user routines and the lookup tables.
+    ExpressionEvaluator makeBodyEvaluator(const char* kind, const std::string& name) const;
     
     // CoolProp function evaluation
     ADValue evaluateCoolPropFunction(const FunctionCall& func);

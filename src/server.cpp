@@ -2130,17 +2130,15 @@ int startServer(const ServerOptions& options) {
                             }
                             
                             t1 = std::chrono::high_resolution_clock::now();
-                            Solver solver(ir, cachedAnalysis, solverOpts.coolpropConfig);
-                            // Supply lookup tables to the solver (fast path bypasses runner)
-                            {
-                                static thread_local LookupTableStore parametricStore;
-                                parametricStore = LookupTableStore{};
-                                for (const auto& [name, csv] : parametricLookupCSVs) {
-                                    try { parametricStore.add(LookupTable::fromCSV(name, csv)); }
-                                    catch (...) {}
-                                }
-                                solver.setLookupTableStore(&parametricStore);
+                            // Lookup tables of the session (the fast path bypasses the runner, which
+                            // would otherwise own the store); declared before the solver that reads it.
+                            LookupTableStore parametricStore;
+                            for (const auto& [name, csv] : parametricLookupCSVs) {
+                                try { parametricStore.add(LookupTable::fromCSV(name, csv)); }
+                                catch (...) {}
                             }
+                            Solver solver(ir, cachedAnalysis, solverOpts.coolpropConfig);
+                            solver.setLookupTableStore(&parametricStore);
                             pointSolveResult = solver.solve(solverOpts, false);
                             t2 = std::chrono::high_resolution_clock::now();
                             solveMs = std::chrono::duration<double, std::milli>(t2 - t1).count();

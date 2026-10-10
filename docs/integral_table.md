@@ -220,6 +220,13 @@ At time `t` with state `y`, the RHS `f(t, y)` is evaluated by:
 3. Read the integrand variables (`dydt`, ...) from the solution — those are
    `f`.
 
+The lookup tables of the model (companion `<model>-<table>.csv` files, or the tables of
+the GUI session) are owned by the runner and given to `IntegralSolver`, which hands them
+to every algebraic `Solver` it builds (the march and the system that resolves symbolic
+limits). `INTERPOLATE` / `LOOKUP` therefore work in the equations of an `INTEGRAL` model
+and in its `FUNCTION`s / `PROCEDURE`s, with the weather (or any forcing) table read at
+each step (`examples/building_rc_network.eescode`).
+
 For **implicit Euler**, steps 1–3 are wrapped inside the nonlinear solve
 for `y_{n+1}`: the block solver receives `y_{n+1}` as additional unknowns
 appended to the algebraic block, reusing the existing Newton/LM/TrustRegion
@@ -307,6 +314,10 @@ empty column.
   or expressions of the model that do not depend on `t` or on a state (§2.5).
 - **Semi-explicit index-1 DAE only.** Higher-index systems are detected
   and reported; index reduction is not yet implemented.
+- **A state whose initial value is an inline lookup** (`y = LOOKUP('t', 1, 2) + INTEGRAL(...)`,
+  likewise an inline property call) is refused (*Initial value of a state: Unknown or
+  unsupported function*): write the value as a variable (`y0 = LOOKUP('t', 1, 2)`,
+  `y = y0 + INTEGRAL(...)`).
 - **2-arg table-based `INTEGRAL(integrand, var)`** is not supported — it
   requires an EES-style Parametric table that CoolSolve does not have.
 - **Stiff systems.** An explicit method may need many steps on a stiff
@@ -332,6 +343,9 @@ Bundled examples:
   `y(0) = 1`, analytical solution `y(t) = e^{-t}`.
 - `examples/integral_free_fall.eescode` — free fall with drag (EES
   example from the EES documentation).
+- `examples/building_rc_network.eescode` — 3R2C building over one week, the
+  weather read from the companion table `building_rc_network-week.csv` with
+  `INTERPOLATE` at every step.
 - `examples/integral_harmonic_oscillator.eescode` — coupled `y' = z`,
   `z' = -y` (harmonic oscillator, tests multi-state coupling).
 - `examples/integral_coupled_algebraic.eescode` — state coupled to an

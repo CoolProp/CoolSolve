@@ -44,7 +44,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 - **CoolProp Integration**: Thermodynamic property calculations via the low-level `AbstractState` API (2–5× faster than `PropsSI`), with analytical derivatives and thread-local caching.
 
-- **Lookup Tables**: 1D/2D interpolation, cell access, and aggregate functions from external CSV files. A GUI panel lets you create and edit tables in-browser.
+- **Lookup Tables**: 1D/2D interpolation, cell access, and aggregate functions from external CSV files, usable in equations, in `FUNCTION`/`PROCEDURE` bodies and in `INTEGRAL` models. A GUI panel lets you create and edit tables in-browser.
 
 - **Equation-Based Dynamic Solving (`INTEGRAL`)**: Solve initial-value DAE models in the EES integral form (`y = y0 + INTEGRAL(dydt, t, t0, tf)`). Supports coupled ODEs, algebraic variables, RK4/RK45/Euler integrators, Richardson extrapolation, and an **Integral** GUI tab. See [Language Reference §12](docs/language_reference.md#12-equation-based-integration-dynamicdae-solving) and [docs/integral_table.md](docs/integral_table.md).
 

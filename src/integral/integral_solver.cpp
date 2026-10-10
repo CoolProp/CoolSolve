@@ -104,8 +104,9 @@ std::set<std::string, CaseInsensitiveLess> dependentVariables(
 
 IntegralSolver::IntegralSolver(const Program& program, const IR& ir,
                                const StructuralAnalysisResult& analysis,
-                               const SolverOptions& options)
-    : fullIr_(ir), solverOpts_(options) {
+                               const SolverOptions& options,
+                               const LookupTableStore* lookupStore)
+    : fullIr_(ir), solverOpts_(options), lookupStore_(lookupStore) {
     // The time-march loop reuses the algebraic `Solver` thousands of times
     // (several RHS evaluations per integration step). The per-block
     // `progressCallback` is designed for a single top-level solve (a handful
@@ -247,6 +248,7 @@ std::unique_ptr<IntegralSolver::ReducedSystem> IntegralSolver::buildReduced(
     // (reused at every time step).
     sys->analysis = std::make_unique<StructuralAnalysisResult>(StructuralAnalyzer::analyze(*sys->ir));
     sys->solver = std::make_unique<Solver>(*sys->ir, *sys->analysis, solverOpts_.coolpropConfig);
+    if (lookupStore_) sys->solver->setLookupTableStore(lookupStore_);
     return sys;
 }
 

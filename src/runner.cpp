@@ -126,7 +126,8 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
 
         if (integralModel_) {
             // ----- Dynamic (INTEGRAL) path -----
-            IntegralSolver isolver(parseResult_.program, *ir_, analysisResult_, options);
+            IntegralSolver isolver(parseResult_.program, *ir_, analysisResult_, options,
+                                   &lookupTableStore_);
             integralResult_ = isolver.solve(makeIntegratorOptions(options));
             // Map the integral result onto solveResult_ so the existing
             // debug/JSON/.sol downstream code keeps working unchanged.
@@ -391,6 +392,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     
     // Create evaluator for reporting
     coolsolve::SystemEvaluator csEval(*ir_, analysisResult_);
+    csEval.setLookupTableStore(&lookupTableStore_);
     // Use solve result if available
     if (solveResult_.success) {
         for (const auto& [n, v] : solveResult_.variables) csEval.setVariableValue(n, v);
@@ -416,6 +418,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
             if (evalSuccess && i < evalResult.residuals.size()) {
                 try {
                     coolsolve::ExpressionEvaluator exprEval(ir_->getVariableCount());
+                    exprEval.setLookupTableStore(&lookupTableStore_);
                     for (const auto& [name, val] : csEval.getAllVariables()) {
                         exprEval.setVariable(name, coolsolve::ADValue::constant(val, ir_->getVariableCount()));
                     }

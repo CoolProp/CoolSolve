@@ -60,10 +60,14 @@ public:
      * @param ir       Full IR (already inferred/initialised by the runner).
      * @param analysis Structural analysis of the full IR.
      * @param options  Algebraic solver options (reused per step).
+     * @param lookupStore Lookup tables (`LOOKUP`, `INTERPOLATE`...) the model reads; owned by the
+     *                  caller and must outlive the solver. Every algebraic solve of the march
+     *                  (and of the initial point) uses it. May be null for a model without tables.
      */
     IntegralSolver(const Program& program, const IR& ir,
                    const StructuralAnalysisResult& analysis,
-                   const SolverOptions& options);
+                   const SolverOptions& options,
+                   const LookupTableStore* lookupStore = nullptr);
 
     /**
      * @brief March the system from `t0` to `tf` and tabulate the trajectory.
@@ -79,6 +83,7 @@ public:
 private:
     const IR& fullIr_;
     SolverOptions solverOpts_;              // copied (caller may pass a temporary)
+    const LookupTableStore* lookupStore_;   // not owned; given to every algebraic Solver
     IntegralProblem problem_;
 
     /// Program of the algebraic subsystem *without* the integrator-owned variables: the

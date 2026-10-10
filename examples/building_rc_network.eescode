@@ -9,10 +9,10 @@ tables p.4.12 and 2.23 of the CLIM course).
 Ventilation provides the only cooling (no active HVAC). The model integrates
 indoor and wall temperatures over one week (168 h) using INTEGRAL.
 
-NOTE: this model intentionally uses INTERPOLATE during time-marching. It is
-expected to fail until CoolSolve wires the lookup table store into
-IntegralSolver (see docs/integral_table.md §7.1 Limitations). Keep it as a
-regression test for that feature.
+NOTE: this model uses INTERPOLATE during time-marching: the weather is read
+from the companion table at every integration step (the lookup table store is
+given to the algebraic solves of the IntegralSolver). Final indoor air
+temperature T_in = 30.68 C, checked against an independent RK4 integration.
 
 Source: CLIM R06 repetition exercise 2 (University of Liege), simplified
 from the original EES model (variant 2a: constant ventilation, no cooling unit).

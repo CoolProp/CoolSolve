@@ -565,9 +565,7 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
         throw std::runtime_error("Procedure " + call.name + " expected " + std::to_string(proc.inputs.size()) + " inputs, got " + std::to_string(call.inputArgs.size()));
     }
     
-    ExpressionEvaluator localEval(numVariables_, coolpropConfig_);
-    localEval.userFunctions_ = userFunctions_;
-    localEval.userProcedures_ = userProcedures_;
+    ExpressionEvaluator localEval = makeBodyEvaluator("PROCEDURE", proc.name);
     
     for (size_t i = 0; i < proc.inputs.size(); ++i) {
         const std::string& inputName = proc.inputs[i];
@@ -980,18 +978,22 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
     return evaluateStandardFunction(func.name, args);
 }
 
+ExpressionEvaluator ExpressionEvaluator::makeBodyEvaluator(const char* kind, const std::string& name) const {
+    ExpressionEvaluator body(numVariables_, coolpropConfig_);
+    body.userFunctions_ = userFunctions_;
+    body.userProcedures_ = userProcedures_;
+    body.lookupTableStore_ = lookupTableStore_;
+    body.routine_ = std::string(kind) + " '" + name + "'";
+    return body;
+}
+
 ADValue ExpressionEvaluator::evaluateUserFunction(const FunctionDefinition& func, const FunctionCall& call) {
     if (call.args.size() != func.parameters.size()) {
         throw std::runtime_error("Function " + func.name + " expected " + std::to_string(func.parameters.size()) + " arguments, got " + std::to_string(call.args.size()));
     }
     
     // Create a local evaluator for the function body
-    ExpressionEvaluator localEval(numVariables_, coolpropConfig_);
-    // Inherit user functions and procedures
-    localEval.userFunctions_ = userFunctions_;
-    localEval.userProcedures_ = userProcedures_;
-    // Inherit lookup table store
-    localEval.lookupTableStore_ = lookupTableStore_;
+    ExpressionEvaluator localEval = makeBodyEvaluator("FUNCTION", func.name);
     
     for (size_t i = 0; i < call.args.size(); ++i) {
         const std::string& paramName = func.parameters[i];
@@ -2428,11 +2430,14 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     std::string name = func.name;
     std::transform(name.begin(), name.end(), name.begin(), ::tolower);
 
+    // Where an error comes from when the call is inside a FUNCTION / PROCEDURE body.
+    auto where = [&]() { return routine_.empty() ? std::string() : " (in " + routine_ + ")"; };
+
     // Helper: extract a string literal argument (table name or column name)
     auto getString = [&](size_t idx) -> std::string {
         if (idx >= func.args.size()) {
             throw std::runtime_error(func.name + "(): missing string argument at position " +
-                                     std::to_string(idx));
+                                     std::to_string(idx) + where());
         }
         return evaluateString(func.args[idx]);
     };
@@ -2441,7 +2446,7 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     auto getNum = [&](size_t idx) -> ADValue {
         if (idx >= func.args.size()) {
             throw std::runtime_error(func.name + "(): missing numeric argument at position " +
-                                     std::to_string(idx));
+                                     std::to_string(idx) + where());
         }
         return evaluate(func.args[idx]);
     };
@@ -2449,16 +2454,17 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     // Helper: resolve table — emits a diagnostic and throws if not found
     auto getTable = [&](const std::string& tableName) -> const LookupTable& {
         if (!lookupTableStore_) {
-            std::string msg = func.name + "(): lookup table '" + tableName +
-                "' not found (no table store is available in this context)";
+            std::string msg = func.name + "(): lookup table '" + tableName + "' not found" +
+                (routine_.empty() ? " (" : " (in " + routine_ + "; ") +
+                "no table store is available in this context)";
             if (diagnostics_) diagnostics_->push(DiagnosticSeverity::Error, "L002", msg, "lookup_table");
             throw std::runtime_error(msg);
         }
         const LookupTable* tbl = lookupTableStore_->get(tableName);
         if (!tbl) {
-            std::string msg = func.name + "(): lookup table '" + tableName +
-                "' not found. To fix: place '" + tableName +
-                ".csv' in the model directory, or load it via the Lookup Tables panel.";
+            std::string msg = func.name + "(): lookup table '" + tableName + "' not found" + where() +
+                ". To fix: place '<model>-" + tableName +
+                ".csv' next to the model file, or load it via the Lookup Tables panel.";
             if (diagnostics_) diagnostics_->push(DiagnosticSeverity::Error, "L002", msg, "lookup_table");
             throw std::runtime_error(msg);
         }
@@ -2469,15 +2475,15 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     // EES allows both "T_K" and a numeric column index.
     auto resolveCol = [&](const LookupTable& tbl, size_t argIdx) -> size_t {
         if (argIdx >= func.args.size()) {
-            throw std::runtime_error(func.name + "(): missing column argument");
+            throw std::runtime_error(func.name + "(): missing column argument" + where());
         }
         const auto& arg = func.args[argIdx];
-        if (arg->is<StringLiteral>()) {
-            std::string colName = arg->as<StringLiteral>().value;
+        if (isStringExpression(arg)) {
+            std::string colName = evaluateString(arg);
             size_t col = tbl.columnIndex(colName);
             if (col == 0) {
                 throw std::runtime_error(func.name + "(): column '" + colName +
-                                         "' not found in table '" + tbl.name() + "'");
+                                         "' not found in table '" + tbl.name() + "'" + where());
             }
             return col;
         } else {
@@ -2544,6 +2550,9 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     //    value that may itself be non-integer.
     // ------------------------------------------------------------------
     if (name == "lookup" || name == "tablevalue" || name == "tablevalue#" || name == "tablerun#") {
+        if (func.args.size() < 3) {
+            throw std::runtime_error(func.name + "(): expects 3 arguments: (table, row, col)" + where());
+        }
         std::string tableName = getString(0);
         const LookupTable& tbl = getTable(tableName);
         ADValue rowV = getNum(1);
@@ -2551,12 +2560,12 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
         // Column: string name → exact integer; numeric → possibly non-integer
         ADValue colV;
         const auto& colArg = func.args[2];
-        if (colArg->is<StringLiteral>()) {
-            std::string colName = colArg->as<StringLiteral>().value;
+        if (isStringExpression(colArg)) {
+            std::string colName = evaluateString(colArg);
             size_t col = tbl.columnIndex(colName);
             if (col == 0) {
                 throw std::runtime_error(func.name + "(): column '" + colName +
-                                         "' not found in table '" + tbl.name() + "'");
+                                         "' not found in table '" + tbl.name() + "'" + where());
             }
             colV = ADValue::constant(static_cast<double>(col), numVariables_);
         } else {
@@ -2593,7 +2602,7 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     if (name == "interpolate" || name == "interpolate1") {
         if (func.args.size() < 4) {
             throw std::runtime_error(func.name + "(): expects 4 arguments: "
-                                     "(table, xcol, ycol, xval)");
+                                     "(table, xcol, ycol, xval)" + where());
         }
         std::string tableName = getString(0);
         const LookupTable& tbl = getTable(tableName);
@@ -2610,7 +2619,7 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     if (name == "interpolate2" || name == "interpolate2dm") {
         if (func.args.size() < 6) {
             throw std::runtime_error(func.name + "(): expects 6 arguments: "
-                                     "(table, xcol, ycol, zcol, xval, yval)");
+                                     "(table, xcol, ycol, zcol, xval, yval)" + where());
         }
         std::string tableName = getString(0);
         const LookupTable& tbl = getTable(tableName);
