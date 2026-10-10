@@ -64,7 +64,8 @@ the rest of the file: the parser warns (`P007`) with the line that opened it.
 - Names are **case-insensitive**, as in EES, accented letters included: `T_a_réf` and
   `T_A_RÉF` are one variable (the spelling of the first occurrence is kept in the results).
 - Identifiers ending with `$` are **string variables** (e.g. `fluid$`, `fuel%$`); `$` is
-  only allowed at the end of a name. Array elements are written `X%[i]`, `T_réf[3]`.
+  only allowed at the end of a name. Array elements are written `X%[i]`, `T_réf[3]`; a string
+  variable has no elements (string arrays are not supported, see *String arrays* below).
 - EES takes any keyboard character in a name except `( ) * / + - ^ { } ;` (and, in the older
   manual, `' | : "`); CoolSolve also refuses the characters that are part of its own syntax
   (`'`, `"`, `.`, `,`, `:`, `=`, `<`, `>`, `[`, `]`) and `@ & ~ ? !`. A name that starts with
@@ -291,6 +292,37 @@ Q = if(tau, 3600, 10000, 10000, 0)      "10000 W until tau = 3600 s, then 0"
 | `STRING$(x)`             | Format a numeric value as a string   |
 | `STRINGVAL(s$)`          | Parse a numeric string to a number   |
 
+### String arrays are not supported
+
+EES accepts arrays of strings (`Prod$[1]='CO2'`, `UO$=U$[Pro]`). CoolSolve does not, by
+decision: an element of a string variable (`X$[...]`, in an assignment or in a read, in the
+main program, in a `FUNCTION` or `PROCEDURE` body, in a `DUPLICATE`, in a `CALL`) is an
+error that names the line and says how to rewrite the model, instead of a string that is
+silently lost (stored as the number 0 in the main program, unreadable in a body):
+
+```
+Line 3: String arrays are not supported: 'Prod$[i]' is an element of the string array Prod$.
+Put the strings in a lookup table (one string per row, file <model>-<table>.csv), keep the row
+number in the array instead (a numeric array) and read the string with LOOKUP$('table', row, col) ...
+```
+
+The rewrite: the strings go into a lookup table with one string per row (§11.8), the model
+keeps the row number, and `LOOKUP$('table', row, col)` gives the string wherever a string is
+expected, in particular as the fluid of a property call:
+
+```ees
+{EES}
+Prod$[1] = 'CO2' ; Prod$[2] = 'H2O'
+DUPLICATE i=1,2
+  H[i] = MolarMass(Prod$[i])*enthalpy(Prod$[i], T=T)
+END
+
+{CoolSolve: the file model-Species.csv has the header  Name  and the rows  CO2  and  H2O}
+DUPLICATE i=1,2
+  H[i] = MolarMass(LOOKUP$('Species', i, 1))*enthalpy(LOOKUP$('Species', i, 1), T=T)
+END
+```
+
 ### Unit conversions
 
 | Function                           | Meaning                                     |
@@ -420,7 +452,9 @@ at the top of this page).
 
 Fluids are grouped into the following categories. Names are
 case-insensitive. Use the fluid name as the first positional argument of a
-property function: `density('Water', T=25, P=101325)`.
+property function: `density('Water', T=25, P=101325)`. The fluid is a string literal, an
+unquoted name (`Water`), a string variable (`fluid$`) or any **string expression**, such as
+`LOOKUP$('Species', i, 1)` (§11.8), which is evaluated at each call.
 
 ### Real fluids (equation-of-state based)
 
@@ -950,6 +984,57 @@ analytic, so a routine output that is an unknown of a block still converges with
 Newton. A wrong call is an error that names the table and the routine, e.g.
 `lookup(): lookup table 'Brine1' not found (in PROCEDURE 'brinemini')`; `LOOKUP`
 needs 3 arguments, `INTERPOLATE` 4, `INTERPOLATE2` 6.
+
+### 11.8 Text cells: `LOOKUP$`
+
+`LOOKUP$('table', row, col)` returns the **text** of a cell (EES `LOOKUP$`). A table may
+mix text and numbers: a cell that is not a number is text (`N2`, `kJ/kg-K`), and a CSV field
+in double quotes may contain commas. This is how a model replaces a string array (see
+*String arrays are not supported*, §2): the strings are rows of a table and the model keeps
+the row number.
+
+`species.eescode` with `species-Species.csv`:
+
+```
+Name,M
+N2,28.0134
+O2,31.9988
+CO2,44.0095
+```
+
+```ees
+DUPLICATE i=1,3
+  h[i] = MolarMass(LOOKUP$('Species', i, 'Name'))*enthalpy(LOOKUP$('Species', i, 1), T=T)
+END
+
+PROCEDURE unitlabel(Pro : UO$)
+  UO$ = LOOKUP$('Units', Pro, 1)      "the label of row Pro of the table Units"
+END
+```
+
+- `row` is rounded to the nearest integer; `col` is a number or a column name. A row or a
+  column outside the table, an unknown table or column, and a wrong number of arguments are
+  errors that name the table (and the `FUNCTION`/`PROCEDURE` the call is in), e.g.
+  *LOOKUP$(): row 4 is outside the table 'Species' (1 to 3 rows)*.
+- A numeric cell gives its text as written in the CSV (`1.50` stays `1.50`, without the
+  surrounding blanks) when the table has at least one text cell; an empty cell gives the
+  empty string. In a table without any text cell the number is formatted with up to 15
+  significant digits. `STRINGVAL(LOOKUP$(...))` converts a numeric cell to a number.
+- The result is a string. It can be used as the fluid of a property function (`enthalpy`,
+  `cp`, `MolarMass`, `T_CRIT`, `PHASE$`, ...), as an operand of `=` and `<>` (without regard
+  to case), as the table or column argument of another lookup function and as the value of a
+  string variable inside a `FUNCTION` or `PROCEDURE` body (`UO$ = LOOKUP$('Units', Pro, 1)`).
+  A variable in `row` or `col` is a variable of the equation: it is computed first. In the
+  main program a string variable is only set by a literal or by a `CALL` output, so
+  `s$ = LOOKUP$(...)` at the top level is an error (*LOOKUP$ returns a string and cannot be
+  used as a number*): use the call where the string is needed, or compute the string in a
+  procedure. Used as a number it is an error too.
+- Numeric functions work as before on a table with text cells: `LOOKUP('Species', 2, 2)` is
+  31.9988, `LOOKUP('Species', 2.5, 'M')` interpolates between the rows, and a text or empty
+  cell (read as NaN) spoils the result only where it is really read. `LOOKUP$ROW` is not
+  implemented.
+- The GUI Lookup Tables panel shows and edits the text cells like the other cells (the table
+  is kept as CSV text); no GUI setting is needed.
 
 ---
 

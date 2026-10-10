@@ -295,7 +295,14 @@ Worked example: §12, Example 3.
     (`CS-BUG-INTERP-DESC`);
   - companion tables were not loaded when the model was given as a bare file
     name on the command line (`coolsolve model.eescode`): fixed after v0.3.0
-    (`CS-BUG-LOOKUP-PATH`); with older builds use `coolsolve ./model.eescode`.
+    (`CS-BUG-LOOKUP-PATH`); with older builds use `coolsolve ./model.eescode`;
+  - **string arrays are not supported** (`Prod$[i]`, `U$[Pro]`): an element of a
+    string variable is an error with the line number. Rewrite: put the strings in
+    a lookup table (one string per row, `<model>-<table>.csv`), keep the row
+    number in the array and read the string with `LOOKUP$('table', row, col)`,
+    which also works as the fluid of a property call
+    ([Language Reference §11.8](language_reference.md#118-text-cells-lookup));
+    `LOOKUP$ROW` is not implemented.
 
 Following principle 1, models using the native EES `INTERPOLATE` form keep it
 and are marked *blocked* until the gap is closed.

@@ -170,7 +170,7 @@ public:
     ADValue evaluate(const ExprPtr& expr);
     
     /**
-     * @brief Evaluate a string expression (literal or variable).
+     * @brief Evaluate a string expression (literal, variable or string function: STRING$, PHASE$, LOOKUP$).
      */
     std::string evaluateString(const ExprPtr& expr);
     
@@ -258,6 +258,24 @@ private:
 
     // Lookup table function evaluation (INTERPOLATE, LOOKUP, etc.)
     ADValue evaluateLookupFunction(const FunctionCall& func);
+
+    /// LOOKUP$('table', row, col): the text of a cell (a string-valued function, see evaluateString).
+    /// The row is rounded to the nearest integer; the column is a name or a number.
+    std::string evaluateLookupString(const FunctionCall& func);
+
+    /// The table `tableName` for the lookup function `func`; an error (and a diagnostic) if there is none.
+    const LookupTable& lookupTableFor(const FunctionCall& func, const std::string& tableName);
+
+    /// The 1-based column given by argument `argIdx` of the lookup function `func`: a name or a number
+    /// (0 when the number is not positive).
+    size_t lookupColumnOf(const FunctionCall& func, const LookupTable& tbl, size_t argIdx);
+
+    /// " (in FUNCTION 'f')" inside a body, empty in the main program: where a lookup error comes from.
+    std::string lookupWhere() const;
+
+    /// The fluid named by the first argument of a property function: a string literal, a string variable,
+    /// an unquoted name (`Water`) or a string function such as LOOKUP$('table', i, 1). Empty if `arg` is none of these.
+    std::string fluidNameOf(const ExprPtr& arg);
 };
 
 // ============================================================================

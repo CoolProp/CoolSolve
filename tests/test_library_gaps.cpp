@@ -6445,3 +6445,425 @@ CALL NASA('CO2',T:CP,H,S)
     CHECK_FALSE(run.solveOk);
     CHECK(run.message.find("Unknown procedure: NASA") != std::string::npos);
 }
+
+// ============================================================================
+// CS-GAP-STRING-ARRAY: string arrays are rejected with an error (maintainer decision,
+// 2026-10-10: not supported). The strings go into a lookup table, the array holds the
+// row number, and LOOKUP$('table', row, col) reads the string.
+// ============================================================================
+
+namespace {
+
+/// Every error of the parse of `code`: (line, message).
+std::vector<std::pair<int, std::string>> strArrayParseErrors(const std::string& code) {
+    EESParser parser;
+    auto result = parser.parse(code);
+    std::vector<std::pair<int, std::string>> errors;
+    for (const auto& e : result.errors) errors.emplace_back(e.line, e.message);
+    return errors;
+}
+
+/// The error says what is not supported and how to rewrite the model.
+void checkStringArrayMessage(const std::string& message) {
+    INFO(message);
+    CHECK(message.find("String arrays are not supported") != std::string::npos);
+    CHECK(message.find("lookup table") != std::string::npos);
+    CHECK(message.find("LOOKUP$('table', row, col)") != std::string::npos);
+}
+
+/// The species table of the CSL-0150 pattern: names in column 1, molar masses in column 2.
+const std::map<std::string, std::string> kSpeciesTable = {
+    {"Species", "Name,M\nN2,28.0134\nO2,31.9988\nCO2,44.0095\n"}};
+
+}  // namespace
+
+TEST_CASE("CS-GAP-STRING-ARRAY: the register reproducer of the main program is an error, never a silent 0",
+          "[library-gaps][string-array]") {
+    // was: Prod$[1]='N2' stored as the number 0, then "Unknown fluid: 'Prod'"
+    const std::string code =
+        "Prod$[1]='N2'\n"
+        "M = MolarMass(Prod$[1])\n";
+    auto errors = strArrayParseErrors(code);
+    REQUIRE(errors.size() == 2);
+    CHECK(errors[0].first == 1);   // the assignment
+    CHECK(errors[1].first == 2);   // the read as fluid argument
+    for (const auto& e : errors) checkStringArrayMessage(e.second);
+    CHECK(errors[0].second.find("'Prod$[1]'") != std::string::npos);
+
+    auto run = runModel(code);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(run.vars.empty());   // nothing is solved, in particular no Prod$[1] = 0
+}
+
+TEST_CASE("CS-GAP-STRING-ARRAY: the register reproducer of a PROCEDURE is an error on every element",
+          "[library-gaps][string-array]") {
+    // was: assignment accepted, then "String variable not found: U$[2]" at the read
+    auto errors = strArrayParseErrors(
+        "PROCEDURE pi(n:y)\n"          // 1
+        "U$[1]='a'\n"                  // 2
+        "U$[2]='b'\n"                  // 3
+        "w$=U$[n]\n"                   // 4
+        "y=n\n"                        // 5
+        "END\n"                        // 6
+        "CALL pi(2:yv)\n"
+        "z=yv\n");
+    REQUIRE(errors.size() == 3);
+    CHECK(errors[0].first == 2);
+    CHECK(errors[1].first == 3);
+    CHECK(errors[2].first == 4);
+    for (const auto& e : errors) checkStringArrayMessage(e.second);
+    CHECK(errors[2].second.find("'U$[n]'") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-STRING-ARRAY: FUNCTION bodies, DUPLICATE, CALL arguments and 2-D elements", "[library-gaps][string-array]") {
+    SECTION("FUNCTION body") {
+        auto errors = strArrayParseErrors(
+            "FUNCTION f(n)\n"
+            "L$[1] = 'a'\n"
+            "f = n\n"
+            "END\n"
+            "x = f(1)\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].first == 2);
+        checkStringArrayMessage(errors[0].second);
+    }
+    SECTION("DUPLICATE: the species names of CSL-0150") {
+        auto errors = strArrayParseErrors(
+            "T = 300\n"                                  // 1
+            "Prod$[1] = 'N2' ; Prod$[2] = 'O2'\n"        // 2 (two statements on one line)
+            "DUPLICATE i=1,2\n"                          // 3
+            "  h[i] = enthalpy(Prod$[i],T=T)\n"          // 4
+            "END\n");
+        REQUIRE(errors.size() == 3);
+        CHECK(errors[0].first == 2);
+        CHECK(errors[1].first == 2);
+        CHECK(errors[2].first == 4);
+        for (const auto& e : errors) checkStringArrayMessage(e.second);
+    }
+    SECTION("an element as argument and as output of a CALL") {
+        auto errors = strArrayParseErrors(
+            "PROCEDURE p(a$:b$)\n"   // 1
+            "b$ = a$\n"              // 2
+            "END\n"                  // 3
+            "CALL p(U$[2] : w$)\n"   // 4
+            "CALL p('x' : V$[1])\n"); // 5
+        REQUIRE(errors.size() == 2);
+        CHECK(errors[0].first == 4);
+        CHECK(errors[1].first == 5);
+        for (const auto& e : errors) checkStringArrayMessage(e.second);
+    }
+    SECTION("2-D element and an expression as index") {
+        auto errors = strArrayParseErrors("S$[1,2] = 'a'\nk = 2\nw$ = S$[k+1]\n");
+        REQUIRE(errors.size() == 2);
+        CHECK(errors[0].first == 1);
+        CHECK(errors[1].first == 3);
+        for (const auto& e : errors) checkStringArrayMessage(e.second);
+    }
+    SECTION("an element inside a condition") {
+        auto errors = strArrayParseErrors(
+            "PROCEDURE p(n:y)\n"
+            "IF (U$[n] = 'a') THEN y = 1 ELSE y = 2\n"
+            "END\n"
+            "CALL p(1:yv)\n");
+        REQUIRE_FALSE(errors.empty());
+        CHECK(errors[0].first == 2);
+        checkStringArrayMessage(errors[0].second);
+    }
+}
+
+TEST_CASE("CS-GAP-STRING-ARRAY: scalar string variables and numeric arrays are unaffected", "[library-gaps][string-array]") {
+    auto run = runModel(R"(
+F$ = 'N2'
+Note$ = 'see U$[1] in the manual'
+P[1] = 2 ; P[2] = 3
+Q = P[2] + P[1]
+M = MolarMass(F$)
+w = 5 [m]
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["Q"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["M"], WithinRel(molarMassKgPerKmol("N2"), 1e-9));
+    CHECK(run.strings.at("F$") == "N2");
+    CHECK(run.strings.at("Note$") == "see U$[1] in the manual");   // a '$[' inside a string literal is text
+}
+
+// ----------------------------------------------------------------------------
+// LOOKUP$
+// ----------------------------------------------------------------------------
+
+TEST_CASE("CS-GAP-LOOKUPROW: LookupTable keeps the text of the cells", "[library-gaps][lookup-string]") {
+    SECTION("a table with text cells keeps every cell as written in the CSV") {
+        auto t = LookupTable::fromCSV("t", "Name,x,y\nN2, 1.50 ,1e3\nO2,2,\n\"a,b\",3,4\n");
+        REQUIRE(t.numRows() == 3);
+        CHECK(t.text(1, 1) == "N2");
+        CHECK(t.text(1, 2) == "1.50");    // a numeric cell: its text as written, whitespace trimmed
+        CHECK(t.text(1, 3) == "1e3");
+        CHECK(t.text(2, 3) == "");        // an empty cell
+        CHECK(t.text(3, 1) == "a,b");     // a quoted cell
+        // the numeric view is unchanged
+        CHECK_THAT(t.value(1, 2), WithinAbs(1.5, 1e-15));
+        CHECK_THAT(t.value(1, 3), WithinAbs(1000.0, 1e-12));
+        CHECK(std::isnan(t.value(1, 1)));
+        CHECK(std::isnan(t.value(2, 3)));
+        // toCSV keeps the text cells
+        auto back = LookupTable::fromCSV("t", t.toCSV());
+        CHECK(back.text(1, 1) == "N2");
+        CHECK(back.text(3, 1) == "a,b");
+    }
+    SECTION("a purely numeric table gives the number as text") {
+        auto t = LookupTable::fromCSV("n", "x,y\n1,0.5\n2,\n");
+        CHECK(t.text(1, 1) == "1");
+        CHECK(t.text(1, 2) == "0.5");
+        CHECK(t.text(2, 2) == "");
+    }
+    SECTION("out of range") {
+        auto t = LookupTable::fromCSV("t", "Name,x\nN2,1\n");
+        CHECK_THROWS_AS(t.text(2, 1), std::out_of_range);
+        CHECK_THROWS_AS(t.text(1, 3), std::out_of_range);
+        CHECK_THROWS_AS(t.text(0, 1), std::out_of_range);
+    }
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: LOOKUP$ returns the text of a cell, the column as a number or a name",
+          "[library-gaps][lookup-string]") {
+    auto run = runModel(R"(
+PROCEDURE cell(r, c : s$)
+  s$ = LOOKUP$('Species', r, c)
+END
+PROCEDURE cellname(r : s$)
+  s$ = LOOKUP$('Species', r, 'Name')
+END
+CALL cell(1, 1 : A$)
+CALL cell(3, 1 : B$)
+CALL cell(2, 2 : C$)
+CALL cellname(2 : D$)
+)", kSpeciesTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.strings.at("A$") == "N2");
+    CHECK(run.strings.at("B$") == "CO2");
+    CHECK(run.strings.at("C$") == "31.9988");   // a numeric cell: its text as written
+    CHECK(run.strings.at("D$") == "O2");        // the column by name, case of the table
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: LOOKUP$ of a numeric cell keeps the text as written in the CSV", "[library-gaps][lookup-string]") {
+    auto run = runModel(R"(
+PROCEDURE cell(r, c : s$)
+  s$ = LOOKUP$('t', r, c)
+END
+CALL cell(1, 2 : A$)
+CALL cell(2, 2 : B$)
+CALL cell(3, 2 : C$)
+x = stringval(A$) + stringval(B$)
+)", {{"t", "name,v\n a ,1.50\nb,1e3\nc,\n"}});
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.strings.at("A$") == "1.50");
+    CHECK(run.strings.at("B$") == "1e3");
+    CHECK(run.strings.at("C$") == "");          // an empty cell is the empty string
+    CHECK_THAT(run["x"], WithinAbs(1001.5, 1e-9));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: LOOKUP$ as the fluid argument, the CSL-0150 pattern in a DUPLICATE",
+          "[library-gaps][lookup-string]") {
+    // Prod$[i] of the EES source becomes LOOKUP$('Species', i, 1)
+    auto run = runModel(R"(
+T = 300
+DUPLICATE i=1,3
+  H[i] = MolarMass(LOOKUP$('Species',i,1))*enthalpy(LOOKUP$('Species',i,1),T=T)
+END
+Href[1] = MolarMass(N2)*enthalpy(N2,T=T)
+Href[2] = MolarMass(O2)*enthalpy(O2,T=T)
+Href[3] = MolarMass(CO2)*enthalpy(CO2,T=T)
+)", kSpeciesTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (int i = 1; i <= 3; ++i) {
+        INFO("species " << i);
+        CHECK_THAT(run["H[" + std::to_string(i) + "]"], WithinRel(run["Href[" + std::to_string(i) + "]"], 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: LOOKUP$ as the fluid of the other property functions", "[library-gaps][lookup-string]") {
+    auto run = runModel(R"(
+T = 300
+P = 1E5
+a = cp(LOOKUP$('Species',2,1),T=T)
+a_ref = cp(O2,T=T)
+b = MolarMass(LOOKUP$('Species',3,1))
+b_ref = MolarMass(CO2)
+c = entropy(LOOKUP$('Species',1,1),T=T,P=P)
+c_ref = entropy(N2,T=T,P=P)
+d = density(LOOKUP$('Species',1,1),T=T,P=P)
+d_ref = density(N2,T=T,P=P)
+tc = T_crit(LOOKUP$('Species',3,1))
+tc_ref = T_crit(CO2)
+)", kSpeciesTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinRel(run["a_ref"], 1e-12));
+    CHECK_THAT(run["b"], WithinRel(run["b_ref"], 1e-12));
+    CHECK_THAT(run["c"], WithinRel(run["c_ref"], 1e-12));
+    CHECK_THAT(run["d"], WithinRel(run["d_ref"], 1e-12));
+    CHECK_THAT(run["tc"], WithinRel(run["tc_ref"], 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: the row of LOOKUP$ is a variable computed by another equation", "[library-gaps][lookup-string]") {
+    // the equation that uses the fluid must wait for idx (a dependency hidden in the fluid argument
+    // would evaluate it with the default value 1, i.e. the wrong species, silently)
+    auto run = runModel(R"(
+H = enthalpy(LOOKUP$('Species', idx, 1), T=300)
+idx = k + 1
+k = 1
+H_ref = enthalpy(O2, T=300)
+)", kSpeciesTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["idx"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["H"], WithinRel(run["H_ref"], 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: an unknown solved through a property call of the LOOKUP$ fluid", "[library-gaps][lookup-string]") {
+    // the temperature at which O2 (row 2 of the table) has the molar enthalpy of 800 degC
+    auto run = runModel(R"(
+Href = MolarMass(O2)*enthalpy(O2,T=800)
+Href = MolarMass(LOOKUP$('Species',2,1))*enthalpy(LOOKUP$('Species',2,1),T=Tx)
+)", kSpeciesTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["Tx"], WithinAbs(800.0, 1e-6));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: LOOKUP$ in FUNCTION and PROCEDURE bodies", "[library-gaps][lookup-string]") {
+    SECTION("FUNCTION: fluid argument and string comparison") {
+        auto run = runModel(R"(
+FUNCTION hm(i, T)
+  hm = MolarMass(LOOKUP$('Species',i,1))*enthalpy(LOOKUP$('Species',i,1),T=T)
+END
+FUNCTION isO2(r)
+  isO2 = 0
+  IF (LOOKUP$('Species', r, 1) = 'o2') THEN isO2 = 1
+END
+FUNCTION isgas(i)
+  isgas = 0
+  IF (PHASE$(LOOKUP$('Species', i, 1), T=25, P=1E5) = 'gas') THEN isgas = 1
+END
+a = hm(3, 400)
+a_ref = MolarMass(CO2)*enthalpy(CO2,T=400)
+b = isO2(2)
+c = isO2(1)
+d = isgas(3)
+)", kSpeciesTable);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinRel(run["a_ref"], 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(1.0, 1e-12));   // the comparison ignores the case, as EES does
+        CHECK_THAT(run["c"], WithinAbs(0.0, 1e-12));
+        CHECK_THAT(run["d"], WithinAbs(1.0, 1e-12));   // PHASE$ takes the LOOKUP$ fluid too
+    }
+    SECTION("PROCEDURE: a string variable of the body, the BrineProp pattern") {
+        // UO$ = U$[Pro] of the BrineProp library becomes UO$ = LOOKUP$('Units', Pro, 1)
+        auto run = runModel(R"(
+PROCEDURE unitlabel(Pro : UO$, n)
+  UO$ = LOOKUP$('Units', Pro, 1)
+  n = Pro
+END
+CALL unitlabel(3 : A$, n3)
+CALL unitlabel(5 : B$, n5)
+)", {{"Units", "Unit\nC\nkg/m^3\nkJ/kg-K\nW/m-K\nmilliPa-s\n"}});
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.strings.at("A$") == "kJ/kg-K");
+        CHECK(run.strings.at("B$") == "milliPa-s");
+    }
+    SECTION("table name from a string variable") {
+        auto run = runModel(R"(
+PROCEDURE pick(tab$, r : s$)
+  s$ = LOOKUP$(tab$, r, 1)
+END
+CALL pick('Species', 2 : A$)
+)", kSpeciesTable);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.strings.at("A$") == "O2");
+    }
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: LOOKUP$ negative tests give clear errors", "[library-gaps][lookup-string]") {
+    auto fail = [&](const std::string& call, const std::string& expected) {
+        auto run = runModel("PROCEDURE p(r : s$)\n  s$ = " + call + "\nEND\nCALL p(1 : A$)\n", kSpeciesTable);
+        INFO(call);
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find(expected) != std::string::npos);
+    };
+    SECTION("row out of range") {
+        fail("LOOKUP$('Species', 4, 1)", "LOOKUP$(): row 4 is outside the table 'Species' (1 to 3");
+        fail("LOOKUP$('Species', 0, 1)", "LOOKUP$(): row 0 is outside the table 'Species' (1 to 3");
+        fail("LOOKUP$('Species', -2, 1)", "row -2 is outside");
+    }
+    SECTION("column out of range or unknown") {
+        fail("LOOKUP$('Species', 1, 3)", "LOOKUP$(): column 3 is outside the table 'Species' (1 to 2");
+        fail("LOOKUP$('Species', 1, 0)", "column 0 is outside");
+        fail("LOOKUP$('Species', 1, 'Nope')", "LOOKUP$(): column 'Nope' not found in table 'Species'");
+    }
+    SECTION("unknown table") {
+        fail("LOOKUP$('Nope', 1, 1)", "LOOKUP$(): lookup table 'Nope' not found");
+    }
+    SECTION("arity") {
+        fail("LOOKUP$('Species', 1)", "LOOKUP$(): expects 3 arguments: (table, row, col)");
+    }
+    SECTION("used as a number") {
+        auto run = runModel("x = LOOKUP$('Species', 1, 2)\n", kSpeciesTable);
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("LOOKUP$ returns a string") != std::string::npos);
+    }
+    SECTION("an unknown fluid text from the table is reported as such") {
+        auto run = runModel("h = enthalpy(LOOKUP$('Bad', 1, 1), T=300)\n", {{"Bad", "Name\nUnobtainium\n"}});
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("Unknown fluid: 'Unobtainium'") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: a numeric LOOKUP next to a text column keeps its value and its derivative",
+          "[library-gaps][lookup-string]") {
+    // 0*NaN: the text column must not spoil the cell of the numeric column (was NaN)
+    const std::string csv = "name,v\nA,10\nB,20\nC,40\n";
+    auto exact = evalWithSlope("y = lookup('t', r, 2)\n", csv, 2.0);
+    CHECK_THAT(exact.value, WithinAbs(20.0, 1e-12));
+    CHECK_THAT(exact.slope, WithinAbs(20.0, 1e-12));   // the slope of the segment 2..3 (40 - 20)
+    auto between = evalWithSlope("y = lookup('t', r, 'v')\n", csv, 2.5);
+    CHECK_THAT(between.value, WithinAbs(30.0, 1e-12));
+    CHECK_THAT(between.slope, WithinAbs(20.0, 1e-12));
+    auto first = evalWithSlope("y = lookup('t', r, 2)\n", csv, 1.0);
+    CHECK_THAT(first.value, WithinAbs(10.0, 1e-12));
+    CHECK_THAT(first.slope, WithinAbs(10.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: the numeric lookup functions are unchanged on a table that has text cells",
+          "[library-gaps][lookup-string]") {
+    auto run = runModel(R"(
+a = lookup('Species', 2, 2)
+b = lookup('Species', 2.5, 'M')
+c = nlookuprows('Species')
+d = nlookupcolumns('Species')
+e = sumlookup('Species', 'M')
+f = interpolate('Species', 'M', 'M', 30)
+)", kSpeciesTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(31.9988, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(0.5 * (31.9988 + 44.0095), 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["e"], WithinAbs(28.0134 + 31.9988 + 44.0095, 1e-9));
+    CHECK_THAT(run["f"], WithinAbs(30.0, 1e-9));
+}

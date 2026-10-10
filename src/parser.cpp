@@ -2606,11 +2606,25 @@ private:
         
         // Ensure the name is a valid identifier (to distinguish from units like 10[m])
         if (!isIdentifier(name)) return nullptr;
-        
+
         // The bracket that closes the element: nothing but a unit annotation (handled by
         // parsePrimary) may follow it
         const size_t bracketEnd = findClosingBracket(expr, bracketStart);
         if (bracketEnd == std::string::npos || expr[bracketEnd] != ']') return nullptr;
+
+        // A string array (U$[2]) is not supported, by decision: refused here, in the main program, in
+        // FUNCTION/PROCEDURE bodies and in DUPLICATE alike, instead of being stored as the number 0
+        // (main program) or failing at the read (bodies)
+        if (name.back() == '$') {
+            setExpressionError("String arrays are not supported: '" + trim(expr.substr(0, bracketEnd + 1)) +
+                "' is an element of the string array " + name + ". Put the strings in a lookup table (one "
+                "string per row, file <model>-<table>.csv), keep the row number in the array instead (a "
+                "numeric array) and read the string with LOOKUP$('table', row, col), which can be used "
+                "wherever a string is expected, for instance as the fluid of a property call: "
+                "enthalpy(LOOKUP$('table', i, 1), T=T)");
+            return nullptr;
+        }
+
         if (bracketEnd + 1 < expr.size()) {
             const std::string rest = trim(expr.substr(bracketEnd + 1));
             if (!rest.empty()) {

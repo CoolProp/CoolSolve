@@ -18,7 +18,9 @@ namespace coolsolve {
  *
  * A table is a named rectangular matrix of doubles with a header row.
  * Row and column indices are 1-based throughout the public API, matching
- * EES conventions.  Empty CSV cells are stored as NaN.
+ * EES conventions.  Empty CSV cells, and cells that are text, are stored
+ * as NaN; a table that has text cells also keeps the text of every cell
+ * (see text()), which `LOOKUP$` reads.
  *
  * Linear interpolation is provided for 1-D and 2-D (bilinear) cases with
  * full forward-mode AD derivative support.  Extrapolation clamps to the
@@ -41,7 +43,9 @@ public:
      * @brief Parse a CSV string into a LookupTable.
      *
      * The first non-empty line is treated as the header row (column names).
-     * Subsequent lines are numeric data rows.  Empty cells become NaN.
+     * Subsequent lines are data rows.  Empty cells and cells that are not
+     * numbers (text, read by `LOOKUP$`) become NaN in the numeric view; if the
+     * table has such a cell, the text of every cell is kept too (see text()).
      * Whitespace around fields is stripped.
      *
      * @param name  Table name (used for error messages and as the key in
@@ -79,6 +83,19 @@ public:
      * Throws std::out_of_range if indices are out of bounds.
      */
     double value(size_t row1, size_t col1) const;
+
+    /**
+     * @brief Return the text of the cell at 1-based (row, col): EES `LOOKUP$`.
+     *
+     * In a table with at least one text cell this is the cell as written in
+     * the CSV (surrounding whitespace removed, quotes resolved), also for a
+     * numeric cell ("1.50" stays "1.50"); an empty cell gives "".  A table
+     * without text cells keeps no text (no memory is added to numeric
+     * tables): the number is formatted with up to 15 significant digits.
+     *
+     * Throws std::out_of_range if indices are out of bounds.
+     */
+    std::string text(size_t row1, size_t col1) const;
 
     // ------------------------------------------------------------------
     // Interpolation
@@ -169,6 +186,10 @@ private:
     std::string                      name_;
     std::vector<std::string>         columnNames_;
     std::vector<std::vector<double>> data_;   // data_[row][col]
+    std::vector<std::vector<std::string>> text_;   // text_[row][col]; empty unless the CSV has a text cell
+
+    /// Throws std::out_of_range unless (row1, col1) is a cell of the table.
+    void checkCell(size_t row1, size_t col1) const;
 
     // Internal helper: find the interval [lo, hi) in a sorted column such
     // that data_[lo][col0] <= x < data_[hi][col0].  Returns lo == hi == 0

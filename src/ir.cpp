@@ -495,9 +495,10 @@ void IR::extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensi
             // Extract from positional args
             for (const auto& arg : node.args) {
                 if (isThermo && firstArg) {
-                    // Skip first argument (fluid name) for thermo functions
+                    // Skip first argument (fluid name) for thermo functions, except a call
+                    // (LOOKUP$('table', i, 1)): its row and column are variables of the equation
                     firstArg = false;
-                    continue;
+                    if (!(arg && arg->template is<FunctionCall>())) continue;
                 }
                 // Skip string literals in lookup functions (they are table/column names)
                 if (isLookup && arg && arg->template is<StringLiteral>()) {

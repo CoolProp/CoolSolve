@@ -35,7 +35,7 @@ export function registerEESLanguage(monaco: typeof Monaco) {
       'convert', 'unitsystem', 'error',
       // Lookup table functions
       'interpolate', 'interpolate1', 'interpolate2', 'interpolate2dm',
-      'lookup', 'lookupcol', 'lookupcol1', 'lookupcellempty',
+      'lookup', 'lookup$', 'lookupcol', 'lookupcol1', 'lookupcellempty',
       'tablevalue', 'nlookuprows', 'nlookupcolumns',
       'sumlookup', 'avglookup', 'maxlookup', 'minlookup', 'stddevlookup',
       // Equation-based integration (INTEGRAL / $IntegralTable)
@@ -61,8 +61,9 @@ export function registerEESLanguage(monaco: typeof Monaco) {
         [/\d+\.?\d*([eE][+-]?\d+)?/, 'number'],
         [/\.\d+([eE][+-]?\d+)?/, 'number'],
 
-        // Identifiers: letters (accented ones too), digits, _ and the symbols % | # \ ° of EES names
-        [/[a-zA-Z_\u00C0-\u00FF][\w%|#\\\u00B0\u00B2\u00B3\u00B5\u00B9\u00C0-\u00FF]*/, {
+        // Identifiers: letters (accented ones too), digits, _ and the symbols % | # \ ° of EES names,
+        // with the $ that ends a string variable or a string function (LOOKUP$)
+        [/[a-zA-Z_\u00C0-\u00FF][\w%|#\\\u00B0\u00B2\u00B3\u00B5\u00B9\u00C0-\u00FF]*\$?/, {
           cases: {
             '@keywords': 'keyword',
             '@typeKeywords': 'type.identifier',
