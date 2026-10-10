@@ -20,11 +20,15 @@
 #include "coolsolve/solution_checker.h"
 #include "CoolProp.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -4710,4 +4714,824 @@ TEST_CASE("CS-BUG-STRING-CALL-OUT: negative tests", "[library-gaps][string-call-
         CHECK_FALSE(run.solveOk);
         CHECK(anyContains({run.message}, "r$"));
     }
+}
+
+// ============================================================================
+// Characters of variable names: CS-GAP-NAME-SYMBOL (%), CS-GAP-NAME-PIPE (|),
+// CS-GAP-ACCENTED-IDENT (accented letters, °) and CS-BUG-HASH-IDENT (# inside a name)
+//
+// EES help, "Variable names": a name starts with a letter and holds any keyboard character
+// except ( ) * / + - ^ { } ; (older manual: also ' | : "). `$` ends a string variable,
+// `[ ]` index an array. The valid-EES evidence of each character is in the register.
+// ============================================================================
+
+namespace {
+
+/// The variables of `run` whose name is not a CoolSolve auxiliary (`__...`).
+std::vector<std::string> userVariables(const ModelRun& run) {
+    std::vector<std::string> names;
+    for (const auto& [name, value] : run.vars) {
+        (void)value;
+        if (name.rfind("__", 0) != 0) names.push_back(name);
+    }
+    return names;
+}
+
+/// Run the report generator on a solved model and return the LaTeX source.
+std::string latexOf(const std::string& code) {
+    static int counter = 0;
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_name_chars";
+    fs::create_directories(dir);
+    const fs::path file = dir / ("latex_" + std::to_string(counter++) + ".eescode");
+    { std::ofstream f(file); f << code; }
+    CoolSolveRunner runner(file.string());
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    const bool ok = runner.run(options, false);
+    fs::remove(file);
+    REQUIRE(ok);
+    return runner.generateLatexReportContent("name_chars");
+}
+
+/// True when pdflatex is installed.
+bool havePdflatex() { return std::system("pdflatex --version > /dev/null 2>&1") == 0; }
+
+/// Compile `tex` with pdflatex; true when the run ends without error.
+bool pdflatexCompiles(const std::string& tex, std::string* log = nullptr) {
+    static int counter = 0;
+    const fs::path dir = fs::temp_directory_path() / ("coolsolve_test_name_chars_tex_" + std::to_string(counter++));
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    { std::ofstream f(dir / "r.tex"); f << tex; }
+    const std::string cmd = "cd '" + dir.string() + "' && pdflatex -interaction=nonstopmode -halt-on-error r.tex > out.txt 2>&1";
+    const bool ok = std::system(cmd.c_str()) == 0;
+    if (log) {
+        std::ifstream in(dir / "r.log");
+        *log = std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    fs::remove_all(dir);
+    return ok;
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// CS-GAP-NAME-SYMBOL: `%` in a name
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CS-GAP-NAME-SYMBOL: register reproducer, the fuel mass fractions C%, H%, O%", "[library-gaps][name-symbol]") {
+    // valid EES (orc_complex.EES, EES 9.920): C% = 0.5, H% = 0.06, O% = 1-C%-H%, m = C%/12 stored as 0.04167
+    // was: "Parse failed: Line 1 … Line 5: Could not parse line"
+    auto run = runModel("C% = 0.5\nH% = 0.06\nm_boil = C%/12\nn_boil = H%/1\nO% = 1-C%-H%\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["m_boil"], WithinAbs(0.5 / 12.0, 1e-15));
+    CHECK_THAT(run["n_boil"], WithinAbs(0.06, 1e-15));
+    CHECK_THAT(run["O%"], WithinAbs(0.44, 1e-15));
+    CHECK_THAT(run["C%"], WithinAbs(0.5, 1e-15));
+    CHECK_THAT(run["m_boil"], WithinAbs(0.04167, 1e-5));   // the value EES stores
+}
+
+TEST_CASE("CS-GAP-NAME-SYMBOL: the % in every position of the model", "[library-gaps][name-symbol]") {
+    SECTION("start, middle, end of a name, in expressions and in function arguments") {
+        auto run = runModel(
+            "C% = 86.9\nH% = 100 - C%\nO% = 0\nS% = 0\n"
+            "HHV_kJ = 4.186*(81*C%+300*(H%-O%/8)+25*S%)\n"      // the correlation of CSL-0150
+            "Q_dot_2_% = 100*3/12\n"                             // trailing % (CSL-0152)
+            "m = (C%/100)/12.011\n"
+            "y = max(C%, H%) + min(C%/2, 7)\n"
+            "p%q = sqrt(C%)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["HHV_kJ"], WithinRel(4.186 * (81 * 86.9 + 300 * 13.1), 1e-12));
+        CHECK_THAT(run["Q_dot_2_%"], WithinAbs(25.0, 1e-12));
+        CHECK_THAT(run["m"], WithinRel(0.869 / 12.011, 1e-12));
+        CHECK_THAT(run["y"], WithinRel(86.9 + 7.0, 1e-12));
+        CHECK_THAT(run["p%q"], WithinRel(std::sqrt(86.9), 1e-12));
+    }
+
+    SECTION("FUNCTION and PROCEDURE: parameters, locals and CALL outputs") {
+        auto run = runModel(
+            "FUNCTION hhv(C%, H%)\n  S% = 0\n  hhv = 4.186*(81*C%+300*H%+25*S%)\nEND\n"
+            "PROCEDURE comp(C%, H% : m%, n%)\n  m% = C%/12\n  n% = H%/1\nEND\n"
+            "C% = 86.9\nH% = 100 - C%\n"
+            "x = hhv(C%, H%)\n"
+            "CALL comp(C%, H% : mm%, nn%)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["x"], WithinRel(4.186 * (81 * 86.9 + 300 * 13.1), 1e-12));
+        CHECK_THAT(run["mm%"], WithinRel(86.9 / 12.0, 1e-12));
+        CHECK_THAT(run["nn%"], WithinRel(13.1, 1e-12));
+        // the locals of a routine are not variables of the model
+        CHECK(run.vars.count("S%") == 0);
+        CHECK(run.vars.count("m%") == 0);
+    }
+
+    SECTION("IF conditions and loops inside a routine") {
+        auto run = runModel(
+            "FUNCTION g(a%)\n"
+            "  IF (a% > 50) THEN g = 1 ELSE g = 2\n"
+            "END\n"
+            "PROCEDURE cnt(n% : s%)\n"
+            "  s% = 0\n"
+            "  i% = 0\n"
+            "  REPEAT\n"
+            "    i% = i% + 1\n"
+            "    s% = s% + i%\n"
+            "  UNTIL (i% >= n%)\n"
+            "END\n"
+            "a = g(86.9)\nb = g(10)\nCALL cnt(4 : c%)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["c%"], WithinAbs(10.0, 1e-12));
+    }
+
+    SECTION("array elements X%[i], DUPLICATE and sums") {
+        auto run = runModel(
+            "C% = 0.5\n"
+            "DUPLICATE i = 1, 3\n  X%[i] = i*C%\nEND\n"
+            "S = X%[1] + X%[2] + X%[3]\n"
+            "Y%[2] = 5\nz = Y%[2] * 2\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["X%[2]"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["S"], WithinAbs(3.0, 1e-12));
+        CHECK_THAT(run["z"], WithinAbs(10.0, 1e-12));
+    }
+
+    SECTION("a string variable and a $IF directive") {
+        auto run = runModel(
+            "fuel%$ = 'CH4'\n"
+            "$IF fuel%$='ch4'\nx = 1\n$ELSE\nx = 2\n$ENDIF\n"
+            "$IFNOT fuel%$='CH4'\ny = 1\n$ELSE\ny = 2\n$ENDIF\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["y"], WithinAbs(2.0, 1e-12));
+        CHECK(run.strings.at("fuel%$") == "CH4");
+    }
+
+    SECTION("thermophysical function with a name=value argument") {
+        auto run = runModel("T% = 100\nP% = pressure(Water, T=T%, x=1)\n");   // °C, the default unit system
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["P%"], WithinRel(CoolProp::PropsSI("P", "T", 373.15, "Q", 1, "Water"), 1e-6));
+    }
+}
+
+TEST_CASE("CS-GAP-NAME-SYMBOL: state of an INTEGRAL model, the trajectory and its CSV", "[library-gaps][name-symbol]") {
+    auto run = runIntegral(
+        "y% = 0 + integral(dydt%, t, 0, 2, 0.01)\n"
+        "dydt% = 3*t\n"
+        "$IntegralTable t:1 y% dydt%\n",
+        [](SolverOptions& o) { o.integralMethod = "RK4"; });
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y%"], WithinAbs(6.0, 1e-9));
+    REQUIRE(run.table.numRows() == 3);
+    CHECK(run.table.columns() == std::vector<std::string>{"t", "y%", "dydt%"});
+    CHECK_THAT(run.cell("y%", 1), WithinAbs(1.5, 1e-9));
+    CHECK(run.table.toCSV().rfind("t,y%,dydt%", 0) == 0);
+}
+
+TEST_CASE("CS-GAP-NAME-SYMBOL: names are case-insensitive and the debug folder lists them", "[library-gaps][name-symbol]") {
+    auto run = runModel("C% = 0.5\ny = c%*2\nc_x% = 3\nz = C_X%\n");
+    REQUIRE(run.solveOk);
+    CHECK(userVariables(run).size() == 4);      // C%, y, c_x%, z: c% and C% are one variable
+    CHECK_THAT(run["y"], WithinAbs(1.0, 1e-15));
+    CHECK_THAT(run["z"], WithinAbs(3.0, 1e-15));
+
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_name_symbol_debug";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const std::string code = "C% = 0.5\nm_boil = C%/12\n";
+    { std::ofstream f(dir / "model.eescode"); f << code; }
+    CoolSolveRunner runner((dir / "model.eescode").string());
+    SolverOptions options;
+    REQUIRE(runner.run(options));
+    runner.generateDebugOutput((dir / "debug").string(), code);
+    auto slurp = [&](const char* name) {
+        std::ifstream in(dir / "debug" / name);
+        REQUIRE(in.good());
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    CHECK(slurp("variables.md").find("`C%`") != std::string::npos);
+    CHECK(slurp("equations.md").find("m_boil = (C% / 12") != std::string::npos);
+    CHECK(slurp("incidence.md").find("`C%`") != std::string::npos);
+    CHECK(slurp("variables.csv").find("\"C%\"") != std::string::npos);
+    CHECK(slurp("analysis.json").find("\"C%\"") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("CS-GAP-NAME-SYMBOL: .initials and .sol files with a % in the name", "[library-gaps][name-symbol]") {
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_name_symbol_files";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    EESParser parser;
+    auto parsed = parser.parse("C% = 0.5\nx% = 2*C%\nc2% = x%^2\n");
+    REQUIRE(parsed.success);
+    SECTION("initials: values, units and comments") {
+        { std::ofstream f(dir / "m.initials"); f << "C% = 0.4 \"kg/kg\"\n# a comment line\nx% = 3 # trailing comment\n"; }
+        IR ir = IR::fromAST(parsed.program);
+        CHECK(ir.loadInitialsFromFile((dir / "m.initials").string()) == 2);
+        REQUIRE(ir.getVariable("C%") != nullptr);
+        CHECK_THAT(*ir.getVariable("C%")->solutionValue, WithinAbs(0.4, 1e-15));
+        CHECK(ir.getVariable("C%")->units == "kg/kg");
+        CHECK_THAT(*ir.getVariable("x%")->solutionValue, WithinAbs(3.0, 1e-15));
+        CHECK_FALSE(ir.getVariable("c2%")->solutionValue.has_value());
+    }
+    SECTION("the .sol written by a solve is read back") {
+        auto run = runModel("C% = 0.5\nx% = 2*C%\nc2% = x%^2\n");
+        REQUIRE(run.solveOk);
+        std::ofstream f(dir / "m.sol");
+        f << std::scientific << std::setprecision(12);
+        for (const auto& [name, value] : run.vars) f << name << " = " << value << "\n";
+        f << "\n# IntegralTable\nt,x%\n0,1\n";
+        f.close();
+        IR ir = IR::fromAST(parsed.program);
+        CHECK(ir.loadSolutionFromFile((dir / "m.sol").string()) == 3);
+        CHECK_THAT(*ir.getVariable("c2%")->solutionValue, WithinAbs(1.0, 1e-12));
+    }
+    fs::remove_all(dir);
+}
+
+TEST_CASE("CS-GAP-NAME-SYMBOL: LaTeX output escapes the % (a comment character of LaTeX)", "[library-gaps][name-symbol][latex]") {
+    CHECK(variableToLatex("C%") == "C\\%");
+    CHECK(variableToLatex("Q_dot_2_%") == "\\dot{Q}_{2,\\%}");
+    CHECK(variableToLatex("X%[2]") == "X\\%_{2}");
+    const std::string tex = latexOf("C% = 0.5\nm_boil = C%/12\nQ_dot_2_% = 100*3/12\n");
+    // no raw % starts a comment in the middle of a math formula or of a table cell
+    CHECK(tex.find("C\\%") != std::string::npos);
+    CHECK(tex.find("$C% ") == std::string::npos);
+    CHECK(tex.find("\\frac{C\\%}{12") != std::string::npos);
+    if (havePdflatex()) {
+        std::string log;
+        INFO(log);
+        CHECK(pdflatexCompiles(tex, &log));
+    }
+}
+
+TEST_CASE("CS-GAP-NAME-SYMBOL: negative tests, characters that stay invalid give a clear error", "[library-gaps][name-symbol]") {
+    SECTION("a name starts with a letter: not with %, # or |") {
+        const auto e1 = parseErrors("%x = 3\n");
+        REQUIRE_FALSE(e1.empty());
+        CHECK(anyContains(e1, "Invalid variable name '%x'"));
+        CHECK(anyContains(parseErrors("x = |a + 1\n"), "Invalid variable name '|a'"));
+        CHECK(anyContains(parseErrors("x = 2 + #a\n"), "Invalid variable name '#a'"));
+        CHECK_FALSE(parseErrors("1x = 3\n").empty());   // a name does not start with a digit
+    }
+    SECTION("characters EES does not take in names, or that CoolSolve needs as syntax") {
+        CHECK(anyContains(parseErrors("x@y = 3\n"), "Invalid variable name 'x@y': the character '@'"));
+        CHECK(anyContains(parseErrors("a&b = 3\n"), "the character '&'"));
+        CHECK(anyContains(parseErrors("a~b = 3\n"), "the character '~'"));
+        CHECK(anyContains(parseErrors("a?b = 3\n"), "the character '?'"));
+        CHECK(anyContains(parseErrors("x = a@b + 1\n"), "Invalid variable name 'a@b'"));
+        // inside a call, a CALL argument and a CALL output the same message
+        CHECK(anyContains(parseErrors("x = max(a@b, 1)\n"), "Invalid variable name 'a@b'"));
+        CHECK(anyContains(parseErrors("PROCEDURE p(a : b)\nb = a\nEND\nCALL p(1 : r@s)\n"), "Invalid variable name 'r@s'"));
+        CHECK(anyContains(parseErrors("PROCEDURE p(a : b)\nb = a\nEND\nCALL p(r@s : y)\n"), "Invalid variable name 'r@s'"));
+        // a % inside a function body is as good as outside, a bad one is as loud as outside
+        CHECK(anyContains(parseErrors("FUNCTION f(a)\n  f = a@b\nEND\ny = f(1)\n"), "Invalid variable name 'a@b'"));
+    }
+    SECTION("the quote opens a string and the dot is a decimal point: neither can be part of a name") {
+        CHECK_FALSE(parseErrors("a'b = 3\n").empty());
+        CHECK(anyContains(parseErrors("a.b = 3\n"), "Invalid variable name 'a.b': the character '.'"));
+    }
+    SECTION("operators are still operators, a name stops where one starts") {
+        auto run = runModel("a% = 6\nb% = 3\nx = a%+b%\ny = a%-b%\nz = a%*b%\nw = a%/b%\nv = a%^2\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(9.0, 1e-12));
+        CHECK_THAT(run["y"], WithinAbs(3.0, 1e-12));
+        CHECK_THAT(run["z"], WithinAbs(18.0, 1e-12));
+        CHECK_THAT(run["w"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["v"], WithinAbs(36.0, 1e-12));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CS-GAP-NAME-PIPE: `|` in a name
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CS-GAP-NAME-PIPE: register reproducer", "[library-gaps][name-pipe]") {
+    // valid EES (the K* coefficient of the cooling-coil bank): was "Line 1/2: Could not parse line"
+    auto run = runModel("K|star_a = 106\nK|star_b = 2*K|star_a\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["K|star_b"], WithinAbs(212.0, 1e-12));
+    CHECK(run.warnings.empty());   // was: "Unknown function 'K|star_r_n/K|star_r*'"
+}
+
+TEST_CASE("CS-GAP-NAME-PIPE: the cooling-coil pattern (CSL-0074, CSL-0163)", "[library-gaps][name-pipe]") {
+    // R_r_coil = R_r_coil_n*K|star_r_n/K|star_r*(M_dot_r_coil_n / M_dot_r_coil)^0.8, K|star_r from the properties
+    auto run = runModel(
+        "K|star_r_n = 106\n"
+        "mu_r_coil = 2.1e-4\nk_r_coil = 0.085\nc_p_r_coil = 1300\nn = 0.8\nm = 0.2\n"
+        "K|star_r=mu_r_coil^(n-m)*k_r_coil^(1-n)*c_p_r_coil^n\n"
+        "R_r_coil_n = 0.0125\nM_dot_r_coil_n = 0.04\nM_dot_r_coil = 0.03\n"
+        "R_r_coil = R_r_coil_n*K|star_r_n/K|star_r*(M_dot_r_coil_n / M_dot_r_coil)^0.8  \"turbulent flow in circular tube\"\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    const double kstar = std::pow(2.1e-4, 0.6) * std::pow(0.085, 0.2) * std::pow(1300.0, 0.8);
+    CHECK_THAT(run["K|star_r"], WithinRel(kstar, 1e-12));
+    CHECK_THAT(run["R_r_coil"], WithinRel(0.0125 * 106.0 / kstar * std::pow(0.04 / 0.03, 0.8), 1e-12));
+}
+
+TEST_CASE("CS-GAP-NAME-PIPE: the compressor pattern, | in the values of name=value arguments (CSL-0116)", "[library-gaps][name-pipe]") {
+    // PRESSURE(fluid$, v=v_in_cp|star, u=u_in_cp|star), enthalpy(...) and implicit equations between starred variables
+    auto run = runModel(
+        "fluid$ = 'R134a'\n"
+        "T_in = 27\nx_in = 1\n"
+        "v_in_cp|star = volume(fluid$, T=T_in, x=x_in)\n"
+        "u_in_cp|star = intenergy(fluid$, T=T_in, x=x_in)\n"
+        "p_in_cp|star = PRESSURE(fluid$, v=v_in_cp|star, u=u_in_cp|star)\n"
+        "h_in_cp|star = enthalpy(fluid$, v=v_in_cp|star, u=u_in_cp|star)\n"
+        "w_in2_cp_v|star = v_in_cp|star * (p_in_cp|star - 100000)\n"
+        "{w_in2_cp=if(p_in_cp;p_ex2_cp;w_in2_cp|star;w_in2_cp|star;w_in2_cp_v)}\n");   // a comment with | is a comment
+    REQUIRE(run.solveOk);
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+    const double p = CoolProp::PropsSI("P", "T", 300.15, "Q", 1, "R134a");
+    CHECK_THAT(run["p_in_cp|star"], WithinRel(p, 1e-4));
+    CHECK_THAT(run["w_in2_cp_v|star"], WithinRel(run["v_in_cp|star"] * (run["p_in_cp|star"] - 100000.0), 1e-12));
+}
+
+TEST_CASE("CS-GAP-NAME-PIPE: the | in every position of the model", "[library-gaps][name-pipe]") {
+    SECTION("routines: parameters, locals, outputs, IF conditions") {
+        auto run = runModel(
+            "FUNCTION f(a|o, b|star)\n  c|loc = a|o*2\n  IF (b|star > 1) THEN f = c|loc + b|star ELSE f = c|loc\nEND\n"
+            "PROCEDURE p(a|o : r|o, s|star)\n  r|o = a|o + 1\n  s|star = a|o*3\nEND\n"
+            "x = f(2, 3)\ny = f(2, 0)\nCALL p(4 : q|o, w|star)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(7.0, 1e-12));
+        CHECK_THAT(run["y"], WithinAbs(4.0, 1e-12));
+        CHECK_THAT(run["q|o"], WithinAbs(5.0, 1e-12));
+        CHECK_THAT(run["w|star"], WithinAbs(12.0, 1e-12));
+        CHECK(run.vars.count("c|loc") == 0);
+    }
+    SECTION("arrays and DUPLICATE") {
+        auto run = runModel("DUPLICATE i = 1, 3\n  G|o[i] = i^2\nEND\ns = G|o[1] + G|o[2] + G|o[3]\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["s"], WithinAbs(14.0, 1e-12));
+        CHECK_THAT(run["G|o[3]"], WithinAbs(9.0, 1e-12));
+    }
+    SECTION("string variables and $IF") {
+        auto run = runModel("mode|a$ = 'ON'\n$IF mode|a$='on'\nx = 1\n$ELSE\nx = 2\n$ENDIF\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(1.0, 1e-12));
+    }
+    SECTION("the state of an INTEGRAL model") {
+        auto run = runIntegral(
+            "T|star = 1 + integral(dTdt|star, t, 0, 1, 0.01)\n"
+            "dTdt|star = -T|star\n"
+            "$IntegralTable t:0.5 T|star\n",
+            [](SolverOptions& o) { o.integralMethod = "RK4"; });
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["T|star"], WithinAbs(std::exp(-1.0), 1e-8));
+        CHECK(run.table.columns() == std::vector<std::string>{"t", "T|star"});
+    }
+    SECTION("an implicit equation between starred variables is solved") {
+        auto run = runModel("x|star^3 + x|star = 10\ny|star = x|star*2\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["x|star"], WithinAbs(2.0, 1e-9));
+    }
+    SECTION("names are case-insensitive") {
+        auto run = runModel("K|STAR = 4\ny = k|Star*2\n");
+        REQUIRE(run.solveOk);
+        CHECK(userVariables(run).size() == 2);
+        CHECK_THAT(run["y"], WithinAbs(8.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-NAME-PIPE: LaTeX output, the | starts a superscript as in EES", "[library-gaps][name-pipe][latex]") {
+    CHECK(variableToLatex("G|o") == "G^{o}");
+    CHECK(variableToLatex("K|star_r_n") == "K^{star}_{r,n}");
+    CHECK(variableToLatex("p_in_cp|star") == "p_{in,cp^{star}}");
+    CHECK(variableToLatex("C|o_m") == "C^{o}_{m}");
+    CHECK(variableToLatex("a||b") == "a^{\\vert{}b}");
+    CHECK(variableToLatex("a|") == "a^{}");
+    const std::string tex = latexOf("K|star_a = 106\nK|star_b = 2*K|star_a\n");
+    CHECK(tex.find("K^{star}_{a}") != std::string::npos);
+    if (havePdflatex()) {
+        std::string log;
+        INFO(log);
+        CHECK(pdflatexCompiles(tex, &log));
+    }
+}
+
+TEST_CASE("CS-GAP-NAME-PIPE: the debug folder keeps the markdown tables intact", "[library-gaps][name-pipe]") {
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_name_pipe_debug";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const std::string code = "K|star_a = 106\nK|star_b = 2*K|star_a\n";
+    { std::ofstream f(dir / "model.eescode"); f << code; }
+    CoolSolveRunner runner((dir / "model.eescode").string());
+    SolverOptions options;
+    REQUIRE(runner.run(options));
+    runner.generateDebugOutput((dir / "debug").string(), code);
+    auto slurp = [&](const char* name) {
+        std::ifstream in(dir / "debug" / name);
+        REQUIRE(in.good());
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    // a raw | in a table cell would add a column: it is written \| (also inside the code span)
+    const std::string variables = slurp("variables.md");
+    CHECK(variables.find("`K\\|star_a`") != std::string::npos);
+    CHECK(variables.find("`K|star_a`") == std::string::npos);
+    const std::string residuals = slurp("coolsolve_residuals.md");
+    CHECK(residuals.find("K\\|star_b") != std::string::npos);
+    // every row of the variable table has the same number of cells as its header
+    std::istringstream rows(variables);
+    std::string row;
+    int checked = 0;
+    while (std::getline(rows, row)) {
+        if (row.rfind("| ", 0) != 0) continue;
+        std::string unescaped;
+        for (size_t i = 0; i < row.size(); ++i) {
+            if (row[i] == '\\' && i + 1 < row.size() && row[i + 1] == '|') { ++i; continue; }
+            unescaped += row[i];
+        }
+        CHECK(std::count(unescaped.begin(), unescaped.end(), '|') == 8);
+        ++checked;
+    }
+    CHECK(checked >= 3);
+    CHECK(slurp("variables.csv").find("\"K|star_a\"") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("CS-GAP-NAME-PIPE: negative tests", "[library-gaps][name-pipe]") {
+    // an operator is not part of a name: a pipe next to one is still a pipe of a name
+    CHECK_FALSE(parseErrors("x = a +| b\n").empty());
+    CHECK_FALSE(parseErrors("x = a || b\n").empty());
+    // a comment is a comment, whatever it holds
+    auto run = runModel("a|b = 1 \"a|b = 5\"\nc = a|b\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["c"], WithinAbs(1.0, 1e-12));
+}
+
+// ---------------------------------------------------------------------------
+// CS-GAP-ACCENTED-IDENT: accented letters and ° in names
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CS-GAP-ACCENTED-IDENT: register reproducer", "[library-gaps][accented-ident]") {
+    // valid EES (the ISO 3046 file of CSL-0151): was "Parse failed: Line 1: Could not parse line"
+    auto run = runModel("T_a_réf = 298\nx = T_a_réf/2\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x"], WithinAbs(149.0, 1e-12));
+    CHECK(run.warnings.empty());   // was a spurious "Unknown function 'p_atm_réf - a*'"
+}
+
+TEST_CASE("CS-GAP-ACCENTED-IDENT: the ISO 3046 pattern with names=value arguments and the reference values (CSL-0151)",
+          "[library-gaps][accented-ident]") {
+    auto run = runModel(
+        "p_atm_réf = 100E3\nT_a_réf = 24.85\nphi_a_réf = 30\n"
+        "p_w_s_réf = pressure(STEAM, T=T_a_réf, x=1)\n"
+        "a = 0.7\nTest_réf = (phi_a_réf/100)*p_w_s_réf\n"
+        "num = p_atm_réf - a*(phi_a_réf/100)*p_w_s_réf\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+    const double ps = CoolProp::PropsSI("P", "T", 24.85 + 273.15, "Q", 1, "Water");
+    CHECK_THAT(run["p_w_s_réf"], WithinRel(ps, 1e-6));
+    CHECK_THAT(run["num"], WithinRel(100e3 - 0.7 * 0.3 * run["p_w_s_réf"], 1e-12));
+}
+
+TEST_CASE("CS-GAP-ACCENTED-IDENT: the degree sign in names (CSL-0158)", "[library-gaps][accented-ident]") {
+    // PROCEDURE Fittings(..., n°_90°elbow_reg, ...) and DELTAp_90°elbow_reg = n°_90°elbow_reg*K_90°elbow_reg*rho_i*(U^2/2)
+    auto run = runModel(
+        "PROCEDURE Fittings(f, U : n°_90°elbow_reg, K_90°elbow_reg)\n"
+        "  n°_90°elbow_reg = f*2\n"
+        "  K_90°elbow_reg = 0.3\n"
+        "END\n"
+        "rho_i = 1.2\nU = 10\n"
+        "CALL Fittings(1, U : n°_90°elbow_reg, K_90°elbow_reg)\n"
+        "DELTAp_90°elbow_reg=n°_90°elbow_reg*K_90°elbow_reg*rho_i*(U^2/2)\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["n°_90°elbow_reg"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["DELTAp_90°elbow_reg"], WithinRel(2.0 * 0.3 * 1.2 * 50.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-ACCENTED-IDENT: accented names in every position", "[library-gaps][accented-ident]") {
+    SECTION("a name that starts with a non-ASCII letter") {
+        auto run = runModel("é_x = 3\nÉnergie = é_x*2\nàb = É_X + 1\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["Énergie"], WithinAbs(6.0, 1e-12));
+        CHECK_THAT(run["àb"], WithinAbs(4.0, 1e-12));
+        CHECK(userVariables(run).size() == 3);   // é_x and É_X are one variable
+    }
+    SECTION("routines, locals, CALL outputs, arrays") {
+        auto run = runModel(
+            "FUNCTION fé(a_réf, b)\n  c_loc_é = a_réf*b\n  fé = c_loc_é + 1\nEND\n"
+            "PROCEDURE pé(a_réf : r_éq)\n  r_éq = a_réf + 1\nEND\n"
+            "x = fé(2, 3)\nCALL pé(4 : q_éq)\n"
+            "DUPLICATE i = 1, 3\n  T_réf[i] = i*10\nEND\ns = T_réf[1] + T_réf[3]\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(7.0, 1e-12));
+        CHECK_THAT(run["q_éq"], WithinAbs(5.0, 1e-12));
+        CHECK_THAT(run["s"], WithinAbs(40.0, 1e-12));
+        CHECK_THAT(run["T_réf[2]"], WithinAbs(20.0, 1e-12));
+    }
+    SECTION("string variable and $IF, accents in the value too") {
+        auto run = runModel(
+            "régime$ = 'Été'\n"
+            "$IF régime$='ÉTÉ'\nx = 1\n$ELSE\nx = 2\n$ENDIF\n"
+            "$IF RÉGIME$='hiver'\ny = 1\n$ELSE\ny = 2\n$ENDIF\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["y"], WithinAbs(2.0, 1e-12));
+    }
+    SECTION("the state of an INTEGRAL model and its CSV") {
+        auto run = runIntegral(
+            "T_réf = 1 + integral(dTdt_réf, t, 0, 1, 0.01)\n"
+            "dTdt_réf = -T_réf\n"
+            "$IntegralTable t:0.5 T_réf\n",
+            [](SolverOptions& o) { o.integralMethod = "RK4"; });
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["T_réf"], WithinAbs(std::exp(-1.0), 1e-8));
+        CHECK(run.table.toCSV().rfind("t,T_réf", 0) == 0);
+        // the state is the same variable in any case (the equations, the integration variable)
+        auto upper = runIntegral(
+            "T_RÉF = 1 + integral(DTDT_RÉF, T, 0, 1, 0.01)\n"
+            "dTdt_réf = -t_réf\n"
+            "$IntegralTable t:0.5 T_réf\n",
+            [](SolverOptions& o) { o.integralMethod = "RK4"; });
+        REQUIRE(upper.solveOk);
+        CHECK_THAT(upper["T_réf"], WithinAbs(std::exp(-1.0), 1e-8));
+    }
+    SECTION("the iterator of DUPLICATE is compared like any other name") {
+        auto run = runModel("DUPLICATE ï = 1, 2\n  Y[Ï] = ï*3\nEND\ns = Y[1] + Y[2]\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["s"], WithinAbs(9.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-ACCENTED-IDENT: names stay case-insensitive with accented letters", "[library-gaps][accented-ident]") {
+    auto run = runModel("T_a_réf = 298\nx = T_A_RÉF + 1\ny = t_a_RÉf * 2\n");
+    REQUIRE(run.solveOk);
+    CHECK(userVariables(run).size() == 3);   // T_a_réf, x, y: the three spellings are one variable
+    CHECK_THAT(run["x"], WithinAbs(299.0, 1e-12));
+    CHECK_THAT(run["y"], WithinAbs(596.0, 1e-12));
+    // the comparator of every name map, and the helper shared with the string comparisons
+    CaseInsensitiveLess less;
+    CHECK_FALSE(less("T_a_réf", "T_A_RÉF"));
+    CHECK_FALSE(less("T_A_RÉF", "T_a_réf"));
+    CHECK(less("e", "é"));          // distinct letters stay distinct, and the order is a strict one
+    CHECK_FALSE(less("é", "e"));
+    CHECK(less("f", "é"));        // by UTF-8 bytes: after every ASCII letter
+    CHECK(less("abc", "ABCD"));
+    CHECK_FALSE(less("ABCD", "abc"));
+    CHECK(less("a", "ä"));
+    CHECK_FALSE(less("ä", "Ä"));
+    CHECK_FALSE(less("Ä", "ä"));
+    CHECK(eesStringEqual("n°_90°elbow", "N°_90°ELBOW"));
+    CHECK_FALSE(eesStringEqual("n°", "n"));
+    CHECK(eesFoldCase("T_A_RÉF°Ç") == "t_a_réf°ç");
+    CHECK(eesFoldCase("ÀÖÞß×ÿ") == "àöþß×ÿ");   // × is not a letter, ß and ÿ have no capital in Latin-1
+    // a std::map keyed with it finds any spelling
+    std::map<std::string, int, CaseInsensitiveLess> m;
+    m["Détarage"] = 1;
+    CHECK(m.count("DÉTARAGE") == 1);
+    CHECK(m.count("détarage") == 1);
+    CHECK(m.count("Detarage") == 0);
+}
+
+TEST_CASE("CS-GAP-ACCENTED-IDENT: .initials, solution file and JSON in UTF-8", "[library-gaps][accented-ident]") {
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_accented_files";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    EESParser parser;
+    auto parsed = parser.parse("T_a_réf = 298\nn°_90°elbow = T_a_réf/2\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    { std::ofstream f(dir / "m.initials"); f << "t_A_RÉF = 300 \"K\"\nn°_90°elbow = 150\n"; }   // any case
+    CHECK(ir.loadInitialsFromFile((dir / "m.initials").string()) == 2);
+    CHECK_THAT(*ir.getVariable("T_a_réf")->solutionValue, WithinAbs(300.0, 1e-12));
+    CHECK(ir.getVariable("T_a_réf")->units == "K");
+    // valid UTF-8 JSON
+    const std::string json = ir.toJSON();
+    CHECK(json.find("\"T_a_réf\"") != std::string::npos);
+    CHECK(json.find("n°_90°elbow") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("CS-GAP-ACCENTED-IDENT: LaTeX output, accents and ° are typeset in math mode", "[library-gaps][accented-ident][latex]") {
+    CHECK(variableToLatex("T_a_réf") == "T_{a,r\\text{é}f}");
+    CHECK(variableToLatex("n°_90°elbow_reg") == "n{}^{\\circ}_{90{}^{\\circ}elbow,reg}");
+    CHECK(variableToLatex("Énergie") == "\\text{É}nergie");
+    CHECK(variableToLatex("µ_x") == "\\mu_{x}");
+    const std::string tex = latexOf(
+        "T_a_réf = 298\nx_réf = T_a_réf/2\nn°_90°elbow_reg = 2\nK_90°elbow = 0.5\nD = n°_90°elbow_reg*K_90°elbow\n");
+    CHECK(tex.find("T_{a,r\\text{é}f}") != std::string::npos);
+    CHECK(tex.find("n{}^{\\circ}") != std::string::npos);
+    if (havePdflatex()) {
+        std::string log;
+        INFO(log);
+        CHECK(pdflatexCompiles(tex, &log));
+    }
+}
+
+TEST_CASE("CS-GAP-ACCENTED-IDENT: negative tests, characters that stay invalid give a clear error", "[library-gaps][accented-ident]") {
+    SECTION("letters outside Latin-1 and symbols that are not part of a name") {
+        CHECK(anyContains(parseErrors("Δp = 3\n"), "Invalid variable name 'Δp': the character 'Δ'"));
+        CHECK(anyContains(parseErrors("x = a×b\n"), "Invalid variable name 'a×b': the character '×'"));
+        CHECK(anyContains(parseErrors("x = a−b\n"), "Invalid variable name 'a−b': the character '−'"));   // U+2212 minus sign
+        CHECK(anyContains(parseErrors("x = a\xC2\xA0+ b\n"), "Invalid variable name"));                  // a non-breaking space
+        CHECK(anyContains(parseErrors("x_€ = 3\n"), "the character '€'"));
+    }
+    SECTION("a file saved in Latin-1 is not UTF-8: the byte is named") {
+        const auto errors = parseErrors("T_a_r\xE9" "f = 298\n");   // é in Latin-1
+        REQUIRE_FALSE(errors.empty());
+        CHECK(anyContains(errors, "not valid UTF-8"));
+        CHECK(anyContains(errors, "0xE9"));
+    }
+    SECTION("accented text in comments, strings and units is not a name") {
+        auto run = runModel("x = 3 \"température [°C]\"\n{commentaire é}\ny$ = 'Été'\nz = 3 [°C]\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.strings.at("y$") == "Été");
+    }
+    SECTION("a keyword followed by accents is a name") {
+        auto run = runModel("ifé = 3\ncallé = ifé + 1\nendé = callé*2\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["endé"], WithinAbs(8.0, 1e-12));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CS-BUG-HASH-IDENT: `#` inside a name
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CS-BUG-HASH-IDENT: register reproducer, the local Nusselt number of a procedure", "[library-gaps][hash-ident]") {
+    // EES: yv = 6. Was a silent drop of the assignment inside the body (yv = 1), a parse error outside.
+    auto run = runModel(
+        "procedure th(x:y, z)\n"
+        "Nu#_f = 2*x\n"
+        "y = Nu#_f\n"
+        "z = 1\n"
+        "end\n"
+        "x = 3\n"
+        "call th(x: yv, zv)\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["yv"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["zv"], WithinAbs(1.0, 1e-12));
+    // the same two lines in the main program
+    auto main = runModel("Nu#_f = 6\ny = Nu#_f\n");
+    REQUIRE(main.solveOk);
+    CHECK_THAT(main["y"], WithinAbs(6.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-HASH-IDENT: the martin procedure pattern (CSL-0111, CSL-0161)", "[library-gaps][hash-ident]") {
+    // h = Nu#_f*k/d_h with Nu#_f = Pr^(1/3)*(mu/mu_w)^(1/6)*0.122*(xi*Re^2*sin(2*beta))^0.374
+    auto run = runModel(
+        "PROCEDURE martin(Re_f, Pr_f, mu_f, mu_w, xi, beta, k_f, d_h : h_f)\n"
+        "  Nu#_f = Pr_f^(1/3)*(mu_f/mu_w)^(1/6)*0.122*(xi*Re_f^2*sin(2*beta))^(0.374)\n"
+        "  h_f = Nu#_f*k_f/d_h\n"
+        "END\n"
+        "beta = 60\nCALL martin(500, 3.5, 8e-4, 7e-4, 0.3, beta, 0.6, 0.004 : h)\n"
+        "Nu#_f = h*0.004/0.6\n");   // and a variable of the main program with the same name
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const double nu = std::pow(3.5, 1.0 / 3.0) * std::pow(8e-4 / 7e-4, 1.0 / 6.0) * 0.122 *
+                      std::pow(0.3 * 500.0 * 500.0 * std::sin(2.0 * 60.0 * M_PI / 180.0), 0.374);
+    CHECK_THAT(run["h"], WithinRel(nu * 0.6 / 0.004, 1e-12));
+    CHECK_THAT(run["Nu#_f"], WithinRel(nu, 1e-12));   // the local of the procedure and the global do not mix
+}
+
+TEST_CASE("CS-BUG-HASH-IDENT: the built-in constants are unchanged", "[library-gaps][hash-ident]") {
+    auto run = runModel("x = g#*2\ny = pi\ng#a = 3\nz = g#a + g#\nTableRun#_x = 5\nw = tablerun#_x\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(2.0 * 9.80665, 1e-12));
+    CHECK_THAT(run["y"], WithinAbs(M_PI, 1e-15));
+    CHECK_THAT(run["z"], WithinAbs(3.0 + 9.80665, 1e-12));
+    CHECK_THAT(run["w"], WithinAbs(5.0, 1e-15));
+    // g# is the constant, g#a is a variable
+    CHECK(run.vars.count("g#a") == 1);
+}
+
+TEST_CASE("CS-BUG-HASH-IDENT: # in a name does not start a comment in .initials and .sol", "[library-gaps][hash-ident]") {
+    // the readers cut a line at '#': the name was truncated and the value lost
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_hash_files";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    EESParser parser;
+    auto parsed = parser.parse("Nu#_f = 6\ny = Nu#_f*2\nR#2 = y\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    {
+        std::ofstream f(dir / "m.initials");
+        f << "# initial values\n"
+          << "Nu#_f = 4.5e+00 \"-\"\n"
+          << "  y = 9 # comment after a space\n"
+          << "R#2 = 3#glued comment\n"
+          << "# R#2 = 100\n";
+    }
+    CHECK(ir.loadInitialsFromFile((dir / "m.initials").string()) == 3);
+    CHECK_THAT(*ir.getVariable("Nu#_f")->solutionValue, WithinAbs(4.5, 1e-15));
+    CHECK_THAT(*ir.getVariable("y")->solutionValue, WithinAbs(9.0, 1e-15));
+    CHECK_THAT(*ir.getVariable("R#2")->solutionValue, WithinAbs(3.0, 1e-15));
+    fs::remove_all(dir);
+}
+
+TEST_CASE("CS-BUG-HASH-IDENT: # in a name, in routines, arrays, $IF and INTEGRAL states", "[library-gaps][hash-ident]") {
+    SECTION("function with # parameters and local, IF condition") {
+        auto run = runModel(
+            "FUNCTION f(Re#, n#)\n  c# = Re#*n#\n  IF (c# > 5) THEN f = c# ELSE f = -c#\nEND\n"
+            "x = f(2, 3)\ny = f(1, 3)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(6.0, 1e-12));
+        CHECK_THAT(run["y"], WithinAbs(-3.0, 1e-12));
+    }
+    SECTION("arrays and string variables") {
+        auto run = runModel(
+            "DUPLICATE i = 1, 2\n  Nu#[i] = i*4\nEND\ns = Nu#[1] + Nu#[2]\n"
+            "fluid#$ = 'Water'\n$IF fluid#$='water'\nx = 1\n$ELSE\nx = 2\n$ENDIF\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["s"], WithinAbs(12.0, 1e-12));
+        CHECK_THAT(run["x"], WithinAbs(1.0, 1e-12));
+    }
+    SECTION("INTEGRAL state") {
+        auto run = runIntegral(
+            "T#_f = 1 + integral(dT#_f, t, 0, 1, 0.01)\ndT#_f = -T#_f\n$IntegralTable t:0.5 T#_f\n",
+            [](SolverOptions& o) { o.integralMethod = "RK4"; });
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["T#_f"], WithinAbs(std::exp(-1.0), 1e-8));
+    }
+    SECTION("names are case-insensitive") {
+        auto run = runModel("NU#_F = 4\ny = nu#_f*2\n");
+        REQUIRE(run.solveOk);
+        CHECK(userVariables(run).size() == 2);
+        CHECK_THAT(run["y"], WithinAbs(8.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-BUG-HASH-IDENT: LaTeX output escapes the #", "[library-gaps][hash-ident][latex]") {
+    CHECK(variableToLatex("Nu#_f") == "Nu\\#_{f}");
+    CHECK(variableToLatex("Nu#") == "Nu\\#");
+    const std::string tex = latexOf("Nu#_f = 6\ny = Nu#_f*2\n");
+    CHECK(tex.find("Nu\\#_{f}") != std::string::npos);
+    if (havePdflatex()) {
+        std::string log;
+        INFO(log);
+        CHECK(pdflatexCompiles(tex, &log));
+    }
+}
+
+TEST_CASE("CS-BUG-HASH-IDENT: negative tests", "[library-gaps][hash-ident]") {
+    // a name starts with a letter
+    CHECK(anyContains(parseErrors("#x = 3\n"), "Invalid variable name '#x'"));
+    // a body that cannot be parsed is still loud (CS-BUG-BODY-LINE-DROP)
+    CHECK(anyContains(parseErrors("FUNCTION f(a)\n  f = a@#\nEND\ny = f(1)\n"), "Invalid variable name"));
+}
+
+// ---------------------------------------------------------------------------
+// The rest of the family: \ in names, keywords next to the new characters, the quote
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CS-GAP-NAME-SYMBOL: a backslash inside a name (EES namespace separator) works and is typeset", "[library-gaps][name-symbol][latex]") {
+    // dU\dtau and time_h\day: names of the EES files of the collection
+    auto run = runModel("dU\\dtau = 3\ntime_h\\day = 2\nq = dU\\dtau*time_h\\day\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["q"], WithinAbs(6.0, 1e-12));
+    CHECK(variableToLatex("dU\\dtau") == "dU\\backslash{}dtau");
+    CHECK(variableToLatex("time_h\\day") == "time_{h\\backslash{}day}");
+    const std::string tex = latexOf("dU\\dtau = 3\ntime_h\\day = 2\nq = dU\\dtau*time_h\\day\n");
+    if (havePdflatex()) {
+        std::string log;
+        INFO(log);
+        CHECK(pdflatexCompiles(tex, &log));
+    }
+    // a backslash at the end of a name, or before a digit, is not a namespace separator
+    CHECK_FALSE(parseErrors("a\\ = 3\n").empty());
+}
+
+TEST_CASE("CS-GAP-NAME-SYMBOL: a keyword followed by one of the new characters is a name", "[library-gaps][name-symbol]") {
+    // CALL%, IF|, FUNCTION# ... start with a keyword but are variables
+    auto run = runModel(
+        "call% = 1\nif|x = 2\nfunction#a = 3\nduplicate% = 4\nrepeat|n = 5\nmodule° = 6\nsubprogram#1 = 7\n"
+        "s = call%+if|x+function#a+duplicate%+repeat|n+module°+subprogram#1\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["s"], WithinAbs(28.0, 1e-12));
+    // inside a routine too
+    auto body = runModel(
+        "FUNCTION f(a)\n  if% = a*2\n  end|x = if% + 1\n  f = end|x\nEND\ny = f(3)\n");
+    REQUIRE(body.solveOk);
+    CHECK_THAT(body["y"], WithinAbs(7.0, 1e-12));
+    // the keywords themselves are unchanged
+    auto kw = runModel("FUNCTION f(a)\n  IF (a > 1) THEN f = 1 ELSE f = 2\nEND\ny = f(3)\n");
+    REQUIRE(kw.solveOk);
+    CHECK_THAT(kw["y"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-NAME-SYMBOL: LaTeX of a whole report with every kind of name compiles", "[library-gaps][name-symbol][latex]") {
+    if (!havePdflatex()) SKIP("pdflatex is not installed");
+    const std::string tex = latexOf(
+        "C% = 0.5\nH% = 0.06\nO% = 1-C%-H%\nm_boil = C%/12\n"
+        "K|star_a = 106\nK|star_b = 2*K|star_a\nG|o_m = 3\n"
+        "T_a_réf = 298\nx_réf = T_a_réf/2\nn°_90°elbow_reg = 2\nK_90°elbow = 0.5\nD_90°elbow = n°_90°elbow_reg*K_90°elbow\n"
+        "Nu#_f = 6\ny = Nu#_f*2\n"
+        "dU\\dtau = 3\nq = dU\\dtau*2\n"
+        "fluid%$ = 'R134a'\nh%q = enthalpy(fluid%$, T=300, x=0)\nÉnergie|2 = 3\nµ_x = 2\n"
+        "X%[1] = 1\nX%[2] = X%[1]*2\n");
+    std::string log;
+    INFO(log);
+    CHECK(pdflatexCompiles(tex, &log));
 }

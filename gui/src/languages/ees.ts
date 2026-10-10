@@ -61,8 +61,8 @@ export function registerEESLanguage(monaco: typeof Monaco) {
         [/\d+\.?\d*([eE][+-]?\d+)?/, 'number'],
         [/\.\d+([eE][+-]?\d+)?/, 'number'],
 
-        // Identifiers
-        [/[a-zA-Z_]\w*/, {
+        // Identifiers: letters (accented ones too), digits, _ and the symbols % | # \ ° of EES names
+        [/[a-zA-Z_\u00C0-\u00FF][\w%|#\\\u00B0\u00B2\u00B3\u00B5\u00B9\u00C0-\u00FF]*/, {
           cases: {
             '@keywords': 'keyword',
             '@typeKeywords': 'type.identifier',
@@ -101,7 +101,7 @@ export function registerEESLanguage(monaco: typeof Monaco) {
 
       array: [
         [/\d+/, 'number'],
-        [/[a-zA-Z_]\w*/, 'identifier'],
+        [/[a-zA-Z_\u00C0-\u00FF][\w%|#\\\u00B0\u00B2\u00B3\u00B5\u00B9\u00C0-\u00FF]*/, 'identifier'],
         [/\]/, 'delimiter.bracket', '@pop'],
         [/[+\-*/]/, 'operator'],
       ],

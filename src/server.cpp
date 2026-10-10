@@ -21,6 +21,7 @@
 
 #include <iostream>
 #include <fstream>
+#include <cstring>
 #include <sstream>
 #include <filesystem>
 #include <mutex>
@@ -1967,8 +1968,9 @@ int startServer(const ServerOptions& options) {
                                               double newValue) -> std::string {
                     std::string escapedName;
                     for (char c : varName) {
-                        if (c == '[' || c == ']' || c == '(' || c == ')' || 
-                            c == '.' || c == '+' || c == '*' || c == '?') {
+                        // every character that is special in a regex, `|` and `\` included: both are
+                        // characters of EES names (K|star, dU\dtau)
+                        if (std::strchr("[](){}.+*?|^$\\", c) != nullptr && c != '\0') {
                             escapedName += '\\';
                         }
                         escapedName += c;

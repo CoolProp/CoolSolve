@@ -22,6 +22,7 @@
  * zero-width interval and evaluates to 0, so `y(t0)` falls out of the algebraic
  * solve at the first step (handled by `IntegralSolver`).
  */
+#include "coolsolve/ees_string.h"
 #include "coolsolve/integral/integral_problem.h"
 
 #include "coolsolve/ir.h"
@@ -40,12 +41,8 @@ namespace {
 
 // ---- small helpers ---------------------------------------------------------
 
-std::string toLower(const std::string& s) {
-    std::string o(s.size(), '\0');
-    std::transform(s.begin(), s.end(), o.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return o;
-}
+// Names are compared as EES does: without regard to case, accented letters included
+std::string toLower(const std::string& s) { return eesFoldCase(s); }
 
 /// Find the first `INTEGRAL(...)` FunctionCall in `expr` (depth-first).
 /// Returns nullptr if none.

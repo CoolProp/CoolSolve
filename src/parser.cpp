@@ -1,6 +1,7 @@
 #include "coolsolve/parser.h"
 #include "coolsolve/conditional_directives.h"
 #include "coolsolve/diagnostic.h"
+#include "coolsolve/ees_string.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/units.h"
 #include "coolsolve/user_hints.h"
@@ -9,6 +10,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <iostream>
 #include <set>
 #include <unordered_set>
@@ -46,6 +48,92 @@ static bool isEESThermophysicalFunction(const std::string& name) {
     std::string lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
     return EES_THERMOPHYSICAL_FUNCTIONS.find(lower) != EES_THERMOPHYSICAL_FUNCTIONS.end();
+}
+
+// ============================================================================
+// Characters of variable names (EES help, "Variable names")
+// ============================================================================
+// A name starts with a letter or an underscore and holds letters, digits, `_` and the
+// symbols `%`, `|` and `#` (`C%`, `K|star_r`, `Nu#_f`); `\` may join two parts of a name
+// (`dU\dtau`), `$` ends a string variable. Letters are ASCII or the letters of Latin-1 in UTF-8
+// (`réf`), and `°`, `µ`, `²`, `³`, `¹` may follow (`n°_90°elbow`), see ees_string.h.
+
+/// True when a name can start with the character at s[i]: a letter or an underscore.
+static bool nameStartsAt(const std::string& s, size_t i) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c < 0x80) return std::isalpha(c) || c == '_';
+    bool letter = false;
+    return eesNonAsciiNameCharLength(s, i, &letter) > 0 && letter;
+}
+
+/// Position of the first character of `s` that a name cannot hold; npos when `s` is a valid name.
+static size_t firstInvalidNameChar(const std::string& s) {
+    if (s.empty() || !nameStartsAt(s, 0)) return 0;
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c >= 0x80) {
+            const size_t len = eesNonAsciiNameCharLength(s, i);
+            if (len == 0) return i;
+            i += len;
+            continue;
+        }
+        if (c == '$') {
+            if (i != s.size() - 1) return i;                  // only at the end (string variable)
+        } else if (c == '\\') {
+            if (i + 1 >= s.size() || !nameStartsAt(s, i + 1)) return i;   // joins two parts of a name
+        } else if (!std::isalnum(c) && c != '_' && c != '%' && c != '|' && c != '#') {
+            return i;
+        }
+        ++i;
+    }
+    return std::string::npos;
+}
+
+/// "the character 'x'" for the character of `s` at `i`, or the byte when it is not valid UTF-8.
+static std::string describeCharAt(const std::string& s, size_t i) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c < 0x80) return std::string("the character '") + s[i] + "'";
+    const size_t len = c >= 0xF0 && c <= 0xF4 ? 4 : c >= 0xE0 && c < 0xF0 ? 3 : c >= 0xC2 && c < 0xE0 ? 2 : 0;
+    bool valid = len > 0 && i + len <= s.size();
+    unsigned cp = len == 2 ? (c & 0x1Fu) : len == 3 ? (c & 0x0Fu) : (c & 0x07u);
+    for (size_t k = 1; valid && k < len; ++k) {
+        const unsigned char cc = static_cast<unsigned char>(s[i + k]);
+        valid = (cc & 0xC0) == 0x80;
+        cp = (cp << 6) | (cc & 0x3Fu);
+    }
+    char buf[128];
+    if (!valid) {
+        std::snprintf(buf, sizeof buf, "the byte 0x%02X, which is not valid UTF-8 (save the model as a UTF-8 file),", c);
+        return buf;
+    }
+    std::snprintf(buf, sizeof buf, "' (U+%04X)", cp);
+    return "the character '" + s.substr(i, len) + buf;
+}
+
+/// Why `token` (no blank in it) is neither a number nor a valid name; empty when the token does
+/// not look like a name at all (the caller then keeps its generic message).
+static std::string invalidNameMessage(const std::string& token) {
+    if (token.empty() || token.find_first_of(" \t") != std::string::npos || token.find("..") != std::string::npos)
+        return "";   // not a name: an expression, or a range i..j of an array
+    const size_t bad = firstInvalidNameChar(token);
+    if (bad == std::string::npos) return "";
+    bool wordLike = false;   // holds a letter, a digit or a non-ASCII character
+    for (unsigned char c : token) wordLike = wordLike || std::isalnum(c) || c >= 0x80;
+    if (!wordLike) return "";
+    const unsigned char first = static_cast<unsigned char>(token[0]);
+    const std::string quoted = "'" + token + "'";
+    if (bad == 0 && (std::isdigit(first) || first == '.')) return "";   // a number, or a range 1..5 of an array
+    if (bad == 0 && first < 0x80 && !std::isalpha(first) && first != '_') {
+        if (std::string("%|#\\$@&~?!").find(token[0]) == std::string::npos) return "";
+        return "Invalid variable name " + quoted + ": a name must start with a letter or an underscore";
+    }
+    const unsigned char c = static_cast<unsigned char>(token[bad]);
+    if (c == '$') return "Invalid variable name " + quoted + ": '$' can only end a name (a string variable)";
+    if (c == '\\')
+        return "Invalid variable name " + quoted + ": '\\' must be followed by a letter or an underscore";
+    const std::string what = describeCharAt(token, bad);
+    if (c >= 0x80 && what.find("not valid UTF-8") != std::string::npos) return "Invalid variable name: " + what;
+    return "Invalid variable name " + quoted + ": " + what + " is not allowed in a name";
 }
 
 // ============================================================================
@@ -183,8 +271,7 @@ private:
             auto isKeyword = [&](const std::string& kw) {
                 if (upper.find(kw) != 0) return false;
                 if (upper.size() == kw.size()) return true;
-                char next = upper[kw.size()];
-                return !std::isalnum(static_cast<unsigned char>(next)) && next != '_';
+                return !isIdentChar(upper[kw.size()]);
             };
 
             if (isKeyword("MODULE") || 
@@ -398,9 +485,22 @@ private:
     // statement parsers to emit a specific diagnostic instead of the generic
     // "Could not parse line". The first message is kept: it is that of the innermost call.
     std::string pendingExpressionError_;
+    // Why a name was refused (invalidNameMessage): added to the specific message above, or
+    // alone, so that a character EES takes in a name and CoolSolve does not is named.
+    std::string pendingNameHint_;
 
     void setExpressionError(const std::string& message) {
         if (pendingExpressionError_.empty()) pendingExpressionError_ = message;
+    }
+    void clearExpressionError() {
+        pendingExpressionError_.clear();
+        pendingNameHint_.clear();
+    }
+    /// The diagnostic to report for an expression that cannot be parsed; empty when nothing specific is known.
+    std::string expressionErrorText() const {
+        if (pendingNameHint_.empty()) return pendingExpressionError_;
+        if (pendingExpressionError_.empty()) return pendingNameHint_;
+        return pendingExpressionError_ + "; " + pendingNameHint_;
     }
     // > 0 while the body of a FUNCTION/PROCEDURE is being parsed (IF ... THEN
     // statements are only valid there).
@@ -1041,8 +1141,7 @@ private:
             auto isBodyKeyword = [&](const std::string& kw) {
                 if (upperBody.find(kw) != 0) return false;
                 if (upperBody.size() == kw.size()) return true;
-                char next = upperBody[kw.size()];
-                return !std::isalnum(static_cast<unsigned char>(next)) && next != '_';
+                return !isIdentChar(upperBody[kw.size()]);
             };
 
             // END, possibly followed by a comment ("END // end of the function")
@@ -1174,8 +1273,11 @@ private:
         "IF ... THEN statements are only allowed inside FUNCTION and PROCEDURE bodies "
         "(in the main program use the IF(cond, a, b) or IF(A, B, X, Y, Z) function)";
 
+    // A character that can be part of a name (see firstInvalidNameChar): a keyword is a keyword only
+    // when none follows it. Bytes >= 0x80 are the UTF-8 letters and symbols of names.
     static bool isIdentChar(char c) {
-        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$' || c == '#';
+        const unsigned char u = static_cast<unsigned char>(c);
+        return std::isalnum(u) || u >= 0x80 || c == '_' || c == '$' || c == '#' || c == '%' || c == '|' || c == '\\';
     }
 
     // Position (>= from) of the whole-word, case-insensitive keyword `kw`
@@ -1298,11 +1400,11 @@ private:
             return "";
         }
         const std::string condText = trim(ifText.substr(2, thenPos - 2));
-        pendingExpressionError_.clear();
+        clearExpressionError();
         ExprPtr cond = parseCondition(condText, ifLine);
         if (!cond)
             result.errors.push_back({ifLine, 0, "Could not parse IF condition '" + condText + "'"
-                                     + (pendingExpressionError_.empty() ? "" : ": " + pendingExpressionError_), srcLine});
+                                     + (expressionErrorText().empty() ? "" : ": " + expressionErrorText()), srcLine});
 
         std::vector<StmtPtr> thenBranch, elseBranch;
         std::string premature;
@@ -1437,8 +1539,7 @@ private:
             }
             if (isNumber) {
                 spec.outputInterval = value;
-            } else if (!interval.empty() &&
-                       (std::isalpha(static_cast<unsigned char>(interval[0])) || interval[0] == '_')) {
+            } else if (!interval.empty() && nameStartsAt(interval, 0)) {
                 spec.outputIntervalVar = interval;   // a variable set to a constant (EES)
             } else {
                 spec.errorMessage = "invalid output interval '" + interval + "'";
@@ -1626,7 +1727,7 @@ private:
     // `errorMsg`, when given, receives the reason why a CALL statement was refused
     // (an argument that cannot be parsed, an output that is not a variable).
     StmtPtr tryParseProcedureCall(const std::string& line, int lineNum, std::string* errorMsg = nullptr) {
-        pendingExpressionError_.clear();
+        clearExpressionError();
         std::string cleaned = removeInlineComments(line);
         cleaned = trim(cleaned);
         
@@ -1692,7 +1793,7 @@ private:
         
         // A faulty argument refuses the whole statement (it is never skipped)
         auto refuse = [&](const std::string& fallback) -> StmtPtr {
-            if (errorMsg) *errorMsg = pendingExpressionError_.empty() ? fallback : pendingExpressionError_;
+            if (errorMsg) *errorMsg = expressionErrorText().empty() ? fallback : expressionErrorText();
             return nullptr;
         };
 
@@ -1740,7 +1841,7 @@ private:
     StmtPtr tryParseEquationOrAssignment(const std::string& line, int lineNum,
                                         std::string* errorMsg = nullptr) {
         // Clear any stale expression error from a previous call.
-        pendingExpressionError_.clear();
+        clearExpressionError();
 
         // Remove inline comments first, extracting any "" comment
         std::string inlineComment;
@@ -1822,8 +1923,8 @@ private:
         
         if (!lhs || !rhs) {
             // Propagate a specific message from parseFunctionCall if available.
-            if (errorMsg && !pendingExpressionError_.empty())
-                *errorMsg = pendingExpressionError_;
+            if (errorMsg && !expressionErrorText().empty())
+                *errorMsg = expressionErrorText();
             return nullptr;
         }
         
@@ -2329,6 +2430,9 @@ private:
             return makeVariable(trimmed, lineNum);
         }
         
+        // Say why a name is refused (a character EES does not take in a name, a Latin-1 file)
+        const std::string why = invalidNameMessage(trimmed);
+        if (!why.empty() && pendingNameHint_.empty()) pendingNameHint_ = why;
         return nullptr;
     }
 
@@ -2567,39 +2671,7 @@ private:
     }
     
     bool isIdentifier(const std::string& s) {
-        if (s.empty()) return false;
-        
-        // First character must be a letter or underscore
-        char first = s[0];
-        if (!std::isalpha(static_cast<unsigned char>(first)) && first != '_') {
-            return false;
-        }
-        
-        // Check remaining characters
-        for (size_t i = 1; i < s.size(); ++i) {
-            char c = s[i];
-            // $ is only allowed as the last character (for string variables)
-            if (c == '$') {
-                if (i != s.size() - 1) return false;
-            } 
-            // # is only allowed as the last character (for constants)
-            else if (c == '#') {
-                if (i != s.size() - 1) return false;
-            }
-            // \ is an EES namespace separator (e.g. FF\V_s) — allowed in
-            // the middle but not at the end; the character after it must
-            // start a new identifier segment (letter or underscore).
-            else if (c == '\\') {
-                if (i == s.size() - 1) return false;  // not at end
-                char next = s[i + 1];
-                if (!std::isalpha(static_cast<unsigned char>(next)) && next != '_') return false;
-            }
-            else if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
-                return false;
-            }
-        }
-        
-        return true;
+        return firstInvalidNameChar(s) == std::string::npos;
     }
     
     std::string trim(const std::string& s) {

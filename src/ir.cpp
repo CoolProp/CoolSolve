@@ -31,11 +31,7 @@ static ExprPtr cloneExprWithSubstitution(const ExprPtr& expr, const std::string&
     } else if (expr->is<Variable>()) {
         const auto& var = expr->as<Variable>();
         // Check if this variable IS the iterator variable (bare reference, no indices)
-        std::string upperName = var.name;
-        std::transform(upperName.begin(), upperName.end(), upperName.begin(), ::toupper);
-        std::string upperIter = iteratorVar;
-        std::transform(upperIter.begin(), upperIter.end(), upperIter.begin(), ::toupper);
-        if (upperName == upperIter && var.indices.empty()) {
+        if (eesStringEqual(var.name, iteratorVar) && var.indices.empty()) {
             result->node = NumberLiteral{value};
         } else {
             Variable newVar;
@@ -625,10 +621,13 @@ int IR::loadSolutionFromFile(const std::string& filePath) {
     std::string line;
     
     while (std::getline(file, line)) {
-        // Remove comments
-        size_t commentPos = line.find('#');
-        if (commentPos != std::string::npos) {
-            line = line.substr(0, commentPos);
+        // Remove comments: a '#' that starts the line or follows a blank (a '#' is also a character
+        // of names: Nu#_f = 6.2)
+        for (size_t k = 0; k < line.size(); ++k) {
+            if (line[k] == '#' && (k == 0 || std::isspace(static_cast<unsigned char>(line[k - 1])))) {
+                line.erase(k);
+                break;
+            }
         }
         
         // Trim whitespace
@@ -698,6 +697,75 @@ int IR::loadSolutionFromFile(const std::string& filePath) {
 // LaTeX Generation
 // ============================================================================
 
+std::string escapeLatexText(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() * 2);
+    for (char c : s) {
+        switch (c) {
+            case '&':  out += "\\&";  break;
+            case '%':  out += "\\%";  break;
+            case '$':  out += "\\$";  break;
+            case '#':  out += "\\#";  break;
+            case '_':  out += "\\_";  break;
+            case '{':  out += "\\{";  break;
+            case '}':  out += "\\}";  break;
+            case '~':  out += "\\textasciitilde{}"; break;
+            case '^':  out += "\\textasciicircum{}"; break;
+            case '\\': out += "\\textbackslash{}"; break;
+            default:   out += c;
+        }
+    }
+    return out;
+}
+
+std::string escapeLatexMath(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() * 2);
+    for (size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        switch (c) {
+            case '&':  out += "\\&";  break;
+            case '%':  out += "\\%";  break;
+            case '$':  out += "\\$";  break;
+            case '#':  out += "\\#";  break;
+            case '{':  out += "\\{";  break;
+            case '}':  out += "\\}";  break;
+            case '|':  out += "\\vert{}"; break;
+            case '~':  out += "\\sim{}"; break;
+            case '^':  out += "\\hat{}"; break;
+            case '\\': out += "\\backslash{}"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x80) { out += c; break; }
+                // UTF-8: the characters accepted in names (ees_string.h); `\text` needs amsmath
+                bool letter = false;
+                const size_t len = eesNonAsciiNameCharLength(s, i, &letter);
+                if (len == 0) { out += c; break; }
+                const std::string ch = s.substr(i, len);
+                i += len - 1;
+                if (letter) out += ch == "\xC2\xB5" ? "\\mu" : "\\text{" + ch + "}";
+                else if (ch == "\xC2\xB0") out += "{}^{\\circ}";
+                else out += "{}^{" + std::string(1, ch == "\xC2\xB2" ? '2' : ch == "\xC2\xB3" ? '3' : '1') + "}";
+        }
+    }
+    return out;
+}
+
+std::string markdownTableCell(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        if (c == '|') out += '\\';
+        out += c;
+    }
+    return out;
+}
+
+/// A segment of a name in math mode: the `|` of EES starts a superscript (`G|o` is G^o).
+static std::string latexSegment(const std::string& seg) {
+    const size_t bar = seg.find('|');
+    if (bar == std::string::npos) return escapeLatexMath(seg);
+    return escapeLatexMath(seg.substr(0, bar)) + "^{" + escapeLatexMath(seg.substr(bar + 1)) + "}";
+}
+
 std::string variableToLatex(const std::string& name) {
     // ---------------------------------------------------------------
     // EES-to-LaTeX variable-name translation.
@@ -729,7 +797,7 @@ std::string variableToLatex(const std::string& name) {
     if (!cleanName.empty() && cleanName.back() == '$') {
         cleanName.pop_back();
     }
-    if (cleanName.empty()) return "\\text{" + name + "}";
+    if (cleanName.empty()) return "\\text{" + escapeLatexText(name) + "}";
 
     // 1. Array brackets: extract index and fold into the base name
     //    so that T_hf[2] becomes segments ["T","hf","2"] (avoiding
@@ -755,7 +823,7 @@ std::string variableToLatex(const std::string& name) {
         }
         if (!seg.empty()) segs.push_back(seg);
     }
-    if (segs.empty()) return name;
+    if (segs.empty()) return "\\text{" + escapeLatexText(name) + "}";
 
     // 3. Greek-letter prefix detection on the first segment
     //    Uppercase prefixes are sorted longest-first to avoid partial clashes.
@@ -787,7 +855,7 @@ std::string variableToLatex(const std::string& name) {
             if (first.size() >= gk.size() &&
                 first.substr(0, gk.size()) == gk) {
                 greekLatex = gl;
-                baseSymbol = first.substr(gk.size());
+                baseSymbol = latexSegment(first.substr(gk.size()));
                 foundGreek = true;
                 break;
             }
@@ -803,7 +871,7 @@ std::string variableToLatex(const std::string& name) {
     }
 
     if (!foundGreek) {
-        baseSymbol = first;
+        baseSymbol = latexSegment(first);
     }
 
     // 4. Classify remaining segments as modifiers or subscripts
@@ -813,7 +881,7 @@ std::string variableToLatex(const std::string& name) {
         if (segs[i] == "bar" || segs[i] == "dot") {
             modifiers.push_back(segs[i]);
         } else {
-            subscripts.push_back(segs[i]);
+            subscripts.push_back(latexSegment(segs[i]));
         }
     }
     // Append array index as the last subscript element
@@ -876,7 +944,7 @@ std::string IR::expressionToLatex(const ExprPtr& expr) const {
             }
             return std::to_string(val);
         } else if constexpr (std::is_same_v<T, StringLiteral>) {
-            return "\\mathrm{" + node.value + "}";
+            return "\\mathrm{" + escapeLatexMath(node.value) + "}";
         } else if constexpr (std::is_same_v<T, Variable>) {
             return variableToLatex(node.flattenedName());
         } else if constexpr (std::is_same_v<T, UnaryOp>) {
@@ -909,7 +977,7 @@ std::string functionCallToLatex(const FunctionCall& func) {
     
     // Use the same THERMO_FUNCTIONS set for consistency
     if (THERMO_FUNCTIONS.find(lowerName) != THERMO_FUNCTIONS.end()) {
-        result = "\\mathrm{" + func.name + "}";
+        result = "\\mathrm{" + escapeLatexMath(func.name) + "}";
     } else if (lowerName == "exp") {
         result = "\\exp";
     } else if (lowerName == "ln" || lowerName == "log") {
@@ -919,7 +987,7 @@ std::string functionCallToLatex(const FunctionCall& func) {
     } else if (lowerName == "min" || lowerName == "max") {
         result = "\\mathrm{" + lowerName + "}";
     } else {
-        result = "\\mathrm{" + func.name + "}";
+        result = "\\mathrm{" + escapeLatexMath(func.name) + "}";
     }
     
     result += " \\left(";
@@ -932,7 +1000,7 @@ std::string functionCallToLatex(const FunctionCall& func) {
     }
     for (const auto& [name, arg] : func.namedArgs) {
         if (!first) result += ", ";
-        result += "\\mbox{\\ " + name + "}=" + expressionToLatex(arg);
+        result += "\\mbox{\\ " + escapeLatexText(name) + "}=" + expressionToLatex(arg);
         first = false;
     }
     
@@ -949,7 +1017,7 @@ std::string expressionToLatex(const ExprPtr& expr) {
         if constexpr (std::is_same_v<T, NumberLiteral>) {
             return std::to_string(node.value);
         } else if constexpr (std::is_same_v<T, StringLiteral>) {
-            return "\\mathrm{" + node.value + "}";
+            return "\\mathrm{" + escapeLatexMath(node.value) + "}";
         } else if constexpr (std::is_same_v<T, Variable>) {
             return variableToLatex(node.flattenedName());
         } else if constexpr (std::is_same_v<T, UnaryOp>) {
@@ -1005,7 +1073,7 @@ std::string IR::variableTableToMarkdown() const {
     int num = 1;
     for (const auto& [name, info] : variables_) {
         oss << "| " << num++;
-        oss << " | `" << name << "`";
+        oss << " | `" << markdownTableCell(name) << "`";
         oss << " | $" << info.latexLabel << "$";
         if (info.solutionValue) {
             oss << " | " << *info.solutionValue;

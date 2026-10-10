@@ -51,8 +51,30 @@ the rest of the file: the parser warns (`P007`) with the line that opened it.
 ### Numbers and identifiers
 
 - Numbers: `1`, `3.14`, `1.5e-3`, `-6E10`.
-- Identifiers: start with letter or `_` / `$`; may contain `[a-zA-Z0-9_$#]`.
-- Identifiers ending with `$` are **string variables** (e.g. `fluid$`).
+- Identifiers (variable names) start with a letter or `_` and may contain letters, digits,
+  `_` and the symbols `%`, `|` and `#`, anywhere in the name: `C%`, `Q_dot_2_%`, `K|star_r_n`,
+  `Nu#_f`. A `\` may join two parts of a name (`dU\dtau`, `time_h\day`) and must be followed
+  by a letter or `_`. The built-in constants `g#`, `R#`... keep their meaning.
+- Letters are the ASCII letters and the accented letters of Latin-1 (`é`, `ç`, `ß`, `µ`...),
+  and the characters `°`, `²`, `³`, `¹` may follow them: `T_a_réf`, `n°_90°elbow_reg`. The
+  model file must be UTF-8. Other letters (Greek, Cyrillic...), signs such as `×` or `−`,
+  spaces that are not ASCII and bytes that are not UTF-8 (a file saved in Latin-1) are errors
+  that name the character: *Invalid variable name 'Δp': the character 'Δ' (U+0394) is not
+  allowed in a name*.
+- Names are **case-insensitive**, as in EES, accented letters included: `T_a_réf` and
+  `T_A_RÉF` are one variable (the spelling of the first occurrence is kept in the results).
+- Identifiers ending with `$` are **string variables** (e.g. `fluid$`, `fuel%$`); `$` is
+  only allowed at the end of a name. Array elements are written `X%[i]`, `T_réf[3]`.
+- EES takes any keyboard character in a name except `( ) * / + - ^ { } ;` (and, in the older
+  manual, `' | : "`); CoolSolve also refuses the characters that are part of its own syntax
+  (`'`, `"`, `.`, `,`, `:`, `=`, `<`, `>`, `[`, `]`) and `@ & ~ ? !`. A name that starts with
+  a digit or with `%`, `|`, `#` is an error. A keyword followed by one of these characters
+  (`call%`, `if|x`) is a name, not the keyword.
+- In the LaTeX report the `%`, `#`, `&`, `\` and `°` of a name are escaped, an accented
+  letter is typeset with `\text{}` and the `|` starts a superscript as in the EES formatted
+  equations (`K|star_r_n` is typeset K<sup>star</sup><sub>r,n</sub>).
+- `.initials` and `.sol` files list the names as written (`Nu#_f = 6.0`); in them a `#` starts a
+  comment only at the start of a line or after a blank.
 
 ### Operators and precedence
 

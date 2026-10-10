@@ -11,6 +11,7 @@
  * algebraic constraints) and the integrand values are read back as `f = dy/dt`.
  * See docs/integral_table.md §2 (Algorithm overview) and §3 (Architecture).
  */
+#include "coolsolve/ees_string.h"
 #include "coolsolve/integral/integral_solver.h"
 
 #include "coolsolve/autodiff_node.h"
@@ -27,11 +28,7 @@ namespace coolsolve {
 
 namespace {
 
-std::string toLowerCopy(std::string s) {
-    std::transform(s.begin(), s.end(), s.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return s;
-}
+std::string toLowerCopy(const std::string& s) { return eesFoldCase(s); }
 
 /// Does `expr` contain a top-level-or-nested INTEGRAL() call?
 bool containsIntegralCall(const ExprPtr& expr) {

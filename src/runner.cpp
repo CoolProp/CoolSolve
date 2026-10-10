@@ -302,7 +302,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         stats << " | ";
         for (size_t i = 0; i < block.variables.size() && i < 3; ++i) {
             if (i > 0) stats << ", ";
-            stats << block.variables[i];
+            stats << markdownTableCell(block.variables[i]);
         }
         if (block.variables.size() > 3) stats << ", ...";
         stats << " |\n";
@@ -331,7 +331,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     int varNum = 1;
     for (const auto& [name, info] : ir_->getVariables()) {
         varTable << "| " << varNum++;
-        varTable << " | `" << name << "`";
+        varTable << " | `" << markdownTableCell(name) << "`";
         varTable << " | $" << info.latexLabel << "$";
         
         std::string valStr = "-";
@@ -414,7 +414,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         
         for (size_t i = 0; i < eqs.size(); ++i) {
             const auto* eq = eqs[i];
-            csRes << "| " << blockId << " | `" << eq->originalText << "`";
+            csRes << "| " << blockId << " | `" << markdownTableCell(eq->originalText) << "`";
             if (evalSuccess && i < evalResult.residuals.size()) {
                 try {
                     coolsolve::ExpressionEvaluator exprEval(ir_->getVariableCount());
