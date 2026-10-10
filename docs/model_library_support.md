@@ -95,9 +95,11 @@ index, file lookup by model ID, name or path) used by the server, the runner
 ### 2.2 HTML model explorer (`CS-FEAT-EXPLORER`)
 
 **First step, done in the library:** `tools/build_index.py` generates the
-self-contained dashboard `library.html` from the `model.json` files (models,
-functions and the gaps of this register, sortable and filterable, with the
-description of each gap of a blocked model). `library.json` is the only machine
+self-contained dashboard `library.html` from the `model.json` files: an
+*Explore* landing page that follows the taxonomy and the `models/` folders, and
+sortable, filterable tables of the models, functions and gaps of this register
+(with the description of each gap of a blocked model); every view and filter has
+an address (`#/models?category=…`, `#CSL-0012`) that the GUI can reuse. `library.json` is the only machine
 index (`library.csv`, `functions.csv` and `CATALOG.md` were dropped). CoolSolve
 can serve the same page under `/library/` once the snapshot is embedded, its
 README links pointing to the documentation viewer, with an *Open* button when the
