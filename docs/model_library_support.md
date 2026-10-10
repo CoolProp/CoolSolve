@@ -466,17 +466,14 @@ models (148): 98 verified / 7 runs / 43 blocked before, 105 verified / 8 runs /
   (#3352, #3403: vapour viscosity and conductivity 12–18 % lower, liquid within ±5 %) and ammonia
   conductivity (#3404) moved `CSL-0114`, `CSL-0019`, `CSL-0158:coolsolve`, `orc_simple`
   and `orc_r245fa`; `CSL-0038`, `CSL-0039` differ only by `balance` residuals below 2e-9;
-  the `CSL-0124` and `CSL-0153` `.sol` were re-baselined. Known: `air_screw_compressor`
-  does not solve from the CLI at the default `tolerance = 1e-9` (solves from 1e-8, and in
-  the suite at 1e-6): bisected to CoolProp `3f06ccf7` (#3360, p,T flash rework), mechanism not analysed.
+  the `CSL-0124` and `CSL-0153` `.sol` were re-baselined. `air_screw_compressor` ships its `.initials`: without it the model does not converge at `tolerance = 1e-9` since the pin (to explore, `solver_roadmap.md` §3.2).
 
 **Queue** (next first):
 Decided 2026-10-10 (afternoon), in this order: (a) verify every §8 note (real ones become §4/§5 items and
 join this queue); (b) string arrays are not supported (error); strings go into a lookup table and the array holds
 the index: `LOOKUP$('table', row, col)` and string expressions as the fluid argument are implemented, `CSL-0150`
 and the BrineProp family are rewritten (library decision D14; done); (c) absolute (third-law) entropies of the ideal gases (done: `CS-GAP-IDEAL-ENTROPY`,
-§7; the library regression changed only `CSL-0152:coolsolve`, re-baselined); (d) `air_screw_compressor` (fails at `tolerance = 1e-9` since
-CoolProp `75af7816`; CoolSolve has no per-model setting for a file of `examples/`): decision pending.
+§7; the library regression changed only `CSL-0152:coolsolve`, re-baselined); (d) `air_screw_compressor`: done (ships its `.initials`).
 0. `CSL-0118` (air nozzle/ejector): its isentropic nozzle/diffuser relations are written as ratios of
    absolute enthalpies, valid only with EES's "h = 0 at 0 K" reference of `Air`; rewrite them with
    absolute-temperature ratios (same physics, any reference), remove `CS-GAP-AIR-ENTHALPY-REF` from
