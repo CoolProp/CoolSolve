@@ -29,7 +29,7 @@ AND,Operators,Logical AND,Yes,1,Used in IF conditions,
 OR,Operators,Logical OR,Yes,1,Used in IF conditions,
 NOT,Operators,Logical NOT,Yes,1,Used in IF conditions,
 # --- Control Flow ---,,,,,,
-IF-THEN-ELSE,Control Flow,Conditional execution in procedural blocks,Yes,1,"FUNCTION/PROCEDURE bodies only (as in EES): single-line and block (ENDIF) forms; conditions = <> < > <= >= (numbers and strings) with AND/OR; src/parser.cpp + IfThenElse AST node",
+IF-THEN-ELSE,Control Flow,Conditional execution in procedural blocks,Yes,1,"FUNCTION/PROCEDURE bodies only (as in EES): single-line and block (ENDIF) forms; conditions = <> < > <= >= (numbers and strings; strings compared without regard to case, as in EES) with AND/OR; src/parser.cpp + IfThenElse AST node",
 IFNOT-THEN-ELSE,Control Flow,Negated conditional execution,Yes,1,Variation of IF-THEN-ELSE,
 "IF(cond, true_val, false_val)",Control Flow,Inline conditional function (expression-level),Yes,1,"src/autodiff_node.cpp — 3-arg IF function, cond>0 returns true_val; a comparison inside the call (IF(a=5,1,2)) is a parse error (named-argument misparse): use the 5-argument form"
 "IF(A, B, X, Y, Z)",Control Flow,"Inline 3-way conditional (X if A<B, Y if A=B, Z if A>B)",Yes,1,src/autodiff_node.cpp — 5-arg form of the IF function; exact equality for A=B; derivative of the selected branch only (A and B are selectors); other arities are an error
@@ -361,8 +361,8 @@ User-supplied property data,Fluids,"User-provided .idg, .mhe, .fld files",No,3,E
 EES_REFPROP interface,Fluids,Direct REFPROP DLL integration for high-accuracy data,No,3,EES can call NIST REFPROP, CoolSolve uses CoolProp
 # --- $ Directives ---,,,,,,
 $UnitSystem,Directives,"Set unit system: $UnitSystem SI C Pa J (or Eng, kJ, bar, etc.)",Partial,5,Parser recognizes it, partial semantic handling in units.cpp
-$IF / $IFNOT / $ENDIF,Directives,Conditional compilation ($IF DirectiveFlag ... $ENDIF),Yes,1,src/parser.cpp — preprocessor-style conditional blocks,
-$ELSE,Directives,Else branch of $IF/$IFNOT conditional,Yes,1,src/parser.cpp,
+$IF / $IFNOT / $ENDIF,Directives,"Conditional compilation: the lines of the branch not selected are removed (X$='text' case-insensitive, PARAMETRICTABLE, MINMAX, UNCERTAINTY, TABLERUN#, DIAGRAMWINDOW, MACRO, PROFESSIONAL, INTEGRALTABLE, UNITSYSTEM, AND/OR)",Yes,1,"src/parser.cpp + src/conditional_directives.cpp — nesting; also in FUNCTION/PROCEDURE bodies. Not in a CoolSolve solve: table/min-max/uncertainty/macro/diagram conditions are false. VERSION unsupported (error)",
+$ELSE,Directives,Else branch of $IF/$IFNOT conditional,Yes,1,"src/parser.cpp — text after $ELSE ignored; $ELSEIF without condition = $ELSE, with a condition an error",
 $Bookmark,Directives,Insert a bookmark marker (GUI navigation aid),Yes,2,src/parser.cpp — parsed and stored,
 $CheckUnits,Directives,Enable/disable automatic unit checking,No,3,to be implemented in the coolsolve config as well, ON/OFF/AutoOn/AutoOff
 $AutoSetUnits,Directives,Automatically assign units to variables,No,3,to be implemented in the coolsolve config as well,

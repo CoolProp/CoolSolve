@@ -23,7 +23,7 @@ This creates a folder `<input>_coolsolve/` (or `<input>_coolsolve/` next to the 
 
 | File | Use for diagnosis |
 |------|-------------------|
-| `report.md` | Block summary, solver status, largest block size |
+| `report.md` | Block summary, solver status, largest block size, branch kept by each `$IF`/`$IFNOT` |
 | `solver_errors.md` | Error type (LineSearchFailed, MaxIterations, EvaluationError) |
 | `solver_trace.md` | Per-block Newton iterations, residual norms |
 | `evaluator.md` | Block evaluation status, max residuals at current state |

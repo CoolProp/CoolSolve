@@ -25,7 +25,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 ## Features
 
-- **Parser**: Parses CoolSolve source code (`.eescode` files) into an AST — variables, equations, procedural blocks (`FUNCTION`, `PROCEDURE`, `CALL`), control flow (`IF-THEN-ELSE`, `DUPLICATE`, `REPEAT-UNTIL`), directives, array subscripts, and named function arguments.
+- **Parser**: Parses CoolSolve source code (`.eescode` files) into an AST — variables, equations, procedural blocks (`FUNCTION`, `PROCEDURE`, `CALL`), control flow (`IF-THEN-ELSE`, `DUPLICATE`, `REPEAT-UNTIL`), directives (including the conditional compilation `$IF` / `$IFNOT` / `$ELSE` / `$ENDIF`), array subscripts, and named function arguments.
 
 - **Structural Analysis**: Decomposes the equation system into solvable blocks using the Hopcroft–Karp matching algorithm and Tarjan's SCC algorithm.
 
@@ -276,7 +276,7 @@ The debug folder contains:
 |------|-------------|
 | `README.md` | Index of all generated files |
 | `coolsolve.conf` | Copy of solver config from source folder (if present) |
-| `report.md` | Model statistics and block summary |
+| `report.md` | Model statistics, block summary and the branch kept by each `$IF`/`$IFNOT` directive |
 | `variables.md` | Variable mapping table (Markdown) |
 | `variables.csv` | Variable mapping (CSV for external tools) |
 | `equations.md` | Equations grouped by solution block |

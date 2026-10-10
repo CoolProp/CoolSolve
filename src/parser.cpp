@@ -1,4 +1,5 @@
 #include "coolsolve/parser.h"
+#include "coolsolve/conditional_directives.h"
 #include "coolsolve/diagnostic.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/units.h"
@@ -127,6 +128,23 @@ public:
     }
     
     ParseResult parse(const std::string& source, const std::string& filename) {
+        ParseResult result = parsePass(source, filename, false);
+        // `$IF INTEGRALTABLE` is true when an $IntegralTable directive is in the file, above or
+        // below the test: EES compiles in two passes for it, so do we.
+        if (integralTableTested_ && integralTableSeen_ != compileState_.integralTable)
+            result = parsePass(source, filename, integralTableSeen_);
+        return result;
+    }
+
+    std::string getLastError() const { return lastError_; }
+
+private:
+    ParseResult parsePass(const std::string& source, const std::string& filename, bool integralTableAssumed) {
+        conditionalStack_.clear();
+        compileState_ = CompileTimeState{};
+        compileState_.integralTable = integralTableAssumed;
+        integralTableSeen_ = false;
+        integralTableTested_ = false;
         ParseResult result;
         result.success = false;
         result.program.sourceFilename = filename;
@@ -152,6 +170,10 @@ public:
             // Skip comments (also those spanning several lines) and blank lines
             if (skipCommentLine(line, lineNumber, result)) continue;
             std::string trimmed = trim(line);
+
+            // $IF / $IFNOT / $ELSE / $ENDIF; the lines of a removed branch are not looked at
+            if (handleConditionalDirective(trimmed, lineNumber, line, result)) continue;
+            if (!conditionalActive()) continue;
 
             // Check for unsupported constructs (procedures, modules, etc.)
             std::string upper = trimmed;
@@ -224,6 +246,7 @@ public:
                 std::string callError;
                 if (auto stmt = tryParseProcedureCall(line, lineNumber, &callError)) {
                     result.program.statements.push_back(stmt);
+                    noteComputedStrings(stmt);
                     continue;
                 }
                 if (!callError.empty()) {
@@ -295,6 +318,7 @@ public:
             if (auto stmt = tryParseDirective(line, lineNumber, &result.diagnostics)) {
                 result.program.statements.push_back(stmt);
                 result.directiveCount++;
+                if (upper.rfind("$INTEGRALTABLE", 0) == 0) integralTableSeen_ = true;
                 continue;
             }
             
@@ -310,6 +334,7 @@ public:
                         if (auto stmt = tryParseEquationOrAssignment(seg, lineNumber, &segError)) {
                             result.program.statements.push_back(stmt);
                             result.equationCount++;
+                            noteStringAssignment(stmt);
                         } else {
                             allOk = false;
                             std::string msg = segError.empty() ? ("Could not parse segment: " + seg) : segError;
@@ -328,6 +353,7 @@ public:
                 if (auto stmt = tryParseEquationOrAssignment(line, lineNumber, &parseError)) {
                     result.program.statements.push_back(stmt);
                     result.equationCount++;
+                    noteStringAssignment(stmt);
                     continue;
                 }
                 if (!parseError.empty()) {
@@ -341,6 +367,11 @@ public:
             result.errors.push_back({lineNumber, 0, "Could not parse line", line});
         }
         
+        for (auto it = conditionalStack_.rbegin(); it != conditionalStack_.rend(); ++it) {
+            const auto& info = result.conditionalDirectives[it->infoIndex];
+            result.errors.push_back({it->line, 0,
+                std::string(it->ifnot ? "$IFNOT" : "$IF") + " without a matching $ENDIF", info.text});
+        }
         if (comments_.inQuote) {
             result.diagnostics.push(DiagnosticSeverity::Warning, "P007",
                 "The comment opened by a '\"' at line " + std::to_string(comments_.quoteOpenLine) +
@@ -359,9 +390,6 @@ public:
         return result;
     }
     
-    std::string getLastError() const { return lastError_; }
-
-private:
     peg::parser parser_;
     bool grammarValid_ = false;
     std::string lastError_;
@@ -378,6 +406,146 @@ private:
     // statements are only valid there).
     int procedureBodyDepth_ = 0;
     
+    // ------------------------------------------------------------------------
+    // Compile-time directives $IF / $IFNOT / $ELSE / $ENDIF (CS-GAP-IF-DIRECTIVE)
+    //
+    // EES compiles the Equations window top to bottom and ignores the lines of the
+    // branch that is not selected. The parse loops (main program and bodies) call
+    // handleConditionalDirective() on every line that is not a comment and skip the
+    // line while conditionalActive() is false: a removed line is never parsed (it may
+    // hold anything, even text CoolSolve does not support), so it never reaches the IR,
+    // the debug reports or the solver, whichever entry point built the program.
+    // The string constants that the conditions test are recorded as the statements
+    // that set them are parsed: EES needs the variable defined before the directive.
+    // The conditions themselves are evaluated by conditional_directives.cpp.
+    // ------------------------------------------------------------------------
+    struct ConditionalFrame {
+        int line;              // line of the $IF / $IFNOT
+        size_t infoIndex;      // its entry in ParseResult::conditionalDirectives
+        bool ifnot;
+        bool parentActive;     // the enclosing branch is kept
+        bool failed;           // the condition cannot be evaluated (reported): both branches are skipped
+        bool condition;        // the THEN branch is selected
+        bool inElse;           // $ELSE seen
+    };
+    std::vector<ConditionalFrame> conditionalStack_;
+    CompileTimeState compileState_;
+    bool integralTableSeen_ = false;     // a kept $IntegralTable directive was parsed
+    bool integralTableTested_ = false;   // a condition asked for INTEGRALTABLE
+
+    static bool frameActive(const ConditionalFrame& f) {
+        return f.parentActive && !f.failed && (f.inElse ? !f.condition : f.condition);
+    }
+    bool conditionalActive() const { return conditionalStack_.empty() || frameActive(conditionalStack_.back()); }
+
+    // Consume the line if it is $IF, $IFNOT, $ELSE or $ENDIF (any letter case). Text after
+    // the condition other than a comment or a trailing `then` is an error; text after
+    // $ELSE / $ENDIF is ignored (EES files annotate them: `$else fuel$='ch4'`). A bare
+    // `$ELSEIF` is a `$ELSE`, as in the EES help.
+    bool handleConditionalDirective(const std::string& trimmed, int lineNumber, const std::string& sourceLine,
+                                    ParseResult& result) {
+        if (trimmed.size() < 3 || trimmed[0] != '$') return false;
+        size_t nameEnd = 1;
+        while (nameEnd < trimmed.size() &&
+               (std::isalnum(static_cast<unsigned char>(trimmed[nameEnd])) || trimmed[nameEnd] == '_'))
+            nameEnd++;
+        std::string name = trimmed.substr(1, nameEnd - 1);
+        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+        if (name != "if" && name != "ifnot" && name != "else" && name != "elseif" && name != "endif") return false;
+        result.directiveCount++;
+
+        std::string upperName = name;
+        std::transform(upperName.begin(), upperName.end(), upperName.begin(), ::toupper);
+        const std::string rest = trim(removeInlineComments(trimmed.substr(nameEnd)));
+        auto fail = [&](const std::string& message) {
+            result.errors.push_back({lineNumber, 0, message, sourceLine});
+        };
+
+        if (name == "if" || name == "ifnot") {
+            ConditionalFrame frame{lineNumber, result.conditionalDirectives.size(), name == "ifnot",
+                                   conditionalActive(), false, false, false};
+            ConditionalDirectiveInfo info;
+            info.line = lineNumber;
+            info.text = trim(removeInlineComments(trimmed));
+            if (frame.parentActive) {
+                const ConditionResult r = evaluateDirectiveCondition(rest, compileState_);
+                if (r.usedIntegralTable) integralTableTested_ = true;
+                if (r.ok) {
+                    frame.condition = frame.ifnot ? !r.value : r.value;
+                    info.evaluated = true;
+                    info.thenKept = frame.condition;
+                } else {
+                    frame.failed = true;
+                    fail("$" + upperName + ": " + r.error);
+                }
+            }
+            result.conditionalDirectives.push_back(info);
+            conditionalStack_.push_back(frame);
+            return true;
+        }
+
+        if (conditionalStack_.empty()) {
+            fail("$" + upperName + " without a matching $IF or $IFNOT");
+            return true;
+        }
+        ConditionalFrame& frame = conditionalStack_.back();
+        ConditionalDirectiveInfo& info = result.conditionalDirectives[frame.infoIndex];
+        if (name == "endif") {
+            info.endLine = lineNumber;
+            conditionalStack_.pop_back();
+            return true;
+        }
+        // $ELSE or $ELSEIF
+        if (frame.inElse) {
+            fail("Second $" + upperName + " in the " + (frame.ifnot ? "$IFNOT" : "$IF") + " of line " + std::to_string(frame.line));
+            return true;
+        }
+        if (name == "elseif" && !rest.empty()) {
+            frame.failed = true;
+            fail("$ELSEIF with a condition is not supported: the EES help documents $IF, $IFNOT, $ELSE and $ENDIF "
+                 "(write $ELSE followed by a nested $IF)");
+            return true;
+        }
+        frame.inElse = true;
+        info.elseLine = lineNumber;
+        return true;
+    }
+
+    // What a main-program statement tells the $IF conditions about string variables: a
+    // constant (`X$ = 'text'`, `X$ = Y$` with Y$ a constant) or a value unknown at compile time.
+    void noteStringAssignment(const StmtPtr& stmt) {
+        if (!stmt->is<Equation>()) return;
+        const auto& eq = stmt->as<Equation>();
+        if (!eq.lhs || !eq.rhs || !eq.lhs->is<Variable>()) return;
+        const auto& var = eq.lhs->as<Variable>();
+        if (var.name.empty() || var.name.back() != '$' || !var.indices.empty()) return;
+        const std::string* constant = nullptr;
+        if (eq.rhs->is<StringLiteral>()) {
+            constant = &eq.rhs->as<StringLiteral>().value;
+        } else if (eq.rhs->is<Variable>() && eq.rhs->as<Variable>().indices.empty()) {
+            const auto it = compileState_.strings.find(eq.rhs->as<Variable>().name);
+            if (it != compileState_.strings.end()) constant = &it->second;
+        }
+        if (constant) {
+            const std::string value = *constant;   // may alias the entry being replaced
+            compileState_.strings[var.name] = value;
+            compileState_.computedStrings.erase(var.name);
+        } else {
+            compileState_.strings.erase(var.name);
+            compileState_.computedStrings.insert(var.name);
+        }
+    }
+
+    // The string outputs of a CALL are computed, not constants.
+    void noteComputedStrings(const StmtPtr& stmt) {
+        if (!stmt->is<ProcedureCall>()) return;
+        for (const auto& out : stmt->as<ProcedureCall>().outputVars) {
+            if (out.name.empty() || out.name.back() != '$' || !out.indices.empty()) continue;
+            compileState_.strings.erase(out.name);
+            compileState_.computedStrings.insert(out.name);
+        }
+    }
+
     // Known built-in math/utility functions (case-insensitive)
     static const std::unordered_set<std::string>& knownBuiltinFunctions() {
         static const std::unordered_set<std::string> fns = {
@@ -863,6 +1031,8 @@ private:
             lineNumber++;
             if (skipCommentLine(bodyLine, lineNumber, result)) continue;
             std::string trimmedBody = trim(bodyLine);
+            if (handleConditionalDirective(trimmedBody, lineNumber, bodyLine, result)) continue;
+            if (!conditionalActive()) continue;
             std::string upperBody = trimmedBody;
             std::transform(upperBody.begin(), upperBody.end(), upperBody.begin(), ::toupper);
 

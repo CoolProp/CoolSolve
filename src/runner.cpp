@@ -256,6 +256,38 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         stats << "\n## Warnings\n\n";
         stats << "- " << analysisResult_.errorMessage << "\n";
     }
+
+    // Compile-time $IF / $IFNOT directives: which branch was kept (CS-GAP-IF-DIRECTIVE)
+    if (!parseResult_.conditionalDirectives.empty()) {
+        auto lines = [](int first, int last) {
+            if (first > last) return std::string("no lines");
+            return first == last ? "line " + std::to_string(first)
+                                 : "lines " + std::to_string(first) + "-" + std::to_string(last);
+        };
+        stats << "\n## Conditional directives\n\n";
+        stats << "The `$IF` / `$IFNOT` directives are resolved while parsing, as EES does when it compiles the "
+                 "equations: the lines of the branch that is not selected are removed from the model "
+                 "(they are not parsed, so they appear in no other file of this folder).\n\n";
+        stats << "| Line | Directive | Branch |\n";
+        stats << "|------|-----------|--------|\n";
+        for (const auto& d : parseResult_.conditionalDirectives) {
+            const int thenEnd = (d.elseLine > 0 ? d.elseLine : d.endLine) - 1;
+            stats << "| " << d.line << " | `" << d.text << "` | ";
+            if (!d.evaluated) {
+                stats << "not evaluated (inside a removed branch)";
+            } else {
+                const std::string thenText = "THEN branch " + std::string(d.thenKept ? "kept" : "removed") +
+                                             " (" + lines(d.line + 1, thenEnd) + ")";
+                if (d.elseLine > 0) {
+                    stats << thenText << ", ELSE branch " << (d.thenKept ? "removed" : "kept")
+                          << " (" << lines(d.elseLine + 1, d.endLine - 1) << ")";
+                } else {
+                    stats << thenText << ", no $ELSE";
+                }
+            }
+            stats << " |\n";
+        }
+    }
     
     // Block summary
     stats << "\n## Block Summary\n\n";
@@ -616,7 +648,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     if (fs::exists(debugDir / "coolsolve.conf")) {
         index << "| [coolsolve.conf](coolsolve.conf) | Solver config used for this run |\n";
     }
-    index << "| [report.md](report.md) | Model statistics and block summary |\n";
+    index << "| [report.md](report.md) | Model statistics, block summary and the branch kept by each `$IF` directive |\n";
     index << "| [variables.md](variables.md) | Variable mapping table |\n";
     index << "| [coolsolve_residuals.md](coolsolve_residuals.md) | Detailed equation values and residuals |\n";
     index << "| [evaluator.md](evaluator.md) | Evaluator structure and test |\n";

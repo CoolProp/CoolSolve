@@ -11,6 +11,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "coolsolve/autodiff_node.h"
+#include "coolsolve/ees_string.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/lookup_table.h"
 #include "coolsolve/parser.h"
@@ -18,6 +19,7 @@
 #include "coolsolve/solution_checker.h"
 #include "CoolProp.h"
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -1906,4 +1908,942 @@ w = max(max(1,2),x[1])
     CHECK_THAT(run["n8"], WithinAbs(2.0, 1e-12));
     CHECK_THAT(run["n9"], WithinAbs(5.0, 1e-12));
     CHECK_THAT(run["w"], WithinAbs(5.0, 1e-12));
+}
+
+// ============================================================================
+// CS-GAP-IF-DIRECTIVE: compile-time $IF / $IFNOT / $ELSE / $ENDIF
+// ============================================================================
+
+namespace {
+
+/// Parse only and keep the whole result (errors with their line, resolved directives).
+ParseResult parseFull(const std::string& code) {
+    EESParser parser;
+    return parser.parse(code);
+}
+
+/// "line: message" of every parse error.
+std::vector<std::string> parseErrorsWithLines(const std::string& code) {
+    std::vector<std::string> out;
+    for (const auto& e : parseFull(code).errors) out.push_back(std::to_string(e.line) + ": " + e.message);
+    return out;
+}
+
+bool hasVar(const ModelRun& run, const std::string& name) { return run.vars.count(name) > 0; }
+
+}  // namespace
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: register reproducer, $ELSE keeps the true branch and the system is square", "[library-gaps][if-directive]") {
+    // was: all branches kept, "3 equations and 2 unknowns"
+    auto run = runModel("act$ = 'a'\n$if act$='a'\nx = 5\n$else\nx = 7\n$endif\n");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x"], WithinAbs(5.0, 1e-12));
+
+    // the other value of the string selects the ELSE branch
+    auto other = runModel("act$ = 'b'\n$if act$='a'\nx = 5\n$else\nx = 7\n$endif\n");
+    REQUIRE(other.solveOk);
+    CHECK_THAT(other["x"], WithinAbs(7.0, 1e-12));
+
+    // the string may be set after the branch only if it is set before the directive: here, before
+    auto later = runModel("$if act$='a'\nx = 5\n$endif\nact$ = 'a'\n");
+    CHECK_FALSE(later.parseOk);
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: register reproducer, without $ELSE a false branch is removed", "[library-gaps][if-directive]") {
+    // was: x = 5 solved with SUCCESS although the condition is false
+    auto run = runModel("act$ = 'a'\n$if act$='b'\nx = 5\n$endif\ny = 1\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_FALSE(hasVar(run, "x"));
+    CHECK_THAT(run["y"], WithinAbs(1.0, 1e-12));
+
+    // the true condition keeps the equation
+    auto kept = runModel("act$ = 'a'\n$if act$='a'\nx = 5\n$endif\ny = 1\n");
+    REQUIRE(kept.solveOk);
+    CHECK_THAT(kept["x"], WithinAbs(5.0, 1e-12));
+
+    // the removed equation is not an equation of the model at all
+    auto pr = parseFull("act$ = 'a'\n$if act$='b'\nx = 5\n$endif\ny = 1\n");
+    REQUIRE(pr.success);
+    CHECK(pr.equationCount == 2);   // act$ = 'a' and y = 1
+    CHECK(pr.program.statements.size() == 2);
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: $IFNOT, and the code in the branches of both", "[library-gaps][if-directive]") {
+    auto run = runModel(R"(
+act$ = 'a'
+$ifnot act$='b'
+x = 5
+$else
+x = 7
+$endif
+$IFNOT act$='a'
+y = 5
+$ELSE
+y = 7
+$ENDIF
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["y"], WithinAbs(7.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: a string variable and the constant are compared without regard to case", "[library-gaps][if-directive]") {
+    // the library files rely on it: expandertype_exp$='hermetic' ... $else expanderType_exp$='Hermetic'
+    auto run = runModel(R"(
+expandertype_exp$ = 'hermetic'
+$if expanderType_exp$='Hermetic'
+x = 1
+$else
+x = 2
+$endif
+FLUID$ = 'ABC'
+$IF fluid$ = 'abc'
+y = 1
+$ELSE
+y = 2
+$ENDIF
+$if Fluid$='aBc'
+z = 1
+$endif
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["y"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["z"], WithinAbs(1.0, 1e-12));
+
+    // accented letters (UTF-8), as in the French models of the ULiege collection
+    auto accents = runModel(R"(
+activite$ = 'Définie par le métabolisme'
+$if activite$='définie par le MÉTABOLISME'
+x = 1
+$else
+x = 2
+$endif
+energie$ = 'énergie'
+$if energie$='ÉNERGIE'
+y = 1
+$endif
+$if energie$='energie'
+z = 1
+$endif
+)");
+    REQUIRE(accents.solveOk);
+    CHECK_THAT(accents["x"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(accents["y"], WithinAbs(1.0, 1e-12));
+    CHECK_FALSE(hasVar(accents, "z"));   // e and é are different letters
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: spellings of the directive that EES files use", "[library-gaps][if-directive]") {
+    CHECK(parseErrorsWithLines("a$ = 'x'\n$If a$='x'\nb = 1\n$EndIf\n$ELSE\n") ==
+          std::vector<std::string>{"5: $ELSE without a matching $IF or $IFNOT"});
+
+    auto ok = runModel(R"(
+a$ = 'x'
+$If a$='x'
+b1 = 1
+$Else
+b1 = 2
+$EndIf
+$iFnOt a$='x'
+b2 = 1
+$ELSE
+b2 = 2
+$ENDIF
+$IF a$ ='x'
+b3 = 1
+$endif
+$IF a$= 'x'
+b4 = 1
+$endif
+$IF   a$   =   'x'
+b5 = 1
+$endif
+$if a$='x' then
+b6 = 1
+$else
+b6 = 2
+$endif
+$if a$='y' THEN
+b7 = 1
+$else a$='x'
+b7 = 2
+$endif
+)");
+    REQUIRE(ok.solveOk);
+    for (const char* v : {"b1", "b3", "b4", "b5", "b6"}) CHECK_THAT(ok[v], WithinAbs(1.0, 1e-12));
+    for (const char* v : {"b2", "b7"}) CHECK_THAT(ok[v], WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: comments after the condition, after $ELSE and $ENDIF, directives inside comments", "[library-gaps][if-directive]") {
+    auto run = runModel(R"(
+a$ = 'x'
+$IF a$='x' "the first case"
+b1 = 1
+$ELSE " a$ = 'y' "
+b1 = 2
+$ENDIF "end of the case"
+$IF a$='x' {a brace comment}
+b2 = 1
+$ENDIF {another}
+$IF a$='x' // a line comment
+b3 = 1
+$ENDIF // end
+$IF a$='y' "it's a comment with an apostrophe"
+b4 = 1
+$ELSE
+b4 = 2
+$ENDIF
+{ $IF a$='y'  commented out }
+b5 = 1
+"$ENDIF in a comment"
+$IF a$='y'
+b6 = 1
+{ $ELSE }
+$ENDIF
+b7 = 1
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["b1"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["b2"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["b3"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["b4"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["b5"], WithinAbs(1.0, 1e-12));
+    CHECK_FALSE(hasVar(run, "b6"));
+    CHECK_THAT(run["b7"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: the single quotes around the constant are optional, other characters are kept", "[library-gaps][if-directive]") {
+    auto run = runModel(R"(
+a$ = 'x'
+$IF a$=x
+b1 = 1
+$ENDIF
+$IF a$=X
+b2 = 1
+$ENDIF
+$IF a$=y
+b3 = 1
+$ENDIF
+regime$ = 'on\off'
+$IF regime$='ON\OFF'
+b4 = 1
+$ENDIF
+$IF regime$='on/off'
+b5 = 1
+$ENDIF
+w$ = 'with spaces and (parentheses)'
+$IF w$='With Spaces and (parentheses)'
+b6 = 1
+$ENDIF
+$IF (w$='no') OR (w$='with spaces and (parentheses)')
+b7 = 1
+$ENDIF
+)");
+    REQUIRE(run.solveOk);
+    for (const char* v : {"b1", "b2", "b4", "b6", "b7"}) CHECK(hasVar(run, v));
+    for (const char* v : {"b3", "b5"}) CHECK_FALSE(hasVar(run, v));
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: string variables copy constants, a computed string has no compile-time value", "[library-gaps][if-directive]") {
+    // B$ = C$ (EES manual: string variables set equal to other string variables)
+    auto run = runModel("c$ = 'abc'\nb$ = c$\n$IF b$='ABC'\nx = 1\n$ENDIF\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(1.0, 1e-12));
+
+    // set by a CALL output (library model CSL-0166: regime$ comes from a procedure)
+    const std::string proc = "PROCEDURE p(a : r$)\n  r$ = 'ON'\nEND\n";
+    auto errors = parseErrorsWithLines(proc + "CALL p(1 : regime$)\n$if regime$='ON'\nx = 1\n$endif\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].rfind("5: ", 0) == 0);
+    CHECK(errors[0].find("regime$") != std::string::npos);
+    CHECK(errors[0].find("CALL") != std::string::npos);
+    // set from another computed string
+    errors = parseErrorsWithLines(proc + "CALL p(1 : regime$)\nm$ = regime$\n$if m$='ON'\nx = 1\n$endif\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].find("m$") != std::string::npos);
+    // never set (EES would take it from the Diagram window)
+    errors = parseErrorsWithLines("$if never$='a'\nx = 1\n$endif\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].rfind("1: ", 0) == 0);
+    CHECK(errors[0].find("never$") != std::string::npos);
+    // set later in the file: EES needs the definition before the directive
+    errors = parseErrorsWithLines("$if later$='a'\nx = 1\n$endif\nlater$ = 'a'\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].find("later$") != std::string::npos);
+    CHECK(errors[0].find("before") != std::string::npos);
+    // a numerical variable is not a string variable
+    CHECK_FALSE(parseErrorsWithLines("a = 1\n$if a='1'\nx = 1\n$endif\n").empty());
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: the string set in a removed branch does not count", "[library-gaps][if-directive]") {
+    auto run = runModel(R"(
+mode$ = 'a'
+$if mode$='b'
+fluid$ = 'Water'
+$else
+fluid$ = 'R134a'
+$endif
+$if fluid$='R134a'
+x = 1
+$else
+x = 2
+$endif
+$if fluid$='Water'
+y = 1
+$endif
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(1.0, 1e-12));
+    CHECK_FALSE(hasVar(run, "y"));
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: nested directives", "[library-gaps][if-directive]") {
+    const std::string head = "a$ = 'x'\nb$ = 'y'\n";
+    // the four combinations
+    const std::string nested =
+        "$if a$='x'\n"
+        "  $if b$='y'\n    r = 11\n  $else\n    r = 10\n  $endif\n"
+        "$else\n"
+        "  $if b$='y'\n    r = 1\n  $else\n    r = 0\n  $endif\n"
+        "$endif\n";
+    for (const char* a : {"x", "z"}) {
+        for (const char* b : {"y", "z"}) {
+            auto run = runModel(std::string("a$ = '") + a + "'\nb$ = '" + b + "'\n" + nested);
+            REQUIRE(run.solveOk);
+            const double expected = (std::string(a) == "x" ? 10.0 : 0.0) + (std::string(b) == "y" ? 1.0 : 0.0);
+            CHECK_THAT(run["r"], WithinAbs(expected, 1e-12));
+        }
+    }
+    // the same directive form for three levels, with equations between the directives
+    auto deep = runModel(head + R"(
+$if a$='x'
+p1 = 1
+$if b$='y'
+p2 = 2
+$ifnot a$='x'
+p3 = 3
+$else
+p4 = 4
+$endif
+p5 = 5
+$endif
+p6 = 6
+$endif
+)");
+    REQUIRE(deep.solveOk);
+    for (const char* v : {"p1", "p2", "p4", "p5", "p6"}) CHECK(hasVar(deep, v));
+    CHECK_FALSE(hasVar(deep, "p3"));
+
+    // a nested directive inside a removed branch is not evaluated: no error for a string with no value there
+    auto removed = runModel(head + "$if a$='z'\n$if never$='q'\nx = 1\n$else\nx = 2\n$endif\n$endif\ny = 1\n");
+    REQUIRE(removed.parseOk);
+    REQUIRE(removed.solveOk);
+    CHECK_FALSE(hasVar(removed, "x"));
+    // ... nor is its $ELSE branch taken
+    CHECK_THAT(removed["y"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: documented flag conditions, in a CoolSolve solve", "[library-gaps][if-directive]") {
+    // EES help ($IF and $IFNOT): PARAMETRICTABLE, MIN/MAX (MINMAX), MIN/MAXTABLE (MINMAXTABLE),
+    // UNCERTAINTY, UNCERTAINTYTABLE, DIAGRAMWINDOW, MACRO, PROFESSIONAL, TABLERUN#, UNITSYSTEM('XX')
+    // A solve is not a table run: only PROFESSIONAL is true (CoolSolve has no feature restriction).
+    auto run = runModel(R"(
+$IFNOT PARAMETRICTABLE
+k1 = 1
+$ENDIF
+$IF PARAMETRICTABLE
+f1 = 1
+$ENDIF
+$IF ParametricTable='Table 1'
+f2 = 1
+$ENDIF
+$IFNOT parametrictable='Table 1'
+k2 = 1
+$ENDIF
+$IF MINMAX
+f3 = 1
+$ENDIF
+$IF MIN/MAX
+f4 = 1
+$ENDIF
+$IF MINMAXTABLE
+f5 = 1
+$ENDIF
+$IF MIN/MAXTABLE
+f6 = 1
+$ENDIF
+$IF MINMAXTABLE='Table 1'
+f7 = 1
+$ENDIF
+$IF UNCERTAINTY
+f8 = 1
+$ENDIF
+$IF UNCERTAINTYTABLE
+f9 = 1
+$ENDIF
+$IF UNCERTAINTYTABLE='Table 1'
+f10 = 1
+$ENDIF
+$IF DIAGRAMWINDOW
+f11 = 1
+$ENDIF
+$IF MACRO
+f12 = 1
+$ENDIF
+$IFNOT DIAGRAMWINDOW
+k3 = 1
+$ENDIF
+$IF PROFESSIONAL
+k4 = 1
+$ENDIF
+$IF TABLERUN#=1
+f13 = 1
+$ENDIF
+$IF Tablerun#<13
+f14 = 1
+$ENDIF
+$IF TABLERUN# > 0
+f15 = 1
+$ENDIF
+$IFNOT TABLERUN#=1
+k5 = 1
+$ENDIF
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    for (const char* v : {"k1", "k2", "k3", "k4", "k5"}) CHECK(hasVar(run, v));
+    for (int i = 1; i <= 15; ++i) CHECK_FALSE(hasVar(run, "f" + std::to_string(i)));
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: UNITSYSTEM and INTEGRALTABLE conditions", "[library-gaps][if-directive]") {
+    // CoolSolve: SI, mass basis, degrees, C, Pa, J (as the UNITSYSTEM() function)
+    auto run = runModel(R"(
+$IF UNITSYSTEM('SI')
+u1 = 1
+$ENDIF
+$IF UNITSYSTEM('C')=1
+u2 = 1
+$ENDIF
+$IF UNITSYSTEM('F')=1
+f1 = (100-32)/1.8
+$ELSE
+f1 = 100
+$ENDIF
+$IF UNITSYSTEM('K')
+f2 = 1
+$ENDIF
+$IF UNITSYSTEM('kPa')
+f3 = 1
+$ENDIF
+$IF unitsystem('Pa') AND UNITSYSTEM('J') AND UNITSYSTEM('Mass') AND UNITSYSTEM('Deg')
+u3 = 1
+$ENDIF
+$IF UNITSYSTEM('Eng')=0
+u4 = 1
+$ENDIF
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    for (const char* v : {"u1", "u2", "u3", "u4"}) CHECK(hasVar(run, v));
+    CHECK_THAT(run["f1"], WithinAbs(100.0, 1e-12));
+    CHECK_FALSE(hasVar(run, "f2"));
+    CHECK_FALSE(hasVar(run, "f3"));
+    // unknown setting
+    auto errors = parseErrorsWithLines("$IF UNITSYSTEM('zz')\nx = 1\n$ENDIF\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].find("zz") != std::string::npos);
+
+    // INTEGRALTABLE: true when a $IntegralTable directive appears in the file, above or below the test
+    // (EES compiles in two passes for this condition)
+    const std::string test = "$IF INTEGRALTABLE\na = 1\n$ELSE\na = 2\n$ENDIF\n";
+    auto without = runModel(test);
+    REQUIRE(without.solveOk);
+    CHECK_THAT(without["a"], WithinAbs(2.0, 1e-12));
+    auto below = parseFull(test + "$IntegralTable t y\n");
+    auto above = parseFull("$IntegralTable t y\n" + test);
+    for (const auto* pr : {&below, &above}) {
+        REQUIRE(pr->success);
+        REQUIRE(pr->conditionalDirectives.size() == 1);
+        CHECK(pr->conditionalDirectives[0].thenKept);
+    }
+    // the directive of a removed branch does not make the test true
+    auto removed = parseFull("m$ = 'a'\n$IF m$='b'\n$IntegralTable t y\n$ENDIF\n" + test);
+    REQUIRE(removed.success);
+    REQUIRE(removed.conditionalDirectives.size() == 2);
+    CHECK_FALSE(removed.conditionalDirectives[1].thenKept);
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: AND, OR and parentheses in the condition", "[library-gaps][if-directive]") {
+    // the example of the EES help
+    auto run = runModel(R"(
+A$='A'; B$='D'
+$if (A$='A') and ((B$='B') or (B$='C'))
+z=1
+$else
+z=2
+$endif
+$IF ((A$='A') OR (A$='K')) AND (B$='d')
+w1 = 1
+$ENDIF
+$IF A$='A' AND B$='B' OR B$='D'
+w2 = 1
+$ENDIF
+$IF A$='A' OR B$='B' AND B$='C'
+w3 = 1
+$ENDIF
+$IF (A$='X') or (B$='X')
+w4 = 1
+$ENDIF
+$IFNOT (A$='X') or (B$='X')
+w5 = 1
+$ENDIF
+$IF (A$='A') AND PARAMETRICTABLE
+w6 = 1
+$ENDIF
+$IF (A$='A') AND NOT_A_CONDITION
+w7 = 1
+$ENDIF
+)");
+    // the last test is not a condition: that is an error, whatever the first term says
+    CHECK_FALSE(run.parseOk);
+    auto ok = runModel(R"(
+A$='A'; B$='D'
+$if (A$='A') and ((B$='B') or (B$='C'))
+z=1
+$else
+z=2
+$endif
+$IF ((A$='A') OR (A$='K')) AND (B$='d')
+w1 = 1
+$ENDIF
+$IF A$='A' AND B$='B' OR B$='D'
+w2 = 1
+$ENDIF
+$IF A$='A' OR B$='B' AND B$='C'
+w3 = 1
+$ENDIF
+$IF (A$='X') or (B$='X')
+w4 = 1
+$ENDIF
+$IFNOT (A$='X') or (B$='X')
+w5 = 1
+$ENDIF
+$IF (A$='A') AND PARAMETRICTABLE
+w6 = 1
+$ENDIF
+)");
+    REQUIRE(ok.solveOk);
+    CHECK_THAT(ok["z"], WithinAbs(2.0, 1e-12));
+    // AND binds tighter than OR; w1: true; w2 = (A and B='B') or B='D': true; w3 = A or (B='B' and B='C'): true
+    for (const char* v : {"w1", "w2", "w3", "w5"}) CHECK(hasVar(ok, v));
+    for (const char* v : {"w4", "w6"}) CHECK_FALSE(hasVar(ok, v));
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: everything in a removed branch is removed, parsed or not", "[library-gaps][if-directive]") {
+    // CALL, DUPLICATE, FUNCTION, PROCEDURE, other directives, comments, text CoolSolve cannot parse
+    auto run = runModel(R"(
+mode$ = 'a'
+PROCEDURE p(a : b)
+  b = 2*a
+END
+$if mode$='b'
+$Bookmark Never
+{ a comment }
+"another comment"
+PROCEDURE q(a : b)
+  b = 3*a
+END
+FUNCTION g(a)
+  g = a
+END
+CALL p(1 : y1)
+CALL q(1 : y2)
+DUPLICATE i=1,3
+  z[i] = i
+END
+y3 = g(3)
+y4 = (this is not valid EES
+MODULE m(a : b)
+  b = a
+END
+$integralautostep 0.1
+$else
+y5 = 5
+$endif
+CALL p(4 : v)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y5"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["v"], WithinAbs(8.0, 1e-12));
+    for (const char* v : {"y1", "y2", "y3", "y4", "z[1]", "z[2]", "z[3]"}) CHECK_FALSE(hasVar(run, v));
+    // no warning (unknown directive, unknown function...) comes from the removed lines either
+    for (const auto& w : run.warnings) CHECK(w.find("Never") == std::string::npos);
+
+    // the same lines in a kept branch are parsed and executed
+    auto kept = runModel(R"(
+mode$ = 'b'
+PROCEDURE q(a : b)
+  b = 3*a
+END
+$if mode$='b'
+DUPLICATE i=1,3
+  z[i] = i
+END
+CALL q(1 : y2)
+$endif
+)");
+    REQUIRE(kept.solveOk);
+    CHECK_THAT(kept["y2"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(kept["z[3]"], WithinAbs(3.0, 1e-12));
+
+    // an error outside a removed branch is still reported, one inside is not
+    auto errors = parseErrorsWithLines("mode$ = 'a'\n$if mode$='b'\ny = (1 +\n$endif\nx = (2 +\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].rfind("5: ", 0) == 0);
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: the definition of a function or procedure chosen by a directive", "[library-gaps][if-directive]") {
+    auto model = [](const std::string& choice) {
+        return "FUN$ = '" + choice + "'\n"
+               "$if FUN$='double'\n"
+               "FUNCTION f(a)\n  f = 2*a\nEND\n"
+               "$else\n"
+               "FUNCTION f(a)\n  f = 3*a\nEND\n"
+               "$endif\n"
+               "y = f(5)\n";
+    };
+    auto run = runModel(model("double"));
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(10.0, 1e-12));
+    auto other = runModel(model("triple"));
+    REQUIRE(other.solveOk);
+    CHECK_THAT(other["y"], WithinAbs(15.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: directives in FUNCTION and PROCEDURE bodies", "[library-gaps][if-directive]") {
+    auto run = runModel(R"(
+mode$ = 'b'
+FUNCTION f(a)
+$if mode$='a'
+  f = a
+$else
+  f = 2*a
+$endif
+END
+PROCEDURE p(a : r)
+  r = a
+  $ifnot PARAMETRICTABLE
+  r = r + 100
+  $endif
+  $if PARAMETRICTABLE
+  r = -1
+  $endif
+END
+y = f(3)
+CALL p(1 : z)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["z"], WithinAbs(101.0, 1e-12));
+
+    // a branch that ends in the middle of a body keeps the END of that body: not a block boundary
+    auto errors = parseErrorsWithLines("mode$ = 'a'\nFUNCTION f(a)\n$if mode$='b'\n  f = a\nEND\n$else\n  f = 2*a\nEND\n$endif\ny = f(1)\n");
+    CHECK(errors.empty());
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: unbalanced directives and unusable conditions are errors with a line", "[library-gaps][if-directive]") {
+    using Messages = std::vector<std::string>;
+    // $ELSE or $ENDIF without $IF
+    CHECK(parseErrorsWithLines("x = 1\n$else\ny = 2\n") == Messages{"2: $ELSE without a matching $IF or $IFNOT"});
+    CHECK(parseErrorsWithLines("x = 1\n$endif\n") == Messages{"2: $ENDIF without a matching $IF or $IFNOT"});
+    CHECK(parseErrorsWithLines("a$ = 'a'\n$if a$='a'\nx = 1\n$endif\n$endif\n") ==
+          Messages{"5: $ENDIF without a matching $IF or $IFNOT"});
+    // $IF without $ENDIF: the line of the $IF
+    CHECK(parseErrorsWithLines("a$ = 'a'\n$if a$='a'\nx = 1\n") == Messages{"2: $IF without a matching $ENDIF"});
+    CHECK(parseErrorsWithLines("a$ = 'a'\n$ifnot a$='b'\nx = 1\n$else\ny = 1\n") == Messages{"2: $IFNOT without a matching $ENDIF"});
+    // the outer and the inner one are both open
+    auto open = parseErrorsWithLines("a$ = 'a'\n$if a$='a'\n$if a$='a'\nx = 1\n");
+    REQUIRE(open.size() == 2);
+    CHECK(open[0].rfind("3: ", 0) == 0);
+    CHECK(open[1].rfind("2: ", 0) == 0);
+    // two $ELSE
+    auto twice = parseErrorsWithLines("a$ = 'a'\n$if a$='a'\nx = 1\n$else\ny = 1\n$else\nz = 1\n$endif\n");
+    REQUIRE(twice.size() == 1);
+    CHECK(twice[0].rfind("6: ", 0) == 0);
+    CHECK(twice[0].find("line 2") != std::string::npos);
+    // no condition
+    auto empty = parseErrorsWithLines("$if\nx = 1\n$endif\n");
+    REQUIRE(empty.size() == 1);
+    CHECK(empty[0].rfind("1: ", 0) == 0);
+    // unknown condition: named
+    auto unknown = parseErrorsWithLines("$if SOMETHING\nx = 1\n$endif\n");
+    REQUIRE(unknown.size() == 1);
+    CHECK(unknown[0].rfind("1: ", 0) == 0);
+    CHECK(unknown[0].find("SOMETHING") != std::string::npos);
+    CHECK_FALSE(parseErrorsWithLines("x = 1\n$ifnot y > 3\nz = 1\n$endif\n").empty());
+    CHECK_FALSE(parseErrorsWithLines("a$ = 'a'\n$if a$='a' garbage\nz = 1\n$endif\n").empty());
+    CHECK_FALSE(parseErrorsWithLines("a$ = 'a'\n$if (a$='a'\nz = 1\n$endif\n").empty());
+    CHECK_FALSE(parseErrorsWithLines("a$ = 'a'\n$if a$='a')\nz = 1\n$endif\n").empty());
+    CHECK_FALSE(parseErrorsWithLines("a$ = 'a'\n$if a$='a\nz = 1\n$endif\n").empty());
+    CHECK_FALSE(parseErrorsWithLines("a$ = 'a'\n$if a$='a' AND\nz = 1\n$endif\n").empty());
+    // != and <> are not EES conditions: $IFNOT is
+    auto ne = parseErrorsWithLines("a$ = 'a'\n$if a$<>'b'\nz = 1\n$endif\n");
+    REQUIRE(ne.size() == 1);
+    CHECK(ne[0].find("$IFNOT") != std::string::npos);
+    // a table name is a string constant: a string variable is not accepted
+    CHECK_FALSE(parseErrorsWithLines("t$ = 'T'\n$if PARAMETRICTABLE=t$\nz = 1\n$endif\n").empty());
+    CHECK_FALSE(parseErrorsWithLines("$if PROFESSIONAL='x'\nz = 1\n$endif\n").empty());
+    CHECK_FALSE(parseErrorsWithLines("$if TABLERUN#='x'\nz = 1\n$endif\n").empty());
+    CHECK_FALSE(parseErrorsWithLines("$if TABLERUN# = 1.5\nz = 1\n$endif\n").empty());
+    // VERSION: CoolSolve has no EES version number
+    auto version = parseErrorsWithLines("$if VERSION>10.5\nz = 1\n$endif\n");
+    REQUIRE(version.size() == 1);
+    CHECK(version[0].find("VERSION") != std::string::npos);
+    // $ELSEIF is $ELSE in the EES help; with a condition it is not a documented directive
+    CHECK(parseErrorsWithLines("a$ = 'a'\n$if a$='b'\nz = 1\n$elseif\nz = 2\n$endif\n").empty());
+    auto elseif = parseErrorsWithLines("a$ = 'a'\n$if a$='b'\nz = 1\n$elseif a$='a'\nz = 2\n$endif\n");
+    REQUIRE(elseif.size() == 1);
+    CHECK(elseif[0].rfind("4: ", 0) == 0);
+    // an error in the condition of the first directive does not stop the report on the next
+    CHECK(parseErrorsWithLines("$if A\nx = 1\n$endif\n$if B\ny = 1\n$endif\n").size() == 2);
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: the directives are listed with the branch kept", "[library-gaps][if-directive]") {
+    auto pr = parseFull(
+        "a$ = 'x'\n"                  // 1
+        "$if a$='x'\n"                // 2
+        "p = 1\n"                     // 3
+        "$else\n"                     // 4
+        "p = 2\n"                     // 5
+        "$endif\n"                    // 6
+        "$ifnot a$='x' \"comment\"\n" // 7
+        "q = 1\n"                     // 8
+        "$if never$='y'\n"            // 9   (inside a removed branch)
+        "q2 = 1\n"
+        "$endif\n"
+        "$endif\n"                    // 12
+        "$IF PARAMETRICTABLE\n"       // 13
+        "r = 1\n"
+        "$ELSE\n"
+        "r = 2\n"
+        "$ENDIF\n");                  // 17
+    REQUIRE(pr.success);
+    REQUIRE(pr.conditionalDirectives.size() == 4);
+    const auto& d = pr.conditionalDirectives;
+    CHECK(d[0].line == 2);
+    CHECK(d[0].text == "$if a$='x'");
+    CHECK(d[0].evaluated);
+    CHECK(d[0].thenKept);
+    CHECK(d[0].elseLine == 4);
+    CHECK(d[0].endLine == 6);
+    CHECK(d[1].line == 7);
+    CHECK(d[1].text == "$ifnot a$='x'");   // the comment is not part of it
+    CHECK(d[1].evaluated);
+    CHECK_FALSE(d[1].thenKept);              // $IFNOT of a true test
+    CHECK(d[1].elseLine == 0);
+    CHECK(d[1].endLine == 12);
+    CHECK(d[2].line == 9);
+    CHECK_FALSE(d[2].evaluated);             // inside the removed branch of the previous one
+    CHECK(d[2].endLine == 11);
+    CHECK(d[3].line == 13);
+    CHECK(d[3].evaluated);
+    CHECK_FALSE(d[3].thenKept);
+    CHECK(d[3].elseLine == 15);
+    CHECK(d[3].endLine == 17);
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: debug folder says which branches were kept", "[library-gaps][if-directive]") {
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_library_gaps_debug";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const std::string code =
+        "a$ = 'x'\n"
+        "$if a$='x'\n"
+        "p = 1\n"
+        "$else\n"
+        "p = 2\n"
+        "$endif\n"
+        "$if a$='y'\n"
+        "q = 1\n"
+        "$endif\n"
+        "r = 1\n";
+    const fs::path file = dir / "model.eescode";
+    { std::ofstream f(file); f << code; }
+    CoolSolveRunner runner(file.string());
+    SolverOptions options;
+    REQUIRE(runner.run(options));
+    runner.generateDebugOutput((dir / "debug").string(), code);
+    std::ifstream in(dir / "debug" / "report.md");
+    REQUIRE(in.good());
+    std::string report((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(report.find("## Conditional directives") != std::string::npos);
+    // one line per directive: its line, its text, the branch kept and the lines removed
+    CHECK(report.find("| 2 | `$if a$='x'` | THEN branch kept (line 3), ELSE branch removed (line 5) |") != std::string::npos);
+    CHECK(report.find("| 7 | `$if a$='y'` | THEN branch removed (line 8), no $ELSE |") != std::string::npos);
+    fs::remove_all(dir);
+
+    // a model without directive has no such section
+    const fs::path dir2 = fs::temp_directory_path() / "coolsolve_test_library_gaps_debug2";
+    fs::remove_all(dir2);
+    fs::create_directories(dir2);
+    const fs::path file2 = dir2 / "model.eescode";
+    { std::ofstream f(file2); f << "x = 1\n"; }
+    CoolSolveRunner runner2(file2.string());
+    REQUIRE(runner2.run(options));
+    runner2.generateDebugOutput((dir2 / "debug").string(), "x = 1\n");
+    std::ifstream in2(dir2 / "debug" / "report.md");
+    std::string report2((std::istreambuf_iterator<char>(in2)), std::istreambuf_iterator<char>());
+    CHECK(report2.find("Conditional directives") == std::string::npos);
+    fs::remove_all(dir2);
+}
+
+TEST_CASE("CS-GAP-IF-DIRECTIVE: every entry point goes through the same parser (file, string, INTEGRAL model)", "[library-gaps][if-directive]") {
+    const std::string code = "act$ = 'a'\n$if act$='a'\nx = 5\n$else\nx = 7\n$endif\n";
+    // EESParser::parse (REST /parse, parametric study) and parseFile (CoolSolveRunner, CLI)
+    CHECK(parseFull(code).equationCount == 2);
+    const fs::path file = fs::temp_directory_path() / "coolsolve_test_library_gaps_if.eescode";
+    { std::ofstream f(file); f << code; }
+    EESParser parser;
+    auto fromFile = parser.parseFile(file.string());
+    fs::remove(file);
+    CHECK(fromFile.equationCount == 2);
+    REQUIRE(fromFile.conditionalDirectives.size() == 1);
+
+    // an equation-based dynamic model: the branch is chosen before the INTEGRAL extraction
+    const std::string integral = R"(
+mode$ = 'decay'
+$if mode$='decay'
+dydt = -y
+$else
+dydt = y
+$endif
+y = 1 + integral(dydt, t, 0, 2)
+$IntegralTable t:0.5 y
+)";
+    const fs::path ifile = fs::temp_directory_path() / "coolsolve_test_library_gaps_if_integral.eescode";
+    { std::ofstream f(ifile); f << integral; }
+    CoolSolveRunner runner(ifile.string());
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    const bool ok = runner.run(options);
+    fs::remove(ifile);
+    REQUIRE(ok);
+    REQUIRE(runner.getIntegralResult().success);
+    CHECK_THAT(runner.getIntegralResult().table.interpolate("y", 2.0), WithinAbs(std::exp(-2.0), 1e-3));
+}
+
+// ============================================================================
+// CS-BUG-STRING-CASE: strings are compared without regard to case
+// ============================================================================
+
+TEST_CASE("CS-BUG-STRING-CASE: register reproducer", "[library-gaps][string-case]") {
+    // was: z = 2 (EES: 1)
+    auto run = runModel("PROCEDURE pc(a$:y)\nIF (a$ = 'ABC') THEN y = 1 ELSE y = 2\nEND\nCALL pc('abc':z)\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["z"], WithinAbs(1.0, 1e-12));
+    // a different string is still different
+    auto other = runModel("PROCEDURE pc(a$:y)\nIF (a$ = 'ABC') THEN y = 1 ELSE y = 2\nEND\nCALL pc('abd':z)\n");
+    REQUIRE(other.solveOk);
+    CHECK_THAT(other["z"], WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-STRING-CASE: = and <> in FUNCTION and PROCEDURE bodies, every form", "[library-gaps][string-case]") {
+    auto run = runModel(R"(
+PROCEDURE pc(a$, b$ : y1, y2, y3, y4, y5)
+  IF (a$ = 'ABC') THEN y1 = 1 ELSE y1 = 2
+  IF (a$ <> 'abc') THEN y2 = 1 ELSE y2 = 2
+  IF ('Abc' = a$) THEN y3 = 1 ELSE y3 = 2
+  IF (a$ = b$) THEN y4 = 1 ELSE y4 = 2
+  IF (a$ <> b$) THEN
+    y5 = 1
+  ELSE
+    y5 = 2
+  ENDIF
+END
+FUNCTION f(a$)
+  IF (a$ = 'WATER' OR a$ = 'R134A') THEN
+    f = 1
+  ELSE
+    f = 0
+  ENDIF
+END
+CALL pc('aBc', 'AbC' : r1, r2, r3, r4, r5)
+CALL pc('aBc', 'AbD' : s1, s2, s3, s4, s5)
+w1 = f('water')
+w2 = f('R134a')
+w3 = f('Air')
+fl$ = 'Water'
+w4 = f(fl$)
+w5 = f('WaTeR')
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["r1"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["r2"], WithinAbs(2.0, 1e-12));   // <> is false for strings equal but for the case
+    CHECK_THAT(run["r3"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["r4"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["r5"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["s4"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["s5"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["w1"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["w2"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["w3"], WithinAbs(0.0, 1e-12));
+    CHECK_THAT(run["w4"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["w5"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-STRING-CASE: accented letters, empty strings, strings that only look alike", "[library-gaps][string-case]") {
+    auto run = runModel(R"(
+PROCEDURE pc(a$, b$ : y)
+  IF (a$ = b$) THEN y = 1 ELSE y = 0
+END
+CALL pc('Énergie', 'énergie' : r1)
+CALL pc('ÉNERGIE', 'énergie' : r2)
+CALL pc('Energie', 'énergie' : r3)
+CALL pc('abc', 'abcd' : r4)
+CALL pc('abc', 'ab' : r5)
+CALL pc('', '' : r6)
+CALL pc('a b', 'A B' : r7)
+CALL pc('a b', 'ab' : r8)
+CALL pc('a_b', 'A_B' : r9)
+CALL pc('à', 'À' : r10)
+)");
+    REQUIRE(run.solveOk);
+    const std::map<std::string, double> expected = {{"r1", 1}, {"r2", 1}, {"r3", 0}, {"r4", 0}, {"r5", 0},
+                                                    {"r6", 1}, {"r7", 1}, {"r8", 0}, {"r9", 1}, {"r10", 1}};
+    for (const auto& [name, value] : expected) CHECK_THAT(run[name], WithinAbs(value, 1e-12));
+}
+
+TEST_CASE("CS-BUG-STRING-CASE: eesStringEqual, the helper shared by IF conditions and $IF directives", "[library-gaps][string-case]") {
+    CHECK(eesStringEqual("abc", "ABC"));
+    CHECK(eesStringEqual("AirH2O", "airh2o"));
+    CHECK(eesStringEqual("", ""));
+    CHECK(eesStringEqual("R134a", "r134A"));
+    CHECK(eesStringEqual("Définie", "DÉFINIE"));
+    CHECK_FALSE(eesStringEqual("abc", "abd"));
+    CHECK_FALSE(eesStringEqual("abc", "abcd"));
+    CHECK_FALSE(eesStringEqual("abc", ""));
+    CHECK_FALSE(eesStringEqual("é", "e"));
+    CHECK_FALSE(eesStringEqual("a b", "ab"));
+    // the same equality decides a $IF directive and an IF statement
+    auto run = runModel(R"(
+PROCEDURE pc(a$:y)
+  IF (a$ = 'AIRH2O') THEN y = 1 ELSE y = 2
+END
+fluid$ = 'airh2o'
+CALL pc(fluid$ : z)
+$if fluid$ = 'AirH2O'
+w = 1
+$else
+w = 2
+$endif
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["z"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["w"], WithinAbs(1.0, 1e-12));
 }

@@ -1798,11 +1798,13 @@ TEST_CASE("Evaluator comparison and logical operators of IF conditions", "[evalu
         REQUIRE_FALSE(truth(makeBinaryOp("<>", a, num(3.0))));
     }
 
-    SECTION("string = and <> are case-sensitive") {
+    SECTION("string = and <> ignore the case, as in EES (CS-BUG-STRING-CASE)") {
         auto t = makeVariable("t$");
         REQUIRE(truth(makeBinaryOp("=", t, makeString("N"))));
-        REQUIRE_FALSE(truth(makeBinaryOp("=", t, makeString("n"))));
+        REQUIRE(truth(makeBinaryOp("=", t, makeString("n"))));   // was asserted false: the bug
+        REQUIRE_FALSE(truth(makeBinaryOp("=", t, makeString("K"))));
         REQUIRE(truth(makeBinaryOp("<>", t, makeString("K"))));
+        REQUIRE_FALSE(truth(makeBinaryOp("<>", t, makeString("n"))));
     }
 
     SECTION("and / or") {

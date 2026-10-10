@@ -1,4 +1,5 @@
 #include "coolsolve/evaluator.h"
+#include "coolsolve/ees_string.h"
 #include "coolsolve/lookup_table.h"
 #include "coolsolve/units.h"
 #include "coolsolve/fluids.h"
@@ -777,27 +778,6 @@ ADValue ExpressionEvaluator::evaluateUnaryOp(const UnaryOp& op) {
     throw std::runtime_error("Unknown unary operator: " + op.op);
 }
 
-// UNITSYSTEM('setting'): 1 if the EES unit setting is the one in use, 0 otherwise.
-// CoolSolve works in SI on a mass basis with angles in degrees; temperature,
-// pressure and energy follow `units`.
-static bool unitSettingActive(const std::string& setting, const UnitSystem& units) {
-    auto lower = [](std::string t) {
-        for (auto& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        return t;
-    };
-    const std::string s = lower(setting);
-    if (s == "si" || s == "mass" || s == "deg") return true;
-    if (s == "eng" || s == "molar" || s == "rad") return false;
-    for (const char* t : {"c", "k", "f", "r"})
-        if (s == t) return lower(units.temperature) == s;
-    for (const char* p : {"pa", "kpa", "mpa", "bar", "psia", "atm"})
-        if (s == p) return lower(units.pressure) == s;
-    for (const char* e : {"j", "kj", "btu", "kcal"})
-        if (s == e) return lower(units.energy) == s;
-    throw std::runtime_error("UNITSYSTEM: unknown unit setting '" + setting +
-        "' (expected SI, Eng, Mass, Molar, Deg, Rad, C, K, F, R, Pa, kPa, bar, MPa, psia, atm, J, kJ, Btu or kcal)");
-}
-
 // True for expressions that yield a string: 'literals', variables ending in '$'
 // and string-valued functions such as PHASE$().
 static bool isStringExpression(const ExprPtr& expr) {
@@ -814,9 +794,10 @@ static bool isStringExpression(const ExprPtr& expr) {
 }
 
 ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
-    // Conditions of IF statements compare strings with = and <> (case-sensitive).
+    // Conditions of IF statements compare strings with = and <>, without regard to case
+    // as EES does (CS-BUG-STRING-CASE; the helper is shared with the $IF directives).
     if ((op.op == "=" || op.op == "<>") && (isStringExpression(op.left) || isStringExpression(op.right))) {
-        const bool equal = evaluateString(op.left) == evaluateString(op.right);
+        const bool equal = eesStringEqual(evaluateString(op.left), evaluateString(op.right));
         return ADValue::constant(equal == (op.op == "=") ? 1.0 : -1.0, numVariables_);
     }
 

@@ -127,9 +127,54 @@ comparison inside `IF(a=5, 1, 2)` is not valid (see *Inline selection* below).
 
 Parser-level directives begin with `$` and span a single line:
 
-- `$if <cond>` / `$ifnot <cond>` / `$endif`
+- `$if <cond>` / `$ifnot <cond>` / `$else` / `$endif` — conditional compilation,
+  see below.
 - `$unitSystem SI` — recognised for EES compatibility but currently **ignored**;
   the unit system is fixed (see the warning at the top of this page).
+
+#### Conditional compilation: `$IF`, `$IFNOT`, `$ELSE`, `$ENDIF`
+
+As in EES, the lines between `$IF <cond>` and `$ELSE` / `$ENDIF` are compiled
+only if the condition is true, the lines between `$ELSE` and `$ENDIF` only if it
+is false; `$IFNOT` inverts the condition. The lines of the other branch are
+**removed before anything else looks at them** — they are not parsed (they may
+hold text CoolSolve does not support), define no variable and no equation, and
+appear in no report. Everything may be in a branch: equations, comments, `CALL`s,
+`DUPLICATE` blocks, `FUNCTION`/`PROCEDURE` definitions, other directives.
+Directives may be nested, and may also be used inside the body of a
+`FUNCTION`/`PROCEDURE`. The keywords are case-insensitive.
+
+```ees
+act$ = 'a'
+$if act$='a'
+x = 5
+$else
+x = 7                      "removed: x = 5"
+$endif
+```
+
+The condition is either a test or several tests combined with `AND`, `OR` and
+parentheses (`AND` binds tighter than `OR`):
+
+| Condition | Value in a CoolSolve solve |
+|:----------|:---------------------------|
+| `X$='text'` | true if the string variable `X$` equals `text` **without regard to case** (`X$` and `'text'` as in EES: the quotes are optional). `X$` must be set to a **string constant** (`X$ = 'text'`, or `X$ = Y$` with `Y$` a constant) **before** the directive, in the main program, outside a removed branch; the value of a `CALL` output or of an expression is not known when the equations are compiled and is an error naming the variable, as is a variable that has no value (EES also accepts a value from its Diagram window, which CoolSolve does not have). `<>` is not an EES condition: use `$IFNOT`. |
+| `PARAMETRICTABLE`, `PARAMETRICTABLE='name'` | **false**: a CoolSolve solve is not an EES table run, and the GUI parametric study replaces the imposed value in the text of each point and solves an ordinary model. So `$IFNOT PARAMETRICTABLE` blocks are always kept |
+| `MINMAX` (`MIN/MAX`), `MINMAXTABLE` (`MIN/MAXTABLE`) [`='name'`], `UNCERTAINTY`, `UNCERTAINTYTABLE` [`='name'`], `TABLERUN# = n` / `< n` / `> n`, `DIAGRAMWINDOW`, `MACRO` | false |
+| `PROFESSIONAL` | true (no license restriction: what CoolSolve does not implement fails loudly) |
+| `INTEGRALTABLE` | true if the file contains a (kept) `$IntegralTable` directive, above or below the test (EES compiles in two passes for it) |
+| `UNITSYSTEM('XX')` [`= n`] | as the `UNITSYSTEM()` function: `SI`, `Mass`, `Deg`, `C`, `Pa`, `J` are in use, `Eng`, `Molar`, `Rad`, `K`, `kPa`, … are not |
+
+`VERSION < n` / `> n` and any other condition are errors: CoolSolve has no EES
+version number. Tolerated EES spellings: a trailing `then` after the condition
+(`$if type$='ari' then`), any text after `$else` / `$endif` (`$else fuel$='ch4'`),
+a quoted or `{ }` comment after the condition, spaces around `=`, and a bare
+`$ELSEIF` (it is a `$ELSE` in the EES help; `$ELSEIF <cond>` is an error).
+Unbalanced directives are errors with their line: `$ELSE` or `$ENDIF` without
+`$IF`, a second `$ELSE`, a `$IF` without `$ENDIF`.
+
+With `-d`, the `report.md` of the debug folder lists every `$IF`/`$IFNOT` with
+the branch that was kept. See also [`$IF` in the EES help](https://fchartsoftware.com/ees/eeshelp/_if_and__ifnot.htm).
 
 ---
 
@@ -497,7 +542,8 @@ ENDIF
 - Only the branch selected by the condition is executed; the other one is
   never evaluated (a division by zero in an untaken branch is harmless).
 - The condition compares numbers or strings with `=`, `<>`, `<`, `>`, `<=`,
-  `>=` (string comparison is case-sensitive: `fluid$ = 'R134a'`), and combines
+  `>=` (strings are compared without regard to case, as in EES:
+  `fluid$ = 'R134a'` also matches `'r134A'`), and combines
   relations with `AND`, `OR` and parentheses. The parentheses around the whole
   condition are optional.
 - A branch holds any statements of a body, including other `IF` statements and

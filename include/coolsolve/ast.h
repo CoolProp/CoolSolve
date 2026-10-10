@@ -96,7 +96,7 @@ struct Comment {
 };
 
 struct Directive {
-    std::string name;  // e.g., "$ifnot", "$endif", "$bookmark"
+    std::string name;  // e.g., "$bookmark", "IntegralTable" ($if/$ifnot/$else/$endif are resolved by the parser and never stored)
     std::string content;
     // Optional structured payload, populated by the parser when `name` is
     // "IntegralTable". Other directives leave `hasIntegralTableSpec == false`.
