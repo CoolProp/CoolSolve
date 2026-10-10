@@ -289,6 +289,7 @@ private:
                     std::vector<StmtPtr> body;
                     int startLine = lineNumber;
                     procedureBodyDepth_++;
+                    routineKind_ = "FUNCTION"; routineName_ = name;
                     std::string term = parseBodyLines(stream, lineNumber, body, result);
                     procedureBodyDepth_--;
                     if (term != "END") {
@@ -308,6 +309,7 @@ private:
                     std::vector<StmtPtr> body;
                     int startLine = lineNumber;
                     procedureBodyDepth_++;
+                    routineKind_ = "PROCEDURE"; routineName_ = name;
                     std::string term = parseBodyLines(stream, lineNumber, body, result);
                     procedureBodyDepth_--;
                     if (term != "END") {
@@ -505,6 +507,8 @@ private:
     // > 0 while the body of a FUNCTION/PROCEDURE is being parsed (IF ... THEN
     // statements are only valid there).
     int procedureBodyDepth_ = 0;
+    // The routine whose body is being parsed ("FUNCTION" or "PROCEDURE", and its name).
+    std::string routineKind_, routineName_;
     
     // ------------------------------------------------------------------------
     // Compile-time directives $IF / $IFNOT / $ELSE / $ENDIF (CS-GAP-IF-DIRECTIVE)
@@ -1166,6 +1170,8 @@ private:
                 body.push_back(stmt);
             } else if (auto stmt = tryParseDirective(bodyLine, lineNumber)) {
                 body.push_back(stmt);
+                if (procedureBodyDepth_ > 0 && isCommonDirective(stmt->as<Directive>()))
+                    result.errors.push_back({lineNumber, 0, commonDirectiveMessage(stmt->as<Directive>().content), bodyLine});
             } else if (isBodyKeyword("IF")) {
                 const int ifLine = lineNumber;
                 std::string term = parseIfStatement(trim(removeInlineComments(bodyLine)),
@@ -1576,6 +1582,31 @@ private:
         }
         spec.valid = true;
         return spec;
+    }
+
+    static bool isCommonDirective(const Directive& directive) {
+        std::string name = directive.name;
+        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+        return name == "common";
+    }
+
+    /// The error for a `$COMMON` line in a FUNCTION/PROCEDURE body (CS-BUG-COMMON-PROC): it is not
+    /// supported, the shared variables are passed as input arguments (the body is unchanged).
+    /// `content` is the text after the directive name: variables separated by commas or semicolons.
+    std::string commonDirectiveMessage(const std::string& content) {
+        std::string list = removeInlineComments(content);
+        std::replace(list.begin(), list.end(), ';', ',');
+        std::string names;
+        size_t count = 0;
+        for (const auto& item : splitArguments(list)) {
+            const std::string name = trim(item);
+            if (name.empty()) continue;
+            names += (count++ ? ", " : "") + name;
+        }
+        const std::string what = count == 0 ? "the shared variables as input arguments"
+                               : names + (count == 1 ? " as an input argument" : " as input arguments");
+        return "$COMMON is not supported: pass " + what + " of " + routineKind_ + " " + routineName_ +
+               (routineKind_ == "FUNCTION" ? " (and in each call)" : " (and in each CALL)");
     }
 
     StmtPtr tryParseDirective(const std::string& line, int lineNum, DiagnosticCollector* diag = nullptr) {

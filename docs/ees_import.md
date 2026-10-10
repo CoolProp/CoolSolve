@@ -328,6 +328,11 @@ cannot be swept (`CS-GAP-PARAMETRIC`).
   equations into the main program, renaming the module's internal variables per
   call (`<variable>_<tag>`), as the CoolSolve Library does (its workflow §6,
   decision D10).
+- `$COMMON` (variables of the main program shared with a `FUNCTION`/`PROCEDURE`
+  body, first line of the body) is not supported and is refused with an error that
+  names the variables: pass them as input arguments of the routine and of each
+  `CALL`, and delete the `$COMMON` line (the body is unchanged; the CoolSolve
+  Library does it, its workflow §6, decision D13).
 - Property calls with the (T, H) input pair are not supported and not planned
   (`CS-GAP-PROP-TH`): rewrite them with an equivalent (P, H) call (saturation
   pressure from T for a two-phase state, or an auxiliary pressure unknown), as the

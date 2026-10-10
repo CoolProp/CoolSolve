@@ -283,7 +283,6 @@ convenience. Update the *Blocked models* column when you mark a model blocked.
 
 | ID | Description | Reproducer | Priority |
 |---|---|---|---|
-| `CS-BUG-COMMON-PROC` | Variables shared with the calling program by the **`$common` directive** of a `PROCEDURE`/`FUNCTION` body: the body is evaluated with **zero** for them instead of the value of the caller's variable. `$COMMON` is the documented EES way to share variables with a subroutine without passing them as arguments (EES Language Reference, *Subprograms*: "$COMMON lists the variables that are local to the subroutine but shared with the program that calls it"); valid EES: the source file of library model `CSL-0080`, `~/Nextcloud/thermo_models/Model data bank/Heat_and_Cool_Production_Systems/Heat_Production_by_Combustion/CondensingBoiler_RefSim_Model_VLAR080109.zip!/CondensingBoiler_RefSim_EES_Model_VLAR080109.EES` (EES 7.888, inventory TM-0494), declares `$common R_a_coil,R_m_coil,R_w_coil,P_atm,M_dot_a_coil,C_dot_w_coil,c_p_a_su_coil,T_w_su_coil,T_wb_su_coil,h_a_su_coil` in `PROCEDURE COILWET` and stores the solution of the model, whose wet-coil results depend on all of them | **Silently zero**, with a *SUCCESS* status: the body is evaluated with 0 for every `$common` variable, so a division by one of them returns `NaN` and the solve fails with *SingularJacobian* in the block of the `CALL` outputs (the body's own equations never appear in the residuals report), or the model solves with wrong values. Reproducer (valid EES, 7 lines): `PROCEDURE pq(a:y)` ⏎ `$common b` ⏎ `y = a + b` ⏎ `END` ⏎ `b = 21` ⏎ `a = 1` ⏎ `CALL pq(a:y)` ⏎ `z = y*2` ⏎ `w = z + b` → *SUCCESS*, `y` = 2, `z` = 4, `w` = 25 (EES: 22, 44, 65); with `y = a*b` the same file returns `y` = 0. A name that is *also* a formal argument of the procedure is resolved correctly, only the `$common`-only names are zero. Found while importing `CSL-0080` | Pass the shared variables as formal arguments instead of `$common`, body and call unchanged (`PROCEDURE COILWET(flag_dp, M_dot_a_coil, C_dot_w_coil, c_p_a_su_coil, T_w_su_coil, T_wb_su_coil, h_a_su_coil, R_a_coil, R_m_coil, R_w_coil, P_atm : Q_dot_coil_wet, T_wb_ex_coil_wet)`, the `$common` line dropped): valid EES, no equation of the body changes — `CSL-0080` | P1 (silent) | library model `CSL-0080` *condensing_boiler_refsim* (native file blocked; runnable `_coolsolve` variant passes the shared variables as arguments); expected in every `$common` procedure of the ULiège toolkits (`Brineprop.lib`, TM-0479/TM-0480) **Related, lower priority, and *not* a solver bug** (C-85 review): the body of a subroutine is a sequence of assignments executed in order, as in EES, so a variable that the body uses before it assigns it is a declaration error that EES refuses; CoolSolve accepts such a body silently, and the body local variables never appear in the `-d` residuals (`coolsolve_residuals.md`) nor in the `.sol`, so a loop written inside a procedure body can neither be checked nor iterated. In `CSL-0080` the single forward-referenced local is `c_p_af_coil` (of `SUBPROGRAM WETCOIL`) and the stored EES solution (`Q_dot_coil_wet` = 11 882.65 W with `c_p_af_coil` = 14 793 J/kg.K) shows that EES solves that body simultaneously; the runnable variant therefore copies the body into the main program. A warning on a use-before-assignment and the body locals in the `.sol` would close this |
 | `CS-BUG-TINY-VALUE` | A **computed variable value below about 1E-16 is silently stored and reported as 0** (the literals and the arithmetic are fine: the value is lost when it is assigned to the solution of a block, so every variable of the `.sol` file below ~1E-16 reads `0.000000000000e+00`). Valid EES: the notation and the range are unremarkable (the EES files of the collection store such values, e.g. `1.07955392700E-24` and `1.42515947790E-19` in `~/Nextcloud/thermo_models/modeles/cycle a extraction.EES`, `1.64147763550E-20` in `~/Nextcloud/thermo_models/machines et systemes thermiques/MSTh - Repetitions/TP 12/MSTH-SB-R12-EX7.EES`), and IEEE 754 doubles represent 1E-20 without any loss. Found while translating `CSL-0082` (its mean free path constant `2.33E-20` survives because the *equation result* is 72.6 m, but the constant written as a statement would be 0). | `c = 2.33E-20` ⏎ `d = c/1E-22` ⏎ `e = (2.33E-20)/1E-22` → *SUCCESS*, `c = 0`, `d = 0`, `e = 233` (EES: `c` = 2.33e-20, `d` = 233): `e` shows the literal and the division are evaluated correctly, so the loss happens when the value is stored | Write such constants as a product or a quotient whose result is of ordinary magnitude (e.g. `(2.33/1E20)*T`), and check any variable expected below 1E-15 | P2 (silent) | – (not blocking: `CSL-0082` uses the constant inside an expression) |
 | `CS-BUG-LOOKUP-HINT` | The error hint says *"place 'data.csv' in the model directory"* whereas the convention is `<model>-data.csv`. | same as above | P3 |
 | `CS-BUG-UNIT-VOLUME` | Unit inference labels specific volumes from `VOLUME(...)` as `kg/m^3` in the `.sol` file (should be `m^3/kg`). | `v = VOLUME('R22', T=8, P=5E5)` → `v = 0.049 "kg/m^3"` | P3 |
@@ -335,10 +334,13 @@ convenience. Update the *Blocked models* column when you mark a model blocked.
    one-line entry in §7 (ID, fix, commit) and re-test the blocked models (§9).
 
 **Not gaps** (maintainer decisions; the library rewrites the model itself, decisions
-D11/D12 of the library workflow): property calls with an input pair that CoolProp
+D11/D12/D13 of the library workflow): property calls with an input pair that CoolProp
 does not support (`(T, h)`, `(s, v)`…) are rewritten with an equivalent supported
-pair, and external REFPROP calls (`CALL EES_REFPROP`) are rewritten as CoolProp
-property calls. Only a fluid or a mixture that CoolProp lacks is a gap. Such rows
+pair, external REFPROP calls (`CALL EES_REFPROP`) are rewritten as CoolProp
+property calls, and `$COMMON` (variables of the main program shared with a
+FUNCTION/PROCEDURE body) is rejected with an error that names the variables, which
+are passed as input arguments of the routine and of each `CALL` instead. Only a fluid
+or a mixture that CoolProp lacks is a gap. Such rows
 are kept in §4 with the priority *not a gap* so that importers find the rule.
 
 ---
@@ -382,6 +384,7 @@ One line per fixed item. The regression tests are in `tests/test_library_gaps.cp
 | `CS-GAP-ACCENTED-IDENT` | Latin-1 letters and `°` in variable names (`T_a_réf`), case-insensitive | post-v0.3.0, `fix/library-gaps-2` |
 | `CS-BUG-HASH-IDENT` | `#` inside variable names (`Nu#_f`); `.initials` no longer cut at `#` | post-v0.3.0, `fix/library-gaps-2` |
 | `CS-GAP-FLUIDS-MIXTURE` | CoolProp mixture fluids `A[x]&B[y]` in property calls (warning: predictive mixture properties) | post-v0.3.0, `fix/library-gaps-2` |
+| `CS-BUG-COMMON-PROC` | `$COMMON` rejected with an error naming the variables to pass as arguments (not supported: rewrite the model) | post-v0.3.0, `fix/library-gaps-2` |
 
 ---
 
@@ -402,9 +405,11 @@ Items that a reviewer reproduced were moved to §4/§5 (e.g. `CS-BUG-PI-FUNCTION
 | 2026-10-05 | C-42 `CSL-0040` (space-bunny) | Diagnostics: `coolsolve -d` gives no "equation-less / over-determined variable" diagnostic for non-square systems — it lists all unmatched variables and the count mismatch only (443 eq / 432 unknowns in orc_complex). | Feature suggestion for imports, no EES question. |
 | 2026-10-05 | C-73 `CSL-0069` (space-bunny) | Solver robustness (maybe `CS-BUG-NEWTON1D-DIVERGE`): `examples/simple_centrifugal_compressor.eescode` (CSX-043 = TM-0057, square, 15 blocks of 1) fails with the CLI default pipeline (Newton only): the size-1 block `phi = V_dot_su/(U*A)` starts at `A` = 1, the first step (dx = 62.9) sends `A` negative, it diverges, `dF/dA` underflows and the block reports *SingularJacobian* (`coolsolve -d`, `solver_trace.md`). `TrustRegion` in the pipeline converges (59 it.); with the EES stored solution as `.initials` Newton converges in 4 it. | A diverged 1-D block reports a misleading status; a step limit / divergence detection / bracketed fallback would fix it. The example's `.initials` is stale (holds `r_p`/`r_p_i` of `turbocompressor`), and its header note ("default configuration includes TrustRegion") is wrong for a CLI run: give it the stored solution as `.initials` or add `solverPipeline = Newton, TrustRegion` to `examples/coolsolve.conf`. Not registered: nothing shows that EES converges from the same guesses. |
 | 2026-10-06 | C-111 `CSL-0102` (space-bunny; reproducers in the model README) | (1) `IF … ELSEIF … ENDIF` is accepted but the `ELSEIF` condition is ignored (last branch wins, silent wrong value). (2) A self-recursive `FUNCTION` returns 1.0 or **segfaults**. (3) `temperature_effectiveness_plate` gives wrong results when its arguments are variables, correct ones with literals. | (1) If single-word `ELSEIF` is not valid EES (documented form: nested `ELSE` + `IF`), CoolSolve should reject it rather than mis-evaluate (see `CS-GAP-ELSEIF-CHAIN`). (2) A crash is a bug whatever EES allows for recursion. (3) Possible evaluation-order / branch issue in nested function calls: reproduce first. |
-| 2026-10-07 | C-123 `CSL-0112` (space-bunny) | Procedure locals and caller variables share one namespace: local names `P_ev`, `P_cd`, `P_crit` of the procedure bodies had to be renamed because the calling program uses the same names. | In EES the variables of a FUNCTION/PROCEDURE body are local (only arguments and `$COMMON` cross the boundary). Reproduce with a minimal valid-EES file (a body local with the same name as a main-program unknown) before registering; may be related to `CS-BUG-COMMON-PROC`. |
+| 2026-10-07 | C-123 `CSL-0112` (space-bunny) | Procedure locals and caller variables share one namespace: local names `P_ev`, `P_cd`, `P_crit` of the procedure bodies had to be renamed because the calling program uses the same names. | In EES the variables of a FUNCTION/PROCEDURE body are local (only arguments and `$COMMON` cross the boundary; CoolSolve rejects `$COMMON`, `CS-BUG-COMMON-PROC`). Reproduce with a minimal valid-EES file (a body local with the same name as a main-program unknown) before registering. |
 | 2026-10-07 | C-123 `CSL-0112` (space-bunny) | A state exactly on the R245fa saturation line (TM-0564 demonstration point) returns NaN in CoolSolve; CoolProp's saturation temperature is 0.09 K below EES's, the worker imposed 1 K subcooling. | Property-model difference at the dome boundary, not necessarily a CoolSolve bug; check how `enthalpy(R245fa, T=…, P=…)` behaves at saturation (EES returns a value). |
 | 2026-10-08 | C-147 `CSL-0155` | The native inverter heat pump (all IFs now evaluate) solves 180 of 181 blocks; block 106 (151 variables: dry/wet evaporator selection, compressor heat transfer, condenser coupling) does not converge, even from CoolProp-consistent guesses. | Solver robustness without a small reproducer; model status `failing` in the library. |
+| 2026-10-10 | C-85 review of `CSL-0080` (moved from the closed `CS-BUG-COMMON-PROC`) | Not a solver bug: the body of a subroutine is a sequence of assignments executed in order, as in EES, so a variable that the body uses before it assigns it is a declaration error that EES refuses; CoolSolve accepts such a body silently, and the body local variables never appear in the `-d` residuals (`coolsolve_residuals.md`) nor in the `.sol`, so a loop written inside a procedure body can neither be checked nor iterated. In `CSL-0080` the single forward-referenced local is `c_p_af_coil` (of `SUBPROGRAM WETCOIL`) and the stored EES solution (`Q_dot_coil_wet` = 11 882.65 W with `c_p_af_coil` = 14 793 J/kg.K) shows that EES solves that body simultaneously; the runnable variant copies the body into the main program. | A warning on a use-before-assignment and the body locals in the `.sol` would close it; check in EES that a forward reference is refused before registering (related: `CS-BUG-IMPLICIT-PROC`). |
+| 2026-10-10 | `$COMMON` rewrite of `CSL-0153` | A string variable that a PROCEDURE body reads without defining it (`fluidev$` in the dead `IF fluidev$='glycol'` block of `hx_cd`) stops the run with *"String variable not found: fluidev$"*; the README of the model says EES evaluates the comparison as false and the stored EES solution exists. Reproducer: `PROCEDURE p(a : y)` ⏎ `IF fl$ = 'glycol' THEN` ⏎ `y = 1` ⏎ `ELSE` ⏎ `y = a` ⏎ `ENDIF` ⏎ `END` ⏎ `fl$ = 'glycol'` ⏎ `CALL p(2 : y)` → EvaluationError (EES: `y` = 2, if it accepts the body). | Confirm the EES behaviour (empty string for an unassigned string local, or a declaration error) before registering; the next blocker of `CSL-0153` after `CS-GAP-END-PROCEDURE`. |
 | 2026-10-10 | T-RECHECK of the INTEGRAL fixes (`CSL-0041`, CoolSolve `4cd0ca5`, Claude Sonnet) | `$IntegralTable t:10` rows are placed on the integration steps, so the requested interval is rounded up to a multiple of the step: with `integralMaxSteps = 6`, `y = 1 + integral(dydt, t, 0, 50)` ⏎ `dydt = -y/10` ⏎ `$IntegralTable t:10 y` gives rows at 0, 16.67, 33.33, 50; with the explicit step `integral(dydt, t, 0, 50, 4)` rows at 0, 12, 24, 36, 48, 50. | What EES writes for an output interval that is not a multiple of the step (interpolated rows at 10, 20, … or step-aligned rows) is not established; check in EES before registering (related: `CS-BUG-INTEGRAL-OUTPUT-INTERVAL`). |
 
 ---
@@ -449,7 +454,7 @@ models (148): 98 verified / 7 runs / 43 blocked before, 105 verified / 8 runs /
   caches another tag (`cmake -DCOOLSOLVE_COOLPROP_TAG=75af7816 ..` aligns it) and
   `coolsolve --version` prints the CoolProp revision linked. A bump is deliberate
   ([contributing.md](contributing.md#pinned-coolprop-version)). New `.cpp` files need `cmake .`.
-- *Baselines* (pin `75af7816`): unit suite 603 test cases; examples 40/46 solve, not solving
+- *Baselines* (pin `75af7816`): unit suite 612 test cases; examples 40/46 solve, not solving
   `cooling_tower2`, `internal_combustion_engine_cpbar`, `orc_complex`,
   `simple_centrifugal_compressor`, `turbocompressor_interpolate`, `water_libr`; library
   regression 151 targets, 0 failures (`tools/test_models.py` records the CoolProp baseline
@@ -462,10 +467,7 @@ models (148): 98 verified / 7 runs / 43 blocked before, 105 verified / 8 runs /
   the suite at 1e-6): bisected to CoolProp `3f06ccf7` (#3360, p,T flash rework), mechanism not analysed.
 
 **Queue** (next first):
-Decided 2026-10-10, in this order: (a) `$COMMON` is not supported: CoolSolve rejects it with an error
-naming the variables to pass as arguments; `CSL-0080`, `CSL-0124`, `CSL-0153` pass them as arguments
-(`CS-BUG-COMMON-PROC` closed; also refresh the result values quoted in the `CSL-0124`/`CSL-0153`
-READMEs). (b) `CALL NASA` is rewritten as ideal-gas property calls (`h = MolarMass(X$)*enthalpy(X$,T=T)`),
+Decided 2026-10-10: `CALL NASA` is rewritten as ideal-gas property calls (`h = MolarMass(X$)*enthalpy(X$,T=T)`),
 `CS-GAP-NASA` becomes *not a gap*, new gap for the species CoolProp lacks (OH, H, O, N, NO, NO2), `CSL-0150`
 rewritten. Then:
 0. `CSL-0118` (air nozzle/ejector): its isentropic nozzle/diffuser relations are written as ratios of
@@ -479,7 +481,7 @@ rewritten. Then:
 2. `CS-GAP-INTERP-EES` and `CS-GAP-INTERP-EXTRAP` (silent): `CSL-0011`, `CSL-0035`,
    `CSL-0149`.
 3. Silent bugs: `CS-BUG-VAR-ANNOTATION`, `CS-BUG-PI-FUNCTION`, `CS-BUG-CONVERT-UNIT`,
-   `CS-BUG-COMMON-PROC`, `CS-BUG-IMPLICIT-PROC`, `CS-BUG-DUPLICATE-VAR-BOUND`,
+   `CS-BUG-IMPLICIT-PROC`, `CS-BUG-DUPLICATE-VAR-BOUND`,
    `CS-BUG-DUPLICATE-INDEX-EXPR`, `CS-BUG-DUPLICATE-CALL-BLOCK`, `CS-BUG-STRING-ALIAS`,
    `CS-GAP-GOTO`, `CS-BUG-HUMIDAIR-PROPS`, `CS-GAP-AIR-ENTHALPY-REF`; parser hygiene
    `CS-BUG-MAIN-SEMICOLON`, `CS-BUG-DUPLICATE-HEADER-COMMENT`.
@@ -494,8 +496,7 @@ rewritten. Then:
    integration work.
 6. Close-out (the CoolProp move is done, see *Build*; the former pin differs only by the changes
    listed there, #3333 and #3446 included): merge the branch; decide on `air_screw_compressor` (tolerance-1e-9 failure
-   above); the `CSL-0124` and `CSL-0153` READMEs still quote the former `.sol` values
-   (results tables).
+   above).
 
 **Library follow-ups for the maintainer** (decisions, not CoolSolve fixes):
 `CSL-0078`'s native file fixes `P_ev`, `P_cd`, `M_dot_r` at the stored EES values

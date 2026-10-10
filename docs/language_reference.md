@@ -694,6 +694,34 @@ that follow (as the fluid name, `enthalpy(fluid$, …)`), whether or not the mai
 program also assigns it a literal, in the order the structural analysis finds
 (also inside a coupled block).
 
+### `$COMMON` is not supported
+
+In EES, `$COMMON a, b$, c` on the first line of a `FUNCTION` or `PROCEDURE` body
+lets the body read variables of the main program without receiving them as
+arguments. CoolSolve does not support it: a `$COMMON` line in a body is an
+error (the run stops, in the CLI and in the GUI console), naming the variables,
+the routine and the rewrite:
+
+```
+Line 2: $COMMON is not supported: pass b as an input argument of PROCEDURE pq (and in each CALL)
+```
+
+Pass the shared variables as input arguments, after the existing ones, and in every call;
+the body does not change, and the model is valid EES with the same results:
+
+```ees
+PROCEDURE pq(a, b : y)      "was PROCEDURE pq(a : y) with $COMMON b"
+    y = a + b
+END
+
+b = 21
+a = 1
+CALL pq(a, b : y)           "y = 22"
+```
+
+String variables (`b$`) are passed the same way. A `$COMMON` line in the main
+program shares nothing and is ignored; one inside a comment or a string is text.
+
 ### CALL ERROR
 
 `CALL ERROR('message')` stops the calculation and reports the message — the

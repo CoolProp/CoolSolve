@@ -1593,7 +1593,7 @@ standalone-quote block comment
 3 4
 "
 // a C-style comment 3 4
-$COMMON a
+$Bookmark a directive in a body
 
   s = 0 ; // a comment after a separator
   t := 2 ; {brace after a separator} ;
@@ -6035,4 +6035,274 @@ TEST_CASE("CS-GAP-FLUIDS-MIXTURE: LaTeX report of a model with a mixture compile
     std::string log;
     INFO(log);
     CHECK(pdflatexCompiles(tex, &log));
+}
+
+// ============================================================================
+// CS-BUG-COMMON-PROC: $COMMON is not supported (maintainer decision): the body of a
+// FUNCTION/PROCEDURE saw 0 for the variables of its $COMMON list while the run reported
+// SUCCESS. It is now an error that names the directive, the variables and the routine and
+// says how to rewrite the model: pass the shared variables as input arguments.
+// ============================================================================
+
+namespace {
+
+/// The $COMMON error of `code`, or an empty string.
+std::string commonError(const std::string& code) {
+    for (const auto& m : parseErrors(code))
+        if (m.find("$COMMON") != std::string::npos) return m;
+    return "";
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-COMMON-PROC: the register reproducer is rejected, never SUCCESS", "[library-gaps][common-proc]") {
+    const std::string code =
+        "PROCEDURE pq(a:y)\n"
+        "$common b\n"
+        "y = a + b\n"
+        "END\n"
+        "b = 21\n"
+        "a = 1\n"
+        "CALL pq(a:y)\n"
+        "z = y*2\n"
+        "w = z + b\n";
+    auto run = runModel(code);
+    INFO(run.message);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    // the message names the directive, the variable and the routine, and says how to rewrite
+    CHECK(anyContains({run.message}, "$COMMON is not supported"));
+    CHECK(anyContains({run.message}, "pass b as an input argument of PROCEDURE pq"));
+    CHECK(anyContains({run.message}, "in each CALL"));
+}
+
+TEST_CASE("CS-BUG-COMMON-PROC: the error points at the $COMMON line", "[library-gaps][common-proc]") {
+    EESParser parser;
+    auto result = parser.parse(
+        "x = 1\n"
+        "PROCEDURE pq(a:y)\n"
+        "$common b\n"
+        "y = a + b\n"
+        "END\n"
+        "CALL pq(x:y)\n");
+    REQUIRE(result.errors.size() == 1);
+    CHECK(result.errors[0].line == 3);
+    CHECK(result.errors[0].context.find("$common b") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-COMMON-PROC: a FUNCTION with $COMMON is rejected too", "[library-gaps][common-proc]") {
+    auto run = runModel(
+        "FUNCTION fq(a)\n"
+        "$common b\n"
+        "fq = a + b\n"
+        "END\n"
+        "b = 21\n"
+        "a = 1\n"
+        "y = fq(a)\n");
+    INFO(run.message);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "$COMMON is not supported"));
+    CHECK(anyContains({run.message}, "pass b as an input argument of FUNCTION fq"));
+    CHECK(anyContains({run.message}, "in each call"));
+}
+
+TEST_CASE("CS-BUG-COMMON-PROC: the message lists every variable of the directive", "[library-gaps][common-proc]") {
+    SECTION("upper case $COMMON, comma separated") {
+        const std::string msg = commonError(
+            "PROCEDURE pq(a:y)\n$COMMON b, c, d\ny = a + b + c + d\nEND\n");
+        INFO(msg);
+        CHECK(msg.find("pass b, c, d as input arguments of PROCEDURE pq") != std::string::npos);
+    }
+    SECTION("semicolon separators") {
+        const std::string msg = commonError(
+            "PROCEDURE pq(a:y)\n$COMMON b; c ; d\ny = a + b + c + d\nEND\n");
+        INFO(msg);
+        CHECK(msg.find("pass b, c, d as input arguments of PROCEDURE pq") != std::string::npos);
+    }
+    SECTION("mixed case, a string variable in the list, a trailing comment") {
+        const std::string msg = commonError(
+            "FUNCTION fq(a)\n$Common b, fl$, c   {shared with the main program}\nfq = a + b + c\nEND\n");
+        INFO(msg);
+        CHECK(msg.find("pass b, fl$, c as input arguments of FUNCTION fq") != std::string::npos);
+    }
+    SECTION("only a string variable") {
+        const std::string msg = commonError(
+            "PROCEDURE pq(a:y)\n$common fl$\ny = a\nEND\n");
+        INFO(msg);
+        CHECK(msg.find("pass fl$ as an input argument of PROCEDURE pq") != std::string::npos);
+    }
+    SECTION("an array element keeps its subscripts") {
+        const std::string msg = commonError(
+            "PROCEDURE pq(a:y)\n$common x[1,2], b\ny = a + b\nEND\n");
+        INFO(msg);
+        CHECK(msg.find("pass x[1,2], b as input arguments of PROCEDURE pq") != std::string::npos);
+    }
+    SECTION("an empty list still names the directive and the routine") {
+        const std::string msg = commonError("PROCEDURE pq(a:y)\n$common\ny = a\nEND\n");
+        INFO(msg);
+        CHECK(msg.find("$COMMON is not supported") != std::string::npos);
+        CHECK(msg.find("PROCEDURE pq") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-BUG-COMMON-PROC: every routine with $COMMON is reported", "[library-gaps][common-proc]") {
+    EESParser parser;
+    auto result = parser.parse(
+        "PROCEDURE p1(a:y)\n$common b\ny = a + b\nEND\n"
+        "FUNCTION f2(a)\n$common c\nf2 = a + c\nEND\n"
+        "PROCEDURE p3(a:y)\ny = a\nEND\n"
+        "b = 1\nc = 2\n"
+        "CALL p1(b:y1)\nz = f2(c)\nCALL p3(b:y3)\n");
+    REQUIRE(result.errors.size() == 2);
+    CHECK(result.errors[0].message.find("PROCEDURE p1") != std::string::npos);
+    CHECK(result.errors[1].message.find("FUNCTION f2") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-COMMON-PROC: $COMMON inside nested blocks of a body is rejected", "[library-gaps][common-proc]") {
+    const std::string msg = commonError(
+        "PROCEDURE pq(a:y)\n"
+        "IF (a > 0) THEN\n"
+        "$common b\n"
+        "y = a + b\n"
+        "ELSE\n"
+        "y = a\n"
+        "ENDIF\n"
+        "END\n");
+    INFO(msg);
+    CHECK(msg.find("pass b as an input argument of PROCEDURE pq") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-COMMON-PROC: passing the shared variables as arguments gives the EES values", "[library-gaps][common-proc]") {
+    SECTION("PROCEDURE: the register reproducer rewritten") {
+        auto run = runModel(
+            "PROCEDURE pq(a, b:y)\n"
+            "y = a + b\n"
+            "END\n"
+            "b = 21\n"
+            "a = 1\n"
+            "CALL pq(a, b:y)\n"
+            "z = y*2\n"
+            "w = z + b\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["y"], WithinAbs(22.0, 1e-9));
+        CHECK_THAT(run["z"], WithinAbs(44.0, 1e-9));
+        CHECK_THAT(run["w"], WithinAbs(65.0, 1e-9));
+    }
+    SECTION("PROCEDURE: the product, which the zero-valued $COMMON made 0") {
+        auto run = runModel(
+            "PROCEDURE pq(a, b:y)\n"
+            "y = a*b\n"
+            "END\n"
+            "b = 21\n"
+            "a = 2\n"
+            "CALL pq(a, b:y)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(42.0, 1e-9));
+    }
+    SECTION("FUNCTION") {
+        auto run = runModel(
+            "FUNCTION fq(a, b)\n"
+            "fq = a + b\n"
+            "END\n"
+            "b = 21\n"
+            "a = 1\n"
+            "y = fq(a, b)\n"
+            "z = y*2\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(22.0, 1e-9));
+        CHECK_THAT(run["z"], WithinAbs(44.0, 1e-9));
+    }
+}
+
+TEST_CASE("CS-BUG-COMMON-PROC: no false positive for $common in a comment or a string", "[library-gaps][common-proc]") {
+    SECTION("brace, quote and C-style comments in a body") {
+        const std::string code =
+            "PROCEDURE pq(a, b:y)\n"
+            "{ $common b }\n"
+            "\"$common b\"\n"
+            "// $common b\n"
+            "y = a + b {$common c}\n"
+            "END\n"
+            "b = 21\n"
+            "a = 1\n"
+            "CALL pq(a, b:y)\n";
+        CHECK(commonError(code).empty());
+        auto run = runModel(code);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(22.0, 1e-9));
+    }
+    SECTION("a line of a multi-line brace comment that starts with $common") {
+        const std::string code =
+            "FUNCTION fq(a, b)\n"
+            "{ the former version used\n"
+            "$common b\n"
+            "which is not supported }\n"
+            "fq = a + b\n"
+            "END\n"
+            "y = fq(1, 21)\n";
+        CHECK(commonError(code).empty());
+        auto run = runModel(code);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(22.0, 1e-9));
+    }
+    SECTION("a line of a multi-line quote comment that starts with $common") {
+        const std::string code =
+            "FUNCTION fq(a, b)\n"
+            "\"\n"
+            "$common b\n"
+            "\"\n"
+            "fq = a + b\n"
+            "END\n"
+            "y = fq(1, 21)\n";
+        CHECK(commonError(code).empty());
+    }
+    SECTION("a string that contains the word") {
+        auto run = runModel(
+            "FUNCTION fq(a, b)\n"
+            "fq = a + b\n"
+            "END\n"
+            "note$ = '$common b'\n"
+            "y = fq(1, 21)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(22.0, 1e-9));
+        CHECK(run.strings.at("note$") == "$common b");
+    }
+    SECTION("a $IF branch that is switched off") {
+        const std::string code =
+            "PROCEDURE pq(a, b:y)\n"
+            "$IF PARAMETRICTABLE\n"
+            "$common b\n"
+            "$ENDIF\n"
+            "y = a + b\n"
+            "END\n"
+            "CALL pq(1, 21:y)\n";
+        CHECK(commonError(code).empty());
+    }
+    SECTION("a similar directive name is not $COMMON") {
+        const std::string code =
+            "PROCEDURE pq(a, b:y)\n"
+            "$commons b\n"
+            "y = a + b\n"
+            "END\n"
+            "CALL pq(1, 21:y)\n";
+        CHECK(commonError(code).empty());
+    }
+}
+
+TEST_CASE("CS-BUG-COMMON-PROC: a $COMMON line outside a FUNCTION or PROCEDURE is still accepted", "[library-gaps][common-proc]") {
+    // it shares nothing with any routine: only the bodies are concerned
+    auto run = runModel(
+        "$common b\n"
+        "b = 21\n"
+        "a = 1\n"
+        "y = a + b\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(22.0, 1e-9));
 }
