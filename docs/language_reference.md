@@ -113,10 +113,9 @@ y = max(3, )         "Could not parse argument 2 of 'max': ''"
 ```
 
 The same holds for the arguments of `CALL name(inputs : outputs)`. An output
-must be a variable: EES also accepts an expression there (`CALL p(a : b/1000)`),
-which CoolSolve refuses — write the result into a variable and scale it in a
-separate equation. A call without argument is written `f()`. Array ranges
-(`x[1..3]`) are not expression syntax, in `CALL` arguments neither.
+is a variable or, in the main program, an expression (`CALL p(a : b/1000)`, see
+*Outputs of a CALL* in §7). A call without argument is written `f()`. Array
+ranges (`x[1..3]`) are not expression syntax, in `CALL` arguments neither.
 
 `name=value` arguments (`T=`, `P=`, `x=`, …) belong to the thermophysical
 property functions (§3). A built-in function that takes positional arguments
@@ -586,6 +585,55 @@ CALL divmod(17, 5 : q, r)
 ```
 
 The `:` separates input arguments (left) from output variables (right).
+
+#### Outputs of a CALL
+
+An output is a variable (`CALL p(a : y)`, `CALL p(a : T[2])`) or, in the main
+program, **an expression**, as in EES: the output of the procedure is equated to
+the expression, and the system solves that equation like any other, for the
+unknown it contains (or for an input of the procedure, when the expression is
+known).
+
+```ees
+CALL BRINEPROP('Specheat', brine$, X, t : c_p/1000)   "c_p = 1000 x the output of the procedure"
+CALL BRINEPROP('Dynvisc',  brine$, X, t : mu*1000)
+CALL props(x : T+273.15, P_out/1000, rho/MM)   "three outputs, each equated to its expression"
+```
+
+- Every output position is independent: expressions and variables may be mixed
+  in one `CALL`, and several outputs may be expressions.
+- The expression may contain any unknown, also one that depends on the
+  procedure's input (a coupled block): the Jacobian comes from the automatic
+  differentiation of the procedure like for a variable output.
+- An output that is a constant or has no unknown is an equation that must
+  hold: with nothing else unknown the system is over-determined and is
+  reported as such.
+- Inside a `DUPLICATE` loop of the main program the iterator is substituted in
+  the expression as in any equation (`CALL p(i : z[i]/10)`).
+- **Inside a `FUNCTION` or `PROCEDURE` body an output must be a variable**: the
+  statements run in order and nothing solves for the expression. An expression is the parse error *"Output 1 of 'p' is the
+  expression 'r/1000': inside a FUNCTION or PROCEDURE …"*; write the result into
+  a variable and compute the expression from it.
+- Internally the output goes to an **auxiliary variable**
+  `__out<k>_<procedure>_L<line>` (`k` = position of the output, `line` = source
+  line of the `CALL`; `_2`, `_3`, … for the copies made by a `DUPLICATE` loop or
+  when the model already uses that name) and the equation `expression = auxiliary`
+  is added (`c_p/1000 = __out1_BRINEPROP_L12`). When the expression is one
+  variable under `+`, `-`, `*`, `/` (by something without variables) and a unary
+  minus, the equation is written solved for the variable (`c_p = __out1_… * 1000`,
+  an explicit equation, like the one a user writes by hand); any other
+  expression stays implicit (`sqrt(c_p) = __out1_…`). The auxiliary variable is a
+  variable of the model like the others — it is in the solution (`.sol`, the
+  variable tables) with the raw value of the procedure output, in the units of the
+  procedure, and in the debug folder — and it exists only for expression outputs:
+  a model with variable outputs only has none. Names that begin with `__out` are
+  best left unused.
+
+**String outputs.** A string variable (`name$`) set by a procedure is a result
+like the numeric ones: it is available to the CALLs and the property functions
+that follow (as the fluid name, `enthalpy(fluid$, …)`), whether or not the main
+program also assigns it a literal, in the order the structural analysis finds
+(also inside a coupled block).
 
 ### CALL ERROR
 

@@ -119,6 +119,11 @@ struct ProcedureCall {
     std::string name;
     std::vector<ExprPtr> inputArgs;
     std::vector<Variable> outputVars;
+    /// EES lets an output of a CALL of the main program be an expression (`CALL p(x : c/1000)`):
+    /// the routine's output equals the expression. Empty when every output is a variable; otherwise
+    /// one entry per output, null for a variable (`outputVars[i]`) and the expression where
+    /// `outputVars[i]` is an empty placeholder. `IR::lowerCallExpressionOutputs` lowers them (CS-GAP-CALL-EXPR-OUT).
+    std::vector<ExprPtr> outputExprs;
 };
 
 struct FunctionDefinition {
@@ -262,9 +267,10 @@ inline StmtPtr makeAssignment(ExprPtr lhs, ExprPtr rhs, int line = 0) {
     return stmt;
 }
 
-inline StmtPtr makeProcedureCall(const std::string& name, std::vector<ExprPtr> inputArgs, std::vector<Variable> outputVars, int line = 0) {
+inline StmtPtr makeProcedureCall(const std::string& name, std::vector<ExprPtr> inputArgs, std::vector<Variable> outputVars,
+                                 int line = 0, std::vector<ExprPtr> outputExprs = {}) {
     auto stmt = std::make_shared<Statement>();
-    stmt->node = ProcedureCall{name, std::move(inputArgs), std::move(outputVars)};
+    stmt->node = ProcedureCall{name, std::move(inputArgs), std::move(outputVars), std::move(outputExprs)};
     stmt->sourceLineNumber = line;
     return stmt;
 }

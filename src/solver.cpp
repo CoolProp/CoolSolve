@@ -2880,6 +2880,16 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
         SolverStatus blockStatus = solveBlockWithMultiStart(
             blockIdx, opts, trace, &blockError, &multistartInfo);
         
+        // A CALL that computes a string (CS-BUG-STRING-CALL-OUT) hands it to the next blocks
+        if (blockStatus == SolverStatus::Success) {
+            try {
+                evaluator_.publishStringOutputs(blockIdx);
+            } catch (const std::exception& e) {
+                blockStatus = SolverStatus::EvaluationError;
+                blockError = e.what();
+            }
+        }
+
         // Detach diagnostics pointer (blockDiag goes out of scope later)
         evaluator_.getBlock(blockIdx).setDiagnostics(nullptr);
         

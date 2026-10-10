@@ -108,6 +108,9 @@ static StmtPtr cloneStmtWithSubstitution(const StmtPtr& stmt, const std::string&
             }
             newCall.outputVars.push_back(std::move(newVar));
         }
+        for (const auto& outExpr : call.outputExprs) {
+            newCall.outputExprs.push_back(cloneExprWithSubstitution(outExpr, iteratorVar, value));
+        }
         result->node = std::move(newCall);
     } else if (stmt->is<Comment>()) {
         result->node = stmt->as<Comment>();
@@ -184,6 +187,8 @@ IR IR::fromAST(const Program& program) {
         }
     }
     
+    ir.lowerCallExpressionOutputs(expandedStatements);
+
     for (const auto& stmt : expandedStatements) {
         // Collect standalone "" display comments and attach to next equation
         if (stmt->is<Comment>()) {
@@ -295,6 +300,129 @@ IR IR::fromAST(const Program& program) {
     }
     
     return ir;
+}
+
+namespace {
+
+bool containsVariable(const ExprPtr& expr) {
+    if (!expr) return false;
+    if (expr->is<Variable>()) return true;
+    if (expr->is<UnaryOp>()) return containsVariable(expr->as<UnaryOp>().operand);
+    if (expr->is<BinaryOp>())
+        return containsVariable(expr->as<BinaryOp>().left) || containsVariable(expr->as<BinaryOp>().right);
+    if (expr->is<FunctionCall>()) {
+        for (const auto& arg : expr->as<FunctionCall>().args)
+            if (containsVariable(arg)) return true;
+        for (const auto& named : expr->as<FunctionCall>().namedArgs)
+            if (containsVariable(named.second)) return true;
+    }
+    return false;
+}
+
+ExprPtr makeBinary(const std::string& op, ExprPtr left, ExprPtr right) {
+    auto expr = std::make_shared<Expression>();
+    expr->node = BinaryOp{op, std::move(left), std::move(right)};
+    return expr;
+}
+
+/// Solve `expr = rhs` for the one variable of `expr` when `expr` is built from that variable with
+/// `+`, `-`, `*` and a unary minus, or `/` by something without variables, the other operands
+/// having none: `c/1000 = a` gives `c = a*1000`. Returns false (and leaves the outputs alone)
+/// for any other shape, which stays an implicit equation.
+bool solveForOnlyVariable(const ExprPtr& expr, const ExprPtr& rhs, ExprPtr& variable, ExprPtr& value) {
+    if (expr->is<Variable>()) {
+        for (const auto& idx : expr->as<Variable>().indices)
+            if (containsVariable(idx)) return false;
+        variable = expr;
+        value = rhs;
+        return true;
+    }
+    if (expr->is<UnaryOp>()) {
+        const auto& op = expr->as<UnaryOp>();
+        if (op.op == "+") return solveForOnlyVariable(op.operand, rhs, variable, value);
+        if (op.op != "-") return false;
+        auto negated = std::make_shared<Expression>();
+        negated->node = UnaryOp{"-", rhs};
+        return solveForOnlyVariable(op.operand, negated, variable, value);
+    }
+    if (!expr->is<BinaryOp>()) return false;
+    const auto& op = expr->as<BinaryOp>();
+    const bool inLeft = containsVariable(op.left);
+    if (inLeft == containsVariable(op.right)) return false;   // both sides: not a single variable
+    const ExprPtr& with = inLeft ? op.left : op.right;
+    const ExprPtr& other = inLeft ? op.right : op.left;
+    if (op.op == "+") return solveForOnlyVariable(with, makeBinary("-", rhs, other), variable, value);
+    if (op.op == "*") return solveForOnlyVariable(with, makeBinary("/", rhs, other), variable, value);
+    if (op.op == "-")
+        return solveForOnlyVariable(with, inLeft ? makeBinary("+", rhs, other) : makeBinary("-", other, rhs),
+                                    variable, value);
+    if (op.op == "/" && inLeft) return solveForOnlyVariable(with, makeBinary("*", rhs, other), variable, value);
+    return false;
+}
+
+}  // namespace
+
+// EES lets an output of a CALL be an expression (`CALL BRINEPROP('Specheat', b$, X, T : c_p/1000)`):
+// the output of the routine equals the expression, which the system solves for like any equation
+// (CS-GAP-CALL-EXPR-OUT). The output goes to an auxiliary variable `__out<k>_<routine>_L<line>`
+// (k = position of the output; `_2`, `_3`... for the copies made by a DUPLICATE loop and when the
+// name is already used by the model) and the equation `expression = auxiliary` follows the CALL
+// (solved for the variable when the expression is a simple chain of `+ - * /` on one variable).
+// A variable output is untouched, and so is a program without expression outputs.
+void IR::lowerCallExpressionOutputs(std::vector<StmtPtr>& statements) {
+    const auto hasExpressionOutput = [](const StmtPtr& stmt) {
+        return stmt->is<ProcedureCall>() && !stmt->as<ProcedureCall>().outputExprs.empty();
+    };
+    if (std::none_of(statements.begin(), statements.end(), hasExpressionOutput)) return;
+
+    // Every name of the model, so that an auxiliary variable never merges with one of them
+    std::set<std::string, CaseInsensitiveLess> used;
+    for (const auto& stmt : statements) {
+        if (stmt->is<Equation>()) {
+            extractVariables(stmt->as<Equation>().lhs, used);
+            extractVariables(stmt->as<Equation>().rhs, used);
+        } else if (stmt->is<ProcedureCall>()) {
+            const auto& call = stmt->as<ProcedureCall>();
+            for (const auto& arg : call.inputArgs) extractVariables(arg, used);
+            for (const auto& out : call.outputVars) used.insert(out.flattenedName());
+            for (const auto& out : call.outputExprs) extractVariables(out, used);
+        }
+    }
+
+    std::vector<StmtPtr> lowered;
+    lowered.reserve(statements.size());
+    for (const auto& stmt : statements) {
+        if (!hasExpressionOutput(stmt)) {
+            lowered.push_back(stmt);
+            continue;
+        }
+        ProcedureCall call = stmt->as<ProcedureCall>();
+        std::vector<StmtPtr> ties;
+        for (size_t i = 0; i < call.outputExprs.size(); ++i) {
+            if (!call.outputExprs[i]) continue;
+            const std::string base = "__out" + std::to_string(i + 1) + "_" + call.name + "_L"
+                                     + std::to_string(stmt->sourceLineNumber);
+            std::string name = base;
+            for (int copy = 2; used.count(name); ++copy) name = base + "_" + std::to_string(copy);
+            used.insert(name);
+            call.outputVars[i] = Variable{name, {}};
+            // `c/1000 = aux` is written `c = aux*1000` when it can be: the form of an explicit equation
+            // (solved without iterating, and scaled like the equations a user writes by hand)
+            ExprPtr auxiliary = makeVariable(name, stmt->sourceLineNumber);
+            ExprPtr variable, value;
+            if (solveForOnlyVariable(call.outputExprs[i], auxiliary, variable, value))
+                ties.push_back(makeEquation(variable, value, stmt->sourceLineNumber));
+            else
+                ties.push_back(makeEquation(call.outputExprs[i], auxiliary, stmt->sourceLineNumber));
+        }
+        call.outputExprs.clear();
+        auto lowerCall = std::make_shared<Statement>();
+        lowerCall->node = std::move(call);
+        lowerCall->sourceLineNumber = stmt->sourceLineNumber;
+        lowered.push_back(std::move(lowerCall));
+        for (auto& tie : ties) lowered.push_back(std::move(tie));
+    }
+    statements = std::move(lowered);
 }
 
 // Set of EES thermodynamic function names (lowercase for comparison)

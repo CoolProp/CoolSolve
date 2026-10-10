@@ -148,6 +148,7 @@ private:
     std::vector<std::set<std::string, CaseInsensitiveLess>> incidenceMatrix_;
     
     // Helper functions
+    void lowerCallExpressionOutputs(std::vector<StmtPtr>& statements);
     void extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensitiveLess>& vars);
     std::string expressionToLatex(const ExprPtr& expr) const;
     void addVariable(const std::string& name);

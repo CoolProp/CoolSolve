@@ -1954,6 +1954,46 @@ BlockEvaluator::BlockEvaluator(const Block& block, const IR& ir, const CoolPropC
     for (size_t i = 0; i < variables_.size(); ++i) {
         varToIndex_[variables_[i]] = i;
     }
+    // CALLs that compute a string (CS-BUG-STRING-CALL-OUT): the strings they set are read by other
+    // CALLs of the block, so evaluate them first, each after the producers of the strings it reads.
+    auto isString = [](const std::string& name) { return !name.empty() && name.back() == '$'; };
+    auto stringOutputs = [&](const EquationInfo& eq) {
+        std::set<std::string, CaseInsensitiveLess> names;
+        if (eq.procedureCall)
+            for (const auto& out : eq.procedureCall->outputVars)
+                if (isString(out.name)) names.insert(out.name);
+        return names;
+    };
+    std::vector<size_t> producers;
+    for (size_t i = 0; i < equations_.size(); ++i)
+        if (!stringOutputs(*equations_[i]).empty()) producers.push_back(i);
+    if (producers.empty()) return;
+    hasStringCallOutputs_ = true;
+    std::vector<bool> placed(equations_.size(), false);
+    while (evalOrder_.size() < producers.size()) {
+        bool progress = false;
+        for (size_t i : producers) {
+            if (placed[i]) continue;
+            // ready when no still-unplaced producer sets a string this CALL reads
+            bool ready = true;
+            for (size_t j : producers) {
+                if (placed[j] || j == i) continue;
+                for (const auto& name : stringOutputs(*equations_[j]))
+                    if (equations_[i]->variables.count(name) &&
+                        !stringOutputs(*equations_[i]).count(name)) ready = false;
+            }
+            if (!ready) continue;
+            evalOrder_.push_back(i);
+            placed[i] = true;
+            progress = true;
+        }
+        if (!progress) {   // strings that depend on each other: keep the order of the block
+            for (size_t i : producers)
+                if (!placed[i]) { evalOrder_.push_back(i); placed[i] = true; }
+        }
+    }
+    for (size_t i = 0; i < equations_.size(); ++i)
+        if (!placed[i]) evalOrder_.push_back(i);
 }
 
 EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
@@ -2004,7 +2044,8 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     // Track CALL source lines already processed (to skip sibling equations)
     std::set<int> processedCallLines;
     
-    for (size_t eq = 0; eq < equations_.size(); ++eq) {
+    for (size_t k = 0; k < equations_.size(); ++k) {
+        const size_t eq = evalOrder_.empty() ? k : evalOrder_[k];
         const EquationInfo* eqInfo = equations_[eq];
         
         if (eqInfo->procedureCall) {
@@ -2043,6 +2084,15 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
             // Evaluate procedure call ONCE — this updates exprEval's state
             // for all output variables with the procedure-computed values.
             exprEval.evaluateProcedureCall(call);
+
+            // A string output is no unknown of the numeric system: hand it to the caller
+            if (hasStringCallOutputs_) {
+                for (const auto& var : call.outputVars) {
+                    const std::string name = exprEval.resolveVariableName(var);
+                    if (!name.empty() && name.back() == '$' && exprEval.hasStringVariable(name))
+                        result.stringOutputs[name] = exprEval.getStringVariable(name);
+                }
+            }
             
             // Write one residual per output to its corresponding sibling
             // CALL equation's slot.  siblingGidAndLocal[i] maps to the i-th
@@ -2188,6 +2238,19 @@ void SystemEvaluator::initializeFromGuesses() {
             else currentState_[name] = 1.0;
         }
     }
+}
+
+void SystemEvaluator::publishStringOutputs(size_t blockIndex) {
+    if (blockIndex >= blockEvaluators_.size() || !blockEvaluators_[blockIndex].hasStringCallOutputs()) return;
+    BlockEvaluator& blockEval = blockEvaluators_[blockIndex];
+    std::vector<double> x;
+    for (const auto& varName : blockEval.getVariables()) x.push_back(getVariableValue(varName));
+    std::map<std::string, double> externalVars;
+    for (const auto& [name, value] : currentState_) externalVars[name] = value;
+    std::map<std::string, std::string> externalStringVars;
+    for (const auto& [name, value] : currentStringState_) externalStringVars[name] = value;
+    const EvaluationResult result = blockEval.evaluate(x, externalVars, externalStringVars, false);
+    for (const auto& [name, value] : result.stringOutputs) currentStringState_[name] = value;
 }
 
 EvaluationResult SystemEvaluator::evaluateBlock(size_t blockIndex) {

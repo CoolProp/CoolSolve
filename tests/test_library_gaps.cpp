@@ -44,6 +44,7 @@ struct ModelRun {
     std::string message;     ///< first parse error, or the solver error
     std::vector<std::string> warnings;   ///< messages of all warning diagnostics of the run
     std::map<std::string, double, CaseInsensitiveLess> vars;
+    std::map<std::string, std::string, CaseInsensitiveLess> strings;   ///< string variables of the solution
 
     double operator[](const std::string& name) const { return vars.at(name); }
 };
@@ -81,6 +82,7 @@ ModelRun runModel(const std::string& code,
     if (run.solveOk) {
         const auto& res = runner.getSolveResult();
         run.vars = res.variables;
+        run.strings = res.stringVariables;
         run.verified = checkSolution(runner.getIR(), res.variables, res.stringVariables,
                                      options.coolpropConfig, 1e-3,
                                      &runner.getLookupTableStore()).allSatisfied;
@@ -1206,11 +1208,10 @@ TEST_CASE("CS-BUG-ARG-DROP: the same defect in the arguments of a CALL", "[libra
     CHECK(parseErrors(proc + "CALL p(1, 2 3 : r)\n") == Messages{"Could not parse argument 2 of 'p': '2 3'"});
     CHECK(parseErrors(proc + "CALL p(max(3 4, 2), 1 : r)\n") ==
           Messages{"Could not parse argument 1 of 'max': '3 4'"});
-    // an output must be a variable
-    CHECK(anyContains(parseErrors(proc + "CALL p(1, 2 : 3)\n"), "Output 1 of 'p' must be a variable, not the expression '3'"));
-    CHECK(anyContains(parseErrors(proc + "CALL p(1, 2 : a+b)\n"), "Output 1 of 'p' must be a variable, not the expression 'a+b'"));
-    // (register CS-GAP-CALL-EXPR-OUT: EES accepts CALL BRINEPROP(... : c_p/1000); it was dropped silently)
-    CHECK(anyContains(parseErrors(proc + "CALL p(1, 2 : r, z/1000)\n"), "Output 2 of 'p' must be a variable"));
+    // an output may be an expression in the main program (CS-GAP-CALL-EXPR-OUT: EES equates the output to
+    // it; it was dropped silently, then refused with "must be a variable"); one that cannot be parsed is not
+    CHECK(parseErrors(proc + "CALL p(1, 2 : a+b)\n").empty());
+    CHECK(parseErrors(proc + "CALL p(1, 2 : r, z/1000)\n").empty());
     CHECK(parseErrors(proc + "CALL p(1, 2 : r, 3 4)\n") == Messages{"Could not parse output 2 of 'p': '3 4'"});
     // in a procedure body
     CHECK(parseErrors(proc + "PROCEDURE q(a : r)\n  CALL p(3 4, a : r)\nEND\nCALL q(1 : y)\n") ==
@@ -4029,4 +4030,684 @@ TEST_CASE("CS-GAP-INTEGRAL-LOOKUP: negative tests", "[library-gaps][integral-loo
     auto plain = runIntegral("y = integral(dydt, t, 0, 1, 0.5)\ndydt = 2\n");
     REQUIRE(plain.solveOk);
     CHECK_THAT(plain["y"], WithinAbs(2.0, 1e-9));
+}
+
+// ============================================================================
+// CS-GAP-CALL-EXPR-OUT: an expression as an output of a CALL (EES: the output is equated to it)
+// ============================================================================
+
+namespace {
+
+/// A procedure with one output, 2*a, shared by the cases below.
+const std::string kDoubler = "PROCEDURE dbl(a : y)\n  y = 2*a\nEND\n";
+
+/// Names of the variables of a run that start with the prefix of the auxiliary outputs.
+std::vector<std::string> auxiliaryNames(const ModelRun& run) {
+    std::vector<std::string> names;
+    for (const auto& [name, value] : run.vars)
+        if (name.rfind("__", 0) == 0) names.push_back(name);
+    return names;
+}
+
+/// Residual vector and Jacobian of the block that holds `blockVar`, evaluated at `point`.
+struct BlockSnapshot {
+    std::vector<std::string> vars;                 ///< columns
+    std::vector<std::string> equations;            ///< original text of the rows
+    std::vector<std::vector<double>> jacobian;     ///< [row][column]
+
+    int column(const std::string& prefix) const {
+        for (size_t j = 0; j < vars.size(); ++j)
+            if (vars[j].rfind(prefix, 0) == 0) return static_cast<int>(j);
+        return -1;
+    }
+    int row(const std::string& text) const {
+        for (size_t i = 0; i < equations.size(); ++i)
+            if (equations[i].find(text) != std::string::npos) return static_cast<int>(i);
+        return -1;
+    }
+};
+
+BlockSnapshot snapshotOfBlock(const std::string& code, const std::string& blockVar,
+                              const std::map<std::string, double>& point) {
+    EESParser parser;
+    auto parsed = parser.parse(code);
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    auto analysis = StructuralAnalyzer::analyze(ir);
+    REQUIRE(analysis.success);
+    SystemEvaluator system(ir, analysis);
+    system.initializeFromGuesses();
+    for (const auto& [name, value] : point) system.setVariableValue(name, value);
+    BlockSnapshot snap;
+    for (size_t b = 0; b < system.getNumBlocks(); ++b) {
+        const auto& vars = system.getBlock(b).getVariables();
+        if (std::find(vars.begin(), vars.end(), blockVar) == vars.end()) continue;
+        snap.vars = vars;
+        for (int id : system.getBlock(b).getEquationIds())
+            snap.equations.push_back(ir.getEquations()[id].originalText);
+        snap.jacobian = system.evaluateBlock(b).jacobian;
+        return snap;
+    }
+    FAIL("no block holds " << blockVar);
+    return snap;
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-CALL-EXPR-OUT: register reproducer, the output is equated to the expression",
+          "[library-gaps][call-expr-out]") {
+    // valid EES: z/1000 = 2 * 21, so z = 42000 (was: parse error 'Output 1 of 'pg' must be a variable')
+    auto run = runModel(R"(
+PROCEDURE pg(a:y)
+y=a*2
+END
+CALL pg(21:z/1000)
+w=z
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["z"], WithinAbs(42000.0, 1e-6));
+    CHECK_THAT(run["w"], WithinAbs(42000.0, 1e-6));
+
+    // the two directions of a unit conversion
+    auto scaled = runModel(kDoubler + "CALL dbl(4 : mu*1000)\nCALL dbl(4 : c/1000)\n");
+    REQUIRE(scaled.solveOk);
+    CHECK_THAT(scaled["mu"], WithinAbs(0.008, 1e-12));
+    CHECK_THAT(scaled["c"], WithinAbs(8000.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-CALL-EXPR-OUT: forms of expression", "[library-gaps][call-expr-out]") {
+    SECTION("sign, offset, array element, power, function, parentheses") {
+        auto run = runModel(kDoubler + R"(
+CALL dbl(5 : -x)
+CALL dbl(300 : T[2] + 273.15)
+CALL dbl(8 : q^3)
+CALL dbl(0.5 : exp(v))
+CALL dbl(3 : (u + 1)/2)
+CALL dbl(2 : 4*s - 1)
+)");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["x"], WithinAbs(-10.0, 1e-9));
+        CHECK_THAT(run["T[2]"], WithinAbs(600.0 - 273.15, 1e-9));
+        CHECK_THAT(run["q"], WithinAbs(std::cbrt(16.0), 1e-9));
+        CHECK_THAT(run["v"], WithinAbs(0.0, 1e-9));         // exp(v) = 1
+        CHECK_THAT(run["u"], WithinAbs(11.0, 1e-9));        // (u+1)/2 = 6
+        CHECK_THAT(run["s"], WithinAbs(5.0 / 4.0, 1e-9));   // 4 s - 1 = 4
+    }
+
+    SECTION("a plain variable and an array element are unchanged") {
+        auto run = runModel(kDoubler + "CALL dbl(2 : r)\nCALL dbl(3 : y[4])\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["r"], WithinAbs(4.0, 1e-12));
+        CHECK_THAT(run["y[4]"], WithinAbs(6.0, 1e-12));
+        CHECK(auxiliaryNames(run).empty());
+        CHECK(run.vars.size() == 2);
+    }
+
+    SECTION("several outputs, expressions and plain variables mixed, in order") {
+        auto run = runModel(R"(
+PROCEDURE three(a : p, q, r)
+  p = 10*a
+  q = 20*a
+  r = 30*a
+END
+CALL three(1 : x/2, y, z*3)
+CALL three(2 : u, v + 1, w)
+)");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["x"], WithinAbs(20.0, 1e-9));
+        CHECK_THAT(run["y"], WithinAbs(20.0, 1e-9));
+        CHECK_THAT(run["z"], WithinAbs(10.0, 1e-9));
+        CHECK_THAT(run["u"], WithinAbs(20.0, 1e-9));
+        CHECK_THAT(run["v"], WithinAbs(39.0, 1e-9));
+        CHECK_THAT(run["w"], WithinAbs(60.0, 1e-9));
+    }
+
+    SECTION("the library pattern: a property routine with a selector and a unit conversion") {
+        auto run = runModel(R"(
+PROCEDURE BrineProp(prop$, fluid$, X, T : v)
+  IF (prop$ = 'Specheat') THEN
+    v = 3.8 + 0.002*T + 0.5*X
+  ELSE
+    v = 1.5e-3 - 1e-5*T
+  ENDIF
+END
+brine$ = 'MEG'
+X_brine = 0.2
+t_su = 5
+CALL BRINEPROP('Specheat', brine$, X_brine, t_su : c_p/1000)
+CALL BRINEPROP('Dynvisc', brine$, X_brine, t_su : mu*1000)
+Q = 0.3 * c_p * 4
+)");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["c_p"], WithinAbs(1000.0 * (3.8 + 0.01 + 0.1), 1e-9));
+        CHECK_THAT(run["mu"], WithinAbs((1.5e-3 - 5e-5) / 1000.0, 1e-15));
+        CHECK_THAT(run["Q"], WithinAbs(0.3 * 3910.0 * 4.0, 1e-6));
+    }
+}
+
+TEST_CASE("CS-GAP-CALL-EXPR-OUT: the unknown of the expression may be an input of the routine",
+          "[library-gaps][call-expr-out]") {
+    // known output (through the expression), unknown input: the routine is inverted by Newton
+    auto run = runModel(kDoubler + "CALL dbl(u : w/1000)\nw = 8000\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["u"], WithinAbs(4.0, 1e-9));
+
+    // nothing determines the expression's variable but the call: it is the unknown of the output
+    auto both = runModel(kDoubler + "CALL dbl(u : w/1000)\nu = 4\n");
+    REQUIRE(both.solveOk);
+    CHECK_THAT(both["w"], WithinAbs(8000.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-CALL-EXPR-OUT: coupled block, the Jacobian is analytic", "[library-gaps][call-expr-out]") {
+    // c_p depends on the mean temperature, which depends on the outlet temperature, which depends on c_p
+    const std::string code = R"(
+PROCEDURE cpw(T : c)
+  c = 4.0 + 0.5*exp(-T/100)
+END
+T_in = 10
+Q = 5000
+m = 0.5
+CALL cpw(T_m : c_p/1000)
+Q = m * c_p * (T_out - T_in)
+T_m = (T_in + T_out)/2
+)";
+    auto run = runModel(code);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // fixed point of T_out = T_in + Q/(m c_p(T_m))
+    double tOut = 10.0;
+    for (int it = 0; it < 200; ++it)
+        tOut = 10.0 + 5000.0 / (0.5 * 1000.0 * (4.0 + 0.5 * std::exp(-(10.0 + tOut) / 200.0)));
+    const double tMean = (10.0 + tOut) / 2.0;
+    CHECK_THAT(run["T_out"], WithinAbs(tOut, 1e-8));
+    CHECK_THAT(run["T_m"], WithinAbs(tMean, 1e-8));
+    CHECK_THAT(run["c_p"], WithinAbs(1000.0 * (4.0 + 0.5 * std::exp(-tMean / 100.0)), 1e-5));
+
+    // one block of four: c_p, T_m, T_out and the output of the routine
+    auto snap = snapshotOfBlock(code, "c_p", {{"c_p", 4000.0}, {"T_m", 20.0}, {"T_out", 30.0},
+                                              {"T_in", 10.0}, {"m", 0.5}, {"Q", 5000.0}});
+    REQUIRE(snap.vars.size() == 4);
+    const int aux = snap.column("__");
+    const int cp = snap.column("c_p");
+    const int tm = snap.column("T_m");
+    const int to = snap.column("T_out");
+    REQUIRE(aux >= 0);
+    REQUIRE(cp >= 0);
+    const int callRow = snap.row("CALL cpw");
+    const int exprRow = snap.row("c_p = ");   // c_p/1000 = output is written c_p = output*1000
+    const int energyRow = snap.row("Q");
+    REQUIRE(callRow >= 0);
+    REQUIRE(exprRow >= 0);
+    REQUIRE(energyRow >= 0);
+    // CALL: residual = (previous output) - c(T_m): d/d(output) = 1, d/dT_m = 0.005 exp(-T_m/100)
+    CHECK_THAT(snap.jacobian[callRow][aux], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(snap.jacobian[callRow][tm], WithinAbs(0.005 * std::exp(-0.2), 1e-12));
+    // c_p = output*1000
+    CHECK_THAT(snap.jacobian[exprRow][cp], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(snap.jacobian[exprRow][aux], WithinAbs(-1000.0, 1e-12));
+    CHECK_THAT(snap.jacobian[exprRow][to], WithinAbs(0.0, 1e-12));
+    // Q = m c_p (T_out - T_in): d/dc_p = -m (T_out - T_in) = -10, d/dT_out = -m c_p = -2000
+    CHECK_THAT(snap.jacobian[energyRow][cp], WithinAbs(-10.0, 1e-9));
+    CHECK_THAT(snap.jacobian[energyRow][to], WithinAbs(-2000.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-CALL-EXPR-OUT: an expression that is not solved for the variable stays implicit",
+          "[library-gaps][call-expr-out]") {
+    // sqrt(c_p) = output: the equation is kept as written, its derivative comes from the AD
+    const std::string code = R"(
+PROCEDURE cpw(T : c)
+  c = 60 + 0.5*exp(-T/100)
+END
+T_in = 10
+Q = 5000
+m = 0.5
+CALL cpw(T_m : sqrt(c_p))
+Q = m * c_p * (T_out - T_in)
+T_m = (T_in + T_out)/2
+)";
+    auto run = runModel(code);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // c_p = c(T_m)^2
+    const double cp = run["c_p"];
+    CHECK_THAT(cp, WithinRel(std::pow(60.0 + 0.5 * std::exp(-run["T_m"] / 100.0), 2), 1e-8));
+    CHECK_THAT(run["Q"], WithinAbs(0.5 * cp * (run["T_out"] - 10.0), 1e-5));
+
+    auto snap = snapshotOfBlock(code, "c_p", {{"c_p", 3600.0}, {"T_m", 20.0}, {"T_out", 30.0},
+                                              {"T_in", 10.0}, {"m", 0.5}, {"Q", 5000.0}});
+    REQUIRE(snap.vars.size() == 4);
+    const int aux = snap.column("__");
+    const int cpCol = snap.column("c_p");
+    const int exprRow = snap.row("sqrt(c_p)");
+    REQUIRE(aux >= 0);
+    REQUIRE(exprRow >= 0);
+    CHECK_THAT(snap.jacobian[exprRow][cpCol], WithinAbs(0.5 / 60.0, 1e-12));   // d sqrt(c_p) = 0.5 / sqrt(c_p)
+    CHECK_THAT(snap.jacobian[exprRow][aux], WithinAbs(-1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-CALL-EXPR-OUT: forms solved for the variable and forms kept implicit",
+          "[library-gaps][call-expr-out]") {
+    // every shape gives the value that EES's equation expression = output gives
+    auto run = runModel(kDoubler + R"(
+CALL dbl(5 : 100 - a)
+CALL dbl(5 : b - 100)
+CALL dbl(5 : 3*(c + 2) - 1)
+CALL dbl(5 : 40/d)
+CALL dbl(5 : e*e)
+CALL dbl(5 : f/g)
+g = 2
+CALL dbl(5 : -(h*4 + 1)/2)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(90.0, 1e-9));
+    CHECK_THAT(run["b"], WithinAbs(110.0, 1e-9));
+    CHECK_THAT(run["c"], WithinAbs(11.0 / 3.0 - 2.0, 1e-9));
+    CHECK_THAT(run["d"], WithinAbs(4.0, 1e-9));
+    CHECK_THAT(run["e"] * run["e"], WithinAbs(10.0, 1e-8));
+    CHECK_THAT(run["f"], WithinAbs(20.0, 1e-9));
+    CHECK_THAT(run["h"], WithinAbs((-20.0 - 1.0) / 4.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-CALL-EXPR-OUT: CALL inside a DUPLICATE loop of the main program", "[library-gaps][call-expr-out]") {
+    // every iteration has its own output of the routine
+    auto run = runModel(kDoubler + R"(
+DUPLICATE i = 1, 4
+  CALL dbl(i : z[i]/10)
+END
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (int i = 1; i <= 4; ++i) CHECK_THAT(run["z[" + std::to_string(i) + "]"], WithinAbs(20.0 * i, 1e-9));
+    CHECK(auxiliaryNames(run).size() == 4);
+
+    // the iterator inside the expression, nested loops, a neighbouring plain output
+    auto nested = runModel(kDoubler + R"(
+DUPLICATE i = 1, 2
+  DUPLICATE j = 1, 3
+    CALL dbl(10*i + j : a[i,j] + 100*i)
+  END
+END
+)");
+    REQUIRE(nested.solveOk);
+    CHECK(nested.verified);
+    for (int i = 1; i <= 2; ++i)
+        for (int j = 1; j <= 3; ++j)
+            CHECK_THAT(nested["a[" + std::to_string(i) + "," + std::to_string(j) + "]"],
+                       WithinAbs(2.0 * (10 * i + j) - 100.0 * i, 1e-9));
+    CHECK(auxiliaryNames(nested).size() == 6);
+
+    // two expression outputs in the same loop body
+    auto two = runModel(R"(
+PROCEDURE pr(a : s, t)
+  s = a + 1
+  t = a * 3
+END
+DUPLICATE k = 1, 3
+  CALL pr(k : p[k]*2, q[k] - 1)
+END
+)");
+    REQUIRE(two.solveOk);
+    for (int k = 1; k <= 3; ++k) {
+        CHECK_THAT(two["p[" + std::to_string(k) + "]"], WithinAbs((k + 1) / 2.0, 1e-9));
+        CHECK_THAT(two["q[" + std::to_string(k) + "]"], WithinAbs(3.0 * k + 1.0, 1e-9));
+    }
+    CHECK(auxiliaryNames(two).size() == 6);
+}
+
+TEST_CASE("CS-GAP-CALL-EXPR-OUT: in an INTEGRAL model and in the parametric solver", "[library-gaps][call-expr-out]") {
+    // the time-march solves the algebraic part at every step: the expression output is re-lowered there
+    auto run = runIntegral(kDoubler + "CALL dbl(t : c/1000)\ny = integral(dydt, t, 0, 1, 0.1)\ndydt = c\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run.vars.at("y"), WithinAbs(1000.0, 1e-6));   // dy/dt = 2000 t
+
+    // a Solver built by hand from the parsed program (what the parametric study does)
+    EESParser parser;
+    auto parsed = parser.parse(kDoubler + "CALL dbl(a : w/1000)\nz = 3*w\na = 4\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    auto analysis = StructuralAnalyzer::analyze(ir);
+    REQUIRE(analysis.success);
+    SolverOptions options;
+    Solver solver(ir, analysis, options.coolpropConfig);
+    auto result = solver.solve(options, false);
+    REQUIRE(result.success);
+    CHECK_THAT(result.variables.at("w"), WithinAbs(8000.0, 1e-9));
+    CHECK_THAT(result.variables.at("z"), WithinAbs(24000.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-CALL-EXPR-OUT: the auxiliary variable is documented and unique", "[library-gaps][call-expr-out]") {
+    // __out<position>_<procedure>_L<line>: the raw output of the routine, in the units of the routine
+    auto run = runModel("PROCEDURE pg(a:y)\ny=a*2\nEND\nCALL pg(21:z/1000)\n");
+    REQUIRE(run.solveOk);
+    REQUIRE(auxiliaryNames(run).size() == 1);
+    CHECK(auxiliaryNames(run)[0] == "__out1_pg_L4");
+    CHECK_THAT(run["__out1_pg_L4"], WithinAbs(42.0, 1e-9));
+
+    // models without an expression output have no such variable
+    auto plain = runModel(kDoubler + "CALL dbl(4 : r)\n");
+    REQUIRE(plain.solveOk);
+    CHECK(auxiliaryNames(plain).empty());
+    CHECK(plain.vars.size() == 1);
+
+    // an equal name written by the user is never merged with the auxiliary variable
+    auto clash = runModel("PROCEDURE pg(a:y)\ny=a*2\nEND\n__out1_pg_L5 = 7\nCALL pg(21:z/1000)\n");
+    REQUIRE(clash.solveOk);
+    CHECK_THAT(clash["__out1_pg_L5"], WithinAbs(7.0, 1e-12));
+    CHECK_THAT(clash["z"], WithinAbs(42000.0, 1e-6));
+}
+
+TEST_CASE("CS-GAP-CALL-EXPR-OUT: the debug folder and the solution file", "[library-gaps][call-expr-out]") {
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_library_gaps_exprout_debug";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const std::string code = "PROCEDURE pg(a:y)\ny=a*2\nEND\nCALL pg(21:z/1000)\nw=z\n";
+    const fs::path file = dir / "model.eescode";
+    { std::ofstream f(file); f << code; }
+    CoolSolveRunner runner(file.string());
+    SolverOptions options;
+    REQUIRE(runner.run(options));
+    runner.generateDebugOutput((dir / "debug").string(), code);
+    auto slurp = [&](const char* name) {
+        std::ifstream in(dir / "debug" / name);
+        REQUIRE(in.good());
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    // the equation that ties the expression to the output is listed (z/1000 = output, solved for z)
+    const std::string equations = slurp("equations.md");
+    CHECK(equations.find("z = (__out1_pg_L4 * 1000") != std::string::npos);
+    const std::string variables = slurp("variables.md");
+    CHECK(variables.find("__out1_pg_L4") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("CS-GAP-CALL-EXPR-OUT: negative tests", "[library-gaps][call-expr-out]") {
+    SECTION("an unparsable output is still a parse error") {
+        CHECK(parseErrors(kDoubler + "CALL dbl(1 : r, 3 4)\n") ==
+              std::vector<std::string>{"Could not parse output 2 of 'dbl': '3 4'"});
+    }
+
+    SECTION("a CALL inside a FUNCTION or PROCEDURE body: statements run in order, nothing to solve") {
+        // EES: outputs of a CALL in a routine are variables; the expression cannot be inverted
+        const auto inProc = parseErrors(kDoubler +
+            "PROCEDURE q(a : r)\n  CALL dbl(a : r/1000)\nEND\nCALL q(1 : y)\n");
+        REQUIRE(inProc.size() == 1);
+        CHECK(anyContains(inProc, "Output 1 of 'dbl' is the expression 'r/1000'"));
+        CHECK(anyContains(inProc, "FUNCTION or PROCEDURE"));
+        const auto inFunc = parseErrors(kDoubler +
+            "FUNCTION f(a)\n  CALL dbl(a : -r)\n  f = r\nEND\ny = f(1)\n");
+        CHECK(anyContains(inFunc, "Output 1 of 'dbl' is the expression '-r'"));
+        // inside an IF of a body too
+        const auto inIf = parseErrors(kDoubler +
+            "PROCEDURE q(a : r)\n  IF (a > 0) THEN\n    CALL dbl(a : r + 1)\n  ENDIF\nEND\nCALL q(1 : y)\n");
+        CHECK(anyContains(inIf, "Output 1 of 'dbl' is the expression 'r + 1'"));
+        // a variable output in a body is fine
+        auto fine = runModel(kDoubler + "PROCEDURE q(a : r)\n  CALL dbl(a : t)\n  r = t + 1\nEND\nCALL q(1 : y)\n");
+        REQUIRE(fine.solveOk);
+        CHECK_THAT(fine["y"], WithinAbs(3.0, 1e-12));
+    }
+
+    SECTION("too many outputs are still counted, with the expressions") {
+        auto run = runModel(kDoubler + "CALL dbl(1 : z/1000, w)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "returns 1 outputs, but 2 were provided"));
+    }
+
+    SECTION("an expression output that contradicts a given value is reported") {
+        // 2*5 = 10 but the output is required to be 11
+        auto run = runModel(kDoubler + "CALL dbl(5 : 11)\n");
+        CHECK_FALSE(run.solveOk);
+        auto over = runModel(kDoubler + "CALL dbl(5 : z/1000)\nz = 1\n");
+        CHECK_FALSE(over.solveOk);
+    }
+}
+
+// ============================================================================
+// CS-BUG-STRING-CALL-OUT: a string produced only by a CALL, used by later statements
+// ============================================================================
+
+namespace {
+
+/// `gen` computes a string from a number (no literal assignment of the string in the main program).
+const std::string kStringGen =
+    "PROCEDURE gen(x : r$)\n"
+    "  IF (x > 1) THEN\n"
+    "    r$ := 'BIG'\n"
+    "  ENDIF\n"
+    "  IF (x <= 1) THEN\n"
+    "    r$ := 'SMALL'\n"
+    "  ENDIF\n"
+    "END\n"
+    "PROCEDURE use(s$ : y)\n"
+    "  IF (s$ = 'BIG') THEN\n"
+    "    y = 1\n"
+    "  ELSE\n"
+    "    y = 2\n"
+    "  ENDIF\n"
+    "END\n";
+
+}  // namespace
+
+TEST_CASE("CS-BUG-STRING-CALL-OUT: a string computed by a CALL reaches the next CALL", "[library-gaps][string-call-out]") {
+    // was: "Block 1 (size 1, vars: z) failed: EvaluationError - [Newton] String variable not found: r$"
+    auto big = runModel(kStringGen + "CALL gen(2 : r$)\nCALL use(r$ : z)\n");
+    REQUIRE(big.solveOk);
+    CHECK(big.verified);
+    CHECK_THAT(big["z"], WithinAbs(1.0, 1e-12));
+    CHECK(big.strings.at("r$") == "BIG");
+
+    auto small = runModel(kStringGen + "CALL gen(1 : r$)\nCALL use(r$ : z)\n");
+    REQUIRE(small.solveOk);
+    CHECK_THAT(small["z"], WithinAbs(2.0, 1e-12));
+    CHECK(small.strings.at("r$") == "SMALL");
+
+    // the order of the lines does not matter: the structural analysis orders the blocks
+    auto reversed = runModel(kStringGen + "CALL use(r$ : z)\nCALL gen(2 : r$)\n");
+    REQUIRE(reversed.solveOk);
+    CHECK_THAT(reversed["z"], WithinAbs(1.0, 1e-12));
+
+    // the number given to the first routine is itself computed
+    auto chained = runModel(kStringGen + "n = 3 - 1\nCALL gen(n : r$)\nCALL use(r$ : z)\nw = 10*z\n");
+    REQUIRE(chained.solveOk);
+    CHECK(chained.verified);
+    CHECK_THAT(chained["w"], WithinAbs(10.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-STRING-CALL-OUT: the register reproducer", "[library-gaps][string-call-out]") {
+    // The reproducer of the register writes into a lookup table (CS-BUG-LOOKUP-WRITE, a separate bug).
+    // Whatever becomes of those statements, the string must be found.
+    auto run = runModel(R"(
+PROCEDURE gen(x:r$)
+IF (x>1) THEN
+r$:='BIG'
+ENDIF
+IF (x<=1) THEN
+r$:='SMALL'
+ENDIF
+END
+PROCEDURE wr(i,regime$:res$)
+lookup('noTable',i,1)=i
+lookup$('noTable',i,2)=regime$
+res$='OK'
+END
+i=1
+CALL gen(2:r$)
+CALL wr(i,r$:res$)
+)");
+    CHECK_FALSE(anyContains({run.message}, "String variable not found"));
+    // with the string given by a literal the file solves, as before
+    auto literal = runModel(R"(
+PROCEDURE wr(i,regime$:res$)
+res$='OK'
+END
+i=1
+r$='ON'
+CALL wr(i,r$:res$)
+)");
+    CHECK(literal.solveOk);
+}
+
+TEST_CASE("CS-BUG-STRING-CALL-OUT: other uses of the string", "[library-gaps][string-call-out]") {
+    SECTION("several string outputs, mixed with numeric ones") {
+        auto run = runModel(R"(
+PROCEDURE props(k : name$, v, kind$)
+  IF (k = 1) THEN
+    name$ := 'Water'
+    kind$ := 'liquid'
+  ELSE
+    name$ := 'R134a'
+    kind$ := 'refrigerant'
+  ENDIF
+  v := 10*k
+END
+PROCEDURE isliq(kind$ : f)
+  IF (kind$ = 'liquid') THEN
+    f = 1
+  ELSE
+    f = 0
+  ENDIF
+END
+CALL props(1 : n$, a, t$)
+CALL props(2 : n2$, b, t2$)
+CALL isliq(t$ : f1)
+CALL isliq(t2$ : f2)
+)");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK(run.strings.at("n$") == "Water");
+        CHECK(run.strings.at("t$") == "liquid");
+        CHECK(run.strings.at("n2$") == "R134a");
+        CHECK(run.strings.at("t2$") == "refrigerant");
+        CHECK_THAT(run["a"], WithinAbs(10.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(20.0, 1e-12));
+        CHECK_THAT(run["f1"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["f2"], WithinAbs(0.0, 1e-12));
+    }
+
+    SECTION("the string is the fluid of a property call of the main program") {
+        auto run = runModel(R"(
+PROCEDURE pick(k : fl$)
+  IF (k = 1) THEN
+    fl$ := 'Water'
+  ELSE
+    fl$ := 'R134a'
+  ENDIF
+END
+CALL pick(1 : fluid$)
+h = enthalpy(fluid$, T=100, P=1e5)
+)");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["h"], WithinRel(CoolProp::PropsSI("H", "T", 373.15, "P", 1e5, "Water"), 1e-6));
+    }
+
+    SECTION("the string is the fluid of a property call inside another routine") {
+        auto run = runModel(R"(
+PROCEDURE pick(k : fl$)
+  fl$ := 'Water'
+END
+PROCEDURE hh(fl$, T : h)
+  h := enthalpy(fl$, T=T, P=1e5)
+END
+CALL pick(1 : fluid$)
+CALL hh(fluid$, 100 : h)
+)");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["h"], WithinRel(CoolProp::PropsSI("H", "T", 373.15, "P", 1e5, "Water"), 1e-6));
+    }
+
+    SECTION("a coupled numeric block reads the string") {
+        auto run = runModel(kStringGen + R"(
+PROCEDURE scaled(s$, a : y)
+  IF (s$ = 'BIG') THEN
+    y = 2*a
+  ELSE
+    y = a/2
+  ENDIF
+END
+CALL gen(2 : r$)
+CALL scaled(r$, a : y)
+a + y = 9
+)");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        // 'BIG': y = 2 a, so a = 3 and y = 6 (with 'SMALL' it would be a = 6)
+        CHECK_THAT(run["a"], WithinAbs(3.0, 1e-9));
+        CHECK_THAT(run["y"], WithinAbs(6.0, 1e-9));
+    }
+
+    SECTION("a string given as a literal is untouched") {
+        auto run = runModel(kStringGen + "r$ = 'BIG'\nCALL use(r$ : z)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["z"], WithinAbs(1.0, 1e-12));
+        CHECK(run.strings.at("r$") == "BIG");
+    }
+
+    SECTION("the string is computed inside the coupled block that reads it") {
+        // a is the input of the routine that sets the string, and the string changes the equation that
+        // fixes a: one block of three unknowns (a, y, r$), whatever the order of the lines
+        const std::string scaled =
+            "PROCEDURE scaled(s$, a : y)\n  IF (s$ = 'BIG') THEN\n    y = 2*a\n  ELSE\n    y = a/2\n  ENDIF\nEND\n";
+        for (const char* order : {"CALL gen(a : r$)\nCALL scaled(r$, a : y)\na + y = 9\n",
+                                  "a + y = 9\nCALL scaled(r$, a : y)\nCALL gen(a : r$)\n"}) {
+            auto run = runModel(kStringGen + scaled + order);
+            REQUIRE(run.solveOk);
+            CHECK(run.verified);
+            CHECK_THAT(run["a"], WithinAbs(3.0, 1e-9));   // 'BIG' (a > 1): y = 2 a, a + 2 a = 9
+            CHECK_THAT(run["y"], WithinAbs(6.0, 1e-9));
+            CHECK(run.strings.at("r$") == "BIG");
+        }
+        // a chain of two string producers in the block
+        auto chain = runModel(kStringGen + scaled +
+            "PROCEDURE rename(s$ : t$)\n  t$ := s$\nEND\n"
+            "CALL scaled(q$, a : y)\nCALL rename(r$ : q$)\na + y = 9\nCALL gen(a : r$)\n");
+        REQUIRE(chain.solveOk);
+        CHECK(chain.verified);
+        CHECK_THAT(chain["a"], WithinAbs(3.0, 1e-9));
+        CHECK(chain.strings.at("q$") == "BIG");
+    }
+}
+
+TEST_CASE("CS-BUG-STRING-CALL-OUT: the string is in the solution and the debug folder", "[library-gaps][string-call-out]") {
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_library_gaps_string_debug";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const std::string code = kStringGen + "CALL gen(2 : r$)\nCALL use(r$ : z)\n";
+    const fs::path file = dir / "model.eescode";
+    { std::ofstream f(file); f << code; }
+    CoolSolveRunner runner(file.string());
+    SolverOptions options;
+    REQUIRE(runner.run(options));
+    const auto& res = runner.getSolveResult();
+    CHECK(res.stringVariables.at("r$") == "BIG");
+    // the post-solve check evaluates the second CALL with the string of the first
+    auto check = checkSolution(runner.getIR(), res.variables, res.stringVariables, options.coolpropConfig, 1e-3);
+    CHECK(check.allSatisfied);
+    runner.generateDebugOutput((dir / "debug").string(), code);
+    std::ifstream in(dir / "debug" / "variables.md");
+    REQUIRE(in.good());
+    const std::string variables((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    CHECK(variables.find("`r$`") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("CS-BUG-STRING-CALL-OUT: negative tests", "[library-gaps][string-call-out]") {
+    SECTION("a string that nothing computes is reported with its name") {
+        // never$ is an unknown without equation: the system is not square
+        auto run = runModel(kStringGen + "CALL use(never$ : z)\n");
+        CHECK_FALSE(run.solveOk);
+    }
+
+    SECTION("a routine that does not set its string output") {
+        auto run = runModel("PROCEDURE lazy(x : r$)\n  y = x\nEND\n" + std::string(
+            "PROCEDURE use(s$ : y)\n  y = 1\nEND\nCALL lazy(1 : r$)\nCALL use(r$ : z)\n"));
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "r$"));
+    }
 }

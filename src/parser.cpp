@@ -657,6 +657,7 @@ private:
                     // Also track procedure calls as function-like calls to validate
                     callsFound.push_back({node.name, stmt->sourceLineNumber});
                     for (const auto& arg : node.inputArgs) collectFromExpr(arg, collectFromExpr);
+                    for (const auto& out : node.outputExprs) collectFromExpr(out, collectFromExpr);
                 } else if constexpr (std::is_same_v<T, FunctionDefinition>) {
                     for (const auto& s : node.body) self(s, self);
                 } else if constexpr (std::is_same_v<T, ProcedureDefinition>) {
@@ -819,6 +820,7 @@ private:
                     for (const auto& s : node.body) self(s, self);
                 } else if constexpr (std::is_same_v<T, ProcedureCall>) {
                     for (const auto& arg : node.inputArgs) walkExpr(arg, walkExpr);
+                    for (const auto& out : node.outputExprs) walkExpr(out, walkExpr);
                 } else if constexpr (std::is_same_v<T, FunctionDefinition>) {
                     for (const auto& s : node.body) self(s, self);
                 } else if constexpr (std::is_same_v<T, ProcedureDefinition>) {
@@ -1704,24 +1706,35 @@ private:
             inputArgs.push_back(expr);
         }
         
+        // An output is a variable (possibly an array element). In the main program EES also accepts an
+        // expression (`CALL p(x : c/1000)`): the output of the routine is equated to it. Inside a
+        // FUNCTION/PROCEDURE the statements run in order and nothing solves such an equation.
         std::vector<Variable> outputVars;
+        std::vector<ExprPtr> outputExprs;   // filled only when an output is an expression
         std::vector<std::string> outputStrs = splitArguments(outputsStr);
         for (size_t i = 0; i < outputStrs.size(); ++i) {
             std::string ts = trim(outputStrs[i]);
             if (ts.empty()) continue;
             
-            // Outputs must be variables (potentially array access)
             auto expr = parseExpression(ts, lineNum);
             if (!expr)
                 return refuse("Could not parse output " + std::to_string(i + 1) + " of '" + name
                               + "': '" + ts + "'");
-            if (!expr->is<Variable>())
-                return refuse("Output " + std::to_string(i + 1) + " of '" + name + "' must be a variable, not the expression '"
-                              + ts + "': write the result into a variable and use a separate equation");
-            outputVars.push_back(expr->as<Variable>());
+            if (expr->is<Variable>()) {
+                outputVars.push_back(expr->as<Variable>());
+                if (!outputExprs.empty()) outputExprs.push_back(nullptr);
+                continue;
+            }
+            if (procedureBodyDepth_ > 0)
+                return refuse("Output " + std::to_string(i + 1) + " of '" + name + "' is the expression '" + ts
+                              + "': inside a FUNCTION or PROCEDURE the statements run in order and the expression "
+                                "cannot be solved for; write the result into a variable and compute the expression from it");
+            if (outputExprs.empty()) outputExprs.assign(outputVars.size(), nullptr);
+            outputVars.push_back(Variable{});   // placeholder, replaced when the IR is built
+            outputExprs.push_back(expr);
         }
         
-        return makeProcedureCall(name, std::move(inputArgs), std::move(outputVars), lineNum);
+        return makeProcedureCall(name, std::move(inputArgs), std::move(outputVars), lineNum, std::move(outputExprs));
     }
 
     StmtPtr tryParseEquationOrAssignment(const std::string& line, int lineNum,

@@ -54,6 +54,9 @@ struct EvaluationResult {
     std::vector<double> residuals;           // F(x) for each equation
     std::vector<std::vector<double>> jacobian;  // J[eq][var] = dF_eq/dx_var
     std::vector<std::string> warnings;       // Any warnings during evaluation
+    /// Values of the string variables that a CALL of the block set (name -> value): a string is not
+    /// an unknown of the numeric system, so this is the only way it leaves the evaluation.
+    std::map<std::string, std::string> stringOutputs;
     
     size_t numEquations() const { return residuals.size(); }
     size_t numVariables() const { return jacobian.empty() ? 0 : jacobian[0].size(); }
@@ -331,8 +334,16 @@ public:
 
     /** @brief Provide lookup table access for INTERPOLATE / LOOKUP calls. */
     void setLookupTableStore(const LookupTableStore* store) { lookupTableStore_ = store; }
+
+    /** @brief True if a CALL of this block has a string output (`EvaluationResult::stringOutputs`). */
+    bool hasStringCallOutputs() const { return hasStringCallOutputs_; }
     
 private:
+    bool hasStringCallOutputs_ = false;
+    /// Order in which `evaluate` visits the equations when a CALL of the block computes a string: those
+    /// CALLs first, so that every CALL of the block finds the strings it reads. Empty: the order of
+    /// `equations_`. The row of an equation in the residual vector and the Jacobian never changes.
+    std::vector<size_t> evalOrder_;
     std::vector<std::string> variables_;
     std::vector<int> equationIds_;
     DiagnosticCollector* diagnostics_ = nullptr;
@@ -389,6 +400,16 @@ public:
      * @brief Set the current solution state for a string variable.
      */
     void setStringVariableValue(const std::string& name, const std::string& value);
+
+    /**
+     * @brief Store the string variables that the CALLs of a solved block compute.
+     *
+     * A string is not an unknown of the numeric system, so the solver does not carry it from one
+     * block to the next: the CALL that sets it is evaluated once more at the solution and the
+     * strings it returns become part of the state (CS-BUG-STRING-CALL-OUT). Does nothing, and
+     * costs nothing, for a block without a CALL that has a string output.
+     */
+    void publishStringOutputs(size_t blockIndex);
     
     /**
      * @brief Get the current solution state for a variable.
