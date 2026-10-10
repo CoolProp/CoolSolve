@@ -124,7 +124,7 @@ Legend: ☐ to do · 🔄 in progress · ✅ done (commit) · ⏸ deferred.
 | 1 | `CS-GAP-IF5` | 11: 0009, 0041, **0073**, 0074, 0075, 0080, 0081, 0153, **0155**, 0162, 0166 | ✅ | `59b2862` | ✅ |
 | 1b | `CS-BUG-ARG-DROP` (new, P1 silent: unparsable positional argument dropped) + close `CS-GAP-UNIT-SUBEXPR` / `CS-GAP-UNIT-NAMEDARG` (already parse since `59b2862`; tests needed) + named-argument misparse `IF(a=5,1,2)` → *Unknown fluid ''* (§8 C-147) | – | ✅ | `6c36a30` | – (no model listed the IDs; see log) |
 | 1c | `CS-BUG-BODY-LINE-DROP` (unparsable body line dropped) + `CS-BUG-TRAILING-TEXT` (text after `)`/`]` ignored) — both new, P1 silent, found in #1b | – | ✅ | `8238a94` | `CSL-0103` comment fix (see log) |
-| 2 (scope) | `CS-GAP-IF-DIRECTIVE` + `CS-BUG-STRING-CASE` (one shared case-insensitive string equality) — prompt ready in the session scratchpad (`prompt_2.md`) | | | | |
+| 2 (scope) | `CS-GAP-IF-DIRECTIVE` + `CS-BUG-STRING-CASE` (one shared case-insensitive string equality) | see #2 | ✅ | `9423934` | 🔄 |
 | 2 | `CS-GAP-IF-DIRECTIVE` (`$if/$ifnot/$else/$endif`) | 10: 0012, 0040, 0081, 0116, 0119, 0150, 0151, 0161, 0162, 0166 | ☐ | | ☐ |
 | 3 | INTEGRAL family: `CS-GAP-INTEGRAL-LIMITS`, `CS-BUG-INTEGRAL-FACTOR`, `CS-BUG-INTEGRAL-TABLE-SEP`, `CS-BUG-INTEGRAL-MAXSTEPS`, `CS-BUG-INTEGRAL-TABLE-CASE` (then `CS-GAP-INTEGRAL-MULTIVAR`) | 0009, 0010, 0041, 0047, 0059, 0081 | ☐ | | ☐ |
 | 4 | `CS-GAP-LOOKUP-PROC` | 6: 0072, 0078, 0079, 0116, 0158, 0160 | ☐ | | ☐ |
@@ -143,6 +143,7 @@ Legend: ☐ to do · 🔄 in progress · ✅ done (commit) · ⏸ deferred.
 | 2026-10-10 | Set-up | Branch `fix/library-gaps-2` created; baselines §2 recorded; frozen baseline binary in the session scratchpad (`coolsolve_baseline`). |
 | 2026-10-10 | #1 `CS-GAP-IF5` | Fixed (`59b2862`): 3- and 5-argument `if` in `evaluateStandardFunction`; also unit-annotated literal arguments (`3600[s]`) no longer dropped, and `INTEGRAL` base expressions evaluate built-in functions instead of 0. 13 tests. Suites: 424/424 unit, examples identical to baseline. Native CSL-0073 solves, identical to its variant `.sol`; CSL-0155 parses but fails on block 106 (151 vars, NaN at start, not IF-related). New §5 row `CS-BUG-ARG-DROP`. |
 | 2026-10-10 | #1 re-check | `CSL-0073` blocked → **verified** (native identical to the former variant, 34/34; EES max 2.71e-2 humid-air, unchanged), variant removed, native `.sol` added. `CSL-0155` blocked → **failing** (`missing_features` []): all IFs evaluate, block 106 (151 vars) does not converge even from CoolProp-consistent guesses; `.initials` rebuilt, non-runnable variant removed. 9 other models: IF5 removed from `missing_features`, README/history updated, none stops on IF5 any more. `build_index` 0 errors; `test_models` on the 11 ids OK except baseline `CSL-0153:coolsolve`. Library roadmap §1/§8 updated. Register: new `CS-GAP-REF-STATE` (EES R410A ASHRAE reference vs CoolProp IIR, offsets 142 244.6 J/kg / 773.6 J/kg·K confirmed), §8 C-147 resolved. |
+| 2026-10-10 | #2 | Fixed (`9423934`): `$IF/$IFNOT/$ELSE/$ENDIF` resolved while parsing (removed branches skipped unparsed, main program and bodies; EES help semantics: string constant set before the directive, case-insensitive, AND/OR, EES flags; errors for non-constant strings, unknown conditions, unbalanced directives; `report.md` table); `eesStringEqual` (case-insensitive incl. Latin-1 accents) for IF statements and `$IF`. New files `src/conditional_directives.cpp`, `src/ees_string.cpp` (+ headers). 24 tests; 486/486 unit (one old test asserted case-sensitivity); examples identical; library regression 151 / same 7. No model freed by #2 alone: CSL-0012 → `LOOKUP$ROW`, 0119 → `nDay_`, 0151 → accented names, 0161 → `#` names, 0081 → GOTO, 0116 → `=>`, 0150 → not square (CHEM-EQUIL/NASA), 0162 → CALL-EXPR-OUT, 0040 → Diagram-window strings (new `CS-GAP-IF-NO-CONSTANT`) + `C%`, 0166 → `regime$` from a CALL (`CS-GAP-IF-NO-CONSTANT`), 0075 → now AirH2O branch, SingularJacobian block 16 (ISIDEALGAS/HUMIDAIR-PROPS open). PARAMETRICTABLE stays false in GUI parametric studies (documented). |
 | 2026-10-10 | #1c | Fixed (`8238a94`): unparsable body lines reported ("Could not parse line"), `END // comment` closes a body, text after `)`/`]`/string is an error, unit annotation after a call/element accepted explicitly (also inside expressions). 15 tests; 462/462 unit; examples identical. AST comparison: 6 files gain errors on previously dropped lines — `orc_solar_complex` example (`Nu#_` names), blocked natives CSL-0081 (GOTO), CSL-0153/0160 (`END procedure`/`END name`), CSL-0158 (`°` names) — and **CSL-0103 (verified)**: six `!` comment lines in `FUNCTION dP_Kern` (not an EES comment form, silently dropped before) → fixed in the library as `//` comments, regression OK, history entry added. Register: GOTO and HASH-IDENT now loud (P1→P3); new rows `CS-BUG-VAR-ANNOTATION` (silent in bodies), `CS-BUG-MAIN-SEMICOLON`, `CS-BUG-DUPLICATE-HEADER-COMMENT` → item 9. |
 | 2026-10-10 | #1b | Fixed (`6c36a30`): unparsable positional arguments, indices, CALL inputs/outputs are parse errors (also in bodies); positional-only built-ins refuse `name=value` (`IF(a=5,…)`); `(…) [unit]` accepted; `CS-GAP-UNIT-SUBEXPR`/`-NAMEDARG` closed with tests. 23 tests; 447/447 unit; examples identical; library regression 151 targets, same 7 baseline failures. AST comparison over 267 files: 14 differ, all blocked natives/failing examples now erroring on known gaps (`CALL-EXPR-OUT`, `NAME-SYMBOL`, `ACCENTED-IDENT`, `ARRAY-ARG`). **Library follow-up for item 5:** `CSL-0153` and `CSL-0074` use expression CALL outputs but do not list `CS-GAP-CALL-EXPR-OUT`. New rows `CS-BUG-BODY-LINE-DROP`, `CS-BUG-TRAILING-TEXT` → item 1c. |
 
@@ -259,73 +260,6 @@ build_index/test_models results; any new CoolSolve problem with its reproducer.
 ## Appendix C. Prepared prompts of the open items
 
 Each prompt is removed when its item is done. The fix protocol it refers to is Appendix A (save it as `fix_protocol.md` in the session scratchpad and adapt the paths).
-
-### C.2 — `prompt_2.md`
-
-````text
-You are fixing CoolSolve items. First read and follow the protocol file:
-/tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/fix_protocol.md
-(Note: the build tree is configured with CoolProp pinned (`COOLSOLVE_COOLPROP_TAG=5b9c32ac`); never re-run cmake with
-another tag. `./coolsolve_tests` includes the `[library-gaps]` tests; take the current pass count as your baseline before
-you start; `[examples-comprehensive]` per-example table must stay identical to
-/tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/baseline_test_examples.md
-except where this item intentionally changes an example — report it.)
-
-Items (register /home/sylvain/svn/CoolSolve/docs/model_library_support.md):
-
-1. `CS-GAP-IF-DIRECTIVE` (§4, P1): the EES compile-time directives `$IF <cond>` / `$IFNOT <cond>` / `$ELSE` /
-   `$ENDIF` in the main program are parsed and ignored today: all branches are kept (non-square system with `$ELSE`,
-   and a **silently solved false branch** without `$ELSE`). Implement them: equations (and any statement: comments,
-   CALLs, DUPLICATE blocks, other directives…) inside a false branch are removed before IR building; nesting allowed.
-   Consult the EES help for the exact semantics (WebFetch `https://fchart.com/ees/eeshelp/` — search the directives
-   page, e.g. "$IF"; cite what you find in the language reference) and implement at least:
-   - string-variable comparison `$IF X$='text'` (and `<>` if EES allows it): `X$` must be given a **constant string**
-     in the main program (`X$ = 'text'` anywhere in the file, before or after the directive — check EES's rule),
-     comparison **case-insensitive** for both the variable name and the string value (EES is case-insensitive; library
-     files rely on it: `expandertype_exp$='hermetic'` vs `$else expanderType_exp$='Hermetic'`); a string whose value is
-     not a compile-time constant (e.g. only produced by a `CALL` output, as `regime$` in library model CSL-0166) is a
-     clear **error** naming the variable (no silent choice);
-   - the flag conditions EES documents (e.g. `PARAMETRICTABLE`, `PARAMETRICTABLE='name'`, `MINMAX`,
-     `UNCERTAINTYPROPAGATION`, `DIAGRAMWINDOW`, `MAC`, `PC`/`WINDOWS`, …): decide each value for a CoolSolve solve
-     (`PARAMETRICTABLE` false in a normal solve; if the GUI parametric study can set it true cheaply, do it, otherwise
-     document it as false and say so in your report); unknown condition → error;
-   - tolerated EES spellings seen in valid library files: trailing `then` (`$if compressortype$='ari' then`), text after
-     `$else` (`$else pressuredrop_exp$='no'` — ignored, check EES), any letter case (`$IF`, `$if`, `$IfNot`), spaces
-     around `=`, quoted comments after the condition;
-   - errors: `$ELSE`/`$ENDIF` without `$IF`, `$IF` without `$ENDIF` (with line numbers).
-   Also inside FUNCTION/PROCEDURE bodies if EES allows it there (check; implement if cheap, else error/document).
-   Design: one pre-pass on the AST (or on the statement list) before IR building, reusable by the GUI/server path
-   (`CoolSolveRunner`) — check that every entry point (CLI, server, parametric study, integral models) goes through it.
-   The debug folder (`-d`) should say which branches were kept (one line per directive in an existing report, e.g.
-   `report.md`; contributing §3.8). The LaTeX/`equations.md` output naturally only contains kept equations.
-2. `CS-BUG-STRING-CASE` (§5, P2 silent wrong branch): string comparisons in `IF … THEN` statements of
-   FUNCTION/PROCEDURE bodies are case-sensitive; EES compares strings case-insensitively (register row: reproducer
-   `PROCEDURE pc(a$:y)` ⏎ `IF (a$ = 'ABC') THEN y = 1 ELSE y = 2` ⏎ `END` ⏎ `CALL pc('abc':z)` → z = 2, EES 1). Use **one
-   shared helper** for EES string equality (case-insensitive) in both places (and anywhere else strings are compared
-   for equality in the evaluator — e.g. `<>`; check also `STRINGPOS`-like or lookup-by-name code only if it is about
-   equality of user strings, and report what you changed). Fluid names are out of scope.
-
-Blocked library models to look at (read-only, do not edit the library): the native files listing
-`CS-GAP-IF-DIRECTIVE` in `missing_features` — list them with
-`grep -l 'CS-GAP-IF-DIRECTIVE' /home/sylvain/svn/CoolSolve_Library/models/*/*/*/model.json` (main file in `main_file`).
-Run each native file with your build in a scratch copy of its folder before/after, and report for each: does the
-`$IF` structure now resolve (kept branches), and what is the first remaining error (other gaps are expected: see each
-`missing_features`). `CSL-0012` thermal_comfort_pmv_ppd, `CSL-0119` solar_geometry_sun_path and `CSL-0151`
-engine_derating_iso3046 are the most likely to progress. `CSL-0075` (iso5167, also blocked by `CS-BUG-STRING-CASE`)
-too.
-
-Tests: tags `[library-gaps][if-directive]` and `[library-gaps][string-case]`: register reproducers (both: with
-`$ELSE` → square and right branch; without `$ELSE` → false branch removed), nesting, `$IFNOT`, `PARAMETRICTABLE`,
-case-insensitivity, a string assigned after the directive (if EES allows), CALL/DUPLICATE inside a removed branch,
-error cases (orphan `$ELSE`/`$ENDIF`, missing `$ENDIF`, non-constant string, unknown condition), string-case
-reproducer, `<>`.
-
-Also run the library regression (parser-level change): `cd /home/sylvain/svn/CoolSolve_Library && python3
-tools/test_models.py --coolsolve /home/sylvain/svn/CoolSolve/build/coolsolve` (≈ 4 min). Baseline failures (ignore):
-CSL-0114, CSL-0038, CSL-0019, CSL-0153:coolsolve, CSL-0039, CSL-0158:coolsolve, CSL-0124:coolsolve. Any other failure
-is yours: investigate (a `_coolsolve` variant may contain `$IF` blocks resolved by hand — fine — or a string compare
-that relied on case-sensitivity).
-````
 
 ### C.3 — `prompt_3.md`
 
