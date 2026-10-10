@@ -127,7 +127,7 @@ Legend: ☐ to do · 🔄 in progress · ✅ done (commit) · ⏸ deferred.
 | 2 (scope) | `CS-GAP-IF-DIRECTIVE` + `CS-BUG-STRING-CASE` (one shared case-insensitive string equality) | see #2 | ✅ | `9423934` | ✅ |
 | 2 | `CS-GAP-IF-DIRECTIVE` (`$if/$ifnot/$else/$endif`) | 10: 0012, 0040, 0081, 0116, 0119, 0150, 0151, 0161, 0162, 0166 | ☐ | | ☐ |
 | 3 | INTEGRAL family: `CS-GAP-INTEGRAL-LIMITS`, `CS-BUG-INTEGRAL-FACTOR`, `CS-BUG-INTEGRAL-TABLE-SEP`, `CS-BUG-INTEGRAL-MAXSTEPS`, `CS-BUG-INTEGRAL-TABLE-CASE` (then `CS-GAP-INTEGRAL-MULTIVAR`) | ✅ | `4cd0ca5` | ✅ |
-| 4 🔄 | `CS-GAP-LOOKUP-PROC` + `CS-GAP-INTEGRAL-LOOKUP` (same root cause: table store not wired; frees CSL-0042, example `building_rc_network`) | 6: 0072, 0078, 0079, 0116, 0158, 0160 | ☐ | | ☐ |
+| 4 | `CS-GAP-LOOKUP-PROC` + `CS-GAP-INTEGRAL-LOOKUP` (same root cause: table store not wired; frees CSL-0042, example `building_rc_network`) | ✅ | `d5d6b37` | 🔄 |
 | 5 | `CS-GAP-CALL-EXPR-OUT` + `CS-BUG-STRING-CALL-OUT` (CSL-0166) | 5: 0072, 0078, 0161, 0162, 0163 | ☐ | | ☐ |
 | 6 | Identifier characters: `CS-GAP-NAME-SYMBOL` (`C%`), `CS-GAP-NAME-PIPE` (`K\|star`), `CS-GAP-ACCENTED-IDENT` | 0040, 0074, 0080, 0116, 0150, 0151, 0152, 0158, 0163 | ☐ | | ☐ |
 | 7 | BrineProp family: `CS-GAP-ELSEIF-CHAIN`, `CS-GAP-UPPERCASE`, `CS-GAP-STRING-ARRAY` | 0072, 0078, 0079 | ☐ | | ☐ |
@@ -143,6 +143,7 @@ Legend: ☐ to do · 🔄 in progress · ✅ done (commit) · ⏸ deferred.
 | 2026-10-10 | Set-up | Branch `fix/library-gaps-2` created; baselines §2 recorded; frozen baseline binary in the session scratchpad (`coolsolve_baseline`). |
 | 2026-10-10 | #1 `CS-GAP-IF5` | Fixed (`59b2862`): 3- and 5-argument `if` in `evaluateStandardFunction`; also unit-annotated literal arguments (`3600[s]`) no longer dropped, and `INTEGRAL` base expressions evaluate built-in functions instead of 0. 13 tests. Suites: 424/424 unit, examples identical to baseline. Native CSL-0073 solves, identical to its variant `.sol`; CSL-0155 parses but fails on block 106 (151 vars, NaN at start, not IF-related). New §5 row `CS-BUG-ARG-DROP`. |
 | 2026-10-10 | #1 re-check | `CSL-0073` blocked → **verified** (native identical to the former variant, 34/34; EES max 2.71e-2 humid-air, unchanged), variant removed, native `.sol` added. `CSL-0155` blocked → **failing** (`missing_features` []): all IFs evaluate, block 106 (151 vars) does not converge even from CoolProp-consistent guesses; `.initials` rebuilt, non-runnable variant removed. 9 other models: IF5 removed from `missing_features`, README/history updated, none stops on IF5 any more. `build_index` 0 errors; `test_models` on the 11 ids OK except baseline `CSL-0153:coolsolve`. Library roadmap §1/§8 updated. Register: new `CS-GAP-REF-STATE` (EES R410A ASHRAE reference vs CoolProp IIR, offsets 142 244.6 J/kg / 773.6 J/kg·K confirmed), §8 C-147 resolved. |
+| 2026-10-10 | #4 | Fixed (`d5d6b37`): table store wired into PROCEDURE bodies (`makeBodyEvaluator`), IntegralSolver, debug report, server parametric fast path; + `CS-BUG-LOOKUP-COL-ARG` (string column argument read as a number — would have become silent in bodies; CSL-0123 native now equals its variant). 15 tests; 536/536 unit; example `building_rc_network` now solves (T_in 30.6825, = CSL-0042 variant; EXPECTED_SOLUTIONS added; examples 40/46, baseline copy updated); integral API 14/14; library regression 151 / same 7. Library natives: CSL-0042 now solves; CSL-0079 and CSL-0072 lookups verified in scratch copies (≤ 5e-10 vs variants) but still blocked by ELSEIF-CHAIN/UPPERCASE/STRING-ARRAY/CALL-EXPR-OUT; CSL-0078 non-square; CSL-0116/0158/0160 parse errors first. New row `CS-GAP-INTEGRAL-BASE-CALL`. |
 | 2026-10-10 | #3 re-check | **Freed: CSL-0047, CSL-0010, CSL-0009 blocked → verified** (natives identical to their variants; vs EES: 0047 max 9e-8, 0010 max 4.5e-6 = EES trapezoid vs CoolSolve quadrature, 0009 ≤ 6.1e-5 on curves decoded from the EES plots); variants (and 0009's `coolsolve.conf`) removed, native `.sol` added; CSL-0010 keeps `CS-GAP-OPTIM` for information. CSL-0041 now blocked only by `CS-BUG-WATER-NEAR-FREEZING` (solves with the 3 Water calls replaced). CSL-0059: MULTIVAR + DECREASING. CSL-0081: GOTO + INTEGRALVALUE. Header catch-up cleanup done (IF5/IF-DIRECTIVE mentions). Library roadmap §1: 102 verified / 7 runs / 38 blocked / 1 failing. Register §8: `$IntegralTable` interval rounding note (unverified). |
 | 2026-10-10 | #3 | Fixed (`4cd0ca5`): FACTOR (fast path for `y = base + INTEGRAL`, auxiliary states `__integral_k` otherwise, expression integrands get their own equation, internal names hidden), symbolic LIMITS (solved at the initial point), MAXSTEPS (explicit step honoured, early stop = error), TABLE-SEP/CASE (`, ;` separators, case-insensitive, I001 warning). 35 tests; 521/521 unit; examples identical (ice_storage_tank `-integral.csv` T_w column now filled); `test_integral_api.py --auto` 14/14; library regression 150 / same 7; CSL-0009:coolsolve 1m20 before/after. Natives: CSL-0047, CSL-0010, CSL-0009 solve, identical to their variants; CSL-0041 stops on WATER-NEAR-FREEZING; CSL-0059 on MULTIVAR (+ new DECREASING); CSL-0081 on GOTO. New rows `CS-GAP-INTEGRAL-DECREASING`, `CS-GAP-INTEGRAL-DUPLICATE`, `CS-BUG-INTEGRAL-OUTPUT-INTERVAL`. |
 | 2026-10-10 | #3 (earlier) | Fix agent dispatched; interrupted by an API usage limit mid-implementation (partial diff ≈1800 lines left in the working tree, uncommitted); resumed with its context after the reset. |
@@ -267,57 +268,6 @@ build_index/test_models results; any new CoolSolve problem with its reproducer.
 ## Appendix C. Prepared prompts of the open items
 
 Each prompt is removed when its item is done. The fix protocol it refers to is Appendix A (save it as `fix_protocol.md` in the session scratchpad and adapt the paths).
-
-### C.4 — `prompt_4.md`
-
-````text
-You are fixing CoolSolve items. First read and follow the protocol file:
-/tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/fix_protocol.md
-(The build tree is configured with CoolProp pinned (`COOLSOLVE_COOLPROP_TAG=5b9c32ac`); never re-run cmake with another
-tag; if you add .cpp files, `cmake .` in `build/` keeps the cached tag. Take the current `./coolsolve_tests` pass count as
-your baseline. The `[examples-comprehensive]` per-example table must stay identical to
-/tmp/claude-1000/-home-sylvain-svn-CoolSolve/9a4edc7b-2ae3-4dde-b675-6b24688bae79/scratchpad/baseline_test_examples.md
-**except `building_rc_network`, which is expected to start solving with this item** — then give it an
-`EXPECTED_SOLUTIONS` entry in `tests/test_examples.cpp` (contributing §3.11) with a value you can justify (its header
-and the library model CSL-0042 README give the reference).)
-
-Items (register /home/sylvain/svn/CoolSolve/docs/model_library_support.md §4) — one root cause, the lookup-table store
-(`LookupTableStore`, companion tables `<model>-<table>.csv`) is only given to the main-program evaluators:
-
-1. `CS-GAP-LOOKUP-PROC` (P2, blocks 6 models): `LOOKUP` (and `INTERPOLATE`, `LOOKUPROW`-style table functions,
-   `NLOOKUPROWS`/`NLOOKUPCOLS` if they exist — check `src/evaluator.cpp` around the message *"no table store is
-   available in this context"*) **inside a FUNCTION/PROCEDURE body** fails although the same call works in the main
-   program. Reproducer (valid EES; companion `probe-Brine2.csv` = `Column1,Column2` ⏎ `38.1615,6.3333`):
-   `PROCEDURE pk(r:y)` ⏎ `y=lookup('Brine2',r,2)` ⏎ `END` ⏎ `CALL pk(1:yv)` ⏎ `z=yv` → evaluation error; expected 6.3333.
-   Also in a FUNCTION, in a function called from a procedure (nested), in REPEAT/DUPLICATE loops of a body, in IF
-   conditions, with the derivative w.r.t. an argument that feeds the row/interpolation variable (Newton must converge
-   when the procedure output is an unknown of a block).
-2. `CS-GAP-INTEGRAL-LOOKUP` (P2): lookup functions inside an `INTEGRAL` model — the store is not wired into the
-   `IntegralSolver` (`docs/integral_table.md` §7.1). CoolSolve example `examples/building_rc_network.eescode` (fails at
-   baseline: analysis/solve) and library model CSL-0042 `building_rc_network_3r2c` (native file blocked only by this
-   gap; its `_coolsolve` variant reconstructs the table with a `clamp01` FUNCTION and is the verified reference: compare
-   the native file's results with the variant's `.sol` after your fix).
-Design: one consistent way to give the store to every evaluation context (main blocks, function/procedure
-interpreter, integral solver, solution checker, parametric runs, GUI/server runner) — look for the simplest wiring
-(e.g. the store owned by the runner and passed down where `setLookupTableStore` already exists), no global mutable
-state if avoidable, zero cost when there is no table. Check `$IntegralTable` output and the debug folder still work.
-
-Blocked library models to look at (read-only, do not edit the library): CSL-0072, CSL-0078, CSL-0079, CSL-0116,
-CSL-0158, CSL-0160 (LOOKUP-PROC; the BrineProp `.lib` family reads coefficient rows inside `PROCEDURE BRINEPROP`) and
-CSL-0042 (INTEGRAL-LOOKUP). Find them with `grep -l '<ID>' /home/sylvain/svn/CoolSolve_Library/models/*/*/*/model.json`.
-Run each native file (scratch copy of its folder, with its companion tables) before/after and report whether the lookup
-part now works and the first remaining error. For CSL-0079 (`brineprop_secondary_refrigerants`, a function library) a
-direct check of `BRINEPROP` values against its variant's `.sol` is the most valuable evidence.
-
-Tests: tags `[library-gaps][lookup-proc]` and `[library-gaps][integral-lookup]`: register reproducers, the forms above,
-negative tests (unknown table inside a body → clear error naming the table and the routine). Use temporary folders with
-companion CSV files as the existing `CS-BUG-LOOKUP-PATH` / `[lookup]` tests do.
-
-Library regression at the end (≈ 4 min + 3 min): `cd /home/sylvain/svn/CoolSolve_Library && python3 tools/test_models.py
---coolsolve /home/sylvain/svn/CoolSolve/build/coolsolve` — pre-existing failures to ignore: CSL-0114, CSL-0038, CSL-0019,
-CSL-0153:coolsolve, CSL-0039, CSL-0158:coolsolve, CSL-0124:coolsolve (check the progress note of the supervisor's
-prompt for any update of that list).
-````
 
 ### C.5 — `prompt_5.md`
 
