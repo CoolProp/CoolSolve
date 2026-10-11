@@ -96,7 +96,10 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     // 30.68 degC, same method).
     {"building_rc_network.eescode", {"T_in", 30.6825}},
     {"internal_combustion_engine.eescode",      {"W_dot", 190817}},
-    {"internal_combustion_engine_cpbar.eescode", {"M_dot_a", 0.004209}},
+    // EES reference (MSTH051114 Exercice 4, EES X7.458, stored solution): t_6 = t_7 = 1963.0985 degC, the
+    // block of W_dot_sh = 0 where cpbar(T_6, T_7) is 0/0 (CoolSolve 1961.444, 0.08 % ideal-gas table
+    // difference; the 0/0 guard of PROCEDURE cpbar evaluates its limit). Not M_dot_a: it does not depend on t_6.
+    {"internal_combustion_engine_cpbar.eescode", {"t_6", 1963.0985, 0.2}},
     {"piston_compressor.eescode",               {"C", 0.04694}},
     {"turbocompressor.eescode",                 {"M_dot", 0.6660}},
     // Models from solving/

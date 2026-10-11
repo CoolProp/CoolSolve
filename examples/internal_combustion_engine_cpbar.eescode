@@ -26,6 +26,16 @@ x = 1
 e_min = 0
 e = 0
 
+"Removable singularity: for T_p1 = T_p2 the mean specific heat is 0/0 (its limit is cp(T)).
+Below 0.01 K the mean is taken over a 0.01 K window centred on the mean temperature."
+IF (ABS(T_p1-T_p2)<0.01) THEN
+  T_hi = (T_p1+T_p2)/2+0.005
+  T_lo = (T_p1+T_p2)/2-0.005
+ELSE
+  T_hi = T_p1
+  T_lo = T_p2
+ENDIF
+
 "Composition of simplified air"
 x_air_N2 = 0.79 ; x_air_O2= 0.21 
 
@@ -65,11 +75,11 @@ x_H2O = c/nkmoltot
 x_N2 = g/nkmoltot
 mmprod = x_CO2*MM_CO2+x_CO*MM_CO+x_H2O*MM_H2O+x_N2*MM_N2
 "!Mean c_p of combustion products"
-h_CO2 = (enthalpy(CO2,T=T_p1)-enthalpy(CO2,T=T_p2))*MM_CO2
-h_CO = (enthalpy(CO,T=T_p1)-enthalpy(CO,T=T_p2))*MM_CO
-h_H2O =(enthalpy(H2O,T=T_p1)-enthalpy(H2O,T=T_p2))*MM_H2O
-h_N2 = (enthalpy(N2,T=T_p1)-enthalpy(N2,T=T_p2))*MM_N2
-c_bar_p = ((x_CO2*h_CO2+x_CO*h_CO+x_H2O*h_H2O+x_N2*h_N2)/mmprod)/(T_p1-T_p2)
+h_CO2 = (enthalpy(CO2,T=T_hi)-enthalpy(CO2,T=T_lo))*MM_CO2
+h_CO = (enthalpy(CO,T=T_hi)-enthalpy(CO,T=T_lo))*MM_CO
+h_H2O =(enthalpy(H2O,T=T_hi)-enthalpy(H2O,T=T_lo))*MM_H2O
+h_N2 = (enthalpy(N2,T=T_hi)-enthalpy(N2,T=T_lo))*MM_N2
+c_bar_p = ((x_CO2*h_CO2+x_CO*h_CO+x_H2O*h_H2O+x_N2*h_N2)/mmprod)/(T_hi-T_lo)
  
 "Unburned losses per kmol of fuel"
 T_ref = 25
@@ -90,12 +100,12 @@ x_N2 = parfuel*(1+e)*(x_air_N2/x_air_O2)/nkmoltot
 MM_prod = x_CO2*MM_CO2+x_H2O*MM_H2O+x_O2*MM_O2+x_N2*MM_N2
 
 "Enthalpy and mean specific heat of combustion products [per kg of products]"
-hp_1 = (enthalpy(CO2,T=T_p1)-enthalpy(CO2, T=T_p2))*MM_CO2
-hp_2 = (enthalpy(H2O,T=T_p1)-enthalpy(H2O, T=T_p2))*MM_H2O
-hp_3 = (enthalpy(O2,T=T_p1)-enthalpy(O2, T=T_p2))*MM_O2
-hp_4 = (enthalpy(N2,T=T_p1)-enthalpy(N2, T=T_p2))*MM_N2
+hp_1 = (enthalpy(CO2,T=T_hi)-enthalpy(CO2, T=T_lo))*MM_CO2
+hp_2 = (enthalpy(H2O,T=T_hi)-enthalpy(H2O, T=T_lo))*MM_H2O
+hp_3 = (enthalpy(O2,T=T_hi)-enthalpy(O2, T=T_lo))*MM_O2
+hp_4 = (enthalpy(N2,T=T_hi)-enthalpy(N2, T=T_lo))*MM_N2
 hp = (x_CO2*hp_1+x_H2O*hp_2+x_O2*hp_3+x_N2*hp_4)/MM_prod
-c_bar_p  = hp/(T_p1-T_p2)
+c_bar_p  = hp/(T_hi-T_lo)
 
 ENDIF
 
@@ -103,10 +113,10 @@ ELSE
 
 "Pure air case"
 MM_a = x_air_O2*MM_O2+x_air_N2*MM_N2
-ha_1 = (enthalpy(O2,T=T_p1)-enthalpy(O2, T=T_p2))*MM_O2
-ha_2 = (enthalpy(N2,T=T_p1)-enthalpy(N2, T=T_p2))*MM_N2
+ha_1 = (enthalpy(O2,T=T_hi)-enthalpy(O2, T=T_lo))*MM_O2
+ha_2 = (enthalpy(N2,T=T_hi)-enthalpy(N2, T=T_lo))*MM_N2
 ha = (x_air_O2*ha_1+x_air_N2*ha_2)/MM_a
-c_bar_p  = ha/(T_p1-T_p2)
+c_bar_p  = ha/(T_hi-T_lo)
 ENDIF
 
 END

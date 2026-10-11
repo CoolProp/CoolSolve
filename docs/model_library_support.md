@@ -461,9 +461,10 @@ models (148): 98 verified / 7 runs / 43 blocked before, 105 verified / 8 runs /
   caches another tag (`cmake -DCOOLSOLVE_COOLPROP_TAG=75af7816 ..` aligns it) and
   `coolsolve --version` prints the CoolProp revision linked. A bump is deliberate
   ([contributing.md](contributing.md#pinned-coolprop-version)). New `.cpp` files need `cmake .`.
-- *Baselines* (pin `75af7816`): unit suite 641 test cases; examples 40/46 solve, not solving
-  `cooling_tower2`, `internal_combustion_engine_cpbar`, `orc_complex`,
-  `simple_centrifugal_compressor`, `turbocompressor_interpolate`, `water_libr`; library
+- *Baselines* (pin `75af7816`): unit suite 657 test cases; examples 41/46 solve, not solving
+  `cooling_tower2`, `orc_complex`, `simple_centrifugal_compressor`,
+  `turbocompressor_interpolate`, `water_libr` (`internal_combustion_engine_cpbar` now solves:
+  its `cpbar` procedure guards the 0/0 of equal temperatures); library
   regression 151 targets, 0 failures (`tools/test_models.py` records the CoolProp baseline
   and warns when the binary differs). Versus the former pin `5b9c32ac`: R245fa transport
   (#3352, #3403: vapour viscosity and conductivity 12–18 % lower, liquid within ±5 %) and ammonia
