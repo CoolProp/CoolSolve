@@ -530,9 +530,12 @@ LHV_H2_mol = enthalpy(H2,T=T_ref)*MM_H2 + 0.5*enthalpy(O2,T=T_ref)*MM_O2 - entha
 )");
     REQUIRE(run.solveOk);
     CHECK(run.verified);
-    // EES: 282 989.9 kJ/kmol (stored Q_4 of the cpbar test file of the ULiege library)
-    CHECK_THAT(run["LHV_CO_mol"], WithinRel(282.990e6, 1e-5));
-    CHECK_THAT(run["LHV_H2_mol"], WithinRel(241.820e6, 1e-5));
+    // NASA-Glenn heats of formation (thermo.inp): CO2 -393 510, CO -110 535.196, H2O(g) -241 826 kJ/kmol,
+    // hence 282 974.8 and 241 826 (EES 10, same data with R = 8.314: about 282 957 and 241 811). The Cengel & Boles
+    // table A-26 values used before gave 282 990 and 241 820 (EES 7.966, stored Q_4 of the cpbar test file of the
+    // ULiege library: 282 989.9).
+    CHECK_THAT(run["LHV_CO_mol"], WithinRel(282.974804e6, 1e-6));
+    CHECK_THAT(run["LHV_H2_mol"], WithinRel(241.826e6, 1e-6));
 }
 
 TEST_CASE("CS-GAP-FORMATION-ENTHALPY: h(25 C) is the enthalpy of formation", "[library-gaps][formation-enthalpy]") {
@@ -546,20 +549,28 @@ hf_C3H8 = enthalpy(C3H8,T=25)*molarmass(C3H8)
 h_N2 = enthalpy(N2,T=25)
 h_O2 = enthalpy(O2,T=25)
 h_H2 = enthalpy(H2,T=25)
+h_He = enthalpy(He,T=25)
+h_Ar = enthalpy(Ar,T=25)
 u_CO2 = intenergy(CO2,T=25,P=101325)
 )");
     REQUIRE(run.solveOk);
-    // J/kmol
-    CHECK_THAT(run["hf_CO2"], WithinRel(-393.52e6, 1e-9));
-    CHECK_THAT(run["hf_CO"], WithinRel(-110.53e6, 1e-9));
-    CHECK_THAT(run["hf_H2O"], WithinRel(-241.82e6, 1e-9));
-    CHECK_THAT(run["hf_CH4"], WithinRel(-74.85e6, 1e-9));
-    CHECK_THAT(run["hf_C2H6"], WithinRel(-84.68e6, 1e-9));
-    CHECK_THAT(run["hf_C3H8"], WithinRel(-103.85e6, 1e-9));
-    // elements in their standard state
+    // J/kmol: standard enthalpies of formation at 298.15 K of the NASA-Glenn thermodynamic data (McBride, Zehe,
+    // Gordon, NASA/TP-2002-211556; thermo.inp of NASA CEA, field "heat of formation" of the species header, J/mol),
+    // the data family of EES (EES 10 help: CO2 -393 486, H2O -241 811, CH4 -74 595 kJ/kmol, i.e. the NASA
+    // polynomials with R = 8.314). The Cengel & Boles values used before were -393 520, -110 530, -241 820,
+    // -74 850, -84 680, -103 850 (JANAF-derived, rounded; ethane and propane 0.83 MJ/kmol away from NASA).
+    CHECK_THAT(run["hf_CO2"], WithinRel(-393.510e6, 1e-9));
+    CHECK_THAT(run["hf_CO"], WithinRel(-110.535196e6, 1e-9));
+    CHECK_THAT(run["hf_H2O"], WithinRel(-241.826e6, 1e-9));
+    CHECK_THAT(run["hf_CH4"], WithinRel(-74.600e6, 1e-9));
+    CHECK_THAT(run["hf_C2H6"], WithinRel(-83.851544e6, 1e-9));
+    CHECK_THAT(run["hf_C3H8"], WithinRel(-104.680e6, 1e-9));
+    // elements in their standard state (He and Ar too: EES help, "reference state for specific enthalpy is 0 at 25 C")
     CHECK_THAT(run["h_N2"], WithinAbs(0.0, 1e-3));
     CHECK_THAT(run["h_O2"], WithinAbs(0.0, 1e-3));
     CHECK_THAT(run["h_H2"], WithinAbs(0.0, 1e-3));
+    CHECK_THAT(run["h_He"], WithinAbs(0.0, 1e-3));
+    CHECK_THAT(run["h_Ar"], WithinAbs(0.0, 1e-3));
     // the internal energy follows the same reference (u = h - R T)
     CHECK(run["u_CO2"] < run["hf_CO2"] / molarMassKgPerKmol("CarbonDioxide"));
 }
@@ -584,7 +595,7 @@ h_air = enthalpy(Air,T=25,P=101325)
     // the entropy is the third-law one: s(25 C, 1 atm) = s0(1 bar) - R ln(1.01325) = 213.786 - 0.109 kJ/kmol-K,
     // minus the real-gas residual of CO2 at 1 atm (0.1 kJ/kmol-K, CoolProp's equation of state)
     CHECK_THAT(run["s_CO2"] * molarMassKgPerKmol("CarbonDioxide") / 1000.0, WithinAbs(213.786 - 0.109, 0.2));
-    // species without a formation enthalpy keep CoolProp's reference state
+    // Air has no formation enthalpy (EES references it to 0 K): it keeps CoolProp's reference state
     CHECK_THAT(run["h_air"], WithinRel(CoolProp::PropsSI("H", "T", 298.15, "P", P, "Air"), 1e-9));
 }
 
@@ -608,6 +619,99 @@ TEST_CASE("CS-GAP-FORMATION-ENTHALPY: the cpbar library reproduces the EES test 
     CHECK_THAT(run["e"], WithinRel(-0.02513201, 2e-3));
     CHECK_THAT(run["gamma"], WithinRel(1.394538, 2e-3));
     CHECK_THAT(run["MM_prod"], WithinRel(28.85006, 1e-4));
+}
+
+TEST_CASE("CS-GAP-FORMATION-ENTHALPY: He and Ar are elements, h = 0 at 25 C, as in EES", "[library-gaps][formation-enthalpy]") {
+    // EES help (He, Ar): "The reference state for specific enthalpy is 0 at 25 C". They kept CoolProp's own enthalpy
+    // reference (+6.2 MJ/kmol at 25 C and 1 atm, both) before the elements were given a zero heat of formation.
+    // Monatomic ideal gases: h(100 C) - h(25 C) = 5/2 R 75 K, to the real-gas residual of CoolProp at 1 atm
+    // (Ar 0.18 %, He less than 0.1 %).
+    auto run = runModel(R"(
+h_He = molarmass(He)*enthalpy(He,T=25)
+h_Ar = molarmass(Ar)*enthalpy(Ar,T=25)
+dh_He = molarmass(He)*(enthalpy(He,T=100) - enthalpy(He,T=25))
+dh_Ar = molarmass(Ar)*(enthalpy(Ar,T=100) - enthalpy(Ar,T=25))
+T_He = temperature(He,h=enthalpy(He,T=100))
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["h_He"], WithinAbs(0.0, 1e-3));
+    CHECK_THAT(run["h_Ar"], WithinAbs(0.0, 1e-3));
+    const double dhIdeal = 2.5 * 8314.462618 * 75.0;   // J/kmol between 25 C and 100 C
+    CHECK_THAT(run["dh_He"], WithinRel(dhIdeal, 1e-3));
+    CHECK_THAT(run["dh_Ar"], WithinRel(dhIdeal, 3e-3));
+    CHECK_THAT(run["T_He"], WithinAbs(100.0, 1e-6));   // the shift is undone when the enthalpy is an input
+}
+
+TEST_CASE("CS-GAP-FORMATION-ENTHALPY: Gibbs energies of reaction share one source with the NASA-Glenn tables", "[library-gaps][formation-enthalpy][ideal-entropy]") {
+    // Standard Gibbs energy of the species g = M*h(T) - T*(M*s(T,P) + R ln(P/1 bar)) [J/kmol], from the enthalpy
+    // (heat of formation + CoolProp's sensible part) and the absolute entropy of CoolSolve, at P = 1500 Pa where
+    // every species is an ideal-gas vapour. Reaction dG0 = sum(nu g). Reference: the same quantities from the
+    // NASA-Glenn 9-coefficient polynomials of thermo.inp (NASA/TP-2002-211556, R = 8.314462618 J/mol-K):
+    //   g(T) = dHf(298.15 K) + [H(T) - H(298.15 K)] - T S(T)       (dHf: header of the species, S: 1 bar)
+    // computed in Python (H, S: integrals of the polynomial of the interval containing T; extrapolated to 298.15 K
+    // for C2H6, C3H8 whose first interval starts at 300 K). dG0 in MJ/kmol:
+    //                          298.15 K     2000 K      3000 K
+    //   CO2 -> CO + 1/2 O2      257.2007    110.2552     27.5656      (ln K = -6.6303, -1.1051)
+    //   H2O -> H2 + 1/2 O2      228.5803    135.5622     77.4940      (ln K = -8.1522, -3.1068)
+    //   CH4 + 2 O2 -> CO2 + 2 H2O    -801.0044
+    //   C2H6 + 7/2 O2 -> 2 CO2 + 3 H2O  -1442.6051
+    //   C3H8 + 5 O2 -> 3 CO2 + 4 H2O    -2073.1526
+    // At 298.15 K the specific heats do not enter: dG0 = dH0 - T dS0 is fixed by the heats of formation and the
+    // standard entropies, so a heat of formation from another source shows up directly (Cengel & Boles instead of
+    // NASA: CO2 -> CO + 1/2 O2 +15 kJ/kmol, H2O -> H2 + 1/2 O2 -6, CH4 +252, C2H6 +829, C3H8 -829; CoolProp's own
+    // entropy references: 2 to 120 MJ/kmol). At 2000 and 3000 K the test also contains CoolProp's ideal-gas specific
+    // heats against NASA's (about 0.1 % of the enthalpy rise) and cannot tell the formation enthalpies of the CO2 and
+    // H2O reactions apart (shift of ln K: 0.0009 and 0.0004): it guards the common basis of h and s.
+    const double P = 1500.0;
+    auto gibbs = [&](double TK, const std::vector<std::string>& species) {
+        std::ostringstream code;
+        code << std::setprecision(12);
+        const double TC = TK - 273.15;
+        for (const auto& s : species)
+            code << "g_" << s << " = molarmass(" << s << ")*enthalpy(" << s << ",T=" << TC << ") - " << TK
+                 << "*(molarmass(" << s << ")*entropy(" << s << ",T=" << TC << ",P=" << P << ") + 8314.462618*ln(" << P
+                 << "/1E5))\n";
+        return code.str();
+    };
+    auto solveFor = [&](double TK, const std::vector<std::string>& species, const std::string& reactions) {
+        auto run = runModel(gibbs(TK, species) + reactions);
+        INFO("T = " << TK << " K: " << run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        return run;
+    };
+
+    SECTION("298.15 K: heats of formation and standard entropies") {
+        auto run = solveFor(298.15, {"CO2", "CO", "H2O", "H2", "O2", "CH4", "C2H6", "C3H8"},
+                            "dG_CO2 = g_CO + 0.5*g_O2 - g_CO2\n"
+                            "dG_H2O = g_H2 + 0.5*g_O2 - g_H2O\n"
+                            "dG_CH4 = g_CO2 + 2*g_H2O - g_CH4 - 2*g_O2\n"
+                            "dG_C2H6 = 2*g_CO2 + 3*g_H2O - g_C2H6 - 3.5*g_O2\n"
+                            "dG_C3H8 = 3*g_CO2 + 4*g_H2O - g_C3H8 - 5*g_O2\n");
+        // J/kmol. 3 kJ/kmol of rounding and residuals, plus 10 kJ/kmol per H2O of the reaction: CoolProp's Water at
+        // 1500 Pa and 25 C (47 % of saturation) is a real vapour, its residual entropy -0.03 kJ/kmol-K is -T s
+        // = +9.4 kJ/kmol in g (measured: dG0 of H2O -> H2 + 1/2 O2 is 9.4 off, CH4 + 2 O2 18.8, C2H6 28.2,
+        // C3H8 37.6; CO2 -> CO + 1/2 O2: 0.1). The other sources are 15 kJ/kmol (CO2) to 829 kJ/kmol away.
+        CHECK_THAT(run["dG_CO2"], WithinAbs(257.2007e6, 3e3));
+        CHECK_THAT(run["dG_H2O"], WithinAbs(228.5803e6, 13e3));
+        CHECK_THAT(run["dG_CH4"], WithinAbs(-801.0044e6, 23e3));
+        CHECK_THAT(run["dG_C2H6"], WithinAbs(-1442.6051e6, 33e3));
+        CHECK_THAT(run["dG_C3H8"], WithinAbs(-2073.1526e6, 43e3));
+    }
+    SECTION("2000 K and 3000 K: equilibrium constants of CO2 and H2O dissociation") {
+        // measured deviations from the NASA reference: ln K(CO2) 0.0003 and 0.0009, ln K(H2O) 0.004 and 0.017
+        const double R = 8314.462618;
+        struct Point { double TK, lnK_CO2, lnK_H2O, tol_CO2, tol_H2O; };
+        for (const Point& pt : {Point{2000.0, -6.6303, -8.1522, 2e-3, 1e-2}, Point{3000.0, -1.1051, -3.1068, 3e-3, 3e-2}}) {
+            auto run = solveFor(pt.TK, {"CO2", "CO", "H2O", "H2", "O2"},
+                                "dG_CO2 = g_CO + 0.5*g_O2 - g_CO2\n"
+                                "dG_H2O = g_H2 + 0.5*g_O2 - g_H2O\n");
+            INFO("T = " << pt.TK << " K");
+            CHECK_THAT(-run["dG_CO2"] / (R * pt.TK), WithinAbs(pt.lnK_CO2, pt.tol_CO2));
+            CHECK_THAT(-run["dG_H2O"] / (R * pt.TK), WithinAbs(pt.lnK_H2O, pt.tol_H2O));
+        }
+    }
 }
 
 // ============================================================================
@@ -745,8 +849,10 @@ TEST_CASE("CS-GAP-IDEAL-ENTROPY: entropy and Gibbs energy of the reaction CH4 + 
     // Species entropies are combined: 25 C, every species at the same pressure (2000 Pa, where H2O is a vapour),
     // 3 mol of gas on each side so that the entropy of reaction does not depend on the pressure.
     // NASA: dS0 = -5.224 kJ/kmol-K (NIST-JANAF -5.08); the CoolProp references gave about -146.
-    // Gibbs energy dG0 = dH0 - T dS0 with the heats of formation of the species enthalpies:
-    // tabulated dG0f: CO2 -394.359, H2O(g) -228.572, CH4 -50.72 kJ/mol -> -800.78 MJ/kmol.
+    // Gibbs energy dG0 = dH0 - T dS0 with the heats of formation of the species enthalpies (NASA-Glenn thermo.inp:
+    // CO2 -393 510, H2O(g) -241 826, CH4 -74 600 kJ/kmol): dH0 = -802.562 MJ/kmol, dG0 = -802.562 + 298.15*5.2244e-3
+    // = -801.004 MJ/kmol. The tabulated dG0f of the textbooks (CO2 -394.359, H2O(g) -228.572, CH4 -50.72 kJ/mol)
+    // give -800.78, 0.03 % higher: CH4 has dHf = -74 873 in NIST-JANAF (Cengel -74 850, NASA 2002 -74 600).
     auto run = runModel(R"(
 P = 2000
 T = 25
@@ -758,8 +864,8 @@ dG = dH - (T+273.15)*dS*1000
     REQUIRE(run.solveOk);
     CHECK(run.verified);
     CHECK_THAT(run["dS"], WithinAbs(-5.224, 0.2));      // kJ/kmol-K
-    CHECK_THAT(run["dH"], WithinRel(-802.31e6, 1e-6));  // J/kmol, heats of formation (Cengel & Boles)
-    CHECK_THAT(run["dG"], WithinRel(-800.78e6, 1e-4));  // J/kmol
+    CHECK_THAT(run["dH"], WithinRel(-802.562e6, 1e-6));  // J/kmol, NASA-Glenn heats of formation (Cengel: -802.31)
+    CHECK_THAT(run["dG"], WithinRel(-801.004e6, 1e-4));  // J/kmol
 }
 
 TEST_CASE("CS-GAP-IDEAL-ENTROPY: Air, real fluids and humid air keep CoolProp's reference state", "[library-gaps][ideal-entropy]") {
@@ -6529,10 +6635,12 @@ hf_O2 = MolarMass(O2)*enthalpy(O2,T=25)
 hf_H2 = MolarMass(H2)*enthalpy(H2,T=25)
 )");
     REQUIRE(run.solveOk);
-    CHECK_THAT(run["hf_CO2"], WithinRel(-393.520e6, 1e-9));
-    CHECK_THAT(run["hf_H2O"], WithinRel(-241.820e6, 1e-9));
-    CHECK_THAT(run["hf_CO"], WithinRel(-110.530e6, 1e-9));
-    CHECK_THAT(run["hf_CH4"], WithinRel(-74.850e6, 1e-9));
+    // NASA-Glenn thermo.inp heats of formation (the data CALL NASA reads); Cengel & Boles gave -393.520, -241.820,
+    // -110.530, -74.850
+    CHECK_THAT(run["hf_CO2"], WithinRel(-393.510e6, 1e-9));
+    CHECK_THAT(run["hf_H2O"], WithinRel(-241.826e6, 1e-9));
+    CHECK_THAT(run["hf_CO"], WithinRel(-110.535196e6, 1e-9));
+    CHECK_THAT(run["hf_CH4"], WithinRel(-74.600e6, 1e-9));
     CHECK_THAT(run["hf_N2"], WithinAbs(0.0, 1.0));
     CHECK_THAT(run["hf_O2"], WithinAbs(0.0, 1.0));
     CHECK_THAT(run["hf_H2"], WithinAbs(0.0, 1.0));
@@ -6575,16 +6683,19 @@ H_hot2 = MolarMass(Sp2$)*enthalpy(Sp2$,T=T_hot)
     INFO(run.message);
     REQUIRE(run.solveOk);
     CHECK(run.verified);
-    CHECK_THAT(run["H_ref1"], WithinRel(-393.520e6, 1e-9));
+    CHECK_THAT(run["H_ref1"], WithinRel(-393.510e6, 1e-9));   // NASA-Glenn heats of formation
     CHECK_THAT(run["H_hot1"] - run["H_ref1"], WithinRel(115.779e6, 2e-3));
-    CHECK_THAT(run["H_ref2"], WithinRel(-241.820e6, 1e-9));
+    CHECK_THAT(run["H_ref2"], WithinRel(-241.826e6, 1e-9));
     CHECK_THAT(run["H_hot2"] - run["H_ref2"], WithinRel(93.744e6, 2e-3));
 }
 
 TEST_CASE("CS-GAP-NASA: adiabatic flame temperature of CH4 with the rewritten species enthalpies", "[library-gaps][nasa]") {
     // CSL-0150 without dissociation (CH4, 20 % excess air, reactants at 288 K), species enthalpies from
-    // property calls. Hand balance with the JANAF enthalpies and the heats of formation of the
-    // language reference: H_react = -78.593 MJ/kmol fuel, T_adiab = 2061.6 K = 1788.5 degC.
+    // property calls. Hand balance with the NASA-Glenn data (thermo.inp: polynomials and heats of formation,
+    // computed in Python): H_react = -78.344 MJ/kmol fuel, T_adiab = 2061.0 K = 1787.85 degC. EES stores
+    // H_react = -78 333.02 kJ/kmol for the same reactants (Ex_3-4_CH4-Fuel Oil_Tadiab...EES; its CH4 is -74 595 against
+    // NASA's -74 600). The Cengel & Boles heats of formation gave -78.601 MJ/kmol and 1788.2 degC (hand balance
+    // with the JANAF enthalpies: -78.593 and 1788.5).
     auto run = runModel(R"(
 m = 1 ; n = 4 ; e = 0.2
 T_fuel = 14.85 ; T_air = 14.85
@@ -6596,8 +6707,8 @@ H_react = H_prod
     INFO(run.message);
     REQUIRE(run.solveOk);
     CHECK(run.verified);
-    CHECK_THAT(run["H_react"], WithinRel(-78.593e6, 2e-3));
-    CHECK_THAT(run["T_adiab"], WithinAbs(1788.5, 2.0));
+    CHECK_THAT(run["H_react"], WithinRel(-78.333e6, 5e-4));
+    CHECK_THAT(run["T_adiab"], WithinAbs(1787.85, 2.0));   // CoolProp's specific heats: +0.8 K
 }
 
 TEST_CASE("CS-GAP-NASA: the species of the NASA database that CoolProp lacks are unknown fluids", "[library-gaps][nasa]") {

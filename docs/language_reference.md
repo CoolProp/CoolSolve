@@ -489,49 +489,53 @@ for `H2O`, which keeps the vapor phase down to −20 °C). This pressure is part
 of the model: it is never clamped by the solver and is identical in the solve
 and in the final verification.
 
-**Enthalpy reference state.** As in EES (JANAF convention), the enthalpy and
-internal energy of the species below include the standard enthalpy of
-formation: `h(25 °C)` equals the heat of formation (elements: 0), so heats of
-reaction can be written with species enthalpies:
+**Reference states of the enthalpy and of the entropy.** As in EES (JANAF convention), the
+ideal gases `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`, `C2H6`, `C3H8` and `H2O`
+(vapor) have absolute properties from **one source**, the NASA-Glenn thermodynamic
+data (McBride, Zehe and Gordon, NASA/TP-2002-211556; `thermo.inp` of NASA CEA), the
+data family of the EES ideal gases: `h(25 °C)` is the standard **enthalpy of formation**
+(the elements `N2`, `O2`, `H2`, `He`, `Ar` are 0) and `s(25 °C, 1 bar)` the standard
+**third-law entropy** `s°`.
 
-| Species | `h·M` at 25 °C [kJ/kmol] | Species | `h·M` at 25 °C [kJ/kmol] |
-|:--|--:|:--|--:|
-| `N2`, `O2`, `H2` | 0 | `CH4` | −74 850 |
-| `CO2` | −393 520 | `C2H6` | −84 680 |
-| `CO` | −110 530 | `C3H8` | −103 850 |
-| `H2O` (vapor) | −241 820 | | |
+| Species | `h·M` at 25 °C [kJ/kmol] | `s°` (25 °C, 1 bar) [kJ/kmol-K] | Species | `h·M` at 25 °C [kJ/kmol] | `s°` [kJ/kmol-K] |
+|:--|--:|--:|:--|--:|--:|
+| `N2` | 0 | 191.609 | `CO` | −110 535.2 | 197.659 |
+| `O2` | 0 | 205.148 | `CH4` | −74 600 | 186.370 |
+| `H2` | 0 | 130.680 | `C2H6` | −83 851.5 | 229.220 |
+| `He` | 0 | 126.153 | `C3H8` | −104 680 | 270.313 |
+| `Ar` | 0 | 154.846 | `H2O` (vapor) | −241 826 | 188.828 |
+| `CO2` | −393 510 | 213.786 | | | |
+
+The enthalpies of formation are the values of the species headers of `thermo.inp`; `s°` is
+the 9-coefficient polynomial of the same file at 298.15 K (R = 8.314462618 J/mol-K). EES uses the
+same data with R = 8.314, which puts its values 6e-5 lower (EES help: `CO2` −393 486,
+`H2O` −241 811, `CH4` −74 595 kJ/kmol); NIST-JANAF entropies differ from NASA's by at most
+0.12 kJ/kmol-K (`CH4`). `Air` is not in the table: it keeps CoolProp's reference states (see below).
+Earlier CoolSolve versions used the rounded JANAF values of Çengel & Boles (Table A-26),
+5 to 830 kJ/kmol away (`C2H6` and `C3H8` the most), and `He` and `Ar` kept CoolProp's
+enthalpy reference.
+
+**Enthalpy.** The enthalpy and internal energy of the species include the enthalpy of
+formation, so heats of reaction can be written with species enthalpies:
 
 ```ees
 LHV_CO = enthalpy(CO,T=25)*molarmass(CO) + 0.5*enthalpy(O2,T=25)*molarmass(O2) - enthalpy(CO2,T=25)*molarmass(CO2)
-"= 282 990 kJ/kmol (in J/kmol: 2.8299e8)"
+"= 282 974.8 kJ/kmol (in J/kmol: 2.829748e8)"
 ```
 
 The reference applies to all calls, including `h=` given as an input
 (`temperature(CO2, P=P, h=h)`); enthalpy differences are unchanged. The
-enthalpies of `Air`, `He`, `Ar` and of the real fluids (`Water`,
-`CarbonDioxide`…) keep CoolProp's reference states. Values: Çengel & Boles,
-Table A-26, which reproduce the heats of combustion of EES.
+enthalpies of `Air` and of the real fluids (`Water`, `CarbonDioxide`…) keep
+CoolProp's reference states: EES's `Air` is not a JANAF species either.
 
-**Entropy reference state.** `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`,
-`C2H6`, `C3H8` and `H2O` (vapor) have the **absolute (third-law) entropy** of the
-JANAF/NASA tables, as in EES: the ideal-gas entropy at 25 °C and **1 bar** is the
-standard molar entropy `s°` below, and it depends on the pressure as
-`−R ln(P/1 bar)`. Entropies of different species can therefore be combined:
-entropy of reaction, Gibbs energy, equilibrium constant, exergy of combustion.
-
-| Species | `s°` (25 °C, 1 bar) [kJ/kmol-K] | Species | `s°` [kJ/kmol-K] |
-|:--|--:|:--|--:|
-| `N2` | 191.609 | `CO` | 197.659 |
-| `O2` | 205.148 | `CH4` | 186.370 |
-| `H2` | 130.680 | `C2H6` | 229.220 |
-| `He` | 126.153 | `C3H8` | 270.313 |
-| `Ar` | 154.846 | `H2O` (vapor) | 188.828 |
-| `CO2` | 213.786 | | |
-
-(NASA-Glenn thermodynamic data, McBride, Zehe and Gordon, NASA/TP-2002-211556, the
-source of the EES ideal gases; NIST-JANAF differs by at most 0.12 kJ/kmol-K. EES itself
-uses R = 8.314, which puts its values about 6e-5 lower. For `He` EES documents a
-different convention, zero at 25 °C and 101.3 kPa: CoolSolve gives the third-law value.)
+**Entropy.** The ideal-gas entropy at 25 °C and **1 bar** is `s°`, and it depends on the
+pressure as `−R ln(P/1 bar)`. Entropies of different species can therefore be combined:
+entropy of reaction, Gibbs energy, equilibrium constant, exergy of combustion. Together with the
+enthalpies of formation, the Gibbs energy `h − T·s` of the species is on the NASA-Glenn basis, e.g.
+the equilibrium constants of `CO2 ⇌ CO + ½ O2` and `H2O ⇌ H2 + ½ O2` at 2000 K and 3000 K are those of the
+NASA polynomials, to the difference between CoolProp's and NASA's ideal-gas specific heats
+(0.0003 to 0.017 on `ln K`). For `He` EES documents a different entropy convention, zero at 25 °C and
+101.3 kPa: CoolSolve gives the third-law value.
 
 ```ees
 "entropy of reaction CH4 + 2 O2 -> CO2 + 2 H2O(g) at 25 C (3 mol of gas on each side: any pressure, 2000 Pa keeps H2O a vapor)"

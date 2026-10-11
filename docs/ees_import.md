@@ -349,8 +349,8 @@ cannot be swept (`CS-GAP-PARAMETRIC`).
   `h = MolarMass(X$)*enthalpy(X$,T=T)`, `cp = MolarMass(X$)*cp(X$,T=T)` and
   `s = MolarMass(X$)*entropy(X$,T=T,P=1E5)` [J/kmol, J/kmol-K] for the species `Air`, `N2`,
   `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`, `C2H6`, `C3H8`, `H2O` (the enthalpy includes the
-  formation enthalpy and the entropy is the absolute one at 1 bar, as NASA's, except for `Air`,
-  which keeps CoolProp's references; see the
+  NASA-Glenn formation enthalpy, elements and `He`, `Ar` being 0, and the entropy is the absolute
+  one at 1 bar of the same source, as NASA's, except for `Air`, which keeps CoolProp's references; see the
   [Language Reference](language_reference.md#ideal-gases)), as the CoolSolve Library
   does (its workflow §6, decision D12). A species of the NASA database that CoolProp
   lacks (`OH`, `H`, `O`, `N`, `NO`, `NO2`) is a gap (`CS-GAP-FLUIDS-NASA-SPECIES`).
@@ -400,7 +400,7 @@ README. Tolerances:
 | Real-fluid properties, same equation of state | ≤ 0.1 % |
 | Real-fluid properties, different equation of state (EES vs CoolProp) | ≤ 0.5 % typical |
 | Older EES fluid models (e.g. R22 in EES 7) or near the critical point | up to a few %, **explain it** |
-| Absolute enthalpy/entropy | may differ by a reference-state offset: compare differences and derived results (powers, efficiencies, COP, temperatures). Examples: EES uses the ASHRAE reference (h = s = 0 for the saturated liquid at −40 °C) for R410A and R134a, CoolProp the IIR one: CoolProp − EES = 142.2 kJ/kg and 0.774 kJ/kg·K for R410A, 148.1 kJ/kg and 0.796 kJ/kg·K for R134a. Shift EES enthalpies/entropies by these offsets before using them as `.initials`. The ideal gases `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`, `C2H6`, `C3H8`, `H2O` have the EES (third-law, 1 bar) entropies and the formation enthalpies in the enthalpy: no offset (within 1e-4); `Air` keeps CoolProp's references (EES − CoolSolve = +1815 J/kg-K on `s`, +126 kJ/kg on `h`) |
+| Absolute enthalpy/entropy | may differ by a reference-state offset: compare differences and derived results (powers, efficiencies, COP, temperatures). Examples: EES uses the ASHRAE reference (h = s = 0 for the saturated liquid at −40 °C) for R410A and R134a, CoolProp the IIR one: CoolProp − EES = 142.2 kJ/kg and 0.774 kJ/kg·K for R410A, 148.1 kJ/kg and 0.796 kJ/kg·K for R134a. Shift EES enthalpies/entropies by these offsets before using them as `.initials`. The ideal gases `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`, `C2H6`, `C3H8`, `H2O` have the EES (third-law, 1 bar) entropies and the formation enthalpies in the enthalpy (NASA-Glenn data, as EES, which applies R = 8.314: 6e-5 lower): no offset (within 1e-4); `Air` keeps CoolProp's references (EES − CoolSolve = +1815 J/kg-K on `s`, +126 kJ/kg on `h`) |
 
 A model is *verified* when all derived results agree within these tolerances;
 the comparison and any explained deviation are recorded in the README.

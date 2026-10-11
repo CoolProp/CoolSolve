@@ -158,17 +158,18 @@ void FluidRegistry::initialize() {
     addUnsupported("IsoHexane", "Isohexane is not in CoolProp standard fluids");
     
     // --- Ideal Gases ---
-    // Standard enthalpies of formation at 25 °C [J/kmol] (EES/JANAF convention: elements are 0;
-    // Cengel & Boles, table A-26). They reproduce the heats of combustion of EES, e.g. the
-    // lower heating value of CO, 282 990 kJ/kmol. Species without a value keep CoolProp's
-    // enthalpy reference state.
-    //
-    // Standard molar entropies of the ideal gas at 298.15 K and 1 bar [J/kmol-K] (third law, the
-    // JANAF/NASA convention of EES): NASA-Glenn thermodynamic data (McBride, Zehe, Gordon,
-    // NASA/TP-2002-211556; github.com/nasa/cea, data/thermo.inp, 9-coefficient polynomials evaluated
-    // with R = 8.314462618 J/mol-K), the source of the EES ideal gases. NIST-JANAF differs by at most
-    // 120 J/kmol-K (CH4). `Air` has none: EES's Air is not a third-law species, it keeps CoolProp's
-    // entropy reference (as its enthalpy).
+    // Standard enthalpies of formation of the gas at 298.15 K [J/kmol] (EES/JANAF convention: the elements
+    // in their reference state, N2 O2 H2 He Ar, are 0) and standard molar entropies of the ideal gas at
+    // 298.15 K and 1 bar [J/kmol-K] (third law). Both come from one source, the NASA-Glenn thermodynamic
+    // data (McBride, Zehe, Gordon, NASA/TP-2002-211556; github.com/nasa/cea, data/thermo.inp): the heat of
+    // formation is the field of the species header (J/mol, x 1000), the entropy the 9-coefficient polynomial
+    // evaluated at 298.15 K with R = 8.314462618 J/mol-K (the polynomials' own H(298.15 K) differs from the
+    // header by at most 2.2 J/mol, the R of the fit). It is the data family of the EES ideal gases, which
+    // use it with R = 8.314 (EES help: CO2 -393 486, H2O -241 811, CH4 -74 595 kJ/kmol). The rounded JANAF
+    // values of Cengel & Boles (table A-26) used before differed by 5 to 830 kJ/kmol (CO2 -393 520, CO
+    // -110 530, CH4 -74 850, C2H6 -84 680, C3H8 -103 850, H2O -241 820); NIST-JANAF entropies differ from the
+    // NASA ones by at most 120 J/kmol-K (CH4). The lower heating value of CO is 282 974.8 kJ/kmol.
+    // `Air` has neither: EES's Air is not a JANAF species, it keeps CoolProp's enthalpy and entropy references.
     auto addIdeal = [](const std::string& name, const std::string& cpName,
                        std::optional<double> formationEnthalpy = std::nullopt,
                        std::optional<double> standardEntropy = std::nullopt) {
@@ -183,19 +184,19 @@ void FluidRegistry::initialize() {
     addIdeal("N2", "Nitrogen", 0.0, 191608.6);
     addIdeal("O2", "Oxygen", 0.0, 205148.3);
     addIdeal("H2", "Hydrogen", 0.0, 130680.3);
-    addIdeal("He", "Helium", std::nullopt, 126153.0);
-    addIdeal("Ar", "Argon", std::nullopt, 154845.8);
-    addIdeal("CO2", "CarbonDioxide", -393520e3, 213786.2);
-    addIdeal("CO", "CarbonMonoxide", -110530e3, 197658.7);
-    addIdeal("CH4", "Methane", -74850e3, 186370.0);
-    addIdeal("C2H6", "Ethane", -84680e3, 229219.8);
-    addIdeal("C3H8", "Propane", -103850e3, 270313.3);
+    addIdeal("He", "Helium", 0.0, 126153.0);
+    addIdeal("Ar", "Argon", 0.0, 154845.8);
+    addIdeal("CO2", "CarbonDioxide", -393510e3, 213786.2);
+    addIdeal("CO", "CarbonMonoxide", -110535.196e3, 197658.7);
+    addIdeal("CH4", "Methane", -74600e3, 186370.0);
+    addIdeal("C2H6", "Ethane", -83851.544e3, 229219.8);
+    addIdeal("C3H8", "Propane", -104680e3, 270313.3);
     
     // H2O as ideal gas (water vapor for combustion/chemistry): formation enthalpy and entropy of the vapor.
     // Use a low dummy pressure (100 Pa) so CoolProp stays in the gas phase
     // even at low temperatures (saturation T at 100 Pa ≈ −23 °C).
     {
-        auto fluid = std::make_shared<IdealGasFluid>("H2O", "Water", 100.0, -241820e3, 188828.0);
+        auto fluid = std::make_shared<IdealGasFluid>("H2O", "Water", 100.0, -241826e3, 188828.0);
         registry_["h2o"] = fluid;
     }
     
