@@ -153,6 +153,8 @@ Parser-level directives begin with `$` and span a single line:
   see below.
 - `$unitSystem SI` — recognised for EES compatibility but currently **ignored**;
   the unit system is fixed (see the warning at the top of this page).
+- `$warnings ON` / `OFF` — recognised and **ignored**; the warnings of `CALL WARNING` are
+  always reported, as in EES (see *CALL ERROR and CALL WARNING* in §7).
 
 #### Conditional compilation: `$IF`, `$IFNOT`, `$ELSE`, `$ENDIF`
 
@@ -804,17 +806,52 @@ CALL pq(a, b : y)           "y = 22"
 String variables (`b$`) are passed the same way. A `$COMMON` line in the main
 program shares nothing and is ignored; one inside a comment or a string is text.
 
-### CALL ERROR
+### CALL ERROR and CALL WARNING
 
-`CALL ERROR('message')` stops the calculation and reports the message — the
-EES way to reject inputs in a function or procedure, usually in an `IF`:
+`CALL ERROR` and `CALL WARNING` are the EES built-in procedures with which a `FUNCTION` or
+`PROCEDURE` checks its inputs, usually in an `IF`. `CALL ERROR` stops the calculation and reports the
+message; `CALL WARNING` reports a warning and the calculation continues. As in EES they are valid only
+inside a `FUNCTION` or `PROCEDURE` body (in the main program they are a parse error) and have no outputs:
 
 ```ees
-IF (T_p1 = T_p2) THEN CALL ERROR('T_p1 and T_p2 must differ', T_p1)
+FUNCTION abc(X, Y)
+  G := X + Y
+  IF (X <= 0) THEN CALL ERROR('X must be greater than 0.  A value of XXXF1 was supplied', X)
+  IF (G <= 0) THEN CALL WARNING('The sum of X and Y should be greater than zero.  The sum was XXXA1 ', G)
+  abc := G
+END
+g = abc(3, -4)       "g = -1, with the warning above"
 ```
 
-Additional numeric arguments are appended to the message in brackets. (`CALL
-WARNING` is not available yet.)
+| Form | Message |
+|:-----|:--------|
+| `CALL WARNING('message XXXF1', value)` | the message with the value in place of `XXX` |
+| `CALL WARNING('message')` | the message |
+| `CALL WARNING(value)` | the generic text *A warning message was issued due to the value XXX in YYY.* (`YYY` is the routine) |
+| `CALL ERROR(value)` | the generic text *Calculations have been halted because a parameter is out of range.  The value of the parameter is XXX in function YYY.* |
+
+The message is a string constant, a string variable (`s$`) or a string function; the value is a number
+or, written `XXX$`, a string. Where `XXX` is followed by a display-format code of EES the value takes
+that format: `A<d>` automatic (the digit is ignored, as is the case without a code), `F<d>` fixed (`d` digits
+after the decimal point), `E<d>` exponential (`d` digits after the point, exponent without padding:
+`5.123E2`), `N<d>` `d` significant figures (`123` for 123.4567 with `N3`, `123.5` with `N4`; `E` format beyond
+1E6 and below 1E-6), `G<d>` engineering (`d` significant figures, exponent a multiple of 3), `d` being a digit
+0 to 9 or `M` (the most digits). The automatic format writes a whole number without decimals and any other number
+with up to 10 significant digits. A message that has no `XXX` but a value gets the value appended in brackets
+(`'X is positive [3]'`), so that it is not lost; the `||` line break of EES is not interpreted, and the time and
+date formats are not supported.
+
+**When a warning is reported.** A warning describes the solution, not the Newton iterates: an intermediate
+iterate may cross the validity range of a correlation that the solution respects. CoolSolve therefore ignores
+`CALL WARNING` while it iterates, and when a block has converged it evaluates the block once more at the
+solution and reports the warnings of that evaluation, as a warning diagnostic with code `W001` and the line
+of the `CALL WARNING` statement (`warning (line N): …` on the standard error of the CLI, and in the GUI
+console). Two warnings with the same line and the same text are reported once, whatever the number of calls
+that raised them. Only a block that calls a routine which can reach a `CALL WARNING`, directly or through
+other routines, is evaluated again: a model without the statement runs exactly as before. This is the
+`$Warnings ON /LAST` behaviour of EES; EES can also list the warnings of the earlier iterations (in gray, option
+`/ALL`), which CoolSolve does not. The `$Warnings` directive does not change anything: the help of EES states
+that a warning of the `WARNING` procedure is always displayed.
 
 ---
 

@@ -665,7 +665,7 @@ private:
             "nlookuprows", "nlookupcolumns",
             "sumlookup", "avglookup", "maxlookup", "minlookup", "stddevlookup",
             "lookupcol", "lookupcol1", "lookupcellempty",
-            "unitsystem", "error",  // UNITSYSTEM('K') and the built-in procedure CALL error('msg')
+            "unitsystem", "error", "warning",  // UNITSYSTEM('K') and the built-in procedures CALL error('msg'), CALL warning('msg')
             "ntumethod", "effectivenessntu",
             "lmtd",
             "integral", "integralvalue",  // equation-based dynamic solver
@@ -1755,6 +1755,28 @@ private:
         return true;
     }
 
+    // The reason why a CALL of the built-in procedures ERROR or WARNING is refused; "" when the CALL is valid
+    // or is that of another procedure. EES help (ERROR and WARNING procedures): they are used only within a
+    // FUNCTION or a PROCEDURE, with no outputs, as CALL P(X), CALL P('message XXXF1', X) or CALL P('message');
+    // the message is a string, so a numeric first argument is the value and cannot be followed by another one.
+    static std::string messageProcedureError(const std::string& name, const std::vector<ExprPtr>& args,
+                                             bool hasOutputs, bool inRoutine) {
+        std::string upper = name;
+        std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+        if (upper != "ERROR" && upper != "WARNING") return "";
+        const std::string call = "CALL " + upper;
+        if (!inRoutine) return call + " can only be used inside a FUNCTION or PROCEDURE (as in EES)";
+        if (hasOutputs) return call + " has no outputs: " + call + "('message XXXA1', value)";
+        if (args.empty())
+            return call + " needs an argument: " + call + "('message XXXA1', value), " + call + "('message') or " + call + "(value)";
+        if (args.size() > 2)
+            return call + " takes a message and a value at most: " + call + "('message XXXA1', value)";
+        if (args.size() == 2 && !isStringExpression(args[0]))
+            return "the first argument of " + call + " must be the message (a string) when a value follows: " +
+                   call + "('message XXXA1', value)";
+        return "";
+    }
+
     // `errorMsg`, when given, receives the reason why a CALL statement was refused
     // (an argument that cannot be parsed, an output that is not a variable).
     StmtPtr tryParseProcedureCall(const std::string& line, int lineNum, std::string* errorMsg = nullptr) {
@@ -1838,6 +1860,13 @@ private:
             inputArgs.push_back(expr);
         }
         
+        // The built-in procedures ERROR and WARNING have a grammar of their own (EES help)
+        {
+            const std::string why = messageProcedureError(name, inputArgs, colonPos != std::string::npos,
+                                                          procedureBodyDepth_ > 0);
+            if (!why.empty()) return refuse(why);
+        }
+
         // An output is a variable (possibly an array element). In the main program EES also accepts an
         // expression (`CALL p(x : c/1000)`): the output of the routine is equated to it. Inside a
         // FUNCTION/PROCEDURE the statements run in order and nothing solves such an equation.

@@ -1,14 +1,15 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <string>
 
 namespace coolsolve {
 
 /**
  * @file ees_string.h
- * @brief Case-insensitive comparison of names and user strings, and the non-ASCII characters
- *        accepted in names.
+ * @brief Case-insensitive comparison of names and user strings, the non-ASCII characters
+ *        accepted in names, and the text of numbers in user messages.
  *
  * EES does not distinguish upper and lower case in variable names or in string values
  * (`'AirH2O'` and `'airh2o'` are the same fluid, `IF (a$ = 'ABC')` matches `'abc'`, the
@@ -89,5 +90,33 @@ inline std::size_t eesNonAsciiNameCharLength(const std::string& s, std::size_t i
     }
     return 0;
 }
+
+/**
+ * @brief A number as text in an EES display format (EES help, "Display Formats").
+ *
+ * `format` is the two-character code of EES: `A` (auto, the second character is ignored; also the
+ * result for an empty or unknown code), `F<d>` (fixed: `d` digits right of the decimal point),
+ * `E<d>` (exponential: one digit left of the point, `d` right of it, and the exponent as a plain
+ * integer: `5.123E2`), `G<d>` (engineering: exponent a multiple of 3, `d` significant figures),
+ * `N<d>` (`d` significant figures, shown in `E` format outside 1E-6..1E6: 123.4567 is `123` in `N3`,
+ * `123.5` in `N4`), `d` being a digit 0 to 9 or `M` (the most digits: 15). The auto format writes an
+ * integral value without decimals and any other value with up to 10 significant digits; it is the
+ * text of `STRING$(x)`. The time and date formats of EES (`T`, `D`) are not supported.
+ */
+std::string eesFormatNumber(double value, const std::string& format = "A");
+
+/**
+ * @brief Replace the value placeholder of a CALL WARNING / CALL ERROR message (EES help, WARNING
+ *        and ERROR procedures).
+ *
+ * Every `XXX` of `message` (also `xxx`: EES is not case sensitive) is replaced by `render(format)`, `format` being what follows the three
+ * letters: a display format code such as `A3`, `F1` or `E4` (a letter among A, N, F, E, G and a
+ * digit or `M`, see `eesFormatNumber`), `$` for a string value (`XXX$`) or the empty string when
+ * nothing follows (automatic format). The text after the placeholder is kept as it is.
+ * `found`, when given, tells whether `message` held a placeholder.
+ */
+std::string eesSubstituteValue(const std::string& message,
+                               const std::function<std::string(const std::string& format)>& render,
+                               bool* found = nullptr);
 
 }  // namespace coolsolve

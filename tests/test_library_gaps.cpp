@@ -47,6 +47,7 @@ struct ModelRun {
     bool verified = false;   ///< every equation re-evaluated with the solution (rel. 1e-3)
     std::string message;     ///< first parse error, or the solver error
     std::vector<std::string> warnings;   ///< messages of all warning diagnostics of the run
+    std::vector<Diagnostic> warningItems;   ///< the warning diagnostics themselves (code, line, message)
     std::map<std::string, double, CaseInsensitiveLess> vars;
     std::map<std::string, std::string, CaseInsensitiveLess> strings;   ///< string variables of the solution
 
@@ -80,7 +81,10 @@ ModelRun runModel(const std::string& code,
     run.solveOk = runner.run(options);
     run.parseOk = runner.isParseSuccess();
     for (const auto& d : runner.getDiagnostics().items())
-        if (d.severity == DiagnosticSeverity::Warning) run.warnings.push_back(d.message);
+        if (d.severity == DiagnosticSeverity::Warning) {
+            run.warnings.push_back(d.message);
+            run.warningItems.push_back(d);
+        }
     if (!run.parseOk && !runner.getParseResult().errors.empty())
         run.message = runner.getParseResult().errors[0].message;
     if (run.solveOk) {
@@ -7151,4 +7155,467 @@ f = interpolate('Species', 'M', 'M', 30)
     CHECK_THAT(run["d"], WithinAbs(2.0, 1e-12));
     CHECK_THAT(run["e"], WithinAbs(28.0134 + 31.9988 + 44.0095, 1e-9));
     CHECK_THAT(run["f"], WithinAbs(30.0, 1e-9));
+}
+
+// ============================================================================
+// CS-GAP-CALL-WARNING: CALL WARNING('message XXXA1', value) in functions and procedures
+// ============================================================================
+
+namespace {
+
+/// The warnings raised by CALL WARNING (code W001), in the order reported.
+std::vector<Diagnostic> userWarnings(const ModelRun& run) {
+    std::vector<Diagnostic> out;
+    for (const auto& d : run.warningItems)
+        if (d.code == "W001") out.push_back(d);
+    return out;
+}
+
+/// The messages of the CALL WARNING warnings of `run`.
+std::vector<std::string> userWarningMessages(const ModelRun& run) {
+    std::vector<std::string> out;
+    for (const auto& d : userWarnings(run)) out.push_back(d.message);
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-CALL-WARNING: the EES help example warns once at the solution and the calculation continues",
+          "[library-gaps][call-warning]") {
+    // warning_procedure.htm of the EES help: the sum is -1, so the branch is taken
+    const std::string model = R"(
+Function abc(X,Y)
+  G:=X+Y
+  If (G<=0) Then Call warning('The sum of X and Y should be greater than zero.  The sum was XXXA1 ',G)
+  abc:=G
+End
+g=abc(3,-4)
+)";
+    auto run = runModel(model);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["g"], WithinAbs(-1.0, 1e-12));
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+    const auto warnings = userWarnings(run);
+    REQUIRE(warnings.size() == 1);
+    CHECK(warnings[0].message == "The sum of X and Y should be greater than zero.  The sum was -1 ");
+    CHECK(warnings[0].line == 4);   // the line of the CALL WARNING statement
+
+    // the branch is not taken: nothing is reported
+    auto quiet = runModel(model.substr(0, model.rfind("g=abc(3,-4)")) + "g=abc(3,4)\n");
+    REQUIRE(quiet.solveOk);
+    CHECK_THAT(quiet["g"], WithinAbs(7.0, 1e-12));
+    CHECK(userWarnings(quiet).empty());
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: the value placeholders XXX, XXXA1, XXXF1, XXXE3, XXXN4, XXXG3 and XXX$",
+          "[library-gaps][call-warning]") {
+    auto run = runModel(R"(
+FUNCTION fmt(v, s$)
+  CALL WARNING('plain=XXX|', v)
+  CALL WARNING('auto=XXXA3|', v)
+  CALL WARNING('fixed1=XXXF1|', v)
+  CALL WARNING('fixed0=XXXF0|', v)
+  CALL WARNING('exp=XXXE2|', v)
+  CALL WARNING('sig=XXXN4|', v)
+  CALL WARNING('eng=XXXG3|', v)
+  CALL WARNING('string=XXX$|', s$)
+  CALL WARNING('no value, text only')
+  fmt = v
+END
+r$ = 'R134a'
+x = fmt(123.4567, r$)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    const auto messages = userWarningMessages(run);
+    REQUIRE(messages.size() == 9);
+    CHECK(messages[0] == "plain=123.4567|");
+    CHECK(messages[1] == "auto=123.4567|");
+    CHECK(messages[2] == "fixed1=123.5|");
+    CHECK(messages[3] == "fixed0=123|");
+    CHECK(messages[4] == "exp=1.23E2|");
+    CHECK(messages[5] == "sig=123.5|");
+    CHECK(messages[6] == "eng=123E0|");
+    CHECK(messages[7] == "string=R134a|");
+    CHECK(messages[8] == "no value, text only");
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: a message without placeholder keeps the value, a numeric argument alone gets the generic text",
+          "[library-gaps][call-warning]") {
+    auto run = runModel(R"(
+Function abc(X)
+  If (X>0) Then Call warning('X is positive', X)
+  If (X>1) Then Call warning(X)
+  abc = X
+End
+g = abc(3)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    const auto messages = userWarningMessages(run);
+    REQUIRE(messages.size() == 2);
+    CHECK(messages[0] == "X is positive [3]");   // no XXX in the text: the value is not lost
+    CHECK(messages[1] == "A warning message was issued due to the value 3 in abc.");   // EES generic text
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: the range checker of the ULiege air_nozzle_ejector, as written there (lower-case xxx)",
+          "[library-gaps][call-warning]") {
+    // verbatim from the library model CSL-0118: `if(...) or (...) then call warning(' ... xxxE4 ...', var)`
+    auto run = runModel(R"(
+procedure warning_error(var1_in,var2_in : var1_out,var2_out)
+if(var1_in < 0.18) or (var1_in  > 0.46) then call warning(' FF should be between 0.18 and 0.46.  A value of  xxxE4 was supplied',var1_in)
+if(var2_in< 126) or (var2_in  > 265) then call warning(' FAD_tot  should be between 126 and 265.  A value of  xxxE4 was supplied',var2_in)
+var1_out := var1_in
+var2_out := var2_in
+end
+FF = 0.1
+FAD_tot = 260
+call warning_error(FF,FAD_tot:var1_out,var2_out)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // only FF is outside its range
+    CHECK(userWarningMessages(run) ==
+          std::vector<std::string>{" FF should be between 0.18 and 0.46.  A value of  1.0000E-1 was supplied"});
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: CALL WARNING in a PROCEDURE and in routines called by a routine",
+          "[library-gaps][call-warning]") {
+    auto run = runModel(R"(
+FUNCTION inner(v)
+  IF (v > 5) THEN CALL WARNING('inner: v = XXXF1', v)
+  inner = 2*v
+END
+PROCEDURE outer(a : b, c)
+  b = inner(a)
+  c = a + 1
+  IF (c > 3) THEN CALL WARNING('outer: c = XXXF2', c)
+END
+a = 4
+CALL outer(a : b, c)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["b"], WithinAbs(8.0, 1e-12));
+    const auto messages = userWarningMessages(run);
+    REQUIRE(messages.size() == 1);   // inner does not warn (4 <= 5), outer does (5 > 3)
+    CHECK(messages[0] == "outer: c = 5.00");
+
+    auto both = runModel(R"(
+FUNCTION inner(v)
+  IF (v > 5) THEN CALL WARNING('inner: v = XXXF1', v)
+  inner = 2*v
+END
+PROCEDURE outer(a : b)
+  b = inner(a)
+END
+a = 6
+CALL outer(a : b)
+)");
+    REQUIRE(both.solveOk);
+    const auto m2 = userWarningMessages(both);
+    REQUIRE(m2.size() == 1);   // a warning raised two calls deep
+    CHECK(m2[0] == "inner: v = 6.0");
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: reported once, at the solution, not once per iteration",
+          "[library-gaps][call-warning]") {
+    // x + f(x) = 12 is solved by iteration (x = 3 from the guess 1); x > 2.5 holds at the solution and at
+    // several of the iterates: one message, with the value of the solution
+    auto run = runModel(R"(
+FUNCTION f(x)
+  IF (x > 2.5) THEN CALL WARNING('x is above 2.5: XXXF4', x)
+  f = x^2
+END
+x + f(x) = 12
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(3.0, 1e-6));
+    const auto messages = userWarningMessages(run);
+    REQUIRE(messages.size() == 1);
+    CHECK(messages[0] == "x is above 2.5: 3.0000");
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: a branch taken by an iterate but not at the solution is not reported",
+          "[library-gaps][call-warning]") {
+    // The solver starts from the guess x = 1, where x < 2 holds; the solution x = 3 is outside the branch.
+    auto run = runModel(R"(
+FUNCTION f(x)
+  IF (x < 2) THEN CALL WARNING('x is below 2: XXXF2', x)
+  f = x^2
+END
+x + f(x) = 12
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(3.0, 1e-6));
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+    CHECK(userWarnings(run).empty());
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: identical warnings are reported once, distinct ones each", "[library-gaps][call-warning]") {
+    const std::string routine = R"(
+FUNCTION g(v)
+  IF (v > 1) THEN CALL WARNING('v is large: XXXF1', v)
+  g = v
+END
+)";
+    auto same = runModel(routine + R"(
+DUPLICATE i = 1, 3
+  y[i] = g(5)
+END
+)");
+    INFO(same.message);
+    REQUIRE(same.solveOk);
+    CHECK(userWarningMessages(same) == std::vector<std::string>{"v is large: 5.0"});
+
+    auto distinct = runModel(routine + R"(
+DUPLICATE i = 1, 3
+  y[i] = g(5*i)
+END
+)");
+    REQUIRE(distinct.solveOk);
+    CHECK(userWarningMessages(distinct) ==
+          std::vector<std::string>{"v is large: 5.0", "v is large: 10.0", "v is large: 15.0"});
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: a warning is reported whatever the $Warnings directive says (EES help)",
+          "[library-gaps][call-warning]") {
+    // warning_procedure.htm: "always displayed no matter what the setting ... or whether or not a
+    // $Warnings On directive is provided"; CoolSolve recognises $Warnings but does not interpret it
+    auto run = runModel(R"(
+$Warnings OFF
+FUNCTION f(x)
+  IF (x > 0) THEN CALL WARNING('x = XXXA1', x)
+  f = x
+END
+y = f(2)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(userWarningMessages(run) == std::vector<std::string>{"x = 2"});
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: CALL ERROR uses the same message text as CALL WARNING", "[library-gaps][call-warning]") {
+    const std::string routine = R"(
+FUNCTION g(x)
+  IF (x < 0) THEN CALL error('x must be positive: XXXF1 was given', x)
+  g = sqrt(x)
+END
+)";
+    auto placeholder = runModel(routine + "a = g(-4)\n");
+    REQUIRE_FALSE(placeholder.solveOk);
+    CHECK(placeholder.message.find("CALL ERROR: x must be positive: -4.0 was given") != std::string::npos);
+    CHECK(placeholder.message.find("was given [") == std::string::npos);   // substituted, not appended
+
+    auto generic = runModel(R"(
+FUNCTION g(x)
+  IF (x < 0) THEN CALL error(x)
+  g = sqrt(x)
+END
+a = g(-4)
+)");
+    REQUIRE_FALSE(generic.solveOk);
+    CHECK(generic.message.find("Calculations have been halted because a parameter is out of range.  "
+                               "The value of the parameter is -4 in function g.") != std::string::npos);
+
+    auto exponential = runModel(R"(
+FUNCTION g(x)
+  IF (x > 0) THEN CALL error('value XXXE3!', x)
+  g = x
+END
+a = g(512.3)
+)");
+    REQUIRE_FALSE(exponential.solveOk);
+    CHECK(exponential.message.find("CALL ERROR: value 5.123E2!") != std::string::npos);   // 5.123E2 = 512.3 (EES help, Display Formats)
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: malformed CALL WARNING and CALL ERROR are parse errors", "[library-gaps][call-warning]") {
+    const auto inBody = [](const std::string& call) {
+        return parseErrors("FUNCTION f(x)\n  " + call + "\n  f = x\nEND\ny = f(1)\n");
+    };
+    auto expectError = [](const std::vector<std::string>& errors, const std::string& text) {
+        INFO("expected: " << text);
+        bool found = false;
+        for (const auto& e : errors) {
+            INFO(e);
+            if (e.find(text) != std::string::npos) found = true;
+        }
+        CHECK(found);
+    };
+    SECTION("no argument") {
+        expectError(inBody("CALL WARNING()"), "CALL WARNING needs an argument");
+        expectError(inBody("CALL ERROR()"), "CALL ERROR needs an argument");
+    }
+    SECTION("a message that is not a string, followed by a value") {
+        expectError(inBody("CALL WARNING(x, 2)"), "the first argument of CALL WARNING must be the message");
+        expectError(inBody("CALL ERROR(x + 1, 2)"), "the first argument of CALL ERROR must be the message");
+    }
+    SECTION("too many arguments") {
+        expectError(inBody("CALL WARNING('a', x, 2)"), "CALL WARNING takes a message and a value at most");
+    }
+    SECTION("outputs") {
+        expectError(inBody("CALL WARNING('a', x : y)"), "CALL WARNING has no outputs");
+    }
+    SECTION("the main program") {
+        expectError(parseErrors("x = 1\nCALL WARNING('a', x)\n"),
+                    "CALL WARNING can only be used inside a FUNCTION or PROCEDURE");
+        expectError(parseErrors("x = 1\nCALL ERROR('a', x)\n"),
+                    "CALL ERROR can only be used inside a FUNCTION or PROCEDURE");
+    }
+    SECTION("the valid forms parse") {
+        CHECK(inBody("CALL WARNING('a')").empty());
+        CHECK(inBody("CALL WARNING('a XXXA1', x)").empty());
+        CHECK(inBody("CALL WARNING(x)").empty());
+        CHECK(inBody("CALL warning(s$)").empty());
+        CHECK(inBody("CALL warning('a XXX$', s$)").empty());
+        CHECK(inBody("CALL ERROR('')").empty());
+    }
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: display formats of the value (EES help, Display Formats and STRING$)",
+          "[library-gaps][call-warning]") {
+    // the examples of the EES help
+    CHECK(eesFormatNumber(9.1234565, "F1") == "9.1");        // STRING$ help
+    CHECK(eesFormatNumber(1234567.0, "F0") == "1234567");    // STRING$ help
+    CHECK(eesFormatNumber(123.4567, "N3") == "123");         // Display Formats help
+    CHECK(eesFormatNumber(123.4567, "N4") == "123.5");
+    CHECK(eesFormatNumber(512.3, "E3") == "5.123E2");
+    // the other formats
+    CHECK(eesFormatNumber(1234567.0, "N3") == "1.23E6");     // outside 1E-6..1E6: E format
+    CHECK(eesFormatNumber(1.23456e-7, "N3") == "1.23E-7");
+    CHECK(eesFormatNumber(1.23456e-5, "N3") == "0.0000123");
+    CHECK(eesFormatNumber(0.012345, "N3") == "0.0123");
+    CHECK(eesFormatNumber(99.96, "N3") == "100");            // the rounding carries into the next digit
+    CHECK(eesFormatNumber(-3.0, "E1") == "-3.0E0");
+    CHECK(eesFormatNumber(12345.678, "G3") == "12.3E3");
+    CHECK(eesFormatNumber(0.00123, "G2") == "1.2E-3");
+    CHECK(eesFormatNumber(0.0, "F2") == "0.00");
+    CHECK(eesFormatNumber(123.456, "FM") == "123.456");      // M: the most digits
+    CHECK(eesFormatNumber(123.456, "f1") == "123.5");        // lower case
+    // auto: whole numbers without decimals, else up to 10 significant digits; also the unknown codes
+    CHECK(eesFormatNumber(3.0) == "3");
+    CHECK(eesFormatNumber(-4.0, "A1") == "-4");
+    CHECK(eesFormatNumber(1.5, "A3") == "1.5");
+    CHECK(eesFormatNumber(0.1 + 0.2) == "0.3");
+    CHECK(eesFormatNumber(1.0 / 3.0) == "0.3333333333");
+    CHECK(eesFormatNumber(2.5, "T0") == "2.5");
+    CHECK(eesFormatNumber(2.5, "") == "2.5");
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: the placeholder XXX and the format code that may follow", "[library-gaps][call-warning]") {
+    const auto tag = [](const std::string& format) { return "<" + format + ">"; };
+    CHECK(eesSubstituteValue("a XXXA1 b", tag) == "a <A1> b");
+    CHECK(eesSubstituteValue("a XXX b", tag) == "a <> b");
+    CHECK(eesSubstituteValue("v=XXXF3.", tag) == "v=<F3>.");
+    CHECK(eesSubstituteValue("v=XXXe4", tag) == "v=<e4>");
+    CHECK(eesSubstituteValue("A value of  xxxE4 was supplied", tag) == "A value of  <E4> was supplied");   // library files write xxx
+    CHECK(eesSubstituteValue("a Xxx b", tag) == "a <> b");
+    CHECK(eesSubstituteValue("s=XXX$.", tag) == "s=<$>.");
+    CHECK(eesSubstituteValue("XXXE4 and XXXE4", tag) == "<E4> and <E4>");
+    CHECK(eesSubstituteValue("XXXAverage", tag) == "<>Average");   // a letter that is not followed by a digit is text
+    CHECK(eesSubstituteValue("XXXFM.", tag) == "<FM>.");
+    CHECK(eesSubstituteValue("XXXFMAX", tag) == "<>FMAX");
+    bool found = true;
+    CHECK(eesSubstituteValue("no placeholder, XX only", tag, &found) == "no placeholder, XX only");
+    CHECK_FALSE(found);
+    CHECK(eesSubstituteValue("XXXA1", tag, &found) == "<A1>");   // at the very end of the text
+    CHECK(found);
+}
+
+TEST_CASE("CS-GAP-CALL-WARNING: only the evaluation at the solution reports, only blocks that can warn evaluate again",
+          "[library-gaps][call-warning]") {
+    const std::string routines = R"(
+FUNCTION f(x)
+  IF (x < 2) THEN CALL WARNING('x is below 2: XXXF2', x)
+  f = x^2
+END
+FUNCTION viaF(x)
+  viaF = 3*f(x)
+END
+)";
+    // build the evaluator of a model: its blocks, found by the unknown they solve
+    struct Built {
+        IR ir;
+        StructuralAnalysisResult analysis;
+        size_t blockOf(const std::string& variable) const {
+            for (size_t i = 0; i < analysis.blocks.size(); ++i)
+                for (const auto& v : analysis.blocks[i].variables)
+                    if (v == variable) return i;
+            FAIL("no block solves " << variable);
+            return 0;
+        }
+    };
+    const auto build = [](const std::string& code) {
+        EESParser parser;
+        auto parsed = parser.parse(code);
+        REQUIRE(parsed.success);
+        Built built{IR::fromAST(parsed.program), {}};
+        built.analysis = StructuralAnalyzer::analyze(built.ir);
+        return built;
+    };
+
+    SECTION("a block that calls a routine that warns, directly or through another one") {
+        const auto m = build(routines + "x + f(x) = 12\nz = 4\nw = viaF(z) + 1\nv = 2*z\n");
+        SystemEvaluator ev(m.ir, m.analysis);
+        CHECK(ev.getBlock(m.blockOf("x")).mayCallWarning());
+        CHECK(ev.getBlock(m.blockOf("w")).mayCallWarning());   // viaF calls f, which warns
+        CHECK_FALSE(ev.getBlock(m.blockOf("z")).mayCallWarning());
+        CHECK_FALSE(ev.getBlock(m.blockOf("v")).mayCallWarning());
+    }
+
+    SECTION("an iterate takes the branch and nothing is reported; the solution does not and nothing is") {
+        const auto m = build(routines + "x + f(x) = 12\n");
+        SystemEvaluator ev(m.ir, m.analysis);
+        const size_t block = m.blockOf("x");
+
+        // the guess x = 1 of the first iteration is inside the branch: the evaluation of an iterate
+        // (no sink) leaves no trace, while a sink collects the warning it would raise
+        DiagnosticCollector diagnostics;
+        ev.getBlock(block).setDiagnostics(&diagnostics);
+        ev.setVariableValue("x", 1.0);
+        ev.evaluateBlock(block);
+        CHECK(diagnostics.empty());
+        std::vector<Diagnostic> raised;
+        ev.evaluateBlock(block, false, &raised);
+        REQUIRE(raised.size() == 1);
+        CHECK(raised[0].code == "W001");
+        CHECK(raised[0].severity == DiagnosticSeverity::Warning);
+        CHECK(raised[0].message == "x is below 2: 1.00");
+
+        // reported at a point of the branch, once however often it is asked ...
+        DiagnosticCollector out;
+        ev.reportCallWarnings(block, out);
+        ev.reportCallWarnings(block, out);
+        REQUIRE(out.size() == 1);
+        CHECK(out.items()[0].message == "x is below 2: 1.00");
+        CHECK(diagnostics.empty());   // the diagnostics of the iterations are not used
+
+        // ... and nothing at the solution x = 3
+        DiagnosticCollector atSolution;
+        ev.setVariableValue("x", 3.0);
+        ev.reportCallWarnings(block, atSolution);
+        CHECK(atSolution.empty());
+    }
+
+    SECTION("a model without CALL WARNING marks no block, whatever routines it has") {
+        const auto m = build(R"(
+FUNCTION f(x)
+  IF (x < 2) THEN CALL ERROR('x is below 2: XXXF2', x)
+  f = x^2
+END
+x + f(x) = 12
+y = 2*x
+)");
+        SystemEvaluator ev(m.ir, m.analysis);
+        for (size_t i = 0; i < ev.getNumBlocks(); ++i) CHECK_FALSE(ev.getBlock(i).mayCallWarning());
+        DiagnosticCollector out;
+        for (size_t i = 0; i < ev.getNumBlocks(); ++i) ev.reportCallWarnings(i, out);
+        CHECK(out.empty());
+    }
 }

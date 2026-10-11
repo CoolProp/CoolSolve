@@ -310,4 +310,19 @@ inline StmtPtr makeRepeatUntil(std::vector<StmtPtr> body, ExprPtr condition, int
     return stmt;
 }
 
+/// True for expressions that yield a string: 'literals', variables ending in '$' and
+/// string-valued functions such as PHASE$() or LOOKUP$().
+inline bool isStringExpression(const ExprPtr& expr) {
+    if (expr->is<StringLiteral>()) return true;
+    if (expr->is<Variable>()) {
+        const std::string& n = expr->as<Variable>().name;
+        return !n.empty() && n.back() == '$';
+    }
+    if (expr->is<FunctionCall>()) {
+        const std::string& n = expr->as<FunctionCall>().name;
+        return !n.empty() && n.back() == '$';
+    }
+    return false;
+}
+
 }  // namespace coolsolve

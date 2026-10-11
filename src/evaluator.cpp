@@ -571,15 +571,22 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
     
     auto it = userProcedures_.find(call.name);
     if (it == userProcedures_.end()) {
-        // Built-in CALL ERROR('message' [, values]): stop the calculation (EES).
         std::string lowerName = call.name;
         std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
-        if (lowerName == "error") {
-            std::string message = call.inputArgs.empty() ? "" : evaluateString(call.inputArgs[0]);
-            for (size_t i = 1; i < call.inputArgs.size(); ++i)
-                message += (i == 1 ? " [" : ", ") + std::to_string(evaluate(call.inputArgs[i]).value);
-            if (call.inputArgs.size() > 1) message += "]";
-            throw std::runtime_error("CALL ERROR: " + message);
+        // Built-in CALL ERROR('message XXXF1', value): stop the calculation (EES).
+        if (lowerName == "error") throw std::runtime_error("CALL ERROR: " + userMessage(call, true));
+        // Built-in CALL WARNING('message XXXF1', value): a warning, the calculation goes on (EES). Only the
+        // evaluation at the solution has a sink; the iterations skip it (see setCallWarningSink).
+        if (lowerName == "warning") {
+            if (!callWarningSink_) return;
+            Diagnostic warning;
+            warning.severity = DiagnosticSeverity::Warning;
+            warning.code = "W001";
+            warning.message = userMessage(call, false);
+            warning.line = call.inputArgs.empty() ? 0 : call.inputArgs[0]->sourceLineNumber;   // of the CALL statement
+            warning.source = "evaluator";
+            callWarningSink_->push_back(std::move(warning));
+            return;
         }
         throw std::runtime_error("Unknown procedure: " + call.name);
     }
@@ -621,6 +628,35 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
     }
 }
 
+std::string ExpressionEvaluator::userMessage(const ProcedureCall& call, bool isError) {
+    const std::string procedure = isError ? "CALL ERROR" : "CALL WARNING";
+    const auto& args = call.inputArgs;
+    if (args.empty() || args.size() > 2)   // the parser refuses these calls; a built model cannot hold one
+        throw std::runtime_error(procedure + " takes a message and a value at most, and at least one argument");
+    const bool hasMessage = isStringExpression(args[0]);
+    if (!hasMessage && args.size() > 1)
+        throw std::runtime_error("the first argument of " + procedure + " must be the message (a string) when a value follows");
+    const ExprPtr valueArg = hasMessage ? (args.size() > 1 ? args[1] : nullptr) : args[0];
+
+    const std::string where = routineName_.empty() ? "the main program" : routineName_;
+    const std::string message = hasMessage ? evaluateString(args[0])
+        : isError ? "Calculations have been halted because a parameter is out of range.  The value of the parameter is XXX in function " + where + "."
+                  : "A warning message was issued due to the value XXX in " + where + ".";
+    if (!valueArg) return message;
+
+    // The value: a string for XXX$ (a string variable), else a number in the display format after XXX
+    const bool valueIsText = isStringExpression(valueArg);
+    const std::string text = valueIsText ? evaluateString(valueArg) : std::string();
+    const double number = valueIsText ? 0.0 : evaluate(valueArg).value;
+    bool found = false;
+    std::string out = eesSubstituteValue(message, [&](const std::string& format) {
+        if (valueIsText) return text;
+        return eesFormatNumber(number, format == "$" ? "A" : format);
+    }, &found);
+    if (!found && hasMessage) out += " [" + (valueIsText ? text : eesFormatNumber(number)) + "]";   // keep the value
+    return out;
+}
+
 ADValue ExpressionEvaluator::evaluate(const ExprPtr& expr) {
     if (!expr) {
         throw std::runtime_error("Null expression pointer");
@@ -659,20 +695,10 @@ std::string ExpressionEvaluator::evaluateString(const ExprPtr& expr) {
         
         // STRING$(value) — format a numeric value as a compact decimal string.
         if (lname == "string$" && call.args.size() == 1 && call.namedArgs.empty()) {
-            ADValue v = evaluate(call.args[0]);
-            std::ostringstream oss;
             // EES prints integer values without decimal, otherwise up to ~10
-            // significant digits, trimming trailing zeros.  Keep it simple and
-            // compatible.
-            if (std::isfinite(v.value) && v.value == std::trunc(v.value) &&
-                std::abs(v.value) < 1e16) {
-                oss << static_cast<long long>(v.value);
-            } else {
-                oss.setf(std::ios::fmtflags(0), std::ios::floatfield);
-                oss.precision(10);
-                oss << v.value;
-            }
-            return oss.str();
+            // significant digits, trimming trailing zeros (auto format, shared with
+            // the messages of CALL WARNING / CALL ERROR).
+            return eesFormatNumber(evaluate(call.args[0]).value);
         }
         
         // PHASE$(Fluid, T=..., P=...) — return the thermodynamic phase as a
@@ -784,21 +810,6 @@ ADValue ExpressionEvaluator::evaluateUnaryOp(const UnaryOp& op) {
     }
     
     throw std::runtime_error("Unknown unary operator: " + op.op);
-}
-
-// True for expressions that yield a string: 'literals', variables ending in '$'
-// and string-valued functions such as PHASE$().
-static bool isStringExpression(const ExprPtr& expr) {
-    if (expr->is<StringLiteral>()) return true;
-    if (expr->is<Variable>()) {
-        const std::string& n = expr->as<Variable>().name;
-        return !n.empty() && n.back() == '$';
-    }
-    if (expr->is<FunctionCall>()) {
-        const std::string& n = expr->as<FunctionCall>().name;
-        return !n.empty() && n.back() == '$';
-    }
-    return false;
 }
 
 std::string ExpressionEvaluator::fluidNameOf(const ExprPtr& arg) {
@@ -1018,7 +1029,9 @@ ExpressionEvaluator ExpressionEvaluator::makeBodyEvaluator(const char* kind, con
     body.userProcedures_ = userProcedures_;
     body.lookupTableStore_ = lookupTableStore_;
     body.diagnostics_ = diagnostics_;   // warnings raised in a body (mixtures, CoolProp errors) are reported too
+    body.callWarningSink_ = callWarningSink_;   // and so are the CALL WARNING of the bodies
     body.routine_ = std::string(kind) + " '" + name + "'";
+    body.routineName_ = name;
     return body;
 }
 
@@ -1978,6 +1991,98 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
 // BlockEvaluator Implementation
 // ============================================================================
 
+namespace {
+
+using RoutineNames = std::set<std::string, CaseInsensitiveLess>;
+
+bool callsAnyOf(const ExprPtr& expr, const RoutineNames& names);
+bool callsAnyOf(const std::vector<StmtPtr>& body, const RoutineNames& names);
+
+bool callsAnyOf(const ProcedureCall& call, const RoutineNames& names) {
+    if (names.count(call.name)) return true;
+    for (const auto& arg : call.inputArgs)
+        if (callsAnyOf(arg, names)) return true;
+    for (const auto& out : call.outputExprs)
+        if (callsAnyOf(out, names)) return true;
+    return false;
+}
+
+bool callsAnyOf(const ExprPtr& expr, const RoutineNames& names) {
+    if (!expr) return false;
+    if (expr->is<FunctionCall>()) {
+        const auto& call = expr->as<FunctionCall>();
+        if (names.count(call.name)) return true;
+        for (const auto& arg : call.args)
+            if (callsAnyOf(arg, names)) return true;
+        for (const auto& named : call.namedArgs)
+            if (callsAnyOf(named.second, names)) return true;
+        return false;
+    }
+    if (expr->is<UnaryOp>()) return callsAnyOf(expr->as<UnaryOp>().operand, names);
+    if (expr->is<BinaryOp>())
+        return callsAnyOf(expr->as<BinaryOp>().left, names) || callsAnyOf(expr->as<BinaryOp>().right, names);
+    if (expr->is<Variable>()) {
+        for (const auto& index : expr->as<Variable>().indices)
+            if (callsAnyOf(index, names)) return true;
+    }
+    return false;
+}
+
+bool callsAnyOf(const std::vector<StmtPtr>& body, const RoutineNames& names) {
+    for (const auto& stmt : body) {
+        if (!stmt) continue;
+        if (stmt->is<Equation>()) {
+            const auto& eq = stmt->as<Equation>();
+            if (callsAnyOf(eq.lhs, names) || callsAnyOf(eq.rhs, names)) return true;
+        } else if (stmt->is<Assignment>()) {
+            const auto& assign = stmt->as<Assignment>();
+            if (callsAnyOf(assign.lhs, names) || callsAnyOf(assign.rhs, names)) return true;
+        } else if (stmt->is<IfThenElse>()) {
+            const auto& branch = stmt->as<IfThenElse>();
+            if (callsAnyOf(branch.condition, names) || callsAnyOf(branch.thenBranch, names) ||
+                callsAnyOf(branch.elseBranch, names)) return true;
+        } else if (stmt->is<ProcedureCall>()) {
+            if (callsAnyOf(stmt->as<ProcedureCall>(), names)) return true;
+        } else if (stmt->is<Duplicate>()) {
+            const auto& loop = stmt->as<Duplicate>();
+            if (callsAnyOf(loop.start, names) || callsAnyOf(loop.end, names) || callsAnyOf(loop.body, names)) return true;
+        } else if (stmt->is<RepeatUntil>()) {
+            const auto& loop = stmt->as<RepeatUntil>();
+            if (callsAnyOf(loop.body, names) || callsAnyOf(loop.condition, names)) return true;
+        }
+    }
+    return false;
+}
+
+/// The user FUNCTIONs and PROCEDUREs whose body can execute `CALL WARNING`, directly or through
+/// the routines it calls (the fixed point of "calls WARNING or a routine that does"). Empty for a
+/// model without that call.
+RoutineNames routinesThatWarn(const IR& ir) {
+    RoutineNames names{"warning"};
+    for (bool grown = true; grown;) {
+        grown = false;
+        for (const auto& func : ir.getFunctions())
+            if (!names.count(func.name) && callsAnyOf(func.body, names)) { names.insert(func.name); grown = true; }
+        for (const auto& proc : ir.getProcedures())
+            if (!names.count(proc.name) && callsAnyOf(proc.body, names)) { names.insert(proc.name); grown = true; }
+    }
+    names.erase("warning");   // the main program cannot call it
+    return names;
+}
+
+}  // namespace
+
+void BlockEvaluator::markCallWarnings(const std::set<std::string, CaseInsensitiveLess>& routines) {
+    mayCallWarning_ = false;
+    for (const EquationInfo* eq : equations_) {
+        if (callsAnyOf(eq->lhs, routines) || callsAnyOf(eq->rhs, routines) ||
+            (eq->procedureCall && callsAnyOf(*eq->procedureCall, routines))) {
+            mayCallWarning_ = true;
+            return;
+        }
+    }
+}
+
 BlockEvaluator::BlockEvaluator(const Block& block, const IR& ir, const CoolPropConfig& config)
     : variables_(block.variables), equationIds_(block.equationIds), config_(config) {
     const auto& allEquations = ir.getEquations();
@@ -2034,7 +2139,8 @@ BlockEvaluator::BlockEvaluator(const Block& block, const IR& ir, const CoolPropC
 EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
                                            const std::map<std::string, double>& externalVars,
                                            const std::map<std::string, std::string>& externalStringVars,
-                                           bool computeJacobian) {
+                                           bool computeJacobian,
+                                           std::vector<Diagnostic>* callWarnings) {
     auto eval_start = std::chrono::high_resolution_clock::now();
     g_profilingStats.block_evaluations++;
     
@@ -2051,6 +2157,7 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     ExpressionEvaluator exprEval(variables_.size(), config_);
     exprEval.setResidualOnly(!computeJacobian);
     if (diagnostics_) exprEval.setDiagnostics(diagnostics_);
+    if (callWarnings) exprEval.setCallWarningSink(callWarnings);
     if (lookupTableStore_) exprEval.setLookupTableStore(lookupTableStore_);
     for (const auto& [name, func] : functions_) exprEval.registerFunction(func);
     for (const auto& [name, proc] : procedures_) exprEval.registerProcedure(proc);
@@ -2234,6 +2341,11 @@ SystemEvaluator::SystemEvaluator(const IR& ir, const StructuralAnalysisResult& a
             blockEval.registerProcedure(proc);
         }
     }
+
+    // The blocks that can reach a CALL WARNING (none when the model has no such call)
+    const RoutineNames warningRoutines = routinesThatWarn(ir);
+    if (!warningRoutines.empty())
+        for (auto& blockEval : blockEvaluators_) blockEval.markCallWarnings(warningRoutines);
 }
 
 void SystemEvaluator::setVariableValue(const std::string& name, double value) {
@@ -2288,7 +2400,16 @@ void SystemEvaluator::publishStringOutputs(size_t blockIndex) {
     for (const auto& [name, value] : result.stringOutputs) currentStringState_[name] = value;
 }
 
-EvaluationResult SystemEvaluator::evaluateBlock(size_t blockIndex) {
+void SystemEvaluator::reportCallWarnings(size_t blockIndex, DiagnosticCollector& out) {
+    if (blockIndex >= blockEvaluators_.size() || !blockEvaluators_[blockIndex].mayCallWarning()) return;
+    std::vector<Diagnostic> raised;
+    evaluateBlock(blockIndex, false, &raised);
+    for (auto& warning : raised)
+        if (reportedCallWarnings_.insert({warning.line, warning.message}).second) out.push(std::move(warning));
+}
+
+EvaluationResult SystemEvaluator::evaluateBlock(size_t blockIndex, bool computeJacobian,
+                                                std::vector<Diagnostic>* callWarnings) {
     if (blockIndex >= blockEvaluators_.size()) throw std::out_of_range("Block index out of range");
     BlockEvaluator& blockEval = blockEvaluators_[blockIndex];
     std::vector<double> x;
@@ -2299,7 +2420,7 @@ EvaluationResult SystemEvaluator::evaluateBlock(size_t blockIndex) {
     for (const auto& [name, value] : currentState_) externalVars[name] = value;
     std::map<std::string, std::string> externalStringVars;
     for (const auto& [name, value] : currentStringState_) externalStringVars[name] = value;
-    return blockEval.evaluate(x, externalVars, externalStringVars);
+    return blockEval.evaluate(x, externalVars, externalStringVars, computeJacobian, callWarnings);
 }
 
 // ============================================================================

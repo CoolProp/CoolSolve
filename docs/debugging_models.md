@@ -161,6 +161,9 @@ Use `equations.md` and `report.md` to see which variables appear in the largest 
   - Correct mapping of inputs/outputs in `CALL`.
   - Pressure and temperature units in thermodynamic calls.
   - Use of `:=` vs `=` for assignment inside procedures.
+  - A `CALL WARNING` of the model (diagnostic `W001`, `warning (line N): …` with the line of the call) describes the
+    **solution**: the solver does not report the iterates that crossed the range on the way, so a warning that
+    the model should raise but that is missing means the solution is inside the range.
 
 ## Step 7: Solver Options (Advanced)
 
