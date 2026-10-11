@@ -6,6 +6,7 @@
 #include "coolsolve/evaluator.h"  // For profiling stats
 #include "coolsolve/solution_checker.h"
 #include "coolsolve/latex_report.h"
+#include "coolsolve/version.h"
 #ifdef COOLSOLVE_GUI
 #include "coolsolve/server.h"
 #endif
@@ -38,6 +39,7 @@ void printUsage(const char* programName) {
     std::cerr << "  --gui [port]            Start the GUI web server (default port: 8550)\n";
     std::cerr << "  --no-browser            Don't open browser automatically (with --gui)\n";
 #endif
+    std::cerr << "  --version               Print the CoolSolve and CoolProp (version, git revision) versions\n";
     std::cerr << "  -h, --help              Show this help message\n";
 }
 
@@ -75,6 +77,9 @@ int main(int argc, char* argv[]) {
         
         if (arg == "-h" || arg == "--help") {
             printUsage(argv[0]);
+            return 0;
+        } else if (arg == "--version") {
+            std::cout << coolsolve::versionText(coolsolve::getVersionInfo());
             return 0;
         } else if (arg == "--no-sol") {
             writeSolFile = false;

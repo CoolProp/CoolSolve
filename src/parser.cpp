@@ -1,5 +1,7 @@
 #include "coolsolve/parser.h"
+#include "coolsolve/conditional_directives.h"
 #include "coolsolve/diagnostic.h"
+#include "coolsolve/ees_string.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/units.h"
 #include "coolsolve/user_hints.h"
@@ -8,6 +10,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <iostream>
 #include <set>
 #include <unordered_set>
@@ -45,6 +48,92 @@ static bool isEESThermophysicalFunction(const std::string& name) {
     std::string lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
     return EES_THERMOPHYSICAL_FUNCTIONS.find(lower) != EES_THERMOPHYSICAL_FUNCTIONS.end();
+}
+
+// ============================================================================
+// Characters of variable names (EES help, "Variable names")
+// ============================================================================
+// A name starts with a letter or an underscore and holds letters, digits, `_` and the
+// symbols `%`, `|` and `#` (`C%`, `K|star_r`, `Nu#_f`); `\` may join two parts of a name
+// (`dU\dtau`), `$` ends a string variable. Letters are ASCII or the letters of Latin-1 in UTF-8
+// (`réf`), and `°`, `µ`, `²`, `³`, `¹` may follow (`n°_90°elbow`), see ees_string.h.
+
+/// True when a name can start with the character at s[i]: a letter or an underscore.
+static bool nameStartsAt(const std::string& s, size_t i) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c < 0x80) return std::isalpha(c) || c == '_';
+    bool letter = false;
+    return eesNonAsciiNameCharLength(s, i, &letter) > 0 && letter;
+}
+
+/// Position of the first character of `s` that a name cannot hold; npos when `s` is a valid name.
+static size_t firstInvalidNameChar(const std::string& s) {
+    if (s.empty() || !nameStartsAt(s, 0)) return 0;
+    for (size_t i = 0; i < s.size();) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        if (c >= 0x80) {
+            const size_t len = eesNonAsciiNameCharLength(s, i);
+            if (len == 0) return i;
+            i += len;
+            continue;
+        }
+        if (c == '$') {
+            if (i != s.size() - 1) return i;                  // only at the end (string variable)
+        } else if (c == '\\') {
+            if (i + 1 >= s.size() || !nameStartsAt(s, i + 1)) return i;   // joins two parts of a name
+        } else if (!std::isalnum(c) && c != '_' && c != '%' && c != '|' && c != '#') {
+            return i;
+        }
+        ++i;
+    }
+    return std::string::npos;
+}
+
+/// "the character 'x'" for the character of `s` at `i`, or the byte when it is not valid UTF-8.
+static std::string describeCharAt(const std::string& s, size_t i) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c < 0x80) return std::string("the character '") + s[i] + "'";
+    const size_t len = c >= 0xF0 && c <= 0xF4 ? 4 : c >= 0xE0 && c < 0xF0 ? 3 : c >= 0xC2 && c < 0xE0 ? 2 : 0;
+    bool valid = len > 0 && i + len <= s.size();
+    unsigned cp = len == 2 ? (c & 0x1Fu) : len == 3 ? (c & 0x0Fu) : (c & 0x07u);
+    for (size_t k = 1; valid && k < len; ++k) {
+        const unsigned char cc = static_cast<unsigned char>(s[i + k]);
+        valid = (cc & 0xC0) == 0x80;
+        cp = (cp << 6) | (cc & 0x3Fu);
+    }
+    char buf[128];
+    if (!valid) {
+        std::snprintf(buf, sizeof buf, "the byte 0x%02X, which is not valid UTF-8 (save the model as a UTF-8 file),", c);
+        return buf;
+    }
+    std::snprintf(buf, sizeof buf, "' (U+%04X)", cp);
+    return "the character '" + s.substr(i, len) + buf;
+}
+
+/// Why `token` (no blank in it) is neither a number nor a valid name; empty when the token does
+/// not look like a name at all (the caller then keeps its generic message).
+static std::string invalidNameMessage(const std::string& token) {
+    if (token.empty() || token.find_first_of(" \t") != std::string::npos || token.find("..") != std::string::npos)
+        return "";   // not a name: an expression, or a range i..j of an array
+    const size_t bad = firstInvalidNameChar(token);
+    if (bad == std::string::npos) return "";
+    bool wordLike = false;   // holds a letter, a digit or a non-ASCII character
+    for (unsigned char c : token) wordLike = wordLike || std::isalnum(c) || c >= 0x80;
+    if (!wordLike) return "";
+    const unsigned char first = static_cast<unsigned char>(token[0]);
+    const std::string quoted = "'" + token + "'";
+    if (bad == 0 && (std::isdigit(first) || first == '.')) return "";   // a number, or a range 1..5 of an array
+    if (bad == 0 && first < 0x80 && !std::isalpha(first) && first != '_') {
+        if (std::string("%|#\\$@&~?!").find(token[0]) == std::string::npos) return "";
+        return "Invalid variable name " + quoted + ": a name must start with a letter or an underscore";
+    }
+    const unsigned char c = static_cast<unsigned char>(token[bad]);
+    if (c == '$') return "Invalid variable name " + quoted + ": '$' can only end a name (a string variable)";
+    if (c == '\\')
+        return "Invalid variable name " + quoted + ": '\\' must be followed by a letter or an underscore";
+    const std::string what = describeCharAt(token, bad);
+    if (c >= 0x80 && what.find("not valid UTF-8") != std::string::npos) return "Invalid variable name: " + what;
+    return "Invalid variable name " + quoted + ": " + what + " is not allowed in a name";
 }
 
 // ============================================================================
@@ -127,6 +216,23 @@ public:
     }
     
     ParseResult parse(const std::string& source, const std::string& filename) {
+        ParseResult result = parsePass(source, filename, false);
+        // `$IF INTEGRALTABLE` is true when an $IntegralTable directive is in the file, above or
+        // below the test: EES compiles in two passes for it, so do we.
+        if (integralTableTested_ && integralTableSeen_ != compileState_.integralTable)
+            result = parsePass(source, filename, integralTableSeen_);
+        return result;
+    }
+
+    std::string getLastError() const { return lastError_; }
+
+private:
+    ParseResult parsePass(const std::string& source, const std::string& filename, bool integralTableAssumed) {
+        conditionalStack_.clear();
+        compileState_ = CompileTimeState{};
+        compileState_.integralTable = integralTableAssumed;
+        integralTableSeen_ = false;
+        integralTableTested_ = false;
         ParseResult result;
         result.success = false;
         result.program.sourceFilename = filename;
@@ -153,6 +259,10 @@ public:
             if (skipCommentLine(line, lineNumber, result)) continue;
             std::string trimmed = trim(line);
 
+            // $IF / $IFNOT / $ELSE / $ENDIF; the lines of a removed branch are not looked at
+            if (handleConditionalDirective(trimmed, lineNumber, line, result)) continue;
+            if (!conditionalActive()) continue;
+
             // Check for unsupported constructs (procedures, modules, etc.)
             std::string upper = trimmed;
             std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
@@ -161,8 +271,7 @@ public:
             auto isKeyword = [&](const std::string& kw) {
                 if (upper.find(kw) != 0) return false;
                 if (upper.size() == kw.size()) return true;
-                char next = upper[kw.size()];
-                return !std::isalnum(static_cast<unsigned char>(next)) && next != '_';
+                return !isIdentChar(upper[kw.size()]);
             };
 
             if (isKeyword("MODULE") || 
@@ -180,6 +289,7 @@ public:
                     std::vector<StmtPtr> body;
                     int startLine = lineNumber;
                     procedureBodyDepth_++;
+                    routineKind_ = "FUNCTION"; routineName_ = name;
                     std::string term = parseBodyLines(stream, lineNumber, body, result);
                     procedureBodyDepth_--;
                     if (term != "END") {
@@ -199,6 +309,7 @@ public:
                     std::vector<StmtPtr> body;
                     int startLine = lineNumber;
                     procedureBodyDepth_++;
+                    routineKind_ = "PROCEDURE"; routineName_ = name;
                     std::string term = parseBodyLines(stream, lineNumber, body, result);
                     procedureBodyDepth_--;
                     if (term != "END") {
@@ -221,8 +332,14 @@ public:
 
             // Handle Procedure Call
             if (isKeyword("CALL")) {
-                if (auto stmt = tryParseProcedureCall(line, lineNumber)) {
+                std::string callError;
+                if (auto stmt = tryParseProcedureCall(line, lineNumber, &callError)) {
                     result.program.statements.push_back(stmt);
+                    noteComputedStrings(stmt);
+                    continue;
+                }
+                if (!callError.empty()) {
+                    result.errors.push_back({lineNumber, 0, callError, line});
                     continue;
                 }
             }
@@ -290,6 +407,7 @@ public:
             if (auto stmt = tryParseDirective(line, lineNumber, &result.diagnostics)) {
                 result.program.statements.push_back(stmt);
                 result.directiveCount++;
+                if (upper.rfind("$INTEGRALTABLE", 0) == 0) integralTableSeen_ = true;
                 continue;
             }
             
@@ -305,6 +423,7 @@ public:
                         if (auto stmt = tryParseEquationOrAssignment(seg, lineNumber, &segError)) {
                             result.program.statements.push_back(stmt);
                             result.equationCount++;
+                            noteStringAssignment(stmt);
                         } else {
                             allOk = false;
                             std::string msg = segError.empty() ? ("Could not parse segment: " + seg) : segError;
@@ -323,6 +442,7 @@ public:
                 if (auto stmt = tryParseEquationOrAssignment(line, lineNumber, &parseError)) {
                     result.program.statements.push_back(stmt);
                     result.equationCount++;
+                    noteStringAssignment(stmt);
                     continue;
                 }
                 if (!parseError.empty()) {
@@ -336,6 +456,11 @@ public:
             result.errors.push_back({lineNumber, 0, "Could not parse line", line});
         }
         
+        for (auto it = conditionalStack_.rbegin(); it != conditionalStack_.rend(); ++it) {
+            const auto& info = result.conditionalDirectives[it->infoIndex];
+            result.errors.push_back({it->line, 0,
+                std::string(it->ifnot ? "$IFNOT" : "$IF") + " without a matching $ENDIF", info.text});
+        }
         if (comments_.inQuote) {
             result.diagnostics.push(DiagnosticSeverity::Warning, "P007",
                 "The comment opened by a '\"' at line " + std::to_string(comments_.quoteOpenLine) +
@@ -354,20 +479,177 @@ public:
         return result;
     }
     
-    std::string getLastError() const { return lastError_; }
-
-private:
     peg::parser parser_;
     bool grammarValid_ = false;
     std::string lastError_;
-    // Set by parseFunctionCall when a named-argument value cannot be parsed;
-    // consumed (and cleared) by tryParseEquationOrAssignment to emit a
-    // specific diagnostic instead of the generic "Could not parse line".
+    // Set when an argument of a call, or an index, cannot be parsed (or when a named
+    // argument is given to a function that takes none); consumed (and cleared) by the
+    // statement parsers to emit a specific diagnostic instead of the generic
+    // "Could not parse line". The first message is kept: it is that of the innermost call.
     std::string pendingExpressionError_;
+    // Why a name was refused (invalidNameMessage): added to the specific message above, or
+    // alone, so that a character EES takes in a name and CoolSolve does not is named.
+    std::string pendingNameHint_;
+
+    void setExpressionError(const std::string& message) {
+        if (pendingExpressionError_.empty()) pendingExpressionError_ = message;
+    }
+    void clearExpressionError() {
+        pendingExpressionError_.clear();
+        pendingNameHint_.clear();
+    }
+    /// The diagnostic to report for an expression that cannot be parsed; empty when nothing specific is known.
+    std::string expressionErrorText() const {
+        if (pendingNameHint_.empty()) return pendingExpressionError_;
+        if (pendingExpressionError_.empty()) return pendingNameHint_;
+        return pendingExpressionError_ + "; " + pendingNameHint_;
+    }
     // > 0 while the body of a FUNCTION/PROCEDURE is being parsed (IF ... THEN
     // statements are only valid there).
     int procedureBodyDepth_ = 0;
+    // The routine whose body is being parsed ("FUNCTION" or "PROCEDURE", and its name).
+    std::string routineKind_, routineName_;
     
+    // ------------------------------------------------------------------------
+    // Compile-time directives $IF / $IFNOT / $ELSE / $ENDIF (CS-GAP-IF-DIRECTIVE)
+    //
+    // EES compiles the Equations window top to bottom and ignores the lines of the
+    // branch that is not selected. The parse loops (main program and bodies) call
+    // handleConditionalDirective() on every line that is not a comment and skip the
+    // line while conditionalActive() is false: a removed line is never parsed (it may
+    // hold anything, even text CoolSolve does not support), so it never reaches the IR,
+    // the debug reports or the solver, whichever entry point built the program.
+    // The string constants that the conditions test are recorded as the statements
+    // that set them are parsed: EES needs the variable defined before the directive.
+    // The conditions themselves are evaluated by conditional_directives.cpp.
+    // ------------------------------------------------------------------------
+    struct ConditionalFrame {
+        int line;              // line of the $IF / $IFNOT
+        size_t infoIndex;      // its entry in ParseResult::conditionalDirectives
+        bool ifnot;
+        bool parentActive;     // the enclosing branch is kept
+        bool failed;           // the condition cannot be evaluated (reported): both branches are skipped
+        bool condition;        // the THEN branch is selected
+        bool inElse;           // $ELSE seen
+    };
+    std::vector<ConditionalFrame> conditionalStack_;
+    CompileTimeState compileState_;
+    bool integralTableSeen_ = false;     // a kept $IntegralTable directive was parsed
+    bool integralTableTested_ = false;   // a condition asked for INTEGRALTABLE
+
+    static bool frameActive(const ConditionalFrame& f) {
+        return f.parentActive && !f.failed && (f.inElse ? !f.condition : f.condition);
+    }
+    bool conditionalActive() const { return conditionalStack_.empty() || frameActive(conditionalStack_.back()); }
+
+    // Consume the line if it is $IF, $IFNOT, $ELSE or $ENDIF (any letter case). Text after
+    // the condition other than a comment or a trailing `then` is an error; text after
+    // $ELSE / $ENDIF is ignored (EES files annotate them: `$else fuel$='ch4'`). A bare
+    // `$ELSEIF` is a `$ELSE`, as in the EES help.
+    bool handleConditionalDirective(const std::string& trimmed, int lineNumber, const std::string& sourceLine,
+                                    ParseResult& result) {
+        if (trimmed.size() < 3 || trimmed[0] != '$') return false;
+        size_t nameEnd = 1;
+        while (nameEnd < trimmed.size() &&
+               (std::isalnum(static_cast<unsigned char>(trimmed[nameEnd])) || trimmed[nameEnd] == '_'))
+            nameEnd++;
+        std::string name = trimmed.substr(1, nameEnd - 1);
+        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+        if (name != "if" && name != "ifnot" && name != "else" && name != "elseif" && name != "endif") return false;
+        result.directiveCount++;
+
+        std::string upperName = name;
+        std::transform(upperName.begin(), upperName.end(), upperName.begin(), ::toupper);
+        const std::string rest = trim(removeInlineComments(trimmed.substr(nameEnd)));
+        auto fail = [&](const std::string& message) {
+            result.errors.push_back({lineNumber, 0, message, sourceLine});
+        };
+
+        if (name == "if" || name == "ifnot") {
+            ConditionalFrame frame{lineNumber, result.conditionalDirectives.size(), name == "ifnot",
+                                   conditionalActive(), false, false, false};
+            ConditionalDirectiveInfo info;
+            info.line = lineNumber;
+            info.text = trim(removeInlineComments(trimmed));
+            if (frame.parentActive) {
+                const ConditionResult r = evaluateDirectiveCondition(rest, compileState_);
+                if (r.usedIntegralTable) integralTableTested_ = true;
+                if (r.ok) {
+                    frame.condition = frame.ifnot ? !r.value : r.value;
+                    info.evaluated = true;
+                    info.thenKept = frame.condition;
+                } else {
+                    frame.failed = true;
+                    fail("$" + upperName + ": " + r.error);
+                }
+            }
+            result.conditionalDirectives.push_back(info);
+            conditionalStack_.push_back(frame);
+            return true;
+        }
+
+        if (conditionalStack_.empty()) {
+            fail("$" + upperName + " without a matching $IF or $IFNOT");
+            return true;
+        }
+        ConditionalFrame& frame = conditionalStack_.back();
+        ConditionalDirectiveInfo& info = result.conditionalDirectives[frame.infoIndex];
+        if (name == "endif") {
+            info.endLine = lineNumber;
+            conditionalStack_.pop_back();
+            return true;
+        }
+        // $ELSE or $ELSEIF
+        if (frame.inElse) {
+            fail("Second $" + upperName + " in the " + (frame.ifnot ? "$IFNOT" : "$IF") + " of line " + std::to_string(frame.line));
+            return true;
+        }
+        if (name == "elseif" && !rest.empty()) {
+            frame.failed = true;
+            fail("$ELSEIF with a condition is not supported: the EES help documents $IF, $IFNOT, $ELSE and $ENDIF "
+                 "(write $ELSE followed by a nested $IF)");
+            return true;
+        }
+        frame.inElse = true;
+        info.elseLine = lineNumber;
+        return true;
+    }
+
+    // What a main-program statement tells the $IF conditions about string variables: a
+    // constant (`X$ = 'text'`, `X$ = Y$` with Y$ a constant) or a value unknown at compile time.
+    void noteStringAssignment(const StmtPtr& stmt) {
+        if (!stmt->is<Equation>()) return;
+        const auto& eq = stmt->as<Equation>();
+        if (!eq.lhs || !eq.rhs || !eq.lhs->is<Variable>()) return;
+        const auto& var = eq.lhs->as<Variable>();
+        if (var.name.empty() || var.name.back() != '$' || !var.indices.empty()) return;
+        const std::string* constant = nullptr;
+        if (eq.rhs->is<StringLiteral>()) {
+            constant = &eq.rhs->as<StringLiteral>().value;
+        } else if (eq.rhs->is<Variable>() && eq.rhs->as<Variable>().indices.empty()) {
+            const auto it = compileState_.strings.find(eq.rhs->as<Variable>().name);
+            if (it != compileState_.strings.end()) constant = &it->second;
+        }
+        if (constant) {
+            const std::string value = *constant;   // may alias the entry being replaced
+            compileState_.strings[var.name] = value;
+            compileState_.computedStrings.erase(var.name);
+        } else {
+            compileState_.strings.erase(var.name);
+            compileState_.computedStrings.insert(var.name);
+        }
+    }
+
+    // The string outputs of a CALL are computed, not constants.
+    void noteComputedStrings(const StmtPtr& stmt) {
+        if (!stmt->is<ProcedureCall>()) return;
+        for (const auto& out : stmt->as<ProcedureCall>().outputVars) {
+            if (out.name.empty() || out.name.back() != '$' || !out.indices.empty()) continue;
+            compileState_.strings.erase(out.name);
+            compileState_.computedStrings.insert(out.name);
+        }
+    }
+
     // Known built-in math/utility functions (case-insensitive)
     static const std::unordered_set<std::string>& knownBuiltinFunctions() {
         static const std::unordered_set<std::string> fns = {
@@ -383,7 +665,7 @@ private:
             "nlookuprows", "nlookupcolumns",
             "sumlookup", "avglookup", "maxlookup", "minlookup", "stddevlookup",
             "lookupcol", "lookupcol1", "lookupcellempty",
-            "unitsystem", "error",  // UNITSYSTEM('K') and the built-in procedure CALL error('msg')
+            "unitsystem", "error", "warning",  // UNITSYSTEM('K') and the built-in procedures CALL error('msg'), CALL warning('msg')
             "ntumethod", "effectivenessntu",
             "lmtd",
             "integral", "integralvalue",  // equation-based dynamic solver
@@ -391,6 +673,34 @@ private:
         return fns;
     }
     
+    // Built-in functions that take positional arguments only: for them `name=value` is
+    // not a named argument (typically the comparison of IF(a=5, 1, 2), which EES does not
+    // have). The indexed aggregations SUM(X[i], i=1, N) and the EES form of INTERPOLATE
+    // carry `name=value` arguments (CS-GAP-SUM-INDEXED, CS-GAP-INTERP-EES: not supported
+    // yet, they keep their own diagnostics). The thermophysical functions, user functions
+    // and unknown names are not listed here.
+    static bool isPositionalOnlyBuiltin(const std::string& name) {
+        static const std::unordered_set<std::string> takingNamedArguments = {
+            "sum", "sum2d", "average", "product", "stddev",
+            "interpolate", "interpolate1", "interpolate2", "interpolate2dm",
+        };
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        return knownBuiltinFunctions().count(lower) > 0 && takingNamedArguments.count(lower) == 0;
+    }
+
+    static std::string namedArgumentRefusedMessage(const std::string& function, const std::string& arg,
+                                                   const std::string& paramName, const std::string& paramValue) {
+        std::string lower = function;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        std::string message = function + " does not take named arguments ('" + arg + "'); ";
+        if (lower == "if")
+            return message + "to test an equality use the 5-argument form IF(A, B, X, Y, Z) "
+                   "(X if A<B, Y if A=B, Z if A>B), here IF(" + paramName + ", " + paramValue
+                   + ", X, Y, Z); IF(cond, a, b) tests cond > 0";
+        return message + "only the thermophysical property functions do, e.g. enthalpy(Water, T=20, P=1E5)";
+    }
+
     // Post-parse validation: check that all function calls reference either a
     // built-in, a CoolProp thermo function, or a user-defined function/procedure.
     void validateFunctionNames(ParseResult& result) {
@@ -451,6 +761,7 @@ private:
                     // Also track procedure calls as function-like calls to validate
                     callsFound.push_back({node.name, stmt->sourceLineNumber});
                     for (const auto& arg : node.inputArgs) collectFromExpr(arg, collectFromExpr);
+                    for (const auto& out : node.outputExprs) collectFromExpr(out, collectFromExpr);
                 } else if constexpr (std::is_same_v<T, FunctionDefinition>) {
                     for (const auto& s : node.body) self(s, self);
                 } else if constexpr (std::is_same_v<T, ProcedureDefinition>) {
@@ -613,6 +924,7 @@ private:
                     for (const auto& s : node.body) self(s, self);
                 } else if constexpr (std::is_same_v<T, ProcedureCall>) {
                     for (const auto& arg : node.inputArgs) walkExpr(arg, walkExpr);
+                    for (const auto& out : node.outputExprs) walkExpr(out, walkExpr);
                 } else if constexpr (std::is_same_v<T, FunctionDefinition>) {
                     for (const auto& s : node.body) self(s, self);
                 } else if constexpr (std::is_same_v<T, ProcedureDefinition>) {
@@ -825,17 +1137,21 @@ private:
             lineNumber++;
             if (skipCommentLine(bodyLine, lineNumber, result)) continue;
             std::string trimmedBody = trim(bodyLine);
+            if (handleConditionalDirective(trimmedBody, lineNumber, bodyLine, result)) continue;
+            if (!conditionalActive()) continue;
             std::string upperBody = trimmedBody;
             std::transform(upperBody.begin(), upperBody.end(), upperBody.begin(), ::toupper);
 
             auto isBodyKeyword = [&](const std::string& kw) {
                 if (upperBody.find(kw) != 0) return false;
                 if (upperBody.size() == kw.size()) return true;
-                char next = upperBody[kw.size()];
-                return !std::isalnum(static_cast<unsigned char>(next)) && next != '_';
+                return !isIdentChar(upperBody[kw.size()]);
             };
 
-            if (upperBody == "END") return "END";
+            // END, possibly followed by a comment ("END // end of the function")
+            std::string codeBody = trim(removeInlineComments(bodyLine));
+            std::transform(codeBody.begin(), codeBody.end(), codeBody.begin(), ::toupper);
+            if (codeBody == "END") return "END";
 
             // Check for UNTIL(condition)
             if (isBodyKeyword("UNTIL")) {
@@ -854,6 +1170,8 @@ private:
                 body.push_back(stmt);
             } else if (auto stmt = tryParseDirective(bodyLine, lineNumber)) {
                 body.push_back(stmt);
+                if (procedureBodyDepth_ > 0 && isCommonDirective(stmt->as<Directive>()))
+                    result.errors.push_back({lineNumber, 0, commonDirectiveMessage(stmt->as<Directive>().content), bodyLine});
             } else if (isBodyKeyword("IF")) {
                 const int ifLine = lineNumber;
                 std::string term = parseIfStatement(trim(removeInlineComments(bodyLine)),
@@ -920,30 +1238,27 @@ private:
 
     // Parse the equations/assignments and procedure calls of `text` (one line
     // of a body, or one branch of a single-line IF), split on semicolons.
-    // `errorLine` is the source line reported with parse errors.
+    // `errorLine` is the source line reported with parse errors. A statement that
+    // cannot be parsed is an error, as in the main program: it is never dropped
+    // (CS-BUG-BODY-LINE-DROP); only a segment that holds nothing but comments (or
+    // separators) is skipped.
     void parseSimpleStatements(const std::string& text, int lineNumber,
                                std::vector<StmtPtr>& body, ParseResult& result,
                                const std::string& errorLine) {
-        auto segments = splitOnSemicolons(text);
-        if (segments.size() > 1) {
-            for (const auto& seg : segments) {
-                std::string segErr;
-                if (auto s = tryParseEquationOrAssignment(seg, lineNumber, &segErr))
-                    body.push_back(s);
-                else if (auto s = tryParseProcedureCall(seg, lineNumber))
-                    body.push_back(s);
-                else if (!segErr.empty())
-                    result.errors.push_back({lineNumber, 0, segErr, errorLine});
+        const auto segments = splitOnSemicolons(text);
+        for (const auto& seg : segments) {
+            std::string segErr;
+            StmtPtr stmt = tryParseEquationOrAssignment(seg, lineNumber, &segErr);
+            if (!stmt) stmt = tryParseProcedureCall(seg, lineNumber, &segErr);
+            if (stmt) {
+                body.push_back(stmt);
+            } else if (!segErr.empty()) {
+                result.errors.push_back({lineNumber, 0, segErr, errorLine});
+            } else if (!trim(removeInlineComments(seg)).empty()) {
+                result.errors.push_back({lineNumber, 0, segments.size() > 1
+                                         ? "Could not parse segment: " + seg : "Could not parse line", errorLine});
             }
-            return;
         }
-        std::string bodyErr;
-        if (auto stmt = tryParseEquationOrAssignment(text, lineNumber, &bodyErr))
-            body.push_back(stmt);
-        else if (auto stmt = tryParseProcedureCall(text, lineNumber))
-            body.push_back(stmt);
-        else if (!bodyErr.empty())
-            result.errors.push_back({lineNumber, 0, bodyErr, errorLine});
     }
 
     // ------------------------------------------------------------------------
@@ -962,10 +1277,13 @@ private:
     // ------------------------------------------------------------------------
     static constexpr const char* kIfOutsideProcedureMessage =
         "IF ... THEN statements are only allowed inside FUNCTION and PROCEDURE bodies "
-        "(in the main program use the IF(a, b, c, d) function)";
+        "(in the main program use the IF(cond, a, b) or IF(A, B, X, Y, Z) function)";
 
+    // A character that can be part of a name (see firstInvalidNameChar): a keyword is a keyword only
+    // when none follows it. Bytes >= 0x80 are the UTF-8 letters and symbols of names.
     static bool isIdentChar(char c) {
-        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$' || c == '#';
+        const unsigned char u = static_cast<unsigned char>(c);
+        return std::isalnum(u) || u >= 0x80 || c == '_' || c == '$' || c == '#' || c == '%' || c == '|' || c == '\\';
     }
 
     // Position (>= from) of the whole-word, case-insensitive keyword `kw`
@@ -1088,9 +1406,11 @@ private:
             return "";
         }
         const std::string condText = trim(ifText.substr(2, thenPos - 2));
+        clearExpressionError();
         ExprPtr cond = parseCondition(condText, ifLine);
         if (!cond)
-            result.errors.push_back({ifLine, 0, "Could not parse IF condition '" + condText + "'", srcLine});
+            result.errors.push_back({ifLine, 0, "Could not parse IF condition '" + condText + "'"
+                                     + (expressionErrorText().empty() ? "" : ": " + expressionErrorText()), srcLine});
 
         std::vector<StmtPtr> thenBranch, elseBranch;
         std::string premature;
@@ -1177,16 +1497,33 @@ private:
 
     // Parse the body of a `$IntegralTable` directive into an IntegralTableSpec.
     // EES syntax:  $IntegralTable t:0.1  y  dydt  X[1..5]
-    //   - first token: integration variable, optionally followed by ":interval"
-    //   - remaining tokens: tabulated variables; "X[lo..hi]" ranges are expanded
+    //   - first name: integration variable, optionally followed by ":interval" (a number, or
+    //     the name of a variable that holds a constant, read at the initial point)
+    //   - remaining names: tabulated variables; "X[lo..hi]" ranges are expanded
     //     to X[1], X[2], ... at parse time so the rest of the pipeline sees a
     //     flat column list (additive — only active inside this directive parser).
+    //   - names are separated by spaces or by the EES list delimiters `,` and `;`
+    //     (`t:0.5; y; dydt`, `t:0.5, y, dydt`); a delimiter inside brackets belongs to the
+    //     array subscript (`X[1,2]`).
     static IntegralTableSpec parseIntegralTableContent(const std::string& content) {
         IntegralTableSpec spec;
-        std::istringstream iss(content);
         std::vector<std::string> tokens;
-        std::string tok;
-        while (iss >> tok) tokens.push_back(tok);
+        {
+            std::string cur;
+            int depth = 0;
+            for (char c : content) {
+                if (c == '[') ++depth;
+                else if (c == ']' && depth > 0) --depth;
+                const bool space = std::isspace(static_cast<unsigned char>(c)) != 0;
+                if (depth == 0 && (space || c == ',' || c == ';')) {
+                    if (!cur.empty()) tokens.push_back(cur);
+                    cur.clear();
+                } else if (!(depth > 0 && space)) {   // blanks inside a subscript are dropped
+                    cur += c;
+                }
+            }
+            if (!cur.empty()) tokens.push_back(cur);
+        }
         if (tokens.empty()) {
             spec.errorMessage = "no integration variable specified";
             return spec;
@@ -1196,10 +1533,22 @@ private:
         size_t colon = first.find(':');
         if (colon != std::string::npos) {
             spec.integrationVar = first.substr(0, colon);
+            const std::string interval = first.substr(colon + 1);
+            size_t used = 0;
+            double value = 0.0;
+            bool isNumber = false;
             try {
-                spec.outputInterval = std::stod(first.substr(colon + 1));
+                value = std::stod(interval, &used);
+                isNumber = used == interval.size();
             } catch (...) {
-                spec.errorMessage = "invalid output interval '" + first.substr(colon + 1) + "'";
+                isNumber = false;
+            }
+            if (isNumber) {
+                spec.outputInterval = value;
+            } else if (!interval.empty() && nameStartsAt(interval, 0)) {
+                spec.outputIntervalVar = interval;   // a variable set to a constant (EES)
+            } else {
+                spec.errorMessage = "invalid output interval '" + interval + "'";
                 return spec;
             }
         } else {
@@ -1233,6 +1582,31 @@ private:
         }
         spec.valid = true;
         return spec;
+    }
+
+    static bool isCommonDirective(const Directive& directive) {
+        std::string name = directive.name;
+        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+        return name == "common";
+    }
+
+    /// The error for a `$COMMON` line in a FUNCTION/PROCEDURE body (CS-BUG-COMMON-PROC): it is not
+    /// supported, the shared variables are passed as input arguments (the body is unchanged).
+    /// `content` is the text after the directive name: variables separated by commas or semicolons.
+    std::string commonDirectiveMessage(const std::string& content) {
+        std::string list = removeInlineComments(content);
+        std::replace(list.begin(), list.end(), ';', ',');
+        std::string names;
+        size_t count = 0;
+        for (const auto& item : splitArguments(list)) {
+            const std::string name = trim(item);
+            if (name.empty()) continue;
+            names += (count++ ? ", " : "") + name;
+        }
+        const std::string what = count == 0 ? "the shared variables as input arguments"
+                               : names + (count == 1 ? " as an input argument" : " as input arguments");
+        return "$COMMON is not supported: pass " + what + " of " + routineKind_ + " " + routineName_ +
+               (routineKind_ == "FUNCTION" ? " (and in each call)" : " (and in each CALL)");
     }
 
     StmtPtr tryParseDirective(const std::string& line, int lineNum, DiagnosticCollector* diag = nullptr) {
@@ -1381,7 +1755,32 @@ private:
         return true;
     }
 
-    StmtPtr tryParseProcedureCall(const std::string& line, int lineNum) {
+    // The reason why a CALL of the built-in procedures ERROR or WARNING is refused; "" when the CALL is valid
+    // or is that of another procedure. EES help (ERROR and WARNING procedures): they are used only within a
+    // FUNCTION or a PROCEDURE, with no outputs, as CALL P(X), CALL P('message XXXF1', X) or CALL P('message');
+    // the message is a string, so a numeric first argument is the value and cannot be followed by another one.
+    static std::string messageProcedureError(const std::string& name, const std::vector<ExprPtr>& args,
+                                             bool hasOutputs, bool inRoutine) {
+        std::string upper = name;
+        std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+        if (upper != "ERROR" && upper != "WARNING") return "";
+        const std::string call = "CALL " + upper;
+        if (!inRoutine) return call + " can only be used inside a FUNCTION or PROCEDURE (as in EES)";
+        if (hasOutputs) return call + " has no outputs: " + call + "('message XXXA1', value)";
+        if (args.empty())
+            return call + " needs an argument: " + call + "('message XXXA1', value), " + call + "('message') or " + call + "(value)";
+        if (args.size() > 2)
+            return call + " takes a message and a value at most: " + call + "('message XXXA1', value)";
+        if (args.size() == 2 && !isStringExpression(args[0]))
+            return "the first argument of " + call + " must be the message (a string) when a value follows: " +
+                   call + "('message XXXA1', value)";
+        return "";
+    }
+
+    // `errorMsg`, when given, receives the reason why a CALL statement was refused
+    // (an argument that cannot be parsed, an output that is not a variable).
+    StmtPtr tryParseProcedureCall(const std::string& line, int lineNum, std::string* errorMsg = nullptr) {
+        clearExpressionError();
         std::string cleaned = removeInlineComments(line);
         cleaned = trim(cleaned);
         
@@ -1396,8 +1795,29 @@ private:
         
         std::string name = trim(callContent.substr(0, parenStart));
         
-        size_t parenEnd = callContent.rfind(')');
-        if (parenEnd == std::string::npos || parenEnd <= parenStart) return nullptr;
+        const size_t parenEnd = findClosingBracket(callContent, parenStart);
+        if (parenEnd == std::string::npos || callContent[parenEnd] != ')') return nullptr;
+
+        // Nothing may follow the closing parenthesis but a statement separator or a "[unit]"
+        // comment, which the comment remover keeps (the text was ignored: CS-BUG-TRAILING-TEXT)
+        std::string trailing = trim(callContent.substr(parenEnd + 1));
+        for (bool more = true; more && !trailing.empty();) {
+            more = false;
+            if (trailing.back() == ';') {
+                trailing = trim(trailing.substr(0, trailing.size() - 1));
+                more = true;
+            } else if (trailing.front() == '"') {
+                const size_t close = trailing.find('"', 1);
+                if (close != std::string::npos) {
+                    trailing = trim(trailing.substr(close + 1));
+                    more = true;
+                }
+            }
+        }
+        if (!trailing.empty()) {
+            if (errorMsg) *errorMsg = unexpectedTextMessage(trailing, "the arguments of", name);
+            return nullptr;
+        }
         
         std::string argsStr = callContent.substr(parenStart + 1, parenEnd - parenStart - 1);
         
@@ -1424,33 +1844,64 @@ private:
             inputsStr = argsStr;
         }
         
+        // A faulty argument refuses the whole statement (it is never skipped)
+        auto refuse = [&](const std::string& fallback) -> StmtPtr {
+            if (errorMsg) *errorMsg = expressionErrorText().empty() ? fallback : expressionErrorText();
+            return nullptr;
+        };
+
         std::vector<ExprPtr> inputArgs;
         std::vector<std::string> inputStrs = splitArguments(inputsStr);
-        for (const auto& s : inputStrs) {
-            auto expr = parseExpression(s, lineNum);
-            if (expr) inputArgs.push_back(expr);
+        for (size_t i = 0; i < inputStrs.size(); ++i) {
+            auto expr = parseExpression(inputStrs[i], lineNum);
+            if (!expr)
+                return refuse("Could not parse argument " + std::to_string(i + 1) + " of '" + name
+                              + "': '" + trim(inputStrs[i]) + "'");
+            inputArgs.push_back(expr);
         }
         
+        // The built-in procedures ERROR and WARNING have a grammar of their own (EES help)
+        {
+            const std::string why = messageProcedureError(name, inputArgs, colonPos != std::string::npos,
+                                                          procedureBodyDepth_ > 0);
+            if (!why.empty()) return refuse(why);
+        }
+
+        // An output is a variable (possibly an array element). In the main program EES also accepts an
+        // expression (`CALL p(x : c/1000)`): the output of the routine is equated to it. Inside a
+        // FUNCTION/PROCEDURE the statements run in order and nothing solves such an equation.
         std::vector<Variable> outputVars;
+        std::vector<ExprPtr> outputExprs;   // filled only when an output is an expression
         std::vector<std::string> outputStrs = splitArguments(outputsStr);
-        for (const auto& s : outputStrs) {
-            std::string ts = trim(s);
+        for (size_t i = 0; i < outputStrs.size(); ++i) {
+            std::string ts = trim(outputStrs[i]);
             if (ts.empty()) continue;
             
-            // Outputs must be variables (potentially array access)
             auto expr = parseExpression(ts, lineNum);
-            if (expr && expr->is<Variable>()) {
+            if (!expr)
+                return refuse("Could not parse output " + std::to_string(i + 1) + " of '" + name
+                              + "': '" + ts + "'");
+            if (expr->is<Variable>()) {
                 outputVars.push_back(expr->as<Variable>());
+                if (!outputExprs.empty()) outputExprs.push_back(nullptr);
+                continue;
             }
+            if (procedureBodyDepth_ > 0)
+                return refuse("Output " + std::to_string(i + 1) + " of '" + name + "' is the expression '" + ts
+                              + "': inside a FUNCTION or PROCEDURE the statements run in order and the expression "
+                                "cannot be solved for; write the result into a variable and compute the expression from it");
+            if (outputExprs.empty()) outputExprs.assign(outputVars.size(), nullptr);
+            outputVars.push_back(Variable{});   // placeholder, replaced when the IR is built
+            outputExprs.push_back(expr);
         }
         
-        return makeProcedureCall(name, std::move(inputArgs), std::move(outputVars), lineNum);
+        return makeProcedureCall(name, std::move(inputArgs), std::move(outputVars), lineNum, std::move(outputExprs));
     }
 
     StmtPtr tryParseEquationOrAssignment(const std::string& line, int lineNum,
                                         std::string* errorMsg = nullptr) {
         // Clear any stale expression error from a previous call.
-        pendingExpressionError_.clear();
+        clearExpressionError();
 
         // Remove inline comments first, extracting any "" comment
         std::string inlineComment;
@@ -1510,8 +1961,10 @@ private:
         auto rhs = parseExpression(rhsStr, lineNum);
         
         // If RHS parsing failed, it might be due to unquoted units (e.g., 10 [m])
-        // Try stripping units in square brackets at the end
-        if (!rhs) {
+        // Try stripping units in square brackets at the end. Not when a specific
+        // reason was found (an argument or an index that cannot be parsed): `x[3 4]`
+        // is a faulty index, not the variable x annotated with a unit.
+        if (!rhs && pendingExpressionError_.empty()) {
             size_t lastBracket = rhsStr.rfind(']');
             if (lastBracket == rhsStr.size() - 1) {
                 size_t openBracket = rhsStr.rfind('[');
@@ -1530,8 +1983,8 @@ private:
         
         if (!lhs || !rhs) {
             // Propagate a specific message from parseFunctionCall if available.
-            if (errorMsg && !pendingExpressionError_.empty())
-                *errorMsg = pendingExpressionError_;
+            if (errorMsg && !expressionErrorText().empty())
+                *errorMsg = expressionErrorText();
             return nullptr;
         }
         
@@ -1987,11 +2440,15 @@ private:
             }
         }
         
-        // String literal
+        // String literal (the closing quote ends it)
         if (trimmed.front() == '\'') {
             size_t end = trimmed.find('\'', 1);
             if (end != std::string::npos) {
                 std::string value = trimmed.substr(1, end - 1);
+                if (end + 1 < trimmed.size()) {
+                    setExpressionError(unexpectedTextMessage(trimmed.substr(end + 1), "the string", value));
+                    return nullptr;
+                }
                 return makeString(value, lineNum);
             }
         }
@@ -2006,38 +2463,96 @@ private:
             }
         }
         
-        // Function call or array access
-        size_t parenPos = trimmed.find('(');
-        size_t bracketPos = trimmed.find('[');
-        
-        if (parenPos != std::string::npos && 
-            (bracketPos == std::string::npos || parenPos < bracketPos)) {
-            return parseFunctionCall(trimmed, lineNum);
+        // A unit annotation in brackets ends the term it follows: a number or a parenthesized
+        // group (3600[s], 0.05 [kg/s], (25 + 273.15) [K]), a function call or an array element
+        // (max(a, b) [kW], x[1] [K]). As for the annotation of a whole equation, the unit is
+        // documentation only (values are not converted): the term is kept and the annotation
+        // dropped. After a call or an element the annotation must hold a unit: a number
+        // between brackets (f(x)[2], A[1][2]) is an index, not a unit, and is refused below.
+        const size_t annotationPos = trimmed.rfind('[');
+        if (annotationPos != std::string::npos && annotationPos > 0 && trimmed.back() == ']' &&
+            trimmed.find(']', annotationPos) == trimmed.size() - 1) {
+            const std::string annotated = trim(trimmed.substr(0, annotationPos));
+            if (isNumber(annotated) || isFullyParenthesized(annotated))
+                return parsePrimary(annotated, lineNum);
+            const std::string unit = trim(trimmed.substr(annotationPos + 1, trimmed.size() - annotationPos - 2));
+            if (!annotated.empty() && (annotated.back() == ')' || annotated.back() == ']') &&
+                !unit.empty() && !isNumber(unit))
+                return parseCallOrElement(annotated, lineNum);
         }
-        
-        if (bracketPos != std::string::npos) {
-            return parseArrayAccess(trimmed, lineNum);
-        }
-        
+
+        // Function call or array element
+        if (trimmed.find_first_of("([") != std::string::npos)
+            return parseCallOrElement(trimmed, lineNum);
+
         // Simple variable
         if (isIdentifier(trimmed)) {
             return makeVariable(trimmed, lineNum);
         }
         
+        // Say why a name is refused (a character EES does not take in a name, a Latin-1 file)
+        const std::string why = invalidNameMessage(trimmed);
+        if (!why.empty() && pendingNameHint_.empty()) pendingNameHint_ = why;
         return nullptr;
     }
-    
+
+    // `expr` starts with a function name followed by '(', or with a variable name followed by
+    // '[' (whichever comes first): a function call or an array element. The text after the
+    // closing bracket is refused here (see parseFunctionCall, parseArrayAccess).
+    ExprPtr parseCallOrElement(const std::string& expr, int lineNum) {
+        const size_t parenPos = expr.find('(');
+        const size_t bracketPos = expr.find('[');
+        if (parenPos != std::string::npos && (bracketPos == std::string::npos || parenPos < bracketPos))
+            return parseFunctionCall(expr, lineNum);
+        if (bracketPos != std::string::npos)
+            return parseArrayAccess(expr, lineNum);
+        return nullptr;
+    }
+
+    // Position of the bracket that closes the '(' or '[' at s[open], the brackets of both kinds
+    // being counted and the 'strings' skipped; npos when it is never closed.
+    static size_t findClosingBracket(const std::string& s, size_t open) {
+        int depth = 0;
+        bool inString = false;
+        for (size_t i = open; i < s.size(); ++i) {
+            const char c = s[i];
+            if (c == '\'') { inString = !inString; continue; }
+            if (inString) continue;
+            if (c == '(' || c == '[') depth++;
+            else if (c == ')' || c == ']') {
+                if (--depth == 0) return i;
+            }
+        }
+        return std::string::npos;
+    }
+
+    // The text found after the end of a call, an array element or a string, where nothing may
+    // follow but a unit annotation (CS-BUG-TRAILING-TEXT): it was ignored.
+    static std::string unexpectedTextMessage(const std::string& text, const std::string& what,
+                                             const std::string& after) {
+        std::string t = text;
+        t.erase(0, t.find_first_not_of(" \t"));
+        return "Unexpected text '" + t + "' after " + what + " '" + after + "'";
+    }
+
     ExprPtr parseFunctionCall(const std::string& expr, int lineNum) {
         size_t parenStart = expr.find('(');
         if (parenStart == std::string::npos) return nullptr;
         
         std::string name = trim(expr.substr(0, parenStart));
+        if (name.empty()) return nullptr;   // "(a + b) c": a group, not a call
         
-        // Find matching close paren
-        size_t parenEnd = expr.size() - 1;
-        while (parenEnd > parenStart && expr[parenEnd] != ')') parenEnd--;
-        
-        if (expr[parenEnd] != ')') return nullptr;
+        // The parenthesis that closes the call: nothing but a unit annotation (handled by
+        // parsePrimary) may follow it
+        const size_t parenEnd = findClosingBracket(expr, parenStart);
+        if (parenEnd == std::string::npos || expr[parenEnd] != ')') return nullptr;
+        if (parenEnd + 1 < expr.size()) {
+            const std::string rest = trim(expr.substr(parenEnd + 1));
+            if (!rest.empty()) {
+                setExpressionError(unexpectedTextMessage(rest, "the call", trim(expr.substr(0, parenEnd + 1))));
+                return nullptr;
+            }
+        }
         
         std::string argsStr = expr.substr(parenStart + 1, parenEnd - parenStart - 1);
         
@@ -2052,8 +2567,8 @@ private:
         // Parse arguments
         std::vector<std::string> argStrings = splitArguments(argsStr);
         
-        for (const auto& argStr : argStrings) {
-            std::string arg = trim(argStr);
+        for (size_t argIndex = 0; argIndex < argStrings.size(); ++argIndex) {
+            std::string arg = trim(argStrings[argIndex]);
             
             // Check for named argument (e.g., T=value)
             size_t eqPos = arg.find('=');
@@ -2063,6 +2578,10 @@ private:
                 std::string paramValue = trim(arg.substr(eqPos + 1));
                 
                 if (isIdentifier(paramName)) {
+                    if (isPositionalOnlyBuiltin(name)) {
+                        setExpressionError(namedArgumentRefusedMessage(name, arg, paramName, paramValue));
+                        return nullptr;
+                    }
                     auto valueExpr = parseExpression(paramValue, lineNum);
                     if (valueExpr) {
                         fc.namedArgs.push_back({paramName, valueExpr});
@@ -2071,31 +2590,36 @@ private:
                     // Value expression is malformed — report a specific error and
                     // abort the whole function call so the equation fails to parse
                     // instead of silently continuing with a missing argument.
-                    pendingExpressionError_ = "Could not parse value for named argument '"
-                        + paramName + "': '" + paramValue + "'";
+                    setExpressionError("Could not parse value for named argument '"
+                        + paramName + "': '" + paramValue + "'");
                     return nullptr;
                 }
             }
             
             // Regular argument
             auto argExpr = parseExpression(arg, lineNum);
-            if (argExpr) {
-                // For thermophysical functions, convert unquoted first argument to string literal
-                // In EES, the first argument is always the fluid name (e.g., humrat(airH2O, ...) 
-                // or enthalpy(R134a, ...)) and quotes are optional
-                // Exception: string variables (ending with $) should remain as variables
-                // because they need to be resolved at runtime
-                if (isThermo && isFirstPositionalArg && argExpr->is<Variable>()) {
-                    const Variable& var = argExpr->as<Variable>();
-                    // Only convert if: simple variable (no array access) AND not a string variable (not ending with $)
-                    if (var.indices.empty() && !var.name.empty() && var.name.back() != '$') {
-                        // Convert the variable to a string literal (fluid name)
-                        argExpr = makeString(var.name, lineNum);
-                    }
-                }
-                fc.args.push_back(argExpr);
-                isFirstPositionalArg = false;
+            if (!argExpr) {
+                // Never skip an argument: the call would be evaluated with fewer
+                // arguments and the model solved with a wrong value.
+                setExpressionError("Could not parse argument " + std::to_string(argIndex + 1)
+                    + " of '" + name + "': '" + arg + "'");
+                return nullptr;
             }
+            // For thermophysical functions, convert unquoted first argument to string literal
+            // In EES, the first argument is always the fluid name (e.g., humrat(airH2O, ...) 
+            // or enthalpy(R134a, ...)) and quotes are optional
+            // Exception: string variables (ending with $) should remain as variables
+            // because they need to be resolved at runtime
+            if (isThermo && isFirstPositionalArg && argExpr->is<Variable>()) {
+                const Variable& var = argExpr->as<Variable>();
+                // Only convert if: simple variable (no array access) AND not a string variable (not ending with $)
+                if (var.indices.empty() && !var.name.empty() && var.name.back() != '$') {
+                    // Convert the variable to a string literal (fluid name)
+                    argExpr = makeString(var.name, lineNum);
+                }
+            }
+            fc.args.push_back(argExpr);
+            isFirstPositionalArg = false;
         }
         
         func->node = fc;
@@ -2111,20 +2635,46 @@ private:
         
         // Ensure the name is a valid identifier (to distinguish from units like 10[m])
         if (!isIdentifier(name)) return nullptr;
-        
-        size_t bracketEnd = expr.rfind(']');
-        if (bracketEnd == std::string::npos || bracketEnd <= bracketStart) return nullptr;
+
+        // The bracket that closes the element: nothing but a unit annotation (handled by
+        // parsePrimary) may follow it
+        const size_t bracketEnd = findClosingBracket(expr, bracketStart);
+        if (bracketEnd == std::string::npos || expr[bracketEnd] != ']') return nullptr;
+
+        // A string array (U$[2]) is not supported, by decision: refused here, in the main program, in
+        // FUNCTION/PROCEDURE bodies and in DUPLICATE alike, instead of being stored as the number 0
+        // (main program) or failing at the read (bodies)
+        if (name.back() == '$') {
+            setExpressionError("String arrays are not supported: '" + trim(expr.substr(0, bracketEnd + 1)) +
+                "' is an element of the string array " + name + ". Put the strings in a lookup table (one "
+                "string per row, file <model>-<table>.csv), keep the row number in the array instead (a "
+                "numeric array) and read the string with LOOKUP$('table', row, col), which can be used "
+                "wherever a string is expected, for instance as the fluid of a property call: "
+                "enthalpy(LOOKUP$('table', i, 1), T=T)");
+            return nullptr;
+        }
+
+        if (bracketEnd + 1 < expr.size()) {
+            const std::string rest = trim(expr.substr(bracketEnd + 1));
+            if (!rest.empty()) {
+                setExpressionError(unexpectedTextMessage(rest, "the array element", trim(expr.substr(0, bracketEnd + 1))));
+                return nullptr;
+            }
+        }
         
         std::string indexStr = expr.substr(bracketStart + 1, bracketEnd - bracketStart - 1);
         
         std::vector<ExprPtr> indices;
         std::vector<std::string> indexStrings = splitArguments(indexStr);
         
-        for (const auto& idx : indexStrings) {
-            auto indexExpr = parseExpression(idx, lineNum);
-            if (indexExpr) {
-                indices.push_back(indexExpr);
+        for (size_t i = 0; i < indexStrings.size(); ++i) {
+            auto indexExpr = parseExpression(indexStrings[i], lineNum);
+            if (!indexExpr) {
+                setExpressionError("Could not parse index " + std::to_string(i + 1)
+                    + " of '" + name + "': '" + trim(indexStrings[i]) + "'");
+                return nullptr;
             }
+            indices.push_back(indexExpr);
         }
         
         return makeArrayVariable(name, indices, lineNum);
@@ -2151,7 +2701,9 @@ private:
             current += c;
         }
         
-        if (!current.empty()) {
+        // No argument at all ("" or blanks: f(), f( )) gives an empty list; after a comma
+        // the last piece is kept even if empty, so that f(a, ) is not read as f(a).
+        if (!result.empty() || !trim(current).empty()) {
             result.push_back(current);
         }
         
@@ -2193,39 +2745,7 @@ private:
     }
     
     bool isIdentifier(const std::string& s) {
-        if (s.empty()) return false;
-        
-        // First character must be a letter or underscore
-        char first = s[0];
-        if (!std::isalpha(static_cast<unsigned char>(first)) && first != '_') {
-            return false;
-        }
-        
-        // Check remaining characters
-        for (size_t i = 1; i < s.size(); ++i) {
-            char c = s[i];
-            // $ is only allowed as the last character (for string variables)
-            if (c == '$') {
-                if (i != s.size() - 1) return false;
-            } 
-            // # is only allowed as the last character (for constants)
-            else if (c == '#') {
-                if (i != s.size() - 1) return false;
-            }
-            // \ is an EES namespace separator (e.g. FF\V_s) — allowed in
-            // the middle but not at the end; the character after it must
-            // start a new identifier segment (letter or underscore).
-            else if (c == '\\') {
-                if (i == s.size() - 1) return false;  // not at end
-                char next = s[i + 1];
-                if (!std::isalpha(static_cast<unsigned char>(next)) && next != '_') return false;
-            }
-            else if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') {
-                return false;
-            }
-        }
-        
-        return true;
+        return firstInvalidNameChar(s) == std::string::npos;
     }
     
     std::string trim(const std::string& s) {

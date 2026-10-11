@@ -1,4 +1,5 @@
 #include "coolsolve/evaluator.h"
+#include "coolsolve/ees_string.h"
 #include "coolsolve/lookup_table.h"
 #include "coolsolve/units.h"
 #include "coolsolve/fluids.h"
@@ -27,6 +28,21 @@ namespace coolsolve {
 // AbstractState Cache (thread-local for thread safety)
 // ============================================================================
 
+/// A new AbstractState for a CoolProp fluid name; a mixture `A[x]&B[y]` (see MixtureFluid) is built
+/// from its components, with its mole fractions set.
+static std::shared_ptr<CoolProp::AbstractState> createState(const std::string& backend,
+                                                            const std::string& fluidName) {
+    if (fluidName.find('&') == std::string::npos)
+        return std::shared_ptr<CoolProp::AbstractState>(CoolProp::AbstractState::factory(backend, fluidName));
+    std::string reason;
+    auto mixture = std::dynamic_pointer_cast<MixtureFluid>(FluidRegistry::getFluid(fluidName, &reason));
+    if (!mixture) throw std::runtime_error(reason.empty() ? "Unknown mixture: " + fluidName : reason);
+    std::shared_ptr<CoolProp::AbstractState> state(
+        CoolProp::AbstractState::factory(backend, mixture->getComponentList()));
+    state->set_mole_fractions(mixture->getMoleFractions());
+    return state;
+}
+
 /// Per-thread cache of AbstractState objects keyed by "backend::fluidName".
 /// Avoids repeated string parsing, fluid lookup, and EOS initialisation that
 /// PropsSI performs on every call.
@@ -44,8 +60,7 @@ struct AbstractStateCache {
             return it->second;
         }
         ++misses;
-        auto state = std::shared_ptr<CoolProp::AbstractState>(
-            CoolProp::AbstractState::factory(backend, fluidName));
+        auto state = createState(backend, fluidName);
         states[key] = state;
         return state;
     }
@@ -398,6 +413,16 @@ static std::string paramToString(CoolProp::parameters param) {
     }
 }
 
+/// The fluid of a property call. An unknown name, or an invalid mixture string, is an error that says
+/// why; a mixture also gets its once-per-run warning (its properties are predictive).
+static std::shared_ptr<Fluid> resolveFluid(const std::string& name, DiagnosticCollector* diag) {
+    std::string reason;
+    auto fluid = FluidRegistry::getFluid(name, &reason);
+    if (!fluid) throw std::runtime_error(reason.empty() ? unknownFluidErrorMessage(name) : reason);
+    if (fluid->getType() == FluidType::Mixture) warnMixtureFluid(diag, fluid->getName());
+    return fluid;
+}
+
 // ============================================================================
 // ExpressionEvaluator Implementation
 // ============================================================================
@@ -546,15 +571,22 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
     
     auto it = userProcedures_.find(call.name);
     if (it == userProcedures_.end()) {
-        // Built-in CALL ERROR('message' [, values]): stop the calculation (EES).
         std::string lowerName = call.name;
         std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
-        if (lowerName == "error") {
-            std::string message = call.inputArgs.empty() ? "" : evaluateString(call.inputArgs[0]);
-            for (size_t i = 1; i < call.inputArgs.size(); ++i)
-                message += (i == 1 ? " [" : ", ") + std::to_string(evaluate(call.inputArgs[i]).value);
-            if (call.inputArgs.size() > 1) message += "]";
-            throw std::runtime_error("CALL ERROR: " + message);
+        // Built-in CALL ERROR('message XXXF1', value): stop the calculation (EES).
+        if (lowerName == "error") throw std::runtime_error("CALL ERROR: " + userMessage(call, true));
+        // Built-in CALL WARNING('message XXXF1', value): a warning, the calculation goes on (EES). Only the
+        // evaluation at the solution has a sink; the iterations skip it (see setCallWarningSink).
+        if (lowerName == "warning") {
+            if (!callWarningSink_) return;
+            Diagnostic warning;
+            warning.severity = DiagnosticSeverity::Warning;
+            warning.code = "W001";
+            warning.message = userMessage(call, false);
+            warning.line = call.inputArgs.empty() ? 0 : call.inputArgs[0]->sourceLineNumber;   // of the CALL statement
+            warning.source = "evaluator";
+            callWarningSink_->push_back(std::move(warning));
+            return;
         }
         throw std::runtime_error("Unknown procedure: " + call.name);
     }
@@ -564,9 +596,7 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
         throw std::runtime_error("Procedure " + call.name + " expected " + std::to_string(proc.inputs.size()) + " inputs, got " + std::to_string(call.inputArgs.size()));
     }
     
-    ExpressionEvaluator localEval(numVariables_, coolpropConfig_);
-    localEval.userFunctions_ = userFunctions_;
-    localEval.userProcedures_ = userProcedures_;
+    ExpressionEvaluator localEval = makeBodyEvaluator("PROCEDURE", proc.name);
     
     for (size_t i = 0; i < proc.inputs.size(); ++i) {
         const std::string& inputName = proc.inputs[i];
@@ -596,6 +626,35 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
             setVariable(callOutVarName, localEval.getVariable(outParamName));
         }
     }
+}
+
+std::string ExpressionEvaluator::userMessage(const ProcedureCall& call, bool isError) {
+    const std::string procedure = isError ? "CALL ERROR" : "CALL WARNING";
+    const auto& args = call.inputArgs;
+    if (args.empty() || args.size() > 2)   // the parser refuses these calls; a built model cannot hold one
+        throw std::runtime_error(procedure + " takes a message and a value at most, and at least one argument");
+    const bool hasMessage = isStringExpression(args[0]);
+    if (!hasMessage && args.size() > 1)
+        throw std::runtime_error("the first argument of " + procedure + " must be the message (a string) when a value follows");
+    const ExprPtr valueArg = hasMessage ? (args.size() > 1 ? args[1] : nullptr) : args[0];
+
+    const std::string where = routineName_.empty() ? "the main program" : routineName_;
+    const std::string message = hasMessage ? evaluateString(args[0])
+        : isError ? "Calculations have been halted because a parameter is out of range.  The value of the parameter is XXX in function " + where + "."
+                  : "A warning message was issued due to the value XXX in " + where + ".";
+    if (!valueArg) return message;
+
+    // The value: a string for XXX$ (a string variable), else a number in the display format after XXX
+    const bool valueIsText = isStringExpression(valueArg);
+    const std::string text = valueIsText ? evaluateString(valueArg) : std::string();
+    const double number = valueIsText ? 0.0 : evaluate(valueArg).value;
+    bool found = false;
+    std::string out = eesSubstituteValue(message, [&](const std::string& format) {
+        if (valueIsText) return text;
+        return eesFormatNumber(number, format == "$" ? "A" : format);
+    }, &found);
+    if (!found && hasMessage) out += " [" + (valueIsText ? text : eesFormatNumber(number)) + "]";   // keep the value
+    return out;
 }
 
 ADValue ExpressionEvaluator::evaluate(const ExprPtr& expr) {
@@ -636,44 +695,17 @@ std::string ExpressionEvaluator::evaluateString(const ExprPtr& expr) {
         
         // STRING$(value) — format a numeric value as a compact decimal string.
         if (lname == "string$" && call.args.size() == 1 && call.namedArgs.empty()) {
-            ADValue v = evaluate(call.args[0]);
-            std::ostringstream oss;
             // EES prints integer values without decimal, otherwise up to ~10
-            // significant digits, trimming trailing zeros.  Keep it simple and
-            // compatible.
-            if (std::isfinite(v.value) && v.value == std::trunc(v.value) &&
-                std::abs(v.value) < 1e16) {
-                oss << static_cast<long long>(v.value);
-            } else {
-                oss.setf(std::ios::fmtflags(0), std::ios::floatfield);
-                oss.precision(10);
-                oss << v.value;
-            }
-            return oss.str();
+            // significant digits, trimming trailing zeros (auto format, shared with
+            // the messages of CALL WARNING / CALL ERROR).
+            return eesFormatNumber(evaluate(call.args[0]).value);
         }
         
         // PHASE$(Fluid, T=..., P=...) — return the thermodynamic phase as a
         // human-readable string.
         if (lname == "phase$") {
-            std::string eesFluidName;
-            if (!call.args.empty() && call.args[0]->is<StringLiteral>()) {
-                eesFluidName = call.args[0]->as<StringLiteral>().value;
-            } else if (!call.args.empty() && call.args[0]->is<Variable>()) {
-                const auto& var = call.args[0]->as<Variable>();
-                std::string resolvedName = resolveVariableName(var);
-                if (hasStringVariable(resolvedName)) {
-                    eesFluidName = getStringVariable(resolvedName);
-                } else {
-                    eesFluidName = var.name;
-                    if (!eesFluidName.empty() && eesFluidName.back() == '$') {
-                        eesFluidName.pop_back();
-                    }
-                }
-            }
-            auto fluid = FluidRegistry::getFluid(eesFluidName);
-            if (!fluid) {
-                throw std::runtime_error(unknownFluidErrorMessage(eesFluidName));
-            }
+            const std::string eesFluidName = fluidNameOf(call.args.empty() ? nullptr : call.args[0]);
+            auto fluid = resolveFluid(eesFluidName, diagnostics_);
             if (fluid->getType() == FluidType::HumidAir) {
                 return "gas";
             }
@@ -741,6 +773,9 @@ std::string ExpressionEvaluator::evaluateString(const ExprPtr& expr) {
             }
         }
         
+        // LOOKUP$('table', row, col) — the text of a lookup-table cell.
+        if (lname == "lookup$") return evaluateLookupString(call);
+
         throw std::runtime_error("String-valued function not supported: " + call.name);
     }
     
@@ -777,46 +812,28 @@ ADValue ExpressionEvaluator::evaluateUnaryOp(const UnaryOp& op) {
     throw std::runtime_error("Unknown unary operator: " + op.op);
 }
 
-// UNITSYSTEM('setting'): 1 if the EES unit setting is the one in use, 0 otherwise.
-// CoolSolve works in SI on a mass basis with angles in degrees; temperature,
-// pressure and energy follow `units`.
-static bool unitSettingActive(const std::string& setting, const UnitSystem& units) {
-    auto lower = [](std::string t) {
-        for (auto& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        return t;
-    };
-    const std::string s = lower(setting);
-    if (s == "si" || s == "mass" || s == "deg") return true;
-    if (s == "eng" || s == "molar" || s == "rad") return false;
-    for (const char* t : {"c", "k", "f", "r"})
-        if (s == t) return lower(units.temperature) == s;
-    for (const char* p : {"pa", "kpa", "mpa", "bar", "psia", "atm"})
-        if (s == p) return lower(units.pressure) == s;
-    for (const char* e : {"j", "kj", "btu", "kcal"})
-        if (s == e) return lower(units.energy) == s;
-    throw std::runtime_error("UNITSYSTEM: unknown unit setting '" + setting +
-        "' (expected SI, Eng, Mass, Molar, Deg, Rad, C, K, F, R, Pa, kPa, bar, MPa, psia, atm, J, kJ, Btu or kcal)");
-}
-
-// True for expressions that yield a string: 'literals', variables ending in '$'
-// and string-valued functions such as PHASE$().
-static bool isStringExpression(const ExprPtr& expr) {
-    if (expr->is<StringLiteral>()) return true;
-    if (expr->is<Variable>()) {
-        const std::string& n = expr->as<Variable>().name;
-        return !n.empty() && n.back() == '$';
+std::string ExpressionEvaluator::fluidNameOf(const ExprPtr& arg) {
+    if (!arg) return "";
+    if (arg->is<StringLiteral>()) return arg->as<StringLiteral>().value;
+    if (arg->is<Variable>()) {
+        const auto& var = arg->as<Variable>();
+        std::string resolvedName = resolveVariableName(var);
+        if (hasStringVariable(resolvedName)) return getStringVariable(resolvedName);
+        // Fallback: use the name itself (minus $ if present), the unquoted fluid name of EES
+        std::string name = var.name;
+        if (!name.empty() && name.back() == '$') name.pop_back();
+        return name;
     }
-    if (expr->is<FunctionCall>()) {
-        const std::string& n = expr->as<FunctionCall>().name;
-        return !n.empty() && n.back() == '$';
-    }
-    return false;
+    // A string function, such as LOOKUP$('table', i, 1)
+    if (arg->is<FunctionCall>() && isStringExpression(arg)) return evaluateString(arg);
+    return "";
 }
 
 ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
-    // Conditions of IF statements compare strings with = and <> (case-sensitive).
+    // Conditions of IF statements compare strings with = and <>, without regard to case
+    // as EES does (CS-BUG-STRING-CASE; the helper is shared with the $IF directives).
     if ((op.op == "=" || op.op == "<>") && (isStringExpression(op.left) || isStringExpression(op.right))) {
-        const bool equal = evaluateString(op.left) == evaluateString(op.right);
+        const bool equal = eesStringEqual(evaluateString(op.left), evaluateString(op.right));
         return ADValue::constant(equal == (op.op == "=") ? 1.0 : -1.0, numVariables_);
     }
 
@@ -902,6 +919,13 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
         return evaluateCoolPropFunction(func);
     }
     
+    // LOOKUP$ gives text (see evaluateString), never a number
+    if (name == "lookup$") {
+        throw std::runtime_error(func.name + " returns a string and cannot be used as a number; use it where a "
+            "string is expected (a fluid argument, a string comparison, a string variable set in a "
+            "PROCEDURE or FUNCTION), or STRINGVAL(LOOKUP$(...)) to convert a numeric cell" + lookupWhere());
+    }
+
     // STRINGVAL(s$) — parse a numeric string to a number.
     if (name == "stringval" && func.args.size() == 1 && func.namedArgs.empty()) {
         std::string s = evaluateString(func.args[0]);
@@ -999,18 +1023,25 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
     return evaluateStandardFunction(func.name, args);
 }
 
+ExpressionEvaluator ExpressionEvaluator::makeBodyEvaluator(const char* kind, const std::string& name) const {
+    ExpressionEvaluator body(numVariables_, coolpropConfig_);
+    body.userFunctions_ = userFunctions_;
+    body.userProcedures_ = userProcedures_;
+    body.lookupTableStore_ = lookupTableStore_;
+    body.diagnostics_ = diagnostics_;   // warnings raised in a body (mixtures, CoolProp errors) are reported too
+    body.callWarningSink_ = callWarningSink_;   // and so are the CALL WARNING of the bodies
+    body.routine_ = std::string(kind) + " '" + name + "'";
+    body.routineName_ = name;
+    return body;
+}
+
 ADValue ExpressionEvaluator::evaluateUserFunction(const FunctionDefinition& func, const FunctionCall& call) {
     if (call.args.size() != func.parameters.size()) {
         throw std::runtime_error("Function " + func.name + " expected " + std::to_string(func.parameters.size()) + " arguments, got " + std::to_string(call.args.size()));
     }
     
     // Create a local evaluator for the function body
-    ExpressionEvaluator localEval(numVariables_, coolpropConfig_);
-    // Inherit user functions and procedures
-    localEval.userFunctions_ = userFunctions_;
-    localEval.userProcedures_ = userProcedures_;
-    // Inherit lookup table store
-    localEval.lookupTableStore_ = lookupTableStore_;
+    ExpressionEvaluator localEval = makeBodyEvaluator("FUNCTION", func.name);
     
     for (size_t i = 0; i < call.args.size(); ++i) {
         const std::string& paramName = func.parameters[i];
@@ -1034,27 +1065,9 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     std::string funcName = func.name;
     std::transform(funcName.begin(), funcName.end(), funcName.begin(), ::tolower);
     
-    std::string eesFluidName;
-    if (!func.args.empty() && func.args[0]->is<StringLiteral>()) {
-        eesFluidName = func.args[0]->as<StringLiteral>().value;
-    } else if (!func.args.empty() && func.args[0]->is<Variable>()) {
-        const auto& var = func.args[0]->as<Variable>();
-        std::string resolvedName = resolveVariableName(var);
-        if (hasStringVariable(resolvedName)) {
-            eesFluidName = getStringVariable(resolvedName);
-        } else {
-            // Fallback: use the name itself (minus $ if present)
-            eesFluidName = var.name;
-            if (!eesFluidName.empty() && eesFluidName.back() == '$') {
-                eesFluidName.pop_back();
-            }
-        }
-    }
+    const std::string eesFluidName = fluidNameOf(func.args.empty() ? nullptr : func.args[0]);
     
-    auto fluid = FluidRegistry::getFluid(eesFluidName);
-    if (!fluid) {
-        throw std::runtime_error(unknownFluidErrorMessage(eesFluidName));
-    }
+    auto fluid = resolveFluid(eesFluidName, diagnostics_);
     
     // Derived thermophysical properties — compute by combining base CoolProp calls
     // entirely in AD space so gradients are correct.
@@ -1094,11 +1107,15 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             if (inputs.empty()) {
                 return ADValue::constant(28.966, numVariables_);
             }
-        } else if (fluid->getType() != FluidType::Unknown && fluid->getType() != FluidType::Mixture) {
+        } else if (fluid->getType() != FluidType::Unknown) {
             // For pure fluids or incompressible, molar mass is constant
             if (inputs.empty()) {
                 std::string cpFluidName = fluid->getCoolPropName();
                 try {
+                    if (fluid->getType() == FluidType::Mixture) {   // mole-weighted, no state needed
+                        auto state = g_abstractStateCache.getOrCreate(coolpropConfig_.getBackendString(), cpFluidName);
+                        return ADValue::constant(state->molar_mass() * KG_PER_KMOL, numVariables_);
+                    }
                     double mm = timedPropsSI("M", "T", 300, "P", 101325, cpFluidName);
                     return ADValue::constant(mm * KG_PER_KMOL, numVariables_);
                 } catch (...) {
@@ -1369,10 +1386,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     }
     
     // --- Standard CoolProp Handling ---
-    if (fluid->getType() == FluidType::Mixture) {
-        throw std::runtime_error("Fluid '" + eesFluidName + "' (mixture) is not available. "
-            "Use REFPROP or an external correlation.");
-    } else if (fluid->getType() == FluidType::Unknown) {
+    if (fluid->getType() == FluidType::Unknown) {
         auto unsupported = std::dynamic_pointer_cast<UnsupportedFluid>(fluid);
         throw std::runtime_error("Fluid '" + eesFluidName + "' is not supported: " + (unsupported ? unsupported->getReason() : "Unknown reason"));
     }
@@ -1472,6 +1486,11 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         std::string lowerName = funcName;
         std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
         if (lowerName == "t_sat" || lowerName == "p_sat" || lowerName == "tsat" || lowerName == "psat") {
+            if (fluid->getType() == FluidType::Mixture) {
+                throw std::runtime_error(func.name + "() is not defined for the mixture '" + fluid->getName() +
+                    "': it has a bubble and a dew point, not one saturation point. Use temperature(fluid, P=..., x=0) "
+                    "for the bubble point and x=1 for the dew point (pressure(fluid, T=..., x=0 or 1) at given T)");
+            }
             inputs["q"] = ADValue::constant(0.5, numVariables_);
         }
     }
@@ -1901,8 +1920,20 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 // else: residualOnly_ → derivatives stay 0
                 
                 usedAbstractState = true;
-            } catch (...) {
+            } catch (const std::exception& e) {
+                // A mixture has no other path (PropsSI would only return Inf and lose the reason)
+                if (fluid->getType() == FluidType::Mixture) {
+                    const std::string what = e.what();
+                    if (what.find("with inputs:") != std::string::npos) throw;   // already says which call
+                    std::ostringstream oss;
+                    oss << what << " [" << outputStr << "(" << cpFluidName << ") with inputs: "
+                        << input1Str << "=" << val1 << siUnitLabel(input1Param) << ", "
+                        << input2Str << "=" << val2 << siUnitLabel(input2Param) << "]";
+                    throw std::runtime_error(oss.str());
+                }
                 // AbstractState failed — fall through to PropsSI below
+                usedAbstractState = false;
+            } catch (...) {
                 usedAbstractState = false;
             }
         }
@@ -1960,6 +1991,98 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
 // BlockEvaluator Implementation
 // ============================================================================
 
+namespace {
+
+using RoutineNames = std::set<std::string, CaseInsensitiveLess>;
+
+bool callsAnyOf(const ExprPtr& expr, const RoutineNames& names);
+bool callsAnyOf(const std::vector<StmtPtr>& body, const RoutineNames& names);
+
+bool callsAnyOf(const ProcedureCall& call, const RoutineNames& names) {
+    if (names.count(call.name)) return true;
+    for (const auto& arg : call.inputArgs)
+        if (callsAnyOf(arg, names)) return true;
+    for (const auto& out : call.outputExprs)
+        if (callsAnyOf(out, names)) return true;
+    return false;
+}
+
+bool callsAnyOf(const ExprPtr& expr, const RoutineNames& names) {
+    if (!expr) return false;
+    if (expr->is<FunctionCall>()) {
+        const auto& call = expr->as<FunctionCall>();
+        if (names.count(call.name)) return true;
+        for (const auto& arg : call.args)
+            if (callsAnyOf(arg, names)) return true;
+        for (const auto& named : call.namedArgs)
+            if (callsAnyOf(named.second, names)) return true;
+        return false;
+    }
+    if (expr->is<UnaryOp>()) return callsAnyOf(expr->as<UnaryOp>().operand, names);
+    if (expr->is<BinaryOp>())
+        return callsAnyOf(expr->as<BinaryOp>().left, names) || callsAnyOf(expr->as<BinaryOp>().right, names);
+    if (expr->is<Variable>()) {
+        for (const auto& index : expr->as<Variable>().indices)
+            if (callsAnyOf(index, names)) return true;
+    }
+    return false;
+}
+
+bool callsAnyOf(const std::vector<StmtPtr>& body, const RoutineNames& names) {
+    for (const auto& stmt : body) {
+        if (!stmt) continue;
+        if (stmt->is<Equation>()) {
+            const auto& eq = stmt->as<Equation>();
+            if (callsAnyOf(eq.lhs, names) || callsAnyOf(eq.rhs, names)) return true;
+        } else if (stmt->is<Assignment>()) {
+            const auto& assign = stmt->as<Assignment>();
+            if (callsAnyOf(assign.lhs, names) || callsAnyOf(assign.rhs, names)) return true;
+        } else if (stmt->is<IfThenElse>()) {
+            const auto& branch = stmt->as<IfThenElse>();
+            if (callsAnyOf(branch.condition, names) || callsAnyOf(branch.thenBranch, names) ||
+                callsAnyOf(branch.elseBranch, names)) return true;
+        } else if (stmt->is<ProcedureCall>()) {
+            if (callsAnyOf(stmt->as<ProcedureCall>(), names)) return true;
+        } else if (stmt->is<Duplicate>()) {
+            const auto& loop = stmt->as<Duplicate>();
+            if (callsAnyOf(loop.start, names) || callsAnyOf(loop.end, names) || callsAnyOf(loop.body, names)) return true;
+        } else if (stmt->is<RepeatUntil>()) {
+            const auto& loop = stmt->as<RepeatUntil>();
+            if (callsAnyOf(loop.body, names) || callsAnyOf(loop.condition, names)) return true;
+        }
+    }
+    return false;
+}
+
+/// The user FUNCTIONs and PROCEDUREs whose body can execute `CALL WARNING`, directly or through
+/// the routines it calls (the fixed point of "calls WARNING or a routine that does"). Empty for a
+/// model without that call.
+RoutineNames routinesThatWarn(const IR& ir) {
+    RoutineNames names{"warning"};
+    for (bool grown = true; grown;) {
+        grown = false;
+        for (const auto& func : ir.getFunctions())
+            if (!names.count(func.name) && callsAnyOf(func.body, names)) { names.insert(func.name); grown = true; }
+        for (const auto& proc : ir.getProcedures())
+            if (!names.count(proc.name) && callsAnyOf(proc.body, names)) { names.insert(proc.name); grown = true; }
+    }
+    names.erase("warning");   // the main program cannot call it
+    return names;
+}
+
+}  // namespace
+
+void BlockEvaluator::markCallWarnings(const std::set<std::string, CaseInsensitiveLess>& routines) {
+    mayCallWarning_ = false;
+    for (const EquationInfo* eq : equations_) {
+        if (callsAnyOf(eq->lhs, routines) || callsAnyOf(eq->rhs, routines) ||
+            (eq->procedureCall && callsAnyOf(*eq->procedureCall, routines))) {
+            mayCallWarning_ = true;
+            return;
+        }
+    }
+}
+
 BlockEvaluator::BlockEvaluator(const Block& block, const IR& ir, const CoolPropConfig& config)
     : variables_(block.variables), equationIds_(block.equationIds), config_(config) {
     const auto& allEquations = ir.getEquations();
@@ -1971,12 +2094,53 @@ BlockEvaluator::BlockEvaluator(const Block& block, const IR& ir, const CoolPropC
     for (size_t i = 0; i < variables_.size(); ++i) {
         varToIndex_[variables_[i]] = i;
     }
+    // CALLs that compute a string (CS-BUG-STRING-CALL-OUT): the strings they set are read by other
+    // CALLs of the block, so evaluate them first, each after the producers of the strings it reads.
+    auto isString = [](const std::string& name) { return !name.empty() && name.back() == '$'; };
+    auto stringOutputs = [&](const EquationInfo& eq) {
+        std::set<std::string, CaseInsensitiveLess> names;
+        if (eq.procedureCall)
+            for (const auto& out : eq.procedureCall->outputVars)
+                if (isString(out.name)) names.insert(out.name);
+        return names;
+    };
+    std::vector<size_t> producers;
+    for (size_t i = 0; i < equations_.size(); ++i)
+        if (!stringOutputs(*equations_[i]).empty()) producers.push_back(i);
+    if (producers.empty()) return;
+    hasStringCallOutputs_ = true;
+    std::vector<bool> placed(equations_.size(), false);
+    while (evalOrder_.size() < producers.size()) {
+        bool progress = false;
+        for (size_t i : producers) {
+            if (placed[i]) continue;
+            // ready when no still-unplaced producer sets a string this CALL reads
+            bool ready = true;
+            for (size_t j : producers) {
+                if (placed[j] || j == i) continue;
+                for (const auto& name : stringOutputs(*equations_[j]))
+                    if (equations_[i]->variables.count(name) &&
+                        !stringOutputs(*equations_[i]).count(name)) ready = false;
+            }
+            if (!ready) continue;
+            evalOrder_.push_back(i);
+            placed[i] = true;
+            progress = true;
+        }
+        if (!progress) {   // strings that depend on each other: keep the order of the block
+            for (size_t i : producers)
+                if (!placed[i]) { evalOrder_.push_back(i); placed[i] = true; }
+        }
+    }
+    for (size_t i = 0; i < equations_.size(); ++i)
+        if (!placed[i]) evalOrder_.push_back(i);
 }
 
 EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
                                            const std::map<std::string, double>& externalVars,
                                            const std::map<std::string, std::string>& externalStringVars,
-                                           bool computeJacobian) {
+                                           bool computeJacobian,
+                                           std::vector<Diagnostic>* callWarnings) {
     auto eval_start = std::chrono::high_resolution_clock::now();
     g_profilingStats.block_evaluations++;
     
@@ -1993,6 +2157,7 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     ExpressionEvaluator exprEval(variables_.size(), config_);
     exprEval.setResidualOnly(!computeJacobian);
     if (diagnostics_) exprEval.setDiagnostics(diagnostics_);
+    if (callWarnings) exprEval.setCallWarningSink(callWarnings);
     if (lookupTableStore_) exprEval.setLookupTableStore(lookupTableStore_);
     for (const auto& [name, func] : functions_) exprEval.registerFunction(func);
     for (const auto& [name, proc] : procedures_) exprEval.registerProcedure(proc);
@@ -2021,7 +2186,8 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     // Track CALL source lines already processed (to skip sibling equations)
     std::set<int> processedCallLines;
     
-    for (size_t eq = 0; eq < equations_.size(); ++eq) {
+    for (size_t k = 0; k < equations_.size(); ++k) {
+        const size_t eq = evalOrder_.empty() ? k : evalOrder_[k];
         const EquationInfo* eqInfo = equations_[eq];
         
         if (eqInfo->procedureCall) {
@@ -2060,6 +2226,15 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
             // Evaluate procedure call ONCE — this updates exprEval's state
             // for all output variables with the procedure-computed values.
             exprEval.evaluateProcedureCall(call);
+
+            // A string output is no unknown of the numeric system: hand it to the caller
+            if (hasStringCallOutputs_) {
+                for (const auto& var : call.outputVars) {
+                    const std::string name = exprEval.resolveVariableName(var);
+                    if (!name.empty() && name.back() == '$' && exprEval.hasStringVariable(name))
+                        result.stringOutputs[name] = exprEval.getStringVariable(name);
+                }
+            }
             
             // Write one residual per output to its corresponding sibling
             // CALL equation's slot.  siblingGidAndLocal[i] maps to the i-th
@@ -2166,6 +2341,11 @@ SystemEvaluator::SystemEvaluator(const IR& ir, const StructuralAnalysisResult& a
             blockEval.registerProcedure(proc);
         }
     }
+
+    // The blocks that can reach a CALL WARNING (none when the model has no such call)
+    const RoutineNames warningRoutines = routinesThatWarn(ir);
+    if (!warningRoutines.empty())
+        for (auto& blockEval : blockEvaluators_) blockEval.markCallWarnings(warningRoutines);
 }
 
 void SystemEvaluator::setVariableValue(const std::string& name, double value) {
@@ -2207,7 +2387,29 @@ void SystemEvaluator::initializeFromGuesses() {
     }
 }
 
-EvaluationResult SystemEvaluator::evaluateBlock(size_t blockIndex) {
+void SystemEvaluator::publishStringOutputs(size_t blockIndex) {
+    if (blockIndex >= blockEvaluators_.size() || !blockEvaluators_[blockIndex].hasStringCallOutputs()) return;
+    BlockEvaluator& blockEval = blockEvaluators_[blockIndex];
+    std::vector<double> x;
+    for (const auto& varName : blockEval.getVariables()) x.push_back(getVariableValue(varName));
+    std::map<std::string, double> externalVars;
+    for (const auto& [name, value] : currentState_) externalVars[name] = value;
+    std::map<std::string, std::string> externalStringVars;
+    for (const auto& [name, value] : currentStringState_) externalStringVars[name] = value;
+    const EvaluationResult result = blockEval.evaluate(x, externalVars, externalStringVars, false);
+    for (const auto& [name, value] : result.stringOutputs) currentStringState_[name] = value;
+}
+
+void SystemEvaluator::reportCallWarnings(size_t blockIndex, DiagnosticCollector& out) {
+    if (blockIndex >= blockEvaluators_.size() || !blockEvaluators_[blockIndex].mayCallWarning()) return;
+    std::vector<Diagnostic> raised;
+    evaluateBlock(blockIndex, false, &raised);
+    for (auto& warning : raised)
+        if (reportedCallWarnings_.insert({warning.line, warning.message}).second) out.push(std::move(warning));
+}
+
+EvaluationResult SystemEvaluator::evaluateBlock(size_t blockIndex, bool computeJacobian,
+                                                std::vector<Diagnostic>* callWarnings) {
     if (blockIndex >= blockEvaluators_.size()) throw std::out_of_range("Block index out of range");
     BlockEvaluator& blockEval = blockEvaluators_[blockIndex];
     std::vector<double> x;
@@ -2218,7 +2420,7 @@ EvaluationResult SystemEvaluator::evaluateBlock(size_t blockIndex) {
     for (const auto& [name, value] : currentState_) externalVars[name] = value;
     std::map<std::string, std::string> externalStringVars;
     for (const auto& [name, value] : currentStringState_) externalStringVars[name] = value;
-    return blockEval.evaluate(x, externalVars, externalStringVars);
+    return blockEval.evaluate(x, externalVars, externalStringVars, computeJacobian, callWarnings);
 }
 
 // ============================================================================
@@ -2443,6 +2645,77 @@ std::string generateEvaluatorReport(const SystemEvaluator& evaluator) {
 // Lookup table / interpolation function evaluation
 // ============================================================================
 
+std::string ExpressionEvaluator::lookupWhere() const {
+    // Where an error comes from when the call is inside a FUNCTION / PROCEDURE body.
+    return routine_.empty() ? std::string() : " (in " + routine_ + ")";
+}
+
+const LookupTable& ExpressionEvaluator::lookupTableFor(const FunctionCall& func, const std::string& tableName) {
+    // Resolve a table: emits a diagnostic and throws if not found
+    if (!lookupTableStore_) {
+        std::string msg = func.name + "(): lookup table '" + tableName + "' not found" +
+            (routine_.empty() ? " (" : " (in " + routine_ + "; ") +
+            "no table store is available in this context)";
+        if (diagnostics_) diagnostics_->push(DiagnosticSeverity::Error, "L002", msg, "lookup_table");
+        throw std::runtime_error(msg);
+    }
+    const LookupTable* tbl = lookupTableStore_->get(tableName);
+    if (!tbl) {
+        std::string msg = func.name + "(): lookup table '" + tableName + "' not found" + lookupWhere() +
+            ". To fix: place '<model>-" + tableName +
+            ".csv' next to the model file, or load it via the Lookup Tables panel.";
+        if (diagnostics_) diagnostics_->push(DiagnosticSeverity::Error, "L002", msg, "lookup_table");
+        throw std::runtime_error(msg);
+    }
+    return *tbl;
+}
+
+size_t ExpressionEvaluator::lookupColumnOf(const FunctionCall& func, const LookupTable& tbl, size_t argIdx) {
+    // Resolve a column by name or 1-based number (as double arg)
+    // EES allows both "T_K" and a numeric column index.
+    if (argIdx >= func.args.size()) {
+        throw std::runtime_error(func.name + "(): missing column argument" + lookupWhere());
+    }
+    const auto& arg = func.args[argIdx];
+    if (isStringExpression(arg)) {
+        std::string colName = evaluateString(arg);
+        size_t col = tbl.columnIndex(colName);
+        if (col == 0) {
+            throw std::runtime_error(func.name + "(): column '" + colName +
+                                     "' not found in table '" + tbl.name() + "'" + lookupWhere());
+        }
+        return col;
+    } else {
+        // Numeric column index (0, which no column has, when it is not a positive number)
+        const double col = std::round(evaluate(arg).value);
+        return col >= 1 && col < 1e18 ? static_cast<size_t>(col) : 0;
+    }
+}
+
+std::string ExpressionEvaluator::evaluateLookupString(const FunctionCall& func) {
+    // LOOKUP$('table', row, col): the text of a cell, the way EES reads strings from a lookup table
+    // (the replacement of string arrays: the strings are in a table, the model keeps the row number).
+    if (func.args.size() != 3 || !func.namedArgs.empty()) {
+        throw std::runtime_error(func.name + "(): expects 3 arguments: (table, row, col)" + lookupWhere());
+    }
+    const LookupTable& tbl = lookupTableFor(func, evaluateString(func.args[0]));
+
+    const double rowValue = evaluate(func.args[1]).value;
+    const double row = std::round(rowValue);
+    if (!(row >= 1 && row <= static_cast<double>(tbl.numRows()))) {
+        std::ostringstream msg;
+        msg << func.name << "(): row " << rowValue << " is outside the table '" << tbl.name() << "' (1 to "
+            << tbl.numRows() << " rows)" << lookupWhere();
+        throw std::runtime_error(msg.str());
+    }
+    const size_t col = lookupColumnOf(func, tbl, 2);
+    if (col < 1 || col > tbl.numCols()) {
+        throw std::runtime_error(func.name + "(): column " + std::to_string(col) + " is outside the table '" +
+                                 tbl.name() + "' (1 to " + std::to_string(tbl.numCols()) + " columns)" + lookupWhere());
+    }
+    return tbl.text(static_cast<size_t>(row), col);
+}
+
 ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     std::string name = func.name;
     std::transform(name.begin(), name.end(), name.begin(), ::tolower);
@@ -2451,7 +2724,7 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     auto getString = [&](size_t idx) -> std::string {
         if (idx >= func.args.size()) {
             throw std::runtime_error(func.name + "(): missing string argument at position " +
-                                     std::to_string(idx));
+                                     std::to_string(idx) + lookupWhere());
         }
         return evaluateString(func.args[idx]);
     };
@@ -2460,50 +2733,9 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     auto getNum = [&](size_t idx) -> ADValue {
         if (idx >= func.args.size()) {
             throw std::runtime_error(func.name + "(): missing numeric argument at position " +
-                                     std::to_string(idx));
+                                     std::to_string(idx) + lookupWhere());
         }
         return evaluate(func.args[idx]);
-    };
-
-    // Helper: resolve table — emits a diagnostic and throws if not found
-    auto getTable = [&](const std::string& tableName) -> const LookupTable& {
-        if (!lookupTableStore_) {
-            std::string msg = func.name + "(): lookup table '" + tableName +
-                "' not found (no table store is available in this context)";
-            if (diagnostics_) diagnostics_->push(DiagnosticSeverity::Error, "L002", msg, "lookup_table");
-            throw std::runtime_error(msg);
-        }
-        const LookupTable* tbl = lookupTableStore_->get(tableName);
-        if (!tbl) {
-            std::string msg = func.name + "(): lookup table '" + tableName +
-                "' not found. To fix: place '" + tableName +
-                ".csv' in the model directory, or load it via the Lookup Tables panel.";
-            if (diagnostics_) diagnostics_->push(DiagnosticSeverity::Error, "L002", msg, "lookup_table");
-            throw std::runtime_error(msg);
-        }
-        return *tbl;
-    };
-
-    // Helper: resolve a column by name or 1-based number (as double arg)
-    // EES allows both "T_K" and a numeric column index.
-    auto resolveCol = [&](const LookupTable& tbl, size_t argIdx) -> size_t {
-        if (argIdx >= func.args.size()) {
-            throw std::runtime_error(func.name + "(): missing column argument");
-        }
-        const auto& arg = func.args[argIdx];
-        if (arg->is<StringLiteral>()) {
-            std::string colName = arg->as<StringLiteral>().value;
-            size_t col = tbl.columnIndex(colName);
-            if (col == 0) {
-                throw std::runtime_error(func.name + "(): column '" + colName +
-                                         "' not found in table '" + tbl.name() + "'");
-            }
-            return col;
-        } else {
-            // Numeric column index
-            ADValue v = evaluate(arg);
-            return static_cast<size_t>(std::round(v.value));
-        }
     };
 
     // ------------------------------------------------------------------
@@ -2511,7 +2743,7 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     // ------------------------------------------------------------------
     if (name == "nlookuprows") {
         std::string tableName = getString(0);
-        const LookupTable& tbl = getTable(tableName);
+        const LookupTable& tbl = lookupTableFor(func, tableName);
         return ADValue::constant(static_cast<double>(tbl.numRows()), numVariables_);
     }
 
@@ -2520,7 +2752,7 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     // ------------------------------------------------------------------
     if (name == "nlookupcolumns") {
         std::string tableName = getString(0);
-        const LookupTable& tbl = getTable(tableName);
+        const LookupTable& tbl = lookupTableFor(func, tableName);
         return ADValue::constant(static_cast<double>(tbl.numCols()), numVariables_);
     }
 
@@ -2531,7 +2763,7 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     if (name == "lookupcol" || name == "lookupcol1") {
         std::string tableName = getString(0);
         std::string colName   = getString(1);
-        const LookupTable& tbl = getTable(tableName);
+        const LookupTable& tbl = lookupTableFor(func, tableName);
         size_t col = tbl.columnIndex(colName);
         return ADValue::constant(static_cast<double>(col), numVariables_);
     }
@@ -2542,9 +2774,9 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     // ------------------------------------------------------------------
     if (name == "lookupcellempty") {
         std::string tableName = getString(0);
-        const LookupTable& tbl = getTable(tableName);
+        const LookupTable& tbl = lookupTableFor(func, tableName);
         ADValue rowV = getNum(1);
-        size_t col   = resolveCol(tbl, 2);
+        size_t col   = lookupColumnOf(func, tbl, 2);
         size_t row   = static_cast<size_t>(std::round(rowV.value));
         double v     = tbl.value(row, col);
         return ADValue::constant(std::isnan(v) ? 1.0 : 0.0, numVariables_);
@@ -2563,19 +2795,22 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     //    value that may itself be non-integer.
     // ------------------------------------------------------------------
     if (name == "lookup" || name == "tablevalue" || name == "tablevalue#" || name == "tablerun#") {
+        if (func.args.size() < 3) {
+            throw std::runtime_error(func.name + "(): expects 3 arguments: (table, row, col)" + lookupWhere());
+        }
         std::string tableName = getString(0);
-        const LookupTable& tbl = getTable(tableName);
+        const LookupTable& tbl = lookupTableFor(func, tableName);
         ADValue rowV = getNum(1);
 
         // Column: string name → exact integer; numeric → possibly non-integer
         ADValue colV;
         const auto& colArg = func.args[2];
-        if (colArg->is<StringLiteral>()) {
-            std::string colName = colArg->as<StringLiteral>().value;
+        if (isStringExpression(colArg)) {
+            std::string colName = evaluateString(colArg);
             size_t col = tbl.columnIndex(colName);
             if (col == 0) {
                 throw std::runtime_error(func.name + "(): column '" + colName +
-                                         "' not found in table '" + tbl.name() + "'");
+                                         "' not found in table '" + tbl.name() + "'" + lookupWhere());
             }
             colV = ADValue::constant(static_cast<double>(col), numVariables_);
         } else {
@@ -2592,8 +2827,8 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     if (name == "sumlookup" || name == "avglookup" || name == "maxlookup" ||
         name == "minlookup" || name == "stddevlookup") {
         std::string tableName = getString(0);
-        const LookupTable& tbl = getTable(tableName);
-        size_t col = resolveCol(tbl, 1);
+        const LookupTable& tbl = lookupTableFor(func, tableName);
+        size_t col = lookupColumnOf(func, tbl, 1);
 
         double result;
         if      (name == "sumlookup")    result = tbl.sumCol(col);
@@ -2612,12 +2847,12 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     if (name == "interpolate" || name == "interpolate1") {
         if (func.args.size() < 4) {
             throw std::runtime_error(func.name + "(): expects 4 arguments: "
-                                     "(table, xcol, ycol, xval)");
+                                     "(table, xcol, ycol, xval)" + lookupWhere());
         }
         std::string tableName = getString(0);
-        const LookupTable& tbl = getTable(tableName);
-        size_t xcol = resolveCol(tbl, 1);
-        size_t ycol = resolveCol(tbl, 2);
+        const LookupTable& tbl = lookupTableFor(func, tableName);
+        size_t xcol = lookupColumnOf(func, tbl, 1);
+        size_t ycol = lookupColumnOf(func, tbl, 2);
         ADValue xval = getNum(3);
         return tbl.interpolate1D(xcol, ycol, xval, diagnostics_);
     }
@@ -2629,13 +2864,13 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     if (name == "interpolate2" || name == "interpolate2dm") {
         if (func.args.size() < 6) {
             throw std::runtime_error(func.name + "(): expects 6 arguments: "
-                                     "(table, xcol, ycol, zcol, xval, yval)");
+                                     "(table, xcol, ycol, zcol, xval, yval)" + lookupWhere());
         }
         std::string tableName = getString(0);
-        const LookupTable& tbl = getTable(tableName);
-        size_t xcol = resolveCol(tbl, 1);
-        size_t ycol = resolveCol(tbl, 2);
-        size_t zcol = resolveCol(tbl, 3);
+        const LookupTable& tbl = lookupTableFor(func, tableName);
+        size_t xcol = lookupColumnOf(func, tbl, 1);
+        size_t ycol = lookupColumnOf(func, tbl, 2);
+        size_t zcol = lookupColumnOf(func, tbl, 3);
         ADValue xval = getNum(4);
         ADValue yval = getNum(5);
         return tbl.interpolate2D(xcol, ycol, zcol, xval, yval, diagnostics_);

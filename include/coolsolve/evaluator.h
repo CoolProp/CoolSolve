@@ -54,6 +54,9 @@ struct EvaluationResult {
     std::vector<double> residuals;           // F(x) for each equation
     std::vector<std::vector<double>> jacobian;  // J[eq][var] = dF_eq/dx_var
     std::vector<std::string> warnings;       // Any warnings during evaluation
+    /// Values of the string variables that a CALL of the block set (name -> value): a string is not
+    /// an unknown of the numeric system, so this is the only way it leaves the evaluation.
+    std::map<std::string, std::string> stringOutputs;
     
     size_t numEquations() const { return residuals.size(); }
     size_t numVariables() const { return jacobian.empty() ? 0 : jacobian[0].size(); }
@@ -167,7 +170,7 @@ public:
     ADValue evaluate(const ExprPtr& expr);
     
     /**
-     * @brief Evaluate a string expression (literal or variable).
+     * @brief Evaluate a string expression (literal, variable or string function: STRING$, PHASE$, LOOKUP$).
      */
     std::string evaluateString(const ExprPtr& expr);
     
@@ -209,6 +212,16 @@ public:
     
     void setDiagnostics(DiagnosticCollector* diag) { diagnostics_ = diag; }
 
+    /**
+     * @brief Where the `CALL WARNING` statements executed by this evaluator (and by the bodies of the
+     *        routines it calls) put their warnings; null (the default) makes them no-ops.
+     *
+     * A warning is meaningful only at the solution, not at every Newton iterate, so only the evaluation
+     * of a block at its solution gives a sink (`SystemEvaluator::reportCallWarnings`): the evaluations
+     * of the iterations skip the statement without even formatting its message.
+     */
+    void setCallWarningSink(std::vector<Diagnostic>* sink) { callWarningSink_ = sink; }
+
     /** @brief Provide access to lookup tables for INTERPOLATE / LOOKUP calls. */
     void setLookupTableStore(const LookupTableStore* store) { lookupTableStore_ = store; }
     const LookupTableStore* getLookupTableStore() const { return lookupTableStore_; }
@@ -224,7 +237,14 @@ private:
     bool residualOnly_ = false;
     bool disableClamping_ = false;
     DiagnosticCollector* diagnostics_ = nullptr;
+    std::vector<Diagnostic>* callWarningSink_ = nullptr;   ///< see setCallWarningSink
     const LookupTableStore* lookupTableStore_ = nullptr;
+    /// "FUNCTION 'name'" / "PROCEDURE 'name'" when this evaluator runs the body of a user routine
+    /// (empty in the main program); only used to say where a lookup error comes from.
+    std::string routine_;
+    /// The name of that routine (empty in the main program): the YYY of the generic messages of
+    /// CALL WARNING and CALL ERROR.
+    std::string routineName_;
     std::map<std::string, ADValue, CaseInsensitiveLess> variables_;
     std::map<std::string, std::string, CaseInsensitiveLess> stringVariables_;
     std::map<std::string, FunctionDefinition, CaseInsensitiveLess> userFunctions_;
@@ -241,12 +261,47 @@ private:
     
     // User-defined function evaluation
     ADValue evaluateUserFunction(const FunctionDefinition& func, const FunctionCall& call);
+
+    /**
+     * @brief The text of a `CALL WARNING` / `CALL ERROR` (EES help, WARNING and ERROR procedures).
+     *
+     * The call is `(message, value)`, `(message)` or `(value)`; the message is a string constant,
+     * variable or function, the value a number (or, with `XXX$`, a string). The characters `XXX` of the
+     * message, with the display format that may follow (`XXXA1`, `XXXF1`, `XXXE4`, see `eesFormatNumber`),
+     * are replaced by the value. Without a message EES writes a generic text naming the routine. A message
+     * that has no `XXX` but a value gets the value appended in brackets, so that it is not lost.
+     * @param isError  true for CALL ERROR (its generic text), false for CALL WARNING.
+     */
+    std::string userMessage(const ProcedureCall& call, bool isError);
+
+    /// Evaluator for the body of the user routine `kind` (FUNCTION / PROCEDURE) `name` called from
+    /// here. Variables are local to a body (only the arguments cross the boundary); what it
+    /// inherits is the context every expression needs: the user routines and the lookup tables.
+    ExpressionEvaluator makeBodyEvaluator(const char* kind, const std::string& name) const;
     
     // CoolProp function evaluation
     ADValue evaluateCoolPropFunction(const FunctionCall& func);
 
     // Lookup table function evaluation (INTERPOLATE, LOOKUP, etc.)
     ADValue evaluateLookupFunction(const FunctionCall& func);
+
+    /// LOOKUP$('table', row, col): the text of a cell (a string-valued function, see evaluateString).
+    /// The row is rounded to the nearest integer; the column is a name or a number.
+    std::string evaluateLookupString(const FunctionCall& func);
+
+    /// The table `tableName` for the lookup function `func`; an error (and a diagnostic) if there is none.
+    const LookupTable& lookupTableFor(const FunctionCall& func, const std::string& tableName);
+
+    /// The 1-based column given by argument `argIdx` of the lookup function `func`: a name or a number
+    /// (0 when the number is not positive).
+    size_t lookupColumnOf(const FunctionCall& func, const LookupTable& tbl, size_t argIdx);
+
+    /// " (in FUNCTION 'f')" inside a body, empty in the main program: where a lookup error comes from.
+    std::string lookupWhere() const;
+
+    /// The fluid named by the first argument of a property function: a string literal, a string variable,
+    /// an unquoted name (`Water`) or a string function such as LOOKUP$('table', i, 1). Empty if `arg` is none of these.
+    std::string fluidNameOf(const ExprPtr& arg);
 };
 
 // ============================================================================
@@ -283,11 +338,14 @@ public:
     /**
      * @param computeJacobian When false, skip derivative computation
      *        (saves CoolProp calls during line search; residuals only).
+     * @param callWarnings When given, the `CALL WARNING` statements executed by the evaluation push their
+     *        warnings (code `W001`) there; when null they do nothing (the case of every iteration).
      */
     EvaluationResult evaluate(const std::vector<double>& x,
                               const std::map<std::string, double>& externalVars = {},
                               const std::map<std::string, std::string>& externalStringVars = {},
-                              bool computeJacobian = true);
+                              bool computeJacobian = true,
+                              std::vector<Diagnostic>* callWarnings = nullptr);
     
     /**
      * @brief Get the variable names in this block.
@@ -323,8 +381,29 @@ public:
 
     /** @brief Provide lookup table access for INTERPOLATE / LOOKUP calls. */
     void setLookupTableStore(const LookupTableStore* store) { lookupTableStore_ = store; }
+
+    /** @brief True if a CALL of this block has a string output (`EvaluationResult::stringOutputs`). */
+    bool hasStringCallOutputs() const { return hasStringCallOutputs_; }
+
+    /**
+     * @brief True if an equation of this block calls a routine that may execute `CALL WARNING`
+     *        (see `markCallWarnings`); false for every block of a model without that call.
+     */
+    bool mayCallWarning() const { return mayCallWarning_; }
+
+    /**
+     * @brief Record whether the equations of this block call one of `routines`, the FUNCTIONs and
+     *        PROCEDUREs whose body can reach a `CALL WARNING` (directly or through other routines).
+     */
+    void markCallWarnings(const std::set<std::string, CaseInsensitiveLess>& routines);
     
 private:
+    bool hasStringCallOutputs_ = false;
+    bool mayCallWarning_ = false;
+    /// Order in which `evaluate` visits the equations when a CALL of the block computes a string: those
+    /// CALLs first, so that every CALL of the block finds the strings it reads. Empty: the order of
+    /// `equations_`. The row of an equation in the residual vector and the Jacobian never changes.
+    std::vector<size_t> evalOrder_;
     std::vector<std::string> variables_;
     std::vector<int> equationIds_;
     DiagnosticCollector* diagnostics_ = nullptr;
@@ -381,6 +460,16 @@ public:
      * @brief Set the current solution state for a string variable.
      */
     void setStringVariableValue(const std::string& name, const std::string& value);
+
+    /**
+     * @brief Store the string variables that the CALLs of a solved block compute.
+     *
+     * A string is not an unknown of the numeric system, so the solver does not carry it from one
+     * block to the next: the CALL that sets it is evaluated once more at the solution and the
+     * strings it returns become part of the state (CS-BUG-STRING-CALL-OUT). Does nothing, and
+     * costs nothing, for a block without a CALL that has a string output.
+     */
+    void publishStringOutputs(size_t blockIndex);
     
     /**
      * @brief Get the current solution state for a variable.
@@ -413,17 +502,35 @@ public:
     }
     
     /**
+     * @brief Report the `CALL WARNING` that holds at the solution of a block (code `W001`).
+     *
+     * A user warning describes the solution (an input outside the validity range of a correlation), not
+     * the Newton iterates that may cross the range on the way: it is raised by one more evaluation of
+     * the block at its solution, made after the block converged, and not by the evaluations of the
+     * iterations. A warning identical to one already reported (same line, same text) is not repeated.
+     * Does nothing, and costs nothing, for a block that cannot reach a `CALL WARNING`
+     * (`BlockEvaluator::mayCallWarning`), that is for every block of a model without that call.
+     * @param blockIndex The block, solved
+     * @param out Receives the warnings
+     */
+    void reportCallWarnings(size_t blockIndex, DiagnosticCollector& out);
+
+    /**
      * @brief Evaluate a specific block with current state.
      * @param blockIndex The block to evaluate
+     * @param computeJacobian false: residuals only
+     * @param callWarnings Receives the `CALL WARNING` raised by the evaluation, none if null
      * @return Evaluation result for that block
      */
-    EvaluationResult evaluateBlock(size_t blockIndex);
+    EvaluationResult evaluateBlock(size_t blockIndex, bool computeJacobian = true,
+                                   std::vector<Diagnostic>* callWarnings = nullptr);
     
 private:
     const IR& ir_;
     std::vector<BlockEvaluator> blockEvaluators_;
     std::map<std::string, double, CaseInsensitiveLess> currentState_;
     std::map<std::string, std::string, CaseInsensitiveLess> currentStringState_;
+    std::set<std::pair<int, std::string>> reportedCallWarnings_;   ///< (line, message) of the warnings already reported
     CoolPropConfig config_;
 };
 

@@ -2,15 +2,27 @@
  * @file integral_extraction.cpp
  * @brief Extract an `IntegralProblem` from a parsed IR.
  *
- * Walks every equation looking for top-level `INTEGRAL(integrand, var, lo, hi[, step])`
- * calls, classifies state vs algebraic variables, validates structural
- * preconditions, and runs a conservative high-index rejection.  See
- * `docs/integral_table.md` §1 (Mathematical model) and §3 (Architecture).
+ * Walks every equation looking for `INTEGRAL(integrand, var, lo, hi[, step])`
+ * calls (anywhere in an equation: an INTEGRAL call is a *value*, the integral from
+ * `lo` to the current value of `var`), classifies state vs algebraic variables,
+ * validates structural preconditions, and runs a conservative high-index
+ * rejection.  See `docs/integral_table.md` §1 (Mathematical model) and §3
+ * (Architecture).
+ *
+ * Two kinds of state, one per call:
+ *  - the plain additive form `y = base + INTEGRAL(...)` (base free of INTEGRAL and
+ *    constant along the trajectory) makes `y` a state owned by the integrator;
+ *  - any other form (`y = m*INTEGRAL(...)`, `-INTEGRAL(...)`, `INTEGRAL(...)/3.6E6`,
+ *    two calls in one equation, an INTEGRAL on the left-hand side...) gets an
+ *    *auxiliary* state per call (internal name, I(lo) = 0, dI/dt = integrand) and the
+ *    equation, with the call replaced by that state, stays an ordinary algebraic
+ *    equation.
  *
  * The initial state is *not* extracted here: at t = t0 the integral term has a
  * zero-width interval and evaluates to 0, so `y(t0)` falls out of the algebraic
  * solve at the first step (handled by `IntegralSolver`).
  */
+#include "coolsolve/ees_string.h"
 #include "coolsolve/integral/integral_problem.h"
 
 #include "coolsolve/ir.h"
@@ -29,12 +41,8 @@ namespace {
 
 // ---- small helpers ---------------------------------------------------------
 
-std::string toLower(const std::string& s) {
-    std::string o(s.size(), '\0');
-    std::transform(s.begin(), s.end(), o.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return o;
-}
+// Names are compared as EES does: without regard to case, accented letters included
+std::string toLower(const std::string& s) { return eesFoldCase(s); }
 
 /// Find the first `INTEGRAL(...)` FunctionCall in `expr` (depth-first).
 /// Returns nullptr if none.
@@ -66,6 +74,75 @@ const FunctionCall* findIntegralCall(const ExprPtr& expr) {
         }
     }, expr->node);
     return found;
+}
+
+/// Collect the outermost INTEGRAL calls of `expr`, in depth-first (left to right) order.
+/// A call nested in the arguments of another call is not collected (the extraction
+/// rejects it separately).
+void collectIntegralCalls(const ExprPtr& expr, std::vector<const FunctionCall*>& out) {
+    if (!expr) return;
+    if (expr->is<FunctionCall>() && toLower(expr->as<FunctionCall>().name) == "integral") {
+        out.push_back(&expr->as<FunctionCall>());
+        return;
+    }
+    std::visit([&](const auto& node) {
+        using T = std::decay_t<decltype(node)>;
+        if constexpr (std::is_same_v<T, UnaryOp>) {
+            collectIntegralCalls(node.operand, out);
+        } else if constexpr (std::is_same_v<T, BinaryOp>) {
+            collectIntegralCalls(node.left, out);
+            collectIntegralCalls(node.right, out);
+        } else if constexpr (std::is_same_v<T, FunctionCall>) {
+            for (const auto& a : node.args) collectIntegralCalls(a, out);
+            for (const auto& na : node.namedArgs) collectIntegralCalls(na.second, out);
+        } else if constexpr (std::is_same_v<T, Variable>) {
+            for (const auto& idx : node.indices) collectIntegralCalls(idx, out);
+        }
+    }, expr->node);
+}
+
+/// Names of the variables used by `expr` (array elements by their flattened name).
+void collectVariableNames(const ExprPtr& expr, std::set<std::string, CaseInsensitiveLess>& out) {
+    if (!expr) return;
+    std::visit([&](const auto& node) {
+        using T = std::decay_t<decltype(node)>;
+        if constexpr (std::is_same_v<T, Variable>) {
+            out.insert(node.flattenedName());
+            for (const auto& idx : node.indices) collectVariableNames(idx, out);
+        } else if constexpr (std::is_same_v<T, UnaryOp>) {
+            collectVariableNames(node.operand, out);
+        } else if constexpr (std::is_same_v<T, BinaryOp>) {
+            collectVariableNames(node.left, out);
+            collectVariableNames(node.right, out);
+        } else if constexpr (std::is_same_v<T, FunctionCall>) {
+            for (const auto& a : node.args) collectVariableNames(a, out);
+            for (const auto& na : node.namedArgs) collectVariableNames(na.second, out);
+        }
+    }, expr->node);
+}
+
+/// Is `target` reached from `e` only through additions and subtractions, with a
+/// net + sign (`a + INTEGRAL`, `INTEGRAL - b + c`, `a - (b - INTEGRAL)`)?  Anything else
+/// (a factor, a division, `a - INTEGRAL`, a function argument...) is not the plain
+/// additive state form.
+bool reachedAdditively(const ExprPtr& e, const FunctionCall* target, int sign) {
+    if (!e) return false;
+    if (e->is<FunctionCall>()) return &e->as<FunctionCall>() == target && sign > 0;
+    if (e->is<UnaryOp>()) {
+        const auto& u = e->as<UnaryOp>();
+        if (u.op == "-") return reachedAdditively(u.operand, target, -sign);
+        if (u.op == "+") return reachedAdditively(u.operand, target, sign);
+        return false;
+    }
+    if (e->is<BinaryOp>()) {
+        const auto& b = e->as<BinaryOp>();
+        if (b.op != "+" && b.op != "-") return false;
+        std::vector<const FunctionCall*> inLeft;
+        collectIntegralCalls(b.left, inLeft);
+        if (!inLeft.empty()) return reachedAdditively(b.left, target, sign);
+        return reachedAdditively(b.right, target, (b.op == "-") ? -sign : sign);
+    }
+    return false;
 }
 
 /// Clone an expression, applying `replace` to every node; if `replace` returns
@@ -129,12 +206,13 @@ bool evalConstantExpr(const ExprPtr& e, double& out) {
 
 bool hasIntegral(const IR& ir) {
     for (const auto& eq : ir.getEquations())
-        if (findIntegralCall(eq.rhs)) return true;
+        if (findIntegralCall(eq.rhs) || findIntegralCall(eq.lhs)) return true;
     return false;
 }
 
 IntegralProblem extractIntegralProblem(const IR& ir,
-                                       const StructuralAnalysisResult& /*analysis*/) {
+                                       const StructuralAnalysisResult& /*analysis*/,
+                                       const std::set<int>* forceAuxiliary) {
     IntegralProblem prob;
 
     // Pull the `$IntegralTable` spec off the parsed AST, if present, by scanning
@@ -149,85 +227,194 @@ IntegralProblem extractIntegralProblem(const IR& ir,
         return prob;
     };
 
-    // -- 1. Walk equations, harvest INTEGRAL declarations. -------------------
+    // -- 1. Walk equations, harvest every INTEGRAL call. --------------------
+    struct EquationCalls {
+        const EquationInfo* eq;
+        std::vector<const FunctionCall*> calls;
+    };
+    std::vector<EquationCalls> work;
+    std::set<std::string, CaseInsensitiveLess> integralLhsNames;  // LHS variables of those equations
     for (const auto& eq : ir.getEquations()) {
-        const FunctionCall* ic = findIntegralCall(eq.rhs);
-        if (!ic) continue;
+        EquationCalls ec{&eq, {}};
+        collectIntegralCalls(eq.lhs, ec.calls);
+        collectIntegralCalls(eq.rhs, ec.calls);
+        if (ec.calls.empty()) continue;
         prob.hasIntegral = true;
+        if (eq.lhs && eq.lhs->is<Variable>()) integralLhsNames.insert(eq.lhs->as<Variable>().flattenedName());
+        work.push_back(std::move(ec));
+    }
 
-        // LHS must be a plain variable (the state).
-        if (!eq.lhs || !eq.lhs->is<Variable>() || !eq.lhs->as<Variable>().indices.empty()) {
-            return fail("INTEGRAL() must appear on the right-hand side of a scalar variable "
-                        "equation (line " + std::to_string(eq.sourceLine) + ").");
+    // Internal variable names that cannot clash with the model's variables.
+    std::set<std::string, CaseInsensitiveLess> usedInternal;
+    auto internalName = [&](const std::string& stem, int k) {
+        std::string name = stem + std::to_string(k);
+        while (ir.getVariable(name) || usedInternal.count(name)) name += "_";
+        usedInternal.insert(name);
+        prob.internalNames.push_back(name);
+        return name;
+    };
+
+    // -- 2. Validate each call and create its state. --------------------------
+    int callIndex = 0;
+    bool allLimitsConstant = true;
+    bool allStepsConstant = true;
+    bool firstExplicitStepTaken = false;
+    double firstConstLo = 0.0, firstConstHi = 0.0;
+    bool firstLimitsConstant = false;
+
+    for (const auto& ec : work) {
+        const EquationInfo& eq = *ec.eq;
+        const std::string where = " (line " + std::to_string(eq.sourceLine) + ")";
+
+        // Pass 1: validate the arguments of every call of this equation.
+        for (const FunctionCall* ic : ec.calls) {
+            const auto& args = ic->args;
+            if (args.size() != 4 && args.size() != 5) {
+                return fail("INTEGRAL() expects 4 or 5 arguments (integrand, var, lo, hi[, step]); "
+                            "got " + std::to_string(args.size()) + where + ".");
+            }
+            if (!args[1] || !args[1]->is<Variable>() || !args[1]->as<Variable>().indices.empty()) {
+                return fail("INTEGRAL() integration variable must be a scalar variable" + where + ".");
+            }
+            for (const auto& a : args) {
+                if (findIntegralCall(a)) {
+                    return fail("Nested INTEGRAL() calls are not supported in this version "
+                                "(multi-variable integration). See docs/integral_table.md §7.1.");
+                }
+            }
         }
-        std::string stateName = eq.lhs->as<Variable>().name;
 
-        // Validate argument count: 4 (auto step) or 5 (fixed step).
-        const auto& args = ic->args;
-        if (args.size() != 4 && args.size() != 5) {
-            return fail("INTEGRAL() expects 4 or 5 arguments (integrand, var, lo, hi[, step]); "
-                        "got " + std::to_string(args.size()) + " (line " +
-                        std::to_string(eq.sourceLine) + ").");
+        // Is this the plain additive state form  y = base + INTEGRAL(...)  with a base that is
+        // constant along the trajectory?  (one call, scalar variable on the left, the call reached
+        // by additions only, base free of the integration variable and of any variable defined
+        // through an INTEGRAL)
+        bool userState = false;
+        ExprPtr baseExpr;
+        std::vector<std::string> baseVariableList;
+        if (ec.calls.size() == 1 && eq.lhs && eq.lhs->is<Variable>() &&
+            eq.lhs->as<Variable>().indices.empty() && eq.rhs &&
+            reachedAdditively(eq.rhs, ec.calls[0], +1)) {
+            baseExpr = cloneExpr(eq.rhs, [&](const ExprPtr& e) -> ExprPtr {
+                if (e && e->is<FunctionCall>() && &e->as<FunctionCall>() == ec.calls[0])
+                    return makeNumber(0.0, e->sourceLineNumber);
+                return nullptr;
+            });
+            std::set<std::string, CaseInsensitiveLess> baseVars;
+            collectVariableNames(baseExpr, baseVars);
+            const std::string integVarHere = ec.calls[0]->args[1]->as<Variable>().name;
+            userState = !baseVars.count(integVarHere);
+            for (const auto& v : baseVars)
+                if (integralLhsNames.count(v)) userState = false;   // base follows another state (or y itself)
+            if (forceAuxiliary && forceAuxiliary->count(eq.id)) userState = false;
+            if (userState) baseVariableList.assign(baseVars.begin(), baseVars.end());
         }
 
-        // 2nd argument must be a plain variable (the integration variable).
-        if (!args[1] || !args[1]->is<Variable>() || !args[1]->as<Variable>().indices.empty()) {
-            return fail("INTEGRAL() integration variable must be a scalar variable "
-                        "(line " + std::to_string(eq.sourceLine) + ").");
+        // Pass 2: one state per call.
+        std::vector<ExprPtr> replacements;    // auxiliary variable of each call, in order
+        for (const FunctionCall* ic : ec.calls) {
+            const auto& args = ic->args;
+            const std::string integVar = args[1]->as<Variable>().name;
+
+            StateVariable sv;
+            sv.equationId = eq.id;
+            sv.integrandExpr = args[0];
+            if (args[0] && args[0]->is<Variable>()) {
+                sv.integrandVar = args[0]->as<Variable>().flattenedName();
+            } else {
+                // Any other integrand expression is defined by an extra algebraic equation, so it is
+                // evaluated by the algebraic solver (arrays, property calls, user functions...).
+                sv.integrandVar = internalName("__integrand_", callIndex + 1);
+                prob.integrandEquations.emplace_back(sv.integrandVar, args[0]);
+            }
+            if (userState) {
+                sv.name = eq.lhs->as<Variable>().name;
+                sv.baseExpr = baseExpr;
+                sv.baseVariables = baseVariableList;
+                sv.tableName = sv.name;
+            } else {
+                sv.name = internalName("__integral_", callIndex + 1);
+                sv.baseExpr = makeNumber(0.0);
+                sv.auxiliary = true;
+                if (ec.calls.size() == 1 && eq.lhs && eq.lhs->is<Variable>())
+                    sv.tableName = eq.lhs->as<Variable>().flattenedName();
+                replacements.push_back(makeVariable(sv.name, eq.sourceLine));
+            }
+
+            // Limits / step: prefer constant folding, keep the expressions for the solver.
+            double lo = 0.0, hi = 0.0, step = 0.0;
+            const bool loOk = evalConstantExpr(args[2], lo);
+            const bool hiOk = evalConstantExpr(args[3], hi);
+            const bool hasStep = args.size() == 5;
+            const bool stepOk = hasStep && evalConstantExpr(args[4], step);
+            if (hasStep && stepOk && step < 0.0)
+                return fail("INTEGRAL() step must be positive (0 = automatic step)" + where + ".");
+
+            IntegralCall call;
+            call.equationId = eq.id;
+            call.stateIndex = static_cast<int>(prob.states.size());
+            call.lowerExpr = args[2];
+            call.upperExpr = args[3];
+            if (hasStep) call.stepExpr = args[4];
+
+            if (prob.calls.empty()) {
+                prob.integrationVar = integVar;
+                prob.lowerLimitExpr = args[2];
+                prob.upperLimitExpr = args[3];
+                prob.lowerLimit = lo;
+                prob.upperLimit = hi;
+                firstLimitsConstant = loOk && hiOk;
+                firstConstLo = lo;
+                firstConstHi = hi;
+            } else {
+                if (toLower(integVar) != toLower(prob.integrationVar)) {
+                    return fail("All INTEGRAL() calls must share the same integration variable; "
+                                "found '" + integVar + "' and '" + prob.integrationVar + "'.");
+                }
+                // Constant intervals are compared here; symbolic ones by the solver once the
+                // limits are known (see IntegralSolver::solve).
+                if (firstLimitsConstant && loOk && hiOk && (lo != firstConstLo || hi != firstConstHi)) {
+                    return fail("All INTEGRAL() calls must share the same [lo, hi] interval.");
+                }
+            }
+            if (!(loOk && hiOk)) allLimitsConstant = false;
+            if (hasStep && !stepOk) allStepsConstant = false;
+            // The first explicit step wins; a step of 0 means "automatic".
+            if (hasStep && stepOk && step > 0.0) {
+                if (!firstExplicitStepTaken) {
+                    prob.fixedStep = step;
+                    firstExplicitStepTaken = true;
+                } else if (step != prob.fixedStep) {
+                    prob.warnings.push_back(
+                        "INTEGRAL() calls use different steps (" + std::to_string(prob.fixedStep) +
+                        " and " + std::to_string(step) + "): the first explicit step is used for the whole "
+                        "integration" + where + ".");
+                }
+            }
+
+            prob.calls.push_back(call);
+            prob.states.push_back(sv);
+            ++callIndex;
         }
-        std::string integVar = args[1]->as<Variable>().name;
 
-        // Integrand: usually a variable (the derivative); record both ways.
-        StateVariable sv;
-        sv.name = stateName;
-        sv.integrandExpr = args[0];
-        if (args[0] && args[0]->is<Variable>() && args[0]->as<Variable>().indices.empty())
-            sv.integrandVar = args[0]->as<Variable>().name;
-
-        // Base expression = RHS with the INTEGRAL call blanked to 0; this is
-        // the part that evaluates to y(t0) once the algebraic system is solved
-        // at t = t0 (handled by IntegralSolver).
-        sv.baseExpr = cloneExpr(eq.rhs, [](const ExprPtr& e) -> ExprPtr {
-            if (e && e->is<FunctionCall>() && toLower(e->as<FunctionCall>().name) == "integral")
-                return makeNumber(0.0, e->sourceLineNumber);
-            return nullptr;
-        });
-        sv.equationId = eq.id;
-
-        // Limits / step: prefer constant folding, keep expressions for Phase 5.
-        double lo = 0.0, hi = 0.0, step = 0.0;
-        bool loOk = evalConstantExpr(args[2], lo);
-        bool hiOk = evalConstantExpr(args[3], hi);
-        bool stepOk = (args.size() == 5) && evalConstantExpr(args[4], step);
-
-        // -- 2. Validate consistency across all INTEGRAL equations. -----------
-        if (prob.states.empty()) {
-            prob.integrationVar = integVar;
-            prob.lowerLimitExpr = args[2];
-            prob.upperLimitExpr = args[3];
-            prob.lowerLimit = lo;
-            prob.upperLimit = hi;
-            prob.limitsConstant = loOk && hiOk;
-            if (args.size() == 5 && stepOk) prob.fixedStep = step;
+        if (userState) {
+            prob.integralEquationIds.push_back(eq.id);
         } else {
-            if (integVar != prob.integrationVar) {
-                return fail("All INTEGRAL() calls must share the same integration variable; "
-                            "found '" + integVar + "' and '" + prob.integrationVar + "'.");
-            }
-            double eLo = 0.0, eHi = 0.0;
-            bool eLoOk = evalConstantExpr(args[2], eLo);
-            bool eHiOk = evalConstantExpr(args[3], eHi);
-            if (prob.limitsConstant && eLoOk && eHiOk &&
-                (eLo != prob.lowerLimit || eHi != prob.upperLimit)) {
-                return fail("All INTEGRAL() calls must share the same [lo, hi] interval.");
-            }
-            if (args.size() == 5 && stepOk && prob.fixedStep == 0.0) {
-                prob.fixedStep = step;  // adopt the first explicit step
-            }
+            RewrittenEquation rw;
+            rw.equationId = eq.id;
+            rw.originalLhs = eq.lhs;
+            rw.originalRhs = eq.rhs;
+            size_t next = 0;
+            auto replaceCall = [&](const ExprPtr& e) -> ExprPtr {
+                if (e && e->is<FunctionCall>() && toLower(e->as<FunctionCall>().name) == "integral")
+                    return replacements.at(next++);
+                return nullptr;
+            };
+            // Calls are numbered in depth-first order, left side first, as collected above.
+            rw.lhs = cloneExpr(eq.lhs, replaceCall);
+            rw.rhs = cloneExpr(eq.rhs, replaceCall);
+            prob.rewrittenEquations.push_back(std::move(rw));
+            prob.auxEquationIds.push_back(eq.id);
         }
-
-        prob.states.push_back(sv);
-        prob.integralEquationIds.push_back(eq.id);
     }
 
     if (!prob.hasIntegral) {
@@ -235,32 +422,51 @@ IntegralProblem extractIntegralProblem(const IR& ir,
         prob.errorMessage = "no INTEGRAL() equations found";
         return prob;
     }
-
-    // Convenience name lists.
-    for (const auto& s : prob.states) {
-        prob.stateNames.push_back(s.name);
-        if (!s.integrandVar.empty()) prob.derivativeNames.push_back(s.integrandVar);
+    // The integration variable belongs to the integrator: no INTEGRAL equation may define it
+    // (names are case-insensitive: `T = ... INTEGRAL(f, t, ...)` is the same variable).
+    for (const auto& ec : work) {
+        if (ec.eq->lhs && ec.eq->lhs->is<Variable>() &&
+            toLower(ec.eq->lhs->as<Variable>().flattenedName()) == toLower(prob.integrationVar)) {
+            return fail("An equation with an INTEGRAL() call defines '" + ec.eq->lhs->as<Variable>().name +
+                        "', which is the integration variable '" + prob.integrationVar +
+                        "' (variable names are not case-sensitive) (line " +
+                        std::to_string(ec.eq->sourceLine) + ").");
+        }
     }
-
-    // -- 3. Reject nested integrals (multi-variable integration). ------------
-    for (const auto& s : prob.states) {
-        // The integrand expression must not itself contain an INTEGRAL call.
-        if (findIntegralCall(s.integrandExpr)) {
-            return fail("Nested INTEGRAL() calls are not supported in this version "
-                        "(multi-variable integration). See docs/integral_table.md §7.1.");
+    prob.limitsConstant = allLimitsConstant;
+    prob.stepConstant = allStepsConstant;
+    if (!allLimitsConstant || !allStepsConstant) {
+        // The solver resolves symbolic limits/steps from the initial solve; it defines them as
+        // internal variables `__int_lo_k`, `__int_hi_k`, `__int_step_k`.
+        for (size_t k = 0; k < prob.calls.size(); ++k) {
+            auto& c = prob.calls[k];
+            c.loVar = internalName("__int_lo_", static_cast<int>(k) + 1);
+            c.hiVar = internalName("__int_hi_", static_cast<int>(k) + 1);
+            if (c.stepExpr) c.stepVar = internalName("__int_step_", static_cast<int>(k) + 1);
         }
     }
 
+    // Convenience name lists (user states and the derivative variables).
+    for (const auto& st : prob.states) {
+        prob.stateNames.push_back(st.name);
+        if (!st.integrandVar.empty()) prob.derivativeNames.push_back(st.integrandVar);
+    }
+
+    // -- 3. (nested integrals were rejected above) ---------------------------
+
     // -- 4. Classify variables: state / algebraic / integration var. ---------
-    std::set<std::string, CaseInsensitiveLess> stateSet(prob.stateNames.begin(),
-                                                        prob.stateNames.end());
+    // (auxiliary states are internal variables, not IR variables: only the user states count here)
+    std::set<std::string, CaseInsensitiveLess> stateSet;
+    for (const auto& st : prob.states)
+        if (!st.auxiliary) stateSet.insert(st.name);
     for (const auto& [name, info] : ir.getVariables()) {
         if (stateSet.count(name)) continue;          // state variable (integrator-owned)
-        if (name == prob.integrationVar) continue;   // independent variable (integrator-owned)
+        if (toLower(name) == toLower(prob.integrationVar)) continue;   // independent variable (integrator-owned)
         prob.algebraicVars.push_back(name);
     }
 
-    // Algebraic equations = every equation that is not an integral declaration.
+    // Algebraic equations = every equation that is not the declaration of a user state
+    // (equations with auxiliary states are ordinary algebraic equations).
     std::set<int> integralSet(prob.integralEquationIds.begin(),
                               prob.integralEquationIds.end());
     for (const auto& eq : ir.getEquations())
@@ -299,7 +505,7 @@ IntegralProblem extractIntegralProblem(const IR& ir,
     // After removing the K integral equations and K state variables, the
     // algebraic subsystem should be square. The integration variable (held by
     // the integrator) accounts for the +1 "equation" t = t_current.
-    const long kStates = static_cast<long>(prob.states.size());
+    const long kStates = static_cast<long>(stateSet.size());
     const long algebraicUnknowns = static_cast<long>(prob.algebraicVars.size());
     const long algebraicEqs = static_cast<long>(prob.algebraicEquationIds.size());
     if (algebraicEqs != algebraicUnknowns) {
@@ -319,6 +525,12 @@ const StateVariable* IntegralProblem::state(const std::string& name) const {
     for (const auto& s : states)
         if (s.name == name) return &s;
     return nullptr;
+}
+
+bool IntegralProblem::isInternal(const std::string& name) const {
+    for (const auto& n : internalNames)
+        if (toLower(n) == toLower(name)) return true;
+    return false;
 }
 
 }  // namespace coolsolve

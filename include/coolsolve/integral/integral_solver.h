@@ -12,6 +12,7 @@
  * (Architecture) and §3.3 (RHS evaluation strategy).
  */
 #include "coolsolve/ast.h"
+#include "coolsolve/diagnostic.h"
 #include "coolsolve/integral/integral_problem.h"
 #include "coolsolve/integral/integral_table.h"
 #include "coolsolve/integral/integrator.h"
@@ -40,8 +41,12 @@ struct IntegralSolveResult {
     int rejectedSteps = 0;                  ///< RK45 steps rejected (diagnostics).
     std::vector<double> acceptedStepSizes;  ///< Per-step `h` (diagnostics).
 
-    /// Final-step algebraic result (variables, status, block results).
+    /// Final-step algebraic result (variables, status, block results). Holds the values at
+    /// the upper limit; the internal variables of the INTEGRAL extraction are removed.
     SolveResult algebraicResult;
+
+    /// Warnings of the dynamic solve (unknown `$IntegralTable` column, steps that differ...).
+    DiagnosticCollector diagnostics;
 };
 
 /**
@@ -55,10 +60,14 @@ public:
      * @param ir       Full IR (already inferred/initialised by the runner).
      * @param analysis Structural analysis of the full IR.
      * @param options  Algebraic solver options (reused per step).
+     * @param lookupStore Lookup tables (`LOOKUP`, `INTERPOLATE`...) the model reads; owned by the
+     *                  caller and must outlive the solver. Every algebraic solve of the march
+     *                  (and of the initial point) uses it. May be null for a model without tables.
      */
     IntegralSolver(const Program& program, const IR& ir,
                    const StructuralAnalysisResult& analysis,
-                   const SolverOptions& options);
+                   const SolverOptions& options,
+                   const LookupTableStore* lookupStore = nullptr);
 
     /**
      * @brief March the system from `t0` to `tf` and tabulate the trajectory.
@@ -74,11 +83,31 @@ public:
 private:
     const IR& fullIr_;
     SolverOptions solverOpts_;              // copied (caller may pass a temporary)
+    const LookupTableStore* lookupStore_;   // not owned; given to every algebraic Solver
     IntegralProblem problem_;
 
-    std::unique_ptr<IR> reducedIr_;                          ///< algebraic subsystem
-    std::unique_ptr<StructuralAnalysisResult> reducedAnalysis_;
-    std::unique_ptr<Solver> algebraicSolver_;                ///< reused each step
+    /// Program of the algebraic subsystem *without* the integrator-owned variables: the
+    /// statements of the model minus the equations declaring a user state, with the INTEGRAL
+    /// calls of the other equations replaced by their auxiliary states, plus the equations
+    /// defining the non-variable integrands.
+    Program baseProgram_;
+    /// A square reduced system: `baseProgram_` + extra statements, with `v = <literal>` driver
+    /// equations for the variables the integrator pins.
+    struct ReducedSystem {
+        std::unique_ptr<IR> ir;
+        std::unique_ptr<StructuralAnalysisResult> analysis;
+        std::unique_ptr<Solver> solver;
+        std::map<std::string, ExprPtr> drivers;
+    };
+    std::unique_ptr<ReducedSystem> buildReduced(const std::vector<StmtPtr>& extraStatements,
+                                                const std::vector<std::string>& driven) const;
+
+    /// Resolve symbolic limits/step: solve the model at the initial point (`t = lower limit`,
+    /// auxiliary states 0) and read them. Returns false and sets `error` on failure.
+    bool resolveSymbolicInterval(double& t0, double& tf, double& step, std::string& error,
+                                 DiagnosticCollector& diag);
+
+    std::unique_ptr<ReducedSystem> march_;                   ///< algebraic subsystem, reused each step
 
     /// Evaluate the RHS f(t, y) by fixing (t, y) and solving the algebraic
     /// subsystem. Throws std::runtime_error on algebraic failure.
@@ -99,8 +128,7 @@ private:
     /// Driver equations (`v = <literal>`) for integrator-owned variables
     /// (states + integration var). Each step the literal is updated to the
     /// integrator's current value so the algebraic solve sees them as fixed.
-    std::map<std::string, ExprPtr> driverLiterals_;
-    void setDriverValue(const std::string& name, double value);
+    static void setDriverValue(ReducedSystem& sys, const std::string& name, double value);
 };
 
 }  // namespace coolsolve

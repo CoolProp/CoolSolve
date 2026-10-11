@@ -25,26 +25,7 @@ namespace coolsolve {
 // ---------------------------------------------------------------------------
 
 /// Escape special LaTeX characters in plain text (not math mode).
-static std::string escLatex(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() * 2);
-    for (char c : s) {
-        switch (c) {
-            case '&':  out += "\\&";  break;
-            case '%':  out += "\\%";  break;
-            case '$':  out += "\\$";  break;
-            case '#':  out += "\\#";  break;
-            case '_':  out += "\\_";  break;
-            case '{':  out += "\\{";  break;
-            case '}':  out += "\\}";  break;
-            case '~':  out += "\\textasciitilde{}"; break;
-            case '^':  out += "\\textasciicircum{}"; break;
-            case '\\': out += "\\textbackslash{}"; break;
-            default:   out += c;
-        }
-    }
-    return out;
-}
+static std::string escLatex(const std::string& s) { return escapeLatexText(s); }
 
 /// Format a floating-point number for display in a LaTeX table cell.
 static std::string fmtVal(double v) {

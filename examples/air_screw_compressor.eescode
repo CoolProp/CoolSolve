@@ -11,7 +11,10 @@ Intake and discharge pressure drops are neglected; internal leakage is accounted
 
 SOLVER NOTE: The Newton solver alone fails on this model due to a highly nonlinear
 leakage loop. Use the full default solver pipeline (Newton->TrustRegion->...) which
-activates TrustRegion as fallback. Provide the .initials file for reliable convergence.
+activates TrustRegion as fallback. Keep the .initials file (guesses from the EES stored
+solution): since CoolProp 75af7816 (p,T flash rework, CoolProp #3360) the model does not
+converge without it at the default tolerance 1e-9 (SingularJacobian in block 13; it does
+from 1e-8). Cause not analysed yet (docs/solver_roadmap.md, section 3.2).
 "
 
 "Compressor model parameters imposed: V_s (swept volume), T_m (mechanical loss torque), A_thr_leak (equivalent leakage throat area)"

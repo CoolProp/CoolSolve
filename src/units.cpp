@@ -14,6 +14,20 @@ static std::string normalize(const std::string& unit) {
     return s;
 }
 
+bool unitSettingActive(const std::string& setting, const UnitSystem& units) {
+    const std::string s = normalize(setting);
+    if (s == "si" || s == "mass" || s == "deg") return true;
+    if (s == "eng" || s == "molar" || s == "rad") return false;
+    for (const char* t : {"c", "k", "f", "r"})
+        if (s == t) return normalize(units.temperature) == s;
+    for (const char* p : {"pa", "kpa", "mpa", "bar", "psia", "atm"})
+        if (s == p) return normalize(units.pressure) == s;
+    for (const char* e : {"j", "kj", "btu", "kcal"})
+        if (s == e) return normalize(units.energy) == s;
+    throw std::runtime_error("UNITSYSTEM: unknown unit setting '" + setting +
+        "' (expected SI, Eng, Mass, Molar, Deg, Rad, C, K, F, R, Pa, kPa, bar, MPa, psia, atm, J, kJ, Btu or kcal)");
+}
+
 double UnitConverter::toSI(double value, UnitType type, const std::string& unit) {
     std::string u = normalize(unit);
     

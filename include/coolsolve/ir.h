@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ast.h"
+#include "ees_string.h"
 #include <map>
 #include <set>
 #include <string>
@@ -10,14 +11,11 @@
 
 namespace coolsolve {
 
-// Case-insensitive comparator for variable names (EES style)
+// Case-insensitive comparator for variable names (EES style): ASCII and the accented letters
+// of Latin-1 (UTF-8) are folded, see ees_string.h. T_a_réf and T_A_RÉF are one variable.
 struct CaseInsensitiveLess {
     bool operator()(const std::string& a, const std::string& b) const {
-        std::string la = a;
-        std::string lb = b;
-        std::transform(la.begin(), la.end(), la.begin(), ::tolower);
-        std::transform(lb.begin(), lb.end(), lb.begin(), ::tolower);
-        return la < lb;
+        return eesCompareFolded(a, b) < 0;
     }
 };
 
@@ -148,6 +146,7 @@ private:
     std::vector<std::set<std::string, CaseInsensitiveLess>> incidenceMatrix_;
     
     // Helper functions
+    void lowerCallExpressionOutputs(std::vector<StmtPtr>& statements);
     void extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensitiveLess>& vars);
     std::string expressionToLatex(const ExprPtr& expr) const;
     void addVariable(const std::string& name);
@@ -163,6 +162,16 @@ std::string variableToLatex(const std::string& name);
 
 // Convert an expression to LaTeX
 std::string expressionToLatex(const ExprPtr& expr);
+
+// Escape a text for LaTeX text mode (table cells, comments): % # & _ { } $ \ ^ ~
+std::string escapeLatexText(const std::string& s);
+
+// Escape the characters of a name or string for LaTeX math mode: the same set, `|` and `\` as
+// symbols, `°` and the accented letters of Latin-1 (\text{é}) so that pdflatex compiles them
+std::string escapeLatexMath(const std::string& s);
+
+// Escape a text for a cell of a Markdown table: `|` would end the cell
+std::string markdownTableCell(const std::string& s);
 
 // Convert a function call to LaTeX (handles thermodynamic functions specially)
 std::string functionCallToLatex(const FunctionCall& func);

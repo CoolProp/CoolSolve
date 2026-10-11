@@ -126,7 +126,8 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
 
         if (integralModel_) {
             // ----- Dynamic (INTEGRAL) path -----
-            IntegralSolver isolver(parseResult_.program, *ir_, analysisResult_, options);
+            IntegralSolver isolver(parseResult_.program, *ir_, analysisResult_, options,
+                                   &lookupTableStore_);
             integralResult_ = isolver.solve(makeIntegratorOptions(options));
             // Map the integral result onto solveResult_ so the existing
             // debug/JSON/.sol downstream code keeps working unchanged.
@@ -138,6 +139,7 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
             solveResult_.variables = integralResult_.algebraicResult.variables;
             solveResult_.stringVariables = integralResult_.algebraicResult.stringVariables;
             solveResult_.totalIterations = integralResult_.totalSteps;
+            solveResult_.diagnostics = integralResult_.diagnostics;
         } else {
             // ----- Algebraic path (unchanged) -----
             Solver solver(*ir_, analysisResult_, options.coolpropConfig);
@@ -256,6 +258,38 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         stats << "\n## Warnings\n\n";
         stats << "- " << analysisResult_.errorMessage << "\n";
     }
+
+    // Compile-time $IF / $IFNOT directives: which branch was kept (CS-GAP-IF-DIRECTIVE)
+    if (!parseResult_.conditionalDirectives.empty()) {
+        auto lines = [](int first, int last) {
+            if (first > last) return std::string("no lines");
+            return first == last ? "line " + std::to_string(first)
+                                 : "lines " + std::to_string(first) + "-" + std::to_string(last);
+        };
+        stats << "\n## Conditional directives\n\n";
+        stats << "The `$IF` / `$IFNOT` directives are resolved while parsing, as EES does when it compiles the "
+                 "equations: the lines of the branch that is not selected are removed from the model "
+                 "(they are not parsed, so they appear in no other file of this folder).\n\n";
+        stats << "| Line | Directive | Branch |\n";
+        stats << "|------|-----------|--------|\n";
+        for (const auto& d : parseResult_.conditionalDirectives) {
+            const int thenEnd = (d.elseLine > 0 ? d.elseLine : d.endLine) - 1;
+            stats << "| " << d.line << " | `" << d.text << "` | ";
+            if (!d.evaluated) {
+                stats << "not evaluated (inside a removed branch)";
+            } else {
+                const std::string thenText = "THEN branch " + std::string(d.thenKept ? "kept" : "removed") +
+                                             " (" + lines(d.line + 1, thenEnd) + ")";
+                if (d.elseLine > 0) {
+                    stats << thenText << ", ELSE branch " << (d.thenKept ? "removed" : "kept")
+                          << " (" << lines(d.elseLine + 1, d.endLine - 1) << ")";
+                } else {
+                    stats << thenText << ", no $ELSE";
+                }
+            }
+            stats << " |\n";
+        }
+    }
     
     // Block summary
     stats << "\n## Block Summary\n\n";
@@ -268,7 +302,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         stats << " | ";
         for (size_t i = 0; i < block.variables.size() && i < 3; ++i) {
             if (i > 0) stats << ", ";
-            stats << block.variables[i];
+            stats << markdownTableCell(block.variables[i]);
         }
         if (block.variables.size() > 3) stats << ", ...";
         stats << " |\n";
@@ -297,7 +331,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     int varNum = 1;
     for (const auto& [name, info] : ir_->getVariables()) {
         varTable << "| " << varNum++;
-        varTable << " | `" << name << "`";
+        varTable << " | `" << markdownTableCell(name) << "`";
         varTable << " | $" << info.latexLabel << "$";
         
         std::string valStr = "-";
@@ -358,6 +392,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     
     // Create evaluator for reporting
     coolsolve::SystemEvaluator csEval(*ir_, analysisResult_);
+    csEval.setLookupTableStore(&lookupTableStore_);
     // Use solve result if available
     if (solveResult_.success) {
         for (const auto& [n, v] : solveResult_.variables) csEval.setVariableValue(n, v);
@@ -379,10 +414,11 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         
         for (size_t i = 0; i < eqs.size(); ++i) {
             const auto* eq = eqs[i];
-            csRes << "| " << blockId << " | `" << eq->originalText << "`";
+            csRes << "| " << blockId << " | `" << markdownTableCell(eq->originalText) << "`";
             if (evalSuccess && i < evalResult.residuals.size()) {
                 try {
                     coolsolve::ExpressionEvaluator exprEval(ir_->getVariableCount());
+                    exprEval.setLookupTableStore(&lookupTableStore_);
                     for (const auto& [name, val] : csEval.getAllVariables()) {
                         exprEval.setVariable(name, coolsolve::ADValue::constant(val, ir_->getVariableCount()));
                     }
@@ -565,10 +601,16 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         md << "- Integration variable: `" << ip.integrationVar << "`\n";
         md << "- Interval: [" << ip.lowerLimit << ", " << ip.upperLimit << "]";
         if (ip.fixedStep > 0.0) md << " (fixed step " << ip.fixedStep << ")";
+        if (!ip.limitsConstant || !ip.stepConstant)
+            md << " (limits resolved from the model at the initial point)";
         md << "\n- State variables (" << ip.states.size() << "): ";
         for (size_t i = 0; i < ip.states.size(); ++i) {
             if (i) md << ", ";
-            md << "`" << ip.states[i].name << "` (derivative `" << ip.states[i].integrandVar << "`)";
+            if (ip.states[i].auxiliary)   // INTEGRAL call inside a larger expression
+                md << "integral of `" << ip.states[i].integrandVar << "`" << " (auxiliary state"
+                   << (ip.states[i].tableName.empty() ? "" : ", in the equation of `" + ip.states[i].tableName + "`") << ")";
+            else
+                md << "`" << ip.states[i].name << "` (derivative `" << ip.states[i].integrandVar << "`)";
         }
         md << "\n- Algebraic variables: " << ip.algebraicVars.size() << "\n\n";
 
@@ -616,7 +658,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     if (fs::exists(debugDir / "coolsolve.conf")) {
         index << "| [coolsolve.conf](coolsolve.conf) | Solver config used for this run |\n";
     }
-    index << "| [report.md](report.md) | Model statistics and block summary |\n";
+    index << "| [report.md](report.md) | Model statistics, block summary and the branch kept by each `$IF` directive |\n";
     index << "| [variables.md](variables.md) | Variable mapping table |\n";
     index << "| [coolsolve_residuals.md](coolsolve_residuals.md) | Detailed equation values and residuals |\n";
     index << "| [evaluator.md](evaluator.md) | Evaluator structure and test |\n";

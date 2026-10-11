@@ -544,7 +544,7 @@ successful solve and when the tab is opened.
 
 An inline editable HTML table:
 - Header row cells are editable (rename columns).
-- Data cells are plain text inputs (numeric or empty for NaN).
+- Data cells are plain text inputs (a number, empty for NaN, or text read by `LOOKUP$`; the table is kept as CSV text, so a text cell is shown and saved as typed).
 - **+ Row / + Col** buttons append rows and columns.
 - **× buttons** (per row/column) delete that row or column (header row
   is protected; at least 1 data row and 1 column are always kept).

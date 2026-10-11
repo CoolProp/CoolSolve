@@ -96,7 +96,7 @@ struct Comment {
 };
 
 struct Directive {
-    std::string name;  // e.g., "$ifnot", "$endif", "$bookmark"
+    std::string name;  // e.g., "$bookmark", "IntegralTable" ($if/$ifnot/$else/$endif are resolved by the parser and never stored)
     std::string content;
     // Optional structured payload, populated by the parser when `name` is
     // "IntegralTable". Other directives leave `hasIntegralTableSpec == false`.
@@ -119,6 +119,11 @@ struct ProcedureCall {
     std::string name;
     std::vector<ExprPtr> inputArgs;
     std::vector<Variable> outputVars;
+    /// EES lets an output of a CALL of the main program be an expression (`CALL p(x : c/1000)`):
+    /// the routine's output equals the expression. Empty when every output is a variable; otherwise
+    /// one entry per output, null for a variable (`outputVars[i]`) and the expression where
+    /// `outputVars[i]` is an empty placeholder. `IR::lowerCallExpressionOutputs` lowers them (CS-GAP-CALL-EXPR-OUT).
+    std::vector<ExprPtr> outputExprs;
 };
 
 struct FunctionDefinition {
@@ -262,9 +267,10 @@ inline StmtPtr makeAssignment(ExprPtr lhs, ExprPtr rhs, int line = 0) {
     return stmt;
 }
 
-inline StmtPtr makeProcedureCall(const std::string& name, std::vector<ExprPtr> inputArgs, std::vector<Variable> outputVars, int line = 0) {
+inline StmtPtr makeProcedureCall(const std::string& name, std::vector<ExprPtr> inputArgs, std::vector<Variable> outputVars,
+                                 int line = 0, std::vector<ExprPtr> outputExprs = {}) {
     auto stmt = std::make_shared<Statement>();
-    stmt->node = ProcedureCall{name, std::move(inputArgs), std::move(outputVars)};
+    stmt->node = ProcedureCall{name, std::move(inputArgs), std::move(outputVars), std::move(outputExprs)};
     stmt->sourceLineNumber = line;
     return stmt;
 }
@@ -302,6 +308,21 @@ inline StmtPtr makeRepeatUntil(std::vector<StmtPtr> body, ExprPtr condition, int
     stmt->node = RepeatUntil{std::move(body), std::move(condition)};
     stmt->sourceLineNumber = line;
     return stmt;
+}
+
+/// True for expressions that yield a string: 'literals', variables ending in '$' and
+/// string-valued functions such as PHASE$() or LOOKUP$().
+inline bool isStringExpression(const ExprPtr& expr) {
+    if (expr->is<StringLiteral>()) return true;
+    if (expr->is<Variable>()) {
+        const std::string& n = expr->as<Variable>().name;
+        return !n.empty() && n.back() == '$';
+    }
+    if (expr->is<FunctionCall>()) {
+        const std::string& n = expr->as<FunctionCall>().name;
+        return !n.empty() && n.back() == '$';
+    }
+    return false;
 }
 
 }  // namespace coolsolve

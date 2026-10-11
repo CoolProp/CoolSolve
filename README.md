@@ -25,7 +25,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 ## Features
 
-- **Parser**: Parses CoolSolve source code (`.eescode` files) into an AST — variables, equations, procedural blocks (`FUNCTION`, `PROCEDURE`, `CALL`), control flow (`IF-THEN-ELSE`, `DUPLICATE`, `REPEAT-UNTIL`), directives, array subscripts, and named function arguments.
+- **Parser**: Parses CoolSolve source code (`.eescode` files) into an AST — variables, equations, procedural blocks (`FUNCTION`, `PROCEDURE`, `CALL`), control flow (`IF-THEN-ELSE`, `DUPLICATE`, `REPEAT-UNTIL`), directives (including the conditional compilation `$IF` / `$IFNOT` / `$ELSE` / `$ENDIF`), array subscripts, and named function arguments.
 
 - **Structural Analysis**: Decomposes the equation system into solvable blocks using the Hopcroft–Karp matching algorithm and Tarjan's SCC algorithm.
 
@@ -42,9 +42,9 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
   - **Symbolic Block Reduction** (explicit extraction, CoolProp call inversion, equation substitution)
   - **Multi-Start** fallback (CoolProp-consistent starting points for thermo blocks, scale factors for algebraic blocks; parallel execution available; engageable always, never, or only on Deep Search)
 
-- **CoolProp Integration**: Thermodynamic property calculations via the low-level `AbstractState` API (2–5× faster than `PropsSI`), with analytical derivatives and thread-local caching.
+- **CoolProp Integration**: Thermodynamic property calculations via the low-level `AbstractState` API (2–5× faster than `PropsSI`), with analytical derivatives and thread-local caching. CoolProp mixtures are accepted as fluids (`'R245fa[0.5]&R134a[0.5]'`, with a warning that mixture properties are predictive).
 
-- **Lookup Tables**: 1D/2D interpolation, cell access, and aggregate functions from external CSV files. A GUI panel lets you create and edit tables in-browser.
+- **Lookup Tables**: 1D/2D interpolation, cell access, text cells (`LOOKUP$`, the replacement of string arrays, which are not supported), and aggregate functions from external CSV files, usable in equations, in `FUNCTION`/`PROCEDURE` bodies and in `INTEGRAL` models. A GUI panel lets you create and edit tables in-browser.
 
 - **Equation-Based Dynamic Solving (`INTEGRAL`)**: Solve initial-value DAE models in the EES integral form (`y = y0 + INTEGRAL(dydt, t, t0, tf)`). Supports coupled ODEs, algebraic variables, RK4/RK45/Euler integrators, Richardson extrapolation, and an **Integral** GUI tab. See [Language Reference §12](docs/language_reference.md#12-equation-based-integration-dynamicdae-solving) and [docs/integral_table.md](docs/integral_table.md).
 
@@ -99,8 +99,8 @@ CoolSolve uses several file formats for input and verification:
     - `multiStartNumCores`: Threads for concurrent multi-start candidates (default: `4`; `N`>1 or `0`=auto runs candidates in parallel, first-to-converge wins).
    - **Integration options** (equation-based `INTEGRAL` models — all inert by default; see [Language Reference §12](docs/language_reference.md#12-equation-based-integration-dynamicdae-solving)):
      - `integralMethod`: Integrator — `RK4` (default), `RK45` (adaptive), `EulerExplicit`, or `EulerImplicit`.
-     - `integralFixedStep`: Fixed step size (`0` ⇒ derive from `integralMaxSteps` for fixed methods, or adapt for RK45).
-     - `integralMaxSteps`: Upper bound on the number of integration steps (default: `1000`).
+     - `integralFixedStep`: Fixed step size when the `INTEGRAL` call gives none (`0` ⇒ `integralMaxSteps` steps for fixed methods, or adapt for RK45). A step given in the model (5th `INTEGRAL` argument) always wins.
+     - `integralMaxSteps`: Number of steps of a fixed-step method without an explicit step (default: `1000`); budget of RK45 (`4·integralMaxSteps` attempted steps). A march that stops before the upper limit is an error.
      - `integralRelTol` / `integralAbsTol`: RK45 error control (defaults `1e-6` / `1e-9`).
      - `integralMinStep` / `integralMaxStep`: Step-size bounds (`0` = auto).
      - `integralRichardson`: Richardson extrapolation on fixed-step methods (default: `false`).
@@ -140,7 +140,7 @@ CoolSolve is a **standalone library** that automatically downloads all its depen
 | **Eigen** | Linear algebra |
 | **Catch2** | Unit testing |
 
-Dependencies are cached in `.fetchcontent_cache/` at the project root. This cache **persists across build folder deletions**, so you won't need to re-download dependencies if you clean and rebuild. The first `cmake` run will take several minutes to fetch CoolProp and its submodules; subsequent runs take only a few seconds.
+Dependencies are cached in `.fetchcontent_cache/` at the project root. This cache **persists across build folder deletions**, so you won't need to re-download dependencies if you clean and rebuild. The first `cmake` run will take several minutes to fetch CoolProp (full history, as the pinned commit is not a branch tip) and its submodules; subsequent runs take only a few seconds.
 
 ### Build Steps
 
@@ -224,15 +224,20 @@ grep CMAKE_BUILD_TYPE CMakeCache.txt
 
 ### Updating CoolProp Version
 
-By default, CoolSolve fetches the latest `master` branch of CoolProp. To use a specific version:
+CoolSolve is built with **one pinned CoolProp commit**, recorded in `CMakeLists.txt`
+(`COOLSOLVE_COOLPROP_PINNED_TAG`): a CoolSolve commit therefore determines the property
+library its results come from. `coolsolve --version` prints the CoolProp version and git
+revision actually linked. To build with another CoolProp (tag, branch or commit):
 
 ```bash
-# Use a specific tag or commit
-cmake -DCOOLSOLVE_COOLPROP_TAG=v6.6.0 ..
-
-# Or a specific commit hash
-cmake -DCOOLSOLVE_COOLPROP_TAG=abc123def ..
+cmake -DCOOLSOLVE_COOLPROP_TAG=v6.6.0 ..      # a tag
+cmake -DCOOLSOLVE_COOLPROP_TAG=abc123def ..   # or a commit hash
 ```
+
+An existing build directory keeps the value it cached: when it differs from the pin,
+`cmake` prints a warning with the command that aligns it
+(`cmake -DCOOLSOLVE_COOLPROP_TAG=<pin> ..`). Bumping the pin is a deliberate change, see
+[Contributing](docs/contributing.md#pinned-coolprop-version).
 
 ### Cleaning the Build
 
@@ -276,7 +281,7 @@ The debug folder contains:
 |------|-------------|
 | `README.md` | Index of all generated files |
 | `coolsolve.conf` | Copy of solver config from source folder (if present) |
-| `report.md` | Model statistics and block summary |
+| `report.md` | Model statistics, block summary and the branch kept by each `$IF`/`$IFNOT` directive |
 | `variables.md` | Variable mapping table (Markdown) |
 | `variables.csv` | Variable mapping (CSV for external tools) |
 | `equations.md` | Equations grouped by solution block |
@@ -301,6 +306,7 @@ The debug folder contains:
 | `-g, --guess` | Update .initials file with solution on success |
 | `--no-sol` | Disable generation of .sol file |
 | `--no-superancillary` | Disable CoolProp superancillary functions (faster VLE solving) |
+| `--version` | Print the CoolSolve version and the CoolProp version and git revision |
 | `-h, --help` | Show help message |
 
 ### Performance Options
@@ -416,6 +422,7 @@ CoolSolve/
 │   ├── evaluator.h             # Block and system evaluators
 │   ├── solution_checker.h      # Post-solve solution verification
 │   ├── usage_log.h             # GUI solve-attempt log (append + aggregated stats)
+│   ├── version.h               # CoolSolve / CoolProp version info (`--version`)
 │   └── solver.h                # Solver pipeline, all SolverOptions declarations
 ├── include/coolsolve/integral/
 │   └── *.h                     # Equation-based dynamic solver (IntegralProblem, IntegralTable, Integrator, IntegralSolver)
@@ -443,6 +450,7 @@ CoolSolve/
 │   ├── solver_symbolic.cpp     # Symbolic block reduction preprocessing
 │   ├── solver_trust_region.cpp # Trust-region dogleg solver
 │   ├── usage_log.cpp           # GUI solve-attempt log: CSV append + cached statistics
+│   ├── version.cpp             # CoolSolve and CoolProp (version, git revision) at run time
 │   └── solution_checker.cpp    # Post-solve equation-by-equation verification
 ├── tests/
 │   ├── test_parser.cpp         # Parser/IR unit tests (Catch2)

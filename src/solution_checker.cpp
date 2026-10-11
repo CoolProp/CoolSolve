@@ -290,7 +290,7 @@ void writeSolutionCheckReport(const std::string& path, const SolutionCheckResult
         for (const auto& c : result.checks) {
             if (!c.satisfied) {
                 f << "| " << c.equationId
-                  << " | " << c.originalText
+                  << " | " << markdownTableCell(c.originalText)
                   << " | " << std::setprecision(10) << c.lhsValue
                   << " | " << c.rhsValue
                   << " | " << std::setprecision(4) << c.residual
@@ -311,7 +311,7 @@ void writeSolutionCheckReport(const std::string& path, const SolutionCheckResult
           << " | " << c.rhsValue
           << " | " << std::setprecision(3) << c.residual
           << " | " << c.relativeError
-          << " | " << c.originalText << " |\n";
+          << " | " << markdownTableCell(c.originalText) << " |\n";
     }
 }
 

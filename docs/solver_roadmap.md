@@ -139,6 +139,12 @@ testing new solver work):
 `orc_co2` (28 vars), `cooling_tower` (22 vars),
 `air_screw_compressor` (13-var near-singular compressor-leak block).
 
+To explore: since the CoolProp pin `75af7816` (p,T flash rework, CoolProp #3360, bisected to
+`3f06ccf7`), `air_screw_compressor` no longer converges from the default guesses at the default
+`tolerance = 1e-9` (SingularJacobian in block 13, tearing at its iteration limit); it converges from
+1e-8, and at 1e-9 from its `.initials` (shipped since). Mechanism not analysed (flash precision vs the
+residual floor of the leakage block?).
+
 ---
 
 ## 4. Implementation notes

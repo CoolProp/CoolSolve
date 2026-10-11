@@ -94,6 +94,8 @@ LookupTable LookupTable::fromCSV(const std::string& name, const std::string& csv
     }
 
     std::vector<std::vector<double>> data;
+    std::vector<std::vector<std::string>> texts;   // the trimmed cell texts, kept only if a cell is not a number
+    bool hasText = false;
     size_t numCols = header.size();
 
     while (std::getline(stream, line)) {
@@ -102,6 +104,7 @@ LookupTable LookupTable::fromCSV(const std::string& name, const std::string& csv
 
         auto fields = parseCSVRow(trimmed);
         std::vector<double> row(numCols, std::numeric_limits<double>::quiet_NaN());
+        std::vector<std::string> rowTexts(numCols);
         for (size_t c = 0; c < numCols && c < fields.size(); ++c) {
             std::string s = trimWhitespace(fields[c]);
             if (s.empty()) {
@@ -118,12 +121,17 @@ LookupTable LookupTable::fromCSV(const std::string& name, const std::string& csv
                 } catch (...) {
                     row[c] = std::numeric_limits<double>::quiet_NaN();
                 }
+                if (std::isnan(row[c])) hasText = true;   // a cell that is text (read by LOOKUP$)
             }
+            rowTexts[c] = std::move(s);
         }
         data.push_back(std::move(row));
+        texts.push_back(std::move(rowTexts));
     }
 
-    return LookupTable(name, std::move(header), std::move(data));
+    LookupTable table(name, std::move(header), std::move(data));
+    if (hasText) table.text_ = std::move(texts);
+    return table;
 }
 
 // ============================================================================
@@ -139,10 +147,21 @@ std::string LookupTable::toCSV() const {
     }
     out << '\n';
     // Data rows
-    for (const auto& row : data_) {
+    for (size_t r = 0; r < data_.size(); ++r) {
+        const auto& row = data_[r];
         for (size_t c = 0; c < row.size(); ++c) {
             if (c > 0) out << ',';
-            if (std::isnan(row[c])) {
+            if (!text_.empty()) {
+                // A table with text cells: the cell as it was read, quoted again if it needs it
+                const std::string& cell = text_[r][c];
+                if (cell.find_first_of(",\"") == std::string::npos) {
+                    out << cell;
+                } else {
+                    out << '"';
+                    for (char ch : cell) out << (ch == '"' ? "\"\"" : std::string(1, ch));
+                    out << '"';
+                }
+            } else if (std::isnan(row[c])) {
                 // Empty cell
             } else {
                 out << row[c];
@@ -168,7 +187,7 @@ size_t LookupTable::columnIndex(const std::string& colName) const {
     return 0;
 }
 
-double LookupTable::value(size_t row1, size_t col1) const {
+void LookupTable::checkCell(size_t row1, size_t col1) const {
     if (row1 < 1 || row1 > data_.size()) {
         throw std::out_of_range("LookupTable '" + name_ + "': row " +
                                 std::to_string(row1) + " out of range [1," +
@@ -179,7 +198,22 @@ double LookupTable::value(size_t row1, size_t col1) const {
                                 std::to_string(col1) + " out of range [1," +
                                 std::to_string(columnNames_.size()) + "]");
     }
+}
+
+double LookupTable::value(size_t row1, size_t col1) const {
+    checkCell(row1, col1);
     return data_[row1 - 1][col1 - 1];
+}
+
+std::string LookupTable::text(size_t row1, size_t col1) const {
+    checkCell(row1, col1);
+    if (!text_.empty()) return text_[row1 - 1][col1 - 1];
+    const double v = data_[row1 - 1][col1 - 1];
+    if (std::isnan(v)) return "";
+    std::ostringstream oss;
+    oss.precision(15);
+    oss << v;
+    return oss.str();
 }
 
 // ============================================================================
@@ -461,26 +495,31 @@ ADValue LookupTable::lookup(const ADValue& rowVal, const ADValue& colVal,
     double v01 = data_[rlo0][chi0];
     double v11 = data_[rhi0][chi0];
 
-    double result = (1.0 - tr) * (1.0 - tc) * v00
-                  + tr         * (1.0 - tc) * v10
-                  + (1.0 - tr) * tc          * v01
-                  + tr         * tc          * v11;
+    // A zero weight (an exact row or column, a constant index) gives 0, whatever the neighbouring
+    // cell: 0*NaN is NaN, which would let a text or empty cell next to the one read spoil the result
+    // (a table with a column of names and a column of numbers).
+    auto prod = [](double w, double v) { return w == 0.0 ? 0.0 : w * v; };
+
+    double result = prod((1.0 - tr) * (1.0 - tc), v00)
+                  + prod(tr         * (1.0 - tc), v10)
+                  + prod((1.0 - tr) * tc,         v01)
+                  + prod(tr         * tc,         v11);
 
     // Analytical partial derivatives w.r.t. the row and column indices.
     // Zero when clamped outside the valid range (flat extrapolation).
     double dvdr = 0.0;
     double dvdc = 0.0;
     if (rInRange && nRows > 1) {
-        dvdr = (1.0 - tc) * (v10 - v00) + tc * (v11 - v01);
+        dvdr = prod(1.0 - tc, v10 - v00) + prod(tc, v11 - v01);
     }
     if (cInRange && nCols > 1) {
-        dvdc = (1.0 - tr) * (v01 - v00) + tr * (v11 - v10);
+        dvdc = prod(1.0 - tr, v01 - v00) + prod(tr, v11 - v10);
     }
 
     size_t ng = rowVal.gradient.size();
     ADValue res(result, ng);
     for (size_t i = 0; i < ng; ++i) {
-        res.gradient[i] = dvdr * rowVal.gradient[i] + dvdc * colVal.gradient[i];
+        res.gradient[i] = prod(rowVal.gradient[i], dvdr) + prod(colVal.gradient[i], dvdc);
     }
     return res;
 }

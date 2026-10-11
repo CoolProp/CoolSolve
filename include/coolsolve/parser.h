@@ -23,11 +23,26 @@ struct ParseError {
 // Parser Result
 // ============================================================================
 
+/**
+ * One `$IF` / `$IFNOT` directive as resolved while parsing (CS-GAP-IF-DIRECTIVE;
+ * see conditional_directives.h). The statements of the removed branch are not in
+ * `ParseResult::program`. Reported in the debug folder (`report.md`).
+ */
+struct ConditionalDirectiveInfo {
+    int line = 0;             ///< Line of the `$IF` / `$IFNOT`.
+    std::string text;         ///< The directive as written, comments removed (`$IF fluid$='Water'`).
+    bool evaluated = false;   ///< False: inside a removed branch (not evaluated) or not evaluable (an error).
+    bool thenKept = false;    ///< Only if `evaluated`: the lines up to `$ELSE`/`$ENDIF` are kept (else: the lines after `$ELSE`).
+    int elseLine = 0;         ///< Line of the `$ELSE`, 0 when there is none.
+    int endLine = 0;          ///< Line of the `$ENDIF`.
+};
+
 struct ParseResult {
     bool success;
     Program program;
     std::vector<ParseError> errors;
     DiagnosticCollector diagnostics;
+    std::vector<ConditionalDirectiveInfo> conditionalDirectives;  ///< Every `$IF`/`$IFNOT`, in file order.
     
     // Statistics
     int totalLines = 0;

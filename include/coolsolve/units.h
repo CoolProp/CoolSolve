@@ -40,6 +40,17 @@ struct UnitSystem {
     std::string density = "kg/m^3";
 };
 
+/**
+ * @brief `UNITSYSTEM('setting')` of EES: whether that unit setting is the one in use.
+ *
+ * CoolSolve works in SI on a mass basis with angles in degrees (`SI`, `Mass`, `Deg`
+ * are always in use, `Eng`, `Molar`, `Rad` never); temperature, pressure and energy
+ * follow `units`. Shared by the `UNITSYSTEM()` function (evaluator) and the
+ * `$IF UNITSYSTEM('XX')` directive (parser).
+ * @throws std::runtime_error for an unknown setting.
+ */
+bool unitSettingActive(const std::string& setting, const UnitSystem& units);
+
 class UnitConverter {
 public:
     // Convert value from the specified unit to SI (CoolProp standard)

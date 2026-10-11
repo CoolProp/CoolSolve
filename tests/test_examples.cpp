@@ -90,12 +90,11 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     // INTEGRAL examples (final integrated state at t = tf)
     {"ice_storage_tank.eescode",  {"E_discharged", 6.56833e10}},
     {"engine_weibe_cycle.eescode", {"p", 89221.7}},
-    // Pending: INTERPOLATE during INTEGRAL (lookup store not yet wired into
-    // IntegralSolver — see docs/integral_table.md §7.1 Limitations). Uncomment
-    // and set T_in from the first successful solve at tau = 604800 s once the
-    // fix lands.
-    // EES reference (ventilation only): T_in_max ≈ 29.76 °C.
-    // {"building_rc_network.eescode", {"T_in", 0.0}},
+    // INTERPOLATE (weather table) during INTEGRAL, T_in at tau = 604800 s (CS-GAP-INTEGRAL-LOOKUP).
+    // No EES stored solution: the reference is an independent RK4 integration (h = 15 s) of the same
+    // equations with a piecewise-linear reading of the same table, 30.6825 degC (library model CSL-0042:
+    // 30.68 degC, same method).
+    {"building_rc_network.eescode", {"T_in", 30.6825}},
     {"internal_combustion_engine.eescode",      {"W_dot", 190817}},
     {"internal_combustion_engine_cpbar.eescode", {"M_dot_a", 0.004209}},
     {"piston_compressor.eescode",               {"C", 0.04694}},

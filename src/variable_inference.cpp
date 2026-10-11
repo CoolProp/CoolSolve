@@ -293,12 +293,14 @@ void initializeVariables(IR& ir) {
 
         if (!info.inferredFluid.empty() && !info.inferredProperty.empty()) {
             auto t1 = std::chrono::high_resolution_clock::now();
-            auto fluid = FluidRegistry::getFluid(info.inferredFluid);
+            std::string fluidError;
+            auto fluid = FluidRegistry::getFluid(info.inferredFluid, &fluidError);
             auto t2 = std::chrono::high_resolution_clock::now();
             g_inference_fluid_lookup_time_ms += std::chrono::duration<double, std::milli>(t2 - t1).count();
             
             if (!fluid) {
-                initErrors.push_back("Variable '" + name + "': unknown fluid '" + info.inferredFluid + "'");
+                initErrors.push_back("Variable '" + name + "': " +
+                    (fluidError.empty() ? "unknown fluid '" + info.inferredFluid + "'" : fluidError));
                 info.guessValue = value;
                 continue;
             }

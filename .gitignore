@@ -7,3 +7,6 @@ CoolSolve_Installer.exe
 *-integral.csv
 # GUI solve-attempt log (see include/coolsolve/usage_log.h)
 coolsolve_gui.log
+
+# Python bytecode caches
+__pycache__/

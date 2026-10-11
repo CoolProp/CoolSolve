@@ -31,11 +31,7 @@ static ExprPtr cloneExprWithSubstitution(const ExprPtr& expr, const std::string&
     } else if (expr->is<Variable>()) {
         const auto& var = expr->as<Variable>();
         // Check if this variable IS the iterator variable (bare reference, no indices)
-        std::string upperName = var.name;
-        std::transform(upperName.begin(), upperName.end(), upperName.begin(), ::toupper);
-        std::string upperIter = iteratorVar;
-        std::transform(upperIter.begin(), upperIter.end(), upperIter.begin(), ::toupper);
-        if (upperName == upperIter && var.indices.empty()) {
+        if (eesStringEqual(var.name, iteratorVar) && var.indices.empty()) {
             result->node = NumberLiteral{value};
         } else {
             Variable newVar;
@@ -107,6 +103,9 @@ static StmtPtr cloneStmtWithSubstitution(const StmtPtr& stmt, const std::string&
                 newVar.indices.push_back(cloneExprWithSubstitution(idx, iteratorVar, value));
             }
             newCall.outputVars.push_back(std::move(newVar));
+        }
+        for (const auto& outExpr : call.outputExprs) {
+            newCall.outputExprs.push_back(cloneExprWithSubstitution(outExpr, iteratorVar, value));
         }
         result->node = std::move(newCall);
     } else if (stmt->is<Comment>()) {
@@ -184,6 +183,8 @@ IR IR::fromAST(const Program& program) {
         }
     }
     
+    ir.lowerCallExpressionOutputs(expandedStatements);
+
     for (const auto& stmt : expandedStatements) {
         // Collect standalone "" display comments and attach to next equation
         if (stmt->is<Comment>()) {
@@ -297,6 +298,129 @@ IR IR::fromAST(const Program& program) {
     return ir;
 }
 
+namespace {
+
+bool containsVariable(const ExprPtr& expr) {
+    if (!expr) return false;
+    if (expr->is<Variable>()) return true;
+    if (expr->is<UnaryOp>()) return containsVariable(expr->as<UnaryOp>().operand);
+    if (expr->is<BinaryOp>())
+        return containsVariable(expr->as<BinaryOp>().left) || containsVariable(expr->as<BinaryOp>().right);
+    if (expr->is<FunctionCall>()) {
+        for (const auto& arg : expr->as<FunctionCall>().args)
+            if (containsVariable(arg)) return true;
+        for (const auto& named : expr->as<FunctionCall>().namedArgs)
+            if (containsVariable(named.second)) return true;
+    }
+    return false;
+}
+
+ExprPtr makeBinary(const std::string& op, ExprPtr left, ExprPtr right) {
+    auto expr = std::make_shared<Expression>();
+    expr->node = BinaryOp{op, std::move(left), std::move(right)};
+    return expr;
+}
+
+/// Solve `expr = rhs` for the one variable of `expr` when `expr` is built from that variable with
+/// `+`, `-`, `*` and a unary minus, or `/` by something without variables, the other operands
+/// having none: `c/1000 = a` gives `c = a*1000`. Returns false (and leaves the outputs alone)
+/// for any other shape, which stays an implicit equation.
+bool solveForOnlyVariable(const ExprPtr& expr, const ExprPtr& rhs, ExprPtr& variable, ExprPtr& value) {
+    if (expr->is<Variable>()) {
+        for (const auto& idx : expr->as<Variable>().indices)
+            if (containsVariable(idx)) return false;
+        variable = expr;
+        value = rhs;
+        return true;
+    }
+    if (expr->is<UnaryOp>()) {
+        const auto& op = expr->as<UnaryOp>();
+        if (op.op == "+") return solveForOnlyVariable(op.operand, rhs, variable, value);
+        if (op.op != "-") return false;
+        auto negated = std::make_shared<Expression>();
+        negated->node = UnaryOp{"-", rhs};
+        return solveForOnlyVariable(op.operand, negated, variable, value);
+    }
+    if (!expr->is<BinaryOp>()) return false;
+    const auto& op = expr->as<BinaryOp>();
+    const bool inLeft = containsVariable(op.left);
+    if (inLeft == containsVariable(op.right)) return false;   // both sides: not a single variable
+    const ExprPtr& with = inLeft ? op.left : op.right;
+    const ExprPtr& other = inLeft ? op.right : op.left;
+    if (op.op == "+") return solveForOnlyVariable(with, makeBinary("-", rhs, other), variable, value);
+    if (op.op == "*") return solveForOnlyVariable(with, makeBinary("/", rhs, other), variable, value);
+    if (op.op == "-")
+        return solveForOnlyVariable(with, inLeft ? makeBinary("+", rhs, other) : makeBinary("-", other, rhs),
+                                    variable, value);
+    if (op.op == "/" && inLeft) return solveForOnlyVariable(with, makeBinary("*", rhs, other), variable, value);
+    return false;
+}
+
+}  // namespace
+
+// EES lets an output of a CALL be an expression (`CALL BRINEPROP('Specheat', b$, X, T : c_p/1000)`):
+// the output of the routine equals the expression, which the system solves for like any equation
+// (CS-GAP-CALL-EXPR-OUT). The output goes to an auxiliary variable `__out<k>_<routine>_L<line>`
+// (k = position of the output; `_2`, `_3`... for the copies made by a DUPLICATE loop and when the
+// name is already used by the model) and the equation `expression = auxiliary` follows the CALL
+// (solved for the variable when the expression is a simple chain of `+ - * /` on one variable).
+// A variable output is untouched, and so is a program without expression outputs.
+void IR::lowerCallExpressionOutputs(std::vector<StmtPtr>& statements) {
+    const auto hasExpressionOutput = [](const StmtPtr& stmt) {
+        return stmt->is<ProcedureCall>() && !stmt->as<ProcedureCall>().outputExprs.empty();
+    };
+    if (std::none_of(statements.begin(), statements.end(), hasExpressionOutput)) return;
+
+    // Every name of the model, so that an auxiliary variable never merges with one of them
+    std::set<std::string, CaseInsensitiveLess> used;
+    for (const auto& stmt : statements) {
+        if (stmt->is<Equation>()) {
+            extractVariables(stmt->as<Equation>().lhs, used);
+            extractVariables(stmt->as<Equation>().rhs, used);
+        } else if (stmt->is<ProcedureCall>()) {
+            const auto& call = stmt->as<ProcedureCall>();
+            for (const auto& arg : call.inputArgs) extractVariables(arg, used);
+            for (const auto& out : call.outputVars) used.insert(out.flattenedName());
+            for (const auto& out : call.outputExprs) extractVariables(out, used);
+        }
+    }
+
+    std::vector<StmtPtr> lowered;
+    lowered.reserve(statements.size());
+    for (const auto& stmt : statements) {
+        if (!hasExpressionOutput(stmt)) {
+            lowered.push_back(stmt);
+            continue;
+        }
+        ProcedureCall call = stmt->as<ProcedureCall>();
+        std::vector<StmtPtr> ties;
+        for (size_t i = 0; i < call.outputExprs.size(); ++i) {
+            if (!call.outputExprs[i]) continue;
+            const std::string base = "__out" + std::to_string(i + 1) + "_" + call.name + "_L"
+                                     + std::to_string(stmt->sourceLineNumber);
+            std::string name = base;
+            for (int copy = 2; used.count(name); ++copy) name = base + "_" + std::to_string(copy);
+            used.insert(name);
+            call.outputVars[i] = Variable{name, {}};
+            // `c/1000 = aux` is written `c = aux*1000` when it can be: the form of an explicit equation
+            // (solved without iterating, and scaled like the equations a user writes by hand)
+            ExprPtr auxiliary = makeVariable(name, stmt->sourceLineNumber);
+            ExprPtr variable, value;
+            if (solveForOnlyVariable(call.outputExprs[i], auxiliary, variable, value))
+                ties.push_back(makeEquation(variable, value, stmt->sourceLineNumber));
+            else
+                ties.push_back(makeEquation(call.outputExprs[i], auxiliary, stmt->sourceLineNumber));
+        }
+        call.outputExprs.clear();
+        auto lowerCall = std::make_shared<Statement>();
+        lowerCall->node = std::move(call);
+        lowerCall->sourceLineNumber = stmt->sourceLineNumber;
+        lowered.push_back(std::move(lowerCall));
+        for (auto& tie : ties) lowered.push_back(std::move(tie));
+    }
+    statements = std::move(lowered);
+}
+
 // Set of EES thermodynamic function names (lowercase for comparison)
 // In EES, thermophysical functions have a fluid name as their first positional
 // argument, which can be specified without quotes. These functions are skipped
@@ -371,9 +495,10 @@ void IR::extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensi
             // Extract from positional args
             for (const auto& arg : node.args) {
                 if (isThermo && firstArg) {
-                    // Skip first argument (fluid name) for thermo functions
+                    // Skip first argument (fluid name) for thermo functions, except a call
+                    // (LOOKUP$('table', i, 1)): its row and column are variables of the equation
                     firstArg = false;
-                    continue;
+                    if (!(arg && arg->template is<FunctionCall>())) continue;
                 }
                 // Skip string literals in lookup functions (they are table/column names)
                 if (isLookup && arg && arg->template is<StringLiteral>()) {
@@ -497,10 +622,13 @@ int IR::loadSolutionFromFile(const std::string& filePath) {
     std::string line;
     
     while (std::getline(file, line)) {
-        // Remove comments
-        size_t commentPos = line.find('#');
-        if (commentPos != std::string::npos) {
-            line = line.substr(0, commentPos);
+        // Remove comments: a '#' that starts the line or follows a blank (a '#' is also a character
+        // of names: Nu#_f = 6.2)
+        for (size_t k = 0; k < line.size(); ++k) {
+            if (line[k] == '#' && (k == 0 || std::isspace(static_cast<unsigned char>(line[k - 1])))) {
+                line.erase(k);
+                break;
+            }
         }
         
         // Trim whitespace
@@ -570,6 +698,75 @@ int IR::loadSolutionFromFile(const std::string& filePath) {
 // LaTeX Generation
 // ============================================================================
 
+std::string escapeLatexText(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() * 2);
+    for (char c : s) {
+        switch (c) {
+            case '&':  out += "\\&";  break;
+            case '%':  out += "\\%";  break;
+            case '$':  out += "\\$";  break;
+            case '#':  out += "\\#";  break;
+            case '_':  out += "\\_";  break;
+            case '{':  out += "\\{";  break;
+            case '}':  out += "\\}";  break;
+            case '~':  out += "\\textasciitilde{}"; break;
+            case '^':  out += "\\textasciicircum{}"; break;
+            case '\\': out += "\\textbackslash{}"; break;
+            default:   out += c;
+        }
+    }
+    return out;
+}
+
+std::string escapeLatexMath(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() * 2);
+    for (size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        switch (c) {
+            case '&':  out += "\\&";  break;
+            case '%':  out += "\\%";  break;
+            case '$':  out += "\\$";  break;
+            case '#':  out += "\\#";  break;
+            case '{':  out += "\\{";  break;
+            case '}':  out += "\\}";  break;
+            case '|':  out += "\\vert{}"; break;
+            case '~':  out += "\\sim{}"; break;
+            case '^':  out += "\\hat{}"; break;
+            case '\\': out += "\\backslash{}"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x80) { out += c; break; }
+                // UTF-8: the characters accepted in names (ees_string.h); `\text` needs amsmath
+                bool letter = false;
+                const size_t len = eesNonAsciiNameCharLength(s, i, &letter);
+                if (len == 0) { out += c; break; }
+                const std::string ch = s.substr(i, len);
+                i += len - 1;
+                if (letter) out += ch == "\xC2\xB5" ? "\\mu" : "\\text{" + ch + "}";
+                else if (ch == "\xC2\xB0") out += "{}^{\\circ}";
+                else out += "{}^{" + std::string(1, ch == "\xC2\xB2" ? '2' : ch == "\xC2\xB3" ? '3' : '1') + "}";
+        }
+    }
+    return out;
+}
+
+std::string markdownTableCell(const std::string& s) {
+    std::string out;
+    for (char c : s) {
+        if (c == '|') out += '\\';
+        out += c;
+    }
+    return out;
+}
+
+/// A segment of a name in math mode: the `|` of EES starts a superscript (`G|o` is G^o).
+static std::string latexSegment(const std::string& seg) {
+    const size_t bar = seg.find('|');
+    if (bar == std::string::npos) return escapeLatexMath(seg);
+    return escapeLatexMath(seg.substr(0, bar)) + "^{" + escapeLatexMath(seg.substr(bar + 1)) + "}";
+}
+
 std::string variableToLatex(const std::string& name) {
     // ---------------------------------------------------------------
     // EES-to-LaTeX variable-name translation.
@@ -601,7 +798,7 @@ std::string variableToLatex(const std::string& name) {
     if (!cleanName.empty() && cleanName.back() == '$') {
         cleanName.pop_back();
     }
-    if (cleanName.empty()) return "\\text{" + name + "}";
+    if (cleanName.empty()) return "\\text{" + escapeLatexText(name) + "}";
 
     // 1. Array brackets: extract index and fold into the base name
     //    so that T_hf[2] becomes segments ["T","hf","2"] (avoiding
@@ -627,7 +824,7 @@ std::string variableToLatex(const std::string& name) {
         }
         if (!seg.empty()) segs.push_back(seg);
     }
-    if (segs.empty()) return name;
+    if (segs.empty()) return "\\text{" + escapeLatexText(name) + "}";
 
     // 3. Greek-letter prefix detection on the first segment
     //    Uppercase prefixes are sorted longest-first to avoid partial clashes.
@@ -659,7 +856,7 @@ std::string variableToLatex(const std::string& name) {
             if (first.size() >= gk.size() &&
                 first.substr(0, gk.size()) == gk) {
                 greekLatex = gl;
-                baseSymbol = first.substr(gk.size());
+                baseSymbol = latexSegment(first.substr(gk.size()));
                 foundGreek = true;
                 break;
             }
@@ -675,7 +872,7 @@ std::string variableToLatex(const std::string& name) {
     }
 
     if (!foundGreek) {
-        baseSymbol = first;
+        baseSymbol = latexSegment(first);
     }
 
     // 4. Classify remaining segments as modifiers or subscripts
@@ -685,7 +882,7 @@ std::string variableToLatex(const std::string& name) {
         if (segs[i] == "bar" || segs[i] == "dot") {
             modifiers.push_back(segs[i]);
         } else {
-            subscripts.push_back(segs[i]);
+            subscripts.push_back(latexSegment(segs[i]));
         }
     }
     // Append array index as the last subscript element
@@ -748,7 +945,7 @@ std::string IR::expressionToLatex(const ExprPtr& expr) const {
             }
             return std::to_string(val);
         } else if constexpr (std::is_same_v<T, StringLiteral>) {
-            return "\\mathrm{" + node.value + "}";
+            return "\\mathrm{" + escapeLatexMath(node.value) + "}";
         } else if constexpr (std::is_same_v<T, Variable>) {
             return variableToLatex(node.flattenedName());
         } else if constexpr (std::is_same_v<T, UnaryOp>) {
@@ -781,7 +978,7 @@ std::string functionCallToLatex(const FunctionCall& func) {
     
     // Use the same THERMO_FUNCTIONS set for consistency
     if (THERMO_FUNCTIONS.find(lowerName) != THERMO_FUNCTIONS.end()) {
-        result = "\\mathrm{" + func.name + "}";
+        result = "\\mathrm{" + escapeLatexMath(func.name) + "}";
     } else if (lowerName == "exp") {
         result = "\\exp";
     } else if (lowerName == "ln" || lowerName == "log") {
@@ -791,7 +988,7 @@ std::string functionCallToLatex(const FunctionCall& func) {
     } else if (lowerName == "min" || lowerName == "max") {
         result = "\\mathrm{" + lowerName + "}";
     } else {
-        result = "\\mathrm{" + func.name + "}";
+        result = "\\mathrm{" + escapeLatexMath(func.name) + "}";
     }
     
     result += " \\left(";
@@ -804,7 +1001,7 @@ std::string functionCallToLatex(const FunctionCall& func) {
     }
     for (const auto& [name, arg] : func.namedArgs) {
         if (!first) result += ", ";
-        result += "\\mbox{\\ " + name + "}=" + expressionToLatex(arg);
+        result += "\\mbox{\\ " + escapeLatexText(name) + "}=" + expressionToLatex(arg);
         first = false;
     }
     
@@ -821,7 +1018,7 @@ std::string expressionToLatex(const ExprPtr& expr) {
         if constexpr (std::is_same_v<T, NumberLiteral>) {
             return std::to_string(node.value);
         } else if constexpr (std::is_same_v<T, StringLiteral>) {
-            return "\\mathrm{" + node.value + "}";
+            return "\\mathrm{" + escapeLatexMath(node.value) + "}";
         } else if constexpr (std::is_same_v<T, Variable>) {
             return variableToLatex(node.flattenedName());
         } else if constexpr (std::is_same_v<T, UnaryOp>) {
@@ -877,7 +1074,7 @@ std::string IR::variableTableToMarkdown() const {
     int num = 1;
     for (const auto& [name, info] : variables_) {
         oss << "| " << num++;
-        oss << " | `" << name << "`";
+        oss << " | `" << markdownTableCell(name) << "`";
         oss << " | $" << info.latexLabel << "$";
         if (info.solutionValue) {
             oss << " | " << *info.solutionValue;
