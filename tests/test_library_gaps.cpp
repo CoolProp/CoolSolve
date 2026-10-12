@@ -11,6 +11,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "coolsolve/autodiff_node.h"
+#include "coolsolve/constants.h"
 #include "coolsolve/ees_string.h"
 #include "coolsolve/evaluator.h"
 #include "coolsolve/ir.h"
@@ -8772,4 +8773,181 @@ CALL Colebrook(1000, 0.001, 0.1 : f, RR)
         CHECK_THAT(run["f"], WithinRel(0.074, 1e-14));
         CHECK_THAT(run["RR"], WithinRel(0.01, 1e-14));
     }
+}
+
+// ============================================================================
+// CS-BUG-PI-FUNCTION: the built-in constants (pi, g#, R#, ...) inside FUNCTION/PROCEDURE bodies.
+// The body evaluator started with no variables, so `pi` was read as an unset local (= 1) and every
+// `pi/4*D^2` of a body was silently wrong.
+// ============================================================================
+
+TEST_CASE("CS-BUG-PI-FUNCTION: pi in the body of a FUNCTION", "[library-gaps][pi-function]") {
+    const double pi = 3.14159265358979323846;
+    // the reproducer of the register: the area of a circle
+    auto run = runModel(R"(
+FUNCTION fa(D)
+  a = PI/4*D^2
+  fa = a
+END
+x1 = fa(1)
+y1 = PI/4
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.warnings.empty());
+    CHECK_THAT(run["x1"], WithinRel(pi / 4, 1e-14));
+    CHECK_THAT(run["y1"], WithinRel(pi / 4, 1e-14));
+
+    // the three spellings of the constant, and the function form
+    auto spellings = runModel(R"(
+FUNCTION f(x)
+  f = PI*x + 10*pi*x + 100*Pi*x + 1000*pi()*x
+END
+y = f(2)
+)");
+    REQUIRE(spellings.solveOk);
+    CHECK_THAT(spellings["y"], WithinRel(1111 * pi * 2, 1e-14));
+}
+
+TEST_CASE("CS-BUG-PI-FUNCTION: pi in the body of a PROCEDURE, and in a function called by a body", "[library-gaps][pi-function]") {
+    const double pi = 3.14159265358979323846;
+    auto run = runModel(R"(
+PROCEDURE circle(D : A, P)
+  A = pi/4*D^2
+  P = PI*D
+END
+CALL circle(2 : A1, P1)
+FUNCTION inner(x)
+  inner = Pi*x
+END
+FUNCTION outer(x)
+  outer = inner(x) + pi
+END
+PROCEDURE proc2(x : y)
+  y = outer(x)
+END
+z = outer(3)
+CALL proc2(3 : w)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["A1"], WithinRel(pi, 1e-14));
+    CHECK_THAT(run["P1"], WithinRel(2 * pi, 1e-14));
+    CHECK_THAT(run["z"], WithinRel(4 * pi, 1e-14));
+    CHECK_THAT(run["w"], WithinRel(4 * pi, 1e-14));
+}
+
+TEST_CASE("CS-BUG-PI-FUNCTION: every built-in constant, in every spelling, inside a body", "[library-gaps][pi-function]") {
+    // the value is the one of the main program: src/constants.cpp is the single table. The results are
+    // scaled by 1E30 so that the 1E-34 constants are not lost in the Newton step from the guess value 1
+    // (x - (x - 1E-19) is 0 in double precision; unrelated to the constants).
+    int checked = 0;
+    for (const auto& [name, info] : Constants::getAll()) {
+        INFO(name);
+        auto run = runModel("FUNCTION fc(x)\n  fc = " + name + "*x*1E30\nEND\nPROCEDURE pc(x : y)\n  y = " + name +
+                            "*x*1E30\nEND\nr = fc(1)\nCALL pc(1 : s)\nm = " + name + "*1E30\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["r"], WithinRel(info.value * 1e30, 1e-13));
+        CHECK_THAT(run["s"], WithinRel(info.value * 1e30, 1e-13));
+        CHECK_THAT(run["m"], WithinRel(info.value * 1e30, 1e-13));
+        ++checked;
+    }
+    CHECK(checked == static_cast<int>(Constants::getAll().size()));
+    CHECK(checked >= 17);   // PI, pi, Pi and the # constants
+    // spot checks of the values themselves
+    CHECK(Constants::getValue("g#") == 9.80665);
+    auto g = runModel("FUNCTION w(m)\n  w = m*g#\nEND\nF = w(2)\n");
+    REQUIRE(g.solveOk);
+    CHECK_THAT(g["F"], WithinRel(2 * 9.80665, 1e-14));
+}
+
+TEST_CASE("CS-BUG-PI-FUNCTION: constants in the IF branches and the loops of a body", "[library-gaps][pi-function]") {
+    const double pi = 3.14159265358979323846;
+    auto run = runModel(R"(
+FUNCTION f(x)
+  IF (x > 0) THEN
+    r = pi*x
+  ELSE
+    r = -pi*x
+  ENDIF
+  IF (pi > 3) THEN s = 1 ELSE s = 0
+  IF (x > 100) THEN t = 0 ELSE t = g#
+  k := 0
+  REPEAT
+    k := k + 1
+    u := pi*k
+  UNTIL (u > 10)
+  DUPLICATE i = 1, 3
+    a[i] = pi*i
+  END
+  f = r + 10*s + 100*t + 1000*k + 10000*u + 100000*(a[1] + a[2] + a[3])
+END
+y1 = f(2)
+y2 = f(-2)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    const double common = 10 + 100 * 9.80665 + 1000 * 4 + 10000 * (4 * pi) + 100000 * 6 * pi;
+    CHECK_THAT(run["y1"], WithinRel(2 * pi + common, 1e-14));
+    CHECK_THAT(run["y2"], WithinRel(2 * pi + common, 1e-14));
+}
+
+TEST_CASE("CS-BUG-PI-FUNCTION: derivatives through a body that uses pi", "[library-gaps][pi-function]") {
+    const double pi = 3.14159265358979323846;
+    // an implicit main-program equation solved through a FUNCTION: the Jacobian comes from the body
+    auto run = runModel(R"(
+FUNCTION fa(D)
+  a = PI/4*D^2
+  fa = a
+END
+fa(D) = 1
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["D"], WithinRel(std::sqrt(4 / pi), 1e-9));
+
+    // and through a PROCEDURE that is part of a coupled block, with g# in the body
+    auto coupled = runModel(R"(
+PROCEDURE fall(h : v)
+  v = sqrt(2*g#*h)
+END
+CALL fall(H : v)
+v = 5
+Area = pi/4*Dia^2
+Area = 2
+)");
+    REQUIRE(coupled.solveOk);
+    CHECK_THAT(coupled["H"], WithinRel(25 / (2 * 9.80665), 1e-9));
+    CHECK_THAT(coupled["Dia"], WithinRel(std::sqrt(8 / pi), 1e-9));
+}
+
+TEST_CASE("CS-BUG-PI-FUNCTION: a local variable of a body named like a constant keeps its own value", "[library-gaps][pi-function]") {
+    // `c#`, `h#`, `k#`... are also plausible local names (the speed of light is a constant of the main program only
+    // when nothing sets it): the local assignment wins in the body, the main program keeps the constant
+    auto run = runModel(R"(
+FUNCTION f(x)
+  c# = 2*x
+  f = c#
+END
+FUNCTION g(x)
+  pi = 3
+  g = pi*x
+END
+FUNCTION h(x)
+  h = pi*x + c#*1E-8
+END
+y = f(4)
+z = g(2)
+w = h(1)
+m = c#*1E-8
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    const double pi = 3.14159265358979323846;
+    CHECK_THAT(run["y"], WithinRel(8.0, 1e-14));
+    CHECK_THAT(run["z"], WithinRel(6.0, 1e-14));
+    // the unset local of another body is the constant, not 1
+    CHECK_THAT(run["w"], WithinRel(pi + 299792458.0 * 1e-8, 1e-14));
+    CHECK_THAT(run["m"], WithinRel(299792458.0 * 1e-8, 1e-12));
 }

@@ -54,7 +54,10 @@ the rest of the file: the parser warns (`P007`) with the line that opened it.
 - Identifiers (variable names) start with a letter or `_` and may contain letters, digits,
   `_` and the symbols `%`, `|` and `#`, anywhere in the name: `C%`, `Q_dot_2_%`, `K|star_r_n`,
   `Nu#_f`. A `\` may join two parts of a name (`dU\dtau`, `time_h\day`) and must be followed
-  by a letter or `_`. The built-in constants `g#`, `R#`... keep their meaning.
+  by a letter or `_`. The built-in constants `pi`, `g#`, `R#`... keep their meaning, in the
+  main program and in the bodies of `FUNCTION`s and `PROCEDURE`s alike (a body does not see the
+  variables of the main program, but it does see the constants). A variable of a body that has the
+  name of a constant (a local `c#`) is a local one: it keeps the value the body gives it.
 - Letters are the ASCII letters and the accented letters of Latin-1 (`é`, `ç`, `ß`, `µ`...),
   and the characters `°`, `²`, `³`, `¹` may follow them: `T_a_réf`, `n°_90°elbow_reg`. The
   model file must be UTF-8. Other letters (Greek, Cyrillic...), signs such as `×` or `−`,

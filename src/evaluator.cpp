@@ -1,4 +1,5 @@
 #include "coolsolve/evaluator.h"
+#include "coolsolve/constants.h"
 #include "coolsolve/ees_string.h"
 #include "coolsolve/lookup_table.h"
 #include "coolsolve/units.h"
@@ -462,6 +463,14 @@ ADValue ExpressionEvaluator::getVariable(const std::string& name) const {
         return it->second;
     }
     
+    // A built-in constant (pi, g#, R#, ...) is available in every scope: the main program gets it as
+    // an IR variable (IR::addVariable), the body of a FUNCTION or PROCEDURE has no IR variables and
+    // would otherwise read it as an unset local (CS-BUG-PI-FUNCTION). The lookup above comes first: a
+    // body that sets a variable named like a constant (a local `c#`) keeps its own value, as before.
+    if (Constants::isConstant(name)) {
+        return ADValue::constant(Constants::getValue(name), numVariables_);
+    }
+
     // If not found, use default value of 1.0 and record as missing
     missingVariables_.insert(name);
     return ADValue::constant(1.0, numVariables_);
