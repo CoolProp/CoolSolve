@@ -799,6 +799,88 @@ that follow (as the fluid name, `enthalpy(fluid$, …)`), whether or not the mai
 program also assigns it a literal, in the order the structural analysis finds
 (also inside a coupled block).
 
+### Bodies are assignments executed in order
+
+As in EES, the body of a `FUNCTION` or `PROCEDURE` is **100 % explicit**: a
+sequence of assignment statements executed from top to bottom (`=` and `:=` both
+mean assignment there). Nothing in a body is solved simultaneously. The routine
+itself may still be **called implicitly** from the main program: `ff(x) = 10`
+solves `x` through the explicit function `ff`, and a `CALL` inside an algebraic
+loop is iterated by the solver like any equation.
+
+Three rules follow, checked once when the model is parsed (statements inside `IF`
+branches, `REPEAT ... UNTIL` and `DUPLICATE` loops included). A violation is an
+error with its line, like a syntax error, and the model is not solved:
+
+- **The left-hand side is a variable or an array element.** Anything else is an
+  implicit equation, which a body cannot solve:
+
+  ```
+  Line 3: implicit equation in PROCEDURE 'pq': the statements of a FUNCTION or PROCEDURE are
+  assignments executed in order, so the left-hand side must be a variable. Solve the equation
+  in the main program, or iterate explicitly in the body (REPEAT ... UNTIL)
+  ```
+
+  (A lookup-table cell write `LOOKUP('t', 1, 1) = x` is not concerned: writing a
+  cell is not supported yet and the statement has no effect.)
+- **A variable is assigned before it is read.** The variables of a body other
+  than its inputs are local and *"not initialised"* (EES help, *Internal
+  Functions*): the outputs (the function's own name, the outputs of a procedure)
+  and every other name have no value until a statement assigns them, and a body
+  does not see the variables of the main program.
+
+  ```
+  Line 2: variable 'b' is read in PROCEDURE 'p' before it is assigned: the variables of a
+  FUNCTION or PROCEDURE other than its inputs are local and not initialised (pass
+  main-program values as input arguments)
+  ```
+
+  A variable counts as assigned from the first statement that assigns it, in
+  the order of the text: an assignment in either branch of an `IF`, the output
+  of an earlier `CALL` and one element of an array all count. The iterator of a
+  `DUPLICATE` loop, the inputs and the built-in constants (`pi`, `g#`, `R#`,
+  `sigma#`, …) are always available. Inside a `REPEAT` loop the text order is
+  the rule too: a variable read before its assignment in the loop must also be
+  assigned before the loop. Every read counts — right-hand sides, indices,
+  `IF` and `UNTIL` conditions, the input arguments of a `CALL`, the arguments
+  of functions — and string variables (`fluid$`) follow the same rule; the
+  names that are not variables (function names, the `T=` keys of property
+  calls, an unquoted fluid name such as `R134a`) are ignored, as in the main
+  program. Each variable is reported once, at its first read.
+- **Every output is assigned.** An output that no statement of the body assigns
+  (not even in one branch of an `IF`, or as the output of a `CALL`) would have
+  no value; the error is reported on the header line of the routine:
+
+  ```
+  Line 1: FUNCTION 'ff' never assigns its output 'ff': every output of a FUNCTION or
+  PROCEDURE must be assigned by its body
+  ```
+
+The explicit rewrites, valid EES with the same results:
+
+```ees
+"A value of the main program: pass it as an input argument"
+PROCEDURE p(a, b : y)       "was PROCEDURE p(a : y), reading the main-program b"
+    y = 2*b + a
+END
+
+"An implicit equation: iterate explicitly in the body..."
+PROCEDURE friction(Re, RR : f)
+    f = 0.02
+    REPEAT
+        f_old = f
+        f = (-2*log10(RR/3.7 + 2.51/(Re*sqrt(f_old))))^(-2)     "Colebrook, fixed point"
+    UNTIL (abs(f - f_old) < 1E-12)
+END
+CALL friction(1E5, 0.001 : f)                                   "f = 0.022175"
+
+"...or solve it in the main program and pass the result as an input argument"
+1/sqrt(f) = -2*log10(RR/3.7 + 2.51/(Re*sqrt(f)))
+CALL pipe(f, L, D : DELTAp)
+```
+
+A body that holds a syntax error is checked once that error is fixed.
+
 ### `$COMMON` is not supported
 
 In EES, `$COMMON a, b$, c` on the first line of a `FUNCTION` or `PROCEDURE` body

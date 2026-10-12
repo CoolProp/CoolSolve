@@ -1,5 +1,6 @@
 #include "coolsolve/parser.h"
 #include "coolsolve/conditional_directives.h"
+#include "coolsolve/constants.h"
 #include "coolsolve/diagnostic.h"
 #include "coolsolve/ees_string.h"
 #include "coolsolve/ir.h"
@@ -290,11 +291,14 @@ private:
                     int startLine = lineNumber;
                     procedureBodyDepth_++;
                     routineKind_ = "FUNCTION"; routineName_ = name;
+                    const size_t errorsBefore = result.errors.size();
                     std::string term = parseBodyLines(stream, lineNumber, body, result);
                     procedureBodyDepth_--;
                     if (term != "END") {
                         result.errors.push_back({startLine, 0, "Function '" + name + "' missing END", line});
                     } else {
+                        if (result.errors.size() == errorsBefore)
+                            checkRoutineBody(params, {name}, body, startLine, preprocessed, result);
                         result.program.statements.push_back(makeFunctionDefinition(name, params, body, startLine));
                     }
                     continue;
@@ -310,11 +314,14 @@ private:
                     int startLine = lineNumber;
                     procedureBodyDepth_++;
                     routineKind_ = "PROCEDURE"; routineName_ = name;
+                    const size_t errorsBefore = result.errors.size();
                     std::string term = parseBodyLines(stream, lineNumber, body, result);
                     procedureBodyDepth_--;
                     if (term != "END") {
                         result.errors.push_back({startLine, 0, "Procedure '" + name + "' missing END", line});
                     } else {
+                        if (result.errors.size() == errorsBefore)
+                            checkRoutineBody(inputs, outputs, body, startLine, preprocessed, result);
                         result.program.statements.push_back(makeProcedureDefinition(name, inputs, outputs, body, startLine));
                     }
                     continue;
@@ -1260,6 +1267,136 @@ private:
                                          ? "Could not parse segment: " + seg : "Could not parse line", errorLine});
             }
         }
+    }
+
+    // ------------------------------------------------------------------------
+    // Check of a FUNCTION / PROCEDURE body (CS-BUG-IMPLICIT-PROC, CS-BUG-LOCAL-UNASSIGNED,
+    // CS-GAP-STRING-LOCAL-UNSET; maintainer decision of 2026-10-12)
+    //
+    // A body is a sequence of assignments executed in order, as in EES (`=` and `:=` alike), and its
+    // variables other than the inputs are local and not initialised (EES help, Internal Functions).
+    // Two errors, reported with their line like the parse errors so that the model is not solved
+    // (the evaluator would skip the statement, or read the variable as 1):
+    //  - an implicit statement: the left-hand side is not a variable or an array element. A
+    //    lookup-table cell write `LOOKUP(...) = ...` is left alone (the open item CS-BUG-LOOKUP-WRITE);
+    //  - a read of a variable that is no input, no built-in constant (pi, g#...) and that no earlier
+    //    statement of the body assigns, in text order. Flow-insensitive: an assignment in either
+    //    branch of an IF counts, an array counts as assigned once one of its elements is; inside a
+    //    REPEAT loop a variable read before its assignment in the loop is an error. The variables
+    //    read are those the equations of the main program count (IR::extractVariables);
+    //  - an output (the FUNCTION's own name, a PROCEDURE output) that no statement assigns, reported
+    //    on the routine's header line (flow-insensitive too: one branch or a CALL output suffices).
+    // Each variable is reported once, at its first read. Called once per routine, at parse time,
+    // and only when its body parsed without error: a statement that failed to parse would make the
+    // variables it assigns look unassigned.
+    // ------------------------------------------------------------------------
+    struct BodyCheck {
+        std::string routine;                                  // "FUNCTION 'f'" / "PROCEDURE 'p'"
+        std::set<std::string, CaseInsensitiveLess> assigned;  // the inputs, then every name assigned so far
+        std::set<std::string, CaseInsensitiveLess> reported;  // variables already reported as unassigned
+        const std::string& source;                            // the preprocessed source (error context)
+        ParseResult& result;
+    };
+
+    void checkRoutineBody(const std::vector<std::string>& inputs, const std::vector<std::string>& outputs,
+                          const std::vector<StmtPtr>& body, int headerLine, const std::string& source,
+                          ParseResult& result) {
+        BodyCheck check{routineKind_ + " '" + routineName_ + "'", {}, {}, source, result};
+        for (const auto& input : inputs) check.assigned.insert(arrayBaseName(input));   // an array input `SP[1..5]`: SP
+        checkBodyStatements(body, check);
+        for (const auto& output : outputs)
+            if (!check.assigned.count(arrayBaseName(output)))
+                bodyError(check, headerLine, check.routine + " never assigns its output '" + arrayBaseName(output) +
+                          "': every output of a FUNCTION or PROCEDURE must be assigned by its body");
+    }
+
+    static void checkBodyStatements(const std::vector<StmtPtr>& statements, BodyCheck& check) {
+        for (const auto& stmt : statements) {
+            const int line = stmt->sourceLineNumber;
+            if (stmt->is<Equation>() || stmt->is<Assignment>()) {
+                const bool isEquation = stmt->is<Equation>();
+                const ExprPtr& lhs = isEquation ? stmt->as<Equation>().lhs : stmt->as<Assignment>().lhs;
+                const ExprPtr& rhs = isEquation ? stmt->as<Equation>().rhs : stmt->as<Assignment>().rhs;
+                if (isLookupCellWrite(lhs)) continue;
+                if (!lhs->is<Variable>()) {
+                    bodyError(check, line, "implicit equation in " + check.routine + ": the statements of a FUNCTION "
+                              "or PROCEDURE are assignments executed in order, so the left-hand side must be a variable. "
+                              "Solve the equation in the main program, or iterate explicitly in the body (REPEAT ... UNTIL)");
+                    markBodyAssigned(lhs, check);   // its variables are not reported again at each later read
+                    continue;
+                }
+                checkBodyReads(rhs, line, check);
+                for (const auto& index : lhs->as<Variable>().indices) checkBodyReads(index, line, check);
+                check.assigned.insert(lhs->as<Variable>().name);
+            } else if (stmt->is<IfThenElse>()) {
+                const auto& ite = stmt->as<IfThenElse>();
+                checkBodyReads(ite.condition, line, check);
+                checkBodyStatements(ite.thenBranch, check);
+                checkBodyStatements(ite.elseBranch, check);
+            } else if (stmt->is<ProcedureCall>()) {
+                const auto& call = stmt->as<ProcedureCall>();
+                for (const auto& arg : call.inputArgs) checkBodyReads(arg, line, check);
+                for (const auto& out : call.outputVars) {
+                    for (const auto& index : out.indices) checkBodyReads(index, line, check);
+                    check.assigned.insert(out.name);
+                }
+            } else if (stmt->is<Duplicate>()) {
+                const auto& dup = stmt->as<Duplicate>();
+                checkBodyReads(dup.start, line, check);
+                checkBodyReads(dup.end, line, check);
+                check.assigned.insert(dup.iteratorVar);
+                checkBodyStatements(dup.body, check);
+            } else if (stmt->is<RepeatUntil>()) {
+                const auto& rep = stmt->as<RepeatUntil>();
+                checkBodyStatements(rep.body, check);   // the condition is tested after the loop body
+                checkBodyReads(rep.condition, rep.condition->sourceLineNumber > 0 ? rep.condition->sourceLineNumber
+                                                                                   : line, check);
+            }
+        }
+    }
+
+    // `LOOKUP('table', row, col) = value` / `LOOKUP$(...) = 'text'`: a lookup-table cell write
+    static bool isLookupCellWrite(const ExprPtr& lhs) {
+        if (!lhs->is<FunctionCall>()) return false;
+        std::string name = lhs->as<FunctionCall>().name;
+        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+        return name == "lookup" || name == "lookup$";
+    }
+
+    // The name of an array without the indices that IR::extractVariables flattens into it (x[i] -> x).
+    static std::string arrayBaseName(const std::string& flattened) {
+        return flattened.substr(0, flattened.find('['));
+    }
+
+    static void checkBodyReads(const ExprPtr& expr, int line, BodyCheck& check) {
+        std::set<std::string, CaseInsensitiveLess> read;
+        IR::extractVariables(expr, read);
+        for (const auto& flattened : read) {
+            const std::string name = arrayBaseName(flattened);
+            if (check.assigned.count(name) || Constants::isConstant(name) || !check.reported.insert(name).second)
+                continue;
+            bodyError(check, line, "variable '" + name + "' is read in " + check.routine + " before it is assigned: "
+                      "the variables of a FUNCTION or PROCEDURE other than its inputs are local and not initialised "
+                      "(pass main-program values as input arguments)");
+        }
+    }
+
+    static void markBodyAssigned(const ExprPtr& expr, BodyCheck& check) {
+        std::set<std::string, CaseInsensitiveLess> names;
+        IR::extractVariables(expr, names);
+        for (const auto& flattened : names) check.assigned.insert(arrayBaseName(flattened));
+    }
+
+    static void bodyError(BodyCheck& check, int line, const std::string& message) {
+        // the source line as context, like the other parse errors
+        size_t start = 0;
+        for (int i = 1; i < line && start != std::string::npos; ++i) {
+            start = check.source.find('\n', start);
+            if (start != std::string::npos) ++start;
+        }
+        const std::string context = start == std::string::npos ? std::string()
+            : check.source.substr(start, check.source.find('\n', start) - start);
+        check.result.errors.push_back({line, 0, message, context});
     }
 
     // ------------------------------------------------------------------------

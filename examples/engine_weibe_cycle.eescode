@@ -13,7 +13,7 @@ Source: Engine thermodynamics course exercise (University of Liege, 2008-2009),
 Weibe combustion model repetition 4.
 "
 
-PROCEDURE weibe(theta, theta_s, theta_d : x_b, x_dot_b)
+PROCEDURE weibe(theta, theta_s, theta_d, a_weibe, n_weibe : x_b, x_dot_b)
     x_b = 1 - exp(-a_weibe * ((theta - theta_s) / theta_d)^n_weibe)
     x_dot_b = n_weibe * a_weibe / theta_d * (((theta - theta_s) / theta_d)^(n_weibe - 1)) * exp(-a_weibe * ((theta - theta_s) / theta_d)^n_weibe)
     IF theta < theta_s THEN
@@ -97,7 +97,7 @@ W_dot_scaled = W_dot / (360 * N)
 Q_dot_w_scaled = Q_dot_w / (360 * N)
 
 "--- Pressure dynamics (admission inlined; Weibe via procedure) ---"
-CALL weibe(theta, theta_s, theta_d : x_b, x_dot_b)
+CALL weibe(theta, theta_s, theta_d, a_weibe, n_weibe : x_b, x_dot_b)
 "Intake mass flow [kg/s] — zero outside the intake valve opening interval"
 M_dot = IF(theta - theta_ivo, IF(theta_ivc - theta, IF(p - p_out, 0, C_d * A_v * p_out / c_son * gamma * (2 / (gamma + 1))^((gamma + 1) / (2 * (gamma - 1)))), 0), 0)
 Q_dot_weibe_deg = x_dot_b * Q_comb

@@ -138,6 +138,15 @@ public:
     // This is an alias for loadSolutionFromFile but specifically for initials
     int loadInitialsFromFile(const std::string& filePath);
     
+    /**
+     * Add to `vars` the names of the variables that `expr` reads, the way the equations of the
+     * main program count them: an array element by its flattened name (`x[1]`, `x[i]`) plus the
+     * variables of its indices; not the function names, the keys of named arguments (`T=`), the
+     * fluid name of a property call (`enthalpy(R134a, ...)`) nor string literals. Also used by
+     * the parser's check of FUNCTION/PROCEDURE bodies.
+     */
+    static void extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensitiveLess>& vars);
+    
 private:
     std::map<std::string, VariableInfo, CaseInsensitiveLess> variables_;
     std::vector<EquationInfo> equations_;
@@ -147,7 +156,6 @@ private:
     
     // Helper functions
     void lowerCallExpressionOutputs(std::vector<StmtPtr>& statements);
-    void extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensitiveLess>& vars);
     std::string expressionToLatex(const ExprPtr& expr) const;
     void addVariable(const std::string& name);
 };

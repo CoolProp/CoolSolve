@@ -7472,8 +7472,9 @@ TEST_CASE("CS-GAP-CALL-WARNING: malformed CALL WARNING and CALL ERROR are parse 
         CHECK(inBody("CALL WARNING('a')").empty());
         CHECK(inBody("CALL WARNING('a XXXA1', x)").empty());
         CHECK(inBody("CALL WARNING(x)").empty());
-        CHECK(inBody("CALL warning(s$)").empty());
-        CHECK(inBody("CALL warning('a XXX$', s$)").empty());
+        // s$ is assigned first: a body reads no local it has not assigned (CS-GAP-STRING-LOCAL-UNSET)
+        CHECK(inBody("s$ = 'b'\n  CALL warning(s$)").empty());
+        CHECK(inBody("s$ = 'b'\n  CALL warning('a XXX$', s$)").empty());
         CHECK(inBody("CALL ERROR('')").empty());
     }
 }
@@ -7788,4 +7789,330 @@ TEST_CASE("CS-GAP-NDAY: the number of arguments is checked", "[library-gaps][nda
         REQUIRE_FALSE(run.solveOk);
         CHECK(run.message.find("nDay_ takes 2 arguments (month, day)") != std::string::npos);
     }
+}
+
+// ============================================================================
+// CS-BUG-IMPLICIT-PROC, CS-BUG-LOCAL-UNASSIGNED, CS-GAP-STRING-LOCAL-UNSET: the statements of a
+// FUNCTION/PROCEDURE body are assignments executed in order, as in EES (maintainer decision of
+// 2026-10-12). An implicit statement in a body, and a read of a variable that the body has not
+// assigned before (its locals are not initialised), are errors of the check of the bodies, reported
+// with their line like the parse errors; they were skipped / read as 1, SUCCESS with a wrong value.
+// A routine may still be called implicitly from the main program.
+// ============================================================================
+
+namespace {
+
+using Messages = std::vector<std::string>;
+
+const std::string kImplicitBodyText =
+    "the statements of a FUNCTION or PROCEDURE are assignments executed in order, so the left-hand side "
+    "must be a variable. Solve the equation in the main program, or iterate explicitly in the body (REPEAT ... UNTIL)";
+const std::string kUnassignedLocalText =
+    "before it is assigned: the variables of a FUNCTION or PROCEDURE other than its inputs are local and "
+    "not initialised (pass main-program values as input arguments)";
+
+/// "line: message" (parseErrorsWithLines) of an implicit statement in `routine` ("PROCEDURE 'pq'").
+std::string implicitBodyError(int line, const std::string& routine) {
+    return std::to_string(line) + ": implicit equation in " + routine + ": " + kImplicitBodyText;
+}
+
+/// "line: message" (parseErrorsWithLines) of a read of `var` before its assignment in `routine`.
+std::string unassignedLocalError(int line, const std::string& var, const std::string& routine) {
+    return std::to_string(line) + ": variable '" + var + "' is read in " + routine + " " + kUnassignedLocalText;
+}
+
+const std::string kColebrookImplicit = "1/sqrt(f) = -2*log10((r/1000)/3.7+2.51/(1E5*sqrt(f)))";
+
+}  // namespace
+
+TEST_CASE("CS-BUG-IMPLICIT-PROC: reproducer (a), an implicit statement after an assignment is an error, not skipped",
+          "[library-gaps][implicit-proc]") {
+    // was SUCCESS with fv = 1: the statement was skipped and f, never assigned, read as 1
+    const std::string code = "PROCEDURE pq(r : f, g)\ng = r*2\n" + kColebrookImplicit + "\nend\ncall pq(1 : fv, gv)\n";
+    CHECK(parseErrorsWithLines(code) == Messages{implicitBodyError(3, "PROCEDURE 'pq'")});
+
+    const auto result = parseFull(code);
+    CHECK_FALSE(result.success);
+    REQUIRE(result.errors.size() == 1);
+    CHECK(result.errors[0].context == kColebrookImplicit);   // the source line, as for the other parse errors
+
+    auto run = runModel(code);   // like any parse error: the model is not solved
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(run.message.find("Line 3: implicit equation in PROCEDURE 'pq'") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-IMPLICIT-PROC: reproducer (b), a body made of the implicit statement only", "[library-gaps][implicit-proc]") {
+    const std::string code = "PROCEDURE pq(r : f)\n" + kColebrookImplicit + "\nend\ncall pq(1 : fv)\n";
+    CHECK(parseErrorsWithLines(code) == Messages{implicitBodyError(2, "PROCEDURE 'pq'")});
+    auto run = runModel(code);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+}
+
+TEST_CASE("CS-BUG-IMPLICIT-PROC: reproducer (c), an implicit statement in a FUNCTION", "[library-gaps][implicit-proc]") {
+    const std::string code =
+        "FUNCTION ff(r)\n1/sqrt(ff) = -2*log10((r/1000)/3.7+2.51/(1E5*sqrt(ff)))\nend\nfv = ff(1)\n";
+    CHECK(parseErrorsWithLines(code) == Messages{implicitBodyError(2, "FUNCTION 'ff'")});
+    auto run = runModel(code);
+    CHECK_FALSE(run.parseOk);
+    CHECK(run.message.find("Line 2: implicit equation in FUNCTION 'ff'") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-IMPLICIT-PROC: implicit statements in IF, REPEAT and DUPLICATE blocks, with := and semicolons",
+          "[library-gaps][implicit-proc]") {
+    const std::string fn = "FUNCTION 'f'";
+    const std::string tail = "END\ny = f(1)\n";
+    // block IF and single-line IF ... ELSE
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  IF (a > 0) THEN\n    2*f = a\n  ELSE\n    f = a\n  ENDIF\n" + tail) ==
+          Messages{implicitBodyError(3, fn)});
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  IF (a > 0) THEN f = a ELSE f^2 = a\n" + tail) ==
+          Messages{implicitBodyError(2, fn)});
+    // REPEAT ... UNTIL and DUPLICATE (a variable of an implicit statement is not reported again later)
+    CHECK(parseErrorsWithLines("PROCEDURE p(a : y)\n  k = 0\n  REPEAT\n    k + 1 = 2*k\n  UNTIL (k > 3)\n  y = k\nEND\n"
+                               "CALL p(1 : z)\n") == Messages{implicitBodyError(4, "PROCEDURE 'p'")});
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  DUPLICATE i = 1, 3\n    x[i] + 1 = a*i\n  END\n  f = x[3]\n" + tail) ==
+          Messages{implicitBodyError(3, fn)});
+    // `:=` is an assignment as well, and a statement after a semicolon has the line of its line
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  f := a\n  2*f := a\n" + tail) == Messages{implicitBodyError(3, fn)});
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  s = a ; 2*f = s\n" + tail) == Messages{implicitBodyError(2, fn)});
+    // every implicit statement is reported
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  2*s = a\n  2*f = s\n" + tail) ==
+          Messages{implicitBodyError(2, fn), implicitBodyError(3, fn)});
+}
+
+TEST_CASE("CS-BUG-IMPLICIT-PROC: a lookup-table cell write in a body is unchanged (CS-BUG-LOOKUP-WRITE)",
+          "[library-gaps][implicit-proc]") {
+    // an open item of its own: no new error, the statement is still skipped when the body runs
+    auto run = runModel("PROCEDURE w(M, h : y)\n  lookup('ev', 1, 1) = M*h\n  Lookup('ev', 2, 1) = M\n  y = M + h\nEND\n"
+                        "CALL w(2, 3 : z)\n");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["z"], WithinAbs(5.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-IMPLICIT-PROC: an explicit routine may still be called implicitly from the main program",
+          "[library-gaps][implicit-proc]") {
+    SECTION("ff(x) = 10 solves x through the explicit FUNCTION ff") {
+        auto run = runModel("FUNCTION ff(x)\n  ff = x^2 + 1\nEND\nff(x) = 10\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(3.0, 1e-9));
+        CHECK(run.verified);
+    }
+    SECTION("a CALL inside an algebraic loop of the main program") {
+        auto run = runModel("PROCEDURE sq(x : y)\n  y = x^2\nEND\nCALL sq(x : y)\ny + x = 6\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(2.0, 1e-9));
+        CHECK_THAT(run["y"], WithinAbs(4.0, 1e-9));
+    }
+}
+
+TEST_CASE("CS-BUG-IMPLICIT-PROC: the explicit rewrite of reproducer (a), a fixed-point REPEAT ... UNTIL on Colebrook",
+          "[library-gaps][implicit-proc]") {
+    // Re = 1E5, RR = 0.001: f = 0.0221745359... (the value EES gives for the implicit form)
+    auto run = runModel(R"(
+PROCEDURE pq(r : f, g)
+  g = r*2
+  f = 0.02
+  REPEAT
+    f_old = f
+    f = (-2*log10((r/1000)/3.7 + 2.51/(1E5*sqrt(f_old))))^(-2)
+  UNTIL (abs(f - f_old) < 1E-12)
+END
+call pq(1 : fv, gv)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["fv"], WithinRel(0.022174535944515, 1e-9));
+    CHECK_THAT(run["gv"], WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-LOCAL-UNASSIGNED: reproducer, a local read before its assignment is an error", "[library-gaps][local-unassigned]") {
+    // was SUCCESS with yv = 2: b read as 1
+    const std::string code = "PROCEDURE p(a : y)\ny = 2 * b\nb = a + 1\nEND\nCALL p(5 : yv)\n";
+    CHECK(parseErrorsWithLines(code) == Messages{unassignedLocalError(2, "b", "PROCEDURE 'p'")});
+    const auto result = parseFull(code);
+    REQUIRE(result.errors.size() == 1);
+    CHECK(result.errors[0].context == "y = 2 * b");
+    auto run = runModel(code);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(run.message.find("Line 2: variable 'b' is read in PROCEDURE 'p' before it is assigned") != std::string::npos);
+
+    // the two statements in the order of execution: yv = 12
+    auto ordered = runModel("PROCEDURE p(a : y)\nb = a + 1\ny = 2 * b\nEND\nCALL p(5 : yv)\n");
+    REQUIRE(ordered.solveOk);
+    CHECK_THAT(ordered["yv"], WithinAbs(12.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-LOCAL-UNASSIGNED: a name never assigned in the body, even when the main program defines it",
+          "[library-gaps][local-unassigned]") {
+    // a body does not see the main program: bb must be passed as an argument
+    CHECK(parseErrorsWithLines("PROCEDURE p(a : y)\ny = 2 * bb\nEND\nbb = 10\nCALL p(5 : yv)\n") ==
+          Messages{unassignedLocalError(2, "bb", "PROCEDURE 'p'")});
+    // a misspelt name
+    CHECK(parseErrorsWithLines("FUNCTION area(D)\n  r = D/2\n  area = 3.14159*rr^2\nEND\nA = area(1)\n") ==
+          Messages{unassignedLocalError(3, "rr", "FUNCTION 'area'")});
+}
+
+TEST_CASE("CS-BUG-LOCAL-UNASSIGNED: in a FUNCTION", "[library-gaps][local-unassigned]") {
+    // was SUCCESS with q = 2
+    const std::string code = "FUNCTION f(a)\nf = 2*b\nb = a+1\nEND\nq = f(5)\n";
+    CHECK(parseErrorsWithLines(code) == Messages{unassignedLocalError(2, "b", "FUNCTION 'f'")});
+    auto run = runModel(code);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+}
+
+TEST_CASE("CS-BUG-LOCAL-UNASSIGNED: the outputs are not pre-assigned", "[library-gaps][local-unassigned]") {
+    // the FUNCTION's own name read before it is assigned
+    CHECK(parseErrorsWithLines("FUNCTION ff(x)\n  ff = ff + x\nEND\ny = ff(1)\n") ==
+          Messages{unassignedLocalError(2, "ff", "FUNCTION 'ff'")});
+    // a PROCEDURE output read before it is assigned
+    CHECK(parseErrorsWithLines("PROCEDURE p(a : y, z)\n  z = y + a\n  y = a\nEND\nCALL p(1 : u, v)\n") ==
+          Messages{unassignedLocalError(2, "y", "PROCEDURE 'p'")});
+}
+
+TEST_CASE("CS-BUG-LOCAL-UNASSIGNED: every output must be assigned by the body", "[library-gaps][local-unassigned]") {
+    // was SUCCESS with the unassigned result read as 1
+    const std::string never = "never assigns its output";
+    auto fn = parseErrorsWithLines("FUNCTION ff(x)\n  y = 2*x\nEND\nq = ff(3)\n");
+    REQUIRE(fn.size() == 1);
+    CHECK(fn[0].rfind("1: FUNCTION 'ff' never assigns its output 'ff'", 0) == 0);
+    auto proc = parseErrorsWithLines("x = 1\nPROCEDURE p(a : y, z)\n  y = a\nEND\nCALL p(1 : u, v)\n");
+    REQUIRE(proc.size() == 1);
+    CHECK(proc[0].rfind("2: PROCEDURE 'p' never assigns its output 'z'", 0) == 0);
+    auto run = runModel("FUNCTION ff(x)\n  y = 2*x\nEND\nq = ff(3)\n");
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+
+    // assigned in one branch only, or through a CALL of the body: accepted (flow-insensitive)
+    CHECK(parseErrorsWithLines("FUNCTION sgn(x)\n  IF x > 0 THEN\n    sgn = 1\n  ELSE\n    sgn = -1\n  ENDIF\nEND\nq = sgn(3)\n").empty());
+    CHECK(parseErrorsWithLines("PROCEDURE inner(a : b)\n  b = 2*a\nEND\nPROCEDURE outer(a : y)\n  CALL inner(a : y)\nEND\n"
+                               "CALL outer(2 : yv)\n").empty());
+}
+
+TEST_CASE("CS-BUG-LOCAL-UNASSIGNED: every kind of read is checked", "[library-gaps][local-unassigned]") {
+    const std::string fn = "FUNCTION 'f'";
+    const std::string tail = "END\ny = f(1)\n";
+    const std::string q = "PROCEDURE q(a : b)\n  b = a\nEND\n";   // lines 1-3
+    // IF and UNTIL conditions
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  IF (c > 0) THEN f = 1 ELSE f = 2\n" + tail) ==
+          Messages{unassignedLocalError(2, "c", fn)});
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  k = 0\n  REPEAT\n    k = k + 1\n  UNTIL (k > n)\n  f = k\n" + tail) ==
+          Messages{unassignedLocalError(5, "n", fn)});
+    // input arguments of a CALL, and the index of one of its outputs
+    CHECK(parseErrorsWithLines(q + "FUNCTION f(a)\n  CALL q(w : v)\n  f = v\n" + tail) ==
+          Messages{unassignedLocalError(5, "w", fn)});
+    CHECK(parseErrorsWithLines(q + "FUNCTION f(a)\n  CALL q(a : x[k])\n  f = a\n" + tail) ==
+          Messages{unassignedLocalError(5, "k", fn)});
+    // array indices, on the right-hand side and on the left-hand side
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  x[1] = a\n  f = x[j]\n" + tail) ==
+          Messages{unassignedLocalError(3, "j", fn)});
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  x[j] = a\n  f = a\n" + tail) == Messages{unassignedLocalError(2, "j", fn)});
+    // arguments of a function call, values of the named arguments of a property call
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  f = max(a, m)\n" + tail) == Messages{unassignedLocalError(2, "m", fn)});
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  f = enthalpy(Water, T=t1, P=a)\n" + tail) ==
+          Messages{unassignedLocalError(2, "t1", fn)});
+    // the bounds of a DUPLICATE
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  DUPLICATE i = 1, n\n    x[i] = i\n  END\n  f = a\n" + tail) ==
+          Messages{unassignedLocalError(2, "n", fn)});
+    // the right-hand side read before the left-hand side is assigned: x = x + 1
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  x = x + 1\n  f = x\n" + tail) == Messages{unassignedLocalError(2, "x", fn)});
+}
+
+TEST_CASE("CS-BUG-LOCAL-UNASSIGNED: inside a REPEAT loop the text order is the rule", "[library-gaps][local-unassigned]") {
+    // t is assigned later in the loop: its first read, in the first pass, finds no value
+    const std::string loop = "  REPEAT\n    s = t + 1\n    t = k\n    k = k + 1\n  UNTIL (k > 3)\n  f = s\nEND\ny = f(1)\n";
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  k = 0\n" + loop) == Messages{unassignedLocalError(4, "t", "FUNCTION 'f'")});
+    // assigned before the loop: k 0 -> 4, s = 1, 1, 2, 3
+    auto run = runModel("FUNCTION f(a)\n  k = 0\n  t = 0\n" + loop);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(3.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-LOCAL-UNASSIGNED: one error per variable, at its first read; a syntax error is not followed by others",
+          "[library-gaps][local-unassigned]") {
+    CHECK(parseErrorsWithLines("PROCEDURE p(a : y)\n  u = b + 1\n  v = 2*b\n  y = u + v + c\nEND\nCALL p(1 : z)\n") ==
+          Messages{unassignedLocalError(2, "b", "PROCEDURE 'p'"), unassignedLocalError(4, "c", "PROCEDURE 'p'")});
+    // a body that does not parse is not checked: the statement that failed would assign t
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  t = 3 4\n  f = t\nEND\ny = f(1)\n") == Messages{"2: Could not parse line"});
+}
+
+TEST_CASE("CS-BUG-LOCAL-UNASSIGNED: what a body may read keeps solving", "[library-gaps][local-unassigned]") {
+    SECTION("a variable assigned in the branches of an IF, read after the IF") {
+        auto run = runModel("FUNCTION f(a)\n  IF (a > 0) THEN\n    s = 10\n  ELSE\n    s = 20\n  ENDIF\n  f = s + a\nEND\n"
+                            "y1 = f(1)\ny2 = f(-1)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y1"], WithinAbs(11.0, 1e-12));
+        CHECK_THAT(run["y2"], WithinAbs(19.0, 1e-12));
+        // the check is flow-insensitive: an assignment in one branch counts
+        auto oneBranch = runModel("FUNCTION g(a)\n  IF (a > 0) THEN t = 5\n  g = t\nEND\ny = g(1)\n");
+        REQUIRE(oneBranch.solveOk);
+        CHECK_THAT(oneBranch["y"], WithinAbs(5.0, 1e-12));
+    }
+    SECTION("a REPEAT loop with a counter initialised before the loop") {
+        auto run = runModel("FUNCTION nsteps(a)\n  k = 0\n  x = a\n  REPEAT\n    x = x/2\n    k = k + 1\n  UNTIL (x < 1)\n"
+                            "  nsteps = k\nEND\nn = nsteps(10)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["n"], WithinAbs(4.0, 1e-12));
+    }
+    SECTION("a DUPLICATE loop filling an array, then summed") {
+        auto run = runModel("FUNCTION sq(n)\n  DUPLICATE i = 1, 4\n    x[i] = i^2\n  END\n  s = 0\n  DUPLICATE i = 1, 4\n"
+                            "    s = s + x[i]\n  END\n  sq = s + n\nEND\ntotal = sq(0)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["total"], WithinAbs(30.0, 1e-12));
+    }
+    SECTION("a CALL inside a body whose output is read afterwards") {
+        auto run = runModel("PROCEDURE dbl(a : b)\n  b = 2*a\nEND\nFUNCTION f(a)\n  CALL dbl(a : d)\n  f = d + 1\nEND\ny = f(3)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(7.0, 1e-12));
+    }
+    SECTION("a FUNCTION reads its own name after assigning it") {
+        auto run = runModel("FUNCTION ff(x)\n  ff = 1\n  ff = ff + x\nEND\ny = ff(4)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(5.0, 1e-12));
+    }
+    SECTION("pi and a # constant are no locals") {
+        // their value in a body is CS-BUG-PI-FUNCTION; this test is about the check only
+        auto run = runModel("FUNCTION fa(D)\n  fa = pi/4*D^2 + 0*g#\nEND\nx = fa(1)\n");
+        REQUIRE(run.parseOk);
+        CHECK(run.solveOk);
+    }
+    SECTION("an unquoted fluid name, named arguments and a units annotation in a property call") {
+        auto run = runModel("FUNCTION hR(T, P)\n  hR = enthalpy(R134a, T=T, P=P) \"[J/kg]\"\nEND\nh1 = hR(300, 1E5)\n"
+                            "h2 = enthalpy(R134a, T=300, P=1E5)\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["h1"], WithinRel(run["h2"], 1e-12));
+    }
+    SECTION("an array input written SP[1..5] in the header is an input (its form is CS-GAP-ARRAY-ARG)") {
+        CHECK(parseErrorsWithLines("PROCEDURE p(SP[1..2] : y)\n  y = SP[1] + SP[2]\nEND\n").empty());
+    }
+    SECTION("string inputs, string locals assigned before they are read, string literals") {
+        auto run = runModel("PROCEDURE p(f$, a : y, z)\n  IF f$ = 'water' THEN y = a ELSE y = 0\n  g$ = 'glycol'\n"
+                            "  IF g$ = 'glycol' THEN z = 1 ELSE z = a\nEND\nCALL p('Water', 3 : yv, zv)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["yv"], WithinAbs(3.0, 1e-12));
+        CHECK_THAT(run["zv"], WithinAbs(1.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-STRING-LOCAL-UNSET: reproducer, a string local read before any assignment is an error",
+          "[library-gaps][local-unassigned]") {
+    // was the run-time error "String variable not found: fl$"; now the same check as the numeric locals
+    const std::string body = "PROCEDURE p(a : y)\nIF fl$ = 'glycol' THEN\ny = 1\nELSE\ny = a\nENDIF\nEND\nCALL p(2 : yv)\n";
+    const Messages expected{unassignedLocalError(2, "fl$", "PROCEDURE 'p'")};
+    CHECK(parseErrorsWithLines(body) == expected);
+    CHECK(parseErrorsWithLines(body + "fl$ = 'glycol'\n") == expected);   // a body does not see the main program
+    auto run = runModel(body);
+    CHECK_FALSE(run.parseOk);
+    CHECK(run.message.find("Line 2: variable 'fl$' is read in PROCEDURE 'p' before it is assigned") != std::string::npos);
+
+    // the CSL-0153 form: the string is an input argument of a CALL in the body
+    CHECK(parseErrorsWithLines("PROCEDURE prop(f$, T : c)\n  c = T\nEND\nPROCEDURE hx(T : c)\n  CALL prop(fluidev$, T : c)\nEND\n"
+                               "CALL hx(300 : cv)\n") == Messages{unassignedLocalError(5, "fluidev$", "PROCEDURE 'hx'")});
 }

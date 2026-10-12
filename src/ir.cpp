@@ -454,7 +454,7 @@ static bool isThermoFunction(const std::string& name) {
 void IR::extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensitiveLess>& vars) {
     if (!expr) return;
     
-    std::visit([this, &vars](const auto& node) {
+    std::visit([&vars](const auto& node) {
         using T = std::decay_t<decltype(node)>;
         
         if constexpr (std::is_same_v<T, Variable>) {

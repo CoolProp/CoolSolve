@@ -160,7 +160,21 @@ Use `equations.md` and `report.md` to see which variables appear in the largest 
 - Procedures are a common source of issues. Check:
   - Correct mapping of inputs/outputs in `CALL`.
   - Pressure and temperature units in thermodynamic calls.
-  - Use of `:=` vs `=` for assignment inside procedures.
+  - A body is a sequence of assignments executed in order (`=` and `:=` alike), checked when the model is
+    parsed ([Language Reference §7](language_reference.md#bodies-are-assignments-executed-in-order)). Three
+    parse errors, with the line of the statement, stop the run:
+    - `implicit equation in PROCEDURE 'pq'`: the left-hand side of a body statement is not a variable
+      (`1/sqrt(f) = …`). A body solves nothing: iterate explicitly in the body (`REPEAT … UNTIL`, e.g. a
+      fixed-point iteration), or move the equation to the main program and pass its result as an input argument.
+    - `variable 'b' is read in PROCEDURE 'p' before it is assigned`: the body reads a local that has no value
+      yet (the locals of a body are not initialised). Usually the statements are in the wrong order (move the
+      assignment up), the name is misspelt, or it is a variable of the main program, which a body does not see:
+      add it to the input arguments of the routine and of every call. In a `REPEAT` loop, a variable read before
+      its assignment in the loop needs a value before the loop. A source written for simultaneous solving (an
+      EES `SUBPROGRAM`, or a body that reads its own output, such as the function's name, before computing it)
+      must be rewritten as explicit assignments or moved to the main program.
+    - `FUNCTION 'ff' never assigns its output 'ff'` (or a `PROCEDURE` output), on the header line: no statement
+      of the body assigns that output; assign it (in every branch that can be taken) or remove it from the outputs.
   - A `CALL WARNING` of the model (diagnostic `W001`, `warning (line N): …` with the line of the call) describes the
     **solution**: the solver does not report the iterates that crossed the range on the way, so a warning that
     the model should raise but that is missing means the solution is inside the range.
