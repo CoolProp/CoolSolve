@@ -140,8 +140,9 @@ y = max(3, )         "Could not parse argument 2 of 'max': ''"
 
 The same holds for the arguments of `CALL name(inputs : outputs)`. An output
 is a variable or, in the main program, an expression (`CALL p(a : b/1000)`, see
-*Outputs of a CALL* in §7). A call without argument is written `f()`. Array
-ranges (`x[1..3]`) are not expression syntax, in `CALL` arguments neither.
+*Outputs of a CALL* in §7). A call without argument is written `f()`. An array
+range `x[1..3]` stands for the arguments `x[1], x[2], x[3]` (see *Array ranges*
+in §8); it is not an expression of its own.
 
 `name=value` arguments (`T=`, `P=`, `x=`, …) belong to the thermophysical
 property functions (§3). A built-in function that takes positional arguments
@@ -158,6 +159,29 @@ Parser-level directives begin with `$` and span a single line:
   the unit system is fixed (see the warning at the top of this page).
 - `$warnings ON` / `OFF` — recognised and **ignored**; the warnings of `CALL WARNING` are
   always reported, as in EES (see *CALL ERROR and CALL WARNING* in §7).
+- `$CONSTANT Name# = value [units]` — a constant of the model, see below.
+
+#### `$CONSTANT`
+
+```ees
+$CONSTANT imax# = 20                "number of segments"
+$CONSTANT L_seg# = 2/imax# [m]      "an expression of numbers and constants defined above"
+```
+
+As in EES, a constant is a value that cannot change and that **every part of the
+model sees**: the main program and the bodies of all `FUNCTION`s and `PROCEDURE`s,
+whether the directive is above or below them. Its name ends with `#`. The value
+is a number or an expression **without spaces** of numbers and of the constants
+defined above (`+ - * / ^`, parentheses, the built-in constants such as `pi`); the
+`[units]` that may follow, and the English-unit value EES allows after them, are
+ignored. Every use of the constant is replaced by its value when the model is
+compiled, so a constant is not a variable of the solution; it is the usual way to
+size arrays (`DUPLICATE i = 1, imax#`, `T[1..imax#]`, §6 and §8). A routine that
+declares the name in its header (`PROCEDURE p(imax#, …)`) keeps it as its own
+variable. Errors, with the line: assigning a constant (*"'imax#' is a constant
+($CONSTANT, line 3): its value cannot be changed"*), a value that uses a variable
+or a later constant, a name without `#`, a second definition of the name, and a
+string constant (`$CONSTANT R#$ = 'R134a'`), which is not supported.
 
 #### Conditional compilation: `$IF`, `$IFNOT`, `$ELSE`, `$ENDIF`
 
@@ -309,6 +333,10 @@ guess value in the `.initials` file).
 | `average(a, b, …)`       | Arithmetic mean                 |
 | `product(a, b, …)`       | Product of arguments            |
 | `stddev(a, b, …)`        | Population standard deviation   |
+
+`min(a, b, …)` and `max(a, b, …)` take any number of arguments too. An array range
+is a list of arguments: `average(T[1..imax#])`, `sum(x[1..n], 10, y)` (§8). The
+indexed form `sum(x[i], i=1, n)` is not supported.
 
 ### Inline selection
 
@@ -709,6 +737,35 @@ END
 The loop is **expanded at parse time** — `DUPLICATE i = 1, N` produces N
 copies of the body with `i` substituted.
 
+The bounds of a loop of the main program must be **integers known before the
+solve** (EES: "an integer number or a variable set to an integer constant"):
+
+- a number or an arithmetic expression (`+ - * / ^`, parentheses) of numbers;
+- a `$CONSTANT` (`DUPLICATE i = 1, imax#`, `DUPLICATE i = 1, (imax#-1)`);
+- a variable of the main program set to a constant expression by an equation
+  `n = <expression>`, above or below the loop, possibly through other such
+  variables (`n = 2*m`, `m = 3`); the equation stays in the model;
+- in a nested loop, an expression of the indices of the enclosing loops
+  (`DUPLICATE j = i+1, n` inside `DUPLICATE i = 1, n-1`), evaluated for each copy.
+
+A loop whose first bound is greater than the last runs downward
+(`DUPLICATE i = 3, 1` gives `i` = 3, 2, 1).
+
+Any other bound is an error that names it, with the line of the loop — a
+variable set by an equation that depends on an unknown, by a `CALL`, or not set
+at all, an array element, a value that is not an integer:
+
+```
+Line 2: DUPLICATE i: the last bound 'n' is not known before the solve: 'n' is set
+by 'n = y + 1' (line 1), which is not a constant expression. A bound is a number,
+a $CONSTANT, or a variable set to a constant expression by an equation of the main
+program (n = 17), combined with + - * / ^
+Line 2: DUPLICATE i: the last bound 'n' is 2.5, not an integer
+```
+
+A `DUPLICATE` inside a `FUNCTION` or `PROCEDURE` body is a loop executed when the
+routine runs: its bounds may be the inputs of the routine or its local variables.
+
 ### REPEAT-UNTIL loop
 
 ```ees
@@ -871,8 +928,8 @@ error with its line, like a syntax error, and the model is not solved:
   A variable counts as assigned from the first statement that assigns it, in
   the order of the text: an assignment in either branch of an `IF`, the output
   of an earlier `CALL` and one element of an array all count. The iterator of a
-  `DUPLICATE` loop, the inputs and the built-in constants (`pi`, `g#`, `R#`,
-  `sigma#`, …) are always available. Inside a `REPEAT` loop the text order is
+  `DUPLICATE` loop, the inputs, the built-in constants (`pi`, `g#`, `R#`,
+  `sigma#`, …) and the `$CONSTANT`s are always available. Inside a `REPEAT` loop the text order is
   the rule too: a variable read before its assignment in the loop must also be
   assigned before the loop. Every read counts — right-hand sides, indices,
   `IF` and `UNTIL` conditions, the input arguments of a `CALL`, the arguments
@@ -1035,6 +1092,52 @@ DUPLICATE i = 1, 5
     T[i] = T_in + i * DeltaT
 END
 ```
+
+### Array ranges
+
+`X[a..b]` stands for the elements `X[a], X[a+1], …, X[b]` (EES *array range
+notation*), wherever a list of values is expected:
+
+```ees
+$CONSTANT imax# = 5
+FUNCTION q(T, i, EPS[1..imax#])          "a header: 2 + 5 inputs, EPS is the array of the body"
+  q = EPS[i]*T
+END
+PROCEDURE props(T[1..imax#] : EPS[1..imax#], tot)
+  ...
+END
+CALL props(T_3[1..imax#] : eps_3[1..imax#], total)   "inputs and outputs"
+q_3 = q(T_3[2], 2, eps_3[1..imax#])                  "a function argument"
+T_bar = AVERAGE(T_3[1..imax#])                       "an aggregate built-in"
+```
+
+- **Where**: in the arguments of a function, of a user `FUNCTION` and of a
+  `CALL` (inputs and outputs), in the main program and in the bodies, and in the
+  header of a `FUNCTION` or `PROCEDURE`. Anywhere else (`y = x[1..3]`, an
+  operand, an index, the left-hand side of an equation) it is an error; the EES
+  assignment `A[1..3] = [1, 2, 3]` is not supported.
+- **Arguments**: the range expands argument by argument, in order: the header
+  `p(a, X[1..3], b)` declares 5 inputs, `a, X[1], X[2], X[3], b`, and in the body
+  `X` is an array (`X[2]`, `X[i]` with a loop index). A call supplies the 5 values
+  in any form — a matching range, single elements, expressions, a shorter range
+  completed by other values (`CALL p(1, V[2..3], 7, 2 : …)`). A call that uses a
+  range, or calls a routine whose header has one, must give as many values as the
+  header declares: *"CALL pp gives 2 inputs (an array range counts its elements),
+  but PROCEDURE pp (line 3) takes 3"* (outputs and function arguments alike).
+- **Two dimensions**: a range on one index (`A[2,1..3]`) or on both
+  (`A[1..2,1..2]`, the last index varying fastest: `A[1,1], A[1,2], A[2,1], A[2,2]`).
+- **Bounds**: integers known before the solve, as for `DUPLICATE` (§6): numbers,
+  `$CONSTANT`s, arithmetic of those and, in the main program, variables set to a
+  constant expression (`n = 3`, then `x[1..n]`). The first bound must not exceed
+  the last. In a header or a body the bounds are numbers or `$CONSTANT`s: a body
+  does not see the variables of the main program and its own are known only when
+  it runs (EES's variable-size header arrays, `FUNCTION f(n, A[1..n])`, are not
+  supported). A bound that uses the index of an enclosing `DUPLICATE`
+  (`sum(x[1..i])` inside the loop) is not supported. Each of these cases is an
+  error with the line: *"array range 'x[3..1]': the first index (3) is greater
+  than the last (1)"*, *"array range 'x[1..2.5]': the last index is 2.5, not an
+  integer"*, *"array range 'X[1..n]' in FUNCTION 'g': the bounds of a range in a
+  FUNCTION or PROCEDURE are numbers or $CONSTANTs …"*.
 
 ---
 

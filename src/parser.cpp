@@ -11,7 +11,9 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
+#include <iomanip>
 #include <iostream>
 #include <set>
 #include <unordered_set>
@@ -217,11 +219,15 @@ public:
     }
     
     ParseResult parse(const std::string& source, const std::string& filename) {
+        presetConstants_.clear();
         ParseResult result = parsePass(source, filename, false);
         // `$IF INTEGRALTABLE` is true when an $IntegralTable directive is in the file, above or
-        // below the test: EES compiles in two passes for it, so do we.
-        if (integralTableTested_ && integralTableSeen_ != compileState_.integralTable)
+        // below the test: EES compiles in two passes for it, so do we. A $CONSTANT is global: the
+        // body of a routine written above its directive uses it too (second pass, constants known).
+        if ((integralTableTested_ && integralTableSeen_ != compileState_.integralTable) || constantAfterRoutine_) {
+            for (const auto& entry : userConstants_) presetConstants_.insert(entry.first);
             result = parsePass(source, filename, integralTableSeen_);
+        }
         return result;
     }
 
@@ -235,6 +241,8 @@ private:
         integralTableSeen_ = false;
         integralTableTested_ = false;
         procedureNames_.clear();
+        userConstants_.clear();
+        routineChecked_ = constantAfterRoutine_ = rangeSeen_ = duplicateSeen_ = false;
         ParseResult result;
         result.success = false;
         result.program.sourceFilename = filename;
@@ -387,6 +395,7 @@ private:
                     result.errors.push_back({startLine, 0, "DUPLICATE missing END", line});
                 } else {
                     result.program.statements.push_back(makeDuplicate(iterVar, startExpr, endExpr, body, startLine));
+                    duplicateSeen_ = true;
                 }
                 continue;
             }
@@ -416,6 +425,7 @@ private:
             if (auto stmt = tryParseDirective(line, lineNumber, &result.diagnostics)) {
                 result.program.statements.push_back(stmt);
                 result.directiveCount++;
+                noteConstantDirective(stmt->as<Directive>(), lineNumber, line, result);
                 if (upper.rfind("$INTEGRALTABLE", 0) == 0) integralTableSeen_ = true;
                 continue;
             }
@@ -477,6 +487,8 @@ private:
                 "parser", comments_.quoteOpenLine, 0);
         }
         result.totalLines = lineNumber;
+        if (result.errors.empty() && (rangeSeen_ || duplicateSeen_ || !userConstants_.empty()))
+            resolveCompileTimeValues(result, preprocessed);
         // Success if no errors AND we found something valid
         bool somethingParsed = result.equationCount > 0 || result.commentCount > 0 || result.directiveCount > 0 || !result.program.statements.empty();
         result.success = !unsupportedFound && result.errors.empty() && somethingParsed;
@@ -521,7 +533,19 @@ private:
     // The PROCEDUREs defined so far (EES: a routine is defined before it is called); one of them
     // named like a built-in procedure replaces it (see isBuiltinColebrook).
     std::set<std::string, CaseInsensitiveLess> procedureNames_;
-    
+
+    // $CONSTANT and the other values known before the solve (see resolveCompileTimeValues)
+    struct UserConstant {
+        double value;
+        int line;
+    };
+    std::map<std::string, UserConstant, CaseInsensitiveLess> userConstants_;  // the $CONSTANTs parsed so far
+    std::set<std::string, CaseInsensitiveLess> presetConstants_;  // all those of the file, on a second pass
+    bool routineChecked_ = false;        // the body of a FUNCTION/PROCEDURE has been checked
+    bool constantAfterRoutine_ = false;  // a $CONSTANT defined below such a body: parse again
+    bool rangeSeen_ = false;             // an array range X[a..b] was parsed (a header included)
+    bool duplicateSeen_ = false;         // a DUPLICATE loop was parsed
+
     // ------------------------------------------------------------------------
     // Compile-time directives $IF / $IFNOT / $ELSE / $ENDIF (CS-GAP-IF-DIRECTIVE)
     //
@@ -1184,6 +1208,7 @@ private:
                 body.push_back(stmt);
             } else if (auto stmt = tryParseDirective(bodyLine, lineNumber)) {
                 body.push_back(stmt);
+                noteConstantDirective(stmt->as<Directive>(), lineNumber, bodyLine, result);
                 if (procedureBodyDepth_ > 0 && isCommonDirective(stmt->as<Directive>()))
                     result.errors.push_back({lineNumber, 0, commonDirectiveMessage(stmt->as<Directive>().content), bodyLine});
             } else if (isBodyKeyword("IF")) {
@@ -1230,6 +1255,7 @@ private:
                 std::string term = parseBodyLines(stream, lineNumber, dupBody, result);
                 if (term == "END") {
                     body.push_back(makeDuplicate(iterVar, startExpr, endExpr, dupBody, dupStartLine));
+                    duplicateSeen_ = true;
                 } else {
                     result.errors.push_back({dupStartLine, 0, "DUPLICATE missing END", bodyLine});
                 }
@@ -1302,12 +1328,15 @@ private:
         std::set<std::string, CaseInsensitiveLess> reported;  // variables already reported as unassigned
         const std::string& source;                            // the preprocessed source (error context)
         ParseResult& result;
+        std::set<std::string, CaseInsensitiveLess> constants; // the $CONSTANTs (global, above or below)
     };
 
     void checkRoutineBody(const std::vector<std::string>& inputs, const std::vector<std::string>& outputs,
                           const std::vector<StmtPtr>& body, int headerLine, const std::string& source,
                           ParseResult& result) {
-        BodyCheck check{routineKind_ + " '" + routineName_ + "'", {}, {}, source, result};
+        BodyCheck check{routineKind_ + " '" + routineName_ + "'", {}, {}, source, result, presetConstants_};
+        for (const auto& entry : userConstants_) check.constants.insert(entry.first);
+        routineChecked_ = true;
         for (const auto& input : inputs) check.assigned.insert(arrayBaseName(input));   // an array input `SP[1..5]`: SP
         checkBodyStatements(body, check);
         for (const auto& output : outputs)
@@ -1379,7 +1408,8 @@ private:
         IR::extractVariables(expr, read);
         for (const auto& flattened : read) {
             const std::string name = arrayBaseName(flattened);
-            if (check.assigned.count(name) || Constants::isConstant(name) || !check.reported.insert(name).second)
+            if (check.assigned.count(name) || Constants::isConstant(name) || check.constants.count(name) ||
+                !check.reported.insert(name).second)
                 continue;
             bodyError(check, line, "variable '" + name + "' is read in " + check.routine + " before it is assigned: "
                       "the variables of a FUNCTION or PROCEDURE other than its inputs are local and not initialised "
@@ -1395,14 +1425,557 @@ private:
 
     static void bodyError(BodyCheck& check, int line, const std::string& message) {
         // the source line as context, like the other parse errors
+        check.result.errors.push_back({line, 0, message, sourceLineText(check.source, line)});
+    }
+
+    /// Line `line` (1-based) of `source`; empty when there is none.
+    static std::string sourceLineText(const std::string& source, int line) {
         size_t start = 0;
         for (int i = 1; i < line && start != std::string::npos; ++i) {
-            start = check.source.find('\n', start);
+            start = source.find('\n', start);
             if (start != std::string::npos) ++start;
         }
-        const std::string context = start == std::string::npos ? std::string()
-            : check.source.substr(start, check.source.find('\n', start) - start);
-        check.result.errors.push_back({line, 0, message, context});
+        return start == std::string::npos ? std::string() : source.substr(start, source.find('\n', start) - start);
+    }
+
+    // ------------------------------------------------------------------------
+    // $CONSTANT Name# = ValueSI [UnitsSI] ValueEng [UnitsEng] (EES help, $Constant)
+    //
+    // A value known before the solve and global: the main program and every FUNCTION / PROCEDURE see
+    // it, above or below the directive. ValueSI is a number or an expression without spaces of numbers
+    // and of the constants defined above; the units and the English value are ignored (CoolSolve works
+    // in SI). Its reads are replaced by the value once the file is parsed (resolveCompileTimeValues).
+    // A string constant (`Name#$ = 'text'`) is not supported.
+    // ------------------------------------------------------------------------
+    void noteConstantDirective(const Directive& directive, int lineNumber, const std::string& sourceLine,
+                               ParseResult& result) {
+        std::string kind = directive.name;
+        std::transform(kind.begin(), kind.end(), kind.begin(), ::tolower);
+        if (kind != "constant") return;
+        auto fail = [&](const std::string& message) { result.errors.push_back({lineNumber, 0, message, sourceLine}); };
+        const std::string text = trim(removeInlineComments(directive.content));
+        const size_t eq = text.find('=');
+        const std::string name = trim(text.substr(0, eq));
+        if (eq == std::string::npos || name.empty()) return fail("$CONSTANT: expected $CONSTANT Name# = value [units]");
+        if (name.size() > 2 && name.compare(name.size() - 2, 2, "#$") == 0)
+            return fail("$CONSTANT " + name + ": string constants are not supported (set a string variable in the "
+                        "main program and pass it to the routines as an argument)");
+        if (name.back() != '#' || !isIdentifier(name))
+            return fail("$CONSTANT: the name of a constant ends with # ('" + name + "')");
+        const std::string rest = trim(text.substr(eq + 1));
+        const size_t valueEnd = rest.find_first_of(" \t[");
+        const std::string valueText = rest.substr(0, valueEnd);
+        const std::string after = valueEnd == std::string::npos ? "" : trim(rest.substr(valueEnd));
+        if (valueText.empty() || (!after.empty() && after[0] != '['))
+            return fail("$CONSTANT " + name + ": the value is a number or an expression without spaces, followed "
+                        "by its [units] if any (EES), not '" + rest + "'");
+        const auto existing = userConstants_.find(name);
+        if (existing != userConstants_.end())
+            return fail("$CONSTANT " + name + " is already defined (line " + std::to_string(existing->second.line) + ")");
+        clearExpressionError();
+        std::string unknown;
+        const auto value = evaluateConstantExpression(parseExpression(valueText, lineNumber),
+            [this](const std::string& n) { return constantValue(n); }, &unknown);
+        clearExpressionError();
+        if (!value)
+            return fail("$CONSTANT " + name + ": " + (unknown.empty() ? "'" + valueText + "' is not a constant expression"
+                                                                      : "'" + unknown + "' is not a constant defined above"));
+        userConstants_[name] = {*value, lineNumber};
+        if (routineChecked_ && !presetConstants_.count(name)) constantAfterRoutine_ = true;
+    }
+
+    /// Value of a $CONSTANT defined so far or of a built-in constant (pi, g#...); nullopt otherwise.
+    std::optional<double> constantValue(const std::string& name) const {
+        const auto it = userConstants_.find(name);
+        if (it != userConstants_.end()) return it->second.value;
+        if (Constants::isConstant(name)) return Constants::getValue(name);
+        return std::nullopt;
+    }
+
+    // ------------------------------------------------------------------------
+    // Values known before the solve (CS-BUG-DUPLICATE-VAR-BOUND, CS-GAP-ARRAY-ARG)
+    //
+    // One walk of the program, once the whole file is parsed without error (a variable may be set
+    // below the loop that uses it), and only when the file has a $CONSTANT, a DUPLICATE or an array range:
+    //  - every read of a $CONSTANT becomes its value (a routine that declares the name in its header
+    //    keeps it as its own variable); assigning a constant is an error;
+    //  - the bounds of the DUPLICATE loops of the main program and of the array ranges X[a..b] are
+    //    resolved by evaluateConstantExpression, a name standing for a constant or for a variable of the
+    //    main program set to a constant expression by an equation `n = <expression>`, possibly through
+    //    other such variables (n = 2*m, m = 3). A DUPLICATE bound that uses the index of an enclosing
+    //    DUPLICATE stays an expression of it, evaluated by the IR for each copy; any other bound becomes
+    //    its integer value. In a FUNCTION / PROCEDURE (header and body) the bounds of a range are numbers
+    //    or constants: a body sees no variable of the main program and its own are known only when it
+    //    runs (the DUPLICATE loops of a body are run by the evaluator and keep their bounds);
+    //  - a range stands for its elements, in order (the last index varying fastest), in the header of a
+    //    routine and in the arguments of a function or of a CALL, outputs included; anywhere else it is
+    //    an error. A call that passes a range, or calls a routine whose header has one, must give as many
+    //    values as the header declares (checked here, with the line, rather than at the solve).
+    // Each error names the bound and is reported with its line, like a parse error.
+    // ------------------------------------------------------------------------
+    using NameSet = std::set<std::string, CaseInsensitiveLess>;
+
+    struct RoutineSignature {
+        std::string kind;   // "FUNCTION" / "PROCEDURE"
+        std::string name;
+        int line = 0;
+        size_t inputs = 0, outputs = 0;   // after the ranges of the header are expanded
+        bool hasRange = false;            // the header has a range
+    };
+
+    struct CompileTimeContext {
+        ParseResult& result;
+        const std::string& source;
+        /// The variables of the main program set by an equation `name = <expression>` (the first one).
+        std::map<std::string, std::pair<ExprPtr, int>, CaseInsensitiveLess> definitions;
+        std::map<std::string, std::optional<double>, CaseInsensitiveLess> values;   // resolved so far
+        NameSet resolving;                                                         // cycle guard
+        std::map<std::string, RoutineSignature, CaseInsensitiveLess> routines;
+        NameSet iterators;     // the indices of the enclosing DUPLICATE loops (main program)
+        std::string routine;   // "FUNCTION 'f'" while a routine is walked, empty in the main program
+        NameSet locals;        // the names its header declares (they hide a $CONSTANT)
+        int line = 0;          // line of the statement being walked
+
+        void error(const std::string& message) {
+            result.errors.push_back({line, 0, message, sourceLineText(source, line)});
+        }
+    };
+
+    static constexpr const char* kBoundRule =
+        ". A bound is a number, a $CONSTANT, or a variable set to a constant expression by an equation of the "
+        "main program (n = 17), combined with + - * / ^";
+    static constexpr size_t kMaxRangeElements = 100000;
+
+    static bool isRangeIndex(const ExprPtr& index) {
+        return index && index->is<BinaryOp>() && index->as<BinaryOp>().op == "..";
+    }
+    static bool hasRange(const Variable& var) {
+        return std::any_of(var.indices.begin(), var.indices.end(), isRangeIndex);
+    }
+
+    static std::string formatNumber(double value) {
+        std::ostringstream os;
+        os << std::setprecision(15) << value;
+        return os.str();
+    }
+
+    /// The expression as written in a message: `x[1..n]`, `y + 1`, `2*m`.
+    static std::string formatExpr(const ExprPtr& expr) {
+        if (!expr) return "";
+        auto precedence = [](const std::string& op) {
+            return op == "+" || op == "-" ? 1 : op == "*" || op == "/" ? 2 : op == "^" ? 3 : 0;
+        };
+        auto operand = [&](const ExprPtr& e, int parent, bool right) {
+            const std::string text = formatExpr(e);
+            if (!e->is<BinaryOp>() || e->as<BinaryOp>().op == "..") return text;
+            const int own = precedence(e->as<BinaryOp>().op);
+            return own < parent || (right && own == parent) ? "(" + text + ")" : text;
+        };
+        if (expr->is<NumberLiteral>()) return formatNumber(expr->as<NumberLiteral>().value);
+        if (expr->is<StringLiteral>()) return "'" + expr->as<StringLiteral>().value + "'";
+        if (expr->is<Variable>()) {
+            const auto& var = expr->as<Variable>();
+            std::string text = var.name;
+            for (size_t i = 0; i < var.indices.size(); ++i)
+                text += (i == 0 ? "[" : ",") + formatExpr(var.indices[i]) + (i + 1 == var.indices.size() ? "]" : "");
+            return text;
+        }
+        if (expr->is<UnaryOp>()) return expr->as<UnaryOp>().op + operand(expr->as<UnaryOp>().operand, 3, false);
+        if (expr->is<BinaryOp>()) {
+            const auto& op = expr->as<BinaryOp>();
+            if (op.op == "..") return formatExpr(op.left) + ".." + formatExpr(op.right);
+            const int own = precedence(op.op);
+            const std::string sep = own == 1 || own == 0 ? " " : "";
+            return operand(op.left, own, false) + sep + op.op + sep + operand(op.right, own, true);
+        }
+        const auto& call = expr->as<FunctionCall>();
+        std::string text = call.name + "(";
+        for (size_t i = 0; i < call.args.size(); ++i) text += (i ? ", " : "") + formatExpr(call.args[i]);
+        for (size_t i = 0; i < call.namedArgs.size(); ++i)
+            text += (i || !call.args.empty() ? ", " : "") + call.namedArgs[i].first + "=" + formatExpr(call.namedArgs[i].second);
+        return text + ")";
+    }
+
+    void resolveCompileTimeValues(ParseResult& result, const std::string& source) {
+        auto& statements = result.program.statements;
+        CompileTimeContext ctx{result, source, {}, {}, {}, {}, {}, {}, {}, 0};
+        for (const auto& stmt : statements) {
+            const ExprPtr* lhs = nullptr;
+            const ExprPtr* rhs = nullptr;
+            if (stmt->is<Equation>()) { lhs = &stmt->as<Equation>().lhs; rhs = &stmt->as<Equation>().rhs; }
+            if (stmt->is<Assignment>()) { lhs = &stmt->as<Assignment>().lhs; rhs = &stmt->as<Assignment>().rhs; }
+            if (lhs && (*lhs)->is<Variable>() && (*lhs)->as<Variable>().indices.empty())
+                ctx.definitions.emplace((*lhs)->as<Variable>().name, std::make_pair(*rhs, stmt->sourceLineNumber));
+        }
+        for (auto& stmt : statements) {   // the headers first: the calls are checked against them
+            ctx.line = stmt->sourceLineNumber;
+            RoutineSignature signature;
+            signature.line = stmt->sourceLineNumber;
+            const size_t errorsBefore = result.errors.size();
+            if (stmt->is<FunctionDefinition>()) {
+                auto& def = stmt->as<FunctionDefinition>();
+                signature.kind = "FUNCTION";
+                signature.name = def.name;
+                ctx.routine = "FUNCTION '" + def.name + "'";
+                expandHeader(def.parameters, signature.hasRange, ctx);
+                signature.inputs = def.parameters.size();
+                signature.outputs = 1;
+            } else if (stmt->is<ProcedureDefinition>()) {
+                auto& def = stmt->as<ProcedureDefinition>();
+                signature.kind = "PROCEDURE";
+                signature.name = def.name;
+                ctx.routine = "PROCEDURE '" + def.name + "'";
+                expandHeader(def.inputs, signature.hasRange, ctx);
+                expandHeader(def.outputs, signature.hasRange, ctx);
+                signature.inputs = def.inputs.size();
+                signature.outputs = def.outputs.size();
+            } else {
+                continue;
+            }
+            if (result.errors.size() == errorsBefore)   // a header in error is not checked against its calls
+                ctx.routines.emplace(signature.name, signature);
+        }
+        ctx.routine.clear();
+        walkStatements(statements, ctx);
+    }
+
+    // --- bounds ---------------------------------------------------------------
+
+    /// Value of `name` in a bound or a constant expression: a constant (not hidden by a name of the
+    /// routine's header) and, in the main program, a variable set to a constant expression.
+    std::optional<double> knownValue(CompileTimeContext& ctx, const std::string& name) {
+        if (ctx.locals.count(name)) return std::nullopt;
+        if (!ctx.definitions.count(name) || userConstants_.count(name))
+            if (const auto constant = constantValue(name)) return constant;
+        if (!ctx.routine.empty()) return std::nullopt;
+        const auto known = ctx.values.find(name);
+        if (known != ctx.values.end()) return known->second;
+        const auto def = ctx.definitions.find(name);
+        if (def == ctx.definitions.end() || !ctx.resolving.insert(name).second) return std::nullopt;   // n = m, m = n
+        const auto value = evaluateConstantExpression(def->second.first,
+                                                      [&](const std::string& n) { return knownValue(ctx, n); });
+        ctx.resolving.erase(name);
+        ctx.values[name] = value;
+        return value;
+    }
+
+    /// Why `name` (a name without value in a bound of the main program) is not known before the solve.
+    static std::string explainUnknown(const CompileTimeContext& ctx, const std::string& name) {
+        if (name.find('[') != std::string::npos)
+            return "'" + name + "' is an array element, known only at the solve";
+        const auto def = ctx.definitions.find(name);
+        if (def == ctx.definitions.end())
+            return "'" + name + "' is not set by an equation '" + name + " = <constant expression>' of the main program";
+        return "'" + name + "' is set by '" + name + " = " + formatExpr(def->second.first) + "' (line " +
+               std::to_string(def->second.second) + "), which is not a constant expression";
+    }
+
+    /// Resolve in place the `which` ("first"/"last") bound of a DUPLICATE of the main program: its integer
+    /// value, or (a bound using an enclosing index) the expression with the known names replaced by their
+    /// values. False, reported, when it is neither.
+    bool resolveDuplicateBound(ExprPtr& bound, const char* which, const std::string& iterator, CompileTimeContext& ctx) {
+        std::string unknown;
+        bool usesIndex = false;
+        const auto value = evaluateConstantExpression(bound, [&](const std::string& n) -> std::optional<double> {
+            if (ctx.iterators.count(n)) {
+                usesIndex = true;
+                return 1.0;   // the form is checked here, the value in each copy (IR)
+            }
+            return knownValue(ctx, n);
+        }, &unknown);
+        const std::string what = "DUPLICATE " + iterator + ": the " + which + " bound '" + formatExpr(bound) + "'";
+        if (!value) {
+            ctx.error(what + (unknown.empty() ? " is not an arithmetic expression"
+                                              : " is not known before the solve: " + explainUnknown(ctx, unknown)) +
+                      kBoundRule);
+            return false;
+        }
+        if (usesIndex) {
+            replaceKnownNames(bound, ctx);
+            return true;
+        }
+        const auto integer = asIntegerBound(*value);
+        if (!integer) {
+            ctx.error(what + " is " + formatNumber(*value) + ", not an integer");
+            return false;
+        }
+        bound = makeNumber(*integer, bound->sourceLineNumber);
+        return true;
+    }
+
+    void replaceKnownNames(ExprPtr& expr, CompileTimeContext& ctx) {
+        if (expr->is<Variable>()) {
+            const auto& var = expr->as<Variable>();
+            if (!var.indices.empty() || ctx.iterators.count(var.name)) return;
+            if (const auto value = knownValue(ctx, var.name)) expr->node = NumberLiteral{*value};
+        } else if (expr->is<UnaryOp>()) {
+            replaceKnownNames(expr->as<UnaryOp>().operand, ctx);
+        } else if (expr->is<BinaryOp>()) {
+            replaceKnownNames(expr->as<BinaryOp>().left, ctx);
+            replaceKnownNames(expr->as<BinaryOp>().right, ctx);
+        }
+    }
+
+    /// "array range 'x[1..n]'", with the routine when it is in one.
+    static std::string rangeLabel(const std::string& text, const CompileTimeContext& ctx, bool inHeader) {
+        std::string label = "array range '" + text + "'";
+        if (!ctx.routine.empty()) label += (inHeader ? " in the header of " : " in ") + ctx.routine;
+        return label;
+    }
+
+    /// The integer value of the `which` bound of the range `text`; nullopt (reported) when it is not known.
+    std::optional<int> rangeBound(const ExprPtr& bound, const char* which, const std::string& text,
+                                  CompileTimeContext& ctx, bool inHeader) {
+        std::string unknown, index;
+        const auto value = evaluateConstantExpression(bound, [&](const std::string& n) -> std::optional<double> {
+            if (ctx.iterators.count(n) && ctx.routine.empty()) {
+                if (index.empty()) index = n;
+                return std::nullopt;
+            }
+            return knownValue(ctx, n);
+        }, &unknown);
+        const std::string label = rangeLabel(text, ctx, inHeader);
+        if (!value) {
+            if (!ctx.routine.empty() && !unknown.empty())
+                ctx.error(label + ": the bounds of a range in a FUNCTION or PROCEDURE are numbers or $CONSTANTs ('" +
+                          unknown + "' is known only when the routine runs)");
+            else if (!index.empty())
+                ctx.error(label + ": its bounds cannot depend on the index '" + index + "' of the enclosing DUPLICATE "
+                          "(not supported: write the elements one by one)");
+            else
+                ctx.error(label + ": the " + which + " index " +
+                          (unknown.empty() ? std::string("is not an arithmetic expression")
+                                           : "is not known before the solve: " + explainUnknown(ctx, unknown)) + kBoundRule);
+            return std::nullopt;
+        }
+        const auto integer = asIntegerBound(*value);
+        if (!integer) ctx.error(label + ": the " + which + " index is " + formatNumber(*value) + ", not an integer");
+        return integer;
+    }
+
+    // --- ranges and constants ---------------------------------------------------
+
+    /// The elements of `var` (an index at least is a range a..b), the last index varying fastest; empty
+    /// when a bound is not known (reported).
+    std::vector<Variable> rangeElements(Variable& var, CompileTimeContext& ctx, bool inHeader) {
+        const std::string text = formatExpr(makeArrayVariable(var.name, var.indices));
+        std::vector<Variable> elements{Variable{var.name, {}}};
+        for (auto& index : var.indices) {
+            std::vector<ExprPtr> values;
+            if (!isRangeIndex(index)) {
+                walkExpression(index, ctx);
+                values.push_back(index);
+            } else {
+                const auto& range = index->as<BinaryOp>();
+                const auto first = rangeBound(range.left, "first", text, ctx, inHeader);
+                const auto last = first ? rangeBound(range.right, "last", text, ctx, inHeader) : std::nullopt;
+                if (!last) return {};
+                if (*first > *last) {
+                    ctx.error(rangeLabel(text, ctx, inHeader) + ": the first index (" + std::to_string(*first) +
+                              ") is greater than the last (" + std::to_string(*last) + ")");
+                    return {};
+                }
+                if (static_cast<size_t>(*last - *first + 1) * elements.size() > kMaxRangeElements) {
+                    ctx.error(rangeLabel(text, ctx, inHeader) + ": more than " + std::to_string(kMaxRangeElements) +
+                              " elements");
+                    return {};
+                }
+                for (int k = *first; k <= *last; ++k) values.push_back(makeNumber(k, index->sourceLineNumber));
+            }
+            std::vector<Variable> next;
+            for (const auto& element : elements)
+                for (const auto& value : values) {
+                    next.push_back(element);
+                    next.back().indices.push_back(value);
+                }
+            elements = std::move(next);
+        }
+        return elements;
+    }
+
+    /// Replace the ranges of an argument list by their elements; the other arguments are walked. True when
+    /// the list held a range.
+    bool expandArguments(std::vector<ExprPtr>& args, CompileTimeContext& ctx) {
+        bool hadRange = false;
+        std::vector<ExprPtr> expanded;
+        for (auto& arg : args) {
+            if (!arg->is<Variable>() || !hasRange(arg->as<Variable>())) {
+                walkExpression(arg, ctx);
+                expanded.push_back(arg);
+                continue;
+            }
+            hadRange = true;
+            for (auto& element : rangeElements(arg->as<Variable>(), ctx, false))
+                expanded.push_back(makeArrayVariable(element.name, std::move(element.indices), arg->sourceLineNumber));
+        }
+        if (hadRange) args = std::move(expanded);
+        return hadRange;
+    }
+
+    /// Replace the ranges of a routine header (`SP[1..5]`) by the names of their elements as the body
+    /// reads them (`SP[1]`, ..., `SP[5]`). The bounds are numbers or constants.
+    void expandHeader(std::vector<std::string>& names, bool& hasRangeOut, CompileTimeContext& ctx) {
+        std::vector<std::string> expanded;
+        for (const auto& name : names) {
+            if (name.find("..") == std::string::npos) {
+                expanded.push_back(name);
+                continue;
+            }
+            clearExpressionError();
+            ExprPtr parsed = parseExpression(name, ctx.line);
+            clearExpressionError();
+            if (!parsed || !parsed->is<Variable>() || !hasRange(parsed->as<Variable>())) {
+                ctx.error("Could not parse the argument '" + name + "' in the header of " + ctx.routine);
+                continue;
+            }
+            hasRangeOut = true;
+            for (const auto& element : rangeElements(parsed->as<Variable>(), ctx, true))
+                expanded.push_back(element.flattenedName());
+        }
+        names = std::move(expanded);
+    }
+
+    /// A call that uses a range, or calls a routine whose header has one, gives as many values as declared.
+    static void checkCallSize(const std::string& call, const std::string& routine, size_t given, bool callHasRange,
+                              bool outputs, CompileTimeContext& ctx) {
+        const auto it = ctx.routines.find(routine);
+        if (it == ctx.routines.end() || (!callHasRange && !it->second.hasRange)) return;
+        const auto& sig = it->second;
+        const size_t declared = outputs ? sig.outputs : sig.inputs;
+        if (given == declared) return;
+        const std::string what = call.rfind("CALL ", 0) == 0 ? (outputs ? " outputs" : " inputs") : " arguments";
+        ctx.error(call + " gives " + std::to_string(given) + what + " (an array range counts its elements), but " +
+                  sig.kind + " " + sig.name + " (line " + std::to_string(sig.line) + ") " +
+                  (outputs ? "returns " : "takes ") + std::to_string(declared));
+    }
+
+    /// A variable assigned by a statement (left-hand side, CALL output) must not be a $CONSTANT.
+    void checkNotConstant(const Variable& var, CompileTimeContext& ctx) {
+        if (!var.indices.empty() || ctx.locals.count(var.name)) return;
+        const auto it = userConstants_.find(var.name);
+        if (it != userConstants_.end())
+            ctx.error("'" + var.name + "' is a constant ($CONSTANT, line " + std::to_string(it->second.line) +
+                      "): its value cannot be changed");
+    }
+
+    void walkExpression(ExprPtr& expr, CompileTimeContext& ctx) {
+        if (!expr) return;
+        if (expr->is<Variable>()) {
+            auto& var = expr->as<Variable>();
+            if (var.indices.empty()) {   // a $CONSTANT becomes its value
+                const auto it = ctx.locals.count(var.name) ? userConstants_.end() : userConstants_.find(var.name);
+                if (it != userConstants_.end()) expr->node = NumberLiteral{it->second.value};
+                return;
+            }
+            if (hasRange(var)) {
+                ctx.error("array range '" + formatExpr(expr) + "' is only allowed as an argument of a function or of "
+                          "a CALL, or in the header of a FUNCTION or PROCEDURE (EES array range notation)");
+                return;
+            }
+            for (auto& index : var.indices) walkExpression(index, ctx);
+        } else if (expr->is<UnaryOp>()) {
+            walkExpression(expr->as<UnaryOp>().operand, ctx);
+        } else if (expr->is<BinaryOp>()) {
+            walkExpression(expr->as<BinaryOp>().left, ctx);
+            walkExpression(expr->as<BinaryOp>().right, ctx);
+        } else if (expr->is<FunctionCall>()) {
+            auto& call = expr->as<FunctionCall>();
+            const bool hadRange = expandArguments(call.args, ctx);
+            for (auto& named : call.namedArgs) walkExpression(named.second, ctx);
+            checkCallSize(call.name + "(...)", call.name, call.args.size(), hadRange, false, ctx);
+        }
+    }
+
+    /// The left-hand side of an equation or an assignment.
+    void walkAssigned(ExprPtr& lhs, CompileTimeContext& ctx) {
+        if (!lhs->is<Variable>()) return walkExpression(lhs, ctx);   // an implicit equation of the main program
+        checkNotConstant(lhs->as<Variable>(), ctx);
+        if (!lhs->as<Variable>().indices.empty()) walkExpression(lhs, ctx);
+    }
+
+    void walkCall(ProcedureCall& call, CompileTimeContext& ctx) {
+        const bool inputRange = expandArguments(call.inputArgs, ctx);
+        bool outputRange = false;
+        std::vector<Variable> outputs;
+        std::vector<ExprPtr> outputExprs;   // kept aligned with the outputs when the CALL has expression outputs
+        for (size_t i = 0; i < call.outputVars.size(); ++i) {
+            ExprPtr expression = call.outputExprs.empty() ? nullptr : call.outputExprs[i];
+            Variable& var = call.outputVars[i];
+            if (expression || !hasRange(var)) {
+                if (expression) walkExpression(expression, ctx);
+                checkNotConstant(var, ctx);
+                for (auto& index : var.indices) walkExpression(index, ctx);
+                outputs.push_back(var);
+                outputExprs.push_back(expression);
+                continue;
+            }
+            outputRange = true;
+            for (auto& element : rangeElements(var, ctx, false)) {
+                outputs.push_back(std::move(element));
+                outputExprs.push_back(nullptr);
+            }
+        }
+        if (outputRange) {
+            call.outputVars = std::move(outputs);
+            if (!call.outputExprs.empty()) call.outputExprs = std::move(outputExprs);
+        }
+        const auto sig = ctx.routines.find(call.name);
+        if (sig == ctx.routines.end() || sig->second.kind != "PROCEDURE") return;
+        checkCallSize("CALL " + call.name, call.name, call.inputArgs.size(), inputRange || outputRange, false, ctx);
+        checkCallSize("CALL " + call.name, call.name, call.outputVars.size(), inputRange || outputRange, true, ctx);
+    }
+
+    void walkStatements(std::vector<StmtPtr>& statements, CompileTimeContext& ctx) {
+        for (auto& stmt : statements) {
+            ctx.line = stmt->sourceLineNumber;
+            if (stmt->is<Equation>()) {
+                walkAssigned(stmt->as<Equation>().lhs, ctx);
+                walkExpression(stmt->as<Equation>().rhs, ctx);
+            } else if (stmt->is<Assignment>()) {
+                walkAssigned(stmt->as<Assignment>().lhs, ctx);
+                walkExpression(stmt->as<Assignment>().rhs, ctx);
+            } else if (stmt->is<ProcedureCall>()) {
+                walkCall(stmt->as<ProcedureCall>(), ctx);
+            } else if (stmt->is<Duplicate>()) {
+                auto& dup = stmt->as<Duplicate>();
+                if (ctx.routine.empty()) {   // a loop of a body is run by the evaluator, with its bounds
+                    if (resolveDuplicateBound(dup.start, "first", dup.iteratorVar, ctx))
+                        resolveDuplicateBound(dup.end, "last", dup.iteratorVar, ctx);
+                } else {
+                    walkExpression(dup.start, ctx);
+                    walkExpression(dup.end, ctx);
+                }
+                const bool added = ctx.iterators.insert(dup.iteratorVar).second;
+                walkStatements(dup.body, ctx);
+                if (added) ctx.iterators.erase(dup.iteratorVar);
+            } else if (stmt->is<IfThenElse>()) {
+                auto& ite = stmt->as<IfThenElse>();
+                walkExpression(ite.condition, ctx);
+                walkStatements(ite.thenBranch, ctx);
+                walkStatements(ite.elseBranch, ctx);
+            } else if (stmt->is<RepeatUntil>()) {
+                auto& rep = stmt->as<RepeatUntil>();
+                walkStatements(rep.body, ctx);
+                if (rep.condition && rep.condition->sourceLineNumber > 0) ctx.line = rep.condition->sourceLineNumber;
+                walkExpression(rep.condition, ctx);
+            } else if (stmt->is<FunctionDefinition>()) {
+                auto& def = stmt->as<FunctionDefinition>();
+                ctx.routine = "FUNCTION '" + def.name + "'";
+                ctx.locals = {def.name};
+                for (const auto& p : def.parameters) ctx.locals.insert(arrayBaseName(p));
+                walkStatements(def.body, ctx);
+                ctx.routine.clear();
+                ctx.locals.clear();
+            } else if (stmt->is<ProcedureDefinition>()) {
+                auto& def = stmt->as<ProcedureDefinition>();
+                ctx.routine = "PROCEDURE '" + def.name + "'";
+                for (const auto& p : def.inputs) ctx.locals.insert(arrayBaseName(p));
+                for (const auto& p : def.outputs) ctx.locals.insert(arrayBaseName(p));
+                walkStatements(def.body, ctx);
+                ctx.routine.clear();
+                ctx.locals.clear();
+            }
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -1781,7 +2354,7 @@ private:
                 "integralautostep", "integralstop",  // recognised-but-not-interpreted
                 "diagrams", "bookmark", "hiddenvariables",
                 "checkunits", "warnings", "complex",
-                "reference", "savelookup",
+                "reference", "savelookup", "constant",
             };
             if (knownDirectives.find(lower) == knownDirectives.end()) {
                 diag->push(DiagnosticSeverity::Warning, "P002",
@@ -1841,6 +2414,7 @@ private:
         std::vector<std::string> argStrs = splitArguments(argsStr);
         for (const auto& s : argStrs) {
             params.push_back(trim(s));
+            if (s.find("..") != std::string::npos) rangeSeen_ = true;   // X[1..5]: CS-GAP-ARRAY-ARG
         }
         return true;
     }
@@ -1896,6 +2470,7 @@ private:
         for (const auto& s : outputStrs) {
             outputs.push_back(trim(s));
         }
+        if (argsStr.find("..") != std::string::npos) rangeSeen_ = true;   // X[1..5]: CS-GAP-ARRAY-ARG
         return true;
     }
 
@@ -2841,7 +3416,7 @@ private:
         std::vector<std::string> indexStrings = splitArguments(indexStr);
         
         for (size_t i = 0; i < indexStrings.size(); ++i) {
-            auto indexExpr = parseExpression(indexStrings[i], lineNum);
+            auto indexExpr = parseIndexOrRange(indexStrings[i], lineNum);
             if (!indexExpr) {
                 setExpressionError("Could not parse index " + std::to_string(i + 1)
                     + " of '" + name + "': '" + trim(indexStrings[i]) + "'");
@@ -2852,7 +3427,29 @@ private:
         
         return makeArrayVariable(name, indices, lineNum);
     }
-    
+
+    // An index, or a range `a..b` of indices (EES array range notation, CS-GAP-ARRAY-ARG): the binary
+    // operator "..", which resolveCompileTimeValues() expands into the elements once the whole file is
+    // parsed. nullptr when the text is neither.
+    ExprPtr parseIndexOrRange(const std::string& text, int lineNum) {
+        size_t dots = std::string::npos;
+        int depth = 0;
+        for (size_t i = 0; i + 1 < text.size() && dots == std::string::npos; ++i) {
+            if (text[i] == '(' || text[i] == '[') depth++;
+            else if (text[i] == ')' || text[i] == ']') depth--;
+            else if (depth == 0 && text[i] == '.' && text[i + 1] == '.') dots = i;
+        }
+        if (dots == std::string::npos) return parseExpression(text, lineNum);
+        const std::string first = trim(text.substr(0, dots));
+        const std::string last = trim(text.substr(dots + 2));
+        if (first.empty() || last.empty() || last[0] == '.' || first.back() == '.') return nullptr;   // 1...3
+        auto firstExpr = parseExpression(first, lineNum);
+        auto lastExpr = firstExpr ? parseExpression(last, lineNum) : nullptr;
+        if (!lastExpr) return nullptr;
+        rangeSeen_ = true;
+        return makeBinaryOp("..", firstExpr, lastExpr, lineNum);
+    }
+
     std::vector<std::string> splitArguments(const std::string& argsStr) {
         std::vector<std::string> result;
         std::string current;
@@ -2962,6 +3559,51 @@ std::string EESParser::getLastError() const {
 // Utility Functions
 // ============================================================================
 
+std::optional<double> evaluateConstantExpression(
+    const ExprPtr& expr, const std::function<std::optional<double>(const std::string&)>& lookup,
+    std::string* unknown) {
+    if (!expr) return std::nullopt;
+    if (expr->is<NumberLiteral>()) return expr->as<NumberLiteral>().value;
+    if (expr->is<Variable>()) {
+        const auto& var = expr->as<Variable>();
+        std::optional<double> value;
+        if (var.indices.empty() && lookup) value = lookup(var.name);
+        if (!value && unknown && unknown->empty()) *unknown = var.flattenedName();
+        return value;
+    }
+    if (expr->is<UnaryOp>()) {
+        const auto& op = expr->as<UnaryOp>();
+        const auto operand = evaluateConstantExpression(op.operand, lookup, unknown);
+        if (!operand || (op.op != "-" && op.op != "+")) return std::nullopt;
+        return op.op == "-" ? -*operand : *operand;
+    }
+    if (expr->is<BinaryOp>()) {
+        const auto& op = expr->as<BinaryOp>();
+        const auto left = evaluateConstantExpression(op.left, lookup, unknown);
+        if (!left) return std::nullopt;
+        const auto right = evaluateConstantExpression(op.right, lookup, unknown);
+        if (!right) return std::nullopt;
+        double value;
+        if (op.op == "+") value = *left + *right;
+        else if (op.op == "-") value = *left - *right;
+        else if (op.op == "*") value = *left * *right;
+        else if (op.op == "/") value = *left / *right;
+        else if (op.op == "^") value = std::pow(*left, *right);
+        else return std::nullopt;   // a comparison, a range a..b
+        if (!std::isfinite(value)) return std::nullopt;
+        return value;
+    }
+    return std::nullopt;   // a function call, a string
+}
+
+std::optional<int> asIntegerBound(double value) {
+    const double rounded = std::round(value);
+    if (!std::isfinite(value) || std::fabs(rounded) > 1e9 ||
+        std::fabs(value - rounded) > 1e-9 * std::max(1.0, std::fabs(value)))
+        return std::nullopt;
+    return static_cast<int>(rounded);
+}
+
 std::optional<std::string> readFile(const std::string& filepath) {
     std::ifstream file(filepath);
     if (!file.is_open()) {
@@ -3028,6 +3670,7 @@ std::string astToString(const ExprPtr& expr) {
         } else if constexpr (std::is_same_v<T, UnaryOp>) {
             return "(" + node.op + astToString(node.operand) + ")";
         } else if constexpr (std::is_same_v<T, BinaryOp>) {
+            if (node.op == "..") return astToString(node.left) + ".." + astToString(node.right);   // an array range
             return "(" + astToString(node.left) + " " + node.op + " " + astToString(node.right) + ")";
         } else if constexpr (std::is_same_v<T, FunctionCall>) {
             std::string result = node.name + "(";

@@ -2,6 +2,7 @@
 
 #include "ast.h"
 #include "diagnostic.h"
+#include <functional>
 #include <string>
 #include <optional>
 #include <vector>
@@ -83,6 +84,25 @@ std::optional<std::string> readFile(const std::string& filepath);
 
 // Collect all variables from an expression
 void collectVariables(const ExprPtr& expr, std::vector<std::string>& vars);
+
+/**
+ * Value of an expression known before the solve: numbers combined with `+ - * / ^`, a unary sign and
+ * parentheses, a name (a variable without subscript) standing for `lookup(name)`. This is the resolver of
+ * the integer bounds of the DUPLICATE loops and of the array ranges `X[a..b]` (the parser resolves the
+ * names, the IR evaluates the copies of a nested loop) and of the `$CONSTANT` values.
+ *
+ * @param lookup  Value of a name; nullopt (or no lookup) when the name has none.
+ * @param unknown When given and still empty, receives the first name (or array element) without a value.
+ * @return nullopt for a name without value, a function call, a string, a comparison or a result that is
+ *         not finite.
+ */
+std::optional<double> evaluateConstantExpression(
+    const ExprPtr& expr, const std::function<std::optional<double>(const std::string&)>& lookup = {},
+    std::string* unknown = nullptr);
+
+/// `value` as an integer bound (DUPLICATE, array range) when it is an integer up to rounding errors
+/// (`0.1*170` is 17); nullopt otherwise.
+std::optional<int> asIntegerBound(double value);
 
 // Convert AST to string representation (for debugging)
 std::string astToString(const ExprPtr& expr);

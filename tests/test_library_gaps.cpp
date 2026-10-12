@@ -1442,8 +1442,9 @@ TEST_CASE("CS-BUG-ARG-DROP: the same defect in an array index", "[library-gaps][
     CHECK(parseErrors("y = A[1, 2 3]\n") == Messages{"Could not parse index 2 of 'A': '2 3'"});
     CHECK(parseErrors("x[1 2] = 5\n") == Messages{"Could not parse index 1 of 'x': '1 2'"});
     CHECK(parseErrors("y = x[1, ]\n") == Messages{"Could not parse index 2 of 'x': ''"});
-    // an index range is not an expression (only the $IntegralTable directive reads x[1..3])
-    CHECK(parseErrors("y = sum(x[1..3])\n") == Messages{"Could not parse index 1 of 'x': '1..3'"});
+    // an index range is an argument list (CS-GAP-ARRAY-ARG), its bounds are parsed like the other indices
+    CHECK(parseErrors("y = sum(x[1..3])\n").empty());
+    CHECK(parseErrors("y = sum(x[1..3 4])\n") == Messages{"Could not parse index 1 of 'x': '1..3 4'"});
     // an index inside a call argument: one message, the innermost
     CHECK(parseErrors("y = max(x[3 4], 2)\n") == Messages{"Could not parse index 1 of 'x': '3 4'"});
 }
@@ -8950,4 +8951,457 @@ m = c#*1E-8
     // the unset local of another body is the constant, not 1
     CHECK_THAT(run["w"], WithinRel(pi + 299792458.0 * 1e-8, 1e-14));
     CHECK_THAT(run["m"], WithinRel(299792458.0 * 1e-8, 1e-12));
+}
+
+// ============================================================================
+// CS-GAP-ARRAY-ARG: an array range X[a..b] stands for its elements X[a], ..., X[b] (EES help, Array Range
+// Notation): in the arguments of a function or of a CALL (outputs included), in the header of a FUNCTION or
+// PROCEDURE and in the aggregate built-ins (SUM, AVERAGE, MAX, ...). Its bounds are integers known before
+// the solve, resolved like the bounds of a DUPLICATE loop (CS-BUG-DUPLICATE-VAR-BOUND): numbers, $CONSTANTs,
+// arithmetic of those, and variables of the main program set to a constant expression (`n = 3`).
+// ============================================================================
+
+namespace {
+
+/// Number of equations of the IR built from `code`, which must parse without error.
+int equationCount(const std::string& code) {
+    const auto parsed = parseFull(code);
+    REQUIRE(parsed.errors.empty());
+    return IR::fromAST(parsed.program).getEquationCount();
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-ARRAY-ARG: reproducer of the register", "[library-gaps][array-arg]") {
+    // was: "Line 7: Could not parse index 1 of 'SP': '1..3'" (EES: z = 6)
+    auto run = runModel("SP[1]=1\nSP[2]=2\nSP[3]=3\nPROCEDURE pp(a, b, c : y)\ny = a+b+c\nend\ncall pp(SP[1..3] : yv)\n"
+                        "z = yv\n");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["z"], WithinAbs(6.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-ARRAY-ARG: a range in the header of a PROCEDURE and of a FUNCTION", "[library-gaps][array-arg]") {
+    // the header p(a, X[1..3], b) declares 5 inputs, X being the array of the body (constant subscripts, a
+    // REPEAT index, a DUPLICATE index). Any 5 values may be passed: a matching range, single elements,
+    // expressions, a shorter range completed by other values.
+    auto run = runModel(R"(
+PROCEDURE p(a, X[1..3], b : s, m)
+  s = a*1000 + X[1]*100 + X[2]*10 + X[3] + b/10
+  m := 0
+  i := 0
+  REPEAT
+    i := i + 1
+    m := m + X[i]^2
+  UNTIL (i >= 3)
+END
+FUNCTION f(Y[1..2], c)
+  t := 0
+  DUPLICATE k = 1, 2
+    t := t + k*Y[k]
+  END
+  f = t + c
+END
+V[1] = 4
+V[2] = 5
+V[3] = 6
+CALL p(1, V[1..3], 2 : s1, m1)
+CALL p(1, V[1], V[2], V[3], 2 : s2, m2)
+CALL p(1, 7, 8, 2+7, 2 : s3, m3)
+CALL p(1, V[2..3], 3, 2 : s4, m4)
+y1 = f(V[2..3], 1)
+y2 = f(5, 6, 1)
+y3 = f(V[1..2], V[3])
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["s1"], WithinAbs(1456.2, 1e-9));
+    CHECK_THAT(run["m1"], WithinAbs(16.0 + 25.0 + 36.0, 1e-12));
+    CHECK_THAT(run["s2"], WithinAbs(1456.2, 1e-9));
+    CHECK_THAT(run["m2"], WithinAbs(16.0 + 25.0 + 36.0, 1e-12));
+    CHECK_THAT(run["s3"], WithinAbs(1789.2, 1e-9));
+    CHECK_THAT(run["m3"], WithinAbs(49.0 + 64.0 + 81.0, 1e-12));
+    CHECK_THAT(run["s4"], WithinAbs(1563.2, 1e-9));
+    CHECK_THAT(run["y1"], WithinAbs(5.0 + 2 * 6.0 + 1.0, 1e-12));
+    CHECK_THAT(run["y2"], WithinAbs(5.0 + 2 * 6.0 + 1.0, 1e-12));
+    CHECK_THAT(run["y3"], WithinAbs(4.0 + 2 * 5.0 + 6.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-ARRAY-ARG: ranges as outputs of a CALL and of a PROCEDURE header", "[library-gaps][array-arg]") {
+    auto run = runModel(R"(
+PROCEDURE sq(X[1..3] : Y[1..3], tot)
+  DUPLICATE k = 1, 3
+    Y[k] = X[k]^2
+  END
+  tot = Y[1] + Y[2] + Y[3]
+END
+DUPLICATE i = 1, 3
+  x[i] = i + 1
+END
+CALL sq(x[1..3] : y[1..3], t)
+CALL sq(x[1..3] : w[1], w[2], w[3], u)
+CALL sq(1, 2, 3 : z[2..4], v)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (int i = 1; i <= 3; ++i) {
+        CHECK_THAT(run["y[" + std::to_string(i) + "]"], WithinAbs((i + 1.0) * (i + 1.0), 1e-12));
+        CHECK_THAT(run["w[" + std::to_string(i) + "]"], WithinAbs((i + 1.0) * (i + 1.0), 1e-12));
+        CHECK_THAT(run["z[" + std::to_string(i + 1) + "]"], WithinAbs(1.0 * i * i, 1e-12));
+    }
+    CHECK_THAT(run["t"], WithinAbs(29.0, 1e-12));
+    CHECK_THAT(run["u"], WithinAbs(29.0, 1e-12));
+    CHECK_THAT(run["v"], WithinAbs(14.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-ARRAY-ARG: bounds from a $CONSTANT and from variables set to a constant, in the aggregate built-ins",
+          "[library-gaps][array-arg]") {
+    const std::string code = R"(
+$CONSTANT N#=4
+n = 3
+m = n - 1
+x[1] = 1
+x[2] = 2
+x[3] = 4
+x[4] = 8
+s_c = SUM(x[1..N#])
+s_v = SUM(x[1..n])
+a = AVERAGE(x[1..N#])
+mx = MAX(x[m..n])
+mn = MIN(x[2..N#-1])
+p = PRODUCT(x[1..3])
+sd = STDDEV(x[1..2])
+mixed = SUM(x[1..2], 10, x[N#])
+)";
+    CHECK(equationCount(code) == 14);
+    auto run = runModel(code);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["s_c"], WithinAbs(15.0, 1e-12));
+    CHECK_THAT(run["s_v"], WithinAbs(7.0, 1e-12));
+    CHECK_THAT(run["a"], WithinAbs(3.75, 1e-12));
+    CHECK_THAT(run["mx"], WithinAbs(4.0, 1e-12));
+    CHECK_THAT(run["mn"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["p"], WithinAbs(8.0, 1e-12));
+    CHECK_THAT(run["sd"], WithinAbs(0.5, 1e-12));
+    CHECK_THAT(run["mixed"], WithinAbs(21.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-ARRAY-ARG: $CONSTANT sizes as in orc_solar_complex, the constant defined below its uses",
+          "[library-gaps][array-arg]") {
+    // header ranges, a CALL with input and output ranges, a function call with a range inside a DUPLICATE,
+    // AVERAGE of a range; the PROCEDURE has an input named like the constant (it is its local)
+    auto run = runModel(R"(
+FUNCTION q(T, i, EPS[1..imax#])
+  q = EPS[i]*T
+END
+PROCEDURE props(imax#, T[1..imax#] : EPS[1..imax#], tot)
+  j := 0
+  tot := 0
+  REPEAT
+    j := j + 1
+    EPS[j] := T[j]/100
+    tot := tot + EPS[j]
+  UNTIL (j >= imax#)
+END
+DUPLICATE i = 1, imax#
+  T_3[i] = 10*i
+END
+CALL props(imax#, T_3[1..imax#] : eps_3[1..imax#], total)
+DUPLICATE i = 1, imax#
+  q_3[i] = q(T_3[i], i, eps_3[1..imax#])
+END
+T_bar = AVERAGE(T_3[1..imax#])
+$CONSTANT imax#=5
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (int i = 1; i <= 5; ++i) {
+        CHECK_THAT(run["eps_3[" + std::to_string(i) + "]"], WithinAbs(0.1 * i, 1e-12));
+        CHECK_THAT(run["q_3[" + std::to_string(i) + "]"], WithinAbs(1.0 * i * i, 1e-12));
+    }
+    CHECK_THAT(run["total"], WithinAbs(1.5, 1e-12));
+    CHECK_THAT(run["T_bar"], WithinAbs(30.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-ARRAY-ARG: ranges in the CALLs and the function calls of a body", "[library-gaps][array-arg]") {
+    auto run = runModel(R"(
+$CONSTANT K#=3
+PROCEDURE inner(a, b, c : s)
+  s = a + 10*b + 100*c
+END
+FUNCTION total(Z[1..K#])
+  total = SUM(Z[1..K#]) + MAX(Z[2..3])
+END
+PROCEDURE outer(X[1..3] : r, t, u)
+  CALL inner(X[1..3] : r)
+  CALL inner(X[2..K#], 0 : t)
+  u = total(X[1..K#])
+END
+CALL outer(1, 2, 3 : r, t, u)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["r"], WithinAbs(321.0, 1e-12));
+    CHECK_THAT(run["t"], WithinAbs(32.0, 1e-12));
+    CHECK_THAT(run["u"], WithinAbs(9.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-ARRAY-ARG: a range on one index of a 2-D array, and on both", "[library-gaps][array-arg]") {
+    auto run = runModel(R"(
+FUNCTION corner(M[1..2,1..2])
+  corner = M[1,2] - M[2,1]
+END
+A[1,1] = 1
+A[1,2] = 2
+A[2,1] = 3
+A[2,2] = 4
+s_row = SUM(A[2,1..2])
+s_col = SUM(A[1..2,1])
+s_all = SUM(A[1..2,1..2])
+c = corner(A[1..2,1..2])
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["s_row"], WithinAbs(7.0, 1e-12));
+    CHECK_THAT(run["s_col"], WithinAbs(4.0, 1e-12));
+    CHECK_THAT(run["s_all"], WithinAbs(10.0, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(-1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-ARRAY-ARG: a number of values that does not match the header is an error", "[library-gaps][array-arg]") {
+    // the register reproducer with a range one element short: counted after the ranges are expanded
+    auto errors = parseErrorsWithLines("SP[1]=1\nSP[2]=2\nPROCEDURE pp(a, b, c : y)\ny = a+b+c\nend\ncall pp(SP[1..2] : yv)\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].rfind("6: ", 0) == 0);
+    CHECK(anyContains(errors, "CALL pp gives 2 inputs"));
+    CHECK(anyContains(errors, "PROCEDURE pp (line 3) takes 3"));
+    // a header range: f(X[1..3]) takes 3 arguments
+    errors = parseErrorsWithLines("FUNCTION f(X[1..3])\n  f = X[1]\nEND\ny = f(1, 2)\nz = f(1, 2, 3, 4)\n");
+    REQUIRE(errors.size() == 2);
+    CHECK(errors[0].rfind("4: ", 0) == 0);
+    CHECK(anyContains(errors, "f(...) gives 2 arguments"));
+    CHECK(anyContains(errors, "f(...) gives 4 arguments"));
+    CHECK(anyContains(errors, "FUNCTION f (line 1) takes 3"));
+    // outputs
+    errors = parseErrorsWithLines("PROCEDURE q(a : Y[1..2])\n  Y[1] = a\n  Y[2] = a\nEND\nCALL q(1 : z[1..3])\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].rfind("5: ", 0) == 0);
+    CHECK(anyContains(errors, "CALL q gives 3 outputs"));
+    CHECK(anyContains(errors, "PROCEDURE q (line 1) returns 2"));
+    // the same in a body
+    errors = parseErrorsWithLines("PROCEDURE pp(a, b : y)\n  y = a+b\nEND\nPROCEDURE o(X[1..3] : r)\n  CALL pp(X[1..3] : r)\nEND\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].rfind("5: ", 0) == 0);
+    CHECK(anyContains(errors, "CALL pp gives 3 inputs"));
+    // the solve is not attempted
+    auto run = runModel("SP[1]=1\nSP[2]=2\nPROCEDURE pp(a, b, c : y)\ny = a+b+c\nend\ncall pp(SP[1..2] : yv)\n");
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+}
+
+TEST_CASE("CS-GAP-ARRAY-ARG: a reversed, non-integer, misplaced or unknown range is an error", "[library-gaps][array-arg]") {
+    const std::string x = "x[1]=1\nx[2]=2\nx[3]=3\n";
+    SECTION("reversed and non-integer bounds") {
+        CHECK(parseErrorsWithLines(x + "y = SUM(x[3..1])\n") ==
+              std::vector<std::string>{"4: array range 'x[3..1]': the first index (3) is greater than the last (1)"});
+        CHECK(parseErrorsWithLines(x + "y = SUM(x[1..2.5])\n") ==
+              std::vector<std::string>{"4: array range 'x[1..2.5]': the last index is 2.5, not an integer"});
+        CHECK(parseErrorsWithLines(x + "n = 1.5\ny = SUM(x[n..2])\n") ==
+              std::vector<std::string>{"5: array range 'x[n..2]': the first index is 1.5, not an integer"});
+        CHECK_FALSE(parseErrors(x + "y = SUM(x[1...3])\n").empty());
+        CHECK_FALSE(parseErrors(x + "y = SUM(x[1..])\n").empty());
+    }
+    SECTION("a bound that is not known before the solve") {
+        auto errors = parseErrorsWithLines(x + "n = y + 1\nz = SUM(x[1..n])\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].rfind("5: array range 'x[1..n]'", 0) == 0);
+        CHECK(anyContains(errors, "'n = y + 1' (line 4)"));
+        errors = parseErrorsWithLines(x + "z = SUM(x[1..nn])\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(anyContains(errors, "'nn' is not set"));
+    }
+    SECTION("a range that is not an argument") {
+        for (const std::string line : {"y = x[1..3]\n", "y = 2*SUM(x[1..2]) + x[1..2]\n", "x[4..5] = 5\n",
+                                       "y = SUM(x[1..2]^2)\n", "y = x[x[1..2]]\n"}) {
+            INFO(line);
+            const auto errors = parseErrorsWithLines(x + line);
+            REQUIRE(errors.size() == 1);
+            CHECK(errors[0].rfind("4: array range", 0) == 0);
+            CHECK(anyContains(errors, "is only allowed as an argument"));
+        }
+    }
+    SECTION("bounds that depend on the index of a DUPLICATE") {
+        const auto errors = parseErrorsWithLines(x + "DUPLICATE i=1,3\n  y[i] = SUM(x[1..i])\nEND\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].rfind("5: array range 'x[1..i]'", 0) == 0);
+        CHECK(anyContains(errors, "index 'i' of the enclosing DUPLICATE"));
+    }
+    SECTION("in a body and in a header, only numbers and $CONSTANTs") {
+        auto errors = parseErrorsWithLines("FUNCTION g(n, X[1..3])\n  g = SUM(X[1..n])\nEND\nz = g(2, 1, 2, 3)\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].rfind("2: array range 'X[1..n]' in FUNCTION 'g'", 0) == 0);
+        CHECK(anyContains(errors, "numbers or $CONSTANTs"));
+        errors = parseErrorsWithLines("FUNCTION h(n, A[1..n])\n  h = A[1]\nEND\nz = h(1, 5)\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].rfind("1: array range 'A[1..n]' in the header of FUNCTION 'h'", 0) == 0);
+        CHECK(anyContains(errors, "numbers or $CONSTANTs"));
+    }
+}
+
+TEST_CASE("CS-GAP-ARRAY-ARG: the $CONSTANT directive", "[library-gaps][array-arg]") {
+    SECTION("a value usable in the main program and in the bodies, defined above or below") {
+        auto run = runModel(R"(
+$CONSTANT N#=4
+$Constant M# = N#-1 [m]
+$CONSTANT L#=2 [m] 6.56 [ft]   "the English value is ignored"
+FUNCTION f(x)
+  f = x*N# + P#
+END
+y = 2*N#
+z = f(3)
+w = M#*L#
+$constant P#=0.5
+)");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK(run.warnings.empty());   // no "Unknown directive"
+        CHECK_THAT(run["y"], WithinAbs(8.0, 1e-12));
+        CHECK_THAT(run["z"], WithinAbs(12.5, 1e-12));
+        CHECK_THAT(run["w"], WithinAbs(6.0, 1e-12));
+        CHECK_FALSE(hasVar(run, "N#"));   // a constant, not a variable
+    }
+    SECTION("errors") {
+        CHECK(anyContains(parseErrorsWithLines("$CONSTANT N#=3\nN# = 5\n"), "2: 'N#' is a constant ($CONSTANT, line 1)"));
+        CHECK(anyContains(parseErrorsWithLines("$CONSTANT N#=3\nFUNCTION f(x)\n  N# = x\n  f = N#\nEND\ny = f(1)\n"),
+                          "3: 'N#' is a constant ($CONSTANT, line 1)"));
+        CHECK(anyContains(parseErrorsWithLines("$CONSTANT N#=3\nPROCEDURE p(x : y)\n  y = x\nEND\nCALL p(1 : N#)\n"),
+                          "5: 'N#' is a constant ($CONSTANT, line 1)"));
+        CHECK(anyContains(parseErrorsWithLines("$CONSTANT N# = 2 * 3\n"), "1: $CONSTANT"));
+        CHECK(anyContains(parseErrorsWithLines("x = 2\n$CONSTANT N#=x+1\n"), "2: $CONSTANT N#: 'x' is not a constant"));
+        CHECK(anyContains(parseErrorsWithLines("$CONSTANT N=3\n"), "1: $CONSTANT: the name of a constant ends with #"));
+        CHECK(anyContains(parseErrorsWithLines("$CONSTANT R#$='R134a'\n"), "1: $CONSTANT R#$: string constants are not supported"));
+        CHECK(anyContains(parseErrorsWithLines("$CONSTANT N#=3\n$CONSTANT N#=4\n"), "2: $CONSTANT N# is already defined (line 1)"));
+    }
+}
+
+// ============================================================================
+// CS-BUG-DUPLICATE-VAR-BOUND: the bounds of a DUPLICATE loop of the main program may be variables set to a
+// constant expression (`n = 17`, `n = 2*m`), $CONSTANTs and arithmetic of those (EES: "previously set"); a
+// bound that cannot be known before the solve is an error with its line. The loop was silently dropped.
+// ============================================================================
+
+TEST_CASE("CS-BUG-DUPLICATE-VAR-BOUND: reproducer of the register", "[library-gaps][duplicate-var-bound]") {
+    // was: Equations: 1, SUCCESS (the loop dropped); EES: 3 equations, x[1] = 2, x[2] = 4
+    const std::string code = "n=2\nDUPLICATE i=1,n\nx[i]=2*i\nEND\n";
+    CHECK(equationCount(code) == 3);
+    auto run = runModel(code);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["n"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["x[1]"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["x[2]"], WithinAbs(4.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-VAR-BOUND: n = 17, a chain of variables, a $CONSTANT, expressions", "[library-gaps][duplicate-var-bound]") {
+    SECTION("n = 17 as in CSL-0157, several equations per row") {
+        const std::string code = "n=17\nduplicate i=1,n\n  a[i] = i\n  b[i] = a[i]^2\nend\ntot = sum(b[1..n])\n";
+        CHECK(equationCount(code) == 1 + 2 * 17 + 1);
+        auto run = runModel(code);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["b[17]"], WithinAbs(289.0, 1e-12));
+        CHECK_THAT(run["tot"], WithinAbs(1785.0, 1e-9));
+    }
+    SECTION("n = 2*m, m = 3, defined after the loop") {
+        const std::string code = "DUPLICATE i=1,n\n  x[i] = i\nEND\nn = 2*m\nm = 3\n";
+        CHECK(equationCount(code) == 6 + 2);
+        auto run = runModel(code);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x[6]"], WithinAbs(6.0, 1e-12));
+    }
+    SECTION("a $CONSTANT, alone and in an expression") {
+        // (no index arithmetic such as x[i+1] in the loop: that is CS-BUG-DUPLICATE-INDEX-EXPR)
+        const std::string code = "$CONSTANT N#=4\nDUPLICATE i=1,N#\n  x[i] = i\nEND\nDUPLICATE i = 1, (N#-1)\n"
+                                 "  d[i] = 2*x[i]\nEND\n";
+        CHECK(equationCount(code) == 4 + 3);
+        auto run = runModel(code);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["d[3]"], WithinAbs(6.0, 1e-12));
+        CHECK_FALSE(hasVar(run, "x[5]"));
+    }
+    SECTION("a start bound that is a variable, an end bound that is an expression") {
+        const std::string code = "k = 2\nDUPLICATE i=k,2*k+1\n  x[i] = i\nEND\n";
+        CHECK(equationCount(code) == 1 + 4);
+        auto run = runModel(code);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x[2]"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["x[5]"], WithinAbs(5.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-VAR-BOUND: nested loops whose bounds use the outer index", "[library-gaps][duplicate-var-bound]") {
+    // `j = i+1` was dropped too (an expression, not a number, once i is substituted)
+    const std::string code = "n = 4\nDUPLICATE i=1,n-1\n  DUPLICATE j=i+1,n\n    c[i,j] = 10*i + j\n  END\nEND\n";
+    CHECK(equationCount(code) == 1 + 6);
+    auto run = runModel(code);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["c[1,2]"], WithinAbs(12.0, 1e-12));
+    CHECK_THAT(run["c[3,4]"], WithinAbs(34.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-VAR-BOUND: a DUPLICATE in a body takes its bounds from the inputs when it runs",
+          "[library-gaps][duplicate-var-bound]") {
+    auto run = runModel("$CONSTANT M#=3\nFUNCTION tri(n)\n  s := 0\n  DUPLICATE k=1,n\n    s := s + k\n  END\n"
+                        "  DUPLICATE k=1,M#\n    s := s + 100\n  END\n  tri = s\nEND\ny = tri(4)\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(310.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-VAR-BOUND: a bound that is not known before the solve is an error, not a dropped loop",
+          "[library-gaps][duplicate-var-bound]") {
+    const std::string loop = "DUPLICATE i=1,n\n  x[i] = i\nEND\n";
+    SECTION("n set by an equation that depends on an unknown") {
+        const auto errors = parseErrorsWithLines("n = y + 1\n" + loop);
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].rfind("2: DUPLICATE i: the last bound 'n'", 0) == 0);
+        CHECK(anyContains(errors, "'n = y + 1' (line 1)"));
+        auto run = runModel("n = y + 1\n" + loop);
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+    }
+    SECTION("n set by nothing, by a CALL, by an equation that is not of the form n = ...") {
+        CHECK(anyContains(parseErrorsWithLines(loop), "1: DUPLICATE i: the last bound 'n'"));
+        CHECK(anyContains(parseErrorsWithLines(loop), "'n' is not set"));
+        CHECK(anyContains(parseErrorsWithLines("PROCEDURE p(a : b)\n  b = a\nEND\nCALL p(3 : n)\n" + loop),
+                          "5: DUPLICATE i: the last bound 'n'"));
+        CHECK(anyContains(parseErrorsWithLines("2*n = 6\n" + loop), "2: DUPLICATE i: the last bound 'n'"));
+    }
+    SECTION("a non-integer bound, a cycle, an array element") {
+        CHECK(parseErrorsWithLines("n = 2.5\n" + loop) ==
+              std::vector<std::string>{"2: DUPLICATE i: the last bound 'n' is 2.5, not an integer"});
+        CHECK(anyContains(parseErrorsWithLines("n = m\nm = n + 0\n" + loop), "3: DUPLICATE i: the last bound 'n'"));
+        CHECK(anyContains(parseErrorsWithLines("N[1] = 3\nDUPLICATE i=1,N[1]\n  x[i] = i\nEND\n"),
+                          "2: DUPLICATE i: the last bound 'N[1]'"));
+    }
+    SECTION("the first bound too") {
+        CHECK(anyContains(parseErrorsWithLines("DUPLICATE i=k,3\n  x[i] = i\nEND\n"), "1: DUPLICATE i: the first bound 'k'"));
+    }
+    SECTION("a nested bound that is not an integer in one of the copies") {
+        // known only once the outer index is substituted (IR): reported like a parse error, with its line
+        auto run = runModel("n = 3\nDUPLICATE i=1,n\n  DUPLICATE j=1,i/2\n    x[i,j] = 1\n  END\nEND\n");
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "Line 3: DUPLICATE j: the last bound is 0.5 in a copy of the enclosing loop, "
+                                         "not an integer"));
+    }
 }

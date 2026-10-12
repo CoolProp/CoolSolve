@@ -3,6 +3,7 @@
 #include "coolsolve/constants.h"
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <iomanip>
 #include <fstream>
 #include <algorithm>
 #include <regex>
@@ -128,35 +129,33 @@ static StmtPtr cloneStmtWithSubstitution(const StmtPtr& stmt, const std::string&
 }
 
 // Recursively expand a single Duplicate statement into a flat list of expanded statements.
-// Handles nested DUPLICATE by recursively expanding inner DUPLICATE loops.
-static void expandDuplicate(const Duplicate& dup, std::vector<StmtPtr>& out) {
-    // Evaluate start and end — they must be integer literals (possibly after substitution)
-    auto evalIntExpr = [](const ExprPtr& expr) -> std::optional<int> {
-        if (!expr) return std::nullopt;
-        if (expr->is<NumberLiteral>()) {
-            return static_cast<int>(expr->as<NumberLiteral>().value);
+// Handles nested DUPLICATE by recursively expanding inner DUPLICATE loops. The parser has resolved the
+// bounds (CS-BUG-DUPLICATE-VAR-BOUND): an integer, or for a nested loop an arithmetic expression of the
+// indices of the enclosing loops, which are numbers once this copy is made. A bound that is still not an
+// integer is an error (the loop was silently dropped).
+static void expandDuplicate(const Duplicate& dup, int line, std::vector<StmtPtr>& out) {
+    auto bound = [&](const ExprPtr& expr, const char* which) {
+        const auto value = evaluateConstantExpression(expr);
+        const auto integer = value ? asIntegerBound(*value) : std::nullopt;
+        if (!integer) {
+            std::ostringstream what;
+            what << "DUPLICATE " << dup.iteratorVar << ": the " << which << " bound is ";
+            if (value) what << std::setprecision(15) << *value; else what << astToString(expr);
+            what << " in a copy of the enclosing loop, not an integer";
+            throw ModelError(line, what.str());
         }
-        // Could also handle UnaryOp("-", NumberLiteral) for negative numbers
-        if (expr->is<UnaryOp>()) {
-            const auto& op = expr->as<UnaryOp>();
-            if (op.op == "-" && op.operand && op.operand->is<NumberLiteral>()) {
-                return static_cast<int>(-op.operand->as<NumberLiteral>().value);
-            }
-        }
-        return std::nullopt;
+        return *integer;
     };
+    const int startVal = bound(dup.start, "first");
+    const int endVal = bound(dup.end, "last");
 
-    auto startVal = evalIntExpr(dup.start);
-    auto endVal = evalIntExpr(dup.end);
-    if (!startVal || !endVal) return;  // Cannot expand non-literal bounds
-
-    int step = (*startVal <= *endVal) ? 1 : -1;
-    for (int i = *startVal; step > 0 ? i <= *endVal : i >= *endVal; i += step) {
+    int step = (startVal <= endVal) ? 1 : -1;
+    for (int i = startVal; step > 0 ? i <= endVal : i >= endVal; i += step) {
         for (const auto& bodyStmt : dup.body) {
             auto cloned = cloneStmtWithSubstitution(bodyStmt, dup.iteratorVar, static_cast<double>(i));
             if (cloned && cloned->is<Duplicate>()) {
                 // Recursively expand nested DUPLICATE
-                expandDuplicate(cloned->as<Duplicate>(), out);
+                expandDuplicate(cloned->as<Duplicate>(), cloned->sourceLineNumber, out);
             } else if (cloned) {
                 out.push_back(std::move(cloned));
             }
@@ -177,7 +176,7 @@ IR IR::fromAST(const Program& program) {
     std::vector<StmtPtr> expandedStatements;
     for (const auto& stmt : program.statements) {
         if (stmt->is<Duplicate>()) {
-            expandDuplicate(stmt->as<Duplicate>(), expandedStatements);
+            expandDuplicate(stmt->as<Duplicate>(), stmt->sourceLineNumber, expandedStatements);
         } else {
             expandedStatements.push_back(stmt);
         }

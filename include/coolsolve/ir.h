@@ -8,8 +8,16 @@
 #include <vector>
 #include <optional>
 #include <algorithm>
+#include <stdexcept>
 
 namespace coolsolve {
+
+/// An error of the model found while the IR is built, at a line of the source: reported like a parse
+/// error (CoolSolveRunner::run).
+struct ModelError : std::runtime_error {
+    int line;
+    ModelError(int line, const std::string& message) : std::runtime_error(message), line(line) {}
+};
 
 // Case-insensitive comparator for variable names (EES style): ASCII and the accented letters
 // of Latin-1 (UTF-8) are folded, see ees_string.h. T_a_réf and T_A_RÉF are one variable.

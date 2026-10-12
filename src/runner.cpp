@@ -53,7 +53,7 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
     auto t2 = std::chrono::high_resolution_clock::now();
     timing_.parse_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
     
-    if (!parseResult_.success) {
+    auto parseFailed = [&]() {
         // Build a descriptive error message from parse errors
         std::ostringstream errMsg;
         errMsg << "Parse failed:";
@@ -66,7 +66,8 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
         solveResult_.detailedError = errMsg.str();
         diagnostics_.merge(parseResult_.diagnostics);
         return false;
-    }
+    };
+    if (!parseResult_.success) return parseFailed();
 
     // 2. Build IR
     try {
@@ -74,6 +75,12 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
         ir_ = std::make_unique<IR>(IR::fromAST(parseResult_.program));
         t2 = std::chrono::high_resolution_clock::now();
         timing_.ir_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+    } catch (const ModelError& e) {
+        // A model the IR cannot build (a DUPLICATE bound that is not an integer in one of the copies of a
+        // nested loop) is reported like a parse error: every caller then shows the message.
+        parseResult_.success = false;
+        parseResult_.errors.push_back({e.line, 0, e.what(), ""});
+        return parseFailed();
     } catch (...) {
         return false;
     }
