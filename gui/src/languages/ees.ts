@@ -31,7 +31,7 @@ export function registerEESLanguage(monaco: typeof Monaco) {
       'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
       'exp', 'ln', 'log', 'log10', 'sqrt', 'abs',
       'min', 'max', 'round', 'trunc', 'ceil', 'floor',
-      'nDay_',
+      'nDay_', 'NumDay_', 'AveDay_', 'EqnTime_',
       'DELTAh_s', 'T_sat', 'P_sat', 'h_sat', 's_sat',
       'convert', 'unitsystem', 'error', 'warning',
       // Lookup table functions

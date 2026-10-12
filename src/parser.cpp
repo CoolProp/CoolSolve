@@ -658,7 +658,7 @@ private:
             "sinh", "cosh", "tanh", "arcsinh", "asinh", "arccosh", "acosh",
             "arctanh", "atanh",
             "ceil", "floor", "round", "trunc", "sign", "mod", "pow",
-            "nday_",  // EES date function: day of the year
+            "nday_", "numday_", "aveday_", "eqntime_",  // EES time functions (SETP.LIB)
             "min", "max", "sum", "sum2d", "average", "product", "stddev",
             "if", "convert", "converttemp", "pi",
             "tablevalue", "tablevalue#", "tablerun#", "lookup", "lookup$",

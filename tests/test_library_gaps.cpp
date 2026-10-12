@@ -55,9 +55,11 @@ struct ModelRun {
 };
 
 /// Write `code` to a temporary model file, solve it and verify the solution.
-/// `tables` maps a lookup-table name to its CSV text (written as `<model>-<name>.csv`).
+/// `tables` maps a lookup-table name to its CSV text (written as `<model>-<name>.csv`);
+/// `initials`, when not empty, is the text of the model's `.initials` file (guess values).
 ModelRun runModel(const std::string& code,
-                  const std::map<std::string, std::string>& tables = {}) {
+                  const std::map<std::string, std::string>& tables = {},
+                  const std::string& initials = "") {
     static int counter = 0;
     const fs::path dir = fs::temp_directory_path() / "coolsolve_test_library_gaps";
     fs::create_directories(dir);
@@ -72,6 +74,12 @@ ModelRun runModel(const std::string& code,
         tableFiles.push_back(dir / (stem + "-" + name + ".csv"));
         std::ofstream f(tableFiles.back());
         f << csv;
+    }
+
+    if (!initials.empty()) {
+        tableFiles.push_back(dir / (stem + ".initials"));
+        std::ofstream f(tableFiles.back());
+        f << initials;
     }
 
     ModelRun run;
@@ -7687,15 +7695,29 @@ d = nDay_(3, 1)
     CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
 }
 
-TEST_CASE("CS-GAP-NDAY: the day is used as given, the month may carry a rounding error", "[library-gaps][nday]") {
+TEST_CASE("CS-GAP-NDAY: the day is used as given, the month is rounded to the nearest integer", "[library-gaps][nday]") {
+    // SETP.LIB: monthx = round(month), so any month value is rounded, whatever the distance to an integer
     auto run = runModel(R"(
 a = nDay_(12, 4.5)
 m = 36 / 3 + 1e-12
 b = nDay_(m, 4)
+c = nDay_(12.0001, 4)
+d = nDay_(2.5, 1)
+e = nDay_(2.4, 1)
+f = nDay_(11.6, 1)
+g = nDay_(2, 28.0005)
+h = nDay_(7, 31.0005)
 )");
     REQUIRE(run.solveOk);
     CHECK_THAT(run["a"], WithinAbs(338.5, 1e-12));
     CHECK_THAT(run["b"], WithinAbs(338.0, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(338.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(60.0, 1e-12));      // 2.5 -> month 3
+    CHECK_THAT(run["e"], WithinAbs(32.0, 1e-12));      // 2.4 -> month 2
+    CHECK_THAT(run["f"], WithinAbs(335.0, 1e-12));     // 11.6 -> month 12
+    // the day may exceed the length of its month by up to 0.001
+    CHECK_THAT(run["g"], WithinAbs(59.0005, 1e-12));
+    CHECK_THAT(run["h"], WithinAbs(212.0005, 1e-12));
 }
 
 TEST_CASE("CS-GAP-NDAY: automatic differentiation, 1 with respect to the day and 0 to the month", "[library-gaps][nday]") {
@@ -7754,30 +7776,54 @@ m = max(nDay_(1, 1), nDay_(2, 1))
     CHECK_THAT(run["m"], WithinAbs(32.0, 1e-12));
 }
 
-TEST_CASE("CS-GAP-NDAY: a month that is not an integer between 1 and 12 is an error, not a value", "[library-gaps][nday]") {
-    for (const std::string month : {"13", "0", "-1", "2.5", "12.0001"}) {
+TEST_CASE("CS-GAP-NDAY: a month that does not round to 1..12 is an error, not a value", "[library-gaps][nday]") {
+    for (const std::string month : {"13", "0", "-1", "12.5", "0.4", "13.4"}) {
         INFO("month = " << month);
         auto run = runModel("m = " + month + "\nn = nDay_(m, 1)\n");
         REQUIRE_FALSE(run.solveOk);
         CHECK(run.message.find("nDay_") != std::string::npos);
-        CHECK(run.message.find("month must be an integer between 1 and 12") != std::string::npos);
+        CHECK(run.message.find("month must be between 1 and 12 after rounding") != std::string::npos);
         CHECK(run.message.find("got " + month) != std::string::npos);
         CHECK(run.vars.count("n") == 0);
     }
     // literal arguments, no variable involved
     auto literal = runModel("n = nDay_(13, 4)\n");
     REQUIRE_FALSE(literal.solveOk);
-    CHECK(literal.message.find("nDay_: month must be an integer between 1 and 12, got 13") != std::string::npos);
+    CHECK(literal.message.find("nDay_: month must be between 1 and 12 after rounding, got 13") != std::string::npos);
 }
 
-TEST_CASE("CS-GAP-NDAY: a day below 1 or above 31 is an error, not a value", "[library-gaps][nday]") {
-    for (const std::string day : {"0", "-3", "0.5", "32", "31.5"}) {
-        INFO("day = " << day);
-        auto run = runModel("d = " + day + "\nn = nDay_(7, d)\n");
-        REQUIRE_FALSE(run.solveOk);
-        CHECK(run.message.find("nDay_") != std::string::npos);
-        CHECK(run.message.find("day must be between 1 and 31") != std::string::npos);
-        CHECK(run.message.find("got " + day) != std::string::npos);
+TEST_CASE("CS-GAP-NDAY: a day below 1 or beyond the length of its month is an error, not a value", "[library-gaps][nday]") {
+    SECTION("day below 1") {
+        for (const std::string day : {"0", "-3", "0.5"}) {
+            INFO("day = " << day);
+            auto run = runModel("d = " + day + "\nn = nDay_(7, d)\n");
+            REQUIRE_FALSE(run.solveOk);
+            CHECK(run.message.find("nDay_: day must be at least 1, got " + day) != std::string::npos);
+        }
+    }
+    SECTION("day beyond the length of the month, in a non-leap year") {
+        const int lengths[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+        for (int month = 1; month <= 12; ++month) {
+            const int len = lengths[month - 1];
+            INFO("month = " << month);
+            // the last day of the month is accepted, the next one is not
+            auto ok = runModel("n = nDay_(" + std::to_string(month) + ", " + std::to_string(len) + ")\n");
+            CHECK(ok.solveOk);
+            auto bad = runModel("n = nDay_(" + std::to_string(month) + ", " + std::to_string(len + 1) + ")\n");
+            REQUIRE_FALSE(bad.solveOk);
+            CHECK(bad.message.find("nDay_: day " + std::to_string(len + 1) + " exceeds the " + std::to_string(len) +
+                                   " days of month " + std::to_string(month)) != std::string::npos);
+        }
+        // the cases of the register: no 29 February, no 31 April
+        CHECK_FALSE(runModel("n = nDay_(2, 29)\n").solveOk);
+        CHECK_FALSE(runModel("n = nDay_(4, 31)\n").solveOk);
+        // a fraction of a day beyond the last day is an error from 0.001 on; the month is the rounded one
+        auto frac = runModel("d = 28.002\nn = nDay_(2, d)\n");
+        REQUIRE_FALSE(frac.solveOk);
+        CHECK(frac.message.find("nDay_: day 28.002 exceeds the 28 days of month 2") != std::string::npos);
+        auto rounded = runModel("m = 2.5\nn = nDay_(m, 32)\n");
+        REQUIRE_FALSE(rounded.solveOk);
+        CHECK(rounded.message.find("nDay_: day 32 exceeds the 31 days of month 3") != std::string::npos);
     }
 }
 
@@ -7787,5 +7833,278 @@ TEST_CASE("CS-GAP-NDAY: the number of arguments is checked", "[library-gaps][nda
         auto run = runModel("n = " + call + "\n");
         REQUIRE_FALSE(run.solveOk);
         CHECK(run.message.find("nDay_ takes 2 arguments (month, day)") != std::string::npos);
+    }
+}
+
+// ============================================================================
+// CS-GAP-NDAY (continued): the other time functions of the EES library SETP.LIB
+// (Duffie & Beckman): NumDay_(month), AveDay_(month), EqnTime_(n)
+// ============================================================================
+
+namespace {
+
+constexpr int kMonthLength[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+constexpr int kAverageDay[12] = {17, 47, 75, 105, 135, 162, 198, 228, 258, 288, 318, 344};
+
+/// Equation of time in minutes, Duffie & Beckman eq. 1.5.3, written independently of the implementation.
+double equationOfTimeMinutes(double n) {
+    const double b = (n - 1.0) * 2.0 * M_PI / 365.0;
+    return 229.2 * (0.000075 + 0.001868 * std::cos(b) - 0.032077 * std::sin(b) - 0.014615 * std::cos(2.0 * b) -
+                    0.04089 * std::sin(2.0 * b));
+}
+
+/// d EqnTime_ / d n, by hand.
+double equationOfTimeSlope(double n) {
+    const double k = 2.0 * M_PI / 365.0, b = (n - 1.0) * k;
+    return 229.2 * k * (-0.001868 * std::sin(b) - 0.032077 * std::cos(b) + 2.0 * 0.014615 * std::sin(2.0 * b) -
+                        2.0 * 0.04089 * std::cos(2.0 * b));
+}
+
+/// EqnTime_ and its derivative with respect to n through the evaluator.
+ADValue eqnTimeAD(double n) {
+    return evaluateStandardFunction("EqnTime_", {ADValue::independent(n, 0, 1)});
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-NDAY: NumDay_, the number of days of each month (non-leap year)", "[library-gaps][nday]") {
+    std::string code;
+    for (int m = 1; m <= 12; ++m) code += "nd" + std::to_string(m) + " = NumDay_(" + std::to_string(m) + ")\n";
+    // the sum over the year, written as one expression
+    code += "total = NumDay_(1)";
+    for (int m = 2; m <= 12; ++m) code += " + NumDay_(" + std::to_string(m) + ")";
+    code += "\n";
+    auto run = runModel(code);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (int m = 1; m <= 12; ++m) {
+        INFO("month = " << m);
+        CHECK_THAT(run["nd" + std::to_string(m)], WithinAbs(kMonthLength[m - 1], 1e-12));
+    }
+    CHECK_THAT(run["total"], WithinAbs(365.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-NDAY: AveDay_, the day number of the average day of each month (Table 1.6.1)", "[library-gaps][nday]") {
+    std::string code;
+    for (int m = 1; m <= 12; ++m) code += "ad" + std::to_string(m) + " = AveDay_(" + std::to_string(m) + ")\n";
+    auto run = runModel(code);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (int m = 1; m <= 12; ++m) {
+        INFO("month = " << m);
+        CHECK_THAT(run["ad" + std::to_string(m)], WithinAbs(kAverageDay[m - 1], 1e-12));
+    }
+    // the same days as dates: 17 Jan, 16 Feb, 16 Mar, 15 Apr, 15 May, 11 Jun, 17 Jul, 16 Aug, 15 Sep, 15 Oct, 14 Nov, 10 Dec
+    const int dayOfMonth[12] = {17, 16, 16, 15, 15, 11, 17, 16, 15, 15, 14, 10};
+    std::string dates;
+    for (int m = 1; m <= 12; ++m)
+        dates += "a" + std::to_string(m) + " = AveDay_(" + std::to_string(m) + ") - nDay_(" + std::to_string(m) + ", " +
+                 std::to_string(dayOfMonth[m - 1]) + ")\n";
+    auto diff = runModel(dates);
+    REQUIRE(diff.solveOk);
+    for (int m = 1; m <= 12; ++m) {
+        INFO("month = " << m);
+        CHECK(diff["a" + std::to_string(m)] == 0.0);
+    }
+}
+
+TEST_CASE("CS-GAP-NDAY: NumDay_, AveDay_ and nDay_ agree with each other", "[library-gaps][nday]") {
+    std::string code;
+    for (int m = 1; m <= 12; ++m) {
+        const std::string s = std::to_string(m);
+        // the last day of the month is the cumulative number of days of the year up to it
+        code += "last" + s + " = nDay_(" + s + ", NumDay_(" + s + "))\n";
+        code += "ave" + s + " = AveDay_(" + s + ")\n";
+        code += "first" + s + " = nDay_(" + s + ", 1)\n";
+    }
+    auto run = runModel(code);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    double cumulative = 0.0;
+    for (int m = 1; m <= 12; ++m) {
+        const std::string s = std::to_string(m);
+        cumulative += kMonthLength[m - 1];
+        INFO("month = " << m);
+        CHECK_THAT(run["last" + s], WithinAbs(cumulative, 1e-12));
+        CHECK_THAT(run["first" + s], WithinAbs(cumulative - kMonthLength[m - 1] + 1.0, 1e-12));
+        CHECK(run["ave" + s] >= run["first" + s]);   // the average day is a day of its month
+        CHECK(run["ave" + s] <= run["last" + s]);
+    }
+    CHECK_THAT(run["last12"], WithinAbs(365.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-NDAY: NumDay_ and AveDay_ round the month, an error when the rounded month is not 1..12", "[library-gaps][nday]") {
+    auto run = runModel(R"(
+a = NumDay_(2.4)
+b = NumDay_(2.5)
+c = NumDay_(12.0001)
+d = AveDay_(11.6)
+e = AveDay_(0.9)
+m = 36 / 3 + 1e-12
+f = AveDay_(m)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(28.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(31.0, 1e-12));     // 2.5 -> month 3
+    CHECK_THAT(run["c"], WithinAbs(31.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(344.0, 1e-12));    // 11.6 -> month 12
+    CHECK_THAT(run["e"], WithinAbs(17.0, 1e-12));     // 0.9 -> month 1
+    CHECK_THAT(run["f"], WithinAbs(344.0, 1e-12));
+
+    for (const std::string fn : {"NumDay_", "AveDay_"}) {
+        for (const std::string month : {"13", "0", "-1", "12.5", "0.4", "13.4"}) {
+            INFO(fn << " month = " << month);
+            auto bad = runModel("m = " + month + "\nn = " + fn + "(m)\n");
+            REQUIRE_FALSE(bad.solveOk);
+            CHECK(bad.message.find(fn + ": month must be between 1 and 12 after rounding, got " + month) != std::string::npos);
+            CHECK(bad.vars.count("n") == 0);
+        }
+    }
+    auto literal = runModel("n = NumDay_(13)\n");
+    REQUIRE_FALSE(literal.solveOk);
+    CHECK(literal.message.find("NumDay_: month must be between 1 and 12 after rounding, got 13") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-NDAY: EqnTime_, the equation of time in minutes (eq. 1.5.3)", "[library-gaps][nday]") {
+    // values of the formula evaluated in Python, B = (n-1)*360/365 degrees
+    auto run = runModel(R"(
+e1 = EqnTime_(1)
+e32 = EqnTime_(32)
+e40 = EqnTime_(40)
+e172 = EqnTime_(172)
+e338 = EqnTime_(338)
+e365 = EqnTime_(365)
+e0 = EqnTime_(0)
+e1005 = EqnTime_(100.5)
+n = nDay_(12, 4)
+edec4 = EqnTime_(n)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["e1"], WithinAbs(-2.9044223999999996, 1e-10));
+    CHECK_THAT(run["e32"], WithinAbs(-13.17909744608791, 1e-10));
+    CHECK_THAT(run["e40"], WithinAbs(-14.10758891845034, 1e-10));
+    CHECK_THAT(run["e172"], WithinAbs(-1.3247285561653666, 1e-10));
+    CHECK_THAT(run["e338"], WithinAbs(9.5932959833589191, 1e-10));
+    CHECK_THAT(run["edec4"], WithinAbs(9.5932959833589191, 1e-10));
+    CHECK_THAT(run["e365"], WithinAbs(-2.4533484116245572, 1e-10));
+    CHECK_THAT(run["e1005"], WithinAbs(-1.4795807393866627, 1e-10));
+    // no range check (the library has none): the formula is periodic in n with period 365
+    CHECK_THAT(run["e0"], WithinAbs(run["e365"], 1e-10));
+    for (double n : {1.0, 32.0, 100.5, 338.0}) CHECK_THAT(eqnTimeAD(n).value, WithinAbs(equationOfTimeMinutes(n), 1e-12));
+
+    // the known extremes of the equation of time: about -14.3 min in mid-February, +16.4 min in early November
+    double lo = 1e9, hi = -1e9;
+    int nLo = 0, nHi = 0;
+    for (int d = 1; d <= 365; ++d) {
+        const double e = eqnTimeAD(d).value;
+        if (e < lo) { lo = e; nLo = d; }
+        if (e > hi) { hi = e; nHi = d; }
+    }
+    CHECK_THAT(lo, WithinAbs(-14.27, 0.01));
+    CHECK(nLo >= 40);
+    CHECK(nLo <= 50);
+    CHECK_THAT(hi, WithinAbs(16.39, 0.01));
+    CHECK(nHi >= 300);
+    CHECK(nHi <= 312);
+}
+
+TEST_CASE("CS-GAP-NDAY: EqnTime_ derivative with respect to n is exact", "[library-gaps][nday]") {
+    // by hand, at the points of the value test
+    for (double n : {1.0, 32.0, 40.0, 172.0, 338.0, 365.0}) {
+        INFO("n = " << n);
+        const ADValue r = eqnTimeAD(n);
+        REQUIRE(r.gradient.size() == 1);
+        CHECK_THAT(r.gradient[0], WithinAbs(equationOfTimeSlope(n), 1e-12));
+    }
+    // against a central finite difference over the whole year
+    const double h = 1e-5;
+    for (int d = 1; d <= 365; d += 4) {
+        INFO("n = " << d);
+        const double fd = (eqnTimeAD(d + h).value - eqnTimeAD(d - h).value) / (2.0 * h);
+        CHECK_THAT(eqnTimeAD(d).gradient[0], WithinAbs(fd, 1e-8));
+    }
+    // two independent variables: x0 = something else, x1 = n; and the chain rule through the argument
+    const ADValue second = evaluateStandardFunction("eqntime_", {ADValue::independent(40.0, 1, 2)});
+    REQUIRE(second.gradient.size() == 2);
+    CHECK(second.gradient[0] == 0.0);
+    CHECK_THAT(second.gradient[1], WithinAbs(-0.064297463611859645, 1e-12));
+    const ADValue x = ADValue::independent(20.0, 0, 1);
+    const ADValue chained = evaluateStandardFunction("EQNTIME_", {x * ADValue::constant(2.0, 1)});
+    CHECK_THAT(chained.value, WithinAbs(-14.10758891845034, 1e-10));
+    CHECK_THAT(chained.gradient[0], WithinAbs(-0.12859492722371929, 1e-12));
+}
+
+TEST_CASE("CS-GAP-NDAY: the solver goes through EqnTime_ (Jacobian by automatic differentiation)", "[library-gaps][nday]") {
+    SECTION("the day number is the unknown, from a guess a few days away") {
+        auto run = runModel("EqnTime_(n) = 9.5932959833589191\n", {}, "n = 330\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["n"], WithinAbs(338.0, 1e-6));
+    }
+    SECTION("near the minimum of the equation of time, where the slope is small") {
+        auto run = runModel("EqnTime_(n) = -14.10758891845034\n", {}, "n = 35\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["n"], WithinAbs(40.0, 1e-5));
+    }
+    SECTION("the day of the month is the unknown, through nDay_") {
+        auto run = runModel("EqnTime_(nDay_(12, d)) = 9.5932959833589191\n", {}, "d = 3\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["d"], WithinAbs(4.0, 1e-6));
+    }
+    SECTION("coupled with another equation") {
+        auto run = runModel("t = EqnTime_(n) + 2 * n\nn = 338 + y\ny = 0.5\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["t"], WithinAbs(equationOfTimeMinutes(338.5) + 677.0, 1e-9));
+    }
+}
+
+TEST_CASE("CS-GAP-NDAY: the time functions are case-insensitive", "[library-gaps][nday]") {
+    auto run = runModel(R"(
+a1 = NUMDAY_(2)
+a2 = numday_(2)
+a3 = Numday_(2)
+b1 = AVEDAY_(2)
+b2 = aveday_(2)
+b3 = Aveday_(2)
+c1 = EQNTIME_(32)
+c2 = eqntime_(32)
+c3 = Eqntime_(32)
+c4 = EqnTime_(32)
+)");
+    REQUIRE(run.solveOk);
+    for (const char* name : {"a1", "a2", "a3"}) CHECK_THAT(run[name], WithinAbs(28.0, 1e-12));
+    for (const char* name : {"b1", "b2", "b3"}) CHECK_THAT(run[name], WithinAbs(47.0, 1e-12));
+    for (const char* name : {"c1", "c2", "c3", "c4"}) CHECK_THAT(run[name], WithinAbs(-13.17909744608791, 1e-10));
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+}
+
+TEST_CASE("CS-GAP-NDAY: the time functions are usable in a FUNCTION", "[library-gaps][nday]") {
+    auto run = runModel(R"(
+FUNCTION solarterm(m, d)
+  n = nDay_(m, d)
+  solarterm = EqnTime_(n) + NumDay_(m) + AveDay_(m)
+END
+a = solarterm(12, 4)
+b = solarterm(2, 28)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(9.5932959833589191 + 31.0 + 344.0, 1e-9));
+    CHECK_THAT(run["b"], WithinAbs(equationOfTimeMinutes(59.0) + 28.0 + 47.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-NDAY: the number of arguments of the time functions is checked", "[library-gaps][nday]") {
+    for (const std::string call : {"NumDay_()", "NumDay_(1, 2)", "AveDay_()", "AveDay_(1, 2)", "EqnTime_()", "EqnTime_(1, 2)"}) {
+        INFO("call = " << call);
+        const std::string fn = call.substr(0, call.find('('));
+        const std::string got = (call.find(',') != std::string::npos) ? "2" : "0";
+        const std::string params = (fn == "EqnTime_") ? "(n)" : "(month)";
+        auto run = runModel("n = " + call + "\n");
+        REQUIRE_FALSE(run.solveOk);
+        CHECK(run.message.find(fn + " takes 1 argument " + params + ", got " + got) != std::string::npos);
     }
 }

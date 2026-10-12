@@ -246,26 +246,56 @@ for the EES `RAD` setting must convert its angles (`sin(x*180/pi)`,
 | `sign(x)`                | −1, 0, or +1                    |
 | `mod(x, y)`              | `x` modulo `y`                  |
 
-### Date function
+### Date and time functions
+
+The time functions of the EES library `SETP.LIB` (Duffie & Beckman, *Solar
+Engineering of Thermal Processes*) are built in. Names are case-insensitive.
 
 | Function                 | Meaning                         |
 |:-------------------------|:--------------------------------|
-| `nDay_(month, day)`      | Day of the year (EES `nDay_`), e.g. `nDay_(12, 4) = 338` |
+| `nDay_(month, day)`      | Day number `n` of the year, e.g. `nDay_(12, 4) = 338` |
+| `NumDay_(month)`         | Number of days of the month: 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 |
+| `AveDay_(month)`         | Day number `n` of the "average day" of the month (Table 1.6.1): 17, 47, 75, 105, 135, 162, 198, 228, 258, 288, 318, 344 |
+| `EqnTime_(n)`            | Equation of time in minutes (eq. 1.5.3) on the day number `n` |
 
-`nDay_` counts in a **non-leap year** (365 days, the `n` of Duffie & Beckman):
-the days of the months before `month` plus `day`, so `nDay_(1, 1) = 1`,
-`nDay_(2, 28) = 59`, `nDay_(3, 1) = 60`, `nDay_(12, 31) = 365`. The name is
-case-insensitive. `month` must be an integer from 1 to 12 (a value within
-`1e-9` of an integer is rounded) and `day` a number from 1 to 31, used as given:
-it may have a fraction and is not clamped to the length of the month (the day 31
-of a 30-day month counts as the first of the next). Any other `month` or `day`
-stops the calculation with an error such as
-`nDay_: month must be an integer between 1 and 12, got 13` or
-`nDay_: day must be between 1 and 31, got 0`, as does a call that does not have
-exactly two arguments. The derivative is 1 with respect to `day` and 0 with
-respect to `month` (a piecewise-constant selector), so `nDay_(12, d) = 340`
-solves for `d = 6`; an iterate that leaves the valid range of the day is an
-evaluation error.
+All of them count in a **non-leap year** (365 days, the `n` of Duffie &
+Beckman): `nDay_(1, 1) = 1`, `nDay_(2, 28) = 59`, `nDay_(3, 1) = 60`,
+`nDay_(12, 31) = 365`, and `NumDay_` summed over the 12 months is 365. The
+average days of `AveDay_` are the days whose extraterrestrial radiation is about
+the monthly mean (17 Jan, 16 Feb, 16 Mar, 15 Apr, 15 May, 11 Jun, 17 Jul,
+16 Aug, 15 Sep, 15 Oct, 14 Nov, 10 Dec); they do not hold above the Arctic
+circle or below the Antarctic circle.
+
+**Month.** As in `SETP.LIB`, `month` is rounded to the nearest integer (half
+away from zero) before use: `nDay_(2.5, 1)` is the first of month 3 and
+`12.0001` is month 12. Only a month that rounds outside 1 to 12 is an error.
+
+**Day.** `nDay_` uses `day` as given, so it may have a fraction
+(`nDay_(12, 4.5) = 338.5`). It must be at least 1 and at most the length of its
+month in a non-leap year plus `0.001`: `nDay_(2, 29)` and `nDay_(4, 31)` are
+errors, `nDay_(2, 28.0005)` is accepted.
+
+**Equation of time.** `EqnTime_(n)` is `229.2 (0.000075 + 0.001868 cos B -
+0.032077 sin B - 0.014615 cos 2B - 0.04089 sin 2B)` with
+`B = 360 (n - 1) / 365` degrees, e.g. `EqnTime_(338) = 9.593` (4 December) and
+a minimum of about -14.3 minutes in mid-February. Like the library function it
+has no range check: any `n` is accepted and the result is periodic with period
+365.
+
+**Errors.** An invalid argument stops the calculation with a message such as
+`NumDay_: month must be between 1 and 12 after rounding, got 13`,
+`nDay_: day 29 exceeds the 28 days of month 2` or
+`nDay_: day must be at least 1, got 0`, as does a call with the wrong number of
+arguments (`nDay_` takes 2, the others 1). An iterate of the solver that leaves
+the valid range is an evaluation error.
+
+**Derivatives.** `nDay_` has derivative 1 with respect to `day` and 0 with
+respect to `month`; `NumDay_` and `AveDay_` are piecewise constant (derivative
+0); `EqnTime_` is smooth and its derivative with respect to `n` is exact (forward-mode
+automatic differentiation). All four can therefore be used with an unknown
+argument: `nDay_(12, d) = 340` solves for `d = 6`, and `EqnTime_(n) = -10`
+solves for a day number `n` (the equation of time is not monotonic, so give a
+guess value in the `.initials` file).
 
 ### Aggregation functions
 
