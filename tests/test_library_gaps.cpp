@@ -8435,3 +8435,55 @@ TEST_CASE("CS-GAP-NDAY: the number of arguments of the time functions is checked
         CHECK(run.message.find(fn + " takes 1 argument " + params + ", got " + got) != std::string::npos);
     }
 }
+
+// ============================================================================
+// CS-BUG-NO-SOL-DELETE: `--no-sol` deleted an existing <model>.sol (the clean-up before the solve ran
+// whatever the option), so a check run removed the regression baselines of the model library.
+// These tests run the CLI binary built next to coolsolve_tests (the tests run from the build folder).
+// ============================================================================
+
+namespace {
+
+/// Run `coolsolve <args> m.eescode` in `dir`; true when the command succeeds.
+bool runCli(const fs::path& binary, const fs::path& dir, const std::string& args) {
+    const std::string cmd = "cd '" + dir.string() + "' && '" + binary.string() + "' " + args + " m.eescode > out.txt 2>&1";
+    return std::system(cmd.c_str()) == 0;
+}
+
+std::string fileText(const fs::path& path) {
+    std::ifstream in(path);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-NO-SOL-DELETE: --no-sol leaves an existing .sol untouched and writes none", "[library-gaps][no-sol]") {
+    const fs::path binary = fs::absolute("coolsolve");
+    if (!fs::exists(binary)) SKIP("coolsolve binary not found next to the tests: " << binary.string());
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_no_sol";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    { std::ofstream f(dir / "m.eescode"); f << "a = 1\nb = a + 1\n"; }
+
+    // a normal run writes the .sol
+    REQUIRE(runCli(binary, dir, ""));
+    REQUIRE(fs::exists(dir / "m.sol"));
+    const std::string baseline = fileText(dir / "m.sol");
+    CHECK(baseline.find("b = 2.") != std::string::npos);
+
+    // --no-sol neither deletes nor rewrites it, even when the model changed (was: m.sol removed)
+    { std::ofstream f(dir / "m.eescode"); f << "a = 5\nb = a + 1\n"; }
+    REQUIRE(runCli(binary, dir, "--no-sol"));
+    REQUIRE(fs::exists(dir / "m.sol"));
+    CHECK(fileText(dir / "m.sol") == baseline);
+
+    // --no-sol on a model without .sol does not create one
+    fs::remove(dir / "m.sol");
+    REQUIRE(runCli(binary, dir, "--no-sol"));
+    CHECK_FALSE(fs::exists(dir / "m.sol"));
+
+    // a normal run still replaces the solution of the previous run
+    REQUIRE(runCli(binary, dir, ""));
+    CHECK(fileText(dir / "m.sol").find("b = 6.") != std::string::npos);
+    fs::remove_all(dir);
+}

@@ -304,7 +304,7 @@ The debug folder contains:
 | `-f, --format <fmt>` | Output format: `json`, `latex` (default: json) |
 | `-d, --debug [dir]` | Create debug output folder |
 | `-g, --guess` | Update .initials file with solution on success |
-| `--no-sol` | Disable generation of .sol file |
+| `--no-sol` | Do not write the .sol file (an existing one is left untouched) |
 | `--no-superancillary` | Disable CoolProp superancillary functions (faster VLE solving) |
 | `--version` | Print the CoolSolve version and the CoolProp version and git revision |
 | `-h, --help` | Show help message |
