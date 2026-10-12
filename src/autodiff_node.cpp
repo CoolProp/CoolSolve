@@ -8,24 +8,75 @@ namespace coolsolve {
 
 namespace {
 
-/// EES date function nDay_(month, day): day of the year in a non-leap year (Duffie & Beckman `n`),
-/// the days of the months before `month` plus `day`. `month` must be an integer in 1..12 (rounded
-/// when within 1e-9 of one) and `day` in 1..31, used as given (no clamping to the month length);
-/// anything else is an error, not a value. The month is a piecewise-constant selector with no
-/// derivative: the gradient is that of `day`.
+// ----------------------------------------------------------------------------
+// Time functions of the EES library SETP.LIB (Duffie & Beckman, Solar Engineering of Thermal
+// Processes): nDay_, NumDay_, AveDay_, EqnTime_. They count in a non-leap year (365 days).
+// ----------------------------------------------------------------------------
+
+/// Days of each month of a non-leap year (Table 1.6.1).
+constexpr int monthLength[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+/// Day number n of the "average day" of each month (Table 1.6.1): the day whose extraterrestrial
+/// radiation is about the monthly mean (not valid above the Arctic or below the Antarctic circle).
+constexpr int averageDay[12] = {17, 47, 75, 105, 135, 162, 198, 228, 258, 288, 318, 344};
+
+std::string showValue(double v) {
+    std::ostringstream os;
+    os << v;
+    return os.str();
+}
+
+/// `fname` takes exactly `expected` arguments (`parameters`: their names, for the message).
+void checkDateArgCount(const char* fname, const char* parameters, size_t expected, size_t got) {
+    if (got != expected)
+        throw std::runtime_error(std::string(fname) + " takes " + std::to_string(expected) +
+                                 (expected == 1 ? " argument (" : " arguments (") + parameters + "), got " +
+                                 std::to_string(got));
+}
+
+/// 0-based index of `month` rounded to the nearest integer (the library's `monthx = round(month)`,
+/// so 2.5 is month 3); an error unless the rounded month is in 1..12. Shared by the month functions.
+int roundedMonthIndex(const char* fname, double month) {
+    const double rounded = std::round(month);
+    // the negated test also rejects NaN
+    if (!(rounded >= 1.0 && rounded <= 12.0))
+        throw std::runtime_error(std::string(fname) + ": month must be between 1 and 12 after rounding, got " +
+                                 showValue(month));
+    return static_cast<int>(rounded) - 1;
+}
+
+/// nDay_(month, day): day of the year, the days of the months before `month` plus `day`. `day` is
+/// at least 1 and at most the length of the month plus 0.001 (so 28.0005 is accepted in February),
+/// used as given; anything else is an error, not a value. The month is a piecewise-constant selector
+/// with no derivative: the gradient is that of `day`.
 ADValue nDayOfYear(const std::vector<ADValue>& args) {
-    if (args.size() != 2)
-        throw std::runtime_error("nDay_ takes 2 arguments (month, day), got " + std::to_string(args.size()));
-    static constexpr double monthStart[12] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
-    auto show = [](double v) { std::ostringstream os; os << v; return os.str(); };
-    const double month = args[0].value, day = args[1].value;
-    const double monthRounded = std::round(month);
+    checkDateArgCount("nDay_", "month, day", 2, args.size());
+    const int month = roundedMonthIndex("nDay_", args[0].value);
+    const double day = args[1].value;
     // the negated tests also reject NaN
-    if (!(monthRounded >= 1.0 && monthRounded <= 12.0 && std::abs(month - monthRounded) <= 1e-9))
-        throw std::runtime_error("nDay_: month must be an integer between 1 and 12, got " + show(month));
-    if (!(day >= 1.0 && day <= 31.0))
-        throw std::runtime_error("nDay_: day must be between 1 and 31, got " + show(day));
-    return args[1] + ADValue::constant(monthStart[static_cast<int>(monthRounded) - 1], args[1].gradient.size());
+    if (!(day >= 1.0)) throw std::runtime_error("nDay_: day must be at least 1, got " + showValue(day));
+    if (!(day <= monthLength[month] + 0.001))
+        throw std::runtime_error("nDay_: day " + showValue(day) + " exceeds the " + std::to_string(monthLength[month]) +
+                                 " days of month " + std::to_string(month + 1));
+    int daysBefore = 0;
+    for (int m = 0; m < month; ++m) daysBefore += monthLength[m];
+    return args[1] + ADValue::constant(daysBefore, args[1].gradient.size());
+}
+
+/// NumDay_(month) and AveDay_(month): the entry of `table` for the month. Piecewise constant, so the
+/// derivative is 0.
+ADValue monthTableValue(const char* fname, const int (&table)[12], const std::vector<ADValue>& args) {
+    checkDateArgCount(fname, "month", 1, args.size());
+    return ADValue::constant(table[roundedMonthIndex(fname, args[0].value)], args[0].gradient.size());
+}
+
+/// EqnTime_(n): equation of time in minutes, Duffie & Beckman eq. 1.5.3, as a function of the day
+/// number n, with B = (n-1)*360/365 degrees. Smooth, with no range check (as in the library).
+ADValue equationOfTime(const std::vector<ADValue>& args) {
+    checkDateArgCount("EqnTime_", "n", 1, args.size());
+    constexpr double pi = 3.14159265358979323846;
+    const ADValue b = (args[0] - 1.0) * (2.0 * pi / 365.0);   // radians
+    const ADValue b2 = b * 2.0;
+    return (0.000075 + 0.001868 * cos(b) - 0.032077 * sin(b) - 0.014615 * cos(b2) - 0.04089 * sin(b2)) * 229.2;
 }
 
 }  // namespace
@@ -64,7 +115,11 @@ ADValue evaluateStandardFunction(const std::string& funcName,
                                  std::to_string(args.size()));
     }
 
+    // EES time functions (library SETP.LIB), checked for their own number of arguments
     if (name == "nday_") return nDayOfYear(args);
+    if (name == "numday_") return monthTableValue("NumDay_", monthLength, args);
+    if (name == "aveday_") return monthTableValue("AveDay_", averageDay, args);
+    if (name == "eqntime_") return equationOfTime(args);
 
     if (args.empty()) {
         throw std::runtime_error("Function " + funcName + " requires at least one argument");
