@@ -246,6 +246,27 @@ for the EES `RAD` setting must convert its angles (`sin(x*180/pi)`,
 | `sign(x)`                | −1, 0, or +1                    |
 | `mod(x, y)`              | `x` modulo `y`                  |
 
+### Date function
+
+| Function                 | Meaning                         |
+|:-------------------------|:--------------------------------|
+| `nDay_(month, day)`      | Day of the year (EES `nDay_`), e.g. `nDay_(12, 4) = 338` |
+
+`nDay_` counts in a **non-leap year** (365 days, the `n` of Duffie & Beckman):
+the days of the months before `month` plus `day`, so `nDay_(1, 1) = 1`,
+`nDay_(2, 28) = 59`, `nDay_(3, 1) = 60`, `nDay_(12, 31) = 365`. The name is
+case-insensitive. `month` must be an integer from 1 to 12 (a value within
+`1e-9` of an integer is rounded) and `day` a number from 1 to 31, used as given:
+it may have a fraction and is not clamped to the length of the month (the day 31
+of a 30-day month counts as the first of the next). Any other `month` or `day`
+stops the calculation with an error such as
+`nDay_: month must be an integer between 1 and 12, got 13` or
+`nDay_: day must be between 1 and 31, got 0`, as does a call that does not have
+exactly two arguments. The derivative is 1 with respect to `day` and 0 with
+respect to `month` (a piecewise-constant selector), so `nDay_(12, d) = 340`
+solves for `d = 6`; an iterate that leaves the valid range of the day is an
+evaluation error.
+
 ### Aggregation functions
 
 | Function                 | Meaning                         |

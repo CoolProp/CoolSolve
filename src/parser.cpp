@@ -658,6 +658,7 @@ private:
             "sinh", "cosh", "tanh", "arcsinh", "asinh", "arccosh", "acosh",
             "arctanh", "atanh",
             "ceil", "floor", "round", "trunc", "sign", "mod", "pow",
+            "nday_",  // EES date function: day of the year
             "min", "max", "sum", "sum2d", "average", "product", "stddev",
             "if", "convert", "converttemp", "pi",
             "tablevalue", "tablevalue#", "tablerun#", "lookup", "lookup$",

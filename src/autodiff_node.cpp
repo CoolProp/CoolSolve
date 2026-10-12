@@ -1,8 +1,34 @@
 #include "coolsolve/autodiff_node.h"
 #include <stdexcept>
 #include <algorithm>
+#include <cmath>
+#include <sstream>
 
 namespace coolsolve {
+
+namespace {
+
+/// EES date function nDay_(month, day): day of the year in a non-leap year (Duffie & Beckman `n`),
+/// the days of the months before `month` plus `day`. `month` must be an integer in 1..12 (rounded
+/// when within 1e-9 of one) and `day` in 1..31, used as given (no clamping to the month length);
+/// anything else is an error, not a value. The month is a piecewise-constant selector with no
+/// derivative: the gradient is that of `day`.
+ADValue nDayOfYear(const std::vector<ADValue>& args) {
+    if (args.size() != 2)
+        throw std::runtime_error("nDay_ takes 2 arguments (month, day), got " + std::to_string(args.size()));
+    static constexpr double monthStart[12] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+    auto show = [](double v) { std::ostringstream os; os << v; return os.str(); };
+    const double month = args[0].value, day = args[1].value;
+    const double monthRounded = std::round(month);
+    // the negated tests also reject NaN
+    if (!(monthRounded >= 1.0 && monthRounded <= 12.0 && std::abs(month - monthRounded) <= 1e-9))
+        throw std::runtime_error("nDay_: month must be an integer between 1 and 12, got " + show(month));
+    if (!(day >= 1.0 && day <= 31.0))
+        throw std::runtime_error("nDay_: day must be between 1 and 31, got " + show(day));
+    return args[1] + ADValue::constant(monthStart[static_cast<int>(monthRounded) - 1], args[1].gradient.size());
+}
+
+}  // namespace
 
 // ============================================================================
 // Standard Math Function Evaluation
@@ -37,6 +63,8 @@ ADValue evaluateStandardFunction(const std::string& funcName,
                                  "IF(A, B, X, Y, Z) (X if A < B, Y if A = B, Z if A > B); got " +
                                  std::to_string(args.size()));
     }
+
+    if (name == "nday_") return nDayOfYear(args);
 
     if (args.empty()) {
         throw std::runtime_error("Function " + funcName + " requires at least one argument");
