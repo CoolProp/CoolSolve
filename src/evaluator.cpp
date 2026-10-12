@@ -588,6 +588,15 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
             callWarningSink_->push_back(std::move(warning));
             return;
         }
+        // Built-in CALL Colebrook(Re, RR : f) (EES library; the parser also takes CALL Colebrook(Re, RR, f)):
+        // the Darcy friction factor of the Colebrook-White equation, with its derivatives (AD).
+        if (lowerName == "colebrook") {
+            if (call.inputArgs.size() != 2 || call.outputVars.size() != 1)   // the parser refuses these calls
+                throw std::runtime_error("CALL Colebrook takes 2 inputs (Re, RR) and 1 output (f)");
+            setVariable(resolveVariableName(call.outputVars[0]),
+                        colebrookFrictionFactor(evaluate(call.inputArgs[0]), evaluate(call.inputArgs[1])));
+            return;
+        }
         throw std::runtime_error("Unknown procedure: " + call.name);
     }
     

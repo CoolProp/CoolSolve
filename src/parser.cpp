@@ -234,6 +234,7 @@ private:
         compileState_.integralTable = integralTableAssumed;
         integralTableSeen_ = false;
         integralTableTested_ = false;
+        procedureNames_.clear();
         ParseResult result;
         result.success = false;
         result.program.sourceFilename = filename;
@@ -310,6 +311,7 @@ private:
                 std::string name;
                 std::vector<std::string> inputs, outputs;
                 if (tryParseProcedureHeader(line, name, inputs, outputs)) {
+                    procedureNames_.insert(name);
                     std::vector<StmtPtr> body;
                     int startLine = lineNumber;
                     procedureBodyDepth_++;
@@ -516,6 +518,9 @@ private:
     int procedureBodyDepth_ = 0;
     // The routine whose body is being parsed ("FUNCTION" or "PROCEDURE", and its name).
     std::string routineKind_, routineName_;
+    // The PROCEDUREs defined so far (EES: a routine is defined before it is called); one of them
+    // named like a built-in procedure replaces it (see isBuiltinColebrook).
+    std::set<std::string, CaseInsensitiveLess> procedureNames_;
     
     // ------------------------------------------------------------------------
     // Compile-time directives $IF / $IFNOT / $ELSE / $ENDIF (CS-GAP-IF-DIRECTIVE)
@@ -674,6 +679,7 @@ private:
             "sumlookup", "avglookup", "maxlookup", "minlookup", "stddevlookup",
             "lookupcol", "lookupcol1", "lookupcellempty",
             "unitsystem", "error", "warning",  // UNITSYSTEM('K') and the built-in procedures CALL error('msg'), CALL warning('msg')
+            "colebrook",  // the built-in procedure CALL Colebrook(Re, RR : f)
             "ntumethod", "effectivenessntu",
             "lmtd",
             "integral", "integralvalue",  // equation-based dynamic solver
@@ -1915,6 +1921,15 @@ private:
         return "";
     }
 
+    // True for a CALL of the built-in procedure Colebrook(Re, RR : f) (Darcy friction factor, see
+    // colebrookFrictionFactor), which the colon-less form CALL Colebrook(Re, RR, f) also calls. A PROCEDURE
+    // Colebrook defined by the model before the call replaces it: the call is then that of any procedure.
+    bool isBuiltinColebrook(const std::string& name) const {
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        return lower == "colebrook" && !procedureNames_.count(name);
+    }
+
     // `errorMsg`, when given, receives the reason why a CALL statement was refused
     // (an argument that cannot be parsed, an output that is not a variable).
     StmtPtr tryParseProcedureCall(const std::string& line, int lineNum, std::string* errorMsg = nullptr) {
@@ -1982,6 +1997,18 @@ private:
             inputsStr = argsStr;
         }
         
+        // EES writes the built-in Colebrook without the colon, CALL Colebrook(Re, RR, f): its last argument is the output
+        const bool colebrook = isBuiltinColebrook(name);
+        bool colonLessColebrook = false;
+        if (colebrook && colonPos == std::string::npos) {
+            const std::vector<std::string> args = splitArguments(inputsStr);
+            if (args.size() == 3) {
+                inputsStr = args[0] + "," + args[1];
+                outputsStr = args[2];
+                colonLessColebrook = true;
+            }
+        }
+
         // A faulty argument refuses the whole statement (it is never skipped)
         auto refuse = [&](const std::string& fallback) -> StmtPtr {
             if (errorMsg) *errorMsg = expressionErrorText().empty() ? fallback : expressionErrorText();
@@ -2024,6 +2051,9 @@ private:
                 if (!outputExprs.empty()) outputExprs.push_back(nullptr);
                 continue;
             }
+            if (colonLessColebrook)   // read as an input, so an expression there is more likely a mistake
+                return refuse("the third argument of CALL Colebrook(Re, RR, f) is its output f and must be a variable, "
+                              "got '" + ts + "'");
             if (procedureBodyDepth_ > 0)
                 return refuse("Output " + std::to_string(i + 1) + " of '" + name + "' is the expression '" + ts
                               + "': inside a FUNCTION or PROCEDURE the statements run in order and the expression "
@@ -2032,6 +2062,11 @@ private:
             outputVars.push_back(Variable{});   // placeholder, replaced when the IR is built
             outputExprs.push_back(expr);
         }
+
+        if (colebrook && (inputArgs.size() != 2 || outputVars.size() != 1))
+            return refuse("CALL Colebrook takes 2 inputs (Re, RR) and 1 output (f): CALL Colebrook(Re, RR : f) or "
+                          "CALL Colebrook(Re, RR, f); got " + std::to_string(inputArgs.size()) + " input(s) and " +
+                          std::to_string(outputVars.size()) + " output(s)");
         
         return makeProcedureCall(name, std::move(inputArgs), std::move(outputVars), lineNum, std::move(outputExprs));
     }

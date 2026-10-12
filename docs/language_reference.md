@@ -986,6 +986,40 @@ other routines, is evaluated again: a model without the statement runs exactly a
 `/ALL`), which CoolSolve does not. The `$Warnings` directive does not change anything: the help of EES states
 that a warning of the `WARNING` procedure is always displayed.
 
+### CALL Colebrook (Darcy friction factor)
+
+`Colebrook` is the procedure of an EES add-on library that EES models call for the Darcy friction factor `f`
+of turbulent pipe flow. It is built in: it solves the implicit Colebrook-White equation
+
+```
+1/sqrt(f) = -2*log10(RR/3.7 + 2.51/(Re*sqrt(f)))
+```
+
+with `Re` the Reynolds number and `RR = e/D` the relative roughness. It has two inputs and one output, and
+the EES files call it in either form (the name is case-insensitive):
+
+```ees
+CALL Colebrook(Re, RR : f)
+Call Colebrook(Re_D, RR, f)      "the EES form without colon: the third argument is the output"
+```
+
+In the colon-less form the third argument must be a variable (or an array element); with the colon the output
+follows the rules of any `CALL` (an expression is accepted in the main program, see *Outputs of a CALL*).
+The procedure is usable in the main program and inside a `FUNCTION` or `PROCEDURE`: it iterates internally,
+so for the body of a routine it is an explicit statement that assigns its output.
+
+- **Turbulent flow only.** There is no laminar branch: the models switch themselves, e.g.
+  `IF (Re_D <= 2000) THEN f = 64/Re_D ELSE CALL Colebrook(Re_D, RR, f)`.
+- **Numerics.** Newton iterations on `x = 1/sqrt(f)` from the Swamee-Jain approximation, to full double
+  precision (relative step below 1E-14); for instance `f = 0.0185139` at `Re = 1E5`, `RR = 1E-4`.
+- **Errors.** `Re <= 0`, `RR < 0`, `RR >= 3.7` (the equation has no solution) and NaN stop the calculation with
+  a message naming `Colebrook` (*Colebrook: the Reynolds number Re must be positive (and finite), got 0*); a
+  call with another number of inputs or outputs is a parse error.
+- **Derivatives.** `f` is an implicit function of `Re` and `RR`: its derivatives follow from the implicit
+  function theorem at the solution (automatic differentiation), so `Re` or `RR` may be unknowns
+  (`CALL Colebrook(Re, 1E-4 : f)` with `f = 0.02` solves for `Re`).
+- A `PROCEDURE Colebrook` defined by the model (before its calls, as EES requires) replaces the built-in.
+
 ---
 
 ## 8. Arrays

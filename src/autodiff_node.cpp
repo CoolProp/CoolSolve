@@ -82,6 +82,56 @@ ADValue equationOfTime(const std::vector<ADValue>& args) {
 }  // namespace
 
 // ============================================================================
+// Colebrook-White friction factor (built-in procedure Colebrook of the EES library)
+// ============================================================================
+
+ADValue colebrookFrictionFactor(const ADValue& re, const ADValue& rr) {
+    const double reynolds = re.value, roughness = rr.value;
+    // the negated tests also reject NaN
+    if (!(reynolds > 0.0) || !std::isfinite(reynolds))
+        throw std::runtime_error("Colebrook: the Reynolds number Re must be positive (and finite), got " +
+                                 showValue(reynolds));
+    // RR >= 3.7 leaves 1/sqrt(f) = -2*log10(RR/3.7 + ...) no positive solution
+    if (!(roughness >= 0.0) || !(roughness < 3.7))
+        throw std::runtime_error("Colebrook: the relative roughness RR = e/D must be at least 0 and below 3.7, got " +
+                                 showValue(roughness));
+
+    // g(x) = x + 2*log10(a + b*x) = 0 with x = 1/sqrt(f): increasing and concave on x > 0, where its root
+    // lies (g(0+) = 2*log10(a) < 0). Newton from the Swamee-Jain approximation; after the first step the
+    // iterates approach the root from below, a step that leaves x > 0 is replaced by a halving.
+    const double a = roughness / 3.7, b = 2.51 / reynolds;
+    constexpr double twoOverLn10 = 2.0 / 2.30258509299404568402;
+    double x = -2.0 * std::log10(a + 5.74 / std::pow(reynolds, 0.9));
+    if (!(x > 0.0) || !std::isfinite(x)) x = 1.0;
+    bool converged = false;
+    for (int iteration = 0; iteration < 100 && !converged; ++iteration) {
+        const double s = a + b * x;
+        const double g = x + 2.0 * std::log10(s);
+        const double dg = 1.0 + twoOverLn10 * b / s;
+        double next = x - g / dg;
+        if (!(next > 0.0)) next = 0.5 * x;
+        converged = std::abs(next - x) <= 1e-14 * next;
+        x = next;
+    }
+    if (!converged || !std::isfinite(x))
+        throw std::runtime_error("Colebrook: the Newton iterations did not converge for Re = " + showValue(reynolds) +
+                                 ", RR = " + showValue(roughness));
+
+    // Derivatives by the implicit function theorem at the solution: dx = -(g_Re dRe + g_RR dRR)/g_x, f = x^-2
+    const double s = a + b * x;
+    const double gX = 1.0 + twoOverLn10 * b / s;
+    const double gRe = -twoOverLn10 * b * x / (s * reynolds);   // d(b*x)/dRe = -b*x/Re
+    const double gRR = twoOverLn10 / (3.7 * s);
+    const double dfdx = -2.0 / (x * x * x);
+    const double dfdRe = -dfdx * gRe / gX, dfdRR = -dfdx * gRR / gX;
+
+    ADValue f(1.0 / (x * x), std::max(re.gradient.size(), rr.gradient.size()));
+    for (size_t i = 0; i < re.gradient.size(); ++i) f.gradient[i] += dfdRe * re.gradient[i];
+    for (size_t i = 0; i < rr.gradient.size(); ++i) f.gradient[i] += dfdRR * rr.gradient[i];
+    return f;
+}
+
+// ============================================================================
 // Standard Math Function Evaluation
 // ============================================================================
 

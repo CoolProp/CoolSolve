@@ -8487,3 +8487,289 @@ TEST_CASE("CS-BUG-NO-SOL-DELETE: --no-sol leaves an existing .sol untouched and 
     CHECK(fileText(dir / "m.sol").find("b = 6.") != std::string::npos);
     fs::remove_all(dir);
 }
+
+// ============================================================================
+// CS-GAP-COLEBROOK: the built-in procedure Colebrook(Re, RR : f) of the EES library, the Darcy friction
+// factor of the implicit Colebrook-White equation 1/sqrt(f) = -2*log10(RR/3.7 + 2.51/(Re*sqrt(f))),
+// called with or without the colon (`Call Colebrook(Re_D, RR, f)` in the LABORELEC pipe files, CSL-0158).
+// The reference values are those of the equation solved to 40 digits (mpmath).
+// ============================================================================
+
+namespace {
+
+/// f of `CALL Colebrook(Re, RR : f)` run by the evaluator, with Re and RR the independent variables
+/// 0 and 1: the gradient of f holds df/dRe and df/dRR.
+ADValue colebrookCall(double re, double rr) {
+    EESParser parser;
+    const auto parsed = parser.parse("CALL Colebrook(Re, RR : f)\n");
+    REQUIRE(parsed.errors.empty());
+    REQUIRE(parsed.program.statements.size() == 1);
+    REQUIRE(parsed.program.statements[0]->is<ProcedureCall>());
+    ExpressionEvaluator eval(2);
+    eval.setVariable("Re", ADValue::independent(re, 0, 2));
+    eval.setVariable("RR", ADValue::independent(rr, 1, 2));
+    eval.evaluateProcedureCall(parsed.program.statements[0]->as<ProcedureCall>());
+    return eval.getVariable("f");
+}
+
+/// The message of the error thrown by colebrookCall; empty when it throws none.
+std::string colebrookCallError(double re, double rr) {
+    try {
+        colebrookCall(re, rr);
+    } catch (const std::exception& e) {
+        return e.what();
+    }
+    return "";
+}
+
+/// Residual of the Colebrook-White equation for f.
+double colebrookResidual(double f, double re, double rr) {
+    return 1.0 / std::sqrt(f) + 2.0 * std::log10(rr / 3.7 + 2.51 / (re * std::sqrt(f)));
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-COLEBROOK: reproducer of the register, with and without the colon", "[library-gaps][colebrook]") {
+    const double reference = 0.018513866077471643;   // Re = 1E5, RR = 1E-4
+    for (const std::string call : {"Call Colebrook(Re, RR, f)", "CALL Colebrook(Re, RR : f)"}) {
+        INFO(call);
+        auto run = runModel("Re = 1E5\nRR = 0.0001\n" + call + "\nz = f\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["f"], WithinRel(reference, 1e-12));
+        CHECK_THAT(run["z"], WithinRel(reference, 1e-12));
+        CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+    }
+}
+
+TEST_CASE("CS-GAP-COLEBROOK: the name is case-insensitive and the arguments are expressions", "[library-gaps][colebrook]") {
+    auto run = runModel(R"(
+D = 0.05
+eps = 0.000005
+Re = 1E5
+CALL COLEBROOK(Re, eps/D : f1)
+call colebrook(2*Re/2, 1E-4, f2)
+Call CoLeBrOoK(Re, (eps/D) : f3) "comment"
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const char* name : {"f1", "f2", "f3"}) CHECK_THAT(run[name], WithinRel(0.018513866077471643, 1e-12));
+}
+
+TEST_CASE("CS-GAP-COLEBROOK: reference values over the turbulent range", "[library-gaps][colebrook]") {
+    struct Point { double re, rr, f; };
+    const Point points[] = {
+        {4e3, 0.0, 0.039907014055634898},   {1e5, 1e-4, 0.018513866077471643},
+        {1e6, 1e-3, 0.019943465840476866},  {1e8, 0.0, 0.0059404663516367614},
+        {1e8, 0.05, 0.071550904091083255},  {4e3, 0.05, 0.076986834889224867},
+        {2.5e4, 2e-5, 0.024570135667965701}, {1e5, 1e-3, 0.022174535944515075},   // the last one: as EES
+    };
+    for (const auto& p : points) {
+        INFO("Re = " << p.re << ", RR = " << p.rr);
+        CHECK_THAT(colebrookCall(p.re, p.rr).value, WithinRel(p.f, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-COLEBROOK: f satisfies the Colebrook-White equation to 1e-12 for Re 4E3...1E8, RR 0...0.05",
+          "[library-gaps][colebrook]") {
+    for (double re : {4e3, 6e3, 1e4, 3e4, 1e5, 3e5, 1e6, 3e6, 1e7, 3e7, 1e8}) {
+        for (double rr : {0.0, 1e-7, 1e-6, 1e-5, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 0.03, 0.05}) {
+            INFO("Re = " << re << ", RR = " << rr);
+            const double f = colebrookCall(re, rr).value;
+            CHECK(f > 0.005);
+            CHECK(f < 0.08);
+            CHECK(std::abs(colebrookResidual(f, re, rr)) < 1e-12);
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-COLEBROOK: the CSL-0158 point, inside the PROCEDURE body as in the original (IF ... ELSE CALL)",
+          "[library-gaps][colebrook]") {
+    // Re_D is local to PIPE_GAS and not stored: 1164166.4513 is rebuilt from the stored values of the EES file
+    // (V_dot, rho_i, Pr, Q, T_int: cp, then mu and lambda); RR = epsilon/di with di = 82.5 mm. EES: f = 0.01752150787
+    // (the classical equation gives it to 5e-9). The body passes the check of the routine bodies (CS-BUG-IMPLICIT-PROC).
+    const std::string code = R"(
+PROCEDURE PIPE_GAS(Re_D, di_mm : f, DpDx)
+  di = di_mm/1000
+  epsilon=0.000046	"roughness of the pipe"
+  RR=epsilon/di
+  if (Re_D<=2000) then
+    f = 64/Re_D
+  else
+   Call  Colebrook(Re_D, RR , f) "turbulent flow"
+  endif
+  DpDx = 0.5*f*7.776430299515753*24.05591817048639^2/di
+END
+CALL PIPE_GAS(1164166.4513, 82.5 : f, DpDx)
+CALL PIPE_GAS(1500, 82.5 : f_lam, DpDx_lam)
+)";
+    CHECK(parseErrors(code).empty());
+    auto run = runModel(code);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["f"], WithinRel(0.01752150787, 1e-6));
+    CHECK_THAT(run["DpDx"], WithinRel(0.5 * 0.01752150787 * 7.776430299515753 * 24.05591817048639 * 24.05591817048639 / 0.0825, 1e-6));
+    CHECK_THAT(run["f_lam"], WithinRel(64.0 / 1500.0, 1e-9));   // the laminar branch, to the solver tolerance
+
+    // the Re_D and RR of the CoolSolve variant (CoolProp viscosity): its f, from the implicit equation
+    CHECK_THAT(colebrookCall(1.184661580325e+06, 5.575757575756e-04).value, WithinRel(1.751477912659e-02, 1e-11));
+}
+
+TEST_CASE("CS-GAP-COLEBROOK: usable in a FUNCTION, the output being the function itself or a local",
+          "[library-gaps][colebrook]") {
+    auto run = runModel(R"(
+FUNCTION fric(Re, RR)
+  IF (Re < 2300) THEN
+    fric = 64/Re
+  ELSE
+    CALL Colebrook(Re, RR, fric)
+  ENDIF
+END
+FUNCTION fric2(Re, RR)
+  CALL Colebrook(Re, RR : ff)
+  fric2 = 2*ff
+END
+a = fric(1E5, 1E-4)
+b = fric(1000, 1E-4)
+c = fric2(1E5, 1E-4)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinRel(0.018513866077471643, 1e-12));
+    CHECK_THAT(run["b"], WithinRel(0.064, 1e-14));
+    CHECK_THAT(run["c"], WithinRel(2 * 0.018513866077471643, 1e-12));
+}
+
+TEST_CASE("CS-GAP-COLEBROOK: derivatives by the implicit function theorem (AD)", "[library-gaps][colebrook]") {
+    // at Re = 1E5, RR = 1E-4 (derivatives of the 40-digit solution)
+    const ADValue f = colebrookCall(1e5, 1e-4);
+    REQUIRE(f.gradient.size() == 2);
+    CHECK_THAT(f.gradient[0], WithinRel(-3.4602179397150064e-8, 1e-10));
+    CHECK_THAT(f.gradient[1], WithinRel(5.0696335336773551, 1e-10));
+
+    // against central finite differences over the range
+    for (double re : {4e3, 1e5, 1e7}) {
+        for (double rr : {1e-5, 1e-3, 0.05}) {
+            INFO("Re = " << re << ", RR = " << rr);
+            const ADValue g = colebrookCall(re, rr);
+            const double hRe = re * 1e-4, hRR = rr * 1e-4;   // truncation error ~1e-8, round-off negligible
+            const double dRe = (colebrookCall(re + hRe, rr).value - colebrookCall(re - hRe, rr).value) / (2 * hRe);
+            const double dRR = (colebrookCall(re, rr + hRR).value - colebrookCall(re, rr - hRR).value) / (2 * hRR);
+            CHECK_THAT(g.gradient[0], WithinRel(dRe, 1e-6));
+            CHECK_THAT(g.gradient[1], WithinRel(dRR, 1e-6));
+        }
+    }
+    // RR = 0 (smooth pipe): df/dRR is still defined
+    const ADValue smooth = colebrookCall(1e5, 0.0);
+    const double h = 1e-9;
+    CHECK_THAT(smooth.gradient[1], WithinRel((colebrookCall(1e5, h).value - smooth.value) / h, 1e-4));
+}
+
+TEST_CASE("CS-GAP-COLEBROOK: the solver goes through Colebrook (Re unknown, f given)", "[library-gaps][colebrook]") {
+    const double re = 67137.863981363882;   // f(Re, 1E-4) = 0.02
+    SECTION("CALL in the main program") {
+        auto run = runModel("CALL Colebrook(Re, 1E-4 : f)\nf = 0.02\n", {}, "Re = 50000\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["Re"], WithinRel(re, 1e-7));
+    }
+    SECTION("colon-less CALL coupled with other equations") {
+        auto run = runModel("Re = rho*U*D/mu\nrho = 1000\nD = 0.05\nmu = 0.001\nCall Colebrook(Re, 1E-4, f)\nf = 0.02\n",
+                            {}, "U = 1\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["U"], WithinRel(re * 0.001 / (1000 * 0.05), 1e-7));
+    }
+    SECTION("through a FUNCTION called with the unknown") {
+        auto run = runModel("FUNCTION fric(Re, RR)\n  CALL Colebrook(Re, RR : fric)\nEND\nfric(Re, 1E-4) = 0.02\n",
+                            {}, "Re = 50000\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["Re"], WithinRel(re, 1e-7));
+    }
+}
+
+TEST_CASE("CS-GAP-COLEBROOK: Re <= 0, RR < 0, NaN and RR >= 3.7 are errors naming Colebrook", "[library-gaps][colebrook]") {
+    SECTION("in a model") {
+        const std::pair<std::string, std::string> cases[] = {
+            {"Re = 0\nRR = 1E-4\n", "Colebrook: the Reynolds number Re must be positive"},
+            {"Re = -1E5\nRR = 1E-4\n", "Colebrook: the Reynolds number Re must be positive"},
+            {"Re = 1E5\nRR = -1E-4\n", "Colebrook: the relative roughness RR"},
+        };
+        for (const auto& [inputs, message] : cases) {
+            INFO(inputs);
+            auto run = runModel(inputs + "CALL Colebrook(Re, RR : f)\n");
+            REQUIRE(run.parseOk);
+            REQUIRE_FALSE(run.solveOk);
+            CHECK(run.message.find(message) != std::string::npos);
+        }
+    }
+    SECTION("the messages") {
+        const double nan = std::nan("");
+        CHECK(colebrookCallError(0.0, 1e-4).find("Colebrook: the Reynolds number Re must be positive") != std::string::npos);
+        CHECK(colebrookCallError(-1e5, 1e-4).find("Colebrook: the Reynolds number Re must be positive") != std::string::npos);
+        CHECK(colebrookCallError(nan, 1e-4).find("Colebrook: the Reynolds number Re must be positive") != std::string::npos);
+        CHECK(colebrookCallError(1e5, -1e-4).find("Colebrook: the relative roughness RR") != std::string::npos);
+        CHECK(colebrookCallError(1e5, nan).find("Colebrook: the relative roughness RR") != std::string::npos);
+        CHECK(colebrookCallError(1e5, 3.7).find("Colebrook: the relative roughness RR") != std::string::npos);
+        CHECK(colebrookCallError(1e5, 0.0).empty());
+    }
+}
+
+TEST_CASE("CS-GAP-COLEBROOK: the number of arguments and the output are checked", "[library-gaps][colebrook]") {
+    const std::string arity = "CALL Colebrook takes 2 inputs (Re, RR) and 1 output (f)";
+    for (const std::string call : {"CALL Colebrook(1E5 : f)", "CALL Colebrook(1E5, 1E-4, 2 : f)",
+                                   "CALL Colebrook(1E5, 1E-4 : f, g)", "CALL Colebrook(1E5, 1E-4)",
+                                   "CALL Colebrook(1E5, 1E-4, f, g)", "CALL Colebrook(1E5)"}) {
+        INFO(call);
+        const auto errors = parseErrors(call + "\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].find(arity) != std::string::npos);
+    }
+    // the same in a routine body
+    CHECK(anyContains(parseErrors("PROCEDURE p(x : y)\n  CALL Colebrook(x : y)\nEND\nCALL p(1E5 : z)\n"), arity));
+
+    // the third argument of the colon-less form is the output: a variable
+    const auto constant = parseErrors("CALL Colebrook(1E5, 1E-4, 0.02)\n");
+    REQUIRE(constant.size() == 1);
+    CHECK(constant[0].find("the third argument of CALL Colebrook(Re, RR, f) is its output f and must be a variable") !=
+          std::string::npos);
+    CHECK(anyContains(parseErrors("CALL Colebrook(1E5, 1E-4, 2*f)\n"), "must be a variable"));
+    // inside a routine, an expression output is refused as for any CALL
+    CHECK(anyContains(parseErrors("PROCEDURE p(x : y)\n  CALL Colebrook(x, 1E-4 : 2*y)\nEND\nCALL p(1E5 : z)\n"),
+                      "Output 1 of 'Colebrook' is the expression"));
+    // an array element is a variable
+    auto run = runModel("Re[1] = 1E5\nCALL Colebrook(Re[1], 1E-4, f[1])\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["f[1]"], WithinRel(0.018513866077471643, 1e-12));
+}
+
+TEST_CASE("CS-GAP-COLEBROOK: a PROCEDURE Colebrook of the model replaces the built-in", "[library-gaps][colebrook]") {
+    SECTION("same signature") {
+        auto run = runModel(R"(
+PROCEDURE Colebrook(Re, RR : f)
+  f = 0.316*Re^(-0.25)   "Blasius"
+END
+CALL Colebrook(1E5, 0 : f1)
+CALL COLEBROOK(1E5, 0 : f2)
+)");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["f1"], WithinRel(0.316 * std::pow(1e5, -0.25), 1e-14));
+        CHECK_THAT(run["f2"], WithinRel(0.316 * std::pow(1e5, -0.25), 1e-14));
+    }
+    SECTION("another signature: the built-in rules do not apply") {
+        auto run = runModel(R"(
+PROCEDURE colebrook(Re, eps, D : f, RR)
+  RR = eps/D
+  f = 64/Re + RR
+END
+CALL Colebrook(1000, 0.001, 0.1 : f, RR)
+)");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["f"], WithinRel(0.074, 1e-14));
+        CHECK_THAT(run["RR"], WithinRel(0.01, 1e-14));
+    }
+}

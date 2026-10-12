@@ -420,4 +420,18 @@ using ADFunction = std::function<ADValue(const std::vector<ADValue>&)>;
 ADValue evaluateStandardFunction(const std::string& funcName, 
                                   const std::vector<ADValue>& args);
 
+/**
+ * @brief Darcy friction factor of the Colebrook-White equation (built-in procedure `Colebrook`).
+ *
+ * Solves 1/sqrt(f) = -2*log10(RR/3.7 + 2.51/(Re*sqrt(f))) for f, the turbulent-flow correlation
+ * (no laminar branch), by Newton iterations on x = 1/sqrt(f) to full double precision. The gradient
+ * of f follows from the implicit function theorem at the solution, through those of Re and RR.
+ *
+ * @param re Reynolds number, positive and finite.
+ * @param rr Relative roughness e/D, at least 0 and below 3.7.
+ * @throws std::runtime_error naming Colebrook for an argument out of range (or NaN), or when the
+ *         iterations do not converge.
+ */
+ADValue colebrookFrictionFactor(const ADValue& re, const ADValue& rr);
+
 }  // namespace coolsolve
