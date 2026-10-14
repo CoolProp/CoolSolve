@@ -93,10 +93,6 @@ LibraryStore::LibraryStore(LibraryFileSource source) : source_(std::move(source)
     available_ = true;
 }
 
-bool LibraryStore::readOptional(const std::string& path, std::string& content) const {
-    return source_.read(path, content);
-}
-
 json LibraryStore::snapshot() const {
     if (!available_) return json::object();
     return index_.value("snapshot", json::object());
@@ -216,31 +212,26 @@ bool LibraryStore::loadModel(const std::string& idOrName, const std::string& fil
         return false;
     }
 
-    // Companion files. A variant ("x_coolsolve.eescode") may have its own .initials/.sol or
-    // share those of the model: the file's stem is tried first, then the model name.
+    // Companion files. A variant ("x_coolsolve.eescode") may have its own .initials, .sol and
+    // tables or share those of the model: the file's stem comes first, then the model name.
     const std::string stem = stemOf(model.file);
     std::vector<std::string> stems = {stem};
     if (model.name != stem) stems.push_back(model.name);
     for (const auto& s : stems) {
-        if (model.initials.empty()) readOptional(dir + s + ".initials", model.initials);
-        if (model.sol.empty()) readOptional(dir + s + ".sol", model.sol);
-    }
-    readOptional(dir + "coolsolve.conf", model.conf);
+        if (model.initials.empty()) source_.read(dir + s + ".initials", model.initials);
+        if (model.sol.empty()) source_.read(dir + s + ".sol", model.sol);
 
-    // Lookup tables: "<stem>-<table>.csv"; the part after the first hyphen is the table name
-    for (const auto& path : source_.list(dir)) {
-        std::string rel = path.substr(dir.size());
-        if (rel.find('/') != std::string::npos || !endsWith(rel, ".csv")) continue;
-        std::string base = rel.substr(0, rel.size() - 4);
-        for (const auto& s : stems) {
-            const std::string prefix = s + "-";
-            if (base.size() > prefix.size() && startsWith(base, prefix)) {
-                std::string csv;
-                if (source_.read(path, csv)) model.tables[base.substr(prefix.size())] = csv;
-                break;
-            }
+        // Lookup tables "<stem>-<table>.csv": the table name is what follows "<stem>-"
+        const std::string prefix = dir + s + "-";
+        for (const auto& path : source_.list(prefix)) {
+            if (!endsWith(path, ".csv") || path.find('/', dir.size()) != std::string::npos) continue;
+            std::string table = path.substr(prefix.size(), path.size() - prefix.size() - 4);
+            std::string csv;
+            if (!table.empty() && !model.tables.count(table) && source_.read(path, csv))
+                model.tables.emplace(table, std::move(csv));
         }
     }
+    source_.read(dir + "coolsolve.conf", model.conf);
 
     out = std::move(model);
     return true;

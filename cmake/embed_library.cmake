@@ -7,10 +7,10 @@
 #   cmake -DLIBRARY_DIR=<library checkout> -DOUTPUT_CPP=<path> -DOUTPUT_H=<path>
 #         -DSTAMP_FILE=<path> -P embed_library.cmake
 #
-# The script hashes the files it would embed and compares the hash with STAMP_FILE:
-# when nothing changed it exits at once and leaves OUTPUT_CPP untouched, so the
-# compiler is not re-run. A library that changed (git pull, local edit) is
-# therefore always picked up by `cmake --build`.
+# The script hashes the files it would embed and compares the hash and the library
+# commit with STAMP_FILE: when nothing changed it exits at once and leaves OUTPUT_CPP
+# untouched, so the compiler is not re-run. A library that changed (git pull, local
+# edit) is therefore always picked up by `cmake --build`.
 #
 # What is embedded (allow-list, a mirror of EMBED_FILES in the library's
 # tools/build_index.py; never sources/, tools/, templates/ or work/):
@@ -65,9 +65,29 @@ endforeach()
 string(SHA256 SNAPSHOT_HASH "${HASH_INPUT}")
 string(SUBSTRING "${SNAPSHOT_HASH}" 0 16 SNAPSHOT_HASH)
 
+# --- Library commit (informative), "+local-changes" when embedded files are modified ---
+set(LIBRARY_COMMIT "unknown")
+find_program(GIT_EXECUTABLE git)
+if(GIT_EXECUTABLE)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${LIBRARY_DIR}" rev-parse --short HEAD
+        OUTPUT_VARIABLE COMMIT_OUT RESULT_VARIABLE COMMIT_RES ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(COMMIT_RES EQUAL 0 AND COMMIT_OUT)
+        set(LIBRARY_COMMIT "${COMMIT_OUT}")
+        execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${LIBRARY_DIR}" status --porcelain
+                -- library.html library.json taxonomy.json docs/taxonomy.md models
+            OUTPUT_VARIABLE DIRTY_OUT ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(DIRTY_OUT)
+            set(LIBRARY_COMMIT "${LIBRARY_COMMIT}+local-changes")
+        endif()
+    endif()
+endif()
+
+# The commit is part of the stamp: committing the files embedded so far changes the
+# identity printed by `coolsolve --version`, not only a change of content.
+set(STAMP "${SNAPSHOT_HASH} ${LIBRARY_COMMIT}")
 if(EXISTS "${STAMP_FILE}" AND EXISTS "${OUTPUT_CPP}" AND EXISTS "${OUTPUT_H}")
-    file(READ "${STAMP_FILE}" OLD_HASH)
-    if("${OLD_HASH}" STREQUAL "${SNAPSHOT_HASH}")
+    file(READ "${STAMP_FILE}" OLD_STAMP)
+    if("${OLD_STAMP}" STREQUAL "${STAMP}")
         return()
     endif()
 endif()
@@ -83,22 +103,6 @@ if(NOT "${INDEX_FILES}" STREQUAL "${MODEL_FILE_COUNT_WITH_TAXONOMY}")
             "library.json lists ${INDEX_FILES}. Either library.json is stale (run `python3 tools/build_index.py` "
             "in the library) or the allow-list of cmake/embed_library.cmake differs from EMBED_FILES in "
             "tools/build_index.py.")
-endif()
-
-# --- Library commit (informative) ---
-set(LIBRARY_COMMIT "unknown")
-find_program(GIT_EXECUTABLE git)
-if(GIT_EXECUTABLE)
-    execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${LIBRARY_DIR}" rev-parse --short HEAD
-        OUTPUT_VARIABLE COMMIT_OUT RESULT_VARIABLE COMMIT_RES ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
-    if(COMMIT_RES EQUAL 0 AND COMMIT_OUT)
-        set(LIBRARY_COMMIT "${COMMIT_OUT}")
-        execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${LIBRARY_DIR}" status --porcelain
-            OUTPUT_VARIABLE DIRTY_OUT ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
-        if(DIRTY_OUT)
-            set(LIBRARY_COMMIT "${LIBRARY_COMMIT}+local-changes")
-        endif()
-    endif()
 endif()
 
 # --- Generate ---
@@ -170,7 +174,15 @@ const char* embeddedLibraryHash() { return \"${SNAPSHOT_HASH}\"; }
 ")
 
 file(WRITE "${OUTPUT_CPP}" "${SOURCE_CONTENT}")
-file(WRITE "${OUTPUT_H}" "${HEADER_CONTENT}")
-file(WRITE "${STAMP_FILE}" "${SNAPSHOT_HASH}")
+# The header does not depend on the library: rewriting it would recompile its includers
+# (server.cpp, version.cpp) at every library change.
+set(OLD_HEADER "")
+if(EXISTS "${OUTPUT_H}")
+    file(READ "${OUTPUT_H}" OLD_HEADER)
+endif()
+if(NOT "${OLD_HEADER}" STREQUAL "${HEADER_CONTENT}")
+    file(WRITE "${OUTPUT_H}" "${HEADER_CONTENT}")
+endif()
+file(WRITE "${STAMP_FILE}" "${STAMP}")
 
 message(STATUS "Embedded ${LIB_FILE_COUNT} CoolSolve Library files (commit ${LIBRARY_COMMIT}, hash ${SNAPSHOT_HASH}) into ${OUTPUT_CPP}")

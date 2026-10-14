@@ -61,6 +61,11 @@ export const api = {
   // Health
   health: () => request<HealthResponse>('/health'),
 
+  /** Marks this tab's session as in use: the server drops sessions idle for 24 h. */
+  keepAlive: async (): Promise<void> => {
+    await apiFetch('/keepalive', { method: 'POST' });
+  },
+
   // Warmup
   warmup: () => request<{ warmupMs: number }>('/warmup', { method: 'POST' }),
 
@@ -68,7 +73,8 @@ export const api = {
   getInitialFile: () => requestOptional<{ path: string }>('/initial-file'),
 
   // Files
-  getEescode: () => request<{ content: string; filePath: string; libraryId?: string }>('/files/eescode'),
+  getEescode: () =>
+    request<{ content: string; filePath: string; modelName: string; libraryId: string }>('/files/eescode'),
   putEescode: (content: string) =>
     request<{ success: boolean }>('/files/eescode', {
       method: 'PUT',

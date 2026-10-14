@@ -3,13 +3,16 @@
 test_library_api.py — Integration tests for the embedded model library (GUI server).
 
 Tests the Library menu (verified models only), opening a model folder into a session,
-the per-tab session id, and the /library/ pages and files, via the REST API.
+the per-tab session id (header, ?sid=, keep-alive), the ZIP bundle round-trip of a library
+model, the /library/ pages and files, and that the server opens no file from disk but the
+one given on the command line (models come from the library, not from server paths).
 
 Usage:
     # Start CoolSolve with --gui, then:
     python3 test_library_api.py [base_url]
 
-    # Or run with auto-start (from the build/ directory):
+    # Or run with auto-start (from the build/ directory); this also runs the tests that
+    # need a server started with a file on its command line:
     python3 test_library_api.py --auto
 
 Needs a build with the library embedded (COOLSOLVE_EMBED_LIBRARY=ON, the default).
@@ -17,6 +20,7 @@ Exit code 0 if all tests pass, 1 otherwise.
 """
 
 import http.cookiejar
+import io
 import json
 import os
 import signal
@@ -25,9 +29,12 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import zipfile
 
 BASE_URL = "http://localhost:8550"
 VERBOSE = "--verbose" in sys.argv or "-v" in sys.argv
+# A model file on disk (repository example), for the tests of POST /files/open
+EXAMPLE_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "examples", "rankine1.eescode"))
 
 passed = 0
 failed = 0
@@ -180,7 +187,7 @@ def test_open(models, index):
         status, res = api("POST", "/library/open", {"id": with_variant[0]["id"], "file": with_variant[1]})
         check("a variant opens", status == 200 and res.get("file") == with_variant[1], str(res))
 
-    # Opening a plain file from disk clears the library ID
+    # A new model is not a library model
     api("POST", "/new")
     _, ees = api("GET", "/files/eescode")
     check("New model clears the library ID", ees.get("libraryId") == "")
@@ -232,6 +239,97 @@ def test_tab_sessions(models):
     status, _ = api("GET", "/files/eescode?sid=../../etc", None, None, _plain_opener)
     check("invalid ?sid= does not break the request", status == 200)
 
+    # Every open tab pings the keep-alive route, so that its session is not dropped as idle
+    status, _, _ = raw("POST", "/api/v1/keepalive", None, {"X-CoolSolve-Session": sid_a}, _plain_opener)
+    _, ees_a = api("GET", "/files/eescode", None, {"X-CoolSolve-Session": sid_a}, _plain_opener)
+    check("keep-alive → 204, the session keeps its model", status == 204 and ees_a["libraryId"] == a["id"])
+
+
+def upload_bundle(bundle: bytes, filename: str, headers: dict):
+    """POST a ZIP bundle to /api/v1/files/upload (multipart, as the Open button); return (status, JSON)."""
+    boundary = "----coolsolvelibrarytest"
+    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            "Content-Type: application/zip\r\n\r\n").encode() + bundle + f"\r\n--{boundary}--\r\n".encode()
+    hdrs = {"Content-Type": f"multipart/form-data; boundary={boundary}", **headers}
+    req = urllib.request.Request(BASE_URL + "/api/v1/files/upload", data=body, headers=hdrs, method="POST")
+    try:
+        resp = _plain_opener.open(req, timeout=30)
+        return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"{}")
+
+
+def test_bundle_round_trip(models):
+    print("\n── Save / Open (ZIP bundle) of a library model ──")
+    sid_a = "c" * 32
+    tab_a = {"X-CoolSolve-Session": sid_a}
+    tab_b = {"X-CoolSolve-Session": "d" * 32}
+    res = {}
+    for m in models:  # a model whose folder has lookup tables: they must travel too
+        _, res = api("POST", "/library/open", {"id": m["id"]}, tab_a, _plain_opener)
+        if res.get("tables"):
+            break
+    else:
+        check("some verified model has lookup tables", False)
+        return
+    name = res["modelName"]
+
+    # Save is a plain navigation: the tab's session goes in ?sid=, the cookie session is not used
+    status, _, bundle = raw("GET", "/api/v1/files/bundle?sid=" + sid_a, None, None, _plain_opener)
+    check("the tab's bundle downloads with ?sid=", status == 200 and bundle[:2] == b"PK", f"status={status}")
+    if bundle[:2] != b"PK":
+        return
+    names = zipfile.ZipFile(io.BytesIO(bundle)).namelist()
+    tables_in_zip = [n for n in names if n.startswith(name + "-") and n.endswith(".csv")]
+    check("the bundle holds the model and its tables",
+          name + ".eescode" in names and len(tables_in_zip) == res["tables"], str(names))
+
+    # Open it in another tab: the same model, but no longer a library model
+    status, up = upload_bundle(bundle, name + ".zip", tab_b)
+    check("the bundle opens in another tab", status == 200 and up.get("success"), str(up))
+    for path in ("/files/eescode", "/files/initials", "/files/conf", "/tables"):
+        _, got_a = api("GET", path, None, tab_a, _plain_opener)
+        _, got_b = api("GET", path, None, tab_b, _plain_opener)
+        same = got_a.get("content") == got_b.get("content") if path != "/tables" else got_a == got_b
+        check(f"round-trip keeps {path}", same)
+    for table in tables_in_zip:
+        tname = table[len(name) + 1:-4]
+        csv_a = raw("GET", "/api/v1/tables/" + tname, None, tab_a, _plain_opener)[2]
+        csv_b = raw("GET", "/api/v1/tables/" + tname, None, tab_b, _plain_opener)[2]
+        check(f"round-trip keeps the content of table {tname}", csv_a == csv_b and len(csv_a) > 0)
+    _, ees_b = api("GET", "/files/eescode", None, tab_b, _plain_opener)
+    check("an opened bundle is not a library model", ees_b["libraryId"] == "")
+
+
+def test_open_from_disk_refused():
+    print("\n── Open from disk: no path chosen by the client ──")
+    for path in ("/etc/passwd", EXAMPLE_FILE):
+        status, res = api("POST", "/files/open", {"path": path})
+        check(f"/files/open refuses {os.path.basename(path)} → 403", status == 403, str(res))
+    _, ees = api("GET", "/files/eescode")
+    check("the refused file was not read", "root:" not in ees.get("content", ""))
+
+
+def test_open_command_line_file(binary: str):
+    """The desktop flow: `coolsolve --gui <file>` (file association) opens that file, and only it."""
+    global BASE_URL
+    print("\n── Open from disk: the file given on the command line ──")
+    main_url, BASE_URL = BASE_URL, "http://localhost:18601"
+    proc = start_server(binary, 18601, [EXAMPLE_FILE])  # exits the script if it does not start
+    try:
+        status, initial = api("GET", "/initial-file")
+        check("the server announces the command-line file",
+              status == 200 and initial.get("path") == EXAMPLE_FILE, str(initial))
+        status, res = api("POST", "/files/open", {"path": EXAMPLE_FILE})
+        check("the command-line file opens", status == 200 and res.get("success"), str(res))
+        _, ees = api("GET", "/files/eescode")
+        check("its content is loaded", len(ees.get("content", "")) > 50 and ees.get("libraryId") == "")
+        status, _ = api("POST", "/files/open", {"path": "/etc/passwd"})
+        check("another path is still refused → 403", status == 403)
+    finally:
+        stop_server(proc)
+        BASE_URL = main_url
+
 
 def test_pages(index):
     print("\n── /library/ pages and files ──")
@@ -262,9 +360,32 @@ def test_pages(index):
 
 # ── Runner ───────────────────────────────────────────────────────────────────
 
+def start_server(binary: str, port: int, extra_args=()):
+    """Start `coolsolve --gui <port>` (BASE_URL must already point to that port); wait until it answers."""
+    print(f"Starting CoolSolve from {binary} on port {port}...")
+    proc = subprocess.Popen([binary, "--gui", str(port), "--no-browser", *extra_args],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for _ in range(20):
+        time.sleep(0.5)
+        try:
+            api("GET", "/health")
+            return proc
+        except Exception:
+            pass
+    proc.terminate()
+    print("ERROR: Server did not start in 10s")
+    sys.exit(1)
+
+
+def stop_server(proc):
+    proc.send_signal(signal.SIGTERM)
+    proc.wait(timeout=5)
+
+
 def main():
     global BASE_URL
     server_proc = None
+    binary = None
 
     args = [a for a in sys.argv[1:] if not a.startswith("-")]
     if args:
@@ -277,21 +398,8 @@ def main():
         if not os.path.exists(binary):
             print(f"ERROR: CoolSolve binary not found at {binary}")
             sys.exit(1)
-        print(f"Starting CoolSolve from {binary}...")
-        server_proc = subprocess.Popen([binary, "--gui", "18600", "--no-browser"],
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         BASE_URL = "http://localhost:18600"
-        for _ in range(20):
-            time.sleep(0.5)
-            try:
-                api("GET", "/health")
-                break
-            except Exception:
-                pass
-        else:
-            print("ERROR: Server did not start in 10s")
-            server_proc.terminate()
-            sys.exit(1)
+        server_proc = start_server(binary, 18600)
 
     try:
         status, health = api("GET", "/health")
@@ -303,14 +411,17 @@ def main():
             test_open(models, index)
             test_open_errors(models)
             test_tab_sessions(models)
+            test_bundle_round_trip(models)
             test_pages(index)
+        test_open_from_disk_refused()
+        if binary:
+            test_open_command_line_file(binary)
     except Exception as e:
         print(f"\nFATAL ERROR: {e}")
         check("no fatal error", False, str(e))
     finally:
         if server_proc:
-            server_proc.send_signal(signal.SIGTERM)
-            server_proc.wait(timeout=5)
+            stop_server(server_proc)
 
     total = passed + failed
     print(f"\n{'=' * 60}")

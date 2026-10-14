@@ -314,6 +314,7 @@ class SessionManager {
 
     /// Drop the sessions idle for more than kIdleLimit (no solve running) and their temp folder.
     /// Every browser tab opened from the library has its own session, so they must not pile up.
+    /// An open GUI tab is never idle: it calls POST /api/v1/keepalive (App.tsx).
     void sweepIdle(std::chrono::steady_clock::time_point now) {
         if (now - lastSweep_ < kSweepInterval) return;
         lastSweep_ = now;
@@ -332,18 +333,18 @@ public:
     std::shared_ptr<Session> getOrCreate(const std::string& sessionId) {
         std::lock_guard<std::mutex> lock(mutex_);
         const auto now = std::chrono::steady_clock::now();
-        sweepIdle(now);
         auto it = sessions_.find(sessionId);
-        if (it != sessions_.end()) {
-            it->second->lastAccess = now;
-            return it->second;
+        if (it == sessions_.end()) {
+            auto s = std::make_shared<Session>();
+            s->tempDir = fs::temp_directory_path() / "coolsolve_sessions" / sessionId;
+            fs::create_directories(s->tempDir);
+            it = sessions_.emplace(sessionId, std::move(s)).first;
         }
-        auto s = std::make_shared<Session>();
-        s->lastAccess = now;
-        s->tempDir = fs::temp_directory_path() / "coolsolve_sessions" / sessionId;
-        fs::create_directories(s->tempDir);
-        sessions_[sessionId] = s;
-        return s;
+        // Touched before the sweep: a request never evicts the session it is made for
+        it->second->lastAccess = now;
+        std::shared_ptr<Session> session = it->second;
+        sweepIdle(now);
+        return session;
     }
 };
 
@@ -797,6 +798,13 @@ int startServer(const ServerOptions& options) {
         res.set_content(j.dump(), "application/json");
     });
 
+    // Called periodically by every open GUI tab: getSession() refreshes the session's
+    // access time, so the model of a tab left open is not dropped as idle (SessionManager).
+    svr.Post("/api/v1/keepalive", [&](const httplib::Request& req, httplib::Response& res) {
+        getSession(req, res);
+        res.status = 204;
+    });
+
     // ================================================================
     // Initial file (for CLI-launched --gui <file.eescode>)
     // Returns the initial file path once, then clears it.
@@ -909,14 +917,22 @@ int startServer(const ServerOptions& options) {
         }
     });
     
-    // POST /api/v1/files/open - Open a file from disk (CLI argument / file association)
+    // POST /api/v1/files/open - Open the file given on the command line (or by the file
+    // association). Only that one: a client never makes the server read a path of its choice.
     svr.Post("/api/v1/files/open", [&](const httplib::Request& req, httplib::Response& res) {
         auto& session = *getSession(req, res);
         try {
             auto body = json::parse(req.body);
             std::string filePath = body.value("path", "");
-            
-            if (filePath.empty() || !fs::exists(filePath)) {
+
+            if (filePath.empty() || filePath != options.initialFile) {
+                res.status = 403;
+                json j = {{"error", "Only the file given on the command line can be opened from disk; "
+                                    "use Open (ZIP bundle) or the Library"}};
+                res.set_content(j.dump(), "application/json");
+                return;
+            }
+            if (!fs::exists(filePath)) {
                 res.status = 404;
                 json j = {{"error", "File not found: " + filePath}};
                 res.set_content(j.dump(), "application/json");

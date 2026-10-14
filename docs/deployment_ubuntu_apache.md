@@ -57,11 +57,9 @@ sudo usermod -s /usr/sbin/nologin coolsolve
 sudo chmod 750 /home/coolsolve/CoolSolve
 sudo chmod 750 /home/coolsolve/CoolSolve/build
 
-# The coolsolve binary must be executable
+# The coolsolve binary must be executable (the model library is embedded in it:
+# the server reads no model folder)
 sudo chmod 755 /home/coolsolve/CoolSolve/build/coolsolve
-
-# Examples directory must be readable by the coolsolve user
-sudo chmod -R 755 /home/coolsolve/CoolSolve/examples
 
 # Create a writable temp directory for session data
 sudo mkdir -p /tmp/coolsolve_sessions
@@ -508,4 +506,4 @@ sudo ufw status verbose
 | Apache logs | `/var/log/apache2/coolsolve_{access,error}.log` |
 | Session temp data | `/tmp/coolsolve_sessions/` |
 | Session dir persistence | `/etc/tmpfiles.d/coolsolve.conf` |
-| Examples | `/home/coolsolve/CoolSolve/examples/` |
+| Model library | Embedded in the binary (served at `/library/`), fetched by `cmake ..` into `/home/coolsolve/CoolSolve/.fetchcontent_cache/coolsolvelibrary-src/` |

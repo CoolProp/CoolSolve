@@ -103,6 +103,7 @@ unless noted otherwise.
 |--------|----------|-------------|
 | `GET` | `/api/v1/health` | Health check; returns `{"status":"ok","coolpropReady":true/false}` |
 | `POST` | `/api/v1/warmup` | Trigger CoolProp warmup (called automatically on startup) |
+| `POST` | `/api/v1/keepalive` | Marks the caller's session as in use (204); every open tab calls it every 15 min, so that its session is not deleted as idle (§5) |
 
 On server start, CoolProp warmup runs in a background thread.  The frontend
 polls `/health` and shows a loading indicator until `coolpropReady` is `true`
@@ -139,7 +140,7 @@ the model library open a model without touching the model of another tab
 | `GET` | `/api/v1/files/sol` | Get last solution file content |
 | `GET` | `/api/v1/files/conf` | Get solver configuration (as text) |
 | `PUT` | `/api/v1/files/conf` | Set solver configuration |
-| `POST` | `/api/v1/files/open` | Open a `.eescode` file from disk (file passed on the command line, file association); auto-discovers companion `.initials`, `.sol`, `coolsolve.conf` and lookup tables |
+| `POST` | `/api/v1/files/open` | Open the `.eescode` file passed on the command line (file association); auto-discovers companion `.initials`, `.sol`, `coolsolve.conf` and lookup tables. Any other path is refused (403): a client never makes the server read a file of its choice |
 | `GET` | `/api/v1/files/bundle` | Download a ZIP bundle (eescode + initials + sol + conf + debug files) |
 | `POST` | `/api/v1/files/upload` | Upload a multipart `.zip` bundle or individual files |
 
@@ -361,7 +362,13 @@ tab); only tabs opened by a library link do it, all the others share the cookie 
 
 A session that has been idle for 24 h and has no solve running is deleted, with its temp folder (checked at most
 every 10 minutes), so that tabs opened from the library do not accumulate on a long-running server. A session
-costs a few kilobytes (the model texts and the last result) and no CPU until a solve is started.
+costs a few kilobytes (the model texts and the last result) and no CPU until a solve is started. An open tab is
+never idle: it calls `POST /api/v1/keepalive` every 15 minutes (`App.tsx`), so only the sessions of closed tabs
+expire; and a request never deletes the session it is made for, even when it comes after a long pause.
+
+On a reload, a tab with its own session shows again the model that this session holds (`showSessionModel()` in
+`gui/src/utils/sessionModel.ts`: files, lookup tables, last result), with the edits sent to the server by the last
+solve or save. A tab of the cookie session starts empty, as before.
 
 Session-scoped temp directories live at `/tmp/coolsolve_sessions/{id}/`.
 The "New" action clears all in-memory state while keeping the session alive.
@@ -641,8 +648,9 @@ my_model/
 └── my_model_coolsolve/      # Debug output (generated)
 ```
 
-- **Open** (`POST /api/v1/files/open`): reads `.eescode` and auto-discovers
-  `.initials`, `.sol`, and `coolsolve.conf` in the same directory.
+- **Open** (`POST /api/v1/files/open`, for the file passed on the command line):
+  reads `.eescode` and auto-discovers `.initials`, `.sol`, `coolsolve.conf` and
+  the lookup tables in the same directory.
 - **Save** (`GET /api/v1/files/bundle`): downloads a ZIP bundle named
   `<model_name>_coolsolve.zip`, containing eescode + initials + sol + conf +
   debug files.  The browser's File System Access API (`showSaveFilePicker`)
@@ -677,9 +685,9 @@ on the server side and are shown by the documentation viewer. Because everything
 *Save* (ZIP bundle) round-trips a library model like any other.
 
 *Open in CoolSolve* links (dashboard, README banner) point to `/?library=CSL-0012[&file=…]`. The GUI then
-gives the tab its own session (§5), opens the model, and removes the parameter from the address so that a reload
-does not replace the user's edits. The tab shows an info icon next to the model name that links back to the
-model page of the dashboard.
+gives the tab its own session (§5), opens the model, and removes the parameter from the address: a reload shows
+the tab's session, edits included, instead of opening the model again. The tab shows an info icon next to the
+model name that links back to the model page of the dashboard.
 
 ### 7.4 Session Snapshot (Back Button)
 
@@ -845,7 +853,8 @@ gui/
     ├── languages/
     │   └── ees.ts                 # Monaco Monarch language definition for CoolSolve syntax
     ├── utils/
-    │   └── library.ts             # openLibraryModel(): load a library model folder into the session; dashboard URLs
+    │   ├── library.ts             # openLibraryModel(): load a library model folder into the session; dashboard URLs
+    │   └── sessionModel.ts        # showSessionModel(): editor state read back from the session (open, Back, upload, reload)
     └── components/
         ├── Toolbar.tsx            # Top toolbar with all actions + keyboard shortcuts
         ├── LibraryMenu.tsx        # "Library" drop-down: taxonomy tree of the verified library models, search, link to /library/
@@ -879,7 +888,7 @@ All the following tests pass against the current codebase:
 | `GET /api/v1/health` | ✅ `{"status":"ok","coolpropReady":true}` |
 | `POST /api/v1/parse` with source code | ✅ Returns equation/variable counts |
 | `POST /api/v1/files/open` with a `.eescode` file | ✅ Loads file + discovers companion files |
-| Library menu / open / per-tab sessions / `/library/` pages | ✅ `tests/test_library_api.py --auto` (50 checks) |
+| Library menu / open / per-tab sessions / bundle round-trip / `/library/` pages / `/files/open` restricted to the command-line file | ✅ `tests/test_library_api.py --auto` (67 checks) |
 | `POST /api/v1/solve` with rankine1 example | ✅ Full solve result with block details |
 | `GET /api/v1/variables` | ✅ Returns solved variable values |
 | `GET /api/v1/solve/stream` (SSE, curl) | ✅ 30/30 blocks streamed; final result JSON embedded |
@@ -959,7 +968,7 @@ ENTRYPOINT ["coolsolve", "--gui", "8550"]
 |--------|------------|
 | Arbitrary code execution | CoolSolve only parses `.eescode` — the PEG grammar is the sandbox; no `eval` or shell execution |
 | Resource exhaustion | Per-session `timeoutSeconds`, session expiry on idle |
-| File system access | Online sessions use isolated temp directories; `/files/open` works with uploaded content only |
+| File system access | Online sessions use isolated temp directories named after validated session IDs; `/files/open` only opens the file passed on the command line (none on a server) |
 | Input size | Max upload size enforced by cpp-httplib |
 
 ---

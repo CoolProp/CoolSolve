@@ -150,7 +150,7 @@ export default function LibraryMenu({ onOpen }: Props) {
                 {categories.length === 0 && <div className="library-empty">No model matches.</div>}
                 {categories.map((cat) => (
                   <div key={cat.key} className="library-category">
-                    {renderGroup(cat.key, { ...cat, models: cat.models }, cat.count, 0)}
+                    {renderGroup(cat.key, cat, cat.count, 0)}
                     {(!!q || expanded.has(cat.key)) &&
                       cat.children.map((sub) => renderGroup(`${cat.key}/${sub.key}`, sub, sub.models.length, 1))}
                   </div>

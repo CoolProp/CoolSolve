@@ -374,6 +374,7 @@ async function loadPage(page) {
   if (location.hash !== hash) history.pushState(null, '', hash);
 
   try {
+    const bannerPromise = libraryBanner(page);   // fetched with the page, shown with it
     // Server serves .md files under /docs/raw/{path}
     const url = '/docs/raw/' + page;
     const res = await fetch(url);
@@ -382,8 +383,8 @@ async function loadPage(page) {
 
     // Render Markdown → HTML, rewrite internal .md links and asset paths
     const html = rewriteAssets(rewriteLinks(marked.parse(text), page), page);
+    const banner = await bannerPromise;
     content.innerHTML = html;
-    const banner = await libraryBanner(page);
     if (banner) content.prepend(banner);
 
     // Scroll to top on page change

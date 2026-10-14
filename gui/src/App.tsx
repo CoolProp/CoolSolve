@@ -15,13 +15,18 @@ import SplitPane from './components/SplitPane';
 import { useModelStore } from './stores/modelStore';
 import { useUIStore } from './stores/uiStore';
 import { api } from './api/client';
-import { enableTabSession } from './api/session';
+import { enableTabSession, getTabSessionId } from './api/session';
 import { openLibraryModel } from './utils/library';
+import { showSessionModel } from './utils/sessionModel';
 import './App.css';
 
 // Hidden utility page (solve usage statistics) — reachable at /stats only,
 // deliberately not linked from anywhere in the UI.
 const STATS_PATH = '/stats';
+
+// An open tab tells the server that its session is in use at this interval: the server drops
+// sessions idle for 24 h, which would otherwise lose the model of a tab left open overnight.
+const KEEPALIVE_INTERVAL_MS = 15 * 60 * 1000;
 
 export default function App() {
   if (window.location.pathname === STATS_PATH) {
@@ -44,7 +49,6 @@ function MainApp() {
   const parseErrors = useModelStore((s) => s.parseErrors);
   const lastResult = useModelStore((s) => s.lastResult);
   const solving = useModelStore((s) => s.solving);
-  const loadFile = useModelStore((s) => s.loadFile);
 
   const [ready, setReady] = useState(false);
 
@@ -61,26 +65,29 @@ function MainApp() {
         try {
           if (libraryParam) {
             await openLibraryModel(libraryParam, params.get('file') ?? undefined, false);
-            // Consumed: a reload must not discard the user's edits by reopening the model
+            // Consumed: a reload shows the tab's session (below) instead of reopening the model
             window.history.replaceState(null, '', window.location.pathname);
-            setReady(true);
-            return;
-          }
-          const initial = await api.getInitialFile();
-          if (initial?.path) {
-            const result = await api.openFile(initial.path);
-            const ees = await api.getEescode();
-            const init = await api.getInitials();
-            const solRes = await api.getSol();
-            const confRes = await api.getConf();
-            loadFile(initial.path, ees.content, init.content, solRes.content, confRes.content, result.modelName);
+          } else if (getTabSessionId()) {
+            // Reload of a tab that has its own session: the model it holds, edits included
+            await showSessionModel();
+          } else {
+            const initial = await api.getInitialFile();
+            if (initial?.path) {
+              await api.openFile(initial.path);
+              await showSessionModel();
+            }
           }
         } catch {
           // Not critical — user can open files manually
         }
         setReady(true);
       });
-  }, [loadFile]);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => { api.keepAlive().catch(() => {}); }, KEEPALIVE_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // Apply theme
   useEffect(() => {

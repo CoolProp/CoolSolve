@@ -11,6 +11,7 @@ import { editorInstance, toggleBraceComment, toggleQuoteComment } from './editor
 import { exportAllPlots } from '../utils/exportPlots';
 import { toErrMsg } from '../utils/errors';
 import { openLibraryModel, libraryModelPageUrl } from '../utils/library';
+import { showSessionModel } from '../utils/sessionModel';
 import LibraryMenu from './LibraryMenu';
 import type { SSEEvent, SolveResponse } from '../api/types';
 
@@ -34,7 +35,6 @@ export default function Toolbar() {
   const setSol = useModelStore((s) => s.setSol);
   const setInitials = useModelStore((s) => s.setInitials);
   const setCanGoBack = useModelStore((s) => s.setCanGoBack);
-  const loadFile = useModelStore((s) => s.loadFile);
   const clearModel = useModelStore((s) => s.clearModel);
   const lastResult = useModelStore((s) => s.lastResult);
   const tryHarderAvailable = useModelStore((s) => s.tryHarderAvailable);
@@ -254,17 +254,9 @@ export default function Toolbar() {
       try {
         const res = await api.uploadFiles(formData);
         if (res.success) {
-          const ees = await api.getEescode();
-          const init = await api.getInitials();
-          const solRes = await api.getSol();
-          const confRes = await api.getConf();
+          // Also restores the integral trajectory: its CSV round-trips through the bundle
+          await showSessionModel();
           setCanGoBack(true);
-          loadFile(file.name.replace(/\.zip$/, ''), ees.content, init.content, solRes.content, confRes.content, res.modelName);
-          // Restore integral trajectory: the columnar JSON is not round-tripped
-          // through the bundle, but the CSV is — fetch it so the Integral tab
-          // repopulates on bundle load.
-          api.getIntegralResult().then((t) => setIntegralTable(t?.integralTable ?? null)).catch(() => setIntegralTable(null));
-          api.getIntegralCSV().then((csv) => setIntegralCSV(csv ?? '')).catch(() => setIntegralCSV(''));
           addConsoleLine(`>>> Opened: ${res.files.join(', ')}`);
         }
       } catch (err: unknown) {
@@ -272,7 +264,7 @@ export default function Toolbar() {
       }
     };
     input.click();
-  }, [loadFile, addConsoleLine, setCanGoBack, setIntegralTable, setIntegralCSV]);
+  }, [addConsoleLine, setCanGoBack]);
 
   // ================================================================
   // Save — download ZIP bundle
@@ -322,26 +314,15 @@ export default function Toolbar() {
     try {
       const res = await api.goBack();
       if (res.success) {
-        const ees = await api.getEescode();
-        const init = await api.getInitials();
-        const solRes = await api.getSol();
-        const confRes = await api.getConf();
-        loadFile(ees.filePath || '', ees.content, init.content, solRes.content, confRes.content, res.modelName, ees.libraryId);
+        // The previous model with its solve result and integral trajectory
+        await showSessionModel();
         setCanGoBack(false);
-        // Try to restore solve result
-        try {
-          const result = await api.getSolveResult();
-          setSolveResult(result);
-        } catch { /* no result */ }
-        // Restore integral trajectory (CSV-backed; survives the model swap).
-        api.getIntegralResult().then((t) => setIntegralTable(t?.integralTable ?? null)).catch(() => setIntegralTable(null));
-        api.getIntegralCSV().then((csv) => setIntegralCSV(csv ?? '')).catch(() => setIntegralCSV(''));
         addConsoleLine('>>> Restored previous model');
       }
     } catch (err: unknown) {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
-  }, [loadFile, addConsoleLine, setCanGoBack, setSolveResult, setIntegralTable, setIntegralCSV]);
+  }, [addConsoleLine, setCanGoBack]);
 
   // Stop/cancel solve
   const handleStopSolve = useCallback(async () => {

@@ -40,6 +40,16 @@ set(COOLSOLVE_COOLPROP_TAG "${COOLSOLVE_COOLPROP_PINNED_TAG}" CACHE STRING "Cool
 # --- Fetch Dependencies ---
 include(FetchContent)
 
+# A shallow clone only holds the branch tips: it cannot check out a pinned commit once the
+# branch has moved on. GIT_SHALLOW is therefore TRUE for branch and tag names only.
+function(coolsolve_git_shallow GIT_REF OUT_VAR)
+    if(GIT_REF MATCHES "^[0-9a-fA-F]+$")
+        set(${OUT_VAR} FALSE PARENT_SCOPE)
+    else()
+        set(${OUT_VAR} TRUE PARENT_SCOPE)
+    endif()
+endfunction()
+
 # cpp-peglib - Header-only PEG parsing library
 FetchContent_Declare(
     peglib
@@ -104,11 +114,12 @@ if(COOLSOLVE_BUILD_GUI)
                 set(FETCHCONTENT_UPDATES_DISCONNECTED_COOLSOLVELIBRARY ON)
             endif()
         endif()
+        coolsolve_git_shallow("${COOLSOLVE_LIBRARY_TAG}" _library_shallow)
         FetchContent_Declare(
             coolsolvelibrary
             GIT_REPOSITORY ${COOLSOLVE_LIBRARY_REPO}
             GIT_TAG ${COOLSOLVE_LIBRARY_TAG}
-            GIT_SHALLOW TRUE
+            GIT_SHALLOW ${_library_shallow}
             GIT_PROGRESS TRUE
         )
         FetchContent_MakeAvailable(coolsolvelibrary)   # no CMakeLists.txt: only fetched, not built
@@ -150,14 +161,7 @@ else()
             "cmake -DCOOLSOLVE_COOLPROP_TAG=${COOLSOLVE_COOLPROP_PINNED_TAG} ..")
     endif()
 
-    # A shallow clone only holds the branch tips: it cannot check out a pinned commit
-    # once master has moved on. Shallow is therefore kept for branch/tag names only.
-    if(COOLSOLVE_COOLPROP_TAG MATCHES "^[0-9a-fA-F]+$")
-        set(COOLSOLVE_COOLPROP_SHALLOW FALSE)
-    else()
-        set(COOLSOLVE_COOLPROP_SHALLOW TRUE)
-    endif()
-
+    coolsolve_git_shallow("${COOLSOLVE_COOLPROP_TAG}" COOLSOLVE_COOLPROP_SHALLOW)
     FetchContent_Declare(
         coolprop
         GIT_REPOSITORY https://github.com/CoolProp/CoolProp.git

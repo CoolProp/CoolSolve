@@ -57,6 +57,9 @@ LibraryStore makeStore() {
         {"models/cycles/organic_rankine/orc_simple/figures/f.png", "png"},
         {"models/cycles/organic_rankine/blocked_model/blocked_model.eescode", "x = y"},
         {"models/buildings/comfort/comfort.eescode", "c = 1"},
+        {"models/buildings/comfort/comfort-clo.csv", "model table"},
+        {"models/buildings/comfort/alt_comfort.eescode", "c = 2"},
+        {"models/buildings/comfort/alt_comfort-clo.csv", "variant table"},
     }));
 }
 
@@ -115,6 +118,20 @@ TEST_CASE("A library model loads by name and a variant by file name", "[library]
     REQUIRE(m.initials == "T=5");
     REQUIRE(m.tables.size() == 2);
     REQUIRE(m.variants == std::vector<std::string>{"orc_simple.eescode"});
+}
+
+TEST_CASE("A variant's own table wins over the model's table of the same name", "[library]") {
+    auto store = makeStore();
+    LibraryModel m;
+    std::string err;
+    // "alt_comfort-clo.csv" sorts before "comfort-clo.csv": the priority must not depend on the order
+    REQUIRE(store.loadModel("CSL-0003", "alt_comfort.eescode", m, err));
+    REQUIRE(m.tables.size() == 1);
+    REQUIRE(m.tables.at("clo") == "variant table");
+
+    REQUIRE(store.loadModel("CSL-0003", "", m, err));
+    REQUIRE(m.tables.at("clo") == "model table");
+    REQUIRE(m.variants == std::vector<std::string>{"alt_comfort.eescode"});
 }
 
 TEST_CASE("A blocked model can still be opened", "[library]") {

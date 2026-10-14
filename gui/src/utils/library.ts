@@ -3,12 +3,13 @@
  *
  * A library model is a whole folder (`.eescode`, `.initials`, `coolsolve.conf`, lookup tables,
  * `.sol` baseline): the server loads it all into the session, and the editor state is then
- * read back through the same calls as for any opened model.
+ * read back from the session as for any opened model (`showSessionModel`).
  */
 
 import { api } from '../api/client';
 import { useModelStore } from '../stores/modelStore';
 import { toErrMsg } from './errors';
+import { showSessionModel } from './sessionModel';
 
 /** Address of the library dashboard (all models, blocked ones included). */
 export const LIBRARY_DASHBOARD_URL = '/library/';
@@ -22,15 +23,11 @@ export const libraryModelPageUrl = (id: string) => `/library/#${encodeURICompone
  * Returns true on success; errors are reported in the console panel.
  */
 export async function openLibraryModel(id: string, file?: string, allowBack = true): Promise<boolean> {
-  const { loadFile, addConsoleLine, setCanGoBack } = useModelStore.getState();
+  const { addConsoleLine, setCanGoBack } = useModelStore.getState();
   try {
     const res = await api.openLibraryModel(id, file);
-    const ees = await api.getEescode();
-    const init = await api.getInitials();
-    const solRes = await api.getSol();
-    const confRes = await api.getConf();
+    await showSessionModel();
     setCanGoBack(allowBack);
-    loadFile('', ees.content, init.content, solRes.content, confRes.content, res.modelName, res.libraryId);
     addConsoleLine(`>>> Opened library model: ${res.title} (${res.libraryId})`);
     if (res.status !== 'verified') {
       addConsoleLine(`>>> Note: this model is "${res.status}" in the library; it may not solve as is.`);

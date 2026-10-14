@@ -39,7 +39,8 @@ void printUsage(const char* programName) {
     std::cerr << "  --gui [port]            Start the GUI web server (default port: 8550)\n";
     std::cerr << "  --no-browser            Don't open browser automatically (with --gui)\n";
 #endif
-    std::cerr << "  --version               Print the CoolSolve and CoolProp (version, git revision) versions\n";
+    std::cerr << "  --version               Print the CoolSolve and CoolProp (version, git revision) versions,\n";
+    std::cerr << "                          and the commit of the embedded model library (GUI builds)\n";
     std::cerr << "  -h, --help              Show this help message\n";
 }
 

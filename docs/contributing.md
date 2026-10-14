@@ -194,6 +194,10 @@ Beyond the config editor, several other GUI surfaces may need updates:
       `withSession()` from `gui/src/api/session.ts`).
 - [ ] **`gui/src/stores/modelStore.ts`** / **`uiStore.ts`** — store new
       state fields (Zustand).
+- [ ] **`gui/src/utils/sessionModel.ts`** — if the GUI shows new state kept
+      in the server session, read it back in `showSessionModel()`: opening a
+      library model, *Back*, ZIP upload and the reload of a library tab all
+      go through it.
 - [ ] **`gui/src/components/CodeEditor.tsx`** — only changes if editor
       behaviour itself changes.
 - [ ] **`gui/src/languages/ees.ts`** — add new keywords, built-in
@@ -521,6 +525,7 @@ concern lives.
 | Model library embedding (build)          | `cmake/embed_library.cmake`, `CMakeLists.txt`        |
 | GUI *Library* menu / opening a library model | `gui/src/components/LibraryMenu.tsx`, `gui/src/utils/library.ts` |
 | Per-tab session ID                       | `gui/src/api/session.ts`, `getSession()` in `src/server.cpp` |
+| GUI state read back from the session     | `gui/src/utils/sessionModel.ts` (`showSessionModel()`) |
 | Model library tests                      | `tests/test_library_store.cpp`, `tests/test_library_api.py` |
 | Comprehensive example tests              | `tests/test_examples.cpp` (`EXPECTED_SOLUTIONS`)     |
 | Solver robustness tests                  | `tests/test_solver_robustness.cpp`                   |

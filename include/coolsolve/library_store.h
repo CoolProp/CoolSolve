@@ -66,9 +66,10 @@ public:
      * models whose status is `verified`, empty categories left out. Blocked, failing or
      * documented-only models stay out of the menu; the dashboard (/library/) lists them all.
      *
-     *     {"categories":[{"key","title","count","models":[...],"children":[{"key","title","models":[...]}]}],
-     *      "total":N}
-     * with models as {"id","name","title","level","kind"}.
+     *     {"available":true, "total":N,
+     *      "categories":[{"key","title","count","models":[...],"children":[{"key","title","models":[...]}]}]}
+     * with models as {"id","name","title","level","kind"}; `"available":false` and a `"reason"`
+     * when the snapshot is missing.
      */
     nlohmann::json menu() const;
 
@@ -87,7 +88,6 @@ private:
     std::string reason_;
     nlohmann::json index_;     // library.json
     nlohmann::json taxonomy_;  // taxonomy.json
-    bool readOptional(const std::string& path, std::string& content) const;
 };
 
 }  // namespace coolsolve

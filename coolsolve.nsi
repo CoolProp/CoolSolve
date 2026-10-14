@@ -31,13 +31,10 @@ Section "CoolSolve" Section_Main
     SetOutPath "$INSTDIR"
     File "build\Release\coolsolve.exe"
     ; If we had external DLLs, they would go here
+    ; No example models: the GUI offers the model library embedded in coolsolve.exe.
+    ; Remove the examples folder installed by versions up to 0.3.
+    RMDir /r "$INSTDIR\examples"
 
-    ; Copy example models
-    SetOutPath "$INSTDIR\examples"
-    File "examples\*.eescode"
-    File "examples\*.initials"
-    SetOutPath "$INSTDIR"
-    
     WriteUninstaller "$INSTDIR\Uninstall.exe"
     
     ; Add to Start Menu
