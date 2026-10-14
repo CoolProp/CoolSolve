@@ -135,25 +135,12 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // Resolve binary directory for resource discovery (examples, etc.)
-    fs::path binaryDir;
-#ifdef _WIN32
-    {
-        wchar_t buf[MAX_PATH];
-        GetModuleFileNameW(nullptr, buf, MAX_PATH);
-        binaryDir = fs::path(buf).parent_path();
-    }
-#else
-    try { binaryDir = fs::canonical(argv[0]).parent_path(); } catch (...) {}
-#endif
-
     if (inputFile.empty()) {
 #ifdef COOLSOLVE_GUI
         // No input file: default to GUI mode (e.g. launched from Start Menu with no args)
         coolsolve::ServerOptions serverOpts;
         serverOpts.port = guiPort;
         serverOpts.openBrowser = guiOpenBrowser;
-        serverOpts.examplesDir = (binaryDir / "examples").string();
         return coolsolve::startServer(serverOpts);
 #else
         std::cerr << "Error: No input file specified\n";
@@ -169,7 +156,6 @@ int main(int argc, char* argv[]) {
         serverOpts.port = guiPort;
         serverOpts.openBrowser = guiOpenBrowser;
         serverOpts.initialFile = fs::absolute(inputFile).string();
-        serverOpts.examplesDir = (binaryDir / "examples").string();
         return coolsolve::startServer(serverOpts);
     }
 #endif

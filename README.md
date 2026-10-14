@@ -19,7 +19,7 @@ the CoolProp version bundled in each release.
 
 ### Online Demo
 
-Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolsolve.squoilin.eu/)**
+Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolsolve.squoilin.eu/)** — and browse the model library at **[/library/](https://coolsolve.squoilin.eu/library/)**.
 
 > **⚠ Disclaimer**: The online demo runs on a private server and corresponds to the latest development version, which may not always be stable. Under high load, the server may respond slowly or be temporarily unavailable.
 
@@ -56,6 +56,8 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 - **GUI & REST API**: Embedded single-page app (React/TypeScript) with a code editor, variable table, parametric studies, thermodynamic diagrams, and ZIP bundle round-trip. See [GUI & REST API](docs/gui.md).
 
+- **Model Library**: The GUI binary embeds the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) — documented, verified EES models (cycles, components, heat transfer, HVAC, …). The toolbar **Library** button follows the library taxonomy and opens a whole model folder (code, initial values, lookup tables, configuration) in one click; the dashboard at `/library/` lists every model, blocked ones included, with an *Open in CoolSolve* link on each. The library is fetched at build time, always at its latest version. See [Model Library Support](docs/model_library_support.md).
+
 - **Usage Log**: In GUI mode, every solve or *Try Harder* attempt appends one CSV line to a local log file (timestamp, model name and size, outcome, duration, client IP, version). Written after the solve completes — no impact on solving. Aggregated statistics are available on a hidden `/stats` dashboard. See [GUI & REST API](docs/gui.md).
 
 ## Documentation
@@ -66,7 +68,8 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 | [Dynamic Solving](docs/integral_table.md) | Equation-based `INTEGRAL` / `$IntegralTable` — algorithms, architecture, and limitations |
 | [Debugging Models](docs/debugging_models.md) | Diagnosing and fixing solver failures |
 | [Importing EES Models](docs/ees_import.md) | Reading binary EES files (equations, guesses, stored solution, tables, units) and importing/verifying them in CoolSolve |
-| [Model Library Support](docs/model_library_support.md) | CoolSolve features needed by the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) and register of EES gaps found while importing models |
+| [Model Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) | The curated EES model collection, embedded in the GUI: toolbar **Library** button, dashboard at `/library/` |
+| [Model Library Support](docs/model_library_support.md) | How CoolSolve embeds and serves the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library), the features it needs, and the register of EES gaps found while importing models |
 | [Solver Roadmap](docs/solver_roadmap.md) | Performance roadmap, algorithm details, and implementation status |
 | [Symbolic Block Reduction](docs/symbolic_redecomposition.md) | Symbolic block reduction algorithm |
 | [GUI & REST API](docs/gui.md) | Web interface, REST API, and parametric studies |
@@ -118,7 +121,7 @@ CoolSolve uses several file formats for input and verification:
 
 - C++17 compatible compiler (GCC 7+, Clang 5+, or MSVC 2019+)
 - CMake 3.14 or later
-- Git (for fetching dependencies)
+- Git (for fetching dependencies, including the model library of GUI builds)
 - Python 3 (required by CoolProp's CMake scripts at configure time)
 - Node.js 18+ and npm (required to build the React GUI frontend)
 
@@ -139,6 +142,15 @@ CoolSolve is a **standalone library** that automatically downloads all its depen
 | **nlohmann/json** | JSON serialization |
 | **Eigen** | Linear algebra |
 | **Catch2** | Unit testing |
+| **CoolSolve Library** | Model collection embedded in the GUI binary (`COOLSOLVE_EMBED_LIBRARY`, GUI builds only) |
+
+The **CoolSolve Library** is fetched like CoolProp but follows its `main` branch: every `cmake` configure pulls the latest pushed version, and every `cmake --build` re-embeds whatever is on disk, so a GUI binary always carries the current library (`coolsolve --version` prints its commit). To embed a local checkout instead (uncommitted changes included), or to build without it:
+
+```bash
+cmake -DFETCHCONTENT_SOURCE_DIR_COOLSOLVELIBRARY=/path/to/CoolSolve_Library ..
+cmake -DCOOLSOLVE_EMBED_LIBRARY=OFF ..                  # no library in the binary
+cmake -DFETCHCONTENT_FULLY_DISCONNECTED=ON ..           # offline: use what is already fetched
+```
 
 Dependencies are cached in `.fetchcontent_cache/` at the project root. This cache **persists across build folder deletions**, so you won't need to re-download dependencies if you clean and rebuild. The first `cmake` run will take several minutes to fetch CoolProp (full history, as the pinned commit is not a branch tip) and its submodules; subsequent runs take only a few seconds.
 
@@ -338,6 +350,11 @@ cd build
 # checks expected values, and runs solution verification on each)
 ./coolsolve_tests "[examples-comprehensive]"
 
+# Library tests: the model index/loader (unit tests) and, against the running GUI
+# server, the Library menu, opening a model folder, per-tab sessions and /library/ pages
+./coolsolve_tests "[library]"
+python3 ../tests/test_library_api.py --auto
+
 # Run solver robustness tests (stress-tests every example with multiple
 # solver configurations: Newton-only, LM-only, tearing, symbolic reduction, etc.)
 # Requires a Release build — Debug timings are ~10x slower and must not be committed as reports.
@@ -349,6 +366,8 @@ Or using CTest:
 cd build
 ctest --output-on-failure
 ```
+
+The `examples/` folder is used by the CLI and the regression tests only — the GUI offers the model library instead.
 
 The comprehensive test runs all `.eescode` files in the `examples/` folder, validates solutions against known expected values (with 1% tolerance), and performs **solution verification** — independently re-evaluating every equation to confirm LHS ≈ RHS. A detailed report is written to `examples/test_examples.md`.
 
@@ -422,6 +441,7 @@ CoolSolve/
 │   ├── evaluator.h             # Block and system evaluators
 │   ├── solution_checker.h      # Post-solve solution verification
 │   ├── usage_log.h             # GUI solve-attempt log (append + aggregated stats)
+│   ├── library_store.h         # Model library index: menu of verified models, model-folder loader
 │   ├── version.h               # CoolSolve / CoolProp version info (`--version`)
 │   └── solver.h                # Solver pipeline, all SolverOptions declarations
 ├── include/coolsolve/integral/
@@ -450,6 +470,7 @@ CoolSolve/
 │   ├── solver_symbolic.cpp     # Symbolic block reduction preprocessing
 │   ├── solver_trust_region.cpp # Trust-region dogleg solver
 │   ├── usage_log.cpp           # GUI solve-attempt log: CSV append + cached statistics
+│   ├── library_store.cpp       # Model library index and loader (independent of HTTP and embedding)
 │   ├── version.cpp             # CoolSolve and CoolProp (version, git revision) at run time
 │   └── solution_checker.cpp    # Post-solve equation-by-equation verification
 ├── tests/
@@ -465,9 +486,12 @@ CoolSolve/
 │   ├── test_config.cpp         # coolsolve.conf loading tests
 │   ├── test_fluids.cpp         # CoolProp fluid property tests
 │   ├── test_examples.cpp       # Integration tests with example files
+│   ├── test_library_store.cpp  # Model library index/loader unit tests
+│   ├── test_library_api.py     # Library menu, open, per-tab sessions, /library/ (REST, needs the GUI build)
 │   └── test_kinsol.cpp         # KINSOL solver unit tests (3 modes + config)
+├── cmake/                      # embed_assets / embed_library: GUI, docs and model library embedded in the binary
 ├── tools/                      # EES import helpers: ees_extract.py, compare_solution.py (see docs/ees_import.md)
-└── examples/                   # Example .eescode files for testing
+└── examples/                   # Example .eescode files for the CLI and the regression tests
 ```
 
 ## How It Works
@@ -503,7 +527,7 @@ For the full language syntax, built-in functions, and CoolProp integration detai
 
 ## Future Work
 
-Future features include a complete library of models embedded into CoolSolve — the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library), see [Model Library Support](docs/model_library_support.md) — and improved plotting capabilities. 
+The [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) is embedded and browsable; next steps are importing its functions into any model (`$INCLUDE library:<name>`), a command-line access (`coolsolve --library`), and improved plotting capabilities — see [Model Library Support](docs/model_library_support.md). 
 
 Planned improvements for the solver include a stiff ODE integrator (BDF), pseudo-arclength continuation, and an improved plotting interface. See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
 

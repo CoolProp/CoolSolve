@@ -162,6 +162,17 @@
   #content tr:nth-child(even) { background: var(--code-bg); }
   #content img { max-width: 100%; }
   #content hr { border: none; border-top: 1px solid var(--border); margin: 1.5rem 0; }
+  /* Banner of a model-library README: opens the model in CoolSolve */
+  .library-banner {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem;
+    padding: 0.6rem 0.9rem; margin-bottom: 1.2rem;
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem;
+  }
+  .library-banner .spacer { flex: 1; }
+  #content .library-banner a.open {
+    background: var(--nav-active); color: var(--nav-active-fg); padding: 0.25rem 0.8rem;
+    border-radius: 5px; text-decoration: none; font-weight: 600;
+  }
   /* Loading/error state */
   #content .doc-message { opacity: 0.55; font-style: italic; padding: 2rem 0; }
 </style>
@@ -183,6 +194,7 @@
   <a href="#" data-page="docs/symbolic_redecomposition.md">Symbolic Reduction</a>
   <a href="#" data-page="docs/contributing.md">Contributing</a>
   <a href="#" data-page="docs/versions.md">Version History</a>
+  <a href="/library/">Model Library &#8599;</a>
   <div class="nav-logo">
     <a href="https://www.ises.uliege.be/" target="_blank" rel="noopener noreferrer">
       <img src="/docs/uliege_ISES.png" alt="ISES Research Group – Université de Liège">
@@ -271,9 +283,12 @@ if(__exports != exports)module.exports = exports;return module.exports}));
 // Rewrite relative links so they navigate within the doc viewer
 // instead of pointing at raw markdown files.
 // ----------------------------------------------------------------
-function rewriteLinks(html) {
-  return html.replace(/href="([^"#][^"]*)\.md([^"]*)"/g, function(_, base, anchor) {
-    const page = base + '.md' + anchor;
+function rewriteLinks(html, currentPage) {
+  const dir = currentPage.includes('/') ? currentPage.substring(0, currentPage.lastIndexOf('/') + 1) : '';
+  return html.replace(/href="([^"#][^"]*)\.md([^"]*)"/g, function(m, base, anchor) {
+    if (/^([a-z][a-z0-9+.-]*:|\/)/i.test(base)) return m;   // external or site-absolute link: leave it
+    // Relative links are relative to the page that contains them (docs/x.md -> ../README.md)
+    const page = resolvePath(dir + base + '.md') + anchor;
     return 'href="#" data-page="' + page + '"';
   });
 }
@@ -307,6 +322,42 @@ function rewriteAssets(html, page) {
 }
 
 // ----------------------------------------------------------------
+// Banner of a model README of the library (library/models/<...>/README.md):
+// model ID and status, and the link that opens the model in CoolSolve.
+// ----------------------------------------------------------------
+async function libraryBanner(page) {
+  const m = page.match(/^library\/(models\/.+)\/README\.md$/);
+  if (!m) return null;
+  try {
+    const res = await fetch('/library/' + m[1] + '/model.json');
+    if (!res.ok) return null;
+    const meta = await res.json();
+    const bar = document.createElement('div');
+    bar.className = 'library-banner';
+    const label = document.createElement('span');
+    label.textContent = 'Library model ' + meta.id + ' · status: ' + meta.status;
+    const spacer = document.createElement('span');
+    spacer.className = 'spacer';
+    const open = document.createElement('a');
+    open.className = 'open';
+    open.href = '/?library=' + encodeURIComponent(meta.id);
+    open.target = '_blank';
+    open.rel = 'noopener';
+    open.textContent = 'Open in CoolSolve';
+    const info = document.createElement('a');
+    info.href = '/library/#' + encodeURIComponent(meta.id);
+    info.textContent = 'Model page';
+    const lib = document.createElement('a');
+    lib.href = '/library/';
+    lib.textContent = 'Library';
+    bar.append(label, spacer, open, info, lib);
+    return bar;
+  } catch (e) {
+    return null;
+  }
+}
+
+// ----------------------------------------------------------------
 // Load and render a markdown page
 // ----------------------------------------------------------------
 async function loadPage(page) {
@@ -330,8 +381,10 @@ async function loadPage(page) {
     const text = await res.text();
 
     // Render Markdown → HTML, rewrite internal .md links and asset paths
-    const html = rewriteAssets(rewriteLinks(marked.parse(text)), page);
+    const html = rewriteAssets(rewriteLinks(marked.parse(text), page), page);
     content.innerHTML = html;
+    const banner = await libraryBanner(page);
+    if (banner) content.prepend(banner);
 
     // Scroll to top on page change
     window.scrollTo(0, 0);

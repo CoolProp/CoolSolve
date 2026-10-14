@@ -15,6 +15,8 @@ import SplitPane from './components/SplitPane';
 import { useModelStore } from './stores/modelStore';
 import { useUIStore } from './stores/uiStore';
 import { api } from './api/client';
+import { enableTabSession } from './api/session';
+import { openLibraryModel } from './utils/library';
 import './App.css';
 
 // Hidden utility page (solve usage statistics) — reachable at /stats only,
@@ -46,12 +48,24 @@ function MainApp() {
 
   const [ready, setReady] = useState(false);
 
-  // Initialize: warmup CoolProp, then check for a file passed on the command line
+  // Initialize: warmup CoolProp, then open what was asked for: a library model
+  // ("Open in CoolSolve" link: /?library=CSL-0012) or the file passed on the command line
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const libraryParam = params.get('library');
+    // A library link opens in its own instance, so it never replaces the model of another tab
+    if (libraryParam) enableTabSession();
     api.warmup()
       .catch(() => {})
       .finally(async () => {
         try {
+          if (libraryParam) {
+            await openLibraryModel(libraryParam, params.get('file') ?? undefined, false);
+            // Consumed: a reload must not discard the user's edits by reopening the model
+            window.history.replaceState(null, '', window.location.pathname);
+            setReady(true);
+            return;
+          }
           const initial = await api.getInitialFile();
           if (initial?.path) {
             const result = await api.openFile(initial.path);

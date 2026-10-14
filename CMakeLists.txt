@@ -21,6 +21,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # --- Build Options ---
 option(COOLSOLVE_USE_SYSTEM_COOLPROP "Use system-installed CoolProp instead of fetching" OFF)
 option(COOLSOLVE_BUILD_GUI "Build embedded GUI server (requires cpp-httplib)" ON)
+# The CoolSolve Library (EES models) is fetched like CoolProp and embedded in the GUI binary.
+# It follows the `main` branch: every `cmake` configure pulls the latest pushed state and every
+# `cmake --build` re-embeds whatever is on disk. To work on a local checkout instead:
+#   cmake -DFETCHCONTENT_SOURCE_DIR_COOLSOLVELIBRARY=/path/to/CoolSolve_Library ..
+# Offline: cmake -DFETCHCONTENT_FULLY_DISCONNECTED=ON .. (uses the copy already fetched).
+option(COOLSOLVE_EMBED_LIBRARY "Embed the CoolSolve Library (model collection) in the GUI binary" ON)
+set(COOLSOLVE_LIBRARY_REPO "https://github.com/IntSusEnergySystems/CoolSolve_Library.git" CACHE STRING "CoolSolve Library git repository")
+set(COOLSOLVE_LIBRARY_TAG "main" CACHE STRING "CoolSolve Library branch, tag or commit (releases may pin a tag)")
 # CoolProp is pinned to ONE commit: a CoolSolve commit therefore determines the
 # property library it is built with (CoolProp changes fluid models and transport
 # correlations, which moves model results). Bump it deliberately -- see
@@ -78,6 +86,36 @@ if(COOLSOLVE_BUILD_GUI)
     FetchContent_GetProperties(httplib)
     if(NOT httplib_POPULATED)
         FetchContent_Populate(httplib)
+    endif()
+
+    # CoolSolve Library: a branch is re-fetched at every configure, so the build always
+    # embeds the latest library. When GitHub is unreachable but a copy was already fetched,
+    # keep that copy instead of failing the configure.
+    if(COOLSOLVE_EMBED_LIBRARY)
+        set(_library_src "${FETCHCONTENT_BASE_DIR}/coolsolvelibrary-src")
+        if(NOT FETCHCONTENT_SOURCE_DIR_COOLSOLVELIBRARY AND NOT FETCHCONTENT_FULLY_DISCONNECTED
+           AND EXISTS "${_library_src}/library.json")
+            find_program(GIT_EXECUTABLE git)
+            execute_process(COMMAND "${GIT_EXECUTABLE}" ls-remote --exit-code "${COOLSOLVE_LIBRARY_REPO}" HEAD
+                RESULT_VARIABLE _library_remote_res OUTPUT_QUIET ERROR_QUIET TIMEOUT 20)
+            if(NOT _library_remote_res EQUAL 0)
+                message(WARNING "CoolSolve Library: ${COOLSOLVE_LIBRARY_REPO} is unreachable; "
+                        "embedding the copy already fetched in ${_library_src} (may not be the latest).")
+                set(FETCHCONTENT_UPDATES_DISCONNECTED_COOLSOLVELIBRARY ON)
+            endif()
+        endif()
+        FetchContent_Declare(
+            coolsolvelibrary
+            GIT_REPOSITORY ${COOLSOLVE_LIBRARY_REPO}
+            GIT_TAG ${COOLSOLVE_LIBRARY_TAG}
+            GIT_SHALLOW TRUE
+            GIT_PROGRESS TRUE
+        )
+        FetchContent_MakeAvailable(coolsolvelibrary)   # no CMakeLists.txt: only fetched, not built
+        if(NOT EXISTS "${coolsolvelibrary_SOURCE_DIR}/library.json")
+            message(FATAL_ERROR "CoolSolve Library not found in ${coolsolvelibrary_SOURCE_DIR} (no library.json). "
+                    "Fix the checkout or configure with -DCOOLSOLVE_EMBED_LIBRARY=OFF.")
+        endif()
     endif()
 endif()
 
@@ -230,6 +268,37 @@ if(COOLSOLVE_BUILD_GUI)
     else()
         message(STATUS "GUI dist not found, server will serve from filesystem (dev mode)")
         target_compile_definitions(coolsolve_lib PRIVATE COOLSOLVE_GUI_DEV_DIR="${GUI_DIST_DIR}")
+    endif()
+
+    # Embed the model library snapshot. Unlike the GUI assets (generated once, at configure
+    # time), this runs at EVERY build: embed_library.cmake hashes the library files and only
+    # rewrites the generated source when they changed.
+    if(COOLSOLVE_EMBED_LIBRARY)
+        set(EMBEDDED_LIBRARY_CPP "${CMAKE_CURRENT_BINARY_DIR}/embedded_library.cpp")
+        set(EMBEDDED_LIBRARY_H   "${CMAKE_CURRENT_BINARY_DIR}/embedded_library.h")
+        set(EMBEDDED_LIBRARY_STAMP "${CMAKE_CURRENT_BINARY_DIR}/embedded_library.stamp")
+        file(TO_CMAKE_PATH "${coolsolvelibrary_SOURCE_DIR}" LIBRARY_DIR_NORM)
+        set(EMBED_LIBRARY_COMMAND ${CMAKE_COMMAND}
+            "-DLIBRARY_DIR=${LIBRARY_DIR_NORM}"
+            "-DOUTPUT_CPP=${EMBEDDED_LIBRARY_CPP}"
+            "-DOUTPUT_H=${EMBEDDED_LIBRARY_H}"
+            "-DSTAMP_FILE=${EMBEDDED_LIBRARY_STAMP}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_library.cmake")
+        # Once now, so that the generated files exist for IDEs and for the first compile
+        execute_process(COMMAND ${EMBED_LIBRARY_COMMAND} RESULT_VARIABLE _embed_library_res)
+        if(NOT _embed_library_res EQUAL 0)
+            message(FATAL_ERROR "Embedding the CoolSolve Library failed (see above)")
+        endif()
+        add_custom_target(coolsolve_library_snapshot
+            COMMAND ${EMBED_LIBRARY_COMMAND}
+            BYPRODUCTS "${EMBEDDED_LIBRARY_CPP}" "${EMBEDDED_LIBRARY_H}"
+            COMMENT "Checking the embedded CoolSolve Library snapshot"
+            VERBATIM)
+        set_source_files_properties("${EMBEDDED_LIBRARY_CPP}" PROPERTIES GENERATED TRUE)
+        add_dependencies(coolsolve_lib coolsolve_library_snapshot)
+        target_sources(coolsolve_lib PRIVATE "${EMBEDDED_LIBRARY_CPP}")
+        target_include_directories(coolsolve_lib PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+        target_compile_definitions(coolsolve_lib PRIVATE COOLSOLVE_EMBEDDED_LIBRARY)
     endif()
 endif()
 

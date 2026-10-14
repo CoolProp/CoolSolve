@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Play, FolderOpen, Save, RefreshCw, Bug, Sun, Moon,
-  ChevronDown, ChevronUp, BookOpen, Square, Zap,
-  Braces, Quote, FilePlus, Undo, Pencil, FileText, Library,
+  ChevronDown, ChevronUp, Square, Zap,
+  Braces, Quote, FilePlus, Undo, Pencil, FileText, Library, Info,
 } from 'lucide-react';
 import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
@@ -10,7 +10,9 @@ import { api } from '../api/client';
 import { editorInstance, toggleBraceComment, toggleQuoteComment } from './editorUtils';
 import { exportAllPlots } from '../utils/exportPlots';
 import { toErrMsg } from '../utils/errors';
-import type { ExampleFile, SSEEvent, SolveResponse } from '../api/types';
+import { openLibraryModel, libraryModelPageUrl } from '../utils/library';
+import LibraryMenu from './LibraryMenu';
+import type { SSEEvent, SolveResponse } from '../api/types';
 
 export default function Toolbar() {
   const solving = useModelStore((s) => s.solving);
@@ -23,6 +25,7 @@ export default function Toolbar() {
   const sol = useModelStore((s) => s.sol);
   const conf = useModelStore((s) => s.conf);
   const modelName = useModelStore((s) => s.modelName);
+  const libraryId = useModelStore((s) => s.libraryId);
   const setModelName = useModelStore((s) => s.setModelName);
   const setLookupTables = useModelStore((s) => s.setLookupTables);
   const setIntegralTable = useModelStore((s) => s.setIntegralTable);
@@ -45,8 +48,6 @@ export default function Toolbar() {
   const toggleBottomPanel = useUIStore((s) => s.toggleBottomPanel);
   const setBottomPanelOpen = useUIStore((s) => s.setBottomPanelOpen);
 
-  const [examples, setExamples] = useState<ExampleFile[]>([]);
-  const [showExamples, setShowExamples] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [nameInput, setNameInput] = useState('');
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -64,11 +65,6 @@ export default function Toolbar() {
       nameInputRef.current.select();
     }
   }, [editingName]);
-
-  // Load examples on mount
-  useEffect(() => {
-    api.getExamples().then((res) => setExamples(res.examples)).catch(() => {});
-  }, []);
 
   // Cleanup SSE on unmount
   useEffect(() => {
@@ -313,7 +309,7 @@ export default function Toolbar() {
       } catch { /* no debug */ }
 
       addConsoleLine(`>>> Saved: ${fileNames.join(', ')}`);
-      window.location.href = '/api/v1/files/bundle';
+      window.location.href = api.bundleUrl();
     } catch (err: unknown) {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
@@ -330,7 +326,7 @@ export default function Toolbar() {
         const init = await api.getInitials();
         const solRes = await api.getSol();
         const confRes = await api.getConf();
-        loadFile(ees.filePath || '', ees.content, init.content, solRes.content, confRes.content, res.modelName);
+        loadFile(ees.filePath || '', ees.content, init.content, solRes.content, confRes.content, res.modelName, ees.libraryId);
         setCanGoBack(false);
         // Try to restore solve result
         try {
@@ -346,24 +342,6 @@ export default function Toolbar() {
       addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);
     }
   }, [loadFile, addConsoleLine, setCanGoBack, setSolveResult, setIntegralTable, setIntegralCSV]);
-
-  // Open example by server path
-  const openFileByPath = useCallback(async (path: string) => {
-    try {
-      const res = await api.openFile(path);
-      if (res.success) {
-        const ees = await api.getEescode();
-        const init = await api.getInitials();
-        const solRes = await api.getSol();
-        const confRes = await api.getConf();
-        setCanGoBack(true);
-        loadFile(res.filePath, ees.content, init.content, solRes.content, confRes.content, res.modelName);
-        addConsoleLine(`>>> Opened example: ${res.modelName || res.filePath.split('/').pop()}`);
-      }
-    } catch (err: unknown) {
-      addConsoleLine(`>>> ERROR opening example: ${toErrMsg(err)}`);
-    }
-  }, [loadFile, addConsoleLine, setCanGoBack]);
 
   // Stop/cancel solve
   const handleStopSolve = useCallback(async () => {
@@ -455,15 +433,6 @@ export default function Toolbar() {
     }
   }, [modelName, addConsoleLine, downloadBlob]);
 
-  // Open example
-  const handleOpenExample = useCallback(
-    async (ex: ExampleFile) => {
-      setShowExamples(false);
-      await openFileByPath(ex.path);
-    },
-    [openFileByPath]
-  );
-
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -511,25 +480,8 @@ export default function Toolbar() {
 
       <div className="toolbar-separator" />
 
-      {/* Examples */}
-      <div className="toolbar-group example-selector">
-        <button className="toolbar-btn" onClick={() => setShowExamples(!showExamples)}>
-          <BookOpen size={16} /> Examples
-        </button>
-        {showExamples && examples.length > 0 && (
-          <div className="example-dropdown">
-            {examples.map((ex) => (
-              <button
-                key={ex.name}
-                className="example-dropdown-item"
-                onClick={() => handleOpenExample(ex)}
-              >
-                {ex.name}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* Model library (verified models, by taxonomy) */}
+      <LibraryMenu onOpen={(id) => { openLibraryModel(id); }} />
 
       <div className="toolbar-separator" />
 
@@ -665,6 +617,17 @@ export default function Toolbar() {
           >
             {modelName || 'Untitled'} <Pencil size={12} />
           </span>
+        )}
+        {libraryId && (
+          <a
+            className="model-library-link"
+            href={libraryModelPageUrl(libraryId)}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`Library model ${libraryId}: description, verification, README`}
+          >
+            <Info size={13} />
+          </a>
         )}
       </div>
 

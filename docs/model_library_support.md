@@ -42,93 +42,61 @@ exhaustive feature inventory; this page is the prioritised, library-driven view.
 
 ## 2. Integration design
 
-### 2.1 Build-time library snapshot (`CS-FEAT-LIB-EMBED`)
+### 2.1 Build-time library snapshot (`CS-FEAT-LIB-EMBED`) — implemented
 
-**Where the library comes from** (CMake cache variables, resolved in this
-order):
+The GUI binary carries the library as it was when it was compiled. The details (and the CMake options) are in
+[GUI §9.6](gui.md#96-library-embedding); in short:
 
-| Variable | Use |
-|---|---|
-| `COOLSOLVE_LIBRARY_DIR` | Path of a local `CoolSolve_Library` checkout (development). |
-| *(automatic)* `../CoolSolve_Library` | Sibling checkout next to the CoolSolve repository, if it exists. |
-| `COOLSOLVE_LIBRARY_TAG` | Otherwise the library is fetched with `FetchContent` (same mechanism and `.fetchcontent_cache/` as CoolProp) at this tag or commit — default `main`; **releases pin a library tag**. |
-| `COOLSOLVE_EMBED_LIBRARY` | `ON` by default when the GUI is built; `OFF` builds without library (the explorer then says so). |
+- **Fetched like CoolProp**: `FetchContent` clones `IntSusEnergySystems/CoolSolve_Library` into
+  `.fetchcontent_cache/` at configure time. The default `COOLSOLVE_LIBRARY_TAG` is `main`, so each `cmake`
+  configure — and therefore `build_gui.sh`, `build_installer.bat` and a server rebuild — embeds the **latest
+  pushed library**; a release pins a tag (`-DCOOLSOLVE_LIBRARY_TAG=<tag>`, recorded in `docs/versions.md`).
+  `-DFETCHCONTENT_SOURCE_DIR_COOLSOLVELIBRARY=<checkout>` embeds a local checkout instead (library authors; the
+  version string then carries `+local-changes` if it is dirty). `-DCOOLSOLVE_EMBED_LIBRARY=OFF` builds without
+  library.
+- **Re-embedded at every build**: the `coolsolve_library_snapshot` target hashes the allow-listed files and rewrites
+  the generated source only when they changed.
+- **What is embedded** (under the URL prefix `/library/`): `library.json`, `library.html`, `taxonomy.json`,
+  `docs/taxonomy.md`, and in each model folder `README.md`, `model.json`, `*.eescode`, `*.initials`, `*-*.csv`,
+  `coolsolve.conf`, `*.sol` and `figures/*.{png,svg,jpg,jpeg,webp}`. Never `sources/`, `tools/`, `templates/` or
+  `work/`. The allow-list is written twice — `cmake/embed_library.cmake` and `EMBED_FILES` in the library's
+  `tools/build_index.py` — and the build warns when the file counts differ.
+- **Identity**: `coolsolve --version` prints `CoolSolve Library <commit>, snapshot <hash>`; the snapshot block of
+  `library.json` (content hash, counts) and the commit are in `GET /api/v1/library/menu` and shown by the menu.
+- **Size**: ≈ 7 MB → 38 MB of generated source, ≈ 6 s and ≈ 1 GB of memory to compile on GCC, ≈ 8 MB more in the
+  binary. If hex arrays prove too heavy for a compiler (to be checked with MSVC), split the arrays over several
+  files or embed one packed archive behind the same lookup function.
 
-**What is embedded** (allow-list, under the URL prefix `/library/`):
-`library.json`, `library.html`, `taxonomy.json`, `docs/taxonomy.md`, and in
-each model folder `README.md`, `model.json`, `*.eescode`, `*.initials`,
-`*-*.csv`, `coolsolve.conf`, `*.sol` and `figures/*.{png,svg,jpg,webp}`.
-Never `sources/`, `tools/`, `templates/` or `work/`.
+All accesses go through one C++ `LibraryStore` (`include/coolsolve/library_store.h`: menu, loading of a model
+folder), used by the server and later by the runner (`$INCLUDE`) and the CLI.
 
-**Validation and identity.** The build runs the library's
-`tools/build_index.py --check` (Python is already required at configure time)
-and stops on errors (warning only for a development build). `library.json`
-carries the library commit or tag, its generation date, the number of models
-and a **content hash** of all embedded files; CoolSolve exposes them
-(`/api/v1/library`, `coolsolve --version`) and the explorer displays them
-("Library snapshot 2027-03-01 · 312 models · abc1234"). `docs/versions.md`
-records the library tag of each CoolSolve release, as it does for CoolProp.
+**Not implemented yet**: a run-time override (`--library-dir <path>` / `COOLSOLVE_LIBRARY_DIR`) serving a checkout
+from disk, so that library authors need no rebuild.
 
-**Mechanism.** Reuse `cmake/embed_assets.cmake`, which already embeds the GUI,
-`docs/*.md` and `README.md` into a generated `embedded_assets.cpp` served by
-`getEmbeddedAsset()`. Two extensions are needed: recursive extra directories
-(today `EXTRA_DIRn` are scanned flat) with an extension allow-list, and a
-**build step** instead of the configure-time `execute_process`
-(`add_custom_command` depending on the library's `library.json`, whose content
-hash changes whenever an embedded file changes), so that `cmake --build`
-picks up a new library state. Size budget: text ≈ 15–20 kB per model and one
-figure ≤ 100 kB per model (rule of the library workflow), i.e. ≈ 40 MB for 300
-models; the build prints the snapshot size. If hex-encoding in CMake becomes
-too slow at that size, generate the table with a Python script, or embed one
-packed archive (C++26 `#embed`, `.incbin`, Windows resource) behind the same
-lookup function.
+### 2.2 HTML model explorer (`CS-FEAT-EXPLORER`) — implemented (first version)
 
-**Run-time override.** `--library-dir <path>` (or `COOLSOLVE_LIBRARY_DIR`)
-serves a library checkout from disk instead of the snapshot — for library
-authors testing changes without rebuilding, or to use a newer library with an
-older binary.
+Two complementary surfaces, both served by the binary:
 
-All accesses go through one C++ `LibraryStore` (index, taxonomy, function
-index, file lookup by model ID, name or path) used by the server, the runner
-(`$INCLUDE`) and the CLI.
+- **The *Library* button of the GUI** replaces the former *Examples* button (the `examples/` folder is now only
+  for the CLI and the regression tests). It drops down the taxonomy of `taxonomy.json` — category → sub-category →
+  model, with counts and a search box — and lists **verified models only**. Picking one opens the whole model
+  folder (code, initial values, solver configuration, lookup tables, `.sol`) in the session, with *Back* to return
+  to the previous model ([GUI §7.3](gui.md#73-library-models-a-model-is-a-folder)).
+- **The dashboard at `/library/`** is the library's own `library.html` (generated by its `tools/build_index.py`):
+  an *Explore* page following the taxonomy and sortable, filterable tables of **all** the models (blocked ones
+  included, with the description of each gap), of the functions and procedures, and of the CoolSolve gaps. Every
+  view has an address (`/library/#/models?status=blocked`, `/library/#CSL-0012`). When served by CoolSolve, each
+  model page (blocked or not) has an **Open in CoolSolve** button — and one per variant file, e.g. the runnable
+  `_coolsolve` variant of a blocked model — that opens `/?library=CSL-0012` in a **new tab with its own
+  session**, so the model of the first tab is untouched. The README opens in the documentation viewer
+  (`/docs/#library%2Fmodels%2F…%2FREADME.md`), whose banner also offers *Open in CoolSolve*. The documentation
+  links to the dashboard (sidebar of `/docs/`), and the dashboard links to the documentation.
+- **Routes**: `GET /api/v1/library/menu`, `POST /api/v1/library/open`, `GET /library/`, `GET /library/<path>`
+  ([GUI §4.12](gui.md#412-model-library)).
 
-### 2.2 HTML model explorer (`CS-FEAT-EXPLORER`)
-
-**First step, done in the library:** `tools/build_index.py` generates the
-self-contained dashboard `library.html` from the `model.json` files: an
-*Explore* landing page that follows the taxonomy and the `models/` folders, and
-sortable, filterable tables of the models, functions and gaps of this register
-(with the description of each gap of a blocked model); every view and filter has
-an address (`#/models?category=…`, `#CSL-0012`) that the GUI can reuse. `library.json` is the only machine
-index (`library.csv`, `functions.csv` and `CATALOG.md` were dropped). CoolSolve
-can serve the same page under `/library/` once the snapshot is embedded, its
-README links pointing to the documentation viewer, with an *Open* button when the
-API is reachable; the explorer below extends it.
-
-- **Entry points**: a *Library* button in the toolbar next to *Examples*, and
-  addressable views `#/library` and `#/library/CSL-0012` (shareable links on
-  the online demo).
-- **Explorer view**: taxonomy tree with model counts (`taxonomy.json`); search
-  box over titles, summaries, tags, fluids and function names; facet filters —
-  level 🟢🔵🟠🔴, kind ⚙️⏱️🎯🧩, status ✅☑️⚠️⛔❌📄, fluid, origin type; results
-  as cards (title, badges, one-line summary, thumbnail of the README figure).
-  Non-runnable models can be hidden by default.
-- **Model page**: the README rendered with `marked.js` (already used by
-  `docs.html`), relative image links rewritten to `/library/raw/<model path>/…`;
-  a metadata box (ID, category, source and authors, CoolSolve version of the
-  verification, gaps with links to §4); actions:
-  - **Open** — loads `.eescode`, `.initials`, `coolsolve.conf`, companion tables
-    and `.sol` into the session, like the *Examples* menu (with the *Back*
-    snapshot), from the embedded files;
-  - **Include functions** (models that define `FUNCTION`/`PROCEDURE`) — inserts
-    `$INCLUDE library:<name>` at the top of the current model (§2.3);
-  - **Copy code**, **Download ZIP** (bundle format of [GUI §7.2](gui.md)).
-- **Server routes**: `GET /api/v1/library` (index and snapshot information),
-  `GET /api/v1/library/taxonomy`, `GET /api/v1/library/functions`,
-  `GET /library/raw/{path}` (files, as `/docs/raw/` for the documentation),
-  `POST /api/v1/library/open` `{"id": "CSL-0012"}`.
-- **CLI**: `coolsolve --library list [filter]`, `--library show <id>`,
-  `--library get <id> [dir]` (writes the model folder), all from the snapshot.
+Still to do from the original design: faceted search by level/kind/status/fluid in the GUI menu (the dashboard has
+it), a thumbnail per model, **Include functions** (needs `$INCLUDE`, §2.3), *Copy code*, `coolsolve --library
+list / show / get` (`CS-FEAT-LIB-CLI`).
 
 ### 2.3 Importing functions and procedures from `.eescode` files (`CS-FEAT-IMPORT`)
 
@@ -189,8 +157,8 @@ $INCLUDE my_correlations.eescode
 
 | ID | Feature | Section | Priority |
 |---|---|---|---|
-| `CS-FEAT-LIB-EMBED` | Library snapshot embedded at build time, with version identity and run-time override | §2.1 | P1 |
-| `CS-FEAT-EXPLORER` | HTML model explorer: taxonomy, search, facets, model pages, *Open* and *Include functions* | §2.2 | P1 |
+| `CS-FEAT-LIB-EMBED` | Library snapshot embedded at build time, with version identity — **done**; run-time override (`--library-dir`) open | §2.1 | P1 |
+| `CS-FEAT-EXPLORER` | HTML model explorer: taxonomy, search, facets, model pages, *Open* — **done** (Library menu + `/library/` dashboard); *Include functions* waits for `CS-FEAT-IMPORT` | §2.2 | P1 |
 | `CS-FEAT-IMPORT` | `$INCLUDE` of library models and `.eescode` files (all their functions and procedures); native `.txt`/`.lib` for compatibility | §2.3 | P1 |
 | `CS-FEAT-LIB-TEST` | Library regression test: solve every library model whose status is *verified* or *runs* and compare with its `.sol` (logic of `test_examples.cpp`, driven by `library.json`), in the CoolSolve CI and in the library CI | – | P1 |
 | `CS-FEAT-LIB-CLI` | `coolsolve --library list / show / get` | §2.2 | P2 |
@@ -204,9 +172,9 @@ $INCLUDE my_correlations.eescode
 
 Suggested order of implementation:
 
-1. **Snapshot and minimal explorer** — recursive allow-listed embedding,
-   `library.json` identity, `/api/v1/library` and `/library/raw/`, explorer list
-   + model page + *Open*. The library becomes visible in every build.
+1. **Snapshot and minimal explorer** (done) — allow-listed embedding,
+   `library.json` identity, `/api/v1/library/menu` and `/library/`, explorer menu
+   + dashboard + *Open*. The library is visible in every build.
 2. **Imports** — `$INCLUDE` for `.eescode` paths and `library:` targets,
    `/api/v1/library/functions`, *Include functions* button, editor quick-fix.
    Library models then use `$INCLUDE` instead of copied functions.

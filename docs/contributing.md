@@ -188,7 +188,10 @@ Beyond the config editor, several other GUI surfaces may need updates:
 
 - [ ] **`gui/src/api/types.ts`** — extend the TypeScript types if the
       REST API response shape changes.
-- [ ] **`gui/src/api/client.ts`** — add the corresponding API call.
+- [ ] **`gui/src/api/client.ts`** — add the corresponding API call, through
+      `request()`/`apiFetch()` so that the per-tab session header is sent
+      (a direct `fetch`, an `EventSource` or a download link must use
+      `withSession()` from `gui/src/api/session.ts`).
 - [ ] **`gui/src/stores/modelStore.ts`** / **`uiStore.ts`** — store new
       state fields (Zustand).
 - [ ] **`gui/src/components/CodeEditor.tsx`** — only changes if editor
@@ -213,7 +216,12 @@ If the feature has to be reachable from the GUI:
 - [ ] Update SSE progress events if the feature changes solver progress
       semantics.
 - [ ] Add at least one targeted test (Python or C++) that hits the new
-      route end-to-end. Existing example: `tests/test_parametric_api.py`.
+      route end-to-end. Existing examples: `tests/test_parametric_api.py`,
+      `tests/test_library_api.py` (`--auto` starts the server).
+- [ ] Anything that identifies the caller goes through `getSession()`
+      (cookie, `X-CoolSolve-Session` header, `?sid=`); never read the cookie
+      directly. A session ID names a temp folder: accept only
+      `isValidSessionId()` IDs.
 
 ### 3.7 File Loading and Saving (ZIP Bundle)
 
@@ -290,6 +298,10 @@ The comprehensive LaTeX report is generated after a successful solve.
 ### 3.11 Examples and Regression Models
 
 CoolSolve's strongest regression net is the suite of `.eescode` examples.
+The `examples/` folder serves the CLI and the tests; **the GUI does not list
+it** — models meant for users belong to the
+[CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library)
+(its `docs/model_workflow.md`), which the GUI embeds (*Library* button).
 
 - [ ] If the feature unlocks a new modelling pattern, add a minimal
       `examples/<feature_name>.eescode` that exercises it.
@@ -333,6 +345,12 @@ immediately visible to users.
       (e.g. resource files).
 - [ ] If you add a dependency, prefer `FetchContent` and pin a tag.
       Update the *Dependencies* table in `README.md`.
+- [ ] The **model library** is the one dependency that is deliberately *not*
+      pinned: `COOLSOLVE_LIBRARY_TAG` defaults to `main`, so each configure
+      embeds the latest library (`cmake/embed_library.cmake` re-embeds it at
+      every build). A release pins a tag (§9). Its file allow-list mirrors
+      `EMBED_FILES` in the library's `tools/build_index.py`: change both
+      together. See [GUI §9.6](gui.md#96-library-embedding).
 - [ ] CoolProp is pinned to one commit, never `master` (see *Pinned CoolProp
       version* below).
 - [ ] Verify the **Windows build path** still works: `build_installer.bat`
@@ -498,6 +516,12 @@ concern lives.
 | GUI Zustand stores                       | `gui/src/stores/modelStore.ts`, `uiStore.ts`         |
 | GUI REST client                          | `gui/src/api/client.ts`, `types.ts`                  |
 | GUI Console                              | `gui/src/components/Console.tsx`                     |
+| Model library index / model-folder loader | `src/library_store.cpp`, `include/coolsolve/library_store.h` |
+| Model library routes (`/library/`, `/api/v1/library/*`) | `src/server.cpp`                  |
+| Model library embedding (build)          | `cmake/embed_library.cmake`, `CMakeLists.txt`        |
+| GUI *Library* menu / opening a library model | `gui/src/components/LibraryMenu.tsx`, `gui/src/utils/library.ts` |
+| Per-tab session ID                       | `gui/src/api/session.ts`, `getSession()` in `src/server.cpp` |
+| Model library tests                      | `tests/test_library_store.cpp`, `tests/test_library_api.py` |
 | Comprehensive example tests              | `tests/test_examples.cpp` (`EXPECTED_SOLUTIONS`)     |
 | Solver robustness tests                  | `tests/test_solver_robustness.cpp`                   |
 | Configuration parsing tests              | `tests/test_config.cpp`                              |
@@ -585,7 +609,13 @@ git log --oneline -1
 git describe --tags
 ```
 
-Note the commit hash and version string — you will need them in §9.5.
+Note the commit hash and version string — you will need them in §9.5. Do the
+same for the model library: `./coolsolve --version` prints its commit and
+snapshot hash. A release should embed a **tagged** library, so that the release
+can be rebuilt identically: ask the library maintainer to tag it
+(`git tag vX.Y` in `CoolSolve_Library`) and build with
+`cmake -DCOOLSOLVE_LIBRARY_TAG=vX.Y ..` (add it to `build_installer.bat` for the
+release build, then restore the default `main`).
 
 ### 9.4 Run the full test suite
 
@@ -608,6 +638,7 @@ Edit [`docs/versions.md`](versions.md):
 1. Add a new `## vX.Y — Month Year (current)` section at the top with:
    - The Windows installer download link (GitHub Releases URL — see §9.7).
    - The CoolProp commit hash and version string from §9.3.
+   - The model library tag and number of models (`./coolsolve --version`).
    - A bullet list of the main changes since the previous release.
 2. Remove the `(current)` label from the previous version's heading.
 
@@ -677,7 +708,8 @@ host; new releases should use GitHub Releases exclusively.
 
 ```markdown
 - [ ] Version bumped in CMakeLists.txt, coolsolve.nsi, coolsolve.rc
-- [ ] Full test suite passes (unit + examples-comprehensive + solver-robustness)
+- [ ] Model library tagged and embedded with `-DCOOLSOLVE_LIBRARY_TAG=<tag>`; tag recorded in docs/versions.md
+- [ ] Full test suite passes (unit + examples-comprehensive + solver-robustness + `tests/test_library_api.py --auto`)
 - [ ] docs/versions.md updated (new section, CoolProp version, changelog)
 - [ ] README.md "Try CoolSolve" section updated to the new version
 - [ ] Windows installer built with build_installer.bat (not committed to git)

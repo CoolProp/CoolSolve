@@ -11,6 +11,15 @@ export default defineConfig({
         target: 'http://localhost:8550',
         changeOrigin: true,
       },
+      // Served by the CoolSolve binary too: the documentation and the model library
+      '/docs': {
+        target: 'http://localhost:8550',
+        changeOrigin: true,
+      },
+      '/library': {
+        target: 'http://localhost:8550',
+        changeOrigin: true,
+      },
     },
   },
 })

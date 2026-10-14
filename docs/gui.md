@@ -69,6 +69,9 @@ An Electron or Tauri-based desktop app was evaluated and rejected:
 | `src/server.cpp` | HTTP server — all route handlers, session management, asset serving |
 | `include/coolsolve/server.h` | Public API: `ServerOptions` struct + `startServer()` declaration |
 | `cmake/embed_assets.cmake` | CMake script: reads `gui/dist/*`, generates `build/embedded_assets.cpp` and `build/embedded_assets.h` |
+| `cmake/embed_library.cmake` | CMake script run at every build: embeds the model library snapshot (`build/embedded_library.cpp`, §9.6) |
+| `cmake/embed_common.cmake` | Helpers shared by the two embedding scripts (MIME types, file → C array) |
+| `src/library_store.cpp` / `include/coolsolve/library_store.h` | `LibraryStore`: index of the library snapshot, menu of verified models, loading of a model folder (no HTTP, no embedding: testable) |
 
 ### 3.2 Changes to Existing Files
 
@@ -118,6 +121,13 @@ Sessions are managed via a `coolsolve_session` cookie (32-hex-char ID).
 Each session gets isolated in-memory state.  A `SessionSnapshot` is saved
 before each destructive operation to support the "Back" button.
 
+A browser tab can also be an **independent instance**: it sends its own
+session ID in an `X-CoolSolve-Session` header (or a `?sid=` query parameter
+for `EventSource` and downloads, which cannot set headers) and the server
+uses it instead of the cookie. This is how the *Open in CoolSolve* links of
+the model library open a model without touching the model of another tab
+(§5, §7.3).
+
 ### 4.3 File Operations
 
 | Method | Endpoint | Description |
@@ -129,15 +139,16 @@ before each destructive operation to support the "Back" button.
 | `GET` | `/api/v1/files/sol` | Get last solution file content |
 | `GET` | `/api/v1/files/conf` | Get solver configuration (as text) |
 | `PUT` | `/api/v1/files/conf` | Set solver configuration |
-| `POST` | `/api/v1/files/open` | Open a `.eescode` file from disk; auto-discovers companion `.initials` and `coolsolve.conf` |
+| `POST` | `/api/v1/files/open` | Open a `.eescode` file from disk (file passed on the command line, file association); auto-discovers companion `.initials`, `.sol`, `coolsolve.conf` and lookup tables |
 | `GET` | `/api/v1/files/bundle` | Download a ZIP bundle (eescode + initials + sol + conf + debug files) |
 | `POST` | `/api/v1/files/upload` | Upload a multipart `.zip` bundle or individual files |
-| `GET` | `/api/v1/examples` | List built-in example files |
 
 The file workflow is **ZIP-centric**:
 - Open loads files from disk (local mode) or from an uploaded ZIP.
 - Save produces a ZIP bundle containing all companion files plus any debug output.
-- Examples are read-only on the server and opened via `POST /api/v1/files/open`.
+- Models shipped with CoolSolve are opened from the **model library**
+  (§4.12), not from a disk folder: the `examples/` folder of the repository is
+  only used by the CLI and by the regression tests.
 
 ### 4.4 Solver Operations
 
@@ -307,6 +318,22 @@ charts (attempts per day, outcome split, duration distribution, top models,
 top clients). No link points to it anywhere in the UI — it is reachable only
 by typing the URL.
 
+### 4.12 Model Library
+
+The CoolSolve Library is embedded in the binary (§9.6) and served by these routes. A model is a
+**folder**: code, initial values, solver configuration, lookup tables, solution baseline and a README.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/library/menu` | The toolbar *Library* menu: the taxonomy (category → sub-category) with the **verified** models only (`{id, name, title, level, kind}`), the number of models and the snapshot information (`commit`, `content_hash`, `models`). `available: false` with a `reason` when the build has no library |
+| `POST` | `/api/v1/library/open` | Load a model folder into the session; body: `{"id":"CSL-0012"}` (ID or name; optional `"file":"x_coolsolve.eescode"` for another `.eescode` of the folder). **Any status can be opened**, blocked models included. Returns `{libraryId, title, status, modelName, file, variants, hasInitials, hasSol, hasConf, tables}`; 404 for an unknown model or file |
+| `GET` | `/library/` | The library dashboard (`library.html`): **all** the models, blocked ones included, with their gaps, functions and a link to open each in CoolSolve |
+| `GET` | `/library/<path>` | Any embedded file of the snapshot (README figures, `model.json`, …); only the allow-listed files exist (§9.6): `sources/`, `tools/` and `templates/` are not embedded |
+| `GET` | `/docs/raw/library/<path>/README.md` | A model README, rendered by the documentation viewer (`/docs/#library%2Fmodels%2F…%2FREADME.md`) with a banner that opens the model in CoolSolve |
+
+`GET /api/v1/files/eescode` returns `libraryId` (empty when the model does not come from the library), so the
+GUI shows a link to the model page of the dashboard next to the model name. *New* and ZIP *Upload* clear it.
+
 ---
 
 ## 5. Session Management
@@ -325,6 +352,16 @@ Each `Session` holds:
 - `solveInProgress`, `cancelToken` — concurrency control for async solve
 - `lookupTableCSVs` — map from table name to raw CSV text (in-memory store for lookup tables)
 - `lastIntegralResult` / `lastIntegralCSV` / `lastIntegralCsvName` — last integral-solve trajectory (columnar JSON + raw CSV), guarded by a dedicated mutex; cleared on new/open/reset
+
+A request is attributed to a session in this order: `X-CoolSolve-Session` header, `?sid=` query parameter
+(both only if the ID is 32 lowercase hex digits — it names a temp folder — anything else is ignored), then
+the cookie; without any, a new cookie session is created. The GUI gives a tab its own ID with
+`enableTabSession()` (`gui/src/api/session.ts`, kept in `sessionStorage`, so it survives a reload but not a new
+tab); only tabs opened by a library link do it, all the others share the cookie session as before.
+
+A session that has been idle for 24 h and has no solve running is deleted, with its temp folder (checked at most
+every 10 minutes), so that tabs opened from the library do not accumulate on a long-running server. A session
+costs a few kilobytes (the model texts and the last result) and no CPU until a solve is started.
 
 Session-scoped temp directories live at `/tmp/coolsolve_sessions/{id}/`.
 The "New" action clears all in-memory state while keeping the session alive.
@@ -373,7 +410,8 @@ Implemented in `Toolbar.tsx`.  All actions include keyboard shortcuts:
 |--------|----------|-------------|
 | Back | — | Restore previous session snapshot |
 | New | — | Clear editor and start fresh |
-| Open | `Ctrl+O` | Load `.eescode` from disk + companion files |
+| Open | `Ctrl+O` | Load a ZIP bundle (`.eescode` + companion files) |
+| Library | — | Drop-down that follows the taxonomy of the model library (category → sub-category → model) with a search box; lists the **verified** models only. Picking one opens the whole model folder (§7.3). The last entry opens the dashboard `/library/` with all the models |
 | Save | `Ctrl+S` | Download ZIP bundle |
 | Solve | `Ctrl+Enter` | Run async solve, stream progress via SSE |
 | Try Harder | `Ctrl+Enter` (after a failure) | Re-run with `deepSearch: true` — substitutes `deepSearchPipeline`, forces tearing + symbolic reduction on, and consults `multiStartMode`.  The Solve button morphs into Try Harder automatically when the previous run failed; editing the model, initials, or config reverts it to Solve. |
@@ -627,7 +665,23 @@ writer/reader in `server.cpp` — no external library):
 | `<name>-integral.csv` | Integral trajectory (when an `INTEGRAL` model was solved) |
 | `debug/*` | Debug output files (if present) |
 
-### 7.3 Session Snapshot (Back Button)
+### 7.3 Library Models (a Model Is a Folder)
+
+A model of the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) is a project folder
+like §7.1: `<name>.eescode`, `<name>.initials`, `coolsolve.conf`, lookup tables `<name>-<table>.csv`, the
+`<name>.sol` baseline, plus `README.md`, `model.json` and `figures/`. The binary carries those files; opening a
+model (`POST /api/v1/library/open`, `LibraryStore::loadModel`) loads **everything the session understands** exactly
+as *Open* does for a folder on disk: the table name is what follows `<name>-` in the CSV file name, and the
+`.initials`/`.sol` of the model are used by its variants (`x_coolsolve.eescode`). The README and the figures stay
+on the server side and are shown by the documentation viewer. Because everything lives in the session, the usual
+*Save* (ZIP bundle) round-trips a library model like any other.
+
+*Open in CoolSolve* links (dashboard, README banner) point to `/?library=CSL-0012[&file=…]`. The GUI then
+gives the tab its own session (§5), opens the model, and removes the parameter from the address so that a reload
+does not replace the user's edits. The tab shows an info icon next to the model name that links back to the
+model page of the dashboard.
+
+### 7.4 Session Snapshot (Back Button)
 
 Before each destructive operation (New, Open, Upload), the current session
 state is saved to a `SessionSnapshot`.  The `POST /api/v1/back` endpoint
@@ -702,7 +756,7 @@ cd build && cmake .. && make -j$(nproc) coolsolve
 # Terminal 2: start Vite dev server
 cd gui && npm install && npm run dev
 # Frontend at http://localhost:5173
-# API calls proxied to port 8550 via vite.config.ts
+# /api, /docs and /library are proxied to port 8550 via vite.config.ts
 ```
 
 ### 9.3 Production Build (Single Binary)
@@ -725,6 +779,10 @@ cd build && cmake .. && make -j$(nproc) coolsolve
 | Option | Default | Effect |
 |--------|---------|--------|
 | `COOLSOLVE_BUILD_GUI` | `ON` | Compile `server.cpp`, link cpp-httplib, embed frontend assets |
+| `COOLSOLVE_EMBED_LIBRARY` | `ON` | With the GUI: fetch and embed the CoolSolve Library (§9.6) |
+| `COOLSOLVE_LIBRARY_REPO` / `COOLSOLVE_LIBRARY_TAG` | GitHub repository / `main` | Where the library is fetched from, and which branch, tag or commit |
+| `FETCHCONTENT_SOURCE_DIR_COOLSOLVELIBRARY` | — | Use a local library checkout instead of fetching |
+| `FETCHCONTENT_FULLY_DISCONNECTED` | `OFF` | Never touch the network (uses what `.fetchcontent_cache/` already holds) |
 
 When `OFF`, the binary is identical to the pre-GUI version in all respects.
 
@@ -733,6 +791,30 @@ When `OFF`, the binary is identical to the pre-GUI version in all respects.
 The server's catch-all route (`GET /.*`) returns `index.html` (HTTP 200) for
 any non-API path not found in embedded assets.  This supports client-side
 routing if it is ever added.
+
+### 9.6 Library Embedding
+
+The model library is embedded by `cmake/embed_library.cmake` (shared helpers in `cmake/embed_common.cmake`):
+
+- **Where it comes from**: fetched with `FetchContent` from `COOLSOLVE_LIBRARY_REPO`
+  (`IntSusEnergySystems/CoolSolve_Library`), exactly like CoolProp, into `.fetchcontent_cache/`. The default
+  `COOLSOLVE_LIBRARY_TAG` is `main`, so **every `cmake` configure pulls the latest pushed library** (`build_gui.sh`
+  and `build_installer.bat` always configure). If GitHub is unreachable the copy already fetched is used, with a
+  warning. A release pins a tag (`-DCOOLSOLVE_LIBRARY_TAG=<tag>`).
+- **Working on the library at the same time**: `-DFETCHCONTENT_SOURCE_DIR_COOLSOLVELIBRARY=/path/to/CoolSolve_Library`
+  embeds that checkout, uncommitted changes included (`coolsolve --version` then prints `<commit>+local-changes`).
+- **Re-embedding at every build**: the `coolsolve_library_snapshot` target runs the script at each
+  `cmake --build`; it hashes the files to embed and rewrites `embedded_library.cpp` only when the hash changed,
+  so an unchanged library costs 0.1 s and no recompilation.
+- **What is embedded** (allow-list, mirror of `EMBED_FILES` in the library's `tools/build_index.py`):
+  `library.html`, `library.json`, `taxonomy.json`, `docs/taxonomy.md` and, in each model folder, `README.md`,
+  `model.json`, `coolsolve.conf`, `*.eescode`, `*.initials`, `*.sol`, `<name>-<table>.csv`,
+  `figures/*.{png,svg,jpg,jpeg,webp}`. The script warns when the number of files differs from the one in
+  `library.json` (stale index or diverging allow-lists).
+- **Cost**: ≈ 770 files, 7 MB → a 38 MB generated source that compiles in ≈ 6 s with ≈ 1 GB of memory, and
+  ≈ 8 MB more in the binary. `-DCOOLSOLVE_EMBED_LIBRARY=OFF` builds without library (the Library menu then says so).
+- **Identity**: `coolsolve --version` prints `CoolSolve Library <commit>, snapshot <hash>`; the menu response
+  carries the same information.
 
 ---
 
@@ -755,14 +837,18 @@ gui/
     ├── vite-env.d.ts
     ├── api/
     │   ├── client.ts              # Typed fetch wrappers for all API endpoints
+    │   ├── session.ts             # Per-tab session ID (X-CoolSolve-Session header / ?sid=)
     │   └── types.ts               # TypeScript interfaces for all API responses (incl. parametric types)
     ├── stores/
     │   ├── modelStore.ts          # Zustand: eescode, initials, sol, conf, parse errors, solve result, parametric studies, lookup tables, integral table, user unit overrides
     │   └── uiStore.ts             # Zustand: theme, active tabs (incl. 'lookuptables', 'integral'), panel visibility (persisted to localStorage)
     ├── languages/
     │   └── ees.ts                 # Monaco Monarch language definition for CoolSolve syntax
+    ├── utils/
+    │   └── library.ts             # openLibraryModel(): load a library model folder into the session; dashboard URLs
     └── components/
         ├── Toolbar.tsx            # Top toolbar with all actions + keyboard shortcuts
+        ├── LibraryMenu.tsx        # "Library" drop-down: taxonomy tree of the verified library models, search, link to /library/
         ├── CodeEditor.tsx         # Monaco editor wrapper with syntax highlighting + debounced parse
         ├── VariableTable.tsx      # Variable table with units column (color-coded), imposed badges, filter modes
         ├── ArrayTable.tsx         # Spreadsheet view for array variables (var[i])
@@ -792,7 +878,8 @@ All the following tests pass against the current codebase:
 | All C++ unit tests (708 assertions, 94 cases) | ✅ Pass |
 | `GET /api/v1/health` | ✅ `{"status":"ok","coolpropReady":true}` |
 | `POST /api/v1/parse` with source code | ✅ Returns equation/variable counts |
-| `POST /api/v1/files/open` with example file | ✅ Loads file + discovers companion files |
+| `POST /api/v1/files/open` with a `.eescode` file | ✅ Loads file + discovers companion files |
+| Library menu / open / per-tab sessions / `/library/` pages | ✅ `tests/test_library_api.py --auto` (50 checks) |
 | `POST /api/v1/solve` with rankine1 example | ✅ Full solve result with block details |
 | `GET /api/v1/variables` | ✅ Returns solved variable values |
 | `GET /api/v1/solve/stream` (SSE, curl) | ✅ 30/30 blocks streamed; final result JSON embedded |

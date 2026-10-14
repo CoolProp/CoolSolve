@@ -384,7 +384,7 @@ After recompiling CoolSolve (e.g., after a `git pull` or `svn update`):
 
 ```bash
 cd /home/coolsolve/CoolSolve/build
-sudo -u coolsolve cmake ..
+sudo -u coolsolve cmake ..        # also pulls the latest CoolSolve Library (needs network access to GitHub)
 sudo -u coolsolve make -j$(nproc) coolsolve
 
 # Restart the service to load the new binary
@@ -406,6 +406,13 @@ sudo -u coolsolve make -j$(nproc) coolsolve
 
 sudo systemctl restart coolsolve
 ```
+
+The **model library** served at `/library/` and in the *Library* menu is embedded in the binary at compile time, so
+the online demo shows the library as it was at the last `cmake .. && make`: re-run these two commands (and restart
+the service) to publish a newer library. `cmake ..` re-fetches the library `main` branch from GitHub; when the
+server has no network access use `-DFETCHCONTENT_FULLY_DISCONNECTED=ON` (the copy already in `.fetchcontent_cache/`
+is embedded) or `-DFETCHCONTENT_SOURCE_DIR_COOLSOLVELIBRARY=<checkout>`. Compiling the embedded library needs
+about 1 GB of RAM.
 
 ---
 

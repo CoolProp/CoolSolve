@@ -13,6 +13,7 @@ import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import Plot from './PlotlyChart';
 import { useModelStore } from '../stores/modelStore';
 import { api } from '../api/client';
+import { withSession } from '../api/session';
 import type {
   VariableInfo,
   SweepVariable,
@@ -237,7 +238,7 @@ export default function ParametricStudy() {
       });
 
       // Subscribe to SSE for progress
-      const es = new EventSource('/api/v1/solve/stream');
+      const es = new EventSource(withSession('/api/v1/solve/stream'));
       sseRef.current = es;
 
       es.onmessage = (msg) => {

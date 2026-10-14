@@ -14,6 +14,7 @@
 #include "coolsolve/units.h"
 #include "coolsolve/latex_report.h"
 #include "coolsolve/usage_log.h"
+#include "coolsolve/library_store.h"
 
 #include <httplib.h>
 #include "CoolProp.h"
@@ -38,6 +39,9 @@
 
 #ifdef COOLSOLVE_EMBEDDED_ASSETS
 #include "embedded_assets.h"
+#endif
+#ifdef COOLSOLVE_EMBEDDED_LIBRARY
+#include "embedded_library.h"
 #endif
 
 // MSVC does not have popen/pclose; use the underscore variants
@@ -140,6 +144,7 @@ struct SessionSnapshot {
     std::string confContent;
     std::string openFilePath;
     std::string modelName;
+    std::string libraryId;
     std::string debugDir;
     bool hasResult = false;
     SolveResult lastResult;
@@ -165,6 +170,8 @@ struct Session {
     
     std::string openFilePath;                   // Path of currently open .eescode file
     std::string modelName;                      // User-facing model name (for ZIP filename and page title)
+    std::string libraryId;                      // ID ("CSL-0012") when the model was opened from the library
+    std::chrono::steady_clock::time_point lastAccess = std::chrono::steady_clock::now();  // SessionManager only
     
     fs::path tempDir;                               // Session temp directory
     std::string debugDir;                           // Last debug output directory
@@ -218,6 +225,7 @@ struct Session {
         snap->confContent = confContent;
         snap->openFilePath = openFilePath;
         snap->modelName = modelName;
+        snap->libraryId = libraryId;
         snap->debugDir = debugDir;
         snap->inferredVariables = inferredVariables;
         snap->modelFluids = modelFluids;
@@ -244,6 +252,7 @@ struct Session {
         confContent = previousState->confContent;
         openFilePath = previousState->openFilePath;
         modelName = previousState->modelName;
+        libraryId = previousState->libraryId;
         debugDir = previousState->debugDir;
         inferredVariables = previousState->inferredVariables;
         modelFluids = previousState->modelFluids;
@@ -299,18 +308,51 @@ struct Session {
 class SessionManager {
     std::map<std::string, std::shared_ptr<Session>> sessions_;
     std::mutex mutex_;
+    std::chrono::steady_clock::time_point lastSweep_ = std::chrono::steady_clock::now();
+    static constexpr std::chrono::hours kIdleLimit{24};
+    static constexpr std::chrono::minutes kSweepInterval{10};
+
+    /// Drop the sessions idle for more than kIdleLimit (no solve running) and their temp folder.
+    /// Every browser tab opened from the library has its own session, so they must not pile up.
+    void sweepIdle(std::chrono::steady_clock::time_point now) {
+        if (now - lastSweep_ < kSweepInterval) return;
+        lastSweep_ = now;
+        for (auto it = sessions_.begin(); it != sessions_.end();) {
+            const auto& s = it->second;
+            if (now - s->lastAccess > kIdleLimit && !s->solving) {
+                std::error_code ec;
+                fs::remove_all(s->tempDir, ec);
+                it = sessions_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
 public:
     std::shared_ptr<Session> getOrCreate(const std::string& sessionId) {
         std::lock_guard<std::mutex> lock(mutex_);
+        const auto now = std::chrono::steady_clock::now();
+        sweepIdle(now);
         auto it = sessions_.find(sessionId);
-        if (it != sessions_.end()) return it->second;
+        if (it != sessions_.end()) {
+            it->second->lastAccess = now;
+            return it->second;
+        }
         auto s = std::make_shared<Session>();
+        s->lastAccess = now;
         s->tempDir = fs::temp_directory_path() / "coolsolve_sessions" / sessionId;
         fs::create_directories(s->tempDir);
         sessions_[sessionId] = s;
         return s;
     }
 };
+
+/// A session id names a temp folder, so only the ids this server generates are accepted:
+/// 32 lowercase hex digits (see generateSessionId).
+static bool isValidSessionId(const std::string& id) {
+    if (id.size() != 32) return false;
+    return std::all_of(id.begin(), id.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
+}
 
 static std::string getCookieValue(const httplib::Request& req, const std::string& name) {
     auto range = req.headers.equal_range("Cookie");
@@ -517,6 +559,34 @@ static void discoverCompanionFiles(Session& session) {
 }
 
 // ============================================================================
+// Helper: start loading another model into a session
+// ============================================================================
+// Saves the Back snapshot and drops everything that belongs to the previous model
+// (companion files, lookup tables, results). The caller then sets the new model's
+// content. Shared by "open a file from disk" and "open a library model".
+static void beginModel(Session& session) {
+    session.saveSnapshot();
+    session.initialsContent.clear();
+    session.solContent.clear();
+    session.confContent.clear();
+    session.debugDir.clear();
+    // Lookup tables must not accumulate when the user opens another model.
+    session.lookupTableCSVs.clear();
+    session.libraryId.clear();
+    {
+        std::lock_guard<std::mutex> lock(session.resultMutex);
+        session.hasResult = false;
+        session.lastResult = SolveResult{};
+    }
+    {
+        std::lock_guard<std::mutex> lock(session.integralMutex);
+        session.lastIntegralResult.clear();
+        session.lastIntegralCSV.clear();
+        session.lastIntegralCsvName.clear();
+    }
+}
+
+// ============================================================================
 // Helper: Build JSON from solve result
 // ============================================================================
 static json solveResultToJSON(const SolveResult& result, const CoolSolveRunner::PipelineTiming& timing,
@@ -684,10 +754,16 @@ int startServer(const ServerOptions& options) {
         std::cout << "Usage log: " << (pathEc ? usageLogPath : absolutePath.string()) << std::endl;
     }
 
-    // getSession: extract session from cookie, create if new
+    // getSession: a browser tab that opted into its own instance sends its id in the
+    // X-CoolSolve-Session header (or ?sid= for EventSource and downloads, which cannot set
+    // headers); every other client keeps the cookie session, created if new.
     auto getSession = [&sessionMgr](const httplib::Request& req, httplib::Response& res) -> std::shared_ptr<Session> {
+        std::string tabSid = req.get_header_value("X-CoolSolve-Session");
+        if (tabSid.empty() && req.has_param("sid")) tabSid = req.get_param_value("sid");
+        if (isValidSessionId(tabSid)) return sessionMgr.getOrCreate(tabSid);
+
         std::string sid = getCookieValue(req, "coolsolve_session");
-        if (sid.empty()) {
+        if (sid.empty() || !isValidSessionId(sid)) {
             sid = generateSessionId();
             res.set_header("Set-Cookie", "coolsolve_session=" + sid + "; Path=/; SameSite=Lax");
         }
@@ -701,7 +777,7 @@ int startServer(const ServerOptions& options) {
     svr.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
         res.set_header("Access-Control-Allow-Origin", "*");
         res.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CoolSolve-Session");
         
         if (req.method == "OPTIONS") {
             res.status = 204;
@@ -761,7 +837,8 @@ int startServer(const ServerOptions& options) {
         json j = {
             {"content", session.eescodeContent},
             {"filePath", session.openFilePath},
-            {"modelName", session.modelName}
+            {"modelName", session.modelName},
+            {"libraryId", session.libraryId}
         };
         res.set_content(j.dump(), "application/json");
     });
@@ -832,7 +909,7 @@ int startServer(const ServerOptions& options) {
         }
     });
     
-    // POST /api/v1/files/open - Open a file from disk (used for examples)
+    // POST /api/v1/files/open - Open a file from disk (CLI argument / file association)
     svr.Post("/api/v1/files/open", [&](const httplib::Request& req, httplib::Response& res) {
         auto& session = *getSession(req, res);
         try {
@@ -846,30 +923,10 @@ int startServer(const ServerOptions& options) {
                 return;
             }
             
-            // Save snapshot for Back button
-            session.saveSnapshot();
-            
+            beginModel(session);
             session.openFilePath = filePath;
             session.modelName = fs::path(filePath).stem().string();
             session.eescodeContent = readFileToString(filePath);
-            session.initialsContent.clear();
-            session.solContent.clear();
-            session.confContent.clear();
-            session.debugDir.clear();
-            // Drop lookup tables from the previously loaded model so they do
-            // not accumulate when the user opens a different example.
-            session.lookupTableCSVs.clear();
-            {
-                std::lock_guard<std::mutex> lock(session.resultMutex);
-                session.hasResult = false;
-                session.lastResult = SolveResult{};
-            }
-            {
-                std::lock_guard<std::mutex> lock(session.integralMutex);
-                session.lastIntegralResult.clear();
-                session.lastIntegralCSV.clear();
-                session.lastIntegralCsvName.clear();
-            }
 
             // Auto-discover companion files
             discoverCompanionFiles(session);
@@ -908,6 +965,7 @@ int startServer(const ServerOptions& options) {
         session.solContent.clear();
         session.confContent.clear();
         session.openFilePath.clear();
+        session.libraryId.clear();
         session.modelName.clear();
         // Clear lookup tables — otherwise they leak from the previous model
         // into the "new" empty session and reappear in the GUI as soon as
@@ -2590,36 +2648,102 @@ int startServer(const ServerOptions& options) {
     });
     
     // ================================================================
-    // Examples listing
+    // Model library: the CoolSolve Library snapshot embedded in the binary.
+    //   GET  /api/v1/library/menu  verified models by taxonomy (toolbar menu) + snapshot info
+    //   POST /api/v1/library/open  load a model folder into the session: {"id", "file"?}
+    //   GET  /library/             the dashboard (library.html): ALL models, blocked ones too
+    //   GET  /library/<path>       any embedded file of the snapshot (README figures, ...)
+    // READMEs are rendered by the documentation viewer (/docs/#library/models/.../README.md).
     // ================================================================
-    svr.Get("/api/v1/examples", [&](const httplib::Request&, httplib::Response& res) {
-        json examples = json::array();
-        
-        // Look for examples: options.examplesDir first (installed path), then fallbacks
-        std::vector<std::string> searchPaths;
-        if (!options.examplesDir.empty()) searchPaths.push_back(options.examplesDir);
-        searchPaths.push_back("examples");
-        searchPaths.push_back("../examples");
-        searchPaths.push_back(fs::current_path().string() + "/examples");
-        
-        for (const auto& searchPath : searchPaths) {
-            if (fs::exists(searchPath) && fs::is_directory(searchPath)) {
-                for (const auto& entry : fs::directory_iterator(searchPath)) {
-                    if (entry.path().extension() == ".eescode") {
-                        json exObj;
-                        exObj["name"] = entry.path().stem().string();
-                        exObj["path"] = fs::canonical(entry.path()).string();
-                        examples.push_back(exObj);
-                    }
-                }
-                break;  // Use first found directory
-            }
-        }
-        
-        json j = {{"examples", examples}};
+    LibraryFileSource librarySource;
+#ifdef COOLSOLVE_EMBEDDED_LIBRARY
+    librarySource.read = [](const std::string& path, std::string& content) {
+        const EmbeddedLibraryFile* f = getEmbeddedLibraryFile(path);
+        if (!f) return false;
+        content.assign(reinterpret_cast<const char*>(f->data), f->size);
+        return true;
+    };
+    librarySource.list = [](const std::string& prefix) { return listEmbeddedLibraryFiles(prefix); };
+#endif
+    const LibraryStore library(librarySource);
+
+    svr.Get("/api/v1/library/menu", [&](const httplib::Request&, httplib::Response& res) {
+        json j = library.menu();
+        json snap = library.snapshot();
+#ifdef COOLSOLVE_EMBEDDED_LIBRARY
+        snap["commit"] = embeddedLibraryCommit();
+#endif
+        j["snapshot"] = snap;
         res.set_content(j.dump(), "application/json");
     });
-    
+
+    svr.Post("/api/v1/library/open", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        try {
+            auto body = json::parse(req.body);
+            LibraryModel model;
+            std::string error;
+            if (!library.loadModel(body.value("id", ""), body.value("file", ""), model, error)) {
+                res.status = library.available() ? 404 : 503;
+                res.set_content(json{{"error", error}}.dump(), "application/json");
+                return;
+            }
+            beginModel(session);
+            session.libraryId = model.id;
+            session.modelName = fs::path(model.file).stem().string();
+            session.eescodeContent = model.eescode;
+            session.initialsContent = model.initials;
+            session.solContent = model.sol;
+            session.confContent = model.conf;
+            session.lookupTableCSVs = model.tables;
+            session.openFilePath.clear();  // the model lives in the binary, not on disk
+
+            json j = {
+                {"success", true},
+                {"libraryId", model.id},
+                {"title", model.title},
+                {"status", model.status},
+                {"file", model.file},
+                {"variants", model.variants},
+                {"modelName", session.modelName},
+                {"hasInitials", !model.initials.empty()},
+                {"hasSol", !model.sol.empty()},
+                {"hasConf", !model.conf.empty()},
+                {"tables", model.tables.size()}
+            };
+            res.set_content(j.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
+    svr.Get("/library", [](const httplib::Request&, httplib::Response& res) {
+        res.set_redirect("/library/");
+    });
+
+    svr.Get("/library/(.*)", [&](const httplib::Request& req, httplib::Response& res) {
+        std::string path = req.matches[1].str();
+        if (path.empty()) path = "library.html";
+        if (path.find("..") != std::string::npos) {
+            res.status = 400;
+            res.set_content("Invalid path", "text/plain");
+            return;
+        }
+#ifdef COOLSOLVE_EMBEDDED_LIBRARY
+        if (const EmbeddedLibraryFile* f = getEmbeddedLibraryFile(path)) {
+            res.set_content(reinterpret_cast<const char*>(f->data), f->size, f->mimeType);
+            res.set_header("X-Content-Type-Options", "nosniff");
+            return;
+        }
+        res.status = 404;
+        res.set_content("Not found in the model library: " + path, "text/plain");
+#else
+        res.status = 404;
+        res.set_content("This CoolSolve build does not embed the model library", "text/plain");
+#endif
+    });
+
     // ================================================================
     // Lookup Tables REST API
     // GET  /api/v1/tables          → list all tables (names + column headers)
@@ -2827,6 +2951,7 @@ int startServer(const ServerOptions& options) {
         session.solContent.clear();
         session.confContent.clear();
         session.openFilePath.clear();
+        session.libraryId.clear();
         session.modelName.clear();
         session.lookupTableCSVs.clear();
         // Set model name from ZIP filename
@@ -3218,6 +3343,15 @@ int startServer(const ServerOptions& options) {
             return;
         }
 
+#ifdef COOLSOLVE_EMBEDDED_LIBRARY
+        // Model READMEs: library/models/<category>/<model>/README.md
+        if (startsWith(relPath, "library/")) {
+            if (const EmbeddedLibraryFile* f = getEmbeddedLibraryFile(relPath.substr(8))) {
+                res.set_content(reinterpret_cast<const char*>(f->data), f->size, "text/plain; charset=utf-8");
+                return;
+            }
+        }
+#endif
 #ifdef COOLSOLVE_EMBEDDED_ASSETS
         // Embedded key: "/" + relPath (e.g. "/README.md" or "/docs/debugging_models.md")
         const EmbeddedAsset* asset = getEmbeddedAsset("/" + relPath);
@@ -3280,6 +3414,7 @@ int startServer(const ServerOptions& options) {
         std::string path = req.path;
         if (startsWith(path, "/api/")) return; // Let API handlers deal with it
         if (startsWith(path, "/docs")) return;  // Let docs handlers deal with it
+        if (startsWith(path, "/library")) return;  // Let the library handlers deal with it
         
         // Try exact path match
         const EmbeddedAsset* asset = getEmbeddedAsset(path);

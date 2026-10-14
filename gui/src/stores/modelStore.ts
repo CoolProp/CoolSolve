@@ -5,6 +5,8 @@ interface ModelState {
   // File state
   filePath: string;
   modelName: string;
+  /** Library ID ("CSL-0012") when the model was opened from the model library, else ''. */
+  libraryId: string;
   eescode: string;
   initials: string;
   sol: string;
@@ -65,7 +67,7 @@ interface ModelState {
   setCanGoBack: (canGoBack: boolean) => void;
   addConsoleLine: (line: string) => void;
   clearConsole: () => void;
-  loadFile: (path: string, eescode: string, initials: string, sol: string, conf: string, modelName?: string) => void;
+  loadFile: (path: string, eescode: string, initials: string, sol: string, conf: string, modelName?: string, libraryId?: string) => void;
   clearModel: () => void;
   addParametricStudy: (study: SavedParametricStudy) => void;
   removeParametricStudy: (id: string) => void;
@@ -82,6 +84,7 @@ interface ModelState {
 export const useModelStore = create<ModelState>((set) => ({
   filePath: '',
   modelName: '',
+  libraryId: '',
   eescode: '',
   initials: '',
   sol: '',
@@ -128,10 +131,10 @@ export const useModelStore = create<ModelState>((set) => ({
   addConsoleLine: (line) =>
     set((state) => ({ consoleLines: [...state.consoleLines, line] })),
   clearConsole: () => set({ consoleLines: [] }),
-  loadFile: (path, eescode, initials, sol, conf, modelName) =>
-    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', parametricStudies: [], parsedVariables: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
+  loadFile: (path, eescode, initials, sol, conf, modelName, libraryId) =>
+    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', libraryId: libraryId ?? '', parametricStudies: [], parsedVariables: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
   clearModel: () =>
-    set({ filePath: '', modelName: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], userUnitOverrides: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
+    set({ filePath: '', modelName: '', libraryId: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], userUnitOverrides: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
   addParametricStudy: (study) =>
     set((state) => ({ parametricStudies: [...state.parametricStudies, study] })),
   removeParametricStudy: (id) =>

@@ -15,6 +15,8 @@ if(NOT GUI_DIST_DIR OR NOT OUTPUT_CPP OR NOT OUTPUT_H)
     message(FATAL_ERROR "embed_assets.cmake requires GUI_DIST_DIR, OUTPUT_CPP, OUTPUT_H")
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/embed_common.cmake")
+
 # Collect all files recursively from GUI dist
 file(GLOB_RECURSE ASSET_FILES RELATIVE "${GUI_DIST_DIR}" "${GUI_DIST_DIR}/*")
 list(SORT ASSET_FILES)
@@ -44,37 +46,6 @@ set(SOURCE_CONTENT [=[
 
 ]=])
 
-# Helper: guess MIME type from extension
-function(guess_mime_type FILENAME OUT_VAR)
-    get_filename_component(EXT "${FILENAME}" LAST_EXT)
-    string(TOLOWER "${EXT}" EXT)
-    if(EXT STREQUAL ".html")
-        set(${OUT_VAR} "text/html" PARENT_SCOPE)
-    elseif(EXT STREQUAL ".css")
-        set(${OUT_VAR} "text/css" PARENT_SCOPE)
-    elseif(EXT STREQUAL ".js")
-        set(${OUT_VAR} "application/javascript" PARENT_SCOPE)
-    elseif(EXT STREQUAL ".json")
-        set(${OUT_VAR} "application/json" PARENT_SCOPE)
-    elseif(EXT STREQUAL ".svg")
-        set(${OUT_VAR} "image/svg+xml" PARENT_SCOPE)
-    elseif(EXT STREQUAL ".png")
-        set(${OUT_VAR} "image/png" PARENT_SCOPE)
-    elseif(EXT STREQUAL ".ico")
-        set(${OUT_VAR} "image/x-icon" PARENT_SCOPE)
-    elseif(EXT STREQUAL ".woff")
-        set(${OUT_VAR} "font/woff" PARENT_SCOPE)
-    elseif(EXT STREQUAL ".woff2")
-        set(${OUT_VAR} "font/woff2" PARENT_SCOPE)
-    elseif(EXT STREQUAL ".ttf")
-        set(${OUT_VAR} "font/ttf" PARENT_SCOPE)
-    elseif(EXT STREQUAL ".map")
-        set(${OUT_VAR} "application/json" PARENT_SCOPE)
-    else()
-        set(${OUT_VAR} "application/octet-stream" PARENT_SCOPE)
-    endif()
-endfunction()
-
 # Generate data arrays for each file
 set(ASSET_INDEX 0)
 set(MAP_ENTRIES "")
@@ -82,21 +53,7 @@ set(MAP_ENTRIES "")
 foreach(ASSET_FILE ${ASSET_FILES})
     set(FULL_PATH "${GUI_DIST_DIR}/${ASSET_FILE}")
     
-    # Read file as hex
-    file(READ "${FULL_PATH}" FILE_HEX HEX)
-    
-    # Get file size
-    file(SIZE "${FULL_PATH}" FILE_SIZE)
-    
-    # Fast conversion: use regex to insert 0x prefix and commas in one pass
-    # "aabb" -> "0xaa,0xbb"
-    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," FILE_HEX "${FILE_HEX}")
-    # Remove trailing comma
-    string(REGEX REPLACE ",$" "" FILE_HEX "${FILE_HEX}")
-    # Add line breaks every ~16 values for readability (optional, skip for speed)
-    
-    # Add a null terminator so text assets can be used as C strings
-    string(APPEND FILE_HEX ",0x00")
+    coolsolve_file_as_hex_array("${FULL_PATH}" FILE_HEX FILE_SIZE)
     
     # Create a valid C identifier from the file path
     string(MAKE_C_IDENTIFIER "asset_${ASSET_FILE}" VAR_NAME)
@@ -159,11 +116,7 @@ while(1)
             set(URL_PATH "/${URL_PREFIX}/${FNAME}")
         endif()
 
-        file(READ "${FULL_PATH}" FILE_HEX HEX)
-        file(SIZE "${FULL_PATH}" FILE_SIZE)
-        string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," FILE_HEX "${FILE_HEX}")
-        string(REGEX REPLACE ",$" "" FILE_HEX "${FILE_HEX}")
-        string(APPEND FILE_HEX ",0x00")
+        coolsolve_file_as_hex_array("${FULL_PATH}" FILE_HEX FILE_SIZE)
 
         string(MAKE_C_IDENTIFIER "extraasset_${EXTRA_INDEX}_${FNAME}" VAR_NAME)
         guess_mime_type("${FNAME}" MIME)

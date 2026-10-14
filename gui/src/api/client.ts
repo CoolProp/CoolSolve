@@ -6,7 +6,8 @@ import type {
   SolveResponse,
   VariablesResponse,
   FileOpenResponse,
-  ExamplesResponse,
+  LibraryMenuResponse,
+  LibraryOpenResponse,
   UploadResponse,
   SSEEvent,
   InferredVariablesResponse,
@@ -20,11 +21,20 @@ import type {
   IntegralTableData,
   UsageStatsResponse,
 } from './types';
+import { sessionHeaders, withSession } from './session';
 
 const API_BASE = '/api/v1';
 
+/** fetch() on the API with this tab's session (see session.ts). */
+function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { ...sessionHeaders(), ...(init.headers as Record<string, string> | undefined) },
+  });
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await apiFetch(path, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
@@ -36,7 +46,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 async function requestOptional<T>(path: string): Promise<T | null> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await apiFetch(path, {
     headers: { 'Content-Type': 'application/json' },
   });
   if (res.status === 204 || res.status === 404) return null;
@@ -45,6 +55,9 @@ async function requestOptional<T>(path: string): Promise<T | null> {
 }
 
 export const api = {
+  /** URL of the model bundle (ZIP) download: a plain navigation, so the session goes in the URL. */
+  bundleUrl: () => withSession(`${API_BASE}/files/bundle`),
+
   // Health
   health: () => request<HealthResponse>('/health'),
 
@@ -55,7 +68,7 @@ export const api = {
   getInitialFile: () => requestOptional<{ path: string }>('/initial-file'),
 
   // Files
-  getEescode: () => request<{ content: string; filePath: string }>('/files/eescode'),
+  getEescode: () => request<{ content: string; filePath: string; libraryId?: string }>('/files/eescode'),
   putEescode: (content: string) =>
     request<{ success: boolean }>('/files/eescode', {
       method: 'PUT',
@@ -118,7 +131,7 @@ export const api = {
 
   // Subscribe to solve progress via SSE
   subscribeSolveProgress: (onEvent: (event: SSEEvent) => void): EventSource => {
-    const es = new EventSource(`${API_BASE}/solve/stream`);
+    const es = new EventSource(withSession(`${API_BASE}/solve/stream`));
     es.onmessage = (msg) => {
       try {
         const data = JSON.parse(msg.data) as SSEEvent;
@@ -145,8 +158,13 @@ export const api = {
   updateGuesses: () =>
     request<{ success: boolean }>('/update-guesses', { method: 'POST' }),
 
-  // Examples
-  getExamples: () => request<ExamplesResponse>('/examples'),
+  // Model library (the CoolSolve Library embedded in the server)
+  getLibraryMenu: () => request<LibraryMenuResponse>('/library/menu'),
+  openLibraryModel: (id: string, file?: string) =>
+    request<LibraryOpenResponse>('/library/open', {
+      method: 'POST',
+      body: JSON.stringify({ id, file: file ?? '' }),
+    }),
 
   // Debug output
   getDebugFiles: () => request<{ files: { name: string; size: number }[] }>('/debug/files'),
@@ -154,7 +172,7 @@ export const api = {
 
   // Upload ZIP file
   uploadFiles: async (formData: FormData): Promise<UploadResponse> => {
-    const res = await fetch(`${API_BASE}/files/upload`, { method: 'POST', body: formData });
+    const res = await apiFetch('/files/upload', { method: 'POST', body: formData });
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(body.error || `HTTP ${res.status}`);
@@ -202,7 +220,7 @@ export const api = {
   // Integral trajectory as raw CSV text (survives ZIP bundle round-trip;
   // the GUI tab parses this on bundle load when no live JSON is present)
   getIntegralCSV: async (): Promise<string | null> => {
-    const res = await fetch(`${API_BASE}/integral/csv`);
+    const res = await apiFetch('/integral/csv');
     if (res.status === 204 || res.status === 404) return null;
     if (!res.ok) return null;
     return res.text();
@@ -214,7 +232,7 @@ export const api = {
 
   // Compile LaTeX report to PDF (returns binary PDF blob)
   compileLatexReport: async (body: LatexCompileRequest): Promise<Blob> => {
-    const res = await fetch(`${API_BASE}/latex/compile`, {
+    const res = await apiFetch('/latex/compile', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -237,7 +255,7 @@ export const api = {
   getTables: () => request<LookupTablesResponse>('/tables'),
 
   getTableCSV: async (name: string): Promise<string> => {
-    const res = await fetch(`${API_BASE}/tables/${encodeURIComponent(name)}`);
+    const res = await apiFetch(`/tables/${encodeURIComponent(name)}`);
     if (!res.ok) {
       const body = await res.json().catch(() => ({ error: res.statusText }));
       throw new Error(body.error || `HTTP ${res.status}`);
@@ -246,7 +264,7 @@ export const api = {
   },
 
   putTable: async (name: string, csvContent: string): Promise<{ success: boolean; name: string; created: boolean }> => {
-    const res = await fetch(`${API_BASE}/tables/${encodeURIComponent(name)}`, {
+    const res = await apiFetch(`/tables/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'text/csv' },
       body: csvContent,

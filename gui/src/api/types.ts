@@ -105,13 +105,49 @@ export interface FileOpenResponse {
   hasConf: boolean;
 }
 
-export interface ExampleFile {
+/** A model of the library menu (verified models only). */
+export interface LibraryMenuModel {
+  id: string;     // permanent ID, e.g. "CSL-0012"
   name: string;
-  path: string;
+  title: string;
+  level: number;  // 1 introductory ... 4 research
+  kind: string;   // steady | dynamic | optimisation | functions
 }
 
-export interface ExamplesResponse {
-  examples: ExampleFile[];
+/** A node of the library taxonomy holding models (a category or a sub-category). */
+export interface LibraryMenuGroup {
+  key: string;
+  title: string;
+  models: LibraryMenuModel[];
+}
+
+export interface LibraryMenuCategory extends LibraryMenuGroup {
+  count: number;  // models of the category, sub-categories included
+  children: LibraryMenuGroup[];
+}
+
+/** Response of GET /api/v1/library/menu */
+export interface LibraryMenuResponse {
+  available: boolean;
+  reason?: string;  // why the library is not available
+  total: number;
+  categories: LibraryMenuCategory[];
+  snapshot: { commit?: string; models?: number; content_hash?: string };
+}
+
+/** Response of POST /api/v1/library/open */
+export interface LibraryOpenResponse {
+  success: boolean;
+  libraryId: string;
+  title: string;
+  status: string;
+  file: string;
+  variants: string[];
+  modelName: string;
+  hasInitials: boolean;
+  hasSol: boolean;
+  hasConf: boolean;
+  tables: number;
 }
 
 export interface UploadResponse {
