@@ -137,7 +137,7 @@ $Complex ON/OFF,Math — Complex,Enable/disable complex number mode,No,3,EES dir
 RANDOM,Math — Random,"Uniform random number in [0,1)",No,3,,
 RANDG,Math — Random,"Gaussian random with mean,stddev",No,3,,
 # --- Mathematical Functions: Conversion ---,,,,,,
-CONVERT,Math — Conversion,"Unit conversion CONVERT('from','to'), e.g. CONVERT(kJ,BTU)",Yes,1,src/evaluator.cpp — tries all UnitTypes to find conversion factor,
+CONVERT,Math — Conversion,"Unit conversion CONVERT('from','to'), e.g. CONVERT(kJ,BTU)",Yes,1,"src/units.cpp — unitConversionFactor: unit strings with products (- or *), quotients (/), ^n powers and parentheses (lbm/hr, kJ/kg-K, W/m^2-K, ft^3/min), checked for dimension; the factors of UnitConverter plus the other SI/English units; exact capitalization first, then the only unit that fits without regard to case; a temperature unit in a unit is a difference (a bare CONVERT('C','F') is 1.8: assumption, EES help not available); unknown unit, unreadable unit string and incompatible dimensions are errors (a parse error with the line for literal units, an evaluation error for a computed string); the factor of a pair is computed once. The units must be quoted: CONVERT(lbm/hr,kg/s) without quotes is CS-GAP-CONVERT-UNQUOTED",
 CONVERTTEMP,Math — Conversion,"Temperature conversion CONVERTTEMP('from','to',value)",Yes,1,src/evaluator.cpp — converts via UnitConverter toSI/fromSI,
 UNITSYSTEM,Math — Conversion,Returns 1 if the named unit setting is in use (UNITSYSTEM('K')),Yes,3,"SI/Mass/Deg always 1; C/Pa/J from the unit system; src/evaluator.cpp",
 # --- Mathematical Functions: Interpolation ---,,,,,,

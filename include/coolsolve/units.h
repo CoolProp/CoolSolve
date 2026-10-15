@@ -52,13 +52,31 @@ struct UnitSystem {
 bool unitSettingActive(const std::string& setting, const UnitSystem& units);
 
 /**
- * @brief Whether `name` is the symbol of a unit that UnitConverter converts (K, C, kPa, bar, kJ, kg, m, s, kW, ...).
+ * @brief Whether `name` is the symbol of a unit that `CONVERT` knows (K, C, kPa, bar, kJ, kg, m, s, kW, hp, lbf, ...).
  *
  * Case-sensitive, spelled as in EES (`kW`, not `kw`; `J`, not `j`, which is the usual name of an index), and only
  * the units written as one identifier (not `kg/s`, `J/kg-K`). The parser uses it to recognise `a [kW]`, a unit
- * written after a variable, which has the form of the array element `a[kW]` (CS-BUG-VAR-ANNOTATION).
+ * written after a variable, which has the form of the array element `a[kW]` (CS-BUG-VAR-ANNOTATION). It is the
+ * table of unit names of unitConversionFactor.
  */
 bool isUnitName(const std::string& name);
+
+/**
+ * @brief The factor of the EES function `CONVERT('from', 'to')`: 1 [from] = factor [to].
+ *
+ * A unit string is a product of unit names with `-` or `*` between them, a quotient with `/` (everything after
+ * a `/` is in the denominator, `kJ/kg-K` is kJ/(kg*K)), `^n` for an integer power, parentheses and the number 1
+ * (`1/s`): `lbm/hr`, `W/m^2-K`, `Btu/hr-ft^2-R`, `ft^3/min`, `kg/(m-s)`. The names are the SI units with their
+ * usual prefixes, the English units of EES and others (see isUnitName); a name is matched with its exact
+ * capitalization first (`mPa` and `MPa` differ), else case-insensitively when only one unit fits. Temperature
+ * units are temperature differences (K = C, R = F = 5/9 K): `CONVERT('C','F')` is 1.8, the conversion of a
+ * temperature value with its offset is CONVERTTEMP. The result is cached per pair of strings (a constant
+ * CONVERT is evaluated at every iteration of the solver).
+ *
+ * @throws std::runtime_error "CONVERT('from','to'): <reason>" for an unknown or ambiguous unit name, a unit string
+ *         that cannot be read, or units of different dimensions ("incompatible units (energy vs. pressure)").
+ */
+double unitConversionFactor(const std::string& from, const std::string& to);
 
 class UnitConverter {
 public:

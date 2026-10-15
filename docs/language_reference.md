@@ -480,6 +480,40 @@ END
 written for; in CoolSolve such a guard never fires (the unit system is fixed).
 An unknown setting name is an error.
 
+**`CONVERT` unit strings.** The units are quoted strings (`CONVERT('lbm/hr', 'kg/s')`; the
+unquoted form of EES is not implemented). A unit string is a product of unit names with `-` or
+`*` between them, a quotient with `/` (everything after a `/` is in the denominator:
+`kJ/kg-K` is kJ/(kg·K)), `^n` for an integer power (`m^2`, `K^-1`), parentheses and the number
+1 (`1/s`): `lbm/hr`, `W/m^2-K`, `Btu/hr-ft^2-R`, `ft^3/min`, `kg/(m-s)`. The result is the
+product of the factors, checked for the dimension:
+
+```
+m1 = CONVERT('lbm/hr', 'kg/s')          {1.259978805556e-4}
+h  = CONVERT('W/m^2-K', 'Btu/hr-ft^2-R') {0.17611}
+cp = 4.18*CONVERT('kJ/kg-K', 'Btu/lbm-R')
+```
+
+- **Unit names**: the SI units with their usual prefixes (`m`, `mm`, `cm`, `km`, `g`, `kg`, `mg`,
+  `s`, `ms`, `Pa`, `kPa`, `MPa`, `mPa`, `bar`, `mbar`, `J`, `kJ`, `MJ`, `W`, `kW`, `MW`, `N`, `kN`, `L`,
+  `mol`, `kmol`, `A`, `V`, `Hz`, ...), the English and other units of EES (`lbm`, `lb`, `lbf`, `oz`,
+  `slug`, `ft`, `in`, `yd`, `mi`, `psi`, `psia`, `atm`, `torr`, `mmHg`, `inHg`, `Btu`, `cal`, `kcal`,
+  `kWh`, `hp`, `gal`, `qt`, `acre`, `lbmol`, `mph`, `knot`, `min`, `hr`, `day`, `rpm`, `rev`, `rad`,
+  `deg`, `cP`, `poise`, ...) and the long names `meter`, `inch`, `second`, `hour`, `joule`, `watt`, `pascal`,
+  `kilogram`, `gram`, `liter`. A name is read with its exact capitalization first (`mPa` and `MPa` differ,
+  `mW` and `MW`); else without regard to case when only one unit fits (`KPA`, `BTU`, `Lbm/Hr`); `mpa` is
+  ambiguous and is an error.
+- **Temperatures** inside a unit are temperature *differences* (K = C, R = F = 5/9 K), so `kJ/kg-K` and
+  `kJ/kg-C` are the same unit; a bare `CONVERT('C', 'F')` is the ratio of the degrees, 1.8 (assumption: the
+  EES help is not available to check it). The conversion of a temperature *value*, with its offset, is
+  `CONVERTTEMP`.
+- **Errors** (never a silent factor): an unknown unit name (`CONVERT('lbm/hrr','kg/s'): unknown unit 'hrr'
+  in 'lbm/hrr' (did you mean 'hr'?)`; `kg/m3` is one too, a power is written `m^3`), a unit string that
+  cannot be read (`kg//s`, `m^x`, `kg s`, an empty string), units of different dimensions (`CONVERT('kJ','Pa'): incompatible units
+  (energy vs. pressure)`). When both units are string literals the error is a parse error with the
+  line; for a unit computed at run time (a string variable of a FUNCTION) it is an evaluation error. A
+  number of arguments other than two is an evaluation error. The factor of a pair of units is computed
+  once.
+
 ---
 
 ## 3. Thermophysical property functions (CoolProp-backed)

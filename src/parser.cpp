@@ -3585,6 +3585,9 @@ private:
         
         std::string name = trim(expr.substr(0, parenStart));
         if (name.empty()) return nullptr;   // "(a + b) c": a group, not a call
+        // "2*f(x)" is no call of a function "2*f": when f(x) is refused, the whole text must be refused with
+        // the reason, not accepted as a call of an unknown function
+        if (name.find_first_of("+-*/^<>=,[]") != std::string::npos) return nullptr;
         
         // The parenthesis that closes the call: nothing but a unit annotation (handled by
         // parsePrimary) may follow it
@@ -3670,6 +3673,22 @@ private:
             }
             fc.args.push_back(argExpr);
             isFirstPositionalArg = false;
+        }
+        
+        // CONVERT('from', 'to') with literal units: an unknown unit or units of different dimensions are an error
+        // of this line, found before the solve (a unit string computed at run time is checked when evaluated)
+        if (fc.args.size() == 2 && fc.args[0]->is<StringLiteral>() && fc.args[1]->is<StringLiteral>()) {
+            std::string lower = name;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            if (lower == "convert") {
+                try {
+                    unitConversionFactor(fc.args[0]->as<StringLiteral>().value, fc.args[1]->as<StringLiteral>().value);
+                } catch (const std::runtime_error& e) {
+                    clearExpressionError();   // what is pending comes from a rejected alternative reading of the text
+                    setExpressionError(e.what());
+                    return nullptr;
+                }
+            }
         }
         
         func->node = fc;

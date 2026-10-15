@@ -19,6 +19,7 @@
 #include "coolsolve/parser.h"
 #include "coolsolve/runner.h"
 #include "coolsolve/solution_checker.h"
+#include "coolsolve/units.h"
 #include "CoolProp.h"
 
 #include <algorithm>
@@ -12230,4 +12231,299 @@ TEST_CASE("CS-BUG-VAR-ANNOTATION: the workarounds of the message solve", "[libra
     CHECK(run.verified);
     CHECK_THAT(run["y"], WithinAbs(5.0, 1e-12));
     CHECK_THAT(run["z"], WithinAbs(18000.0, 1e-9));
+}
+
+// ============================================================================
+// CS-BUG-CONVERT-UNIT: CONVERT('from', 'to') with compound units, unknown units and
+// incompatible dimensions are errors (it returned 1 for units missing from the table)
+// ============================================================================
+
+namespace {
+
+/// One CONVERT('from','to') and the factor expected (1 [from] = factor [to]).
+struct ConvertCase {
+    const char* from;
+    const char* to;
+    double factor;
+};
+
+/// Solve `x0 = convert(...)`, `x1 = ...` for the cases and check every factor (relative `tolerance`).
+void checkConvertFactors(const std::vector<ConvertCase>& cases, double tolerance) {
+    std::string code;
+    for (size_t i = 0; i < cases.size(); ++i)
+        code += "x" + std::to_string(i) + " = convert('" + cases[i].from + "', '" + cases[i].to + "')\n";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    for (size_t i = 0; i < cases.size(); ++i) {
+        INFO("CONVERT('" << cases[i].from << "', '" << cases[i].to << "') = " << std::setprecision(15) << run["x" + std::to_string(i)]
+             << ", expected " << cases[i].factor);
+        CHECK_THAT(run["x" + std::to_string(i)], WithinRel(cases[i].factor, tolerance));
+    }
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-CONVERT-UNIT: register reproducer, convert('lbm/hr','kg/s') is the EES factor",
+          "[library-gaps][convert-unit]") {
+    // was: SUCCESS with m = 1. EES: 1.259978805556e-4 (library model CSL-0123: M_dot = 0.05514989912 kg/s
+    // for the catalogue's 437.704975 lbm/hr)
+    auto run = runModel("m = convert('lbm/hr','kg/s')\nk = convert('kPa','Pa')\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["m"], WithinRel(1.259978805556e-4, 1e-9));
+    CHECK_THAT(run["k"], WithinRel(1000.0, 1e-14));
+    auto catalogue = runModel("M_lbmhr = 437.704975\nM_dot = M_lbmhr*convert('lbm/hr','kg/s')\n");
+    REQUIRE(catalogue.solveOk);
+    CHECK_THAT(catalogue["M_dot"], WithinRel(0.05514989912, 1e-8));
+}
+
+TEST_CASE("CS-BUG-CONVERT-UNIT: compound units against hand-computed factors", "[library-gaps][convert-unit]") {
+    checkConvertFactors({
+        {"lbm/hr", "kg/s", 0.45359237 / 3600.0},
+        {"kJ/kg-K", "Btu/lbm-R", 0.238845896627},            // 1 / 4.1868
+        {"W/m^2-K", "Btu/hr-ft^2-R", 0.1761101838},
+        {"ft^3/min", "m^3/s", 0.3048 * 0.3048 * 0.3048 / 60.0},
+        {"kg/m^3", "lbm/ft^3", 0.0624279605761},
+        {"ft-lbf/lbm", "kJ/kg", 0.00298906692},
+        {"kg/(m-s)", "cP", 1000.0},                          // a dynamic viscosity written as a quotient
+        {"cP", "Pa-s", 0.001},
+        {"W", "Btu/hr", 3.41214163},
+        {"J/kg", "m^2/s^2", 1.0},                            // the same dimension in other names
+        {"N-m", "J", 1.0},
+        {"kg*m/s^2", "N", 1.0},                              // `*` is a product, like `-`
+        {"1/s", "Hz", 1.0},
+        {"m^-1", "1/m", 1.0},                                // a negative power, and the number 1 as a numerator
+        {"W/(m^2-K)", "W/m^2-K", 1.0},                       // parentheses
+    }, 1e-8);
+}
+
+TEST_CASE("CS-BUG-CONVERT-UNIT: simple units, SI, English and others", "[library-gaps][convert-unit]") {
+    checkConvertFactors({
+        {"psia", "kPa", 6.894757293168},
+        {"psi", "Pa", 6894.757293168},
+        {"bar", "Pa", 1e5},
+        {"mbar", "Pa", 100.0},
+        {"atm", "kPa", 101.325},
+        {"mmHg", "kPa", 0.133322387415},
+        {"inHg", "kPa", 3.38638864},
+        {"hp", "kW", 0.745699871582},
+        {"kcal", "kJ", 4.184},
+        {"Btu", "kJ", 1.05505585},
+        {"kWh", "MJ", 3.6},
+        {"lbf", "N", 4.4482216152605},
+        {"lbm", "kg", 0.45359237},
+        {"lbmol", "kmol", 0.45359237},
+        {"gal", "L", 3.785411784},
+        {"ft", "in", 12.0},
+        {"mi", "ft", 5280.0},
+        {"in", "cm", 2.54},
+        {"hr", "s", 3600.0},
+        {"day", "hr", 24.0},
+        {"min", "s", 60.0},
+        {"rev/min", "rad/s", 0.10471975511966},
+        {"rpm", "rev/min", 1.0},
+        {"deg", "rad", 0.0174532925199433},
+        {"mph", "m/s", 0.44704},
+        {"MPa", "bar", 10.0},
+        {"kJ", "J", 1000.0},                                 // the conversions of before, unchanged
+        {"Pa", "kPa", 0.001},
+        {"kJ", "kcal", 1.0 / 4.184},
+        {"kg", "kg", 1.0},
+        {"kg/s", "kg/s", 1.0},
+        {"h", "hr", 1.0},
+    }, 1e-8);
+}
+
+TEST_CASE("CS-BUG-CONVERT-UNIT: every unit name of the table has its factor", "[library-gaps][convert-unit]") {
+    // the names that UnitConverter converts (long names and aliases included), then the others, each against
+    // a neighbour unit: a misspelt name of the table would be a factor of 1 or an error here
+    checkConvertFactors({
+        {"kilogram", "g", 1000.0}, {"gram", "mg", 1000.0}, {"lb", "kg", 0.45359237}, {"meter", "cm", 100.0},
+        {"inch", "cm", 2.54}, {"second", "ms", 1000.0}, {"sec", "s", 1.0}, {"minute", "s", 60.0}, {"hour", "min", 60.0},
+        {"pascal", "kPa", 1e-3}, {"joule", "kJ", 1e-3}, {"cal", "J", 4.184}, {"MJ", "kJ", 1000.0}, {"watt", "kW", 1e-3},
+        {"poise", "cP", 100.0}, {"centipoise", "Pa-s", 1e-3}, {"celsius", "kelvin", 1.0}, {"fahrenheit", "rankine", 1.0},
+        {"kelvin", "rankine", 1.8},
+        {"hPa", "Pa", 100.0}, {"GPa", "MPa", 1000.0}, {"torr", "Pa", 101325.0 / 760.0}, {"ksi", "psi", 1000.0},
+        {"oz", "g", 28.349523125}, {"slug", "kg", 14.5939029372064}, {"tonne", "kg", 1000.0}, {"mg", "g", 1e-3},
+        {"km", "m", 1000.0}, {"dm", "cm", 10.0}, {"um", "mm", 1e-3}, {"nm", "um", 1e-3}, {"yd", "ft", 3.0},
+        {"ms", "s", 1e-3}, {"us", "ms", 1e-3}, {"ns", "us", 1e-3}, {"week", "day", 7.0},
+        {"kgf", "N", 9.80665}, {"dyne", "N", 1e-5}, {"kN", "N", 1000.0}, {"GJ", "MJ", 1000.0}, {"Wh", "J", 3600.0},
+        {"GW", "MW", 1000.0}, {"hp", "W", 745.699871582}, {"liter", "L", 1.0}, {"litre", "L", 1.0}, {"mL", "L", 1e-3},
+        {"qt", "L", 0.946352946}, {"acre", "m^2", 4046.8564224}, {"ha", "m^2", 1e4}, {"knot", "m/s", 0.514444444},
+        {"mol", "mmol", 1000.0}, {"kmol", "mol", 1000.0}, {"A", "mA", 1000.0}, {"V", "mV", 1000.0}, {"kV", "V", 1000.0},
+        {"V", "W/A", 1.0}, {"Hz", "kHz", 1e-3}, {"rev", "rad", 6.283185307}, {"rad", "deg", 57.29577951},
+    }, 1e-8);
+}
+
+TEST_CASE("CS-BUG-CONVERT-UNIT: a temperature unit inside a unit is a temperature difference", "[library-gaps][convert-unit]") {
+    // K = C, R = F = 5/9 K: kJ/kg-K and kJ/kg-C are the same; a bare scale conversion is the ratio of the
+    // degrees (CONVERTTEMP does the conversion with the offset)
+    checkConvertFactors({
+        {"kJ/kg-K", "kJ/kg-C", 1.0},
+        {"kJ/kg-K", "Btu/lbm-F", 0.238845896627},
+        {"Btu/lbm-R", "Btu/lbm-F", 1.0},
+        {"C", "F", 1.8},
+        {"K", "R", 1.8},
+        {"F", "C", 5.0 / 9.0},
+        {"W/m-K", "Btu/hr-ft-R", 0.577789317},
+    }, 1e-8);
+}
+
+TEST_CASE("CS-BUG-CONVERT-UNIT: case of the unit names", "[library-gaps][convert-unit]") {
+    // the exact spelling first (mPa is a milli-pascal, MPa a mega-pascal), else the case-insensitive match
+    // when only one unit fits (EES unit names are not case sensitive as far as they are known)
+    checkConvertFactors({
+        {"mPa", "Pa", 1e-3},
+        {"MPa", "Pa", 1e6},
+        {"mW", "W", 1e-3},
+        {"MW", "kW", 1000.0},
+        {"mm", "m", 1e-3},
+        {"KPA", "pa", 1000.0},
+        {"BTU", "kJ", 1.05505585},
+        {"KG/S", "g/s", 1000.0},
+        {"Lbm/Hr", "kg/s", 0.45359237 / 3600.0},
+    }, 1e-8);
+    // ... and an ambiguous spelling is an error
+    const auto errors = parseErrorsWithLines("x = 1\ny = convert('mpa', 'Pa')\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0] == "2: CONVERT('mpa','Pa'): the unit 'mpa' is ambiguous (MPa, mPa): write it with its exact capitalization");
+}
+
+TEST_CASE("CS-BUG-CONVERT-UNIT: CONVERT in expressions, equations to solve and routine bodies", "[library-gaps][convert-unit]") {
+    // an unknown of the system multiplied by a factor, a function written in any case, a user FUNCTION
+    auto run = runModel(
+        "x*Convert('kJ','J') = 5000\n"
+        "P = 3.5*CONVERT('bar', 'Pa')\n"
+        "FUNCTION f(a)\n"
+        "  f = a*convert('lbm/hr','kg/s')\n"
+        "END\n"
+        "PROCEDURE p(a : b)\n"
+        "  b = a*convert('kJ/kg-K','Btu/lbm-R')\n"
+        "END\n"
+        "y = f(437.704975)\n"
+        "CALL p(4.1868 : z)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["P"], WithinRel(3.5e5, 1e-14));
+    CHECK_THAT(run["y"], WithinRel(0.05514989912, 1e-8));
+    CHECK_THAT(run["z"], WithinRel(1.0, 1e-8));
+}
+
+TEST_CASE("CS-BUG-CONVERT-UNIT: a unit string computed at run time is converted too", "[library-gaps][convert-unit]") {
+    // the units are string inputs of a FUNCTION, upper-cased at run time
+    const std::string fac =
+        "FUNCTION fac(u$, w$)\n"
+        "  v$ = uppercase$(u$)\n"
+        "  fac = convert(v$, w$)\n"
+        "END\n";
+    auto run = runModel(fac + "m = fac('lbm/hr', 'kg/s')\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["m"], WithinRel(0.45359237 / 3600.0, 1e-12));
+    // ... with the same errors, at the evaluation
+    auto unknown = runModel(fac + "m = fac('foo', 'kg/s')\n");
+    CHECK_FALSE(unknown.solveOk);
+    CHECK(unknown.message.find("CONVERT('FOO','kg/s'): unknown unit 'FOO'") != std::string::npos);
+    auto mismatch = runModel(fac + "m = fac('kj', 'Pa')\n");
+    CHECK_FALSE(mismatch.solveOk);
+    CHECK(mismatch.message.find("CONVERT('KJ','Pa'): incompatible units (energy vs. pressure)") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-CONVERT-UNIT: an unknown unit is a parse error with the line", "[library-gaps][convert-unit]") {
+    // was: SUCCESS with 1
+    CHECK(parseErrorsWithLines("x = 1\nm = convert('lbm/hrr','kg/s')\n") ==
+          std::vector<std::string>{"2: CONVERT('lbm/hrr','kg/s'): unknown unit 'hrr' in 'lbm/hrr' (did you mean 'hr'?)"});
+    CHECK(parseErrorsWithLines("m = convert('kg', 'furlong')\n") ==
+          std::vector<std::string>{"1: CONVERT('kg','furlong'): unknown unit 'furlong'"});
+    CHECK(parseErrorsWithLines("m = convert('lbm/stone', 'kg')\n") ==
+          std::vector<std::string>{"1: CONVERT('lbm/stone','kg'): unknown unit 'stone' in 'lbm/stone'"});
+    // a power written without ^
+    CHECK(parseErrorsWithLines("m = convert('kg/m3', 'kg/m^3')\n") ==
+          std::vector<std::string>{"1: CONVERT('kg/m3','kg/m^3'): unknown unit 'm3' in 'kg/m3' (write 'm^3' for a power)"});
+    // inside the body of a routine: the line of the body
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  b = 2\n  f = a*convert('foo','kg')\nEND\ny = f(1)\n") ==
+          std::vector<std::string>{"3: CONVERT('foo','kg'): unknown unit 'foo'"});
+    // the call is the operand of an operator, as in the catalogue of CSL-0123 (M_lbmhr*convert(...)): the error of
+    // the call is the one reported (the text was taken for a call of a function named '2*convert')
+    CHECK(parseErrorsWithLines("y = 2*convert('foo','kg')\n") ==
+          std::vector<std::string>{"1: CONVERT('foo','kg'): unknown unit 'foo'"});
+    CHECK(parseErrorsWithLines("a = 3\ny = a*convert('kJ','Pa') + 1\n") ==
+          std::vector<std::string>{"2: CONVERT('kJ','Pa'): incompatible units (energy vs. pressure)"});
+    CHECK(parseErrorsWithLines("y = 1 + max(a=1, 2)\n") ==
+          std::vector<std::string>{"1: max does not take named arguments ('a=1'); only the thermophysical property "
+                                   "functions do, e.g. enthalpy(Water, T=20, P=1E5)"});
+    // the system is not solved: no number is produced
+    auto run = runModel("m = convert('lbm/hrr','kg/s')\n");
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+}
+
+TEST_CASE("CS-BUG-CONVERT-UNIT: units of other dimensions are an error", "[library-gaps][convert-unit]") {
+    // was: 1000 (the unknown target was passed through)
+    CHECK(parseErrorsWithLines("x = 1\nm = convert('kJ','Pa')\n") ==
+          std::vector<std::string>{"2: CONVERT('kJ','Pa'): incompatible units (energy vs. pressure)"});
+    CHECK(parseErrorsWithLines("m = convert('lbm/hr','kg')\n") ==
+          std::vector<std::string>{"1: CONVERT('lbm/hr','kg'): incompatible units (mass flow rate vs. mass)"});
+    CHECK(parseErrorsWithLines("m = convert('kJ/kg-K','kJ/kg')\n") ==
+          std::vector<std::string>{"1: CONVERT('kJ/kg-K','kJ/kg'): incompatible units (specific heat vs. specific energy)"});
+    CHECK(parseErrorsWithLines("m = convert('m','s')\n") ==
+          std::vector<std::string>{"1: CONVERT('m','s'): incompatible units (length vs. time)"});
+    // a dimension that has no name is written with the SI base units
+    CHECK(parseErrorsWithLines("m = convert('m^3/kg','kg')\n") ==
+          std::vector<std::string>{"1: CONVERT('m^3/kg','kg'): incompatible units (m^3/kg vs. mass)"});
+    // a force is not a mass (lbf, lbm), nor an angle a length
+    CHECK(parseErrorsWithLines("m = convert('lbf','lbm')\n") ==
+          std::vector<std::string>{"1: CONVERT('lbf','lbm'): incompatible units (force vs. mass)"});
+    CHECK(parseErrorsWithLines("m = convert('rad','m')\n") ==
+          std::vector<std::string>{"1: CONVERT('rad','m'): incompatible units (dimensionless vs. length)"});
+}
+
+TEST_CASE("CS-BUG-CONVERT-UNIT: malformed unit strings and wrong arity are errors", "[library-gaps][convert-unit]") {
+    for (const char* bad : {"kg//s", "kg/", "/s", "(kg", "kg)", "m^x", "m^2.5", "m^", "", "kg s", "kg-", "2/s", "kg.m"}) {
+        INFO("unit string '" << bad << "'");
+        const auto errors = parseErrorsWithLines(std::string("m = convert('") + bad + "','kg')\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].rfind(std::string("1: CONVERT('") + bad + "','kg'): ", 0) == 0);
+    }
+    CHECK(parseErrorsWithLines("m = convert('kg', 's^x')\n") ==
+          std::vector<std::string>{"1: CONVERT('kg','s^x'): invalid unit 's^x': the exponent after '^' must be an integer"});
+    CHECK(parseErrorsWithLines("m = convert('', 'kg')\n") ==
+          std::vector<std::string>{"1: CONVERT('','kg'): invalid unit '': a unit name is expected"});
+    // wrong arity: an error, not a factor
+    for (const char* call : {"convert('kJ')", "convert('kJ','J','x')", "convert()"}) {
+        INFO(call);
+        auto run = runModel(std::string("m = ") + call + "\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("convert") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-BUG-CONVERT-UNIT: isUnitName stays consistent with the units of CONVERT", "[library-gaps][convert-unit]") {
+    // every one-identifier unit symbol that the parser takes for a unit is a unit that CONVERT knows ...
+    const std::vector<std::string> symbols = {
+        "K", "C", "F", "R", "Pa", "kPa", "MPa", "bar", "atm", "psi", "psia", "J", "kJ", "MJ", "cal", "kcal", "Btu",
+        "kg", "g", "lb", "lbm", "m", "cm", "mm", "ft", "in", "s", "sec", "min", "h", "hr", "W", "kW", "MW", "cP",
+        "hp", "lbf", "N", "kN", "L", "gal", "mol", "kmol", "lbmol", "day", "mi", "mbar", "mmHg", "inHg", "rpm"};
+    std::string code;
+    for (size_t i = 0; i < symbols.size(); ++i) {
+        INFO(symbols[i]);
+        CHECK(isUnitName(symbols[i]));
+        code += "x" + std::to_string(i) + " = convert('" + symbols[i] + "', '" + symbols[i] + "')\n";
+    }
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    for (size_t i = 0; i < symbols.size(); ++i) CHECK_THAT(run["x" + std::to_string(i)], WithinAbs(1.0, 1e-15));
+    // ... and a name that CONVERT does not know, a compound unit and the usual index names are none
+    for (const char* name : {"j", "k", "c", "i", "n", "foo", "kg/s", "J/kg-K", "psig", "furlong"}) {
+        INFO(name);
+        CHECK_FALSE(isUnitName(name));
+    }
 }

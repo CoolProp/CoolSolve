@@ -998,32 +998,11 @@ static bool isLookupFunction(const std::string& lowerName) {
         }
     }
     
-    // CONVERT('from', 'to') — returns conversion factor so that 1 [from] = factor [to]
+    // CONVERT('from', 'to') — returns conversion factor so that 1 [from] = factor [to]; an unknown unit or
+    // units of different dimensions are an error (the parser has already checked literal units)
     if (name == "convert" && func.args.size() == 2) {
-        std::string fromUnit = evaluateString(func.args[0]);
-        std::string toUnit = evaluateString(func.args[1]);
-        // Find which UnitType these units belong to, then compute factor
-        auto tryConvert = [&](UnitType type) -> double {
-            double fromSI = UnitConverter::toSI(1.0, type, fromUnit);
-            double toVal = UnitConverter::fromSI(fromSI, type, toUnit);
-            return toVal;
-        };
-        // Try all unit types to find a matching pair
-        static const UnitType types[] = {
-            UnitType::Energy, UnitType::Pressure, UnitType::Mass, UnitType::Length,
-            UnitType::Time, UnitType::Power, UnitType::SpecificHeat, UnitType::SpecificEnergy,
-            UnitType::SpecificEntropy, UnitType::Conductivity, UnitType::Viscosity,
-            UnitType::Density, UnitType::Dimensionless
-        };
-        for (auto type : types) {
-            double factor = tryConvert(type);
-            // If the factor differs from 1.0, we found a real conversion
-            if (std::abs(factor - 1.0) > 1e-15) {
-                return ADValue::constant(factor, numVariables_);
-            }
-        }
-        // If no conversion found, return 1.0 (same units)
-        return ADValue::constant(1.0, numVariables_);
+        const double factor = unitConversionFactor(evaluateString(func.args[0]), evaluateString(func.args[1]));
+        return ADValue::constant(factor, numVariables_);
     }
     
     // CONVERTTEMP('from', 'to', value) — converts a temperature value between scales
