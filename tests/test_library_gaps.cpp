@@ -16116,3 +16116,213 @@ dh = enthalpy(H2O,T=T_x) - enthalpy(H2O,T=25)
     REQUIRE(unknown.solveOk);
     CHECK(unknown.verified);
 }
+
+// ============================================================================
+// CS-GAP-END-PROCEDURE: END PROCEDURE / END FUNCTION and the named terminator END <name> of a
+// FUNCTION or PROCEDURE body (it was "Could not parse line", and the next routines were read into the body)
+// ============================================================================
+
+TEST_CASE("CS-GAP-END-PROCEDURE: register reproducers (EES: x = 6, z = 4)", "[library-gaps][end-procedure]") {
+    SECTION("`End procedure` closes the procedure, the function that follows is registered and called") {
+        // was: "Line 3: Could not parse line", then "Function 'g' missing END"-like errors
+        auto run = runModel("procedure s(a:y)\ny=a+1\nEnd procedure\nFunction g(z)\ng=z*2\nEnd\nx=g(3)\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["x"], WithinAbs(6.0, 1e-12));   // the register's 8 is a slip: g(3) = 6
+    }
+    SECTION("`END p` closes the procedure p (the PV_model.EES pattern)") {
+        // was: "Procedure 'p' missing END"
+        auto run = runModel("PROCEDURE p(x:y)\ny=2*x\nEND p\nCALL p(2:z)\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["z"], WithinAbs(4.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-END-PROCEDURE: the kind word, in any case and spacing, and a comment after the terminator",
+          "[library-gaps][end-procedure]") {
+    // a procedure then a function, each followed by the other so that a missed terminator swallows it
+    const std::string call = "CALL p(2:z)\nx = g(3)\n";
+    for (const std::string pend : {"END PROCEDURE", "end procedure", "End Procedure", "END   PROCEDURE", "\tEnd\tprocedure  ",
+                                   "END PROCEDURE // done", "End procedure \"done\"", "end procedure {done}"}) {
+        for (const std::string fend : {"END FUNCTION", "end function", "End Function", "END FUNCTION // done", "End function \"done\""}) {
+            INFO("terminators: " << pend << " | " << fend);
+            const std::string code = "PROCEDURE p(a:b)\nb=a+1\n" + pend + "\nFUNCTION g(a)\ng=a*2\n" + fend + "\n" + call;
+            auto run = runModel(code);
+            REQUIRE(run.parseOk);
+            REQUIRE(run.solveOk);
+            CHECK_THAT(run["z"], WithinAbs(3.0, 1e-12));
+            CHECK_THAT(run["x"], WithinAbs(6.0, 1e-12));
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-END-PROCEDURE: END <name> with the name of the routine, in any case, with a comment after it",
+          "[library-gaps][end-procedure]") {
+    const std::string call = "CALL p(2:z)\nx = g(3)\n";
+    for (const std::string pend : {"END p", "End P", "end p", "END p // done", "END p \"done\"", "END p {done}", "  END   p   "}) {
+        for (const std::string fend : {"END g", "End G", "END g // done"}) {
+            INFO("terminators: " << pend << " | " << fend);
+            auto run = runModel("PROCEDURE p(a:b)\nb=a+1\n" + pend + "\nFUNCTION g(a)\ng=a*2\n" + fend + "\n" + call);
+            REQUIRE(run.parseOk);
+            REQUIRE(run.solveOk);
+            CHECK_THAT(run["z"], WithinAbs(3.0, 1e-12));
+            CHECK_THAT(run["x"], WithinAbs(6.0, 1e-12));
+        }
+    }
+    SECTION("the routines that follow are all registered, whatever the terminators") {
+        auto run = runModel("PROCEDURE p1(a:b)\nb=a+1\nEND p1\nFunction f2(a)\nf2=a*2\nEnd Function\n"
+                            "Procedure p3(a:b)\nb=a-1\nEnd procedure\nFUNCTION f4(a)\nf4=a^2\nEND f4\n"
+                            "CALL p1(1:u)\nv = f2(u)\nCALL p3(v:w)\nt = f4(w)\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["t"], WithinAbs(9.0, 1e-12));   // u = 2, v = 4, w = 3
+    }
+}
+
+TEST_CASE("CS-GAP-END-PROCEDURE: a DUPLICATE inside the routine is closed by END, the routine by END <name>",
+          "[library-gaps][end-procedure]") {
+    SECTION("procedure with a DUPLICATE, `END` for the loop, `END name` for the procedure") {
+        auto run = runModel("PROCEDURE sq(n:s)\ns = 0\nDUPLICATE i = 1, 3\n  s = s + i^2\nEND\nEND sq\nCALL sq(3:t)\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["t"], WithinAbs(14.0, 1e-12));
+    }
+    SECTION("nested loops and an IF block, `END FUNCTION` for the function, then another routine") {
+        auto run = runModel("FUNCTION f(n)\ns = 0\nDUPLICATE i = 1, n\n  DUPLICATE j = 1, i\n    IF (j = i) THEN\n"
+                            "      s = s + 1\n    ENDIF\n  END\nEND\nf = s\nEND FUNCTION\n"
+                            "Function g(a)\ng = a + 1\nEnd g\nx = g(f(4))\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(5.0, 1e-12));
+    }
+    SECTION("a REPEAT loop, then `END name`") {
+        auto run = runModel("FUNCTION nsteps(a)\nk = 0\nx = a\nREPEAT\n  x = x/2\n  k = k + 1\nUNTIL (x < 1)\nnsteps = k\nEND nsteps\n"
+                            "n = nsteps(10)\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["n"], WithinAbs(4.0, 1e-12));
+    }
+    SECTION("a routine closed by END name after an IF block closed by ENDIF") {
+        auto run = runModel("FUNCTION sgn(a)\nIF (a > 0) THEN\n  sgn = 1\nELSE\n  sgn = -1\nENDIF\nEND sgn\ny = sgn(-3)\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(-1.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-END-PROCEDURE: an END that names another routine or another kind is an error",
+          "[library-gaps][end-procedure]") {
+    using Messages = std::vector<std::string>;
+    const std::string call = "CALL p(2:z)\n";
+    SECTION("END <other name> in a PROCEDURE") {
+        CHECK(parseErrorsWithLines("PROCEDURE p(x:y)\ny=2*x\nEND foo\n" + call) ==
+              Messages{"3: END foo does not close PROCEDURE p"});
+        auto run = runModel("PROCEDURE p(x:y)\ny=2*x\nEND foo\n" + call);
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "END foo does not close PROCEDURE p"));
+    }
+    SECTION("END <other name> in a FUNCTION, whatever the case of the keyword") {
+        CHECK(parseErrorsWithLines("FUNCTION g(a)\ng=a\nend p\nx = g(1)\n") == Messages{"3: END p does not close FUNCTION g"});
+        CHECK(parseErrorsWithLines("FUNCTION g(a)\ng=a\nEnd Foo // closes\nx = g(1)\n") ==
+              Messages{"3: END Foo does not close FUNCTION g"});
+    }
+    SECTION("the name of the previous routine is not the name of this one") {
+        CHECK(parseErrorsWithLines("PROCEDURE p(x:y)\ny=2*x\nEND p\nPROCEDURE q(x:y)\ny=3*x\nEND p\nCALL q(1:z)\n") ==
+              Messages{"6: END p does not close PROCEDURE q"});
+    }
+    SECTION("the kind must be that of the routine") {
+        CHECK(parseErrorsWithLines("PROCEDURE p(x:y)\ny=2*x\nEND FUNCTION\n" + call) ==
+              Messages{"3: END FUNCTION does not close PROCEDURE p"});
+        CHECK(parseErrorsWithLines("FUNCTION g(a)\ng=a\nEnd Procedure\nx = g(1)\n") ==
+              Messages{"3: END Procedure does not close FUNCTION g"});
+    }
+    SECTION("other words after END (END IF, END DUPLICATE, END MODULE) do not close a routine either") {
+        for (const std::string w : {"IF", "DUPLICATE", "REPEAT", "SUBPROGRAM", "MODULE", "i"}) {
+            INFO("END " << w);
+            CHECK(parseErrorsWithLines("PROCEDURE p(x:y)\ny=2*x\nEND " + w + "\n" + call) ==
+                  Messages{"3: END " + w + " does not close PROCEDURE p"});
+        }
+    }
+    SECTION("more than one word after END is no terminator") {
+        CHECK(parseErrorsWithLines("PROCEDURE p(x:y)\ny=2*x\nEND PROCEDURE p\n" + call) ==
+              Messages{"3: Could not parse line", "1: Procedure 'p' missing END"});
+    }
+}
+
+TEST_CASE("CS-GAP-END-PROCEDURE: END <name> does not close a DUPLICATE or a REPEAT inside the routine",
+          "[library-gaps][end-procedure]") {
+    using Messages = std::vector<std::string>;
+    // only the routine level accepts a named END; the loop is closed by a bare END
+    const std::string loopOpen = ": a DUPLICATE or REPEAT loop is still open (a DUPLICATE ends with END, a REPEAT with UNTIL(condition))";
+    const std::string head = "PROCEDURE p(n:s)\ns = 0\nDUPLICATE i = 1, n\n  s = s + i\n";
+    auto errors = parseErrorsWithLines(head + "END p\nEND\nCALL p(3:t)\n");
+    REQUIRE_FALSE(errors.empty());
+    CHECK(errors[0] == "5: END p does not close PROCEDURE p" + loopOpen);
+    errors = parseErrorsWithLines(head + "END i\nEND\nCALL p(3:t)\n");
+    REQUIRE_FALSE(errors.empty());
+    CHECK(errors[0] == "5: END i does not close PROCEDURE p" + loopOpen);
+    // an IF block inside the loop does not change that
+    errors = parseErrorsWithLines("PROCEDURE p(n:s)\ns = 0\nDUPLICATE i = 1, n\n  IF (i > 1) THEN\n    s = s + i\n  ENDIF\nEND PROCEDURE\n"
+                                  "END\nCALL p(3:t)\n");
+    REQUIRE_FALSE(errors.empty());
+    CHECK(errors[0] == "7: END PROCEDURE does not close PROCEDURE p" + loopOpen);
+    // a REPEAT is closed by UNTIL
+    errors = parseErrorsWithLines("FUNCTION f(a)\nx = a\nREPEAT\n  x = x/2\nEND f\nUNTIL (x < 1)\nf = x\nEND\ny = f(1)\n");
+    REQUIRE_FALSE(errors.empty());
+    CHECK(errors[0] == "5: END f does not close FUNCTION f" + loopOpen);
+    // a loop that is closed leaves the routine level free again
+    CHECK(parseErrorsWithLines(head + "END\nEND p\nCALL p(3:t)\n").empty());
+}
+
+TEST_CASE("CS-GAP-END-PROCEDURE: a named END at the routine level of an unclosed IF is the error of a bare END",
+          "[library-gaps][end-procedure]") {
+    // the IF block is not closed: END ends the routine and the IF is reported, whichever the form of the END
+    const std::string body = "FUNCTION f(a)\nIF (a > 0) THEN\n  f = 1\n";
+    const std::string tail = "x = f(1)\n";
+    const auto bare = parseErrorsWithLines(body + "END\n" + tail);
+    REQUIRE_FALSE(bare.empty());
+    CHECK(anyContains(bare, "IF ... THEN without a matching ENDIF"));
+    CHECK(parseErrorsWithLines(body + "END f\n" + tail) == bare);
+    CHECK(parseErrorsWithLines(body + "END FUNCTION\n" + tail) == bare);
+}
+
+TEST_CASE("CS-GAP-END-PROCEDURE: variables named end... are still equations", "[library-gaps][end-procedure]") {
+    SECTION("main program") {
+        auto run = runModel("end_T = 3\nEnd2 = end_T + 1\nendif_x = 2\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["end2"], WithinAbs(4.0, 1e-12));
+        CHECK_THAT(run["endif_x"], WithinAbs(2.0, 1e-12));
+    }
+    SECTION("inside a function and a procedure, before the terminator") {
+        auto run = runModel("FUNCTION f(a)\nend_T = a + 1\nend = end_T*2\nf = end\nEND f\n"
+                            "PROCEDURE p(a:b)\nend_x = a\nb = end_x - 1\nEND p\n"
+                            "y = f(2)\nCALL p(5:z)\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(6.0, 1e-12));
+        CHECK_THAT(run["z"], WithinAbs(4.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-END-PROCEDURE: outside a routine END <word> stays a parse error", "[library-gaps][end-procedure]") {
+    using Messages = std::vector<std::string>;
+    // a stray terminator in the main program
+    CHECK(parseErrorsWithLines("x = 1\nEND p\n") == Messages{"2: Could not parse line"});
+    CHECK(parseErrorsWithLines("x = 1\nEND PROCEDURE\n") == Messages{"2: Could not parse line"});
+    CHECK(parseErrorsWithLines("x = 1\nEND\n") == Messages{"2: Could not parse line"});
+    // the routine is already closed
+    CHECK(parseErrorsWithLines("PROCEDURE p(x:y)\ny=2*x\nEND\nEND p\nCALL p(2:z)\n") == Messages{"4: Could not parse line"});
+    // a DUPLICATE of the main program
+    CHECK(parseErrorsWithLines("DUPLICATE i = 1, 2\n  x[i] = i\nEND i\n") ==
+          Messages{"3: Could not parse line", "1: DUPLICATE missing END"});
+    // MODULE and SUBPROGRAM are not supported (CS-GAP-MODULE): the errors are those of before
+    CHECK(parseErrorsWithLines("MODULE m(a:b)\n b=a\nEND m\nx=1\n") ==
+          Messages{"1: Construct 'MODULE' is not yet handled by coolsolve", "3: Could not parse line"});
+    CHECK(parseErrorsWithLines("SUBPROGRAM s(a:b)\n b=a\nEND SUBPROGRAM\nx=1\n") ==
+          Messages{"1: Construct 'SUBPROGRAM' is not yet handled by coolsolve", "3: Could not parse line"});
+}

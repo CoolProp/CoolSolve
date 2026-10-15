@@ -1155,6 +1155,25 @@ blank lines and directives are not statements. The `END` that closes the
 body may be followed by a comment (`END // area`). `GOTO` and numeric statement
 labels (`10:`) are supported in a body, see §6 (*GOTO and statement labels*).
 
+The `END` of a `FUNCTION` or `PROCEDURE` may also name the routine, as EES allows: the kind
+(`END FUNCTION`, `End procedure`) or its own name (`END area`), in any case, with an optional
+comment after it. A different name or kind (`END foo` in `PROCEDURE p`, `END FUNCTION` closing
+a `PROCEDURE`) is the error *"END foo does not close PROCEDURE p"*, with its line. Inside the
+body a `DUPLICATE` is still closed by a bare `END` (and a `REPEAT` by `UNTIL`): a named `END`
+while a loop is open is an error too. `END MODULE` and `END SUBPROGRAM` stay unsupported
+(MODULE and SUBPROGRAM are not handled).
+
+```ees
+PROCEDURE divmod(x, y : quotient, remainder)
+    quotient  = FLOOR(x / y)
+    remainder = x - quotient * y
+END divmod
+
+FUNCTION area(width, height)
+    area = width * height
+End Function
+```
+
 ### Procedures
 
 ```ees

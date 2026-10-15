@@ -466,6 +466,8 @@ private:
     int procedureBodyDepth_ = 0;
     // The routine whose body is being parsed ("FUNCTION" or "PROCEDURE", and its name).
     std::string routineKind_, routineName_;
+    // Number of DUPLICATE / REPEAT loops being parsed (see parseRoutineEnd).
+    int loopDepth_ = 0;
     // Text that follows `ENDIF;` on a body line, returned by nextBodyLine before the stream is read.
     std::string pendingBodyText_;
     int lastIgnoredEndifLine_ = 0;  // the line of the last ENDIF ignored in a body (one warning per line)
@@ -1218,7 +1220,9 @@ private:
         const int startLine = lineNumber;
         std::vector<StmtPtr> repBody;
         ExprPtr condition;
+        loopDepth_++;
         std::string term = parseBodyLines(stream, lineNumber, repBody, result, &condition);
+        loopDepth_--;
         if (term == "UNTIL" && condition) {
             body.push_back(makeRepeatUntil(repBody, condition, startLine));
         } else {
@@ -1256,13 +1260,43 @@ private:
             return;
         }
         std::vector<StmtPtr> loopBody;
+        loopDepth_++;
         const std::string term = parseBodyLines(stream, lineNumber, loopBody, result);
+        loopDepth_--;
         if (term == "END") {
             body.push_back(makeDuplicate(iterVar, startExpr, endExpr, loopBody, startLine));
             duplicateSeen_ = true;
         } else {
             result.errors.push_back({startLine, 0, "DUPLICATE missing END", line});
         }
+    }
+
+    /// Reads the body line `code` (trimmed, comments removed) as a terminator of the FUNCTION or PROCEDURE being
+    /// parsed, other than the bare `END`: `END FUNCTION`, `END PROCEDURE` (the kind of the routine) or `END <name>`
+    /// (its name), in any case, as EES accepts them (CS-GAP-END-PROCEDURE). False when `code` is not `END` followed
+    /// by one word (`END = 3`, `END a b`, `END_T = 3`). When it is, the line is the end of the body, and an
+    /// error is reported (and the body ended all the same) if the word names another routine or kind, or if a
+    /// DUPLICATE or REPEAT loop is still open: the loop ends with a bare END (or UNTIL), never with a named one.
+    bool parseRoutineEnd(const std::string& code, int lineNumber, const std::string& line, ParseResult& result) {
+        auto upper = [](std::string text) {
+            std::transform(text.begin(), text.end(), text.begin(), ::toupper);
+            return text;
+        };
+        if (code.size() < 5 || (code[0] | 0x20) != 'e' || upper(code.substr(0, 3)) != "END" ||
+            !std::isspace(static_cast<unsigned char>(code[3])))
+            return false;
+        const std::string word = trim(code.substr(3));
+        if (std::isdigit(static_cast<unsigned char>(word[0])) ||
+            !std::all_of(word.begin(), word.end(), [](char c) { return isIdentChar(c); }))
+            return false;
+        const std::string upperWord = upper(word);
+        const bool closesRoutine = upperWord == routineKind_ || upperWord == upper(routineName_);
+        if (closesRoutine && loopDepth_ == 0) return true;
+        std::string message = "END " + word + " does not close " + routineKind_ + " " + routineName_;
+        if (loopDepth_ > 0)
+            message += ": a DUPLICATE or REPEAT loop is still open (a DUPLICATE ends with END, a REPEAT with UNTIL(condition))";
+        result.errors.push_back({lineNumber, 0, message, line});
+        return true;
     }
 
     // ========================================================================
@@ -1302,6 +1336,7 @@ private:
             std::string codeBody = code;
             std::transform(codeBody.begin(), codeBody.end(), codeBody.begin(), ::toupper);
             if (codeBody == "END") return "END";
+            if (procedureBodyDepth_ > 0 && parseRoutineEnd(code, lineNumber, bodyLine, result)) return "END";
 
             // Check for UNTIL(condition); a ')' in a comment after the condition is not its closing parenthesis
             if (isBodyKeyword("UNTIL")) {
