@@ -8,6 +8,7 @@
 #include "coolsolve/user_hints.h"
 #include <peglib.h>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <algorithm>
 #include <cctype>
@@ -488,6 +489,7 @@ private:
                 "parser", comments_.quoteOpenLine, 0);
         }
         result.totalLines = lineNumber;
+        checkRoutineCycles(result, preprocessed);
         if (result.errors.empty() && (rangeSeen_ || duplicateSeen_ || indexedAggregateSeen_ || !userConstants_.empty()))
             resolveCompileTimeValues(result, preprocessed);
         // Success if no errors AND we found something valid
@@ -746,6 +748,150 @@ private:
         return message + "only the thermophysical property functions do, e.g. enthalpy(Water, T=20, P=1E5)";
     }
 
+    /// Receives the calls found by forEachCall: the name, whether it is a CALL statement (false: a call in an
+    /// expression, `f(x)`) and the line.
+    using CallVisitor = std::function<void(const std::string& name, bool isCallStatement, int line)>;
+
+    /// Every call of an expression, the calls in the arguments of a call and in the indices of a variable
+    /// included, outermost first.
+    static void forEachCall(const ExprPtr& expr, const CallVisitor& visit) {
+        if (!expr) return;
+        std::visit([&](const auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, FunctionCall>) {
+                visit(node.name, false, expr->sourceLineNumber);
+                for (const auto& arg : node.args) forEachCall(arg, visit);
+                for (const auto& [k, v] : node.namedArgs) forEachCall(v, visit);
+            } else if constexpr (std::is_same_v<T, UnaryOp>) {
+                forEachCall(node.operand, visit);
+            } else if constexpr (std::is_same_v<T, BinaryOp>) {
+                forEachCall(node.left, visit);
+                forEachCall(node.right, visit);
+            } else if constexpr (std::is_same_v<T, Variable>) {
+                for (const auto& idx : node.indices) forEachCall(idx, visit);
+            }
+        }, expr->node);
+    }
+
+    /// Every call of a statement and of the statements nested in it (IF branches, loop bodies, bodies of
+    /// routines): the calls of its expressions and its CALL statements.
+    static void forEachCall(const StmtPtr& stmt, const CallVisitor& visit) {
+        if (!stmt) return;
+        std::visit([&](const auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, Equation> || std::is_same_v<T, Assignment>) {
+                forEachCall(node.lhs, visit);
+                forEachCall(node.rhs, visit);
+            } else if constexpr (std::is_same_v<T, IfThenElse>) {
+                forEachCall(node.condition, visit);
+                for (const auto& s : node.thenBranch) forEachCall(s, visit);
+                for (const auto& s : node.elseBranch) forEachCall(s, visit);
+            } else if constexpr (std::is_same_v<T, Duplicate>) {
+                forEachCall(node.start, visit);
+                forEachCall(node.end, visit);
+                for (const auto& s : node.body) forEachCall(s, visit);
+            } else if constexpr (std::is_same_v<T, RepeatUntil>) {
+                forEachCall(node.condition, visit);
+                for (const auto& s : node.body) forEachCall(s, visit);
+            } else if constexpr (std::is_same_v<T, ProcedureCall>) {
+                visit(node.name, true, stmt->sourceLineNumber);
+                for (const auto& arg : node.inputArgs) forEachCall(arg, visit);
+                for (const auto& out : node.outputExprs) forEachCall(out, visit);
+                for (const auto& out : node.outputVars)
+                    for (const auto& idx : out.indices) forEachCall(idx, visit);
+            } else if constexpr (std::is_same_v<T, FunctionDefinition> || std::is_same_v<T, ProcedureDefinition>) {
+                for (const auto& s : node.body) forEachCall(s, visit);
+            }
+        }, stmt->node);
+    }
+
+    // ------------------------------------------------------------------------
+    // Call cycles between routines (CS-BUG-RECURSION-CRASH)
+    //
+    // EES does not allow recursion ("Recursive calls in which a function calls itself are, however, not
+    // allowed", Internal Functions), and a body that calls itself, directly or through other routines,
+    // overflowed the stack and killed the process. A cycle in the graph "routine R calls routine S" is
+    // therefore a parse error, one per cycle found, with the line of the call that closes it. The nodes
+    // are the FUNCTIONs and PROCEDUREs of the model; a call that names none of them (a built-in, a
+    // property function, an unknown name) is no edge. A call goes where the evaluator sends it: a call in
+    // an expression to the FUNCTION of that name or else to the PROCEDURE (the inline form `y = p(x)`),
+    // a CALL statement to the PROCEDURE, so that a FUNCTION and a PROCEDURE of the same name are distinct
+    // routines and a model PROCEDURE Colebrook (which replaces the built-in) is a node like any other.
+    // ------------------------------------------------------------------------
+    void checkRoutineCycles(ParseResult& result, const std::string& source) {
+        struct Routine {
+            std::string label;                           // "FUNCTION f"
+            std::vector<std::pair<int, int>> calls;      // (callee, line of its first call here)
+            int state = 0;                               // 0 not visited, 1 on the search path, 2 done
+        };
+        std::vector<Routine> routines;
+        std::map<std::string, int, CaseInsensitiveLess> functions, procedures;   // name -> index in `routines`
+        auto defined = [&](const StmtPtr& stmt) -> int {   // the routine a definition declares (added if new), -1 if none
+            const bool isFunction = stmt->is<FunctionDefinition>();
+            if (!isFunction && !stmt->is<ProcedureDefinition>()) return -1;
+            const std::string& name = isFunction ? stmt->as<FunctionDefinition>().name : stmt->as<ProcedureDefinition>().name;
+            auto& byName = isFunction ? functions : procedures;
+            auto [it, isNew] = byName.emplace(name, static_cast<int>(routines.size()));
+            if (isNew) routines.push_back({std::string(isFunction ? "FUNCTION " : "PROCEDURE ") + name, {}, 0});
+            return it->second;
+        };
+        for (const auto& stmt : result.program.statements) defined(stmt);
+        if (routines.empty()) return;
+
+        for (const auto& stmt : result.program.statements) {
+            const int caller = defined(stmt);
+            if (caller < 0) continue;
+            const auto& body = stmt->is<FunctionDefinition>() ? stmt->as<FunctionDefinition>().body
+                                                              : stmt->as<ProcedureDefinition>().body;
+            for (const auto& inner : body) {
+                forEachCall(inner, [&](const std::string& name, bool isCallStatement, int line) {
+                    int callee = -1;
+                    auto function = functions.find(name);
+                    if (!isCallStatement && function != functions.end()) {
+                        callee = function->second;
+                    } else {
+                        std::string lower = name;
+                        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+                        auto procedure = procedures.find(name);
+                        // the built-in psychprops always runs, whatever the model defines under that name
+                        if (lower != "psychprops" && procedure != procedures.end()) callee = procedure->second;
+                    }
+                    if (callee < 0) return;
+                    auto& calls = routines[caller].calls;
+                    const bool known = std::any_of(calls.begin(), calls.end(), [&](const auto& c) { return c.first == callee; });
+                    if (!known) calls.emplace_back(callee, line);
+                });
+            }
+        }
+
+        std::vector<int> path;   // the routines being searched, the last one calls the next
+        std::function<void(int)> search = [&](int node) {
+            routines[node].state = 1;
+            path.push_back(node);
+            for (const auto& [callee, line] : routines[node].calls) {
+                if (routines[callee].state == 0) {
+                    search(callee);
+                } else if (routines[callee].state == 1) {   // back to a routine of the path: a cycle
+                    auto first = std::find(path.begin(), path.end(), callee);
+                    std::string message;
+                    if (first + 1 == path.end()) {
+                        message = "Recursive call: " + routines[callee].label + " calls itself";
+                    } else {
+                        message = "Recursive calls: ";
+                        for (auto it = first; it != path.end(); ++it) message += routines[*it].label + " → ";
+                        message += routines[callee].label;
+                    }
+                    message += "; recursion is not allowed in EES";
+                    result.errors.push_back({line, 0, message, sourceLineText(source, line)});
+                }
+            }
+            path.pop_back();
+            routines[node].state = 2;
+        };
+        for (int i = 0; i < static_cast<int>(routines.size()); ++i)
+            if (routines[i].state == 0) search(i);
+    }
+
     // Post-parse validation: check that all function calls reference either a
     // built-in, a CoolProp thermo function, or a user-defined function/procedure.
     void validateFunctionNames(ParseResult& result) {
@@ -762,61 +908,8 @@ private:
         // Collect all function call names from the AST
         struct FuncCallInfo { std::string name; int line; };
         std::vector<FuncCallInfo> callsFound;
-        
-        auto collectFromExpr = [&](const ExprPtr& expr, auto& self) -> void {
-            if (!expr) return;
-            std::visit([&](const auto& node) {
-                using T = std::decay_t<decltype(node)>;
-                if constexpr (std::is_same_v<T, FunctionCall>) {
-                    callsFound.push_back({node.name, expr->sourceLineNumber});
-                    for (const auto& arg : node.args) self(arg, self);
-                    for (const auto& [k, v] : node.namedArgs) self(v, self);
-                } else if constexpr (std::is_same_v<T, UnaryOp>) {
-                    self(node.operand, self);
-                } else if constexpr (std::is_same_v<T, BinaryOp>) {
-                    self(node.left, self); self(node.right, self);
-                } else if constexpr (std::is_same_v<T, Variable>) {
-                    for (const auto& idx : node.indices) self(idx, self);
-                }
-            }, expr->node);
-        };
-        
-        auto collectFromStmt = [&](const StmtPtr& stmt, auto& self) -> void {
-            if (!stmt) return;
-            std::visit([&](const auto& node) {
-                using T = std::decay_t<decltype(node)>;
-                if constexpr (std::is_same_v<T, Equation>) {
-                    collectFromExpr(node.lhs, collectFromExpr);
-                    collectFromExpr(node.rhs, collectFromExpr);
-                } else if constexpr (std::is_same_v<T, Assignment>) {
-                    collectFromExpr(node.lhs, collectFromExpr);
-                    collectFromExpr(node.rhs, collectFromExpr);
-                } else if constexpr (std::is_same_v<T, IfThenElse>) {
-                    collectFromExpr(node.condition, collectFromExpr);
-                    for (const auto& s : node.thenBranch) self(s, self);
-                    for (const auto& s : node.elseBranch) self(s, self);
-                } else if constexpr (std::is_same_v<T, Duplicate>) {
-                    collectFromExpr(node.start, collectFromExpr);
-                    collectFromExpr(node.end, collectFromExpr);
-                    for (const auto& s : node.body) self(s, self);
-                } else if constexpr (std::is_same_v<T, RepeatUntil>) {
-                    collectFromExpr(node.condition, collectFromExpr);
-                    for (const auto& s : node.body) self(s, self);
-                } else if constexpr (std::is_same_v<T, ProcedureCall>) {
-                    // Also track procedure calls as function-like calls to validate
-                    callsFound.push_back({node.name, stmt->sourceLineNumber});
-                    for (const auto& arg : node.inputArgs) collectFromExpr(arg, collectFromExpr);
-                    for (const auto& out : node.outputExprs) collectFromExpr(out, collectFromExpr);
-                } else if constexpr (std::is_same_v<T, FunctionDefinition>) {
-                    for (const auto& s : node.body) self(s, self);
-                } else if constexpr (std::is_same_v<T, ProcedureDefinition>) {
-                    for (const auto& s : node.body) self(s, self);
-                }
-            }, stmt->node);
-        };
-        
         for (const auto& stmt : result.program.statements) {
-            collectFromStmt(stmt, collectFromStmt);
+            forEachCall(stmt, [&](const std::string& name, bool, int line) { callsFound.push_back({name, line}); });
         }
         
         // Check each function call

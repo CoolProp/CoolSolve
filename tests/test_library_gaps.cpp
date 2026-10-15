@@ -11696,3 +11696,290 @@ TEST_CASE("CS-BUG-DUPLICATE-INDEX-EXPR: what stays an error", "[library-gaps][du
     CHECK(anyContains(parseErrorsWithLines("DUPLICATE i=1,3\n  x[i] = i\n  s[i] = SUM(x[1..i])\nEND\n"),
                       "3: array range 'x[1..i]': its bounds cannot depend on the index 'i' of the enclosing DUPLICATE"));
 }
+
+// ============================================================================
+// CS-BUG-RECURSION-CRASH: a call cycle between FUNCTIONs / PROCEDUREs is a parse error (EES refuses
+// recursion), and the evaluator stops a runaway nesting of routine calls instead of overflowing the stack
+// ============================================================================
+
+namespace {
+
+/// An evaluator (no variables) with every FUNCTION and PROCEDURE of `code` registered. The parse errors
+/// are ignored, the call cycle among them: this is how the depth guard of the evaluator is reached.
+ExpressionEvaluator evaluatorWithRoutines(const std::string& code) {
+    ExpressionEvaluator ev(0);
+    for (const auto& stmt : parseFull(code).program.statements) {
+        if (stmt->is<FunctionDefinition>()) ev.registerFunction(stmt->as<FunctionDefinition>());
+        if (stmt->is<ProcedureDefinition>()) ev.registerProcedure(stmt->as<ProcedureDefinition>());
+    }
+    return ev;
+}
+
+/// The message of the std::runtime_error that `action` throws; empty when it does not throw.
+std::string errorOf(const std::function<void()>& action) {
+    try {
+        action();
+    } catch (const std::runtime_error& e) {
+        return e.what();
+    }
+    return "";
+}
+
+/// `n` FUNCTIONs `r1` .. `rn`, each calling the next one (`rn` returns its argument): no cycle, but a
+/// call of `r1` nests `n` bodies.
+std::string functionChain(int n) {
+    std::string code;
+    for (int i = 1; i <= n; ++i)
+        code += "FUNCTION r" + std::to_string(i) + "(x)\n  r" + std::to_string(i) + " = " +
+                (i < n ? "r" + std::to_string(i + 1) + "(x) + 1" : "x") + "\nEND\n";
+    return code;
+}
+
+using Messages = std::vector<std::string>;
+
+}  // namespace
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: a FUNCTION that calls itself is a parse error naming the routine and the line",
+          "[library-gaps][recursion]") {
+    // was: Segmentation fault (stack overflow, exit code 139)
+    const std::string code = "FUNCTION f(a)\n  f = f(a) + 1\nEND\nq = f(3)\n";
+    CHECK(parseErrorsWithLines(code) ==
+          Messages{"2: Recursive call: FUNCTION f calls itself; recursion is not allowed in EES"});
+    auto run = runModel(code);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "Line 2: Recursive call: FUNCTION f calls itself"));
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: a PROCEDURE that calls itself is a parse error naming the routine and the line",
+          "[library-gaps][recursion]") {
+    const std::string code = "PROCEDURE p(a : y)\n  CALL p(a : y)\nEND\nCALL p(1 : z)\n";
+    CHECK(parseErrorsWithLines(code) ==
+          Messages{"2: Recursive call: PROCEDURE p calls itself; recursion is not allowed in EES"});
+    auto run = runModel(code);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "Line 2: Recursive call: PROCEDURE p calls itself"));
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: two FUNCTIONs that call each other are a parse error naming the cycle",
+          "[library-gaps][recursion]") {
+    const std::string code = "FUNCTION a(x)\n  a = b(x) + 1\nEND\nFUNCTION b(x)\n  b = a(x) * 2\nEND\nq = a(3)\n";
+    CHECK(parseErrorsWithLines(code) ==
+          Messages{"5: Recursive calls: FUNCTION a → FUNCTION b → FUNCTION a; recursion is not allowed in EES"});
+    auto run = runModel(code);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "Line 5: Recursive calls: FUNCTION a → FUNCTION b → FUNCTION a"));
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: a cycle through three routines, FUNCTIONs and PROCEDUREs",
+          "[library-gaps][recursion]") {
+    const std::string code =
+        "FUNCTION a(x)\n  CALL b(x : t)\n  a = t + 1\nEND\n"
+        "PROCEDURE b(x : y)\n  y = c(x)\nEND\n"
+        "FUNCTION c(x)\n  c = a(x) * 2\nEND\n"
+        "q = a(1)\n";
+    CHECK(parseErrorsWithLines(code) ==
+          Messages{"9: Recursive calls: FUNCTION a → PROCEDURE b → FUNCTION c → FUNCTION a; "
+                   "recursion is not allowed in EES"});
+    auto run = runModel(code);
+    CHECK_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "Line 9: Recursive calls: FUNCTION a → PROCEDURE b → FUNCTION c → FUNCTION a"));
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: a cycle through a CALL in an IF branch of a body", "[library-gaps][recursion]") {
+    const std::string code =
+        "PROCEDURE p(n : y)\n"
+        "  IF (n > 0) THEN\n"
+        "    CALL q(n - 1 : y)\n"
+        "  ELSE\n"
+        "    y = 0\n"
+        "  ENDIF\n"
+        "END\n"
+        "PROCEDURE q(n : y)\n"
+        "  IF (n > 5) THEN\n"
+        "    y = 1\n"
+        "  ELSE\n"
+        "    CALL p(n + 1 : y)\n"
+        "  ENDIF\n"
+        "END\n"
+        "CALL p(3 : z)\n";
+    CHECK(parseErrorsWithLines(code) ==
+          Messages{"12: Recursive calls: PROCEDURE p → PROCEDURE q → PROCEDURE p; "
+                   "recursion is not allowed in EES"});
+    auto run = runModel(code);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: a cycle through the argument of another call", "[library-gaps][recursion]") {
+    SECTION("a FUNCTION called in the input argument of a CALL, itself recursive") {
+        const std::string code =
+            "PROCEDURE p(x : y)\n  y = 2*x\nEND\n"
+            "FUNCTION f(x)\n  CALL p(f(x - 1) : t)\n  f = t\nEND\n"
+            "q = f(3)\n";
+        CHECK(parseErrorsWithLines(code) ==
+              Messages{"5: Recursive call: FUNCTION f calls itself; recursion is not allowed in EES"});
+    }
+    SECTION("mutual recursion hidden in the arguments of built-ins and of a CALL") {
+        const std::string code =
+            "FUNCTION f(x)\n  f = SQRT(ABS(MAX(1, g(x))))\nEND\n"
+            "FUNCTION g(x)\n  CALL h(f(x) + 1 : g)\nEND\n"
+            "PROCEDURE h(x : y)\n  y = x\nEND\n"
+            "q = f(3)\n";
+        CHECK(parseErrorsWithLines(code) ==
+              Messages{"5: Recursive calls: FUNCTION f → FUNCTION g → FUNCTION f; "
+                       "recursion is not allowed in EES"});
+    }
+    SECTION("a call in the index of an output variable of a CALL") {
+        const std::string code =
+            "PROCEDURE p(x : y)\n  v[1] = 1\n  CALL p(x : y)\n  y = v[1]\nEND\n"
+            "FUNCTION n(x)\n  CALL p(x : w[n(x)])\n  n = 1\nEND\n"
+            "q = n(1)\n";
+        CHECK(anyContains(parseErrorsWithLines(code), "7: Recursive call: FUNCTION n calls itself"));
+        CHECK(anyContains(parseErrorsWithLines(code), "3: Recursive call: PROCEDURE p calls itself"));
+    }
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: a cycle through the loops of a body", "[library-gaps][recursion]") {
+    SECTION("DUPLICATE") {
+        CHECK(parseErrorsWithLines("FUNCTION f(n)\n  s = 0\n  DUPLICATE i = 1, n\n    s = s + f(i - 1)\n  END\n  f = s\nEND\nq = f(3)\n") ==
+              Messages{"4: Recursive call: FUNCTION f calls itself; recursion is not allowed in EES"});
+    }
+    SECTION("REPEAT ... UNTIL") {
+        CHECK(parseErrorsWithLines("FUNCTION g(x)\n  y = x\n  REPEAT\n    y = y / 2 + g(y)\n  UNTIL (y < 1)\n  g = y\nEND\nq = g(3)\n") ==
+              Messages{"4: Recursive call: FUNCTION g calls itself; recursion is not allowed in EES"});
+    }
+    SECTION("the bounds of a DUPLICATE and the condition of an IF") {
+        CHECK(anyContains(parseErrorsWithLines("FUNCTION f(n)\n  s = 0\n  DUPLICATE i = 1, f(n - 1)\n    s = s + i\n  END\n  f = s\nEND\nq = f(3)\n"),
+                          "3: Recursive call: FUNCTION f calls itself"));
+        CHECK(anyContains(parseErrorsWithLines("FUNCTION f(n)\n  IF (f(n) > 1) THEN\n    f = 1\n  ELSE\n    f = 2\n  ENDIF\nEND\nq = f(3)\n"),
+                          "2: Recursive call: FUNCTION f calls itself"));
+    }
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: names are compared without regard to case", "[library-gaps][recursion]") {
+    CHECK(parseErrorsWithLines("FUNCTION Foo(a)\n  Foo = FOO(a) + 1\nEND\nq = foo(3)\n") ==
+          Messages{"2: Recursive call: FUNCTION Foo calls itself; recursion is not allowed in EES"});
+    CHECK(anyContains(parseErrorsWithLines("PROCEDURE P1(a : y)\n  CALL p2(a : y)\nEND\nPROCEDURE p2(a : y)\n  CALL p1(a : y)\nEND\nCALL P1(1 : z)\n"),
+                      "5: Recursive calls: PROCEDURE P1 → PROCEDURE p2 → PROCEDURE P1"));
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: a recursion that terminates is an error too (EES does not allow it)",
+          "[library-gaps][recursion]") {
+    // was evaluated (1 + f(a-1) with an IF guard): EES refuses it, so does CoolSolve
+    const std::string code =
+        "FUNCTION f(a)\n"
+        "  IF (a < 1) THEN\n"
+        "    f = 0\n"
+        "  ELSE\n"
+        "    f = 1 + f(a - 1)\n"
+        "  ENDIF\n"
+        "END\n"
+        "q = f(5)\n";
+    CHECK(parseErrorsWithLines(code) ==
+          Messages{"5: Recursive call: FUNCTION f calls itself; recursion is not allowed in EES"});
+    auto run = runModel(code);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: a chain of routines without a cycle keeps working", "[library-gaps][recursion]") {
+    // a -> b -> c, c called twice by b and once by a (a shared callee is not a cycle)
+    auto run = runModel(
+        "FUNCTION c(x)\n  c = x^2\nEND\n"
+        "PROCEDURE b(x : y)\n  y = c(x) + c(x + 1)\nEND\n"
+        "FUNCTION a(x)\n  CALL b(x : t)\n  a = t + c(x)\nEND\n"
+        "q = a(2)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["q"], WithinAbs(4.0 + 9.0 + 4.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: a FUNCTION and a PROCEDURE of the same name are two routines, not a cycle",
+          "[library-gaps][recursion]") {
+    // the CALL of the body reaches the PROCEDURE f, not the FUNCTION f that contains it
+    auto run = runModel(
+        "PROCEDURE f(x : y)\n  y = x + 1\nEND\n"
+        "FUNCTION f(x)\n  CALL f(x : t)\n  f = t * 2\nEND\n"
+        "q = f(3)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["q"], WithinAbs(8.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: a model PROCEDURE Colebrook replaces the built-in, it is no cycle",
+          "[library-gaps][recursion]") {
+    SECTION("the model procedure is called") {
+        auto run = runModel("PROCEDURE Colebrook(Re, RR : f)\n  f = 0.02 + 1/Re\nEND\nCALL Colebrook(1000, 0.001 : fr)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["fr"], WithinAbs(0.021, 1e-12));
+    }
+    SECTION("a routine that calls the built-in Colebrook is no cycle") {
+        auto run = runModel("PROCEDURE fric(Re : f)\n  CALL Colebrook(Re, 0.001 : f)\nEND\nCALL fric(10000 : x)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK(run["x"] > 0.02);
+        CHECK(run["x"] < 0.05);
+    }
+    SECTION("but a model Colebrook that calls itself is recursion: the model routine takes precedence") {
+        CHECK(parseErrorsWithLines("PROCEDURE Colebrook(Re, RR : f)\n  CALL colebrook(Re, RR : f)\nEND\nCALL Colebrook(1000, 0.001 : fr)\n") ==
+              Messages{"2: Recursive call: PROCEDURE Colebrook calls itself; recursion is not allowed in EES"});
+    }
+    SECTION("a model procedure psychprops never runs: its CALL reaches the built-in") {
+        CHECK(parseErrors("PROCEDURE psychprops(T, P, RH : a, b, c)\n  CALL psychprops(T, P, RH : a, b, c, d)\nEND\nq = 1\n").empty());
+    }
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: a routine that is not defined in the model is not part of the graph",
+          "[library-gaps][recursion]") {
+    // `f` is a variable of the main program and a built-in function name in the body; nothing is defined twice
+    CHECK(parseErrors("FUNCTION f(a)\n  f = SQRT(a) + ENTHALPY(Water, T=300, P=1E5)\nEND\nq = f(4)\n").empty());
+    // the call of an undefined routine stays the warning it was
+    CHECK(parseErrors("FUNCTION f(a)\n  f = zz(a)\nEND\nq = f(4)\n").empty());
+}
+
+TEST_CASE("CS-BUG-RECURSION-CRASH: the evaluator stops a runaway nesting of routine calls", "[library-gaps][recursion]") {
+    // The parser refuses these models, so the routines are registered from the AST that it still builds: the
+    // depth guard is what keeps any other caller of the evaluator from overflowing the stack.
+    SECTION("a FUNCTION that calls itself") {
+        auto ev = evaluatorWithRoutines("FUNCTION f(a)\n  f = f(a) + 1\nEND\n");
+        const std::string error = errorOf([&] { ev.evaluate(makeFunctionCall("f", {makeNumber(3)})); });
+        INFO(error);
+        CHECK(anyContains({error}, "FUNCTION 'f'"));
+        CHECK(anyContains({error}, std::to_string(ExpressionEvaluator::kMaxRoutineCallDepth) + " routine calls"));
+        CHECK(anyContains({error}, "recursion is not allowed in EES"));
+    }
+    SECTION("a PROCEDURE that calls itself") {
+        auto ev = evaluatorWithRoutines("PROCEDURE p(a : y)\n  CALL p(a : y)\nEND\n");
+        Variable z;
+        z.name = "z";
+        const ProcedureCall call{"p", {makeNumber(1)}, {z}, {}};
+        const std::string error = errorOf([&] { ev.evaluateProcedureCall(call); });
+        INFO(error);
+        CHECK(anyContains({error}, "PROCEDURE 'p'"));
+        CHECK(anyContains({error}, "routine calls"));
+    }
+    SECTION("two routines that call each other, one through the inline form of a PROCEDURE") {
+        auto ev = evaluatorWithRoutines("FUNCTION a(x)\n  a = b(x) + 1\nEND\nPROCEDURE b(x : y)\n  y = a(x) * 2\nEND\n");
+        const std::string error = errorOf([&] { ev.evaluate(makeFunctionCall("a", {makeNumber(3)})); });
+        INFO(error);
+        CHECK(anyContains({error}, "routine calls"));
+    }
+    SECTION("a chain of exactly the permitted depth is evaluated, one level more is refused") {
+        const int limit = ExpressionEvaluator::kMaxRoutineCallDepth;
+        auto ok = evaluatorWithRoutines(functionChain(limit));
+        CHECK_THAT(ok.evaluate(makeFunctionCall("r1", {makeNumber(5)})).value, WithinAbs(5.0 + limit - 1, 1e-12));
+        auto tooDeep = evaluatorWithRoutines(functionChain(limit + 1));
+        const std::string error = errorOf([&] { tooDeep.evaluate(makeFunctionCall("r1", {makeNumber(5)})); });
+        INFO(error);
+        CHECK(anyContains({error}, "FUNCTION 'r" + std::to_string(limit + 1) + "'"));
+        // the guard leaves nothing behind: the evaluator is usable afterwards
+        CHECK_THAT(ok.evaluate(makeFunctionCall("r1", {makeNumber(1)})).value, WithinAbs(1.0 + limit - 1, 1e-12));
+    }
+}

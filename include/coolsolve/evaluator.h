@@ -112,6 +112,16 @@ struct CoolPropConfig {
  */
 class ExpressionEvaluator {
 public:
+    /**
+     * @brief Deepest nesting of FUNCTION / PROCEDURE bodies the evaluator enters (a call of a routine
+     *        from within a routine body nests one more level).
+     *
+     * EES forbids recursion and the parser refuses a call cycle between routines, so a real model nests
+     * a handful of levels. The limit only stops a runaway nesting that would overflow the stack (about
+     * 3 KB per level) and kill the process: the call that would exceed it raises an evaluation error.
+     */
+    static constexpr int kMaxRoutineCallDepth = 200;
+
     ExpressionEvaluator(size_t numVariables, const CoolPropConfig& config = CoolPropConfig());
     
     /**
@@ -245,6 +255,8 @@ private:
     /// The name of that routine (empty in the main program): the YYY of the generic messages of
     /// CALL WARNING and CALL ERROR.
     std::string routineName_;
+    /// Number of routine bodies entered to reach this evaluator (0 for the main program); see kMaxRoutineCallDepth.
+    int callDepth_ = 0;
     std::map<std::string, ADValue, CaseInsensitiveLess> variables_;
     std::map<std::string, std::string, CaseInsensitiveLess> stringVariables_;
     std::map<std::string, FunctionDefinition, CaseInsensitiveLess> userFunctions_;
@@ -277,6 +289,7 @@ private:
     /// Evaluator for the body of the user routine `kind` (FUNCTION / PROCEDURE) `name` called from
     /// here. Variables are local to a body (only the arguments cross the boundary); what it
     /// inherits is the context every expression needs: the user routines and the lookup tables.
+    /// Throws when the body would nest deeper than kMaxRoutineCallDepth.
     ExpressionEvaluator makeBodyEvaluator(const char* kind, const std::string& name) const;
     
     // CoolProp function evaluation

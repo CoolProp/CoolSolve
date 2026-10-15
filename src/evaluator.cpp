@@ -1067,7 +1067,14 @@ static bool isLookupFunction(const std::string& lowerName) {
 }
 
 ExpressionEvaluator ExpressionEvaluator::makeBodyEvaluator(const char* kind, const std::string& name) const {
+    // The depth travels with the evaluators (a body evaluator is one level deeper than its caller), so
+    // there is no counter to restore when an exception unwinds.
+    if (callDepth_ >= kMaxRoutineCallDepth)
+        throw std::runtime_error("more than " + std::to_string(kMaxRoutineCallDepth) + " routine calls are nested when entering " +
+                                 kind + " '" + name + "': a recursive FUNCTION or PROCEDURE that does not terminate? "
+                                 "(recursion is not allowed in EES)");
     ExpressionEvaluator body(numVariables_, coolpropConfig_);
+    body.callDepth_ = callDepth_ + 1;
     body.userFunctions_ = userFunctions_;
     body.userProcedures_ = userProcedures_;
     body.lookupTableStore_ = lookupTableStore_;

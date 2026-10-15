@@ -1038,6 +1038,31 @@ CALL pipe(f, L, D : DELTAp)
 
 A body that holds a syntax error is checked once that error is fixed.
 
+### Recursion is not allowed
+
+As in EES (*Internal Functions* of the EES help, which refuses a function that calls itself), a `FUNCTION`
+or `PROCEDURE` cannot call itself, nor call a routine that calls it back: a **call cycle between the
+routines of the model is a parse error**, with the routines along the cycle and the line of the call that
+closes it, and the model is not solved:
+
+```
+Line 2: Recursive call: FUNCTION f calls itself; recursion is not allowed in EES
+Line 5: Recursive calls: FUNCTION a → FUNCTION b → FUNCTION a; recursion is not allowed in EES
+```
+
+Every call counts, wherever it is written in a body: statements, `IF` branches and conditions, `DUPLICATE`
+and `REPEAT` loops, the arguments of other calls (built-ins included), the input arguments and the output
+indices of a `CALL`, the inline form of a procedure (`y = p(x)`). A recursion that would terminate (a guard
+in an `IF`) is an error too. Calls to built-ins, to property functions and to names that the model does not
+define are not part of the cycle search; a `FUNCTION` and a `PROCEDURE` of the same name are two routines;
+a `PROCEDURE Colebrook` of the model replaces the built-in (it is then a routine like the others, so one that
+calls itself is an error, whereas a routine that calls the built-in `Colebrook` is not).
+
+Rewrite a recursion as a loop in the body (`DUPLICATE`, `REPEAT ... UNTIL`), or as a chain of routines that
+call one another in one direction only. As a last line of defence for the callers of the evaluator that do
+not go through the parser, the evaluator refuses more than 200 nested routine calls with an evaluation
+error naming the routine, instead of overflowing the stack.
+
 ### `$COMMON` is not supported
 
 In EES, `$COMMON a, b$, c` on the first line of a `FUNCTION` or `PROCEDURE` body
