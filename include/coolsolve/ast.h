@@ -151,6 +151,18 @@ struct RepeatUntil {
     ExprPtr condition;           // condition checked after each iteration
 };
 
+/// A numeric statement label (`100:`), the target of a GOTO. EES has labels and GOTO in the body of a
+/// FUNCTION or PROCEDURE only; the parser refuses them elsewhere (CS-GAP-GOTO).
+struct Label {
+    int number;
+};
+
+/// `GOTO 100`: the body goes on after the label `100:` of the same body. The label is in the block of the
+/// GOTO or in a block that contains it (the parser refuses a jump into a block).
+struct Goto {
+    int label;
+};
+
 struct Statement {
     std::variant<
         Equation,
@@ -162,7 +174,9 @@ struct Statement {
         FunctionDefinition,
         ProcedureDefinition,
         Duplicate,
-        RepeatUntil
+        RepeatUntil,
+        Label,
+        Goto
     > node;
     
     int sourceLineNumber = 0;
@@ -306,6 +320,20 @@ inline StmtPtr makeIfThenElse(ExprPtr condition, std::vector<StmtPtr> thenBranch
 inline StmtPtr makeRepeatUntil(std::vector<StmtPtr> body, ExprPtr condition, int line = 0) {
     auto stmt = std::make_shared<Statement>();
     stmt->node = RepeatUntil{std::move(body), std::move(condition)};
+    stmt->sourceLineNumber = line;
+    return stmt;
+}
+
+inline StmtPtr makeLabel(int number, int line = 0) {
+    auto stmt = std::make_shared<Statement>();
+    stmt->node = Label{number};
+    stmt->sourceLineNumber = line;
+    return stmt;
+}
+
+inline StmtPtr makeGoto(int label, int line = 0) {
+    auto stmt = std::make_shared<Statement>();
+    stmt->node = Goto{label};
     stmt->sourceLineNumber = line;
     return stmt;
 }

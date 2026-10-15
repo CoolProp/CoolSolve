@@ -1010,6 +1010,62 @@ ENDIF;ENDIF                             "one ENDIF per IF ending with ELSE"
 - Derivatives are propagated through the branch taken, so the function can be
   used on unknowns.
 
+### GOTO and statement labels (inside functions and procedures)
+
+A `GOTO` and the numeric **statement labels** it jumps to are supported in the body of
+a `FUNCTION` or `PROCEDURE`, where statements are executed in order (like `IF`, §7); in
+the main program (equations solved in no particular order) they are errors. Legacy EES
+libraries use them for ladders and for loops:
+
+```ees
+PROCEDURE sumto(n : s)
+    s = 0
+    j = 0
+90: j = j + 1                      "a label, followed by a statement on the same line"
+    s = s + j
+    IF (j < n) THEN GOTO 90        "backward jump: a loop"
+END
+
+PROCEDURE regime(t, d, w : q)
+    q = 1
+    IF (t <= d) THEN GOTO 10 ELSE GOTO 20
+10:
+    q = 2
+    GOTO 1000
+20:
+    q = 3
+1000:
+END
+```
+
+- `GOTO n` is a statement: on a line of its own, after a `;`, in the branches of a
+  single-line `IF` (`IF (c) THEN GOTO 10 ELSE GOTO 20`) and inside block `IF`s,
+  `DUPLICATE` and `REPEAT` loops. The body goes on with the statement that follows the
+  label `n:`.
+- A label is an integer followed by a colon (`100:`, `10 :`), alone on its line or
+  followed by a statement (`90 : j = j - 1`); comments may follow. A label at the end
+  of a body (`1000:` before `END`) is valid. The numbers need not be ordered.
+- The label must be in the same body, in the block of the `GOTO` or in a block that
+  contains it: a jump **within** a block, **backward** (a loop) or **out of** nested `IF`
+  branches and loops is valid. A jump **into** a block (a label inside an `IF` branch, a
+  `DUPLICATE` or `REPEAT` body that does not contain the `GOTO`) is refused, as is a label
+  that two statements define.
+- A body that would execute more than 100 000 `GOTO`s in one call is stopped with an error
+  that names the routine and the line (a loop built with `GOTO` that never ends).
+- The read-before-assignment check of the bodies (§7) goes in the order of the text, a
+  `GOTO` does not change it; derivatives are propagated through the path taken, as for
+  an `IF`.
+
+Errors, all with their line and not solved:
+
+```
+Line 3: GOTO 100 has no target: PROCEDURE 'p' has no statement label '100:'
+Line 5: label 100 is defined twice in PROCEDURE 'p' (lines 3 and 5): a GOTO could not tell which one it means
+Line 3: GOTO 10 would jump into a block: the label '10:' (line 5) is inside the THEN branch of the IF at line 4; a GOTO can only jump to a label of its own block or of a block that contains it
+Line 2: GOTO is only allowed inside FUNCTION and PROCEDURE bodies (the statements of the main program are equations, solved in no particular order)
+Line 4: statement labels are only allowed inside FUNCTION and PROCEDURE bodies (...)
+```
+
 ---
 
 ## 7. User-defined functions and procedures
@@ -1029,8 +1085,8 @@ In the body of a function or a procedure every statement is parsed as in the
 main program: a line that cannot be parsed is an error (*"Could not parse
 line"*, with its line number), it is never skipped. Comments of every form,
 blank lines and directives are not statements. The `END` that closes the
-body may be followed by a comment (`END // area`). `GOTO` and statement labels
-(`10:`) are not supported and are refused the same way.
+body may be followed by a comment (`END // area`). `GOTO` and numeric statement
+labels (`10:`) are supported in a body, see §6 (*GOTO and statement labels*).
 
 ### Procedures
 

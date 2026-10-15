@@ -349,6 +349,19 @@ private:
                 continue;
             }
 
+            // GOTO and statement labels belong to the body of a FUNCTION or PROCEDURE (CS-GAP-GOTO)
+            if (isKeyword("GOTO") || std::isdigit(static_cast<unsigned char>(trimmed.empty() ? ' ' : trimmed[0]))) {
+                std::vector<StmtPtr> discarded;
+                const std::string code = trim(removeInlineComments(line));
+                int labelNumber = 0;
+                std::string labelRest;
+                if (parseGotoSegment(code, lineNumber, discarded, result, line)) continue;
+                if (splitStatementLabel(code, labelNumber, labelRest)) {
+                    result.errors.push_back({lineNumber, 0, kLabelOutsideRoutineMessage, line});
+                    continue;
+                }
+            }
+
             // Handle Procedure Call
             if (isKeyword("CALL")) {
                 std::string callError;
@@ -1408,11 +1421,85 @@ private:
                 } else {
                     result.errors.push_back({repStartLine, 0, "REPEAT missing UNTIL(condition)", bodyLine});
                 }
+            } else if (std::isdigit(static_cast<unsigned char>(trimmedBody.empty() ? ' ' : trimmedBody[0])) &&
+                       parseLabelLine(bodyLine, lineNumber, body, result)) {
+                // a statement label (CS-GAP-GOTO)
             } else {
                 parseSimpleStatements(bodyLine, lineNumber, body, result, bodyLine);
             }
         }
         return "";  // EOF
+    }
+
+    // ------------------------------------------------------------------------
+    // GOTO and numeric statement labels (CS-GAP-GOTO)
+    //
+    //   GOTO 100      the body goes on after the label `100:` of the same body
+    //   100:          a label alone on its line, or followed by a statement (`90 : j = j - 1`)
+    //
+    // EES has them in the body of a FUNCTION or PROCEDURE only (the statements of the main program are
+    // equations, solved in no particular order): elsewhere they are errors. GOTO is a statement like
+    // another: a line, a segment after `;`, a branch of a single-line IF (`IF (c) THEN GOTO 10 ELSE GOTO 20`)
+    // or of a block IF. The label must be in the body of the GOTO, in its block or in a block that contains
+    // it: a jump into a block is refused, like a missing or a duplicated label (checkBodyJumps). The
+    // evaluator executes the jumps (ProceduralEvaluator).
+    // ------------------------------------------------------------------------
+    static constexpr const char* kGotoOutsideRoutineMessage =
+        "GOTO is only allowed inside FUNCTION and PROCEDURE bodies "
+        "(the statements of the main program are equations, solved in no particular order)";
+    static constexpr const char* kLabelOutsideRoutineMessage =
+        "statement labels are only allowed inside FUNCTION and PROCEDURE bodies "
+        "(the statements of the main program are equations, solved in no particular order)";
+
+    /// The statement label at the start of `code` (comments removed, trimmed): `100:`, `10 :`, `90 : j = j - 1`.
+    /// Sets its number and the text after the colon; false when `code` does not start with a label
+    /// (`n := 3` is an assignment).
+    bool splitStatementLabel(const std::string& code, int& number, std::string& rest) {
+        size_t digits = 0;
+        while (digits < code.size() && std::isdigit(static_cast<unsigned char>(code[digits]))) ++digits;
+        if (digits == 0 || digits > 9) return false;
+        const size_t colon = code.find_first_not_of(" \t", digits);
+        if (colon == std::string::npos || code[colon] != ':' || (colon + 1 < code.size() && code[colon + 1] == '='))
+            return false;
+        number = std::stoi(code.substr(0, digits));
+        rest = trim(code.substr(colon + 1));
+        return true;
+    }
+
+    /// Parses a body line that starts with a statement label: appends the label to `body`, and the text after it
+    /// is read as the next line. False (nothing done) when the line starts with no label.
+    bool parseLabelLine(const std::string& bodyLine, int lineNumber, std::vector<StmtPtr>& body, ParseResult& result) {
+        int number = 0;
+        std::string rest;
+        if (!splitStatementLabel(trim(removeInlineComments(bodyLine)), number, rest)) return false;
+        if (procedureBodyDepth_ == 0)  // e.g. inside a DUPLICATE of the main program
+            result.errors.push_back({lineNumber, 0, kLabelOutsideRoutineMessage, bodyLine});
+        else
+            body.push_back(makeLabel(number, lineNumber));
+        pendingBodyText_ = rest;
+        return true;
+    }
+
+    /// Parses `segment` as `GOTO n` and appends it to `body`; false when it is no GOTO (the keyword followed by
+    /// `=` is a variable named goto). A GOTO that is refused (no label number, main program) is reported here.
+    bool parseGotoSegment(const std::string& segment, int lineNumber, std::vector<StmtPtr>& body,
+                          ParseResult& result, const std::string& errorLine) {
+        const std::string text = trim(segment);
+        if (text.empty() || (text[0] != 'g' && text[0] != 'G')) return false;
+        const std::string code = trim(removeInlineComments(text));
+        if (findKeywordAtDepth0(code, "GOTO") != 0) return false;
+        const std::string target = trim(code.substr(4));
+        if (!target.empty() && (target[0] == '=' || target[0] == ':')) return false;
+        if (procedureBodyDepth_ == 0) {
+            result.errors.push_back({lineNumber, 0, kGotoOutsideRoutineMessage, errorLine});
+        } else if (target.empty() || target.size() > 9 ||
+                   !std::all_of(target.begin(), target.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+            result.errors.push_back({lineNumber, 0, "GOTO must be followed by a statement label number (GOTO 100), "
+                                     "found '" + target + "'", errorLine});
+        } else {
+            body.push_back(makeGoto(std::stoi(target), lineNumber));
+        }
+        return true;
     }
 
     // Parse the equations/assignments and procedure calls of `text` (one line
@@ -1426,6 +1513,7 @@ private:
                                const std::string& errorLine) {
         const auto segments = splitOnSemicolons(text);
         for (const auto& seg : segments) {
+            if (parseGotoSegment(seg, lineNumber, body, result, errorLine)) continue;
             std::string segErr;
             StmtPtr stmt = tryParseEquationOrAssignment(seg, lineNumber, &segErr);
             if (!stmt) stmt = tryParseProcedureCall(seg, lineNumber, &segErr);
@@ -1511,6 +1599,7 @@ private:
         for (const auto& entry : userConstants_) check.constants.insert(entry.first);
         routineChecked_ = true;
         for (const auto& input : inputs) check.assigned.insert(arrayBaseName(input));   // an array input `SP[1..5]`: SP
+        checkBodyJumps(body, check);
         checkBodyStatements(body, check);
         // `a [kW]` is the element a[kW] read before `kW` is assigned, unless the body assigns `kW` further down
         for (const auto& element : check.unitSubscripts) {
@@ -1523,6 +1612,88 @@ private:
             if (!check.assigned.count(arrayBaseName(output)))
                 bodyError(check, headerLine, check.routine + " never assigns its output '" + arrayBaseName(output) +
                           "': every output of a FUNCTION or PROCEDURE must be assigned by its body");
+    }
+
+    // ------------------------------------------------------------------------
+    // The GOTOs and labels of a body (CS-GAP-GOTO), reported with their line like the other errors of a body:
+    //  - a GOTO whose label the body does not have;
+    //  - a label defined twice in the body (the GOTO could not tell which one it means);
+    //  - a jump into a block: the label is in an IF branch or a loop body that does not contain the GOTO.
+    //    Jumps within a block, backward jumps (loops) and jumps out of blocks are valid.
+    // The reads and assignments of the body are checked in text order whatever the jumps, as for an IF.
+    // ------------------------------------------------------------------------
+    struct JumpScan {
+        using Block = const std::vector<StmtPtr>*;
+        /// The statement of which a block is a branch or the body (null for the body of the routine).
+        struct Owner {
+            const Statement* statement;
+            bool isElse;
+        };
+        struct LabelAt {
+            int line;
+            Block block;   // the block that holds the label
+            Owner owner;
+        };
+        struct GotoAt {
+            int line;
+            int label;
+            std::vector<Block> enclosing;   // the blocks that hold the GOTO, outermost first
+        };
+        std::map<int, LabelAt> labels;
+        std::vector<GotoAt> gotos;
+    };
+
+    static void scanJumps(const std::vector<StmtPtr>& block, JumpScan::Owner owner,
+                          std::vector<JumpScan::Block>& enclosing, JumpScan& scan, BodyCheck& check) {
+        enclosing.push_back(&block);
+        for (const auto& stmt : block) {
+            const int line = stmt->sourceLineNumber;
+            if (stmt->is<Label>()) {
+                const int number = stmt->as<Label>().number;
+                const auto added = scan.labels.emplace(number, JumpScan::LabelAt{line, &block, owner});
+                if (!added.second)
+                    bodyError(check, line, "label " + std::to_string(number) + " is defined twice in " + check.routine +
+                              " (lines " + std::to_string(added.first->second.line) + " and " + std::to_string(line) +
+                              "): a GOTO could not tell which one it means");
+            } else if (stmt->is<Goto>()) {
+                scan.gotos.push_back({line, stmt->as<Goto>().label, enclosing});
+            } else if (stmt->is<IfThenElse>()) {
+                const auto& ite = stmt->as<IfThenElse>();
+                scanJumps(ite.thenBranch, {stmt.get(), false}, enclosing, scan, check);
+                scanJumps(ite.elseBranch, {stmt.get(), true}, enclosing, scan, check);
+            } else if (stmt->is<Duplicate>()) {
+                scanJumps(stmt->as<Duplicate>().body, {stmt.get(), false}, enclosing, scan, check);
+            } else if (stmt->is<RepeatUntil>()) {
+                scanJumps(stmt->as<RepeatUntil>().body, {stmt.get(), false}, enclosing, scan, check);
+            }
+        }
+        enclosing.pop_back();
+    }
+
+    /// "the THEN branch of the IF at line 4", "the REPEAT loop at line 7": the block a label is in.
+    static std::string describeJumpBlock(const JumpScan::Owner& owner) {
+        const std::string at = " at line " + std::to_string(owner.statement->sourceLineNumber);
+        if (owner.statement->is<IfThenElse>())
+            return std::string("the ") + (owner.isElse ? "ELSE" : "THEN") + " branch of the IF" + at;
+        return std::string("the ") + (owner.statement->is<Duplicate>() ? "DUPLICATE" : "REPEAT") + " loop" + at;
+    }
+
+    static void checkBodyJumps(const std::vector<StmtPtr>& body, BodyCheck& check) {
+        JumpScan scan;
+        std::vector<JumpScan::Block> enclosing;
+        scanJumps(body, {nullptr, false}, enclosing, scan, check);
+        for (const auto& jump : scan.gotos) {
+            const std::string number = std::to_string(jump.label);
+            const auto target = scan.labels.find(jump.label);
+            if (target == scan.labels.end()) {
+                bodyError(check, jump.line, "GOTO " + number + " has no target: " + check.routine +
+                          " has no statement label '" + number + ":'");
+            } else if (std::find(jump.enclosing.begin(), jump.enclosing.end(), target->second.block) == jump.enclosing.end()) {
+                bodyError(check, jump.line, "GOTO " + number + " would jump into a block: the label '" + number + ":' (line " +
+                          std::to_string(target->second.line) + ") is inside " + describeJumpBlock(target->second.owner) +
+                          "; a GOTO can only jump to a label of its own block or of a block that contains it");
+            }
+        }
     }
 
     static void checkBodyStatements(const std::vector<StmtPtr>& statements, BodyCheck& check) {
@@ -4070,6 +4241,10 @@ std::string astToString(const StmtPtr& stmt) {
             return "DUPLICATE " + node.iteratorVar + " = " + astToString(node.start) + ", " + astToString(node.end);
         } else if constexpr (std::is_same_v<T, RepeatUntil>) {
             return "REPEAT ... UNTIL " + astToString(node.condition);
+        } else if constexpr (std::is_same_v<T, Label>) {
+            return std::to_string(node.number) + ":";
+        } else if constexpr (std::is_same_v<T, Goto>) {
+            return "GOTO " + std::to_string(node.label);
         }
         return "<unknown>";
     }, stmt->node);

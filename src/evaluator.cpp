@@ -502,7 +502,25 @@ static std::shared_ptr<Fluid> resolveFluid(const std::string& name, DiagnosticCo
 // Internal procedural statement evaluator (forward declaration)
 class ProceduralEvaluator {
 public:
-    static void evaluate(ExpressionEvaluator& eval, const StmtPtr& stmt);
+    /// Runs the statements of the body of a FUNCTION or PROCEDURE, in order; `routine` ("PROCEDURE 'p'") names
+    /// it in the errors. A GOTO jumps to its label, in the block that holds the GOTO or in one that contains it.
+    static void run(ExpressionEvaluator& eval, const std::vector<StmtPtr>& body, const std::string& routine);
+
+private:
+    /// GOTOs executed by one run of a body beyond which it is taken for a loop that never ends.
+    static constexpr long kMaxGotos = 100000;
+
+    /// The GOTO being carried out: while `pending`, the blocks are left, innermost first, up to the one that
+    /// holds `label`.
+    struct Jump {
+        const std::string& routine;
+        bool pending = false;
+        int label = 0;
+        long executed = 0;
+    };
+
+    static void runBlock(ExpressionEvaluator& eval, const std::vector<StmtPtr>& block, Jump& jump);
+    static void execute(ExpressionEvaluator& eval, const StmtPtr& stmt, Jump& jump);
 };
 
 ExpressionEvaluator::ExpressionEvaluator(size_t numVariables, const CoolPropConfig& config)
@@ -699,9 +717,7 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
     }
     
     // Evaluate body
-    for (const auto& stmt : proc.body) {
-        ProceduralEvaluator::evaluate(localEval, stmt);
-    }
+    ProceduralEvaluator::run(localEval, proc.body, localEval.routine_);
     
     // Update output variables in the current scope
     if (call.outputVars.size() != proc.outputs.size()) {
@@ -1158,9 +1174,7 @@ ADValue ExpressionEvaluator::evaluateUserFunction(const FunctionDefinition& func
     }
     
     // Evaluate the body procedurally
-    for (const auto& stmt : func.body) {
-        ProceduralEvaluator::evaluate(localEval, stmt);
-    }
+    ProceduralEvaluator::run(localEval, func.body, localEval.routine_);
     
     // The result is stored in a variable with the function name
     return localEval.getVariable(func.name);
@@ -2675,7 +2689,27 @@ double compareJacobianWithFiniteDifferences(
     return maxDiff;
 }
 
-void ProceduralEvaluator::evaluate(ExpressionEvaluator& eval, const StmtPtr& stmt) {
+void ProceduralEvaluator::run(ExpressionEvaluator& eval, const std::vector<StmtPtr>& body, const std::string& routine) {
+    Jump jump{routine};
+    runBlock(eval, body, jump);
+    if (jump.pending)   // the parser refuses a GOTO whose label is not in the body
+        throw std::runtime_error("GOTO " + std::to_string(jump.label) + " in " + routine + ": the body has no such statement label");
+}
+
+void ProceduralEvaluator::runBlock(ExpressionEvaluator& eval, const std::vector<StmtPtr>& block, Jump& jump) {
+    for (size_t i = 0; i < block.size(); ++i) {
+        execute(eval, block[i], jump);
+        if (!jump.pending) continue;
+        const auto target = std::find_if(block.begin(), block.end(), [&](const StmtPtr& s) {
+            return s->is<Label>() && s->as<Label>().number == jump.label;
+        });
+        if (target == block.end()) return;   // the label is in an enclosing block
+        jump.pending = false;
+        i = static_cast<size_t>(target - block.begin());   // the loop goes on after the label
+    }
+}
+
+void ProceduralEvaluator::execute(ExpressionEvaluator& eval, const StmtPtr& stmt, Jump& jump) {
     if (stmt->is<Assignment>()) {
         const auto& assign = stmt->as<Assignment>();
         if (assign.lhs->is<Variable>()) {
@@ -2704,11 +2738,7 @@ void ProceduralEvaluator::evaluate(ExpressionEvaluator& eval, const StmtPtr& stm
     } else if (stmt->is<IfThenElse>()) {
         const auto& ite = stmt->as<IfThenElse>();
         ADValue cond = eval.evaluate(ite.condition);
-        if (cond.value > 0.5) {
-            for (const auto& s : ite.thenBranch) evaluate(eval, s);
-        } else {
-            for (const auto& s : ite.elseBranch) evaluate(eval, s);
-        }
+        runBlock(eval, cond.value > 0.5 ? ite.thenBranch : ite.elseBranch, jump);
     } else if (stmt->is<ProcedureCall>()) {
         const auto& call = stmt->as<ProcedureCall>();
         eval.evaluateProcedureCall(call);
@@ -2716,18 +2746,26 @@ void ProceduralEvaluator::evaluate(ExpressionEvaluator& eval, const StmtPtr& stm
         const auto& dup = stmt->as<Duplicate>();
         int startVal = static_cast<int>(std::round(eval.evaluate(dup.start).value));
         int endVal = static_cast<int>(std::round(eval.evaluate(dup.end).value));
-        for (int i = startVal; i <= endVal; ++i) {
+        for (int i = startVal; i <= endVal && !jump.pending; ++i) {
             eval.setVariable(dup.iteratorVar, ADValue::constant(static_cast<double>(i), eval.getNumVariables()));
-            for (const auto& s : dup.body) evaluate(eval, s);
+            runBlock(eval, dup.body, jump);
         }
     } else if (stmt->is<RepeatUntil>()) {
         const auto& ru = stmt->as<RepeatUntil>();
         const int maxIter = 10000;
         for (int iter = 0; iter < maxIter; ++iter) {
-            for (const auto& s : ru.body) evaluate(eval, s);
+            runBlock(eval, ru.body, jump);
+            if (jump.pending) break;   // a GOTO out of the loop
             ADValue cond = eval.evaluate(ru.condition);
             if (cond.value > 0.5) break;
         }
+    } else if (stmt->is<Goto>()) {
+        if (++jump.executed > kMaxGotos)
+            throw std::runtime_error("more than " + std::to_string(kMaxGotos) + " GOTO statements executed in " + jump.routine +
+                                     " (the last one at line " + std::to_string(stmt->sourceLineNumber) +
+                                     "): a loop built with GOTO that never ends?");
+        jump.pending = true;
+        jump.label = stmt->as<Goto>().label;
     }
 }
 

@@ -14371,3 +14371,507 @@ TEST_CASE("CS-BUG-STRING-ALIAS: negative tests", "[library-gaps][string-alias]")
         CHECK(run.strings.count("g$") == 0);
     }
 }
+
+// ============================================================================
+// CS-GAP-GOTO: the GOTO statement and the numeric statement labels (100:) in the body of a FUNCTION or
+// PROCEDURE (it was a parse error, "Could not parse line", on the IF ... THEN GOTO line and on each label)
+// ============================================================================
+
+TEST_CASE("CS-GAP-GOTO: reproducer of the register, the jump is taken", "[library-gaps][goto]") {
+    // valid EES: z = 1 when the jump is taken, z = 2 when it is not
+    const std::string proc = "PROCEDURE p(x:y)\ny = 1\nIF (x=1) THEN GOTO 100\ny = 2\n100:\nEND\n";
+    auto taken = runModel(proc + "CALL p(1:yv)\nz = yv\n");
+    INFO(taken.message);
+    REQUIRE(taken.parseOk);
+    REQUIRE(taken.solveOk);
+    CHECK(taken.verified);
+    CHECK_THAT(taken["z"], WithinAbs(1.0, 1e-9));
+
+    auto notTaken = runModel(proc + "CALL p(2:yv)\nz = yv\n");
+    INFO(notTaken.message);
+    REQUIRE(notTaken.solveOk);
+    CHECK_THAT(notTaken["z"], WithinAbs(2.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-GOTO: a ladder like PROCEDURE mean of CSL-0081", "[library-gaps][goto]") {
+    // reduced from PROCEDURE mean: IF ... THEN GOTO 10 ELSE GOTO 20 ladders, labels with a blank before the colon,
+    // GOTO to the label of the end of the body. A missing jump would run the following branches too.
+    const std::string proc = R"EES(PROCEDURE mean(t,d,w,m,q:q_day,q_week,q_month,q_rest)
+"Past loads aggregation (reduced)"
+q_day=q
+q_week=q
+q_month=q
+q_rest=q
+IF t=1 THEN GOTO 1000
+IF (t<=d) THEN GOTO 10 ELSE GOTO 20
+10:
+q_day=q*2
+GOTO 1000
+20:
+IF (t<=w) THEN GOTO 30 ELSE GOTO 40
+30 :
+q_day=q*2
+q_week=q*3
+GOTO 1000
+40:
+IF (t<=m) THEN GOTO 50 ELSE GOTO 60
+50:
+q_day=q*2
+q_week=q*3
+q_month=q*4
+GOTO 1000
+60:
+q_day=q*2
+q_week=q*3
+q_month=q*4
+q_rest=q*5
+GOTO 1000
+1000:
+END
+)EES";
+    std::string calls;
+    int index = 0;
+    for (int t : {1, 3, 7, 15, 30}) {
+        const std::string i = std::to_string(++index);
+        calls += "CALL mean(" + std::to_string(t) + ",5,10,20,100 : d" + i + ",w" + i + ",m" + i + ",r" + i + ")\n";
+    }
+    auto run = runModel(proc + calls);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // t = 1: nothing; t = 3 (<= d): day; t = 7 (<= w): day and week; t = 15 (<= m): + month; t = 30: + rest
+    const double expected[5][4] = {{100, 100, 100, 100}, {200, 100, 100, 100}, {200, 300, 100, 100},
+                                   {200, 300, 400, 100}, {200, 300, 400, 500}};
+    for (int k = 0; k < 5; ++k) {
+        const std::string i = std::to_string(k + 1);
+        INFO("t index " << i);
+        CHECK_THAT(run["d" + i], WithinAbs(expected[k][0], 1e-9));
+        CHECK_THAT(run["w" + i], WithinAbs(expected[k][1], 1e-9));
+        CHECK_THAT(run["m" + i], WithinAbs(expected[k][2], 1e-9));
+        CHECK_THAT(run["r" + i], WithinAbs(expected[k][3], 1e-9));
+    }
+}
+
+TEST_CASE("CS-GAP-GOTO: a ladder with a backward-jump loop like PROCEDURE summation of CSL-0081", "[library-gaps][goto]") {
+    // reduced from PROCEDURE summation: a label followed by a statement (`90 : j:=j-1`), a loop closed by
+    // IF(...) THEN GOTO 90 and a final label with a statement (`999 : sum:=...`)
+    const std::string proc = R"EES(PROCEDURE summation (q,h,d,t:sum)
+sum=0
+sum1=0
+sum3=0
+sum4=0
+sum1=q*t
+IF (t=1) THEN GOTO 999
+IF (t>(h+d)) THEN GOTO 10 ELSE GOTO 20
+10 :
+sum4=1000
+GOTO 100
+20 :
+IF (t>h) THEN GOTO 30 ELSE GOTO 40
+30:
+sum4=100
+GOTO 100
+40 :
+100 :
+j:=t
+90 : j:=j-1
+sum3=sum3 + j
+IF((j>t-h+1) AND (j>1)) THEN GOTO 90
+999 : sum:=sum1+sum3+sum4
+END
+)EES";
+    // by hand, q = 2 and (h, d) = (2, 1) except the last case: t = 1: 2; t = 2: 4 + 1; t = 3: 6 + 2 + 100;
+    // t = 5: 10 + 4 + 1000; (h, d) = (4, 1), t = 8: 16 + (7 + 6 + 5) + 1000
+    auto run = runModel(proc + R"EES(CALL summation(2,2,1,1:s1)
+CALL summation(2,2,1,2:s2)
+CALL summation(2,2,1,3:s3)
+CALL summation(2,2,1,5:s5)
+CALL summation(2,4,1,8:s8)
+)EES");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["s1"], WithinAbs(2.0, 1e-9));
+    CHECK_THAT(run["s2"], WithinAbs(5.0, 1e-9));
+    CHECK_THAT(run["s3"], WithinAbs(108.0, 1e-9));
+    CHECK_THAT(run["s5"], WithinAbs(1014.0, 1e-9));
+    CHECK_THAT(run["s8"], WithinAbs(1034.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-GOTO: loops built with GOTO, in a PROCEDURE and in a FUNCTION", "[library-gaps][goto]") {
+    auto run = runModel(R"EES(PROCEDURE sumto(n:s)
+s = 0
+j = 0
+90 : j = j + 1
+s = s + j
+IF (j < n) THEN GOTO 90
+END
+FUNCTION fact(n)
+fact = 1
+k = n
+10: IF (k <= 1) THEN GOTO 20
+fact = fact * k
+k = k - 1
+GOTO 10
+20:
+END
+CALL sumto(10:total)
+CALL sumto(1:once)
+y = fact(5)
+)EES");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["total"], WithinAbs(55.0, 1e-9));
+    CHECK_THAT(run["once"], WithinAbs(1.0, 1e-9));
+    CHECK_THAT(run["y"], WithinAbs(120.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-GOTO: a routine with GOTO called from a loop built with GOTO", "[library-gaps][goto]") {
+    // the labels belong to their body: both use 10, and each call has its own jumps
+    auto run = runModel(R"EES(FUNCTION inner(n)
+inner = 0
+10: inner = inner + 1
+IF (inner < n) THEN GOTO 10
+END
+PROCEDURE outer(k:s)
+s = 0
+i = 0
+10: i = i + 1
+s = s + inner(i)
+IF (i < k) THEN GOTO 10
+END
+CALL outer(4:r)
+)EES");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["r"], WithinAbs(10.0, 1e-9));   // inner(1) + ... + inner(4)
+}
+
+TEST_CASE("CS-GAP-GOTO: jumps out of nested blocks and within a block", "[library-gaps][goto]") {
+    const std::string proc = R"EES(PROCEDURE p(x:y)
+y = 0
+IF (x > 0) THEN
+  y = y + 1
+  IF (x > 5) THEN
+    y = y + 10
+    GOTO 100
+  ENDIF
+  y = y + 100
+ELSE
+  y = y - 1
+  GOTO 100
+ENDIF
+y = y + 1000
+100:
+END
+PROCEDURE q(x:y)
+y = 0
+IF (x > 0) THEN
+  GOTO 10
+  y = 5
+  10: y = y + 1
+ELSE GOTO 20
+ENDIF
+y = y + 100
+20:
+END
+PROCEDURE r(x:y)
+y = 0
+10:
+y = y + 1
+IF (y < x) THEN
+  IF (y < 100) THEN GOTO 10
+ENDIF
+END
+)EES";
+    auto run = runModel(proc + R"EES(CALL p(8:a)
+CALL p(3:b)
+CALL p(-1:c)
+CALL q(1:d)
+CALL q(-1:e)
+CALL r(5:f)
+)EES");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(11.0, 1e-9));     // out of two IF blocks
+    CHECK_THAT(run["b"], WithinAbs(1101.0, 1e-9));   // no jump
+    CHECK_THAT(run["c"], WithinAbs(-1.0, 1e-9));     // out of the ELSE block
+    CHECK_THAT(run["d"], WithinAbs(101.0, 1e-9));    // within the THEN block, then the code after the IF
+    CHECK_THAT(run["e"], WithinAbs(0.0, 1e-9));      // ELSE GOTO 20
+    CHECK_THAT(run["f"], WithinAbs(5.0, 1e-9));      // backward, out of two IF blocks: a loop
+}
+
+TEST_CASE("CS-GAP-GOTO: GOTO in DUPLICATE and REPEAT bodies", "[library-gaps][goto]") {
+    auto run = runModel(R"EES(PROCEDURE skipeven(n:s,c)
+s = 0
+c = 0
+DUPLICATE i = 1, n
+  IF (mod(i,2) = 0) THEN GOTO 10
+  s = s + i
+  10:
+  c = c + 1
+END
+END
+PROCEDURE firstover(n,lim:k)
+k = 0
+DUPLICATE i = 1, n
+  k = i
+  IF (i*i > lim) THEN GOTO 99
+END
+k = -1
+99:
+END
+PROCEDURE leave(n:k)
+k = 0
+REPEAT
+  k = k + 1
+  IF (k >= n) THEN GOTO 50
+UNTIL (k > 100)
+k = -5
+50:
+END
+PROCEDURE skip3(m:s)
+s = 0
+k = 0
+REPEAT
+  k = k + 1
+  IF (k = 3) THEN GOTO 20
+  s = s + k
+  20:
+UNTIL (k >= m)
+END
+CALL skipeven(6:s1,c1)
+CALL firstover(10,30:k1)
+CALL firstover(4,30:k2)
+CALL leave(7:k3)
+CALL skip3(5:s4)
+)EES");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["s1"], WithinAbs(9.0, 1e-9));    // 1 + 3 + 5
+    CHECK_THAT(run["c1"], WithinAbs(6.0, 1e-9));    // the label is reached on every iteration
+    CHECK_THAT(run["k1"], WithinAbs(6.0, 1e-9));    // 6 * 6 > 30: out of the loop, `k = -1` is skipped
+    CHECK_THAT(run["k2"], WithinAbs(-1.0, 1e-9));   // the loop ends, no jump
+    CHECK_THAT(run["k3"], WithinAbs(7.0, 1e-9));    // out of the REPEAT loop
+    CHECK_THAT(run["s4"], WithinAbs(12.0, 1e-9));   // 1 + 2 + 4 + 5
+}
+
+TEST_CASE("CS-GAP-GOTO: forms of the statements", "[library-gaps][goto]") {
+    // lower case, a comment after the statement, GOTO after a `;`, a label and a statement on one line, the
+    // label of a block (`5 :` before an IF)
+    auto run = runModel(R"EES(PROCEDURE p(x:y)
+y = 1
+IF (x = 1) THEN GOTO 5
+y = 2; goto 7  "skip the rest"
+y = 3
+5 : y = y + 10 // label and statement
+7: "a label with a comment"
+END
+CALL p(1:a)
+CALL p(2:b)
+)EES");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(11.0, 1e-9));
+    CHECK_THAT(run["b"], WithinAbs(2.0, 1e-9));
+
+    // consecutive labels, a label alone before END
+    auto labels = runModel(R"EES(PROCEDURE p(x:y)
+y = x
+IF (x > 0) THEN GOTO 30
+60:
+70: y = -y
+30:
+END
+CALL p(4:a)
+CALL p(-4:b)
+)EES");
+    INFO(labels.message);
+    REQUIRE(labels.solveOk);
+    CHECK_THAT(labels["a"], WithinAbs(4.0, 1e-9));
+    CHECK_THAT(labels["b"], WithinAbs(4.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-GOTO: the derivatives go through the branch taken", "[library-gaps][goto]") {
+    // the unknown x enters the procedure: the solver needs d(y)/d(x) of the branch that runs
+    auto run = runModel(R"EES(PROCEDURE f(x:y)
+IF (x > 0) THEN GOTO 10
+y = -x
+GOTO 20
+10:
+y = x^2
+20:
+END
+CALL f(x:y)
+y = 9
+)EES");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x"], WithinAbs(3.0, 1e-6));
+}
+
+TEST_CASE("CS-GAP-GOTO: the check of the locals of a body goes on with GOTO", "[library-gaps][goto]") {
+    // a variable assigned after a jump target is assigned in text order, as with an IF
+    auto ok = runModel(R"EES(PROCEDURE p(x:y)
+IF (x = 1) THEN GOTO 10
+a = 5
+10:
+b = 2
+y = a + b
+END
+CALL p(2:r)
+)EES");
+    INFO(ok.message);
+    REQUIRE(ok.parseOk);
+    REQUIRE(ok.solveOk);
+    CHECK_THAT(ok["r"], WithinAbs(7.0, 1e-9));
+
+    // a local that nothing assigns is still reported, with its name
+    const auto errors = parseErrorsWithLines("PROCEDURE p(x:y)\nIF (x = 1) THEN GOTO 10\na = 5\n10:\ny = a + c\nEND\nCALL p(2:r)\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].rfind("5: ", 0) == 0);
+    CHECK(errors[0].find("variable 'c' is read in PROCEDURE 'p' before it is assigned") != std::string::npos);
+    // an output that no statement assigns
+    const auto output = parseErrorsWithLines("PROCEDURE p(x:y)\nIF (x = 1) THEN GOTO 10\n10:\nEND\nCALL p(2:r)\n");
+    REQUIRE(output.size() == 1);
+    CHECK(output[0].find("never assigns its output 'y'") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-GOTO: the AST and its debug rendering", "[library-gaps][goto]") {
+    const auto result = parseFull("PROCEDURE p(x:y)\ny = 1\nIF (x=1) THEN GOTO 100\ny = 2\n100:\nEND\n");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.program.statements.size() == 1);
+    const auto& body = result.program.statements[0]->as<ProcedureDefinition>().body;
+    REQUIRE(body.size() == 4);
+    const auto& ite = body[1]->as<IfThenElse>();
+    REQUIRE(ite.thenBranch.size() == 1);
+    CHECK(ite.thenBranch[0]->is<Goto>());
+    CHECK(ite.thenBranch[0]->as<Goto>().label == 100);
+    CHECK(ite.thenBranch[0]->sourceLineNumber == 3);
+    CHECK(astToString(ite.thenBranch[0]) == "GOTO 100");
+    REQUIRE(body[3]->is<Label>());
+    CHECK(body[3]->as<Label>().number == 100);
+    CHECK(body[3]->sourceLineNumber == 5);
+    CHECK(astToString(body[3]) == "100:");
+}
+
+TEST_CASE("CS-GAP-GOTO: a loop that never ends stops with an error naming the routine", "[library-gaps][goto]") {
+    auto proc = runModel("PROCEDURE p(x:y)\ny = x\n10: y = y + 1\nGOTO 10\nEND\nCALL p(1:z)\n");
+    REQUIRE(proc.parseOk);
+    CHECK_FALSE(proc.solveOk);
+    INFO(proc.message);
+    CHECK(proc.message.find("PROCEDURE 'p'") != std::string::npos);
+    CHECK(proc.message.find("GOTO") != std::string::npos);
+
+    auto func = runModel("FUNCTION f(x)\nf = x\n10:\nIF (x > 0) THEN GOTO 10\nEND\ny = f(1)\n");
+    REQUIRE(func.parseOk);
+    CHECK_FALSE(func.solveOk);
+    INFO(func.message);
+    CHECK(func.message.find("FUNCTION 'f'") != std::string::npos);
+
+    // a long loop that ends is not stopped
+    auto longLoop = runModel("FUNCTION count(n)\ncount = 0\n10: count = count + 1\nIF (count < n) THEN GOTO 10\nEND\ny = count(50000)\n");
+    INFO(longLoop.message);
+    REQUIRE(longLoop.solveOk);
+    CHECK_THAT(longLoop["y"], WithinAbs(50000.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-GOTO: negative tests, the errors of GOTO and of the labels", "[library-gaps][goto]") {
+    using Messages = std::vector<std::string>;
+    const std::string call = "CALL p(1:yv)\n";
+    SECTION("a GOTO to a label that does not exist") {
+        const auto errors = parseErrorsWithLines("PROCEDURE p(x:y)\ny = 1\nIF (x=1) THEN GOTO 100\ny = 2\nEND\n" + call);
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0] == "3: GOTO 100 has no target: PROCEDURE 'p' has no statement label '100:'");
+        // the label of another routine is no target
+        const auto other = parseErrorsWithLines("PROCEDURE p(x:y)\ny = 1\nGOTO 100\nEND\nPROCEDURE q(x:y)\ny = 1\n100:\nEND\n" + call);
+        REQUIRE(other.size() == 1);
+        CHECK(other[0].rfind("3: GOTO 100 has no target", 0) == 0);
+        const auto func = parseErrorsWithLines("FUNCTION f(x)\nf = 1\nGOTO 5\nEND\ny = f(1)\n");
+        REQUIRE(func.size() == 1);
+        CHECK(func[0] == "3: GOTO 5 has no target: FUNCTION 'f' has no statement label '5:'");
+    }
+    SECTION("a label defined twice") {
+        const auto errors = parseErrorsWithLines("PROCEDURE p(x:y)\ny = 1\n100:\ny = 2\n100:\nEND\n" + call);
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].rfind("5: label 100 is defined twice in PROCEDURE 'p' (lines 3 and 5)", 0) == 0);
+        // also in two blocks of the body
+        const auto blocks = parseErrorsWithLines("PROCEDURE p(x:y)\nIF (x=1) THEN\n10:\ny = 1\nELSE\n10:\ny = 2\nENDIF\nEND\n" + call);
+        REQUIRE(blocks.size() == 1);
+        CHECK(blocks[0].rfind("6: label 10 is defined twice", 0) == 0);
+        // the same number in two routines is fine
+        CHECK(parseErrorsWithLines("PROCEDURE p(x:y)\ny = 1\n10:\nEND\nPROCEDURE q(x:y)\ny = 1\n10:\nEND\n" + call).empty());
+    }
+    SECTION("GOTO and labels in the main program") {
+        const auto errors = parseErrorsWithLines("x = 1\nGOTO 10\ny = 2\n10:\nz = 3\n");
+        REQUIRE(errors.size() == 2);
+        CHECK(errors[0].rfind("2: GOTO is only allowed inside FUNCTION and PROCEDURE bodies", 0) == 0);
+        CHECK(errors[1].rfind("4: statement labels are only allowed inside FUNCTION and PROCEDURE bodies", 0) == 0);
+        const auto labelAndStatement = parseErrorsWithLines("x = 1\n20: y = 2\n");
+        REQUIRE(labelAndStatement.size() == 1);
+        CHECK(labelAndStatement[0].rfind("2: statement labels are only allowed", 0) == 0);
+        // in the body of a DUPLICATE of the main program
+        const auto loop = parseErrorsWithLines("DUPLICATE i = 1, 2\n  x[i] = i\n  GOTO 10\n  10:\nEND\n");
+        REQUIRE(loop.size() == 2);
+        CHECK(loop[0].rfind("3: GOTO is only allowed inside FUNCTION and PROCEDURE bodies", 0) == 0);
+        CHECK(loop[1].rfind("4: statement labels are only allowed", 0) == 0);
+        auto run = runModel("x = 1\nGOTO 10\n10:\n");
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+    }
+    SECTION("a jump into a block") {
+        const auto intoThen = parseErrorsWithLines("PROCEDURE p(x:y)\ny = 1\nGOTO 10\nIF (x=1) THEN\n10:\ny = 2\nENDIF\nEND\n" + call);
+        REQUIRE(intoThen.size() == 1);
+        CHECK(intoThen[0] == "3: GOTO 10 would jump into a block: the label '10:' (line 5) is inside the THEN branch of the IF at line 4; "
+                             "a GOTO can only jump to a label of its own block or of a block that contains it");
+        const auto intoElse = parseErrorsWithLines("PROCEDURE p(x:y)\nGOTO 10\nIF (x=1) THEN\ny = 1\nELSE\n10:\ny = 2\nENDIF\nEND\n" + call);
+        REQUIRE(intoElse.size() == 1);
+        CHECK(intoElse[0].find("inside the ELSE branch of the IF at line 3") != std::string::npos);
+        const auto intoLoop = parseErrorsWithLines("PROCEDURE p(x:y)\ny = 0\nGOTO 10\nDUPLICATE i = 1, 3\n10:\ny = y + i\nEND\nEND\n" + call);
+        REQUIRE(intoLoop.size() == 1);
+        CHECK(intoLoop[0].find("inside the DUPLICATE loop at line 4") != std::string::npos);
+        const auto intoRepeat = parseErrorsWithLines("PROCEDURE p(x:y)\ny = 0\nGOTO 10\nREPEAT\n10:\ny = y + 1\nUNTIL (y > 3)\nEND\n" + call);
+        REQUIRE(intoRepeat.size() == 1);
+        CHECK(intoRepeat[0].find("inside the REPEAT loop at line 4") != std::string::npos);
+        // from one branch of an IF to the other
+        const auto sibling = parseErrorsWithLines("PROCEDURE p(x:y)\nIF (x=1) THEN\nGOTO 10\ny = 1\nELSE\n10:\ny = 2\nENDIF\nEND\n" + call);
+        REQUIRE(sibling.size() == 1);
+        CHECK(sibling[0].rfind("3: GOTO 10 would jump into a block", 0) == 0);
+        // into a deeper block of the same IF
+        const auto deeper = parseErrorsWithLines("PROCEDURE p(x:y)\nIF (x=1) THEN\nGOTO 10\nIF (x>0) THEN\n10:\ny = 1\nENDIF\nENDIF\nEND\n" + call);
+        REQUIRE(deeper.size() == 1);
+        CHECK(deeper[0].find("the label '10:' (line 5)") != std::string::npos);
+        auto run = runModel("PROCEDURE p(x:y)\ny = 1\nGOTO 10\nIF (x=1) THEN\n10:\ny = 2\nENDIF\nEND\nCALL p(1:z)\n");
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+    }
+    SECTION("a GOTO without a label number") {
+        for (const char* text : {"GOTO", "GOTO x", "GOTO 1.5", "GOTO 10 20", "GOTO -3"}) {
+            INFO(text);
+            const auto errors = parseErrorsWithLines(std::string("PROCEDURE p(x:y)\ny = 1\n") + text + "\nEND\n" + call);
+            REQUIRE(errors.size() == 1);
+            CHECK(errors[0].rfind("3: GOTO must be followed by a statement label number", 0) == 0);
+        }
+        // a variable named goto is still a variable
+        auto run = runModel("goto = 5\ny = 2 * goto\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(10.0, 1e-9));
+    }
+    SECTION("a label that is not a statement label stays an error") {
+        CHECK(parseErrorsWithLines("PROCEDURE p(x:y)\ny = 1\n1.5: y = 2\nEND\n" + call) == Messages{"3: Could not parse line"});
+        CHECK(parseErrorsWithLines("PROCEDURE p(x:y)\ny = 1\nab: y = 2\nEND\n" + call) == Messages{"3: Could not parse line"});
+    }
+}

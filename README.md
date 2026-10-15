@@ -25,7 +25,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 ## Features
 
-- **Parser**: Parses CoolSolve source code (`.eescode` files) into an AST — variables, equations, procedural blocks (`FUNCTION`, `PROCEDURE`, `CALL`), control flow (`IF-THEN-ELSE`, `DUPLICATE`, `REPEAT-UNTIL`), directives (including the conditional compilation `$IF` / `$IFNOT` / `$ELSE` / `$ENDIF` and `$CONSTANT`), array subscripts and array ranges (`X[1..n]` as arguments, outputs and in routine headers), and named function arguments.
+- **Parser**: Parses CoolSolve source code (`.eescode` files) into an AST — variables, equations, procedural blocks (`FUNCTION`, `PROCEDURE`, `CALL`), control flow (`IF-THEN-ELSE`, `DUPLICATE`, `REPEAT-UNTIL`, `GOTO` with numeric statement labels in routine bodies), directives (including the conditional compilation `$IF` / `$IFNOT` / `$ELSE` / `$ENDIF` and `$CONSTANT`), array subscripts and array ranges (`X[1..n]` as arguments, outputs and in routine headers), and named function arguments.
 
 - **Structural Analysis**: Decomposes the equation system into solvable blocks using the Hopcroft–Karp matching algorithm and Tarjan's SCC algorithm.
 
