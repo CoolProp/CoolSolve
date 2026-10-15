@@ -335,8 +335,9 @@ static CoolProp::parameters getCoolPropInputParam(const std::string& inputName) 
     throw std::runtime_error("Unknown CoolProp input: " + inputName);
 }
 
-// Humid Air parameter mapping
-enum class HAParam { T, P, W, R, D, B, H, S, V, M, K, C, Unknown };
+// Humid Air parameter mapping. CoolProp's HAPropsSI gives H, S, U, V, C and CV per kg of DRY air (as EES does for
+// AirH2O); Rho is not a CoolProp output but 1/V (see getHAOutputParam).
+enum class HAParam { T, P, W, R, D, B, H, S, V, M, K, C, CV, U, Rho, Unknown };
 
 static HAParam getHAParam(const std::string& name) {
     std::string n = name;
@@ -352,8 +353,20 @@ static HAParam getHAParam(const std::string& name) {
     if (n == "v" || n == "volume") return HAParam::V;
     if (n == "mu" || n == "viscosity") return HAParam::M;
     if (n == "k" || n == "conductivity") return HAParam::K;
-    if (n == "cp" || n == "cv" || n == "specheat") return HAParam::C;
+    if (n == "cp" || n == "specheat") return HAParam::C;
+    if (n == "cv") return HAParam::CV;
+    if (n == "u" || n == "internalenergy" || n == "intenergy") return HAParam::U;
     return HAParam::Unknown;
+}
+
+/// The humid-air output asked by the EES function `name`: getHAParam, and `density` (EES: 1/volume per kg of dry air,
+/// like the other properties of AirH2O; the density of the mixture is density*(1+w)). `density` is an output only:
+/// as the name of an input it stays unknown (it must not be read as a volume).
+static HAParam getHAOutputParam(const std::string& name) {
+    std::string n = name;
+    std::transform(n.begin(), n.end(), n.begin(), ::tolower);
+    if (n == "density" || n == "rho") return HAParam::Rho;
+    return getHAParam(n);
 }
 
 static std::string haParamToString(HAParam p) {
@@ -370,6 +383,9 @@ static std::string haParamToString(HAParam p) {
         case HAParam::M: return "M";
         case HAParam::K: return "K";
         case HAParam::C: return "C";
+        case HAParam::CV: return "CV";
+        case HAParam::U: return "U";
+        case HAParam::Rho: return "V";   // 1/Vda
         default: return "";
     }
 }
@@ -380,12 +396,15 @@ static UnitType haParamToUnitType(HAParam p) {
         case HAParam::D:
         case HAParam::B: return UnitType::Temperature;
         case HAParam::P: return UnitType::Pressure;
-        case HAParam::H: return UnitType::SpecificEnergy;
+        case HAParam::H:
+        case HAParam::U: return UnitType::SpecificEnergy;
         case HAParam::S: return UnitType::SpecificEntropy;
         case HAParam::V: return UnitType::Density; // m3/kg is inverse density
+        case HAParam::Rho: return UnitType::Density;
         case HAParam::M: return UnitType::Viscosity;
         case HAParam::K: return UnitType::Conductivity;
-        case HAParam::C: return UnitType::SpecificHeat;
+        case HAParam::C:
+        case HAParam::CV: return UnitType::SpecificHeat;
         default: return UnitType::Dimensionless;
     }
 }
@@ -1156,7 +1175,11 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     // entirely in AD space so gradients are correct.
     //   KINEMATICVISCOSITY = viscosity / density          (m^2/s)
     //   THERMALDIFFUSIVITY = conductivity / (density*cp)  (m^2/s)
-    if (funcName == "kinematicviscosity" || funcName == "thermaldiffusivity") {
+    // For humid air the density and cp are per kg of dry air, so k/(density*cp) is the diffusivity of the mixture, but
+    // viscosity/density would be off by (1+w) from its kinematic viscosity: that call is refused below as a humid-air
+    // property without output, naming the function.
+    if (funcName == "thermaldiffusivity" ||
+        (funcName == "kinematicviscosity" && fluid->getType() != FluidType::HumidAir)) {
         auto makeSubCall = [&](const std::string& name) {
             FunctionCall sub = func;
             sub.name = name;
@@ -1317,7 +1340,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             inputValues.push_back(val);
         }
         
-        HAParam outParam = getHAParam(funcName);
+        HAParam outParam = getHAOutputParam(funcName);
         std::vector<HAParam> inParams;
         for (const auto& name : inputNamesList) {
             inParams.push_back(getHAParam(name));
@@ -1348,8 +1371,15 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             vals.push_back(v);
         }
         
+        // The output at the inputs `v`; the density is 1/Vda, so its derivatives below are those of 1/Vda as well
+        // (a failure of CoolProp stays NaN/Inf: 1/Inf must not become a density of 0).
+        auto haOutput = [&](const std::vector<double>& v) {
+            const double r = timedHAPropsSI(outputStr, inputStrs[0], v[0], inputStrs[1], v[1], inputStrs[2], v[2]);
+            return (outParam == HAParam::Rho && std::isfinite(r)) ? 1.0 / r : r;
+        };
+
         try {
-            double result = timedHAPropsSI(outputStr, inputStrs[0], vals[0], inputStrs[1], vals[1], inputStrs[2], vals[2]);
+            double result = haOutput(vals);
             
             if (!std::isfinite(result)) {
                 // Special handling for relative humidity with supersaturated air:
@@ -1420,8 +1450,8 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 vPlus[i] += step;
                 vMinus[i] -= step;
                 
-                double rPlus = timedHAPropsSI(outputStr, inputStrs[0], vPlus[0], inputStrs[1], vPlus[1], inputStrs[2], vPlus[2]);
-                double rMinus = timedHAPropsSI(outputStr, inputStrs[0], vMinus[0], inputStrs[1], vMinus[1], inputStrs[2], vMinus[2]);
+                double rPlus = haOutput(vPlus);
+                double rMinus = haOutput(vMinus);
                 
                 if (std::isfinite(rPlus) && std::isfinite(rMinus)) {
                     dResult_dInput[i] = (rPlus - rMinus) / (2.0 * step);

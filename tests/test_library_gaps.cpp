@@ -6253,8 +6253,11 @@ hN2 = enthalpy('N2', T=25)
 rho_air = density('AirH2O', T=25, P=101325, R=0.5)
 )");
     REQUIRE(run.solveOk);
+    CHECK(run.verified);   // the humid-air call is a value (it was a penalty value with a recorded error: CS-BUG-HUMIDAIR-PROPS)
     CHECK_THAT(run["h"], WithinRel(266776.2, 1e-6));
     CHECK_THAT(run["rho"], WithinRel(CoolProp::PropsSI("D", "T", 293.15, "P", 1e5, "Water"), 1e-9));
+    CHECK_THAT(run["rho_air"], WithinRel(1.0 / HumidAir::HAPropsSI("V", "T", 298.15, "P", 101325, "R", 0.5), 1e-9));
+    CHECK_THAT(run["rho_air"], WithinAbs(1.1658, 1e-4));   // per kg of dry air: 1/volume
     CHECK(mixtureWarnings(run) == 0);
     auto unknown = runModel("h = enthalpy('NoSuchFluid', T=50, P=5E5)\n");
     CHECK_FALSE(unknown.solveOk);
@@ -12683,8 +12686,8 @@ TEST_CASE("CS-BUG-HUMIDAIR-HIGHT: other failures of CoolProp's humid-air model a
     CHECK(checkError(run).find("temperature") != std::string::npos);
     CHECK(checkError(run).find("with inputs H=1500000 J/kg, P=101325 Pa, W=0: CoolProp: ") != std::string::npos);
     // the properties that CoolSolve does not map to a humid-air output are an error as well
-    // (CS-BUG-HUMIDAIR-PROPS: density(AirH2O) was the value 1E4 in the register, the same silent penalty)
-    requireHumidAirError("density('AirH2O',T=50,P=8E5,R=1)", {"density", "not available for humid air (AirH2O)"});
+    // (CS-BUG-HUMIDAIR-PROPS gave density and cv their outputs: density(AirH2O) was the value 1E4 in the register)
+    requireHumidAirError("soundspeed('AirH2O',T=50,P=8E5,R=1)", {"soundspeed", "not available for humid air (AirH2O)"});
     // the properties that do work are untouched at that state (the reproducer of that register entry)
     auto fine = runModel("w=humrat('AirH2O',T=50,P=8E5,R=1)\nc1=cp('AirH2O',T=50,P=8E5,R=1)\nvv=volume('AirH2O',T=50,P=8E5,R=1)\n");
     REQUIRE(fine.solveOk);
@@ -12707,4 +12710,355 @@ TEST_CASE("CS-BUG-HUMIDAIR-HIGHT: PSYCHPROPS out of range is an error that says 
     REQUIRE(ok.solveOk);
     CHECK(ok.verified);
     CHECK_THAT(ok["W"], WithinRel(HumidAir::HAPropsSI("W", "T", 313.15, "P", 101325, "R", 0.5), 1e-9));
+}
+
+// ============================================================================
+// CS-BUG-HUMIDAIR-PROPS: density(AirH2O) was the value 1E4 and cv(AirH2O) the value of cp
+// ============================================================================
+// EES gives the properties of AirH2O per kg of DRY air (h, s, u, v, cp, cv and density = 1/v; the mixture density is
+// density*(1+w)). CoolSolve mapped cv to CoolProp's `C` (the value of cp, gamma = 1) and had no output for density.
+
+namespace {
+
+/// CoolProp's humid-air output `out` (SI) at T [C], P [Pa] and the third input `in` = `inValue`.
+double haOut(const std::string& out, double T_C, double P, const std::string& in, double inValue) {
+    return HumidAir::HAPropsSI(out, "T", T_C + 273.15, "P", P, in, inValue);
+}
+
+/// cv per kg of dry air from thermodynamics alone, cv = cp - T (dv/dT)_P^2 / (-(dv/dP)_T) at constant humidity
+/// ratio (the mixture of a given composition behaves as a pure fluid), independent of CoolProp's CV routine.
+double haCvFromIdentity(double T_C, double P, double W) {
+    const double T = T_C + 273.15, dT = 0.05, dP = 200.0;
+    const double cp = HumidAir::HAPropsSI("C", "T", T, "P", P, "W", W);
+    const double dvdT = (HumidAir::HAPropsSI("V", "T", T + dT, "P", P, "W", W) -
+                         HumidAir::HAPropsSI("V", "T", T - dT, "P", P, "W", W)) / (2 * dT);
+    const double dvdP = (HumidAir::HAPropsSI("V", "T", T, "P", P + dP, "W", W) -
+                         HumidAir::HAPropsSI("V", "T", T, "P", P - dP, "W", W)) / (2 * dP);
+    return cp - T * dvdT * dvdT / (-dvdP);
+}
+
+/// A number written with all its digits, for the text of a model.
+std::string digits(double x) {
+    std::ostringstream oss;
+    oss << std::setprecision(17) << x;
+    return oss.str();
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-HUMIDAIR-PROPS: reproducer of the register, density and cv of AirH2O are values per kg of dry air", "[library-gaps][humidair-props]") {
+    // was: r1 = 1.0e4 (expected ~8.5), c1 = v1 = 1036.34 (gamma = 1); EES: density = 1/volume, cv < cp
+    auto run = runModel(
+        "r1=density('AirH2O',T=50,P=8E5,R=1)\n"
+        "w=humrat('AirH2O',T=50,P=8E5,R=1)\n"
+        "c1=cp('AirH2O',T=50,P=8E5,R=1)\n"
+        "v1=cv('AirH2O',T=50,P=8E5,R=1)\n"
+        "vv=volume('AirH2O',T=50,P=8E5,R=1)\n");
+    INFO(run.message << " " << checkError(run));
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.checkErrors.empty());
+    CHECK_FALSE(anyContains(run.warnings, "HumidAir error"));
+
+    // CoolProp's own outputs at the state, all per kg of dry air
+    const double Vda = haOut("V", 50, 8e5, "R", 1.0);
+    CHECK_THAT(run["vv"], WithinRel(Vda, 1e-9));
+    CHECK_THAT(run["r1"], WithinRel(1.0 / Vda, 1e-9));                       // density = 1/volume
+    CHECK_THAT(run["r1"] * run["vv"], WithinRel(1.0, 1e-12));
+    CHECK_THAT(run["c1"], WithinRel(haOut("C", 50, 8e5, "R", 1.0), 1e-9));
+    CHECK_THAT(run["v1"], WithinRel(haOut("CV", 50, 8e5, "R", 1.0), 1e-9));
+    CHECK_THAT(run["w"], WithinAbs(0.009975, 1e-6));
+    CHECK_THAT(run["r1"], WithinAbs(8.4986, 1e-4));                          // the register expects ~8.5, not 1E4
+    CHECK_THAT(run["v1"], WithinAbs(735.26, 5e-3));
+    CHECK_THAT(run["r1"] * (1 + run["w"]), WithinAbs(8.5834, 1e-4));         // mixture density, expected 8.58 in the register
+
+    // cv is not cp: gamma = cp/cv of the real mixture at 8 bar (1.409; 1.39 for the ideal-gas mixture)
+    CHECK(run["v1"] < run["c1"]);
+    const double gamma = run["c1"] / run["v1"];
+    CHECK(gamma > 1.38);
+    CHECK(gamma < 1.42);
+
+    // independent estimates: ideal-gas mixture of dry air and vapour, and the thermodynamic identity for cv
+    const double w = run["w"], T = 323.15, Ra = 287.055, Rw = 461.495;
+    const double pw = 8e5 * w / (0.62198 + w);                               // partial pressure of the vapour
+    CHECK_THAT(run["r1"], WithinRel((8e5 - pw) / (Ra * T), 5e-3));           // rho_da = P_a/(R_a T)
+    CHECK_THAT(gamma, WithinRel(run["c1"] / (run["c1"] - (Ra + w * Rw)), 0.02));
+    CHECK_THAT(run["v1"], WithinRel(haCvFromIdentity(50, 8e5, w), 1e-6));
+
+    // the workaround formulas of the library model CSL-0075 (EES values of the same state): (1+w)/volume is the
+    // mixture density, Gamma = cp/(cp - R_mix) its ideal-mixture gamma
+    CHECK_THAT((1 + w) / run["vv"], WithinRel(run["r1"] * (1 + w), 1e-12));
+    const double Rmix = (Ra + w * Rw) / (1 + w);
+    CHECK_THAT(gamma, WithinRel(run["c1"] / (run["c1"] - Rmix), 0.025));
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-PROPS: the density of CSL-0159 is 1/volume per kg of dry air, as the EES stored solution", "[library-gaps][humidair-props]") {
+    // The call of the native library model (string variable for the fluid, lower-case r): EES stored
+    // rho_sf_cd = 1.1903 kg/m^3 at 20 C, RH 0.5, 1 atm. 1/volume gives 1.1907, (1+w)/volume (the library
+    // workaround) 1.1994: the EES density is NOT the mixture density.
+    auto run = runModel(
+        "fluid3$='AirH2O'\n"
+        "t_sf_su_cd=20\n"
+        "rho_sf_cd=Density(fluid3$,T=t_sf_su_cd,r=0.5,P=101325)\n"
+        "w_air_cd=humrat(fluid3$,T=t_sf_su_cd,r=0.5,P=101325)\n"
+        "vol=Volume(fluid3$,T=t_sf_su_cd,r=0.5,P=101325)\n");
+    INFO(run.message << " " << checkError(run));
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["rho_sf_cd"], WithinRel(1.0 / run["vol"], 1e-12));
+    CHECK_THAT(run["rho_sf_cd"], WithinRel(1.1903, 5e-4));
+    CHECK(std::abs((1 + run["w_air_cd"]) / run["vol"] / 1.1903 - 1.0) > 7e-3);
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-PROPS: every EES property name of AirH2O maps to its CoolProp output", "[library-gaps][humidair-props]") {
+    const double T = 30.0, P = 101325.0, R = 0.6;
+    const double W = haOut("W", T, P, "R", R), H = haOut("H", T, P, "R", R);
+    const std::string state = "(AirH2O,T=30,P=101325,R=0.6)";
+    auto run = runModel(
+        "y_w = humrat" + state + "\n"
+        "y_rh = relhum(AirH2O,T=30,P=101325,W=" + digits(W) + ")\n"
+        "y_dp = dewpoint" + state + "\n"
+        "y_wb = wetbulb" + state + "\n"
+        "y_h = enthalpy" + state + "\n"
+        "y_s = entropy" + state + "\n"
+        "y_v = volume" + state + "\n"
+        "y_rho = density" + state + "\n"
+        "y_cp = cp" + state + "\n"
+        "y_cv = cv" + state + "\n"
+        "y_sh = specheat" + state + "\n"
+        "y_mu = viscosity" + state + "\n"
+        "y_k = conductivity" + state + "\n"
+        "y_u = intenergy" + state + "\n"
+        "y_t = temperature(AirH2O,H=" + digits(H) + ",P=101325,W=" + digits(W) + ")\n");
+    INFO(run.message << " " << checkError(run));
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.checkErrors.empty());
+    CHECK_FALSE(anyContains(run.warnings, "HumidAir error"));
+    auto ha = [&](const char* out) { return haOut(out, T, P, "R", R); };
+    CHECK_THAT(run["y_w"], WithinRel(W, 1e-9));
+    CHECK_THAT(run["y_rh"], WithinRel(R, 1e-9));
+    CHECK_THAT(run["y_dp"], WithinAbs(ha("Tdp") - 273.15, 1e-9));
+    CHECK_THAT(run["y_wb"], WithinAbs(ha("Twb") - 273.15, 1e-9));
+    CHECK_THAT(run["y_h"], WithinRel(ha("H"), 1e-9));
+    CHECK_THAT(run["y_s"], WithinRel(ha("S"), 1e-9));
+    CHECK_THAT(run["y_v"], WithinRel(ha("V"), 1e-9));
+    CHECK_THAT(run["y_rho"], WithinRel(1.0 / ha("V"), 1e-9));
+    CHECK_THAT(run["y_cp"], WithinRel(ha("C"), 1e-9));
+    CHECK_THAT(run["y_cv"], WithinRel(ha("CV"), 1e-9));
+    CHECK_THAT(run["y_sh"], WithinRel(ha("C"), 1e-9));
+    CHECK_THAT(run["y_mu"], WithinRel(ha("M"), 1e-9));
+    CHECK_THAT(run["y_k"], WithinRel(ha("K"), 1e-9));
+    CHECK_THAT(run["y_u"], WithinRel(ha("U"), 1e-9));
+    CHECK_THAT(run["y_t"], WithinAbs(T, 1e-6));
+    // the relations between them (per kg of dry air): u = h - P v, density = 1/volume, cv < cp
+    CHECK_THAT(run["y_u"], WithinRel(run["y_h"] - P * run["y_v"], 1e-9));
+    CHECK_THAT(run["y_rho"] * run["y_v"], WithinRel(1.0, 1e-12));
+    CHECK(run["y_cv"] < run["y_cp"]);
+    CHECK_THAT(run["y_cv"], WithinRel(haCvFromIdentity(T, P, W), 1e-5));
+    // the typical magnitudes (EES: cp 1.02E3 J/kg-K, gamma 1.4, viscosity 1.8E-5 Pa-s, conductivity 0.026 W/m-K)
+    CHECK_THAT(run["y_cp"] / run["y_cv"], WithinAbs(1.4, 0.02));
+    CHECK_THAT(run["y_mu"], WithinRel(1.85e-5, 0.03));
+    CHECK_THAT(run["y_k"], WithinRel(0.026, 0.03));
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-PROPS: density and cv of dry air (two inputs) and of the other fluids are unchanged", "[library-gaps][humidair-props]") {
+    auto run = runModel(
+        "rho_da = density(AirH2O,T=25,P=101325)\n"
+        "cv_da = cv(AirH2O,T=25,P=101325)\n"
+        "cp_da = cp(AirH2O,T=25,P=101325)\n"
+        "rho_air = density(Air_ha,T=25,P=101325)\n"
+        "cv_air = cv(Air_ha,T=25,P=101325)\n"
+        "cv_w = cv(Water,T=20,P=1E5)\n"
+        "cp_w = cp(Water,T=20,P=1E5)\n"
+        "rho_w = density(Water,T=20,P=1E5)\n");
+    INFO(run.message << " " << checkError(run));
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // humid air without water (W = 0 by default): the dry-air values of CoolProp's humid-air model
+    CHECK_THAT(run["rho_da"], WithinRel(1.0 / haOut("V", 25, 101325, "W", 0.0), 1e-9));
+    CHECK_THAT(run["cv_da"], WithinRel(haOut("CV", 25, 101325, "W", 0.0), 1e-9));
+    CHECK_THAT(run["cp_da"], WithinRel(haOut("C", 25, 101325, "W", 0.0), 1e-9));
+    CHECK_THAT(run["cp_da"] / run["cv_da"], WithinAbs(1.4, 0.005));
+    // ... and those of the real fluid Air agree to the accuracy of the two models
+    CHECK_THAT(run["rho_da"], WithinRel(run["rho_air"], 2e-3));
+    CHECK_THAT(run["cv_da"], WithinRel(run["cv_air"], 2e-3));
+    // the other fluids keep CoolProp's CVMASS and DMASS
+    CHECK_THAT(run["rho_air"], WithinRel(CoolProp::PropsSI("D", "T", 298.15, "P", 101325, "Air"), 1e-9));
+    CHECK_THAT(run["cv_air"], WithinRel(CoolProp::PropsSI("O", "T", 298.15, "P", 101325, "Air"), 1e-9));
+    CHECK_THAT(run["cv_w"], WithinRel(CoolProp::PropsSI("O", "T", 293.15, "P", 1e5, "Water"), 1e-9));
+    CHECK_THAT(run["rho_w"], WithinRel(CoolProp::PropsSI("D", "T", 293.15, "P", 1e5, "Water"), 1e-9));
+    CHECK(run["cv_w"] != run["cp_w"]);
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-PROPS: the derivatives of density and cv of AirH2O w.r.t. T, P and R are exact", "[library-gaps][humidair-props]") {
+    // forward-mode AD through the evaluator at T = 30 C, P = 1.5E5 Pa, R = 0.5, against central differences of CoolProp
+    // (cv is itself a difference quotient inside CoolProp, so its derivative by differences is good to ~1e-3, like cp)
+    const double T = 30.0, P = 1.5e5, R = 0.5;
+    struct Case { const char* name; const char* out; bool inverse; double tolerance; };
+    for (const Case& c : {Case{"density", "V", true, 1e-4}, Case{"cv", "CV", false, 2e-3}, Case{"volume", "V", false, 1e-4}}) {
+        INFO(c.name);
+        EESParser parser;
+        auto parsed = parser.parse(std::string("y = ") + c.name + "(AirH2O, T=Tv, P=Pv, R=Rv)\n");
+        REQUIRE(parsed.success);
+        IR ir = IR::fromAST(parsed.program);
+        ExpressionEvaluator ev(3);
+        ev.setVariable("Tv", ADValue::independent(T, 0, 3));
+        ev.setVariable("Pv", ADValue::independent(P, 1, 3));
+        ev.setVariable("Rv", ADValue::independent(R, 2, 3));
+        const ADValue y = ev.evaluate(ir.getEquations()[0].rhs);
+        auto f = [&](double t, double p, double r) {
+            const double v = haOut(c.out, t, p, "R", r);
+            return c.inverse ? 1.0 / v : v;
+        };
+        CHECK_THAT(y.value, WithinRel(f(T, P, R), 1e-9));
+        const double steps[3] = {0.05, 500.0, 2e-3};
+        const double d[3] = {(f(T + steps[0], P, R) - f(T - steps[0], P, R)) / (2 * steps[0]),
+                             (f(T, P + steps[1], R) - f(T, P - steps[1], R)) / (2 * steps[1]),
+                             (f(T, P, R + steps[2]) - f(T, P, R - steps[2])) / (2 * steps[2])};
+        for (size_t i = 0; i < 3; ++i) {
+            INFO("input " << i << ": AD " << y.gradient[i] << ", difference " << d[i]);
+            CHECK(d[i] != 0.0);
+            CHECK_THAT(y.gradient[i], WithinRel(d[i], c.tolerance));
+        }
+    }
+    // the gradient of density is the chain rule of 1/volume (d(1/v) = -dv/v^2): the same machinery as volume
+    EESParser parser;
+    auto parsed = parser.parse("a = density(AirH2O, T=Tv, P=Pv, R=Rv)\nb = volume(AirH2O, T=Tv, P=Pv, R=Rv)\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    ExpressionEvaluator ev(3);
+    ev.setVariable("Tv", ADValue::independent(T, 0, 3));
+    ev.setVariable("Pv", ADValue::independent(P, 1, 3));
+    ev.setVariable("Rv", ADValue::independent(R, 2, 3));
+    const ADValue a = ev.evaluate(ir.getEquations()[0].rhs), b = ev.evaluate(ir.getEquations()[1].rhs);
+    for (size_t i = 0; i < 3; ++i) CHECK_THAT(a.gradient[i], WithinRel(-b.gradient[i] / (b.value * b.value), 1e-6));
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-PROPS: an unknown is solved through density and through cv of AirH2O", "[library-gaps][humidair-props]") {
+    // the target is the property at a known state, the solver finds that state back
+    const double rhoT = 1.0 / haOut("V", 65, 8e5, "R", 1.0);
+    auto viaT = runModel("rho_t = " + digits(rhoT) + "\nrho_t = density(AirH2O, T=Tg, P=8E5, R=1)\n");
+    INFO(viaT.message << " " << checkError(viaT));
+    REQUIRE(viaT.solveOk);
+    CHECK(viaT.verified);
+    CHECK_THAT(viaT["Tg"], WithinAbs(65.0, 1e-6));
+
+    const double rhoP = 1.0 / haOut("V", 50, 7.5e5, "R", 0.5);
+    auto viaP = runModel("rho_t = " + digits(rhoP) + "\nrho_t = density(AirH2O, T=50, P=Pg, R=0.5)\n");
+    INFO(viaP.message << " " << checkError(viaP));
+    REQUIRE(viaP.solveOk);
+    CHECK(viaP.verified);
+    CHECK_THAT(viaP["Pg"], WithinRel(7.5e5, 1e-8));
+
+    const double cvT = haOut("CV", 40, 1.5e5, "R", 0.5);
+    auto cvViaT = runModel("cv_t = " + digits(cvT) + "\ncv_t = cv(AirH2O, T=Tg, P=1.5E5, R=0.5)\n");
+    INFO(cvViaT.message << " " << checkError(cvViaT));
+    REQUIRE(cvViaT.solveOk);
+    CHECK(cvViaT.verified);
+    CHECK_THAT(cvViaT["Tg"], WithinAbs(40.0, 1e-3));
+
+    const double cvR = haOut("CV", 40, 1.5e5, "R", 0.7);
+    auto cvViaR = runModel("cv_t = " + digits(cvR) + "\ncv_t = cv(AirH2O, T=40, P=1.5E5, R=Rg)\n");
+    INFO(cvViaR.message << " " << checkError(cvViaR));
+    REQUIRE(cvViaR.solveOk);
+    CHECK(cvViaR.verified);
+    CHECK_THAT(cvViaR["Rg"], WithinAbs(0.7, 1e-6));
+
+    // in a coupled block (dry air, two inputs: the call is a candidate of the symbolic reduction of the block)
+    auto coupled = runModel("P = 101325\nrho = density(AirH2O, T=T, P=P)\nY = 3*T + 1\nrho = 1.3 - 0.003*Y\n");
+    INFO(coupled.message << " " << checkError(coupled));
+    REQUIRE(coupled.solveOk);
+    CHECK(coupled.verified);
+    CHECK_THAT(coupled["rho"], WithinRel(1.0 / haOut("V", coupled["T"], 101325, "W", 0.0), 1e-8));
+    CHECK_THAT(coupled["rho"], WithinRel(1.3 - 0.003 * coupled["Y"], 1e-9));
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-PROPS: density and cv take every humid-air input like the other properties", "[library-gaps][humidair-props]") {
+    // humidity ratio, dew point and wet bulb instead of the relative humidity
+    const double W = haOut("W", 30, 1e5, "R", 0.4), Tdp = haOut("Tdp", 30, 1e5, "R", 0.4) - 273.15,
+                 Twb = haOut("Twb", 30, 1e5, "R", 0.4) - 273.15;
+    auto run = runModel(
+        "rho_r = density(AirH2O, T=30, P=1E5, R=0.4)\n"
+        "rho_w = density(AirH2O, T=30, P=1E5, W=" + digits(W) + ")\n"
+        "rho_d = density(AirH2O, T=30, P=1E5, D=" + digits(Tdp) + ")\n"
+        "rho_b = density(AirH2O, T=30, P=1E5, B=" + digits(Twb) + ")\n"
+        "cv_r = cv(AirH2O, T=30, P=1E5, R=0.4)\n"
+        "cv_w = cv(AirH2O, T=30, P=1E5, W=" + digits(W) + ")\n"
+        "cv_d = cv(AirH2O, T=30, P=1E5, D=" + digits(Tdp) + ")\n"
+        "cv_b = cv(AirH2O, T=30, P=1E5, B=" + digits(Twb) + ")\n");
+    INFO(run.message << " " << checkError(run));
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const char* k : {"rho_w", "rho_d", "rho_b"}) CHECK_THAT(run[k], WithinRel(run["rho_r"], 1e-7));
+    for (const char* k : {"cv_w", "cv_d", "cv_b"}) CHECK_THAT(run[k], WithinRel(run["cv_r"], 1e-7));
+    CHECK_THAT(run["rho_r"], WithinRel(1.0 / haOut("V", 30, 1e5, "R", 0.4), 1e-9));
+    CHECK_THAT(run["cv_r"], WithinRel(haOut("CV", 30, 1e5, "R", 0.4), 1e-9));
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-PROPS: negative tests, the properties without a humid-air output stay explicit errors", "[library-gaps][humidair-props]") {
+    // CoolSolve maps no humid-air output to these: an error naming the call at the solution (never a value)
+    for (const char* name : {"soundspeed", "prandtl", "compressibilityfactor", "isentropicexponent", "surfacetension",
+                             "quality", "molarmass", "t_sat", "p_sat"}) {
+        INFO(name);
+        requireHumidAirError(std::string(name) + "(AirH2O,T=50,P=8E5,R=0.9)", {name, "not available for humid air (AirH2O)"});
+    }
+    // kinematicviscosity = mu/density would divide a quantity per kg of mixture by the density per kg of DRY air (off by
+    // 1+w): an error that names the call itself, not the density it is made of
+    requireHumidAirError("kinematicviscosity(AirH2O,T=50,P=8E5,R=0.9)", {"kinematicviscosity", "not available for humid air (AirH2O)"});
+    auto run = runModel("y = kinematicviscosity(AirH2O,T=50,P=8E5,R=0.9)\n");
+    CHECK(checkError(run).find("density()") == std::string::npos);
+    // a model that asks for it is not accepted, whatever else it computes
+    auto mixed = runModel("rho = density(AirH2O,T=50,P=8E5,R=0.9)\nnu = kinematicviscosity(AirH2O,T=50,P=8E5,R=0.9)\n");
+    REQUIRE(mixed.solveOk);
+    CHECK_FALSE(mixed.verified);
+    CHECK(checkError(mixed).find("kinematicviscosity") != std::string::npos);
+    // the other fluids keep it
+    auto water = runModel("nu = kinematicviscosity(Water,T=20,P=1E5)\n");
+    REQUIRE(water.solveOk);
+    CHECK_THAT(water["nu"], WithinRel(CoolProp::PropsSI("V", "T", 293.15, "P", 1e5, "Water") /
+                                      CoolProp::PropsSI("D", "T", 293.15, "P", 1e5, "Water"), 1e-9));
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-PROPS: thermaldiffusivity of AirH2O is k/(rho*cp) of the mixture", "[library-gaps][humidair-props]") {
+    // with the density and cp per kg of dry air, k/(density*cp) is the thermal diffusivity of the mixture:
+    // k/(rho_mix*cp_mix) = k*Vha/Cha, computed here from CoolProp's per-kg-of-humid-air outputs
+    auto run = runModel("a = thermaldiffusivity(AirH2O,T=50,P=8E5,R=0.9)\n");
+    INFO(run.message << " " << checkError(run));
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const double k = haOut("K", 50, 8e5, "R", 0.9), vha = haOut("Vha", 50, 8e5, "R", 0.9), cha = haOut("Cha", 50, 8e5, "R", 0.9);
+    CHECK_THAT(run["a"], WithinRel(k * vha / cha, 1e-6));
+    CHECK_THAT(run["a"], WithinRel(3.2e-6, 0.05));   // ~ 3.2E-6 m^2/s at 8 bar, 50 C
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-PROPS: negative tests, density and cv out of the range of the humid-air model are errors", "[library-gaps][humidair-props]") {
+    for (const char* call : {"density", "cv", "intenergy"}) {
+        INFO(call);
+        requireHumidAirError(std::string(call) + "(AirH2O,T=400,P=101325,R=0.1)", {call, "T=400 C", "(-143.15 C to 350 C)"});
+        requireHumidAirError(std::string(call) + "(AirH2O,T=25,P=1.5E7,R=0.5)", {call, "P=15000000 Pa", "(10 Pa to 10000000 Pa)"});
+    }
+    // inside the range they are values
+    auto ok = runModel("rho = density(AirH2O,T=350,P=101325)\nc = cv(AirH2O,T=350,P=101325)\n");
+    REQUIRE(ok.solveOk);
+    CHECK(ok.verified);
+    CHECK(ok.checkErrors.empty());
+    CHECK_THAT(ok["rho"], WithinRel(1.0 / haOut("V", 350, 101325, "W", 0.0), 1e-9));
+    // the error keeps the penalty value for the iterations, as for the other properties
+    auto hot = runModel("rho = density(AirH2O,T=400,P=101325,R=0.1)\n");
+    REQUIRE(hot.solveOk);
+    CHECK_FALSE(hot.verified);
+    CHECK_THAT(hot["rho"], WithinAbs(1e4, 1e-9));
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-PROPS: negative tests, density is not an input of the humid-air properties", "[library-gaps][humidair-props]") {
+    // `density=` is an output only: it must not be read as CoolProp's `V` (a volume), which would be a wrong state
+    for (const char* arg : {"density=8.5", "rho=8.5"}) {
+        INFO(arg);
+        requireHumidAirError(std::string("humrat(AirH2O, T=50, ") + arg + ", P=8E5)", {"humrat", "was not understood"});
+    }
+    // the other fluids keep `density` as an input
+    auto water = runModel("T = temperature(Water, density=998.2, P=1E5)\n");
+    REQUIRE(water.solveOk);
+    CHECK_THAT(water["T"], WithinAbs(CoolProp::PropsSI("T", "D", 998.2, "P", 1e5, "Water") - 273.15, 1e-6));
 }

@@ -603,9 +603,15 @@ Humid air is accessed through the pseudo-fluid `airH2O` (or equivalently
 | `relhum` / `R`          | Relative humidity (0..1)               |
 | `wetbulb` / `B`         | Wet-bulb temperature                   |
 | `dewpoint` / `D`        | Dew-point temperature                  |
-| `enthalpy`              | Specific enthalpy of the mixture       |
-| `entropy`               | Specific entropy                       |
-| `volume`                | Specific volume m³/kg dry-air          |
+| `enthalpy`              | Specific enthalpy per kg dry air       |
+| `entropy`               | Specific entropy per kg dry air        |
+| `intenergy`             | Specific internal energy per kg dry air (= h − P·v) |
+| `volume`                | Specific volume m³/kg dry air          |
+| `density`               | 1/`volume`, kg dry air per m³ (EES; the density of the mixture is `density`·(1+`humrat`)) |
+| `cp`, `cv`              | Specific heats per kg dry air (CoolProp's `C` and `CV`; `cv` < `cp`) |
+| `viscosity`, `conductivity` | Dynamic viscosity and thermal conductivity of the mixture |
+| `temperature`           | The dry-bulb temperature given the other three inputs (e.g. `H`, `P`, `W`) |
+| `thermaldiffusivity`    | k/(`density`·`cp`) of the mixture, m²/s |
 
 Example:
 
@@ -616,8 +622,9 @@ Twb_1 = wetbulb ( 'airH2O', T=25, P=101325, R=0.5 )
 
 **Validity range.** CoolProp's humid-air model is limited to temperatures (also `Twb`, `Tdp`) from
 −143.15 to 350 °C, pressures from 10 Pa to 10 MPa, `W` from 0 to 10 and `R` from 0 to 1; it gives no
-value outside, and none for the properties that CoolSolve has no humid-air output for (`density`, at
-present). Such a call is an error: during the iterations it has the placeholder value 10 000, so that
+value outside, and none for the properties that CoolSolve has no humid-air output for (`soundspeed`,
+`prandtl`, `compressibilityfactor`, `kinematicviscosity`, the saturation and critical properties…).
+Such a call is an error: during the iterations it has the placeholder value 10 000, so that
 a trial point outside the range is a bad point and not a failure of the solver, but a solution that
 contains it is refused (exit status 1, no `.sol` file) with *CoolProp evaluation failed in final
 solution*, which names the call, its inputs in your units and the limit that is exceeded:
