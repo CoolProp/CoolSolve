@@ -285,10 +285,11 @@ Worked example: §12, Example 3.
 - Known CoolSolve gaps (found while testing, see
   [model_library_support.md](model_library_support.md)):
   - the native EES call `INTERPOLATE('Table','Col1','Col2',Col2=value)`
-    (returns `Col1` at `Col2=value`) is **not supported**: it is parsed as a
-    property call and fails with "Unknown fluid" (`CS-GAP-INTERP-EES`);
-    CoolSolve only accepts its own positional form
-    `INTERPOLATE('table','xcol','ycol',x)`, with the column roles reversed;
+    (returns `Col1` at `Col2=value`) is supported since `CS-GAP-INTERP-EES`, next
+    to CoolSolve's positional form `INTERPOLATE('table','xcol','ycol',x)` (column
+    roles in the other order); keep the native form;
+  - beyond the table ends `INTERPOLATE` extrapolates linearly, as EES does
+    (`CS-GAP-INTERP-EXTRAP`; it clamped before); `INTERPOLATE2` still clamps;
   - EES `INTERPOLATE` is cubic (`INTERPOLATE1` is linear); CoolSolve is linear;
   - CoolSolve returned a **wrong value without error** when the x column is in
     descending order: fixed after v0.3.0, both orders are accepted
@@ -304,8 +305,7 @@ Worked example: §12, Example 3.
     ([Language Reference §11.8](language_reference.md#118-text-cells-lookup));
     `LOOKUP$ROW` is not implemented.
 
-Following principle 1, models using the native EES `INTERPOLATE` form keep it
-and are marked *blocked* until the gap is closed.
+Following principle 1, models keep the native EES `INTERPOLATE` form.
 
 ---
 
@@ -455,7 +455,9 @@ Source: `Revision JL051223-01.EES` (EES 7.458, revision exercise).
   table because its x column is descending (`CS-BUG-INTERP-DESC`: 370 instead of
   420); lookup tables ignored with a bare file name (`CS-BUG-LOOKUP-PATH`);
   library functions must be copied (`CS-FEAT-IMPORT`).
-- Status: *blocked* by `CS-GAP-INTERP-EES` (kept in native syntax).
+- Status: *blocked* by `CS-GAP-INTERP-EES` (kept in native syntax); since that
+  gap is closed, the native file evaluates its `INTERPOLATE` calls and stops at
+  `cpbar` / `gamma` (`CS-GAP-INCLUDE`).
 
 ### Example 3 — unit conversion of a K / kPa / kJ exercise (*verified*)
 

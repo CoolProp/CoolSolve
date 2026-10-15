@@ -120,14 +120,21 @@ TEST_CASE("LookupTable interpolate1D", "[lookup-table]") {
         REQUIRE_THAT(res2.value, WithinAbs(30.0, 1e-9));
     }
 
-    SECTION("below-range clamping to first value") {
+    SECTION("below range: linear extrapolation through the first two nodes") {
         auto res = tbl.interpolate1D(xcol, ycol, constant(-1.0), nullptr);
-        REQUIRE_THAT(res.value, WithinAbs(0.0, 1e-9));
+        REQUIRE_THAT(res.value, WithinAbs(-10.0, 1e-9));
     }
 
-    SECTION("above-range clamping to last value") {
+    SECTION("above range: linear extrapolation through the last two nodes") {
         auto res = tbl.interpolate1D(xcol, ycol, constant(10.0), nullptr);
-        REQUIRE_THAT(res.value, WithinAbs(40.0, 1e-9));
+        REQUIRE_THAT(res.value, WithinAbs(100.0, 1e-9));
+    }
+
+    SECTION("extrapolation uses the end interval only") {
+        // slopes 1 (first interval) and 4 (last interval): the extrapolation follows the end interval, not the whole table
+        auto bent = LookupTable::fromCSV("bent", "x,y\n0,0\n1,1\n2,5\n");
+        REQUIRE_THAT(bent.interpolate1D(1, 2, constant(4.0), nullptr).value, WithinAbs(13.0, 1e-9));    // 5 + 2 * 4
+        REQUIRE_THAT(bent.interpolate1D(1, 2, constant(-2.0), nullptr).value, WithinAbs(-2.0, 1e-9));   // 0 - 2 * 1
     }
 
     SECTION("AD gradient at interior point") {
@@ -138,14 +145,47 @@ TEST_CASE("LookupTable interpolate1D", "[lookup-table]") {
         REQUIRE_THAT(res.gradient[0], WithinAbs(10.0, 1e-9));
     }
 
-    SECTION("AD gradient at clamped point is zero") {
+    SECTION("AD gradient outside the table is the end slope") {
         auto xad = independent(-5.0); // below range
         auto res = tbl.interpolate1D(xcol, ycol, xad, nullptr);
-        REQUIRE_THAT(res.gradient[0], WithinAbs(0.0, 1e-9));
+        REQUIRE_THAT(res.gradient[0], WithinAbs(10.0, 1e-9));
 
         auto xad2 = independent(100.0); // above range
         auto res2 = tbl.interpolate1D(xcol, ycol, xad2, nullptr);
-        REQUIRE_THAT(res2.gradient[0], WithinAbs(0.0, 1e-9));
+        REQUIRE_THAT(res2.gradient[0], WithinAbs(10.0, 1e-9));
+
+        auto bent = LookupTable::fromCSV("bent", "x,y\n0,0\n1,1\n2,5\n");
+        REQUIRE_THAT(bent.interpolate1D(1, 2, independent(4.0), nullptr).gradient[0], WithinAbs(4.0, 1e-12));
+        REQUIRE_THAT(bent.interpolate1D(1, 2, independent(-2.0), nullptr).gradient[0], WithinAbs(1.0, 1e-12));
+    }
+
+    SECTION("AD gradient at the table nodes is the slope of the adjacent interval") {
+        auto bent = LookupTable::fromCSV("bent", "x,y\n0,0\n1,1\n2,5\n");
+        REQUIRE_THAT(bent.interpolate1D(1, 2, independent(0.0), nullptr).gradient[0], WithinAbs(1.0, 1e-12));   // first node
+        REQUIRE_THAT(bent.interpolate1D(1, 2, independent(2.0), nullptr).gradient[0], WithinAbs(4.0, 1e-12));   // last node
+        const double mid = bent.interpolate1D(1, 2, independent(1.0), nullptr).gradient[0];                     // interior node
+        REQUIRE((std::abs(mid - 1.0) < 1e-12 || std::abs(mid - 4.0) < 1e-12));   // one of the two one-sided slopes
+    }
+
+    SECTION("AD gradient is chained through the argument") {
+        auto xad = independent(10.0);
+        xad.gradient[0] = 3.0;   // dx/dp = 3
+        auto res = tbl.interpolate1D(xcol, ycol, xad, nullptr);
+        REQUIRE_THAT(res.gradient[0], WithinAbs(30.0, 1e-9));
+    }
+
+    SECTION("descending x column: extrapolation on both sides") {
+        auto desc = LookupTable::fromCSV("desc", "x,y\n2,5\n1,1\n0,0\n");
+        REQUIRE_THAT(desc.interpolate1D(1, 2, constant(4.0), nullptr).value, WithinAbs(13.0, 1e-9));
+        REQUIRE_THAT(desc.interpolate1D(1, 2, constant(-2.0), nullptr).value, WithinAbs(-2.0, 1e-9));
+        REQUIRE_THAT(desc.interpolate1D(1, 2, independent(4.0), nullptr).gradient[0], WithinAbs(4.0, 1e-12));
+        REQUIRE_THAT(desc.interpolate1D(1, 2, independent(-2.0), nullptr).gradient[0], WithinAbs(1.0, 1e-12));
+    }
+
+    SECTION("single row: constant with zero derivative, also outside") {
+        auto one = LookupTable::fromCSV("one", "x,y\n1,7\n");
+        REQUIRE_THAT(one.interpolate1D(1, 2, independent(5.0), nullptr).value, WithinAbs(7.0, 1e-12));
+        REQUIRE_THAT(one.interpolate1D(1, 2, independent(5.0), nullptr).gradient[0], WithinAbs(0.0, 1e-12));
     }
 
     SECTION("slope changes across intervals") {

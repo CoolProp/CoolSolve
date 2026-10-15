@@ -999,9 +999,10 @@ M_above = INTERPOLATE('t', 'N_rN', 'M', 1.5)
     CHECK_THAT(run["M_node"], WithinAbs(420.0, 1e-9));
     CHECK_THAT(run["M_mid"], WithinAbs(395.0, 1e-9));
     CHECK_THAT(run["M_top"], WithinAbs(437.0, 1e-9));
-    // outside the table: flat extrapolation at the nearest end, whatever the order
-    CHECK_THAT(run["M_below"], WithinAbs(370.0, 1e-9));
-    CHECK_THAT(run["M_above"], WithinAbs(454.0, 1e-9));
+    // outside the table: linear extrapolation through the two end nodes, whatever the order
+    // (CS-GAP-INTERP-EXTRAP; flat before): 370 + (0.5 - 0.9) * (420 - 370)/0.05, 454 + (1.5 - 1) * (454 - 420)/0.05
+    CHECK_THAT(run["M_below"], WithinAbs(-30.0, 1e-9));
+    CHECK_THAT(run["M_above"], WithinAbs(794.0, 1e-9));
 }
 
 TEST_CASE("CS-BUG-INTERP-DESC: ascending and descending tables give the same result", "[library-gaps][interpolate]") {
@@ -10333,9 +10334,9 @@ p4 = INTERPOLATE('T','B','A',500)
         INFO("point " << n);
         CHECK(run[std::string("a") + n] == run[std::string("p") + n]);   // the same interpolation, bit for bit
     }
-    // outside the table the behaviour of the positional form is kept (flat, CS-GAP-INTERP-EXTRAP is separate)
-    CHECK_THAT(run["a3"], WithinAbs(1.0, 1e-12));
-    CHECK_THAT(run["a4"], WithinAbs(4.0, 1e-12));
+    // outside the table both forms extrapolate linearly (CS-GAP-INTERP-EXTRAP; flat before)
+    CHECK_THAT(run["a3"], WithinAbs(1.0 + (5.0 - 10.0) / 20.0, 1e-12));
+    CHECK_THAT(run["a4"], WithinAbs(4.0 + (500.0 - 70.0) / 20.0, 1e-12));
 }
 
 TEST_CASE("CS-GAP-INTERP-EES: names are case-insensitive and columns may be numbers", "[library-gaps][interp-ees]") {
@@ -10391,8 +10392,10 @@ m2 = INTERPOLATE('lookup_1','N_rN','M_r_cp',0.95)
                             "dp_at = INTERPOLATE('lookup_1','DELTAP_throttling','W_dot_sh',W_dot_sh=17500)\n", tables);
         INFO(run.message);
         REQUIRE(run.solveOk);
-        // W = 0 is below the table: flat extrapolation, today's behaviour (CS-GAP-INTERP-EXTRAP is separate)
-        CHECK_THAT(run["DELTAP_throttling_stb"], WithinAbs(8878.0, 1e-9));
+        // W = 0 is below the table (descending column): linear extrapolation through the two last rows
+        // (CS-GAP-INTERP-EXTRAP; the end value 8878 before)
+        const double slopeLast = (8878.0 - 6939.0) / (17288.24354 - 17738.76861);
+        CHECK_THAT(run["DELTAP_throttling_stb"], WithinAbs(8878.0 + slopeLast * (0.0 - 17288.24354), 1e-6));
         CHECK_THAT(run["dp_at"], WithinAbs(6939.0 + (8878.0 - 6939.0) * (17738.76861 - 17500.0) / (17738.76861 - 17288.24354), 1e-6));
     }
 }
@@ -10455,10 +10458,10 @@ TEST_CASE("CS-GAP-INTERP-EES: the derivative is the slope of the table", "[libra
     auto chain = evalWithSlope("v = INTERPOLATE('t','y','x',x=2*r)\n", kXyzCsv, 1.25);
     CHECK_THAT(chain.value, WithinAbs(25.0, 1e-9));
     CHECK_THAT(chain.slope, WithinAbs(20.0, 1e-9));
-    // outside the table the slope is 0, as for the positional form
+    // outside the table the slope is the end slope, as for the positional form (CS-GAP-INTERP-EXTRAP; 0 before)
     auto outside = evalWithSlope("v = INTERPOLATE('t','y','x',x=r)\n", kXyzCsv, 5.0);
-    CHECK_THAT(outside.value, WithinAbs(30.0, 1e-9));
-    CHECK_THAT(outside.slope, WithinAbs(0.0, 1e-12));
+    CHECK_THAT(outside.value, WithinAbs(50.0, 1e-9));
+    CHECK_THAT(outside.slope, WithinAbs(10.0, 1e-12));
 }
 
 TEST_CASE("CS-GAP-INTERP-EES: inside FUNCTION and PROCEDURE bodies", "[library-gaps][interp-ees]") {
@@ -10636,5 +10639,349 @@ TEST_CASE("CS-GAP-INTERP-EES: negative tests give clear errors", "[library-gaps]
         CHECK_FALSE(run.solveOk);
         CHECK(run.message.find("the named argument 'C' is not one of the columns of the call") != std::string::npos);
         CHECK(run.message.find("FUNCTION 'gf'") != std::string::npos);
+    }
+}
+
+// ============================================================================
+// CS-GAP-INTERP-EXTRAP: INTERPOLATE extrapolates linearly beyond the table ends
+// ============================================================================
+// EES continues the line through the two end nodes (evidence: the stored solution of TM-0061, whose
+// operating point r_p = 6 lies beyond the last node 5.0 of its 3-node map: epsilon_s = 1.093333 and
+// M_r = 29.9, where clamping gives 0.86 and 32.9; the lower end is assumed symmetric). Was: clamped
+// to the end values with a zero derivative, silently. 2-D interpolation and LOOKUP are not changed.
+
+namespace {
+// x = 4.5, 4.7, 5.0: slope 0.1 over the first interval, 7/30 over the last one
+const std::string kExtrapCsv = "x,y\n4.5,0.77\n4.7,0.79\n5.0,0.86\n";
+const std::string kExtrapDescCsv = "x,y\n5.0,0.86\n4.7,0.79\n4.5,0.77\n";
+constexpr double kExtrapSlopeUp = 0.07 / 0.3;     // last interval
+constexpr double kExtrapSlopeLow = 0.02 / 0.2;    // first interval
+}  // namespace
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: reproducer of the register", "[library-gaps][interp-extrap]") {
+    auto run = runModel(R"(
+x_hi = 6
+x_lo = 3
+y_hi = INTERPOLATE('t','x','y',x_hi)
+y_lo = INTERPOLATE('t','x','y',x_lo)
+)", {{"t", kExtrapCsv}});
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["y_hi"], WithinAbs(0.86 + kExtrapSlopeUp, 1e-12));   // 1.093333 (was 0.86)
+    CHECK_THAT(run["y_hi"], WithinAbs(1.0933333333, 1e-9));
+    CHECK_THAT(run["y_lo"], WithinAbs(0.62, 1e-12));                    // 0.77 + (3 - 4.5) * 0.1 (was 0.77)
+}
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: the EES point of CSL-0035 (r_p = 6 beyond a 3-node map)",
+          "[library-gaps][interp-extrap]") {
+    const std::map<std::string, std::string> tables = {
+        {"lookup_1", "r_p,M_r,epsilon_s\n4.5,34.3,0.77\n4.7,33.8,0.79\n5.0,32.9,0.86\n"}};
+    auto run = runModel(R"(
+p_su_bar = 1
+p_ex_bar = 6*p_su_bar
+r_p = p_ex_bar/p_su_bar
+epsilon_s = INTERPOLATE('lookup_1','epsilon_s','r_p',r_p=r_p)
+M_r = INTERPOLATE('lookup_1','M_r','r_p',r_p=r_p)
+r_low = 4
+epsilon_low = INTERPOLATE('lookup_1','epsilon_s','r_p',r_p=r_low)
+M_low = INTERPOLATE('lookup_1','M_r','r_p',r_p=r_low)
+)", tables);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["epsilon_s"], WithinAbs(1.093333, 1e-6));   // EES: 0.86 + (6 - 5) (0.86 - 0.79)/(5.0 - 4.7)
+    CHECK_THAT(run["M_r"], WithinAbs(29.9, 1e-9));             // EES: 32.9 - 3.0 (6 - 5)
+    CHECK_THAT(run["epsilon_low"], WithinAbs(0.77 - 0.5 * 0.1, 1e-12));   // symmetric below the first node
+    CHECK_THAT(run["M_low"], WithinAbs(34.3 + 0.5 * 2.5, 1e-12));
+}
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: both call forms, INTERPOLATE and INTERPOLATE1, give the same line",
+          "[library-gaps][interp-extrap]") {
+    const std::map<std::string, std::string> tables = {{"t", kExtrapCsv}};
+    auto run = runModel(R"(
+p1 = INTERPOLATE('t','x','y',6)
+p2 = INTERPOLATE1('t','x','y',6)
+e1 = INTERPOLATE('t','y','x',x=6)
+e2 = INTERPOLATE1('t','y','x',x=6)
+e3 = INTERPOLATE('t','x','y',x=6)
+q1 = INTERPOLATE('t','x','y',3)
+q2 = INTERPOLATE1('t','y','x',x=3)
+)", tables);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    for (const char* n : {"p2", "e1", "e2", "e3"}) {
+        INFO(n);
+        CHECK(run[n] == run["p1"]);   // one interpolation behind every form, bit for bit
+    }
+    CHECK_THAT(run["p1"], WithinAbs(0.86 + kExtrapSlopeUp, 1e-12));
+    CHECK(run["q2"] == run["q1"]);
+    CHECK_THAT(run["q1"], WithinAbs(0.62, 1e-12));
+}
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: ascending and descending x columns give the same line",
+          "[library-gaps][interp-extrap]") {
+    const std::string model = R"(
+a = INTERPOLATE('t','x','y',6)
+b = INTERPOLATE('t','x','y',3)
+c = INTERPOLATE('t','x','y',5)
+d = INTERPOLATE('t','x','y',4.5)
+e = INTERPOLATE('t','x','y',4.6)
+f = INTERPOLATE('t','y','x',y=1.5)
+g = INTERPOLATE('t','y','x',y=0.5)
+)";
+    auto asc = runModel(model, {{"t", kExtrapCsv}});
+    auto desc = runModel(model, {{"t", kExtrapDescCsv}});
+    REQUIRE(asc.solveOk);
+    REQUIRE(desc.solveOk);
+    CHECK_THAT(desc["a"], WithinAbs(0.86 + kExtrapSlopeUp, 1e-12));   // above the first row of a descending column
+    CHECK_THAT(desc["b"], WithinAbs(0.62, 1e-12));                    // below its last row
+    CHECK_THAT(desc["c"], WithinAbs(0.86, 1e-12));                    // the end nodes themselves
+    CHECK_THAT(desc["d"], WithinAbs(0.77, 1e-12));
+    for (const char* n : {"a", "b", "c", "d", "e", "f", "g"}) {
+        INFO(n);
+        CHECK_THAT(desc[n], WithinAbs(asc[n], 1e-12));
+    }
+    // y is increasing with x: x as a function of y outside the table, in the same way
+    CHECK_THAT(asc["f"], WithinAbs(5.0 + (1.5 - 0.86) / kExtrapSlopeUp, 1e-9));
+    CHECK_THAT(asc["g"], WithinAbs(4.5 + (0.5 - 0.77) / kExtrapSlopeLow, 1e-9));
+}
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: values inside the table and at its nodes are unchanged",
+          "[library-gaps][interp-extrap]") {
+    auto run = runModel(R"(
+n1 = INTERPOLATE('t','x','y',4.5)
+n2 = INTERPOLATE('t','x','y',4.7)
+n3 = INTERPOLATE('t','x','y',5)
+m1 = INTERPOLATE('t','x','y',4.6)
+m2 = INTERPOLATE('t','x','y',4.85)
+)", {{"t", kExtrapCsv}});
+    REQUIRE(run.solveOk);
+    CHECK(run["n1"] == 0.77);   // the end nodes come out exactly
+    CHECK(run["n2"] == 0.79);
+    CHECK(run["n3"] == 0.86);
+    CHECK_THAT(run["m1"], WithinAbs(0.78, 1e-12));
+    CHECK_THAT(run["m2"], WithinAbs(0.825, 1e-12));
+}
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: the derivative is the end slope outside the table (exact AD)",
+          "[library-gaps][interp-extrap]") {
+    // x column of the lookup t: 1 2 3; y: 10 20 30 (slope 10); z: 100 400 900 (slopes 300, 500)
+    auto yAbove = evalWithSlope("v = INTERPOLATE('t','x','y',r)\n", kXyzCsv, 5.0);
+    CHECK_THAT(yAbove.value, WithinAbs(50.0, 1e-12));
+    CHECK_THAT(yAbove.slope, WithinAbs(10.0, 1e-12));
+    auto zAbove = evalWithSlope("v = INTERPOLATE('t','x','z',r)\n", kXyzCsv, 5.0);
+    CHECK_THAT(zAbove.value, WithinAbs(900.0 + 2.0 * 500.0, 1e-9));   // the last interval, not the whole table
+    CHECK_THAT(zAbove.slope, WithinAbs(500.0, 1e-12));
+    auto zBelow = evalWithSlope("v = INTERPOLATE('t','x','z',r)\n", kXyzCsv, 0.0);
+    CHECK_THAT(zBelow.value, WithinAbs(100.0 - 300.0, 1e-9));
+    CHECK_THAT(zBelow.slope, WithinAbs(300.0, 1e-12));
+    // the named form, and the chain rule through the value: z at x = 2 r
+    auto named = evalWithSlope("v = INTERPOLATE('t','z','x',x=2*r)\n", kXyzCsv, 2.5);
+    CHECK_THAT(named.value, WithinAbs(900.0 + 2.0 * 500.0, 1e-9));
+    CHECK_THAT(named.slope, WithinAbs(1000.0, 1e-9));
+    // at the end nodes: the end slope (it was 0 there)
+    auto first = evalWithSlope("v = INTERPOLATE('t','x','z',r)\n", kXyzCsv, 1.0);
+    CHECK_THAT(first.value, WithinAbs(100.0, 1e-12));
+    CHECK_THAT(first.slope, WithinAbs(300.0, 1e-12));
+    auto last = evalWithSlope("v = INTERPOLATE('t','x','z',r)\n", kXyzCsv, 3.0);
+    CHECK_THAT(last.value, WithinAbs(900.0, 1e-12));
+    CHECK_THAT(last.slope, WithinAbs(500.0, 1e-12));
+    // a descending column
+    const std::string desc = "x,z\n3,900\n2,400\n1,100\n";
+    auto dHigh = evalWithSlope("v = INTERPOLATE('t','x','z',r)\n", desc, 5.0);
+    CHECK_THAT(dHigh.value, WithinAbs(1900.0, 1e-9));
+    CHECK_THAT(dHigh.slope, WithinAbs(500.0, 1e-12));
+    auto dLow = evalWithSlope("v = INTERPOLATE('t','x','z',r)\n", desc, 0.0);
+    CHECK_THAT(dLow.value, WithinAbs(-200.0, 1e-9));
+    CHECK_THAT(dLow.slope, WithinAbs(300.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: an unknown solved through an extrapolated table converges to the linear root",
+          "[library-gaps][interp-extrap]") {
+    // y = f(x), y + x = c: the root lies beyond the table, so Newton needs the end slope as derivative
+    SECTION("above the last node, positional form") {
+        auto run = runModel("y = INTERPOLATE('t','x','y',x)\ny + x = 8\n", {{"t", kExtrapCsv}}, "x = 4.9\ny = 0.8\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        // 0.86 + (x - 5) s + x = 8
+        const double xRoot = (8.0 - 0.86 + 5.0 * kExtrapSlopeUp) / (1.0 + kExtrapSlopeUp);
+        CHECK_THAT(run["x"], WithinAbs(xRoot, 1e-9));
+        CHECK_THAT(run["y"], WithinAbs(8.0 - xRoot, 1e-9));
+        CHECK(run["x"] > 5.0);   // (clamping gives 7.14)
+    }
+    SECTION("above the last node, from the default guess") {
+        auto run = runModel("y = INTERPOLATE('t','x','y',x)\ny + x = 8\n", {{"t", kExtrapCsv}});
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["x"], WithinAbs((8.0 - 0.86 + 5.0 * kExtrapSlopeUp) / (1.0 + kExtrapSlopeUp), 1e-9));
+    }
+    SECTION("below the first node, EES form") {
+        auto run = runModel("y = INTERPOLATE('t','y','x',x=x)\ny + x = 2\n", {{"t", kExtrapCsv}});
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        // 0.77 + (x - 4.5) s + x = 2
+        CHECK_THAT(run["x"], WithinAbs((2.0 - 0.77 + 4.5 * kExtrapSlopeLow) / (1.0 + kExtrapSlopeLow), 1e-9));
+        CHECK(run["x"] < 4.5);   // (clamping gives 1.23)
+    }
+    SECTION("descending column") {
+        auto run = runModel("y = INTERPOLATE('t','x','y',x)\ny + x = 8\n", {{"t", kExtrapDescCsv}});
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["x"], WithinAbs((8.0 - 0.86 + 5.0 * kExtrapSlopeUp) / (1.0 + kExtrapSlopeUp), 1e-9));
+    }
+    SECTION("inverse lookup: the call is a side of an equation") {
+        // x where y = 1.5 (beyond the last node: the column x is the output)
+        auto run = runModel("INTERPOLATE('t','x','y',y=N) = 5.5\nINTERPOLATE('t','y','x',x=M) = 1.5\n", {{"t", kExtrapCsv}});
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["N"], WithinAbs(0.86 + 0.5 * kExtrapSlopeUp, 1e-9));   // y at x = 5.5
+        CHECK_THAT(run["M"], WithinAbs(5.0 + (1.5 - 0.86) / kExtrapSlopeUp, 1e-9));
+    }
+}
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: tables of one and two rows", "[library-gaps][interp-extrap]") {
+    SECTION("two rows: the line through them, on both sides") {
+        auto run = runModel(R"(
+a = INTERPOLATE('t','x','y',5)
+b = INTERPOLATE('t','x','y',-1)
+c = INTERPOLATE('t','x','y',2)
+d = INTERPOLATE('t','y','x',y=50)
+)", {{"t", "x,y\n1,10\n3,30\n"}});
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(50.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(-10.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(20.0, 1e-12));
+        CHECK_THAT(run["d"], WithinAbs(5.0, 1e-12));
+        auto slope = evalWithSlope("v = INTERPOLATE('t','x','y',r)\n", "x,y\n1,10\n3,30\n", 7.0);
+        CHECK_THAT(slope.value, WithinAbs(70.0, 1e-12));
+        CHECK_THAT(slope.slope, WithinAbs(10.0, 1e-12));
+    }
+    SECTION("one row: the single value, zero derivative (unchanged)") {
+        auto run = runModel("a = INTERPOLATE('t','x','y',5)\nb = INTERPOLATE('t','x','y',-1)\n", {{"t", "x,y\n1,10\n"}});
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(10.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(10.0, 1e-12));
+        auto slope = evalWithSlope("v = INTERPOLATE('t','x','y',r)\n", "x,y\n1,10\n", 7.0);
+        CHECK_THAT(slope.value, WithinAbs(10.0, 1e-12));
+        CHECK_THAT(slope.slope, WithinAbs(0.0, 1e-12));
+    }
+    SECTION("a repeated end node: no division by zero, the end value is held") {
+        auto run = runModel("a = INTERPOLATE('t','x','y',5)\nb = INTERPOLATE('t','x','y',0)\n",
+                            {{"t", "x,y\n1,10\n3,30\n3,30\n"}});
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(30.0, 1e-12));   // beyond the repeated node: its value, slope 0
+        CHECK_THAT(run["b"], WithinAbs(0.0, 1e-12));    // below the first node: the first interval is regular
+    }
+}
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: inside FUNCTION and PROCEDURE bodies", "[library-gaps][interp-extrap]") {
+    auto run = runModel(R"(
+FUNCTION g(r)
+  g = INTERPOLATE('t','x','z',r)
+END
+PROCEDURE pk(r : y, z)
+  y = INTERPOLATE1('t','z','x',x=r)
+  z = INTERPOLATE('t','x','y',2*r)
+END
+fv = g(5)
+fl = g(0)
+CALL pk(5 : yv, zv)
+)", kXyzTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["fv"], WithinAbs(1900.0, 1e-9));
+    CHECK_THAT(run["fl"], WithinAbs(-200.0, 1e-9));
+    CHECK_THAT(run["yv"], WithinAbs(1900.0, 1e-9));
+    CHECK_THAT(run["zv"], WithinAbs(100.0, 1e-9));   // y = 10 x at x = 10
+
+    // the output of a routine that reads the table beyond its end is an unknown of the block: Newton with the end slope
+    auto inverse = runModel(R"(
+FUNCTION g(x)
+  g = INTERPOLATE('t','x','z',x)
+END
+v = g(x)
+v = 1900
+)", kXyzTable, "x = 2.5\nv = 650\n");
+    INFO(inverse.message);
+    REQUIRE(inverse.solveOk);
+    CHECK(inverse.verified);
+    CHECK_THAT(inverse["x"], WithinAbs(5.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: the forcing of an INTEGRAL model beyond the table", "[library-gaps][interp-extrap]") {
+    // dy/dt = v(t) with the table v = 2 t on t = 0 .. 5, read up to t = 10: the line continues, y(10) = 100
+    const std::map<std::string, std::string> tables = {{"f", "t,v\n0,0\n5,10\n"}};
+    auto run = runIntegral(
+        "y = 0 + integral(dydt, t, 0, 10, 0.5)\n"
+        "dydt = interpolate('f', 't', 'v', t)\n",
+        [](SolverOptions& o) { o.integralMethod = "RK4"; }, tables);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(100.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: the 2-D functions and LOOKUP are not changed (they clamp)",
+          "[library-gaps][interp-extrap]") {
+    // The behaviour of EES 2-D extrapolation is not established: INTERPOLATE2 holds the edge values with a zero
+    // derivative outside the grid, as before; LOOKUP clamps the row and the column index.
+    auto run = runModel(R"(
+z_hi = INTERPOLATE2('g','x','y','z',5,5)
+z_lo = INTERPOLATE2('g','x','y','z',-3,-3)
+z_x = INTERPOLATE2('g','x','y','z',5,1.5)
+z_e = INTERPOLATE2('g','x','y','z',x=5,y=1.5)
+l_hi = LOOKUP('g', 99, 3)
+)", kEesGrid);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["z_hi"], WithinAbs(22.0, 1e-12));
+    CHECK_THAT(run["z_lo"], WithinAbs(11.0, 1e-12));
+    CHECK_THAT(run["z_x"], WithinAbs(17.0, 1e-12));   // x held at 2, y = 1.5: (12 + 22)/2
+    CHECK(run["z_e"] == run["z_x"]);
+    CHECK_THAT(run["l_hi"], WithinAbs(22.0, 1e-12));
+    auto slope = evalWithSlope("v = INTERPOLATE2('t','x','y','z',r,1.5)\n", kEesGrid.at("g"), 5.0);
+    CHECK_THAT(slope.slope, WithinAbs(0.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: extrapolation is silent (no warning, as in EES)", "[library-gaps][interp-extrap]") {
+    auto run = runModel("y = INTERPOLATE('t','x','y',6)\nz = INTERPOLATE('t','x','y',3)\n", {{"t", kExtrapCsv}});
+    REQUIRE(run.solveOk);
+    CHECK(run.warnings.empty());
+}
+
+TEST_CASE("CS-GAP-INTERP-EXTRAP: negative tests, the errors of INTERPOLATE are kept", "[library-gaps][interp-extrap]") {
+    auto fail = [&](const std::string& expr, const std::vector<std::string>& expected) {
+        auto run = runModel("a = " + expr + "\n", {{"t", kExtrapCsv}});
+        INFO(expr);
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        for (const auto& text : expected) CHECK(run.message.find(text) != std::string::npos);
+    };
+    SECTION("a table or a column that does not exist, beyond the table ends too") {
+        fail("INTERPOLATE('nope','x','y',6)", {"lookup table 'nope' not found"});
+        fail("INTERPOLATE('t','x','q',6)", {"INTERPOLATE(): column 'q' not found in table 't'"});
+        fail("INTERPOLATE('t','x','y',q=6)", {"INTERPOLATE(): the named argument 'q' is not one of the columns of the call ('x', 'y')"});
+    }
+    SECTION("a call without a value is still an error") {
+        fail("INTERPOLATE('t','x','y')", {"INTERPOLATE(): expects 4 arguments: (table, xcol, ycol, xval)"});
+    }
+    SECTION("an empty table (header only) is an error, not an extrapolation") {
+        auto run = runModel("a = INTERPOLATE('t','x','y',6)\n", {{"t", "x,y\n"}});
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("table is empty") != std::string::npos);
+    }
+    SECTION("a column index out of the table") {
+        auto run = runModel("a = INTERPOLATE('t',1,7,6)\n", {{"t", kExtrapCsv}});
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("LookupTable 't': interpolate1D column index out of range") != std::string::npos);
     }
 }

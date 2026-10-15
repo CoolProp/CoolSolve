@@ -23,8 +23,10 @@ namespace coolsolve {
  * (see text()), which `LOOKUP$` reads.
  *
  * Linear interpolation is provided for 1-D and 2-D (bilinear) cases with
- * full forward-mode AD derivative support.  Extrapolation clamps to the
- * nearest boundary value (flat extrapolation), consistent with EES.
+ * full forward-mode AD derivative support.  Outside the table the 1-D
+ * interpolation extrapolates linearly through the two end nodes, as EES
+ * does; the 2-D interpolation and LOOKUP clamp to the nearest boundary
+ * value (flat extrapolation).
  */
 class LookupTable {
 public:
@@ -106,10 +108,14 @@ public:
      *
      * Given x from column xcol1 and y from column ycol1 (both 1-based),
      * compute y at xval by linear interpolation.  The x column is assumed
-     * to be monotonically increasing.  Values outside the range are clamped
-     * (flat extrapolation).
+     * to be monotonic (ascending or descending).  Outside the range the
+     * line through the two end nodes continues (linear extrapolation, as
+     * in EES; for the lower end the same rule is assumed).  A table of one
+     * row gives its single value.
      *
-     * The AD gradient is propagated through the piecewise-linear slope.
+     * The AD gradient is propagated through the piecewise-linear slope; it
+     * is the slope of the end interval outside the range (and at the end
+     * nodes).
      *
      * @param xcol1  1-based index of the independent variable column.
      * @param ycol1  1-based index of the dependent variable column.

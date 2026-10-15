@@ -277,26 +277,26 @@ ADValue LookupTable::interpolate1D(size_t xcol1, size_t ycol1,
     double dx = x1 - x0;
     double slope = (std::abs(dx) > 1e-300) ? (y1 - y0) / dx : 0.0;
 
-    // Clamp x to the interval for extrapolation: slope becomes 0 outside. In a
-    // descending column the interval runs from x1 (low) to x0 (high).
+    // Beyond the table ends the line through the two end nodes continues (EES extrapolates
+    // linearly; findInterval returns the end interval there) with the same slope as derivative.
+    // The value is anchored at the nearest node, so that a node gives its value exactly and a
+    // repeated end node (slope 0) holds the end value. In a descending column the interval runs
+    // from x1 (low) to x0 (high).
     const bool descending = x1 < x0;
     const double xLow = descending ? x1 : x0, yLow = descending ? y1 : y0;
     const double xHigh = descending ? x0 : x1, yHigh = descending ? y0 : y1;
-    double effectiveSlope = slope;
     double yv = y0 + slope * (x - x0);
     if (x <= xLow) {
-        yv = yLow;
-        effectiveSlope = 0.0; // flat extrapolation: derivative = 0
+        yv = yLow + slope * (x - xLow);
     } else if (x >= xHigh) {
-        yv = yHigh;
-        effectiveSlope = 0.0;
+        yv = yHigh + slope * (x - xHigh);
     }
 
-    // Propagate gradient: dy/dx_input = effectiveSlope
+    // Propagate gradient: dy/dx_input = slope
     size_t ng = xval.gradient.size();
     ADValue result(yv, ng);
     for (size_t i = 0; i < ng; ++i) {
-        result.gradient[i] = effectiveSlope * xval.gradient[i];
+        result.gradient[i] = slope * xval.gradient[i];
     }
     return result;
 }

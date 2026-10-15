@@ -1246,8 +1246,11 @@ h = INTERPOLATE('data', 'T_C', 'h_kJ_per_kg', T)
 
 Performs linear interpolation of column `h_kJ_per_kg` as a function of
 column `T_C` at value `T`.  The rows of the `T_C` column must be sorted, in
-ascending **or descending** order (EES accepts both).  Values outside the range
-are clamped to the nearest endpoint (flat extrapolation, zero derivative).
+ascending **or descending** order (EES accepts both).  Outside the range the line
+through the **two end nodes** continues (linear extrapolation, as EES does, with no
+error and no warning): beyond the last node the value is the last one plus the slope
+of the last interval times the distance, and the same below the first node. A table
+with a single row gives its value everywhere.
 
 Equivalent aliases: `INTERPOLATE1('table', 'xcol', 'ycol', x)`.
 
@@ -1269,12 +1272,17 @@ takes exactly the table, two columns and one named argument (not a fourth positi
 value besides it), and the name must be a column of the call: otherwise the error
 names the function, the table and the columns of the call.
 
-> CoolSolve interpolates **linearly** and holds the end values outside the table;
-> EES `INTERPOLATE` is cubic and extrapolates, so the results can differ slightly
-> inside the table and widely outside it.
+> CoolSolve interpolates **linearly**; EES `INTERPOLATE` is cubic, so the results can
+> differ slightly inside the table. The linear extrapolation through the two end nodes
+> is what an EES solution shows beyond the last node (one library model, an operating
+> point beyond its 3-node map); the same rule is assumed below the first node, which
+> no EES solution has shown. Operating points far beyond the table are
+> extrapolations: check them against the physics of the model.
 
-Analytical derivative (for Newton/AD): slope of the active interval;
-zero when clamped at an endpoint.
+Analytical derivative (for Newton/AD): slope of the active interval; outside the
+table the slope of the end interval (not zero), so that an unknown whose value lies
+beyond the table is solved with the exact derivative. At the end nodes it is the slope
+of the end interval too; a single-row table has a zero derivative.
 
 ### 11.2 2D bilinear interpolation
 
@@ -1295,6 +1303,10 @@ the column that is not named is returned, and the two named arguments may come i
 either order (the two inputs are taken in the order of the columns of the call).
 
 Analytical partial derivatives for the Newton/AD engine.
+
+Outside the grid, `INTERPOLATE2` holds the values of the nearest edge (flat, zero
+derivative): unlike the 1-D `INTERPOLATE` it does **not** extrapolate linearly (how EES
+extrapolates a 2-D table has not been established).
 
 ### 11.3 Table metadata
 
