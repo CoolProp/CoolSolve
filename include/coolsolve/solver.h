@@ -433,6 +433,7 @@ enum class ErrorCategory {
     MaxIterations,
     LineSearchFailed,
     SingularJacobian,
+    Diverged,
     CoolPropError,
     UndefinedVariable,
     UnsupportedFunction,
@@ -842,10 +843,11 @@ private:
  * Unlike the n-dimensional NonLinearSolver hierarchy, this solver works
  * directly on a scalar evaluation function (residual + derivative).
  * It uses a four-phase approach:
- *   - Phase 1: Trust-region Newton with bracket detection
+ *   - Phase 1: Trust-region Newton with bracket detection; a Newton step
+ *              that increases |F| is rejected and retried with half the step
  *   - Phase 2: Multi-probe sign-change exploration (~900 probes)
  *   - Phase 3: Bisection + Newton hybrid within bracket
- *   - Phase 4: Final Newton polish with relaxed tolerance
+ *   - Phase 4: Final Newton polish (same step rejection) with relaxed tolerance
  *
  * A simplified solver (solveSimple) is also provided for use in symbolic
  * reduction where the problem is already well-conditioned.

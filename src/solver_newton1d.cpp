@@ -7,7 +7,8 @@
  * but solution is ~1e5).  Newton1D uses a multi-phase approach:
  *
  *   Phase 1 — Trust-region Newton with adaptive radius and sign-change
- *             (bracket) detection for bisection fallback.
+ *             (bracket) detection for bisection fallback.  A Newton step
+ *             that increases |F| is rejected and retried with half the step.
  *   Phase 2 — Multi-probe exploration: if Phase 1 stalls, evaluates the
  *             residual at ~900 probe points (log-spaced ±1e8, plus values
  *             near every external variable × {0.5, 0.9, …, 2.0}).  All
@@ -16,8 +17,8 @@
  *   Phase 3 — Bisection + Newton hybrid: once a bracket is found,
  *             alternates bisection and Newton steps within the bracket
  *             for fast, guaranteed convergence.
- *   Phase 4 — Final Newton polish from the best point found, with
- *             relaxed tolerance acceptance.
+ *   Phase 4 — Final Newton polish from the best point found (same step
+ *             rejection as Phase 1), with relaxed tolerance acceptance.
  *
  * Falls through to the standard pipeline if all phases fail.
  */
@@ -26,9 +27,54 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 
 namespace coolsolve {
+
+namespace {
+
+/**
+ * Step control of the Newton iterations of Phases 1 and 4: a Newton step that
+ * increases |F| (or reaches a point where F is not finite) is rejected and
+ * retried from the last accepted iterate with half the step.  Without it, the
+ * step of an equation that is hyperbolic in its unknown (f = c - k/x from a
+ * guess above the root) jumps over the pole at x = 0, |F| grows and the
+ * iterate runs away.  A step that does not come from a Newton direction
+ * (zero derivative, bisection) is never rejected.
+ */
+struct StepControl {
+    /// Successive halvings of one step after which the Newton direction is given up.
+    static constexpr int kMaxRejections = 30;
+
+    double xAcc = 0.0;     ///< last accepted iterate
+    double fAcc = std::numeric_limits<double>::infinity();  ///< F at the last accepted iterate
+    bool newtonTrial = false;  ///< the current iterate is a Newton step taken from xAcc
+    int rejections = 0;    ///< successive rejections of the current step
+
+    /// If the iterate \p x with residual \p f, reached by a Newton step, increased |F|: replace
+    /// \p x by the point half-way back to xAcc and return true.  A step that changes the sign of F
+    /// is kept when \p keepSignChange (it brackets a root: Phase 1 bisects it).
+    bool reject(double& x, double f, bool keepSignChange) {
+        if (!newtonTrial) return false;
+        if (std::isfinite(f) && (std::abs(f) <= std::abs(fAcc) || (keepSignChange && f * fAcc < 0))) return false;
+        x = xAcc + 0.5 * (x - xAcc);
+        ++rejections;
+        return true;
+    }
+
+    /// Accept the iterate \p x (residual \p f); \p newtonStep tells whether the step taken from it is a Newton step.
+    void accept(double x, double f, bool newtonStep) {
+        xAcc = x;
+        fAcc = f;
+        newtonTrial = newtonStep;
+        rejections = 0;
+    }
+
+    bool exhausted() const { return rejections > kMaxRejections; }
+};
+
+}  // namespace
 
 // ============================================================================
 // Newton1D Solver Implementation
@@ -49,6 +95,7 @@ SolverStatus Newton1DSolver::solve(
     // Track bracket for bisection fallback
     bool hasBracket = false;
     double xLo = 0, xHi = 0, fLo = 0, fHi = 0;
+    StepControl stepControl;
 
     // --------------------------------------------------------------------
     // Phase 1: Newton with trust-region limiting
@@ -79,7 +126,7 @@ SolverStatus Newton1DSolver::solve(
             traceIter.iter = iter;
             traceIter.residualNorm = std::abs(f);
             traceIter.stepNorm = 0.0;
-            traceIter.lambda = 1.0;
+            traceIter.lambda = std::ldexp(1.0, -stepControl.rejections);  // share of the Newton step tried
             traceIter.x = {xCur};
             traceIter.residuals = {f};
             trace->iterations.push_back(traceIter);
@@ -90,8 +137,25 @@ SolverStatus Newton1DSolver::solve(
             break;
         }
 
-        // Update bracket
-        if (!hasBracket) {
+        // Step control: a Newton step that increased |F| is retried, shortened, from the
+        // last accepted iterate (the trust radius shrinks with it).  A rejected point does
+        // not enter the bracket: a retry across a pole would pair it with a root-free interval.
+        if (!hasBracket && stepControl.reject(xCur, f, true)) {
+            if (stepControl.exhausted()) {
+                xCur = stepControl.xAcc;
+                break;  // the Newton direction gives no descent: let Phase 2 explore
+            }
+            radius = std::abs(xCur - stepControl.xAcc);
+            if (trace && !trace->iterations.empty()) {
+                trace->iterations.back().stepNorm = radius;
+            }
+            continue;
+        }
+
+        // Update bracket (a pole where F is not finite is not a sign change)
+        if (!std::isfinite(f)) {
+            // nothing to record
+        } else if (!hasBracket) {
             if (iter == 0) {
                 xLo = xCur; fLo = f;
             } else {
@@ -111,6 +175,7 @@ SolverStatus Newton1DSolver::solve(
         }
 
         double dx;
+        bool newtonStep = false;
         if (hasBracket) {
             // Bisection-Newton hybrid (Illinois/Dekker-style)
             double xNewton = (std::abs(j) > 1e-30) ? xCur - f / j : (xLo + xHi) / 2.0;
@@ -126,12 +191,14 @@ SolverStatus Newton1DSolver::solve(
                 dx = (dx > 0 ? 1.0 : -1.0) * radius;
             }
             radius = std::max(radius, std::abs(dx) * 2.0);
+            newtonStep = true;
         } else {
             // Zero derivative — explore by stepping
             dx = radius;
             radius *= 2.0;
         }
 
+        stepControl.accept(xCur, f, newtonStep);
         xCur += dx;
         if (trace && !trace->iterations.empty()) {
             trace->iterations.back().stepNorm = std::abs(dx);
@@ -296,12 +363,18 @@ SolverStatus Newton1DSolver::solve(
     // Phase 4: Final Newton polish from best position
     // --------------------------------------------------------------------
     if (!converged) {
+        StepControl polishControl;
         for (int iter = 0; iter < 50 && !converged; ++iter) {
             try {
                 auto [f, j] = eval(xCur);
                 if (std::abs(f) < options.tolerance) { converged = true; break; }
-                if (std::abs(f) < options.lsRelaxedTolerance) { converged = true; break; }
-                if (std::abs(j) < 1e-30) break;
+                if (polishControl.reject(xCur, f, false)) {
+                    if (polishControl.exhausted()) break;
+                    continue;
+                }
+                const bool newtonStep = std::abs(j) >= 1e-30;
+                polishControl.accept(xCur, f, newtonStep);
+                if (!newtonStep) break;
                 double dx = -f / j;
                 double maxStep = std::max(std::abs(xCur) * 2.0, 1e6);
                 if (std::abs(dx) > maxStep) dx = (dx > 0 ? 1.0 : -1.0) * maxStep;
@@ -309,6 +382,11 @@ SolverStatus Newton1DSolver::solve(
             } catch (...) {
                 break;
             }
+        }
+        // The polish cannot go further: accept the best iterate if its residual is small
+        if (!converged && std::abs(polishControl.fAcc) < options.lsRelaxedTolerance) {
+            xCur = polishControl.xAcc;
+            converged = true;
         }
     }
 

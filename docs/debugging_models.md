@@ -24,7 +24,7 @@ This creates a folder `<input>_coolsolve/` (or `<input>_coolsolve/` next to the 
 | File | Use for diagnosis |
 |------|-------------------|
 | `report.md` | Block summary, solver status, largest block size, branch kept by each `$IF`/`$IFNOT` |
-| `solver_errors.md` | Error type (LineSearchFailed, MaxIterations, EvaluationError) |
+| `solver_errors.md` | Error type (LineSearchFailed, MaxIterations, Diverged, EvaluationError) |
 | `solver_trace.md` | Per-block Newton iterations, residual norms |
 | `evaluator.md` | Block evaluation status, max residuals at current state |
 | `coolsolve_residuals.md` | Equation-by-equation LHS, RHS, residual values |
@@ -76,6 +76,13 @@ Outside the GUI, the equivalent is to send `{"deepSearch": true}` to the
 
 - **Meaning**: Jacobian is rank-deficient; Newton cannot compute a unique step.
 - **Typical causes**: Redundant equations, degenerate system, bad structural analysis.
+- **Check**: `solver_singular_diagnostics.md` – the residual and Jacobian at the failure.
+
+### Diverged
+
+- **Meaning**: the Newton iteration ran away (the iterate is more than 10⁶ times larger than the starting point) and the derivatives underflowed to zero, so that no step could be computed. The Jacobian is not structurally singular: it became zero because the iterate left the region of the solution. (`solver_singular_diagnostics.md` is not written.)
+- **Typical causes**: an equation without a root (e.g. `exp(x) = -1`), or a root in a region the iteration jumps over, such as the pole of an equation hyperbolic in its unknown, with a poor initial guess.
+- **Check**: `solver_trace.md` – the residual does not decrease while `||dx||` explodes. Give an initial value on the side of the root (`.initials`) or check that the equation has a solution.
 
 ## Step 3: Identify the Failing Block
 

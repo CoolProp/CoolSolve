@@ -13,9 +13,9 @@ Determine:
   - The diameter and rotation speed for a similar compressor compressing
     12000 m3/h of methane from 2 bar, 20 C to 3 bar.
 
-SOLVER NOTE: Newton solver fails (Singular Jacobian on blk1). Use the full
-solver pipeline (TrustRegion or subsequent solvers work correctly).
-The default solver configuration includes TrustRegion and will converge.
+SOLVER NOTE: the equation phi = V_dot_su/(U*A) is hyperbolic in the area A
+(root 0.0157 m2, below the default guess 1). The default solver configuration
+converges from the default guesses, as EES does.
 "
 "!Determination of optimal rotation speed N and impeller diameter"
 p_su=1E5

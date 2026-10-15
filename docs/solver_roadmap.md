@@ -35,7 +35,7 @@ into independent sub-blocks before entering the solver pipeline. See
 | `solver_common.h`          | Shared utilities: `computeScalingFactors()`, `NonMonotoneHistory`, `isFatalEvaluationError()` |
 | `solver.cpp`               | Orchestrator, tearing, partitioned, pipeline, symbolic-reduction integration |
 | `solver_newton.cpp`        | Newton + non-monotone Armijo backtracking line search + Broyden quasi-Newton |
-| `solver_newton1d.cpp`      | Specialized 1D root-finding: 4-phase Newton + probing + bisection hybrid |
+| `solver_newton1d.cpp`      | Specialized 1D root-finding: 4-phase Newton + probing + bisection hybrid, Newton steps that increase \|F\| are rejected |
 | `solver_trust_region.cpp`  | Trust Region Dogleg + optional hybrd-style Broyden/QR reuse |
 | `solver_lm.cpp`            | Levenberg-Marquardt |
 | `solver_bisection_nd.cpp`  | N-dimensional bisection (sign-pattern simplex) |
@@ -82,7 +82,7 @@ the user must add it to `solverPipeline` explicitly.
 | **Newton + non-monotone line search** | Default workhorse | Grippo-Lampariello-Lucidi (1986) non-monotone Armijo (`lsNonMonotoneMemory`, default 10, bounded by `R × φ_current`); Broyden quasi-Newton rank-1 updates (`broydenRecomputeInterval`, default 0 = always full J) |
 | **Trust Region Dogleg** | Default | Adaptive initial radius (Cauchy-step-based), graduated ρ-threshold radius adaptation, gradient-direction recovery after >15 consecutive rejections. Optional hybrd-style Broyden/QR reuse via `trBroydenRecomputeInterval` (default 0 = disabled) — see §4.6 |
 | **Levenberg-Marquardt** | Default | Nielsen's λ adaptation; cumulative Marquardt diagonal scaling; geodesic acceleration (Transtrum & Sethna 2012) — one extra residual eval/iter, often halves iteration count on curved problems |
-| **Newton1D** | Automatic for size-1 blocks | 4-phase Newton + probing + bisection hybrid |
+| **Newton1D** | Automatic for size-1 blocks | 4-phase Newton + probing + bisection hybrid. A Newton step that increases \|F\| (e.g. the jump over the pole of `phi = V/(U*A)`) is rejected and retried with half the step; a step that changes the sign of F is kept as a bracket |
 | **BisectionND** | Default (skipped when block > `bisectionNDMaxBlockSize`) | Sign-pattern simplex, derivative-free — robust when Jacobian is singular or zero |
 | **Homotopy continuation** | Default | Predictor-corrector with adaptive step, Newton + LM corrector fallback, final polish |
 | **KINSOL** | Opt-in (`Kinsol`) | In-tree port of the three SUNDIALS KINSOL globalisation modes: inexact Newton + Dennis-Schnabel line search (`linesearch`, default), Picard fixed-point (`picard`), Anderson-accelerated fixed-point (`fp`). Not in the default pipeline. |

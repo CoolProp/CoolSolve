@@ -97,6 +97,8 @@ ErrorCategory categorizeError(const std::string& errorMsg) {
         return ErrorCategory::LineSearchFailed;
     if (errorMsg.find("Jacobian is rank-deficient") != std::string::npos || errorMsg.find("SingularJacobian") != std::string::npos) 
         return ErrorCategory::SingularJacobian;
+    if (errorMsg.find("Diverged") != std::string::npos)
+        return ErrorCategory::Diverged;
     if (errorMsg.find("CoolProp") != std::string::npos) 
         return ErrorCategory::CoolPropError;
     if (errorMsg.find("Undefined variable") != std::string::npos) 
@@ -116,6 +118,7 @@ std::string categoryToString(ErrorCategory category) {
         case ErrorCategory::MaxIterations: return "Max iterations";
         case ErrorCategory::LineSearchFailed: return "Line search failed";
         case ErrorCategory::SingularJacobian: return "Singular Jacobian";
+        case ErrorCategory::Diverged: return "Diverged";
         case ErrorCategory::CoolPropError: return "CoolProp error";
         case ErrorCategory::UndefinedVariable: return "Undefined variable";
         case ErrorCategory::UnsupportedFunction: return "Unsupported function";

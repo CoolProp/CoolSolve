@@ -25,6 +25,11 @@
 
 namespace coolsolve {
 
+namespace {
+/// An iterate this many times larger than the starting point (at least 1) has run away.
+constexpr double kDivergenceFactor = 1e6;
+}  // namespace
+
 // ============================================================================
 // Newton Solver Implementation
 // ============================================================================
@@ -103,6 +108,7 @@ SolverStatus NewtonSolver::solve(Problem& problem,
     Eigen::VectorXd F(n), dy(n), x_unscaled(n);
     Eigen::MatrixXd J(n, n), J_unscaled(n, n);
     double initialResidualNorm = 0.0;
+    const double startMagnitude = std::max(x.lpNorm<Eigen::Infinity>(), 1.0);
 
     // Non-monotone merit history (Grippo et al. 1986)
     NonMonotoneHistory meritHistory(options.lsNonMonotoneMemory);
@@ -223,6 +229,20 @@ SolverStatus NewtonSolver::solve(Problem& problem,
             if (useBroyden && !fullJacobianThisIter) {
                 forceFullJacobian = true;
                 continue;
+            }
+            // A step that is not finite because the iterate has run away (its derivatives
+            // underflow or overflow) is a diverged iteration, not a singular Jacobian.
+            const double magnitude = x_unscaled.lpNorm<Eigen::Infinity>();
+            if (iter > 0 && !(magnitude <= kDivergenceFactor * startMagnitude)) {
+                if (trace) { trace->finalStatus = SolverStatus::Diverged; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
+                if (detailedError) {
+                    std::ostringstream ss;
+                    ss << "Diverged at iteration " << iter << ": ||x||_inf = " << magnitude
+                       << " (start " << startMagnitude << "), ||F||_inf = " << residualNorm
+                       << " (initial " << initialResidualNorm << ").\n";
+                    *detailedError = ss.str();
+                }
+                return SolverStatus::Diverged;
             }
             if (trace) {
                 trace->finalStatus = SolverStatus::SingularJacobian;

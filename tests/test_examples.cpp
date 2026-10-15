@@ -114,7 +114,9 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"evaporator.eescode",                      {"epsilon_ev_f", 0.7153}},
     {"heat_pump_MSTh_SB_R10.eescode",           {"COP", 3.311}},
     {"refrigeration_compressor.eescode",        {"epsilon_v_1", 0.4729}},
-    {"simple_centrifugal_compressor.eescode",   {"U", 354.8}},
+    // EES reference (MSTH_041012_exercice_6.EES, TM-0057, EES 7.210, solved from the default guesses): A = 0.01566
+    // (CoolSolve 0.015657); the size-1 block phi = V_dot_su/(U*A) is hyperbolic in A (CS-BUG-NEWTON1D-DIVERGE)
+    {"simple_centrifugal_compressor.eescode",   {"A", 0.01566}},
     {"zorlu_heat_pump.eescode",                 {"COP_HP", 6.4167}},
     // Advanced features showcase (exercises all CoolSolve features)
     {"advanced_features.eescode",               {"verification", 2083.5}},

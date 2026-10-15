@@ -15608,3 +15608,238 @@ TEST_CASE("CS-BUG-DUPLICATE-HEADER-COMMENT: the other block headers accept a com
         CHECK_THAT(proc["v"], WithinAbs(2.0, 1e-12));
     }
 }
+
+// ----------------------------------------------------------------------------
+// CS-BUG-NEWTON1D-DIVERGE: a size-1 block whose equation is hyperbolic in its unknown
+// ----------------------------------------------------------------------------
+
+namespace {
+
+/// phi = V/(U*A) as a residual and its derivative (the equation of the example simple_centrifugal_compressor).
+std::pair<double, double> hyperbolaResidual(double A, double phi = 0.3) {
+    const double V = 1.667, U = 354.8;
+    return {phi - V / (U * A), V / (U * A * A)};
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-NEWTON1D-DIVERGE: phi = V/(U*A) from the default guess (root 0.0157 below the guess 1)",
+          "[library-gaps][newton1d-diverge]") {
+    // was: "Status: SingularJacobian - Block 3 (size 1, vars: A) failed: SingularJacobian": the first Newton step
+    // (-63) throws A to the negative side, |F| grows (0.2953 -> 0.3001) and the iterate runs away; EES stores A = 0.01566
+    auto run = runModel("V = 1.667\nphi = 0.3\nU = 354.8\nphi = V/(U*A)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["A"], WithinRel(1.667 / (354.8 * 0.3), 1e-7));
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-DIVERGE: the same shape with the root above the guess still solves (control)",
+          "[library-gaps][newton1d-diverge]") {
+    auto run = runModel("c = 0.3\nk = 5.9\nc = k/A\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["A"], WithinRel(5.9 / 0.3, 1e-7));
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-DIVERGE: the hyperbola from guesses on both sides of the pole and for a negative root",
+          "[library-gaps][newton1d-diverge]") {
+    const std::string positive = "V = 1.667\nphi = 0.3\nU = 354.8\nphi = V/(U*A)\n";
+    for (const std::string guess : {"0.001", "0.5", "10", "1000", "1e5", "-1", "-1000"}) {
+        INFO("positive root, guess A = " << guess);
+        auto run = runModel(positive, {}, "A = " + guess + "\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["A"], WithinRel(1.667 / (354.8 * 0.3), 1e-7));
+    }
+    const std::string negative = "V = 1.667\nphi = -0.3\nU = 354.8\nphi = V/(U*A)\n";
+    for (const std::string guess : {"1", "-1", "-0.001", "100"}) {
+        INFO("negative root, guess A = " << guess);
+        auto run = runModel(negative, {}, "A = " + guess + "\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["A"], WithinRel(-1.667 / (354.8 * 0.3), 1e-7));
+    }
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-DIVERGE: size-1 blocks with a guess far from the root still converge",
+          "[library-gaps][newton1d-diverge]") {
+    // the reason for Newton1D: guess 1 (or an enthalpy of 1e7 J/kg), root ~1e5 (or ~2.7e6 J/kg)
+    SECTION("exp(x/1e5) = 3 from the default guess") {
+        auto run = runModel("exp(x/1e5) = 3\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinRel(1e5 * std::log(3.0), 1e-7));
+    }
+    SECTION("an enthalpy from T(h, P) = 120 C, from guesses 1e5 and 1e7 J/kg") {
+        const double hRoot = CoolProp::PropsSI("H", "T", 393.15, "P", 1e5, "Water");
+        const std::string code = "P = 1e5\nT_t = 120\nT_t = temperature(Water, h=h, P=P)\n";
+        for (const std::string guess : {"1e5", "1e7"}) {
+            INFO("guess h = " << guess);
+            auto run = runModel(code, {}, "h = " + guess + "\n");
+            INFO(run.message);
+            REQUIRE(run.solveOk);
+            CHECK_THAT(run["h"], WithinRel(hRoot, 1e-6));
+        }
+    }
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-DIVERGE: a block with no root fails with a clear status",
+          "[library-gaps][newton1d-diverge]") {
+    // exp(x) = -1 has no root: Newton runs to x -> -infinity, where the derivative underflows to 0
+    auto run = runModel("exp(x) = -1\n");
+    CHECK_FALSE(run.solveOk);
+    INFO(run.message);
+    CHECK(run.message.find("Block 0 (size 1, vars: x) failed: Diverged") != std::string::npos);
+    CHECK(run.message.find("SingularJacobian") == std::string::npos);
+    CHECK(categorizeError(run.message) == ErrorCategory::Diverged);
+    CHECK(categoryToString(ErrorCategory::Diverged) == "Diverged");
+
+    // x^2 + 1 = 0: the iteration lands on x = 0, where the Jacobian is really singular: still SingularJacobian
+    auto singular = runModel("x^2 + 1 = 0\n");
+    CHECK_FALSE(singular.solveOk);
+    INFO(singular.message);
+    CHECK(singular.message.find("failed: SingularJacobian") != std::string::npos);
+    CHECK(singular.message.find("Diverged") == std::string::npos);
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-DIVERGE: Newton1D rejects a Newton step that increases |F| (halves it, shrinks the radius)",
+          "[library-gaps][newton1d-diverge]") {
+    // from A = 1 the undamped Newton step (-62.9) throws A to the negative side of the pole, where |F| grows
+    int evals = 0;
+    Newton1DSolver::Eval1D eval = [&](double A) {
+        ++evals;
+        return hyperbolaResidual(A);
+    };
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    SolverTrace trace;
+    std::string message;
+    double A = 1.0;
+    const auto status = Newton1DSolver::solve(eval, A, {{"V", 1.667}, {"U", 354.8}, {"phi", 0.3}}, options, &trace, &message);
+    INFO(message);
+    REQUIRE(status == SolverStatus::Success);
+    CHECK_THAT(A, WithinRel(1.667 / (354.8 * 0.3), 1e-7));
+    // Phase 1 alone: the multi-probe exploration of Phase 2 costs more than 100 evaluations
+    CHECK(evals < 30);
+    REQUIRE(trace.iterations.size() >= 4);
+    const auto& it = trace.iterations;
+    CHECK(it[0].x[0] == 1.0);
+    CHECK(it[1].x[0] < 0.0);                           // the full step overshoots to the negative side ...
+    CHECK(it[1].residualNorm > it[0].residualNorm);    // ... |F| grows (0.2953 -> 0.3001) ...
+    CHECK(it[1].lambda == 1.0);
+    CHECK(it[2].lambda == 0.5);                        // ... and the step is retried with half the length
+    CHECK_THAT(it[2].x[0], WithinAbs(1.0 + 0.5 * (it[1].x[0] - 1.0), 1e-12));
+    CHECK(it[3].lambda == 0.25);
+    // the retries stop at the first point with a smaller |F| than the start: it is on the positive side
+    // (lambda 1/64: A = 0.0177, |F| = 0.035), and every later iterate is a Newton step with lambda = 1
+    size_t firstAccepted = 2;
+    while (firstAccepted < it.size() && it[firstAccepted].residualNorm > it[0].residualNorm) ++firstAccepted;
+    REQUIRE(firstAccepted < it.size());
+    CHECK(it[firstAccepted].x[0] > 0.0);
+    CHECK(it[firstAccepted].residualNorm < it[0].residualNorm);
+    for (size_t k = firstAccepted + 1; k < it.size(); ++k) {
+        CAPTURE(k);
+        CHECK(it[k].lambda == 1.0);
+        CHECK(it[k].residualNorm < it[k - 1].residualNorm);
+    }
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-DIVERGE: Newton1D from far above the root does not stop at the pole",
+          "[library-gaps][newton1d-diverge]") {
+    // from A = 1000 the retried step lands exactly on the pole A = 0 (F = -inf): not a sign change
+    for (const double guess : {1000.0, 1e5, -1.0, -1000.0}) {
+        INFO("guess A = " << guess);
+        Newton1DSolver::Eval1D eval = [&](double A) { return hyperbolaResidual(A); };
+        SolverOptions options;
+        options.tolerance = 1e-9;
+        double A = guess;
+        const auto status = Newton1DSolver::solve(eval, A, {{"V", 1.667}, {"U", 354.8}, {"phi", 0.3}}, options);
+        REQUIRE(status == SolverStatus::Success);
+        CHECK_THAT(A, WithinRel(1.667 / (354.8 * 0.3), 1e-7));
+    }
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-DIVERGE: Newton1D takes no extra evaluation when no step is rejected",
+          "[library-gaps][newton1d-diverge]") {
+    // exp(x/1e5) = 3 from x = 1: every Newton step (clamped by the growing radius) decreases |F|
+    int evals = 0;
+    Newton1DSolver::Eval1D eval = [&](double x) {
+        ++evals;
+        const double e = std::exp(x / 1e5);
+        return std::make_pair(e - 3.0, e / 1e5);
+    };
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    SolverTrace trace;
+    double x = 1.0;
+    REQUIRE(Newton1DSolver::solve(eval, x, {}, options, &trace) == SolverStatus::Success);
+    CHECK_THAT(x, WithinRel(1e5 * std::log(3.0), 1e-7));
+    CHECK(static_cast<size_t>(evals) == trace.iterations.size());   // one evaluation per iteration
+    for (const auto& it : trace.iterations) CHECK(it.lambda == 1.0);
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-DIVERGE: Newton1D on a function without a root ends with a failure, quickly",
+          "[library-gaps][newton1d-diverge]") {
+    int evals = 0;
+    Newton1DSolver::Eval1D eval = [&](double x) {
+        ++evals;
+        const double e = std::exp(x);
+        return std::make_pair(e + 1.0, e);
+    };
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    double x = 1.0;
+    const auto status = Newton1DSolver::solve(eval, x, {}, options);
+    CHECK(status != SolverStatus::Success);
+    CHECK(evals < 2000);
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-DIVERGE: Newton reports Diverged, not SingularJacobian, when the iterate has run away",
+          "[library-gaps][newton1d-diverge]") {
+    NewtonSolver solver;
+    NonLinearSolver::Problem problem;
+    problem.size = 1;
+    problem.evaluate = [](const Eigen::VectorXd& x, Eigen::VectorXd& F, Eigen::MatrixXd& J, bool computeJacobian) {
+        const auto [f, j] = hyperbolaResidual(x(0));
+        F(0) = f;
+        if (computeJacobian) J(0, 0) = j;
+    };
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    Eigen::VectorXd x(1);
+    x << 1.0;
+    SolverTrace trace;
+    std::string error;
+    // the standard Newton (line search) takes the steps that Newton1D rejects: |F| grows slowly,
+    // x reaches 1e228 and the derivative underflows to 0
+    CHECK(solver.solve(problem, x, options, &trace, &error) == SolverStatus::Diverged);
+    CHECK(trace.finalStatus == SolverStatus::Diverged);
+    CHECK(trace.singularJacobianF.empty());   // the singular-Jacobian diagnostics do not apply
+    CHECK(error.find("Diverged at iteration") != std::string::npos);
+    CHECK(statusToString(SolverStatus::Diverged) == "Diverged");
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-DIVERGE: Newton keeps SingularJacobian for a Jacobian that is singular where the iterate is",
+          "[library-gaps][newton1d-diverge]") {
+    NewtonSolver solver;
+    NonLinearSolver::Problem problem;
+    problem.size = 1;
+    problem.evaluate = [](const Eigen::VectorXd& x, Eigen::VectorXd& F, Eigen::MatrixXd& J, bool computeJacobian) {
+        F(0) = x(0) * x(0) + 1.0;   // no root; the step from x = 1 lands on x = 0, where J = 0
+        if (computeJacobian) J(0, 0) = 2.0 * x(0);
+    };
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    for (const double start : {1.0, 0.0}) {   // singular after a step, and singular at the start
+        INFO("start x = " << start);
+        Eigen::VectorXd x(1);
+        x << start;
+        SolverTrace trace;
+        CHECK(solver.solve(problem, x, options, &trace) == SolverStatus::SingularJacobian);
+        CHECK(trace.finalStatus == SolverStatus::SingularJacobian);
+        CHECK_FALSE(trace.singularJacobianF.empty());
+    }
+}
