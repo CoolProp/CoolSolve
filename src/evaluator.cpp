@@ -2303,8 +2303,8 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
         return true;
     };
 
-    // Track CALL source lines already processed (to skip sibling equations)
-    std::set<int> processedCallLines;
+    // Track CALLs already processed (to skip sibling equations)
+    std::set<int> processedCallIds;
     
     for (size_t k = 0; k < equations_.size(); ++k) {
         const size_t eq = evalOrder_.empty() ? k : evalOrder_[k];
@@ -2312,23 +2312,22 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
         
         if (eqInfo->procedureCall) {
             // Skip sibling CALL equations already handled by their primary
-            if (processedCallLines.count(eqInfo->sourceLine)) {
+            if (processedCallIds.count(eqInfo->callId)) {
                 continue;
             }
-            processedCallLines.insert(eqInfo->sourceLine);
+            processedCallIds.insert(eqInfo->callId);
 
             const auto& call = *eqInfo->procedureCall;
             const size_t nOutputs = call.outputVars.size();
 
-            // Find ALL sibling CALL equations in this block (same sourceLine),
+            // Find ALL sibling CALL equations in this block (same callId),
             // sorted by global equation ID.  The IR creates sibling equations
             // with consecutive IDs in output order, so sorting by GID gives the
             // correct output-index-to-equation mapping regardless of the SCC
             // ordering within the block.
             std::vector<std::pair<int, size_t>> siblingGidAndLocal; // (globalId, localIdx)
             for (size_t j = 0; j < equations_.size(); ++j) {
-                if (equations_[j]->procedureCall &&
-                    equations_[j]->sourceLine == eqInfo->sourceLine) {
+                if (equations_[j]->callId == eqInfo->callId) {
                     siblingGidAndLocal.push_back({equationIds_[j], j});
                 }
             }
@@ -2401,11 +2400,9 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
                     restore = true;
                 } else {
                     // Check whether the equation matched to this variable is
-                    // a sibling CALL equation (same source line).  If not,
+                    // a sibling CALL equation (same CALL).  If not,
                     // the output is "foreign" and must be restored.
-                    const EquationInfo* matchedEq = equations_[blockVarIdx];
-                    if (!(matchedEq->procedureCall &&
-                          matchedEq->sourceLine == eqInfo->sourceLine)) {
+                    if (equations_[blockVarIdx]->callId != eqInfo->callId) {
                         restore = true;
                     }
                 }

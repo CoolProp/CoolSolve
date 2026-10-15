@@ -13722,3 +13722,343 @@ TEST_CASE("CS-GAP-CONVERT-UNQUOTED: only the unit arguments are read as units",
     REQUIRE(fluid.solveOk);
     CHECK_THAT(fluid["h"], WithinRel(CoolProp::PropsSI("H", "T", 373.15, "Q", 0, "Water"), 1e-6));   // J/kg, SI
 }
+
+// ============================================================================
+// CS-BUG-DUPLICATE-CALL-BLOCK: the CALLs of a DUPLICATE loop in one coupled block are all evaluated
+// ============================================================================
+
+namespace {
+
+/// Number of equations that are outputs of a CALL in the largest block of the model.
+size_t callEquationsInLargestBlock(const std::string& code) {
+    EESParser parser;
+    auto parsed = parser.parse(code);
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    auto analysis = StructuralAnalyzer::analyze(ir);
+    REQUIRE(analysis.success);
+    size_t calls = 0, size = 0;
+    for (const auto& block : analysis.blocks) {
+        if (block.equationIds.size() <= size) continue;
+        size = block.equationIds.size();
+        calls = 0;
+        for (int id : block.equationIds) calls += ir.getEquations()[id].procedureCall ? 1 : 0;
+    }
+    return calls;
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-DUPLICATE-CALL-BLOCK: register reproducer, both copies are evaluated",
+          "[library-gaps][duplicate-call-block]") {
+    // y[i] = 2 x[i], x[1] + x[2] = 9, y[1] = 2 y[2]: x = (6, 3), y = (12, 6) (was: SUCCESS, then the
+    // verification failed on 'CALL dbl(...) [output 1] [output: y[1]]')
+    const std::string code = R"(
+PROCEDURE dbl(a : y)
+  y = 2*a
+END
+DUPLICATE i = 1, 2
+  CALL dbl(x[i] : y[i])
+END
+x[1] + x[2] = 9
+y[1] = 2 * y[2]
+)";
+    CHECK(callEquationsInLargestBlock(code) == 2);   // the two copies are in one coupled block
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.checkErrors.empty());
+    CHECK_THAT(run["x[1]"], WithinAbs(6.0, 1e-8));
+    CHECK_THAT(run["x[2]"], WithinAbs(3.0, 1e-8));
+    CHECK_THAT(run["y[1]"], WithinAbs(12.0, 1e-8));
+    CHECK_THAT(run["y[2]"], WithinAbs(6.0, 1e-8));
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-CALL-BLOCK: three copies in one block", "[library-gaps][duplicate-call-block]") {
+    // x1 = 2 x2, x2 = 2 x3, x1 + x2 + x3 = 14: x = (8, 4, 2)
+    const std::string code = R"(
+PROCEDURE dbl(a : y)
+  y = 2*a
+END
+DUPLICATE i = 1, 3
+  CALL dbl(x[i] : y[i])
+END
+x[1] + x[2] + x[3] = 14
+y[1] = 2 * y[2]
+y[2] = 2 * y[3]
+)";
+    CHECK(callEquationsInLargestBlock(code) == 3);
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const double x[] = {8.0, 4.0, 2.0};
+    for (int i = 1; i <= 3; ++i) {
+        CHECK_THAT(run["x[" + std::to_string(i) + "]"], WithinAbs(x[i - 1], 1e-8));
+        CHECK_THAT(run["y[" + std::to_string(i) + "]"], WithinAbs(2.0 * x[i - 1], 1e-8));
+    }
+
+    // the copies of two loops (on different lines), coupled across each other
+    const std::string crossed = R"(
+PROCEDURE dbl(a : y)
+  y = 2*a
+END
+DUPLICATE i = 1, 2
+  CALL dbl(x[i] : y[i])
+END
+DUPLICATE i = 1, 2
+  CALL dbl(u[i] : v[i])
+END
+x[1] + u[2] = 9
+y[1] = 2 * v[2]
+u[1] + x[2] = 3
+v[1] = 2 * y[2] + 1
+)";
+    CHECK(callEquationsInLargestBlock(crossed) == 2);   // two blocks, a copy of each loop in both
+    auto two = runModel(crossed);
+    INFO(two.message);
+    REQUIRE(two.solveOk);
+    CHECK(two.verified);
+    // x1 = 2 u2 and x1 + u2 = 9: u2 = 3, x1 = 6; u1 = 2 x2 + 1/2 and u1 + x2 = 3: x2 = 5/6
+    CHECK_THAT(two["x[1]"], WithinAbs(6.0, 1e-8));
+    CHECK_THAT(two["u[2]"], WithinAbs(3.0, 1e-8));
+    CHECK_THAT(two["x[2]"], WithinAbs(5.0 / 6.0, 1e-8));
+    CHECK_THAT(two["u[1]"], WithinAbs(13.0 / 6.0, 1e-8));
+    for (const char* i : {"1", "2"}) {
+        CHECK_THAT(two[std::string("y[") + i + "]"], WithinAbs(2.0 * two[std::string("x[") + i + "]"], 1e-8));
+        CHECK_THAT(two[std::string("v[") + i + "]"], WithinAbs(2.0 * two[std::string("u[") + i + "]"], 1e-8));
+    }
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-CALL-BLOCK: a CALL with two outputs in a coupled block of a loop",
+          "[library-gaps][duplicate-call-block]") {
+    // s = a + 1, t = 3 a; s[1] = t[2], x[1] + x[2] = 5: x2 = 1.5, x1 = 3.5
+    const std::string code = R"(
+PROCEDURE pr(a : s, t)
+  s = a + 1
+  t = 3*a
+END
+DUPLICATE k = 1, 2
+  CALL pr(x[k] : s[k], t[k])
+END
+s[1] = t[2]
+x[1] + x[2] = 5
+)";
+    CHECK(callEquationsInLargestBlock(code) == 4);   // two copies of two output equations
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x[1]"], WithinAbs(3.5, 1e-8));
+    CHECK_THAT(run["x[2]"], WithinAbs(1.5, 1e-8));
+    CHECK_THAT(run["s[1]"], WithinAbs(4.5, 1e-8));
+    CHECK_THAT(run["s[2]"], WithinAbs(2.5, 1e-8));
+    CHECK_THAT(run["t[1]"], WithinAbs(10.5, 1e-8));
+    CHECK_THAT(run["t[2]"], WithinAbs(4.5, 1e-8));
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-CALL-BLOCK: expression outputs of the copies (CS-GAP-CALL-EXPR-OUT)",
+          "[library-gaps][duplicate-call-block]") {
+    // y[i]/2 = dbl(x[i]) = 2 x[i], so y[i] = 4 x[i]; y[1] = 2 y[2], x[1] + x[2] = 9: x = (6, 3)
+    auto run = runModel(R"(
+PROCEDURE dbl(a : y)
+  y = 2*a
+END
+DUPLICATE i = 1, 2
+  CALL dbl(x[i] : y[i]/2)
+END
+x[1] + x[2] = 9
+y[1] = 2 * y[2]
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x[1]"], WithinAbs(6.0, 1e-8));
+    CHECK_THAT(run["x[2]"], WithinAbs(3.0, 1e-8));
+    CHECK_THAT(run["y[1]"], WithinAbs(24.0, 1e-8));
+    CHECK_THAT(run["y[2]"], WithinAbs(12.0, 1e-8));
+
+    // an expression of two unknowns stays implicit: y[i] + z = 2 x[i], z = 1;
+    // y[1] = 2 y[2], x[1] + x[2] = 9: x = (35/6, 19/6), y = (32/3, 16/3)
+    auto implicit = runModel(R"(
+PROCEDURE dbl(a : y)
+  y = 2*a
+END
+DUPLICATE i = 1, 2
+  CALL dbl(x[i] : y[i] + z)
+END
+x[1] + x[2] = 9
+y[1] = 2 * y[2]
+z = 1
+)");
+    INFO(implicit.message);
+    REQUIRE(implicit.solveOk);
+    CHECK(implicit.verified);
+    CHECK_THAT(implicit["x[1]"], WithinAbs(35.0 / 6.0, 1e-8));
+    CHECK_THAT(implicit["x[2]"], WithinAbs(19.0 / 6.0, 1e-8));
+    CHECK_THAT(implicit["y[1]"], WithinAbs(32.0 / 3.0, 1e-8));
+    CHECK_THAT(implicit["y[2]"], WithinAbs(16.0 / 3.0, 1e-8));
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-CALL-BLOCK: two CALLs on one source line of a loop body",
+          "[library-gaps][duplicate-call-block]") {
+    // `;` separates the CALLs of the body: they and all their copies share the source line
+    auto run = runModel(R"(
+PROCEDURE dbl(a : y)
+  y = 2*a
+END
+DUPLICATE i = 1, 2
+  CALL dbl(x[i] : y[i]) ; CALL dbl(u[i] : v[i])
+END
+x[1] + x[2] = 9
+y[1] = 2 * y[2]
+u[1] + u[2] = 3
+v[1] = 2 * v[2] + 1
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x[1]"], WithinAbs(6.0, 1e-8));
+    CHECK_THAT(run["x[2]"], WithinAbs(3.0, 1e-8));
+    CHECK_THAT(run["y[1]"], WithinAbs(12.0, 1e-8));
+    CHECK_THAT(run["y[2]"], WithinAbs(6.0, 1e-8));
+    // 2 u1 = 4 u2 + 1, u1 + u2 = 3: u = (13/6, 5/6)
+    CHECK_THAT(run["u[1]"], WithinAbs(13.0 / 6.0, 1e-8));
+    CHECK_THAT(run["u[2]"], WithinAbs(5.0 / 6.0, 1e-8));
+    CHECK_THAT(run["v[1]"], WithinAbs(13.0 / 3.0, 1e-8));
+    CHECK_THAT(run["v[2]"], WithinAbs(5.0 / 3.0, 1e-8));
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-CALL-BLOCK: copies and plain CALLs stay as before", "[library-gaps][duplicate-call-block]") {
+    // an output fixed by another equation: the CALL of each copy is solved for its input
+    auto backward = runModel(R"(
+PROCEDURE dbl(a : y)
+  y = 2*a
+END
+DUPLICATE i = 1, 3
+  CALL dbl(x[i] : y[i])
+END
+y[1] = 12
+y[2] = 6
+y[3] = 2 * y[1]
+)");
+    INFO(backward.message);
+    REQUIRE(backward.solveOk);
+    CHECK(backward.verified);
+    CHECK_THAT(backward["x[1]"], WithinAbs(6.0, 1e-8));
+    CHECK_THAT(backward["x[2]"], WithinAbs(3.0, 1e-8));
+    CHECK_THAT(backward["x[3]"], WithinAbs(12.0, 1e-8));
+
+    // copies in separate blocks (always worked) next to a plain CALL in a coupled block
+    auto separate = runModel(R"(
+PROCEDURE dbl(a : y)
+  y = 2*a
+END
+DUPLICATE i = 1, 3
+  CALL dbl(i : y[i])
+END
+CALL dbl(w : z)
+w + z = 9
+)");
+    REQUIRE(separate.solveOk);
+    CHECK(separate.verified);
+    for (int i = 1; i <= 3; ++i) CHECK_THAT(separate["y[" + std::to_string(i) + "]"], WithinAbs(2.0 * i, 1e-9));
+    CHECK_THAT(separate["w"], WithinAbs(3.0, 1e-8));
+    CHECK_THAT(separate["z"], WithinAbs(6.0, 1e-8));
+
+    // a plain CALL with two outputs in a coupled block: x + 1 = 1.5 x + 0.25
+    auto plain = runModel(R"(
+PROCEDURE pr(a : s, t)
+  s = a + 1
+  t = 3*a
+END
+CALL pr(x : s, t)
+s = t / 2 + 0.25
+)");
+    INFO(plain.message);
+    REQUIRE(plain.solveOk);
+    CHECK(plain.verified);
+    CHECK_THAT(plain["x"], WithinAbs(1.5, 1e-8));
+    CHECK_THAT(plain["s"], WithinAbs(2.5, 1e-8));
+    CHECK_THAT(plain["t"], WithinAbs(4.5, 1e-8));
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-CALL-BLOCK: the solution check flags the wrong output of either copy",
+          "[library-gaps][duplicate-call-block]") {
+    EESParser parser;
+    auto parsed = parser.parse(R"(
+PROCEDURE dbl(a : y)
+  y = 2*a
+END
+DUPLICATE i = 1, 2
+  CALL dbl(x[i] : y[i])
+END
+x[1] + x[2] = 9
+y[1] = 2 * y[2]
+)");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    using Values = std::map<std::string, double, CaseInsensitiveLess>;
+    const std::map<std::string, std::string, CaseInsensitiveLess> noStrings;
+    const auto violated = [&](const SolutionCheckResult& check, const std::string& output) {
+        for (const auto& c : check.checks)
+            if (c.isProcedureCall && !c.satisfied && c.originalText.find("[output: " + output + "]") != std::string::npos)
+                return true;
+        return false;
+    };
+
+    CHECK(checkSolution(ir, Values{{"x[1]", 6}, {"x[2]", 3}, {"y[1]", 12}, {"y[2]", 6}}, noStrings).allSatisfied);
+    // y[2] is wrong (x[2] = 3 gives 6), then y[1]: the output of that copy, and only that one, is reported
+    auto bad2 = checkSolution(ir, Values{{"x[1]", 6}, {"x[2]", 3}, {"y[1]", 12}, {"y[2]", 7}}, noStrings);
+    CHECK_FALSE(bad2.allSatisfied);
+    CHECK(violated(bad2, "y[2]"));
+    CHECK_FALSE(violated(bad2, "y[1]"));
+    auto bad1 = checkSolution(ir, Values{{"x[1]", 6}, {"x[2]", 3}, {"y[1]", 11}, {"y[2]", 6}}, noStrings);
+    CHECK_FALSE(bad1.allSatisfied);
+    CHECK(violated(bad1, "y[1]"));
+    CHECK_FALSE(violated(bad1, "y[2]"));
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-CALL-BLOCK: every CALL, also each copy of a loop, has its own id",
+          "[library-gaps][duplicate-call-block]") {
+    EESParser parser;
+    auto parsed = parser.parse(R"(
+PROCEDURE pr(a : s, t)
+  s = a + 1
+  t = 3*a
+END
+DUPLICATE k = 1, 3
+  CALL pr(x[k] : s[k], t[k])
+END
+CALL pr(w : p, q/2)
+w = 4
+x[1] = 1
+x[2] = 2
+x[3] = 3
+)");
+    REQUIRE(parsed.success);
+    const IR ir = IR::fromAST(parsed.program);
+    // equation ids of the output equations of each CALL, in order of appearance
+    std::vector<std::vector<int>> calls;
+    std::map<int, int> line;   // the loop copies share a source line
+    for (const auto& eq : ir.getEquations()) {
+        if (!eq.procedureCall) {
+            CHECK(eq.callId == -1);
+            continue;
+        }
+        REQUIRE(eq.callId >= 0);
+        if (eq.callId >= static_cast<int>(calls.size())) calls.resize(eq.callId + 1);
+        calls[eq.callId].push_back(eq.id);
+        line[eq.callId] = eq.sourceLine;
+    }
+    // three copies and the plain CALL; each owns its two outputs (consecutive equations)
+    REQUIRE(calls.size() == 4);
+    for (const auto& outputs : calls) {
+        REQUIRE(outputs.size() == 2);
+        CHECK(outputs[1] == outputs[0] + 1);
+    }
+    CHECK(line[0] == line[1]);
+    CHECK(line[1] == line[2]);
+    CHECK(line[2] != line[3]);
+}

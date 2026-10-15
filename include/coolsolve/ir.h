@@ -91,6 +91,9 @@ struct EquationInfo {
     
     // Procedure call (if this is a CALL statement)
     std::optional<ProcedureCall> procedureCall;
+    /// Identifies the CALL the equation is an output of (-1 for any other equation). The equations of one
+    /// CALL share it; every CALL has its own, also the copies a DUPLICATE loop makes of it (same source line).
+    int callId = -1;
     
     // Variables appearing in this equation (LHS and RHS combined)
     std::set<std::string, CaseInsensitiveLess> variables;

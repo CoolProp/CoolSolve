@@ -213,12 +213,10 @@ std::vector<std::vector<int>> StructuralAnalyzer::buildDependencyGraph(
         if (!equations[eq].procedureCall) continue;
         
         const auto& call = *equations[eq].procedureCall;
-        // Only process the primary CALL equation (the first one for this
-        // source line — all sibling output equations share the same
-        // procedureCall, so deduplicate by checking if the previous
-        // equation is the same CALL).
-        if (eq > 0 && equations[eq - 1].procedureCall &&
-            equations[eq - 1].sourceLine == equations[eq].sourceLine) {
+        // Only process the primary CALL equation (the first one of this CALL — all
+        // sibling output equations share the same procedureCall and callId, so
+        // deduplicate by checking if the previous equation is the same CALL).
+        if (eq > 0 && equations[eq - 1].callId == equations[eq].callId) {
             continue;  // Skip sibling CALL equations; only process the first
         }
         
@@ -230,13 +228,12 @@ std::vector<std::vector<int>> StructuralAnalyzer::buildDependencyGraph(
             
             int otherEq = it->second;
             // If this output is matched to a different equation (not one of
-            // the sibling CALL equations for this same source line), add a
+            // the sibling CALL equations of this same CALL), add a
             // back-edge from that equation to this CALL equation.
             if (otherEq != eq) {
                 bool isSiblingCall = false;
-                // Check if otherEq is a sibling CALL equation (same source line)
-                if (equations[otherEq].procedureCall &&
-                    equations[otherEq].sourceLine == equations[eq].sourceLine) {
+                // Check if otherEq is a sibling CALL equation (same CALL)
+                if (equations[otherEq].callId == equations[eq].callId) {
                     isSiblingCall = true;
                 }
                 if (!isSiblingCall) {

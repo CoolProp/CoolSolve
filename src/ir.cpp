@@ -229,6 +229,7 @@ static void expandDuplicate(const Duplicate& dup, int line, std::vector<StmtPtr>
 IR IR::fromAST(const Program& program) {
     IR ir;
     int eqId = 0;
+    int callId = 0;
     std::vector<std::string> pendingComments;  // Accumulate "" display comments
 
     // Expand all top-level DUPLICATE statements into flat statement list
@@ -316,10 +317,12 @@ IR IR::fromAST(const Program& program) {
             // A procedure call with N outputs provides N equations to the system.
             // We create N EquationInfo objects, each representing one output.
             // This ensures the system remains square and matching works correctly.
+            const int thisCallId = callId++;
             if (call.outputVars.empty()) {
                 // Special case: CALL with no outputs (unlikely but possible)
                 EquationInfo eqInfo;
                 eqInfo.id = eqId++;
+                eqInfo.callId = thisCallId;
                 eqInfo.sourceLine = stmt->sourceLineNumber;
                 eqInfo.originalText = "CALL " + call.name + "(...)";
                 eqInfo.procedureCall = call;
@@ -330,6 +333,7 @@ IR IR::fromAST(const Program& program) {
                 for (size_t i = 0; i < call.outputVars.size(); ++i) {
                     EquationInfo eqInfo;
                     eqInfo.id = eqId++;
+                    eqInfo.callId = thisCallId;
                     eqInfo.sourceLine = stmt->sourceLineNumber;
                     eqInfo.originalText = "CALL " + call.name + "(...) [output " + std::to_string(i+1) + "]";
                     eqInfo.procedureCall = call;
