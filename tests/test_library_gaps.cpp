@@ -11184,3 +11184,515 @@ TEST_CASE("CS-GAP-LOOKUP-NONAME: negative tests, what stays an error", "[library
         fail("x = SUMLOOKUP(2)\n", kDefaultTable, {"not a string literal or variable"});
     }
 }
+
+// ============================================================================
+// CS-GAP-SUM-INDEXED: the EES indexed aggregation SUM(expr, i=a, b) (and PRODUCT) is the sum of expr for the
+// index i from a to b. The parser expands it, once the file is parsed, into the variadic SUM of the copies of
+// expr with i = a, ..., b; the bounds are those of a DUPLICATE (numbers, $CONSTANTs, variables set to a
+// constant, arithmetic). The index is local to the sum and never a variable of the model. It was swallowed
+// by the variadic SUM: x[i] and i became unknowns and the model was refused as not square.
+// ============================================================================
+
+TEST_CASE("CS-GAP-SUM-INDEXED: reproducer of the register", "[library-gaps][sum-indexed]") {
+    // was: "There are 3 equations and 5 unknowns. The system is not square" (EES: s = 10)
+    const std::string code = "DUPLICATE i=1,4\nx[i]=i\nEND\ns = sum(x[i], i=1, 4)\n";
+    CHECK(equationCount(code) == 5);
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["s"], WithinAbs(10.0, 1e-12));
+    CHECK_FALSE(hasVar(run, "i"));       // the index is not a variable of the model
+    CHECK_FALSE(hasVar(run, "x[i]"));
+    CHECK(run.vars.size() == 5);         // x[1..4] and s
+}
+
+TEST_CASE("CS-GAP-SUM-INDEXED: the shapes of the turbocharger model CSL-0152", "[library-gaps][sum-indexed]") {
+    // a mixture molar mass, and a mass-based enthalpy: a sum divided by another sum
+    auto run = runModel(R"(
+MM[1] = 44.01
+MM[2] = 18.015
+MM[3] = 28.013
+MM[4] = 31.999
+x[1] = 0.12
+x[2] = 0.10
+x[3] = 0.70
+x[4] = 0.08
+h[1] = -3.2e5
+h[2] = -1.2e6
+h[3] = 2.1e5
+h[4] = 1.9e5
+mm_p = sum(x[i]*MM[i],i=1,4)
+MM_p_su_e = sum(x[i]*MM[i],i=1,4) "molar mass of the products [kg/kmol]"
+h_p = sum(x[i]*MM[i]*h[i],i=1,4)/MM_p_su_e "mixture enthalpy [J/kg]"
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const double MM[] = {44.01, 18.015, 28.013, 31.999}, x[] = {0.12, 0.10, 0.70, 0.08};
+    const double h[] = {-3.2e5, -1.2e6, 2.1e5, 1.9e5};
+    double mm = 0.0, hm = 0.0;
+    for (int i = 0; i < 4; ++i) { mm += x[i] * MM[i]; hm += x[i] * MM[i] * h[i]; }
+    CHECK_THAT(run["mm_p"], WithinRel(mm, 1e-12));
+    CHECK_THAT(run["MM_p_su_e"], WithinRel(mm, 1e-12));
+    CHECK_THAT(run["h_p"], WithinRel(hm / mm, 1e-12));
+}
+
+TEST_CASE("CS-GAP-SUM-INDEXED: bounds are those of a DUPLICATE (variable set to a constant, $CONSTANT, arithmetic)",
+          "[library-gaps][sum-indexed]") {
+    const std::string code = R"(
+$CONSTANT N#=4
+Nprod = 4
+n = 3
+m = n - 1
+ntot = 2
+DUPLICATE j=1,N#
+  x[j] = j
+  H[j] = 10*j
+END
+H_prod = sum(ntot*x[i]*H[i], i =1,Nprod)
+s_c = SUM(x[i], i=1, N#)
+s_a = sum(x[i], i=m, n)
+s_e = sum(x[i], i=n-1, 2*m)
+s_l = sum(x[k], k = 2 , N#-1)
+)";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["H_prod"], WithinAbs(2.0 * (1 * 10 + 2 * 20 + 3 * 30 + 4 * 40), 1e-12));   // the CSL-0150 shape
+    CHECK_THAT(run["s_c"], WithinAbs(10.0, 1e-12));
+    CHECK_THAT(run["s_a"], WithinAbs(2.0 + 3.0, 1e-12));
+    CHECK_THAT(run["s_e"], WithinAbs(2.0 + 3.0 + 4.0, 1e-12));
+    CHECK_THAT(run["s_l"], WithinAbs(2.0 + 3.0, 1e-12));
+    CHECK_FALSE(hasVar(run, "i"));
+    CHECK_FALSE(hasVar(run, "k"));
+}
+
+TEST_CASE("CS-GAP-SUM-INDEXED: the index may be an index expression, the element is x[2], not x[(1+1)]",
+          "[library-gaps][sum-indexed]") {
+    auto run = runModel(R"(
+x[1] = 1
+x[2] = 4
+x[3] = 9
+x[4] = 16
+x[5] = 25
+d = sum(x[i+1] - x[i], i=1, 4)
+e = sum(x[2*i-1], i=1, 3)
+f = sum(x[6-i], i=1, 3)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["d"], WithinAbs(24.0, 1e-12));            // telescopes: x[5] - x[1]
+    CHECK_THAT(run["e"], WithinAbs(1.0 + 9.0 + 25.0, 1e-12));
+    CHECK_THAT(run["f"], WithinAbs(25.0 + 16.0 + 9.0, 1e-12));
+    CHECK(run.vars.size() == 5 + 3);                          // no element named x[expr]
+}
+
+TEST_CASE("CS-GAP-SUM-INDEXED: the index is local to the sum, a variable named like it is not affected",
+          "[library-gaps][sum-indexed]") {
+    SECTION("a model variable i, before, inside and after the sum") {
+        auto run = runModel("i = 7\nx[1] = 10\nx[2] = 20\ny = sum(i, i=1, 3)\nz = i + sum(x[i], i=1, 2)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["i"], WithinAbs(7.0, 1e-12));
+        CHECK_THAT(run["y"], WithinAbs(6.0, 1e-12));
+        CHECK_THAT(run["z"], WithinAbs(37.0, 1e-12));
+    }
+    SECTION("the index of an enclosing DUPLICATE has the same name: the sum's own index hides it") {
+        auto run = runModel("x[1] = 10\nx[2] = 20\nDUPLICATE i=1,2\n  t[i] = i*sum(x[i], i=1, 2)\nEND\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["t[1]"], WithinAbs(30.0, 1e-12));
+        CHECK_THAT(run["t[2]"], WithinAbs(60.0, 1e-12));
+    }
+    SECTION("the expression need not use the index (EES): the term is repeated") {
+        auto run = runModel("x[1] = 10\ny = 3\na = sum(x[1], i=1, 4)\nb = sum(2*y, k=1, 5)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(40.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(30.0, 1e-12));
+    }
+    SECTION("a one-term range, any case of the name, spaces around the bounds") {
+        auto run = runModel("x[3] = 5\na = Sum( x[k] , k = 3 , 3 )\nb = SUM(x[k],k=3,3)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(5.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(5.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-SUM-INDEXED: inside a DUPLICATE of the main program", "[library-gaps][sum-indexed]") {
+    SECTION("the sum runs over a second index of the copy") {
+        auto run = runModel(R"(
+DUPLICATE k=1,3
+  DUPLICATE j=1,2
+    a[k,j] = 10*k + j
+  END
+  s[k] = sum(a[k,i], i=1,2)
+END
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["s[1]"], WithinAbs(23.0, 1e-12));
+        CHECK_THAT(run["s[2]"], WithinAbs(43.0, 1e-12));
+        CHECK_THAT(run["s[3]"], WithinAbs(63.0, 1e-12));
+    }
+    SECTION("a bound that uses the index of the enclosing DUPLICATE is expanded in each copy") {
+        auto run = runModel(R"(
+DUPLICATE j=1,5
+  x[j] = j^2
+END
+n = 5
+DUPLICATE k=1,3
+  u[k] = sum(x[i], i=1,k)
+  v[k] = sum(x[i], i=k,3)
+  w[k] = sum(x[i], i=n-4, 2*k-1)
+END
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["u[1]"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["u[2]"], WithinAbs(5.0, 1e-12));
+        CHECK_THAT(run["u[3]"], WithinAbs(14.0, 1e-12));
+        CHECK_THAT(run["v[1]"], WithinAbs(14.0, 1e-12));
+        CHECK_THAT(run["v[2]"], WithinAbs(13.0, 1e-12));
+        CHECK_THAT(run["v[3]"], WithinAbs(9.0, 1e-12));
+        CHECK_THAT(run["w[1]"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["w[2]"], WithinAbs(14.0, 1e-12));
+        CHECK_THAT(run["w[3]"], WithinAbs(55.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-SUM-INDEXED: nested sums, rectangular and triangular", "[library-gaps][sum-indexed]") {
+    auto run = runModel(R"(
+n = 3
+DUPLICATE p=1,3
+  DUPLICATE q=1,3
+    a[p,q] = 10*p + q
+  END
+END
+full = sum(sum(a[i,j], j=1,2), i=1,3)
+tri = sum(sum(a[i,j], j=1,i), i=1,n)
+same = sum(sum(a[i,i], i=1,2), i=1,3)
+DUPLICATE k=1,3
+  r[k] = sum(sum(a[i,j], j=1,i), i=1,k)
+END
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["full"], WithinAbs(129.0, 1e-12));
+    CHECK_THAT(run["tri"], WithinAbs(11.0 + 43.0 + 96.0, 1e-12));
+    // the inner index hides the outer one of the same name: 3 times (a[1,1] + a[2,2])
+    CHECK_THAT(run["same"], WithinAbs(3.0 * (11.0 + 22.0), 1e-12));
+    CHECK_THAT(run["r[1]"], WithinAbs(11.0, 1e-12));
+    CHECK_THAT(run["r[2]"], WithinAbs(54.0, 1e-12));
+    CHECK_THAT(run["r[3]"], WithinAbs(150.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-SUM-INDEXED: PRODUCT(expr, i=a, b) takes the same form", "[library-gaps][sum-indexed]") {
+    auto run = runModel("DUPLICATE i=1,4\n  x[i] = i\nEND\np = product(x[i], i=1, 4)\n"
+                        "q = PRODUCT(1 + x[k]/10, k=1, 3)\nr = product(x[i], i=2, 2)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["p"], WithinAbs(24.0, 1e-12));
+    CHECK_THAT(run["q"], WithinAbs(1.1 * 1.2 * 1.3, 1e-12));
+    CHECK_THAT(run["r"], WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-SUM-INDEXED: the unknowns of a sum are solved (derivatives of the expanded form)",
+          "[library-gaps][sum-indexed]") {
+    // t + t^2 + t^3 = 14 and (t+1)(t+2)(t+3) = 24, each with one real root
+    auto run = runModel("sum(c*t^i, i=1, 3) = 14\nc = 1\nproduct(u + i, i=1, 3) = 24\n", {}, "t = 1.5\nu = 0.5\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["t"], WithinAbs(2.0, 1e-9));
+    CHECK_THAT(run["u"], WithinAbs(1.0, 1e-9));
+
+    // an unknown element in the sum, solved with the others
+    auto linear = runModel("x[1] + x[2] = 3\nx[1] - x[2] = 1\nz = 5\nsum(x[i]*z, i=1, 2) = w\n");
+    INFO(linear.message);
+    REQUIRE(linear.solveOk);
+    CHECK_THAT(linear["w"], WithinAbs(15.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-SUM-INDEXED: inside FUNCTION and PROCEDURE bodies, bounds from constants", "[library-gaps][sum-indexed]") {
+    auto run = runModel(R"(
+$CONSTANT M#=3
+FUNCTION f(t)
+  v[1] := t
+  v[2] := 2*t
+  v[3] := 3*t
+  f = sum(v[i], i=1,M#) + sum(i*t, i=1,2)
+END
+PROCEDURE pr(a, b : s, p)
+  s = sum(a*k + b, k=1, 3)
+  p = product(a + k, k=1, 2)
+END
+y = f(2)
+CALL pr(2, 1 : sv, pv)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["y"], WithinAbs(12.0 + 6.0, 1e-12));
+    CHECK_THAT(run["sv"], WithinAbs(2.0 * 6.0 + 3.0, 1e-12));
+    CHECK_THAT(run["pv"], WithinAbs(3.0 * 4.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-SUM-INDEXED: the equation is shown expanded in the LaTeX report", "[library-gaps][sum-indexed]") {
+    const std::string tex = latexOf("DUPLICATE i=1,3\n  x[i] = i\nEND\ns = sum(x[i], i=1, 3)\n");
+    CHECK(tex.find("x_{1}") != std::string::npos);
+    CHECK(tex.find("x_{3}") != std::string::npos);
+    CHECK(tex.find("mathrm{sum}") != std::string::npos);
+    CHECK(tex.find("i=1") == std::string::npos);   // the index is not left in the equation
+
+    auto parsed = parseFull("s = sum(x[i], i=1, 2)\n");
+    REQUIRE(parsed.errors.empty());
+    const auto ir = IR::fromAST(parsed.program);
+    const std::string eq = coolsolve::expressionToLatex(ir.getEquations()[0].rhs);
+    CHECK(eq.find("x_{1}") != std::string::npos);
+    CHECK(eq.find("x_{2}") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-SUM-INDEXED: negative tests, what stays an error", "[library-gaps][sum-indexed]") {
+    SECTION("the upper bound is missing, the arguments are not in the order expression, i=first, last") {
+        const std::string form = "the indexed form is SUM(expression, i=first, last)";
+        CHECK(anyContains(parseErrorsWithLines("s = sum(x[i], i=1)\n"), "1: SUM: " + form));
+        CHECK(anyContains(parseErrorsWithLines("s = sum(x[i], 4, i=1)\n"), "1: SUM: " + form));
+        CHECK(anyContains(parseErrorsWithLines("s = sum(i=1, x[i], 4)\n"), "1: SUM: " + form));
+        CHECK(anyContains(parseErrorsWithLines("s = sum(x[i], i=1, 4, 5)\n"), "1: SUM: " + form));
+        CHECK(anyContains(parseErrorsWithLines("s = sum(x[i], i=1, k=4)\n"), "1: SUM: " + form));
+        CHECK(anyContains(parseErrorsWithLines("p = product(x[i], i=1)\n"), "1: PRODUCT: the indexed form is PRODUCT("));
+        CHECK(anyContains(parseErrorsWithLines("s = sum(i=1)\n"), "SUM: " + form));
+        auto run = runModel("s = sum(x[i], i=1)\n");
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+    }
+    SECTION("a bound that is not an integer") {
+        CHECK(parseErrorsWithLines("s = sum(x[i], i=1, 2.5)\n") ==
+              std::vector<std::string>{"1: SUM index i: the last bound '2.5' is 2.5, not an integer"});
+        CHECK(anyContains(parseErrorsWithLines("n = 1.5\ns = sum(x[i], i=n, 3)\n"),
+                          "2: SUM index i: the first bound 'n' is 1.5, not an integer"));
+        CHECK(anyContains(parseErrorsWithLines("p = product(x[i], k=1, 2/3)\n"),
+                          "1: PRODUCT index k: the last bound '2/3' is 0.666666666666667, not an integer"));
+    }
+    SECTION("a bound that is not known before the solve, as for a DUPLICATE") {
+        const auto errors = parseErrorsWithLines("n = y + 1\ns = sum(x[i], i=1, n)\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].rfind("2: SUM index i: the last bound 'n' is not known before the solve", 0) == 0);
+        CHECK(anyContains(errors, "'n = y + 1' (line 1)"));
+        CHECK(anyContains(parseErrorsWithLines("s = sum(x[i], i=1, m)\n"), "1: SUM index i: the last bound 'm'"));
+        CHECK(anyContains(parseErrorsWithLines("s = sum(x[i], i=k, 3)\n"), "1: SUM index i: the first bound 'k'"));
+        CHECK(anyContains(parseErrorsWithLines("N[1] = 3\ns = sum(x[i], i=1, N[1])\n"),
+                          "2: SUM index i: the last bound 'N[1]' is not known before the solve: 'N[1]' is an array element"));
+        auto run = runModel("n = y + 1\ns = sum(x[i], i=1, n)\n");
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+    }
+    SECTION("an empty (reversed) range is an error, not a sum of zero terms") {
+        CHECK(parseErrorsWithLines("s = sum(x[i], i=4, 1)\n") ==
+              std::vector<std::string>{"1: SUM index i: the first bound (4) is greater than the last (1)"});
+        auto run = runModel("n = 2\nDUPLICATE k=1,3\n  s[k] = sum(x[i], i=n, k)\nEND\n");   // k = 1: the range 2..1
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "Line 3: SUM index i: the first bound (2) is greater than the last (1)"));
+    }
+    SECTION("a bound that is not an integer in a copy of the enclosing DUPLICATE") {
+        auto run = runModel("DUPLICATE k=1,3\n  s[k] = sum(x[i], i=1, k/2)\nEND\n");
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "Line 2: SUM index i: the last bound is 0.5 in a copy of the enclosing loop, "
+                                         "not an integer"));
+    }
+    SECTION("too many terms") {
+        CHECK(anyContains(parseErrorsWithLines("s = sum(x[i], i=1, 1000000)\n"), "SUM index i: more than 100000 terms"));
+    }
+    SECTION("in a FUNCTION or PROCEDURE the bounds are numbers or $CONSTANTs: a run-time bound is refused") {
+        const auto errors = parseErrorsWithLines("FUNCTION f(n)\n  f = sum(i, i=1, n)\nEND\ny = f(3)\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].rfind("2: SUM index i: the last bound 'n' is known only when FUNCTION 'f' runs", 0) == 0);
+        CHECK(anyContains(errors, "numbers or $CONSTANTs"));
+        CHECK(anyContains(parseErrorsWithLines("PROCEDURE p(m : s)\n  s = product(k, k=m, 4)\nEND\nCALL p(2 : z)\n"),
+                          "2: PRODUCT index k: the first bound 'm' is known only when PROCEDURE 'p' runs"));
+        CHECK(anyContains(parseErrorsWithLines("FUNCTION f(a)\n  s := 0\n  DUPLICATE j=1,3\n    s := s + sum(a*i, i=1, j)\n"
+                                               "  END\n  f = s\nEND\ny = f(1)\n"),
+                          "4: SUM index i: the last bound 'j' is known only when FUNCTION 'f' runs"));
+    }
+    SECTION("the other aggregates keep their own forms: no indexed AVERAGE, the range SUM(x[1..n]) is unchanged") {
+        auto run = runModel("DUPLICATE i=1,3\n  x[i] = i\nEND\ns = sum(x[1..3])\nt = SUM(x[1], x[2], 10)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["s"], WithinAbs(6.0, 1e-12));
+        CHECK_THAT(run["t"], WithinAbs(13.0, 1e-12));
+    }
+    SECTION("the other aggregates have no indexed form: a clear error, not a non-square model") {
+        const std::string rule = "the indexed form ";
+        CHECK(anyContains(parseErrorsWithLines("a = average(x[i], i=1, 4)\n"),
+                          "1: AVERAGE: the indexed form AVERAGE(expression, i=first, last) is implemented for SUM and "
+                          "PRODUCT only"));
+        CHECK(anyContains(parseErrorsWithLines("a = stddev(x[i], i=1, 4)\n"), "1: STDDEV: " + rule + "STDDEV(expression, i=first, last)"));
+        CHECK(anyContains(parseErrorsWithLines("a = SUM2D(x[i,j], i=1, 4, j=1, 3)\n"), "1: SUM2D: " + rule + "SUM2D(expression, i=first, last)"));
+        CHECK(anyContains(parseErrorsWithLines("a = average(x[1..3], k=2)\n"), "1: AVERAGE: " + rule));
+        CHECK(anyContains(parseErrorsWithLines("FUNCTION f(y)\n  f = average(y, y, i=1, 4)\nEND\nz = f(1)\n"), "2: AVERAGE: " + rule));
+        auto run = runModel("a = average(x[i], i=1, 4)\n");
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+        // MIN and MAX already refuse named arguments, the plain forms are unchanged
+        CHECK(anyContains(parseErrorsWithLines("a = max(x[i], i=1, 4)\n"), "max does not take named arguments"));
+        auto plain = runModel("x[1] = 1\nx[2] = 2\nx[3] = 6\na = average(x[1..3])\nb = stddev(x[1], x[2], x[3])\nc = sum2d(x[1], x[2])\n");
+        REQUIRE(plain.solveOk);
+        CHECK_THAT(plain["a"], WithinAbs(3.0, 1e-12));
+        CHECK_THAT(plain["c"], WithinAbs(3.0, 1e-12));
+    }
+}
+
+// ============================================================================
+// CS-BUG-DUPLICATE-INDEX-EXPR: inside a DUPLICATE loop an index with arithmetic (T[i+1]) was expanded to an
+// unevaluated expression, an element `T[expr]` that is not T[2]. A copy of the loop now names the element:
+// in equations, function arguments, CALL inputs and outputs, with one or two indices, in nested loops.
+// ============================================================================
+
+TEST_CASE("CS-BUG-DUPLICATE-INDEX-EXPR: reproducer of the register", "[library-gaps][duplicate-index-expr]") {
+    // was: Solution Verification Failed, T[(1.000000 + 1.000000)] = (T[1.000000] + 1.000000), residual 11
+    const std::string code = "T[1] = 10\nDUPLICATE i=1,3\n  T[i+1] = T[i] + 1\nEND\n";
+    CHECK(equationCount(code) == 4);
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["T[2]"], WithinAbs(11.0, 1e-12));
+    CHECK_THAT(run["T[3]"], WithinAbs(12.0, 1e-12));
+    CHECK_THAT(run["T[4]"], WithinAbs(13.0, 1e-12));
+    CHECK(run.vars.size() == 4);   // no element named T[expr]
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-INDEX-EXPR: X[i-1] in an equation and in a function argument (CSL-0144)",
+          "[library-gaps][duplicate-index-expr]") {
+    // the shapes of CSL-0144: was 12 unknowns for 11 equations (x[expr] and y[expr] among them)
+    auto run = runModel(R"(
+FUNCTION double(a)
+  double = 2*a
+END
+x[0] = 0
+DUPLICATE i=1,5
+  x[i] = i
+  y[i] = x[i-1]*2
+  z[i] = double(x[i-1])
+END
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (int i = 1; i <= 5; ++i) {
+        CHECK_THAT(run["y[" + std::to_string(i) + "]"], WithinAbs(2.0 * (i - 1), 1e-12));
+        CHECK_THAT(run["z[" + std::to_string(i) + "]"], WithinAbs(2.0 * (i - 1), 1e-12));
+    }
+    CHECK(run.vars.size() == 1 + 5 + 5 + 5);
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-INDEX-EXPR: other arithmetic, on the left-hand side too, with a $CONSTANT",
+          "[library-gaps][duplicate-index-expr]") {
+    auto run = runModel(R"(
+$CONSTANT N#=2
+DUPLICATE i=1,3
+  x[i] = i^2
+  y[2*i] = x[i]
+  w[10-i] = x[i] + 1
+  T[i+N#] = -x[-i+4] + 100
+END
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["y[2]"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["y[6]"], WithinAbs(9.0, 1e-12));
+    CHECK_THAT(run["w[9]"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["w[7]"], WithinAbs(10.0, 1e-12));
+    CHECK_THAT(run["T[3]"], WithinAbs(100.0 - 9.0, 1e-12));   // -x[3] + 100
+    CHECK_THAT(run["T[5]"], WithinAbs(100.0 - 1.0, 1e-12));
+    CHECK(run.vars.size() == 3 + 3 + 3 + 3);
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-INDEX-EXPR: a 2-D index in nested loops", "[library-gaps][duplicate-index-expr]") {
+    auto run = runModel(R"(
+DUPLICATE i=1,2
+  a[i,1] = i
+  DUPLICATE j=1,3
+    a[i,j+1] = a[i,j] + 10
+    b[i+1,j] = a[i,j+1] - a[i,j]
+  END
+END
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a[2,4]"], WithinAbs(2.0 + 30.0, 1e-12));
+    CHECK_THAT(run["a[1,3]"], WithinAbs(1.0 + 20.0, 1e-12));
+    CHECK_THAT(run["b[3,3]"], WithinAbs(10.0, 1e-12));
+    CHECK(run.vars.size() == 2 + 6 + 6);
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-INDEX-EXPR: the elements of a CALL, inputs and outputs", "[library-gaps][duplicate-index-expr]") {
+    auto run = runModel(R"(
+PROCEDURE p(a : b, c)
+  b = 2*a
+  c = a + 1
+END
+x[0] = 5
+DUPLICATE i=1,3
+  CALL p(x[i-1] : x[i], y[i+1])
+END
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x[3]"], WithinAbs(40.0, 1e-12));
+    CHECK_THAT(run["y[2]"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["y[4]"], WithinAbs(21.0, 1e-12));
+    CHECK_FALSE(hasVar(run, "y[expr]"));
+    CHECK(run.vars.size() == 1 + 3 + 3);
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-INDEX-EXPR: a DUPLICATE inside a FUNCTION or PROCEDURE body, run when it is called",
+          "[library-gaps][duplicate-index-expr]") {
+    // the body evaluator reads the index at run time (the loop is not expanded)
+    auto run = runModel(R"(
+FUNCTION g(n)
+  x[1] := 10
+  DUPLICATE i=1,n
+    x[i+1] := x[i] + 1
+  END
+  g = x[n+1]
+END
+PROCEDURE pr(n : t, u)
+  w[1] := 1
+  DUPLICATE i=1,n
+    w[i+1] := 2*w[i]
+  END
+  t = w[n+1]
+  u = w[n-1+1]/2
+END
+y = g(3)
+CALL pr(4 : tv, uv)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["y"], WithinAbs(13.0, 1e-12));
+    CHECK_THAT(run["tv"], WithinAbs(16.0, 1e-12));
+    CHECK_THAT(run["uv"], WithinAbs(4.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-INDEX-EXPR: what stays an error", "[library-gaps][duplicate-index-expr]") {
+    // a range whose bound uses the index of the enclosing loop is refused with its line, not expanded wrongly
+    CHECK(anyContains(parseErrorsWithLines("DUPLICATE i=1,3\n  x[i] = i\n  s[i] = SUM(x[1..i])\nEND\n"),
+                      "3: array range 'x[1..i]': its bounds cannot depend on the index 'i' of the enclosing DUPLICATE"));
+}

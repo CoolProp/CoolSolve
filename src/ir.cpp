@@ -16,6 +16,15 @@ namespace coolsolve {
 // Expression/Statement deep-copy with iterator substitution
 // ============================================================================
 
+// An index that is an arithmetic expression of numbers (`T[i+1]` once i is replaced by 1) is the integer it
+// stands for, so that the copy names the element T[2], not `T[(1 + 1)]`; any other index is returned as is.
+static ExprPtr foldIndex(ExprPtr index) {
+    if (index && (index->is<BinaryOp>() || index->is<UnaryOp>()))
+        if (const auto value = evaluateConstantExpression(index))
+            if (const auto integer = asIntegerBound(*value)) return makeNumber(*integer, index->sourceLineNumber);
+    return index;
+}
+
 // Deep-copy an expression, replacing occurrences of iteratorVar with the given value.
 // - In Variable names: if name matches iteratorVar (case-insensitive), replace with NumberLiteral
 // - In Variable indices: recursively substitute
@@ -38,7 +47,7 @@ static ExprPtr cloneExprWithSubstitution(const ExprPtr& expr, const std::string&
             Variable newVar;
             newVar.name = var.name;
             for (const auto& idx : var.indices) {
-                newVar.indices.push_back(cloneExprWithSubstitution(idx, iteratorVar, value));
+                newVar.indices.push_back(foldIndex(cloneExprWithSubstitution(idx, iteratorVar, value)));
             }
             result->node = std::move(newVar);
         }
@@ -59,14 +68,75 @@ static ExprPtr cloneExprWithSubstitution(const ExprPtr& expr, const std::string&
         const auto& fc = expr->as<FunctionCall>();
         FunctionCall newFc;
         newFc.name = fc.name;
-        for (const auto& arg : fc.args) {
-            newFc.args.push_back(cloneExprWithSubstitution(arg, iteratorVar, value));
+        // the index of an indexed aggregation hides an enclosing index of the same name in its expression
+        const bool indexed = isIndexedAggregate(fc);
+        const bool hidden = indexed && eesStringEqual(fc.namedArgs[0].first, iteratorVar);
+        for (size_t k = 0; k < fc.args.size(); ++k) {
+            newFc.args.push_back(hidden && k == 0 ? cloneExprWithSubstitution(fc.args[0], std::string(), 0.0)
+                                                  : cloneExprWithSubstitution(fc.args[k], iteratorVar, value));
         }
         for (const auto& [key, val] : fc.namedArgs) {
             newFc.namedArgs.push_back({key, cloneExprWithSubstitution(val, iteratorVar, value)});
         }
         result->node = std::move(newFc);
+        if (indexed)   // its bounds are numbers once the enclosing index is replaced
+            if (auto expanded = expandIndexedAggregate(result)) return expanded;
     }
+    return result;
+}
+
+bool isIndexedAggregate(const FunctionCall& call) {
+    if (call.namedArgs.size() != 1 || call.args.size() != 2) return false;
+    std::string lower = call.name;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    return lower == "sum" || lower == "product";
+}
+
+namespace {
+constexpr int kMaxAggregateTerms = 100000;
+
+/// The integer value of the `which` bound of `owner` ("DUPLICATE i", "SUM index i") in a copy of the
+/// enclosing loop, where the parser left an expression of its index; a ModelError when it is not an integer.
+int copyBound(const ExprPtr& expr, const std::string& owner, const char* which, int line) {
+    const auto value = evaluateConstantExpression(expr);
+    const auto integer = value ? asIntegerBound(*value) : std::nullopt;
+    if (!integer) {
+        std::ostringstream what;
+        what << owner << ": the " << which << " bound is ";
+        if (value) what << std::setprecision(15) << *value; else what << astToString(expr);
+        what << " in a copy of the enclosing loop, not an integer";
+        throw ModelError(line, what.str());
+    }
+    return *integer;
+}
+}  // namespace
+
+ExprPtr expandIndexedAggregate(const ExprPtr& callExpr) {
+    const auto& call = callExpr->as<FunctionCall>();
+    const std::string& index = call.namedArgs[0].first;
+    const ExprPtr& firstBound = call.namedArgs[0].second;
+    const ExprPtr& lastBound = call.args[1];
+    if (!evaluateConstantExpression(firstBound) || !evaluateConstantExpression(lastBound)) return nullptr;
+
+    std::string owner = call.name;
+    std::transform(owner.begin(), owner.end(), owner.begin(), ::toupper);
+    owner += " index " + index;
+    const int line = callExpr->sourceLineNumber;
+    const int first = copyBound(firstBound, owner, "first", line);
+    const int last = copyBound(lastBound, owner, "last", line);
+    if (first > last)
+        throw ModelError(line, owner + ": the first bound (" + std::to_string(first) + ") is greater than the last (" +
+                               std::to_string(last) + ")");
+    if (static_cast<long long>(last) - first >= kMaxAggregateTerms)
+        throw ModelError(line, owner + ": more than " + std::to_string(kMaxAggregateTerms) + " terms");
+
+    FunctionCall expanded;
+    expanded.name = call.name;
+    for (int k = first; k <= last; ++k)
+        expanded.args.push_back(cloneExprWithSubstitution(call.args[0], index, static_cast<double>(k)));
+    auto result = std::make_shared<Expression>();
+    result->node = std::move(expanded);
+    result->sourceLineNumber = callExpr->sourceLineNumber;
     return result;
 }
 
@@ -101,7 +171,7 @@ static StmtPtr cloneStmtWithSubstitution(const StmtPtr& stmt, const std::string&
             Variable newVar;
             newVar.name = outVar.name;
             for (const auto& idx : outVar.indices) {
-                newVar.indices.push_back(cloneExprWithSubstitution(idx, iteratorVar, value));
+                newVar.indices.push_back(foldIndex(cloneExprWithSubstitution(idx, iteratorVar, value)));
             }
             newCall.outputVars.push_back(std::move(newVar));
         }
@@ -134,20 +204,9 @@ static StmtPtr cloneStmtWithSubstitution(const StmtPtr& stmt, const std::string&
 // indices of the enclosing loops, which are numbers once this copy is made. A bound that is still not an
 // integer is an error (the loop was silently dropped).
 static void expandDuplicate(const Duplicate& dup, int line, std::vector<StmtPtr>& out) {
-    auto bound = [&](const ExprPtr& expr, const char* which) {
-        const auto value = evaluateConstantExpression(expr);
-        const auto integer = value ? asIntegerBound(*value) : std::nullopt;
-        if (!integer) {
-            std::ostringstream what;
-            what << "DUPLICATE " << dup.iteratorVar << ": the " << which << " bound is ";
-            if (value) what << std::setprecision(15) << *value; else what << astToString(expr);
-            what << " in a copy of the enclosing loop, not an integer";
-            throw ModelError(line, what.str());
-        }
-        return *integer;
-    };
-    const int startVal = bound(dup.start, "first");
-    const int endVal = bound(dup.end, "last");
+    const std::string owner = "DUPLICATE " + dup.iteratorVar;
+    const int startVal = copyBound(dup.start, owner, "first", line);
+    const int endVal = copyBound(dup.end, owner, "last", line);
 
     int step = (startVal <= endVal) ? 1 : -1;
     for (int i = startVal; step > 0 ? i <= endVal : i >= endVal; i += step) {
@@ -473,6 +532,14 @@ void IR::extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensi
             extractVariables(node.left, vars);
             extractVariables(node.right, vars);
         } else if constexpr (std::is_same_v<T, FunctionCall>) {
+            if (isIndexedAggregate(node)) {
+                // not expanded yet (the check of a body): its index is local, only its bounds and the variables
+                // of the expression, read with the index replaced by a number, belong to the equation
+                extractVariables(cloneExprWithSubstitution(node.args[0], node.namedArgs[0].first, 1.0), vars);
+                extractVariables(node.namedArgs[0].second, vars);
+                extractVariables(node.args[1], vars);
+                return;
+            }
             // For thermodynamic functions, skip the first positional arg (fluid name)
             bool isThermo = isThermoFunction(node.name);
 

@@ -19,6 +19,19 @@ struct ModelError : std::runtime_error {
     ModelError(int line, const std::string& message) : std::runtime_error(message), line(line) {}
 };
 
+/// True for the EES indexed aggregation `SUM(expr, i=a, b)` or `PRODUCT(expr, i=a, b)` as the parser stores
+/// it: the arguments `{expr, b}` and the named argument `{"i", a}`. `i` is local to the aggregation.
+bool isIndexedAggregate(const FunctionCall& call);
+
+/// The variadic form of the indexed aggregation `call` (an Expression holding a FunctionCall for which
+/// isIndexedAggregate is true): `SUM(expr[i:=a], ..., expr[i:=b])`, the substitution being that of the
+/// copies of a DUPLICATE loop (the index is replaced by its value, `x[i+1]` becomes the element `x[2]`).
+/// @return nullptr while a bound is not a number, i.e. it uses the index of an enclosing DUPLICATE loop: the
+///         copies of that loop expand the aggregation once the index is replaced.
+/// @throws ModelError when a bound is not an integer, when the first is greater than the last or when the
+///         range holds more than 100000 terms.
+ExprPtr expandIndexedAggregate(const ExprPtr& call);
+
 // Case-insensitive comparator for variable names (EES style): ASCII and the accented letters
 // of Latin-1 (UTF-8) are folded, see ees_string.h. T_a_réf and T_A_RÉF are one variable.
 struct CaseInsensitiveLess {

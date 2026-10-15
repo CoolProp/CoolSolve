@@ -242,7 +242,7 @@ private:
         integralTableTested_ = false;
         procedureNames_.clear();
         userConstants_.clear();
-        routineChecked_ = constantAfterRoutine_ = rangeSeen_ = duplicateSeen_ = false;
+        routineChecked_ = constantAfterRoutine_ = rangeSeen_ = duplicateSeen_ = indexedAggregateSeen_ = false;
         lastIgnoredEndifLine_ = 0;
         ParseResult result;
         result.success = false;
@@ -488,7 +488,7 @@ private:
                 "parser", comments_.quoteOpenLine, 0);
         }
         result.totalLines = lineNumber;
-        if (result.errors.empty() && (rangeSeen_ || duplicateSeen_ || !userConstants_.empty()))
+        if (result.errors.empty() && (rangeSeen_ || duplicateSeen_ || indexedAggregateSeen_ || !userConstants_.empty()))
             resolveCompileTimeValues(result, preprocessed);
         // Success if no errors AND we found something valid
         bool somethingParsed = result.equationCount > 0 || result.commentCount > 0 || result.directiveCount > 0 || !result.program.statements.empty();
@@ -549,6 +549,7 @@ private:
     bool constantAfterRoutine_ = false;  // a $CONSTANT defined below such a body: parse again
     bool rangeSeen_ = false;             // an array range X[a..b] was parsed (a header included)
     bool duplicateSeen_ = false;         // a DUPLICATE loop was parsed
+    bool indexedAggregateSeen_ = false;  // SUM(expr, i=a, b) or PRODUCT(expr, i=a, b) was parsed
 
     // ------------------------------------------------------------------------
     // Compile-time directives $IF / $IFNOT / $ELSE / $ENDIF (CS-GAP-IF-DIRECTIVE)
@@ -718,9 +719,10 @@ private:
     // Built-in functions that take positional arguments only: for them `name=value` is
     // not a named argument (typically the comparison of IF(a=5, 1, 2), which EES does not
     // have). The indexed aggregations SUM(X[i], i=1, N) and the EES form of INTERPOLATE
-    // carry `name=value` arguments: the latter is evaluated from the column names of the call
-    // (ExpressionEvaluator::resolveEesInterpolation), the former is not supported yet
-    // (CS-GAP-SUM-INDEXED, it keeps its own diagnostics). The thermophysical functions,
+    // carry `name=value` arguments: the former is expanded into the elements once the file is parsed
+    // (resolveIndexedAggregate; indexedAggregateError refuses it in any other aggregate, which are
+    // listed here only so that it is the one to answer), the latter is evaluated from the column names
+    // of the call (ExpressionEvaluator::resolveEesInterpolation). The thermophysical functions,
     // user functions and unknown names are not listed here.
     static bool isPositionalOnlyBuiltin(const std::string& name) {
         static const std::unordered_set<std::string> takingNamedArguments = {
@@ -1549,6 +1551,10 @@ private:
     //    its integer value. In a FUNCTION / PROCEDURE (header and body) the bounds of a range are numbers
     //    or constants: a body sees no variable of the main program and its own are known only when it
     //    runs (the DUPLICATE loops of a body are run by the evaluator and keep their bounds);
+    //  - an indexed aggregation SUM(expr, i=a, b) / PRODUCT(expr, i=a, b) becomes the variadic SUM / PRODUCT of
+    //    the copies of expr with i = a, ..., b (the index is local to it), its bounds being resolved as those
+    //    of a DUPLICATE; one that uses the index of an enclosing DUPLICATE is expanded by the IR in each copy
+    //    (resolveIndexedAggregate);
     //  - a range stands for its elements, in order (the last index varying fastest), in the header of a
     //    routine and in the arguments of a function or of a CALL, outputs included; anywhere else it is
     //    an error. A call that passes a range, or calls a routine whose header has one, must give as many
@@ -1712,24 +1718,29 @@ private:
                std::to_string(def->second.second) + "), which is not a constant expression";
     }
 
-    /// Resolve in place the `which` ("first"/"last") bound of a DUPLICATE of the main program: its integer
-    /// value, or (a bound using an enclosing index) the expression with the known names replaced by their
-    /// values. False, reported, when it is neither.
-    bool resolveDuplicateBound(ExprPtr& bound, const char* which, const std::string& iterator, CompileTimeContext& ctx) {
+    /// Resolve in place the `which` ("first"/"last") bound of `owner` ("DUPLICATE i", "SUM index i"), a loop
+    /// of the main program or an indexed aggregation: its integer value, or (a bound using an enclosing
+    /// index) the expression with the known names replaced by their values. False, reported, when it is
+    /// neither. In a FUNCTION or PROCEDURE only constants are known: the other names are values of the run.
+    bool resolveDuplicateBound(ExprPtr& bound, const char* which, const std::string& owner, CompileTimeContext& ctx) {
         std::string unknown;
         bool usesIndex = false;
         const auto value = evaluateConstantExpression(bound, [&](const std::string& n) -> std::optional<double> {
-            if (ctx.iterators.count(n)) {
+            if (ctx.iterators.count(n) && ctx.routine.empty()) {
                 usesIndex = true;
                 return 1.0;   // the form is checked here, the value in each copy (IR)
             }
             return knownValue(ctx, n);
         }, &unknown);
-        const std::string what = "DUPLICATE " + iterator + ": the " + which + " bound '" + formatExpr(bound) + "'";
+        const std::string what = owner + ": the " + which + " bound '" + formatExpr(bound) + "'";
         if (!value) {
-            ctx.error(what + (unknown.empty() ? " is not an arithmetic expression"
-                                              : " is not known before the solve: " + explainUnknown(ctx, unknown)) +
-                      kBoundRule);
+            if (unknown.empty())
+                ctx.error(what + " is not an arithmetic expression" + kBoundRule);
+            else if (!ctx.routine.empty())
+                ctx.error(what + " is known only when " + ctx.routine + " runs: in a FUNCTION or PROCEDURE the "
+                          "bounds of an indexed SUM or PRODUCT are numbers or $CONSTANTs");
+            else
+                ctx.error(what + " is not known before the solve: " + explainUnknown(ctx, unknown) + kBoundRule);
             return false;
         }
         if (usesIndex) {
@@ -1900,6 +1911,32 @@ private:
                       "): its value cannot be changed");
     }
 
+    /// SUM(expr, i=a, b) and PRODUCT(expr, i=a, b): replaced in place by the variadic call over the copies of
+    /// `expr` with i = a, ..., b (expandIndexedAggregate, the substitution of the DUPLICATE copies), then
+    /// walked. The bounds are resolved like those of a DUPLICATE; one that uses the index of an enclosing
+    /// DUPLICATE leaves the call as it is, the IR expands it in each copy of that loop.
+    void resolveIndexedAggregate(ExprPtr& expr, CompileTimeContext& ctx) {
+        auto& call = expr->as<FunctionCall>();
+        std::string owner = call.name;
+        std::transform(owner.begin(), owner.end(), owner.begin(), ::toupper);
+        owner += " index " + call.namedArgs[0].first;
+        if (!resolveDuplicateBound(call.namedArgs[0].second, "first", owner, ctx) ||
+            !resolveDuplicateBound(call.args[1], "last", owner, ctx))
+            return;
+        try {
+            if (const auto expanded = expandIndexedAggregate(expr)) {
+                *expr = *expanded;
+                return walkExpression(expr, ctx);
+            }
+        } catch (const ModelError& e) {
+            return ctx.error(e.what());
+        }
+        const std::string& index = call.namedArgs[0].first;
+        const bool added = ctx.iterators.insert(index).second;
+        walkExpression(call.args[0], ctx);
+        if (added) ctx.iterators.erase(index);
+    }
+
     void walkExpression(ExprPtr& expr, CompileTimeContext& ctx) {
         if (!expr) return;
         if (expr->is<Variable>()) {
@@ -1922,6 +1959,7 @@ private:
             walkExpression(expr->as<BinaryOp>().right, ctx);
         } else if (expr->is<FunctionCall>()) {
             auto& call = expr->as<FunctionCall>();
+            if (isIndexedAggregate(call)) return resolveIndexedAggregate(expr, ctx);
             const bool hadRange = expandArguments(call.args, ctx);
             for (auto& named : call.namedArgs) walkExpression(named.second, ctx);
             checkCallSize(call.name + "(...)", call.name, call.args.size(), hadRange, false, ctx);
@@ -1981,8 +2019,9 @@ private:
             } else if (stmt->is<Duplicate>()) {
                 auto& dup = stmt->as<Duplicate>();
                 if (ctx.routine.empty()) {   // a loop of a body is run by the evaluator, with its bounds
-                    if (resolveDuplicateBound(dup.start, "first", dup.iteratorVar, ctx))
-                        resolveDuplicateBound(dup.end, "last", dup.iteratorVar, ctx);
+                    const std::string owner = "DUPLICATE " + dup.iteratorVar;
+                    if (resolveDuplicateBound(dup.start, "first", owner, ctx))
+                        resolveDuplicateBound(dup.end, "last", owner, ctx);
                 } else {
                     walkExpression(dup.start, ctx);
                     walkExpression(dup.end, ctx);
@@ -3340,6 +3379,37 @@ private:
         return "Unexpected text '" + t + "' after " + what + " '" + after + "'";
     }
 
+    /// The aggregate built-ins take a named argument only in the EES indexed form `SUM(expr, i=first, last)`
+    /// (and PRODUCT): an error message for any other use, empty when `args` (the argument texts of the call
+    /// `call`) is fine. AVERAGE, STDDEV and SUM2D have no indexed form: the named argument would be taken
+    /// for a variable of the model. The indexed form is noted: resolveCompileTimeValues expands it
+    /// (resolveIndexedAggregate).
+    std::string indexedAggregateError(const std::string& name, const std::vector<std::string>& args,
+                                      const std::string& call) {
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        const bool indexable = lower == "sum" || lower == "product";
+        if (!indexable && lower != "average" && lower != "stddev" && lower != "sum2d") return "";
+        std::vector<bool> named;
+        for (const auto& arg : args) {
+            const size_t eq = arg.find('=');
+            named.push_back(eq != std::string::npos && eq > 0 && isIdentifier(trim(arg.substr(0, eq))));
+        }
+        if (std::find(named.begin(), named.end(), true) == named.end()) return "";
+        std::string upper = lower;
+        std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+        if (!indexable)
+            return upper + ": the indexed form " + upper + "(expression, i=first, last) is implemented for SUM and "
+                   "PRODUCT only (found '" + trim(call) + "'); for the other aggregates use an array range, as in " +
+                   upper + "(x[1..n])";
+        if (args.size() == 3 && !named[0] && named[1] && !named[2]) {
+            indexedAggregateSeen_ = true;
+            return "";
+        }
+        return upper + ": the indexed form is " + upper + "(expression, i=first, last), as in " + upper +
+               "(x[i], i=1, 4); found '" + trim(call) + "'";
+    }
+
     ExprPtr parseFunctionCall(const std::string& expr, int lineNum) {
         size_t parenStart = expr.find('(');
         if (parenStart == std::string::npos) return nullptr;
@@ -3371,6 +3441,12 @@ private:
         
         // Parse arguments
         std::vector<std::string> argStrings = splitArguments(argsStr);
+
+        const std::string aggregateError = indexedAggregateError(name, argStrings, expr);
+        if (!aggregateError.empty()) {
+            setExpressionError(aggregateError);
+            return nullptr;
+        }
         
         for (size_t argIndex = 0; argIndex < argStrings.size(); ++argIndex) {
             std::string arg = trim(argStrings[argIndex]);

@@ -329,14 +329,39 @@ guess value in the `.initials` file).
 | Function                 | Meaning                         |
 |:-------------------------|:--------------------------------|
 | `sum(a, b, …)`           | Sum of arguments                |
-| `sum2d(a, b, …)`         | Sum of squares                  |
+| `sum2d(a, b, …)`         | Sum of arguments (same as `sum`) |
 | `average(a, b, …)`       | Arithmetic mean                 |
 | `product(a, b, …)`       | Product of arguments            |
 | `stddev(a, b, …)`        | Population standard deviation   |
 
 `min(a, b, …)` and `max(a, b, …)` take any number of arguments too. An array range
-is a list of arguments: `average(T[1..imax#])`, `sum(x[1..n], 10, y)` (§8). The
-indexed form `sum(x[i], i=1, n)` is not supported.
+is a list of arguments: `average(T[1..imax#])`, `sum(x[1..n], 10, y)` (§8).
+
+**Indexed form** (EES). `sum(expr, i=a, b)` is the sum of `expr` for the index `i`
+from `a` to `b`, and `product(expr, i=a, b)` the product:
+`mm = sum(x[i]*MM[i], i=1, 4)`, `h = sum(x[i]*MM[i]*h[i], i=1, 4)/mm`. When the file
+is read, CoolSolve replaces it by the plain `sum` (`product`) of the copies of `expr`
+with `i` replaced by each value, as a `DUPLICATE` loop does (the equation, and its
+LaTeX form, show the terms).
+
+- The index is local to the aggregation: it is never a variable of the model, and a
+  model variable (or the index of an enclosing `DUPLICATE`) of the same name is not
+  affected. The expression need not use it (`sum(2*y, k=1, 5)` is `10*y`).
+- The bounds are those of a `DUPLICATE` (§6): numbers, `$CONSTANT`s, variables set to
+  a constant expression (`Nprod = 4`, then `sum(…, i=1, Nprod)`), arithmetic of those,
+  or an expression of the index of an enclosing `DUPLICATE` (`u[k] = sum(x[i], i=1, k)`,
+  expanded in each copy). A bound that is not known before the solve, or not an
+  integer, is an error with the line, as for a loop. An empty range (the first bound
+  greater than the last) is an error too, not a sum of no term.
+- An index with arithmetic is evaluated: `sum(x[i+1] - x[i], i=1, 4)` uses `x[2] - x[1]`,
+  …; sums nest (`sum(sum(a[i,j], j=1, i), i=1, n)`).
+- In a `FUNCTION` or `PROCEDURE` the bounds are numbers or `$CONSTANT`s (the body is
+  expanded when the file is read); a bound that is an input of the routine is an error.
+- The form is `sum(expression, i=first, last)` and nothing else: `sum(x[i], i=1)`,
+  `sum(x[i], 4, i=1)` are errors. Only `sum` and `product` have it: `average`, `stddev`
+  and `sum2d` refuse an `i=…` argument with an error naming the line (*"AVERAGE: the
+  indexed form AVERAGE(expression, i=first, last) is implemented for SUM and PRODUCT
+  only"*); for them use a range (`average(x[1..n])`).
 
 ### Inline selection
 
@@ -768,6 +793,11 @@ solve** (EES: "an integer number or a variable set to an integer constant"):
 
 A loop whose first bound is greater than the last runs downward
 (`DUPLICATE i = 3, 1` gives `i` = 3, 2, 1).
+
+An index with arithmetic is evaluated in each copy, in equations, function
+arguments and `CALL` inputs and outputs, with one or several indices:
+`T[i+1] = T[i] + 1` gives `T[2] = T[1] + 1`, `T[3] = T[2] + 1`, …, and
+`a[i, j+1]` in nested loops names the element `a[1,2]`, `a[1,3]`, ….
 
 Any other bound is an error that names it, with the line of the loop — a
 variable set by an equation that depends on an unknown, by a `CALL`, or not set
