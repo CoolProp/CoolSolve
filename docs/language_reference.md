@@ -100,7 +100,8 @@ From tightest to loosest:
 2. Unary `+`, `-`
 3. `*`, `/`
 4. `+`, `-`
-5. `<`, `<=`, `>`, `>=` (return 1/-1 in condition contexts)
+5. `<`, `<=`, `>`, `>=` (return 1/-1 in condition contexts). As in EES, `=>` is also read as `>=` and `=<` as `<=`
+   (written without a blank between the two characters: `= >` and `==` are errors)
 
 ### Units annotations
 
@@ -247,7 +248,8 @@ parentheses (`AND` binds tighter than `OR`):
 | `UNITSYSTEM('XX')` [`= n`] | as the `UNITSYSTEM()` function: `SI`, `Mass`, `Deg`, `C`, `Pa`, `J` are in use, `Eng`, `Molar`, `Rad`, `K`, `kPa`, … are not |
 
 `VERSION < n` / `> n` and any other condition are errors: CoolSolve has no EES
-version number. Tolerated EES spellings: a trailing `then` after the condition
+version number. A `$IF` takes only `=` (and `<` / `>` after `TABLERUN#`): `>=`, `<=` and
+their EES spellings `=>` and `=<` are errors there. Tolerated EES spellings: a trailing `then` after the condition
 (`$if type$='ari' then`), any text after `$else` / `$endif` (`$else fuel$='ch4'`),
 a quoted or `{ }` comment after the condition, spaces around `=`, and a bare
 `$ELSEIF` (it is a `$ELSE` in the EES help; `$ELSEIF <cond>` is an error).
@@ -1014,7 +1016,8 @@ The limit is per run of a loop: a loop nested in another one has its own count e
 starts. A loop left by a `GOTO` (§7) is not concerned.
 
 A comment may follow `REPEAT` and the `UNTIL` condition (`UNTIL(x > 10) // done (or not)`): a `)` in it is
-not the closing parenthesis of the condition.
+not the closing parenthesis of the condition. The condition may use `=>` and `=<` for `>=` and `<=`
+(`UNTIL (k => n)`).
 
 As for `IF ... THEN` and `GOTO`, the loop does not exist in the main program, where the
 equations are solved simultaneously and nothing is executed in order: a `REPEAT` there (also in the
@@ -1052,7 +1055,8 @@ ENDIF;ENDIF                             "one ENDIF per IF ending with ELSE"
 - Only the branch selected by the condition is executed; the other one is
   never evaluated (a division by zero in an untaken branch is harmless).
 - The condition compares numbers or strings with `=`, `<>`, `<`, `>`, `<=`,
-  `>=` (strings are compared without regard to case, as in EES:
+  `>=` (EES also writes the last two `=>` and `=<`, which are the same operators:
+  `IF (Z => 0.001) AND (W > 0) THEN`; strings are compared without regard to case, as in EES:
   `fluid$ = 'R134a'` also matches `'r134A'`), and combines
   relations with `AND`, `OR` and parentheses. The parentheses around the whole
   condition are optional.

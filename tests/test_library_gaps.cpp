@@ -16706,3 +16706,249 @@ TEST_CASE("CS-GAP-LOOKUPROW: LookupTable finds the first row of a key", "[librar
         CHECK_THROWS_AS(t.findRowByValue(0, 1), std::out_of_range);
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// CS-GAP-GE-ARROW: the EES spellings `=>` (greater or equal) and `=<` (less or equal) of a comparison, as `>=` / `<=`
+// ---------------------------------------------------------------------------------------------------------------
+
+namespace {
+
+/// `FUNCTION f(x)` with the IF statement `ifLine` (written on one line, it selects f = 5 or f = 6), called with `arg`.
+std::string arrowFunction(const std::string& ifLine, const std::string& arg) {
+    return "FUNCTION f(x)\n  " + ifLine + " THEN f = 5 ELSE f = 6\nEND\nZ = f(" + arg + ")\nW = Z\n";
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-GE-ARROW: register reproducer, IF (x => 1) is x >= 1", "[library-gaps][ge-arrow]") {
+    // was: "Could not parse IF condition '(x => 1)'"; EES value: Z = 5 for x = 1, Z = 6 for x = 0
+    auto run = runModel(arrowFunction("IF (x => 1)", "1"));
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["Z"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["W"], WithinAbs(5.0, 1e-12));
+
+    auto other = runModel(arrowFunction("IF (x => 1)", "0"));
+    REQUIRE(other.solveOk);
+    CHECK_THAT(other["Z"], WithinAbs(6.0, 1e-12));
+    auto greater = runModel(arrowFunction("IF (x => 1)", "2"));
+    REQUIRE(greater.solveOk);
+    CHECK_THAT(greater["Z"], WithinAbs(5.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-GE-ARROW: =< is <=", "[library-gaps][ge-arrow]") {
+    for (const auto& [arg, expected] : std::vector<std::pair<std::string, double>>{{"0", 5.0}, {"1", 5.0}, {"2", 6.0}}) {
+        INFO("x = " << arg);
+        auto run = runModel(arrowFunction("IF (x =< 1)", arg));
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["Z"], WithinAbs(expected, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-GE-ARROW: every spelling of the operator reads the same as >= and <=", "[library-gaps][ge-arrow]") {
+    // blanks around the operator or none, no parentheses around the condition, a negative or computed right side
+    for (const char* ifLine : {"IF (x=>1)", "IF (x  =>  1)", "IF x => 1", "IF ((x) => (1))", "IF (x => 2-1)", "IF (x => -(-1))"}) {
+        for (const auto& [arg, expected] : std::vector<std::pair<std::string, double>>{{"1", 5.0}, {"0.5", 6.0}}) {
+            INFO(ifLine << ", x = " << arg);
+            auto run = runModel(arrowFunction(ifLine, arg));
+            INFO(run.message);
+            REQUIRE(run.solveOk);
+            CHECK_THAT(run["Z"], WithinAbs(expected, 1e-12));
+        }
+    }
+    for (const char* ifLine : {"IF (x=<1)", "IF (x  =<  1)", "IF x =< 1", "IF ((x) =< (1))", "IF (x =< 2-1)", "IF (-x => -1)"}) {
+        for (const auto& [arg, expected] : std::vector<std::pair<std::string, double>>{{"1", 5.0}, {"1.5", 6.0}}) {
+            INFO(ifLine << ", x = " << arg);
+            auto run = runModel(arrowFunction(ifLine, arg));
+            INFO(run.message);
+            REQUIRE(run.solveOk);
+            CHECK_THAT(run["Z"], WithinAbs(expected, 1e-12));
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-GE-ARROW: the DELTAT_ln condition of the library model CSL-0116, combined with AND and OR",
+          "[library-gaps][ge-arrow]") {
+    // `If (Z => 0.001) and (W>0) then` of FUNCTION DELTAT_ln (TM-0596, EES 8.940)
+    const std::string tail = "  ELSE\n    d = -1\n  ENDIF\n  f = d\nEND\n";
+    auto call = [&](const std::string& condition, const std::string& a, const std::string& b) {
+        return runModel("FUNCTION f(Z, W)\n  IF " + condition + " THEN\n    d = 1\n" + tail + "y = f(" + a + ", " + b + ")\n");
+    };
+    for (const auto& [a, b, expected] : std::vector<std::tuple<std::string, std::string, double>>{
+             {"0.001", "1", 1.0}, {"0.5", "1", 1.0}, {"0.0005", "1", -1.0}, {"0.5", "0", -1.0}, {"0.001", "-1", -1.0}}) {
+        INFO("Z = " << a << ", W = " << b);
+        auto run = call("(Z => 0.001) and (W>0)", a, b);
+        INFO(run.message);
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(expected, 1e-12));
+        // the same condition written with >=
+        auto reference = call("(Z >= 0.001) and (W>0)", a, b);
+        REQUIRE(reference.solveOk);
+        CHECK_THAT(reference["y"], WithinAbs(expected, 1e-12));
+    }
+    // OR, mixed spellings, and the two arrows in one condition
+    auto either = call("(Z =< 0.001) OR (W => 3)", "0.5", "3");
+    REQUIRE(either.solveOk);
+    CHECK_THAT(either["y"], WithinAbs(1.0, 1e-12));
+    auto neither = call("(Z =< 0.001) OR (W => 3)", "0.5", "2.9");
+    REQUIRE(neither.solveOk);
+    CHECK_THAT(neither["y"], WithinAbs(-1.0, 1e-12));
+    auto mixed = call("(Z => 0.001) and (W <= 1) and (Z =< 1) and (W <> 0) and (Z > 0) and (W < 2)", "0.5", "1");
+    REQUIRE(mixed.solveOk);
+    CHECK_THAT(mixed["y"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-GE-ARROW: => and =< in a nested IF, a block IF and an ELSE IF", "[library-gaps][ge-arrow]") {
+    const std::string code = R"(
+FUNCTION classify(x)
+  IF (x => 10) THEN
+    IF (x =< 20) THEN
+      c = 2
+    ELSE
+      c = 3
+    ENDIF
+  ELSE IF (x =< -10) THEN c = -2 ELSE
+    IF (x => 0) THEN c = 1 ELSE c = 0
+  ENDIF;ENDIF
+  classify = c
+END
+a = classify(15)
+b = classify(25)
+d = classify(-10)
+e = classify(5)
+g = classify(-5)
+)";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(-2.0, 1e-12));
+    CHECK_THAT(run["e"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["g"], WithinAbs(0.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-GE-ARROW: => and =< in the UNTIL condition of a REPEAT loop", "[library-gaps][ge-arrow]") {
+    // was: "REPEAT missing UNTIL(condition)"
+    auto count = [](const std::string& until) {
+        return runModel("FUNCTION f(n)\n  k = 0\n  REPEAT\n    k = k + 1\n  UNTIL " + until + "\n  f = k\nEND\nz = f(3)\n");
+    };
+    auto up = count("(k => n)");
+    INFO(up.message);
+    REQUIRE(up.parseOk);
+    REQUIRE(up.solveOk);
+    CHECK_THAT(up["z"], WithinAbs(3.0, 1e-12));
+    auto upNoBlank = count("(k=>n)");
+    REQUIRE(upNoBlank.solveOk);
+    CHECK_THAT(upNoBlank["z"], WithinAbs(3.0, 1e-12));
+    // a loop that counts down
+    auto down = runModel("FUNCTION f(n)\n  k = n\n  REPEAT\n    k = k - 1\n  UNTIL (k =< 0)\n  f = k\nEND\nz = f(4)\n");
+    INFO(down.message);
+    REQUIRE(down.solveOk);
+    CHECK_THAT(down["z"], WithinAbs(0.0, 1e-12));
+    // the same loop with >= and <=
+    auto reference = count("(k >= n)");
+    REQUIRE(reference.solveOk);
+    CHECK_THAT(reference["z"], WithinAbs(3.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-GE-ARROW: the comparison of an IF function and of an equation reads => and =< like >= and <=",
+          "[library-gaps][ge-arrow]") {
+    // the same AST as with >= and <=
+    auto run = runModel("a = 2\nZ1 = IF(a => 2, 5, 6)\nZ2 = IF(a =< 1, 5, 6)\nZ3 = IF(a >= 2, 5, 6)\nZ4 = IF(a <= 1, 5, 6)\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["Z1"], WithinAbs(run["Z3"], 1e-12));
+    CHECK_THAT(run["Z2"], WithinAbs(run["Z4"], 1e-12));
+    CHECK_THAT(run["Z1"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["Z2"], WithinAbs(6.0, 1e-12));
+    auto equation = runModel("a = 2\nZ = (a => 2)\n");
+    INFO(equation.message);
+    REQUIRE(equation.solveOk);
+    CHECK_THAT(equation["Z"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-GE-ARROW: => and =< are never read as a named argument", "[library-gaps][ge-arrow]") {
+    // `IF(a=5, 1, 2)` is refused on purpose (CS-BUG-ARG-DROP): a named argument of a positional-only built-in
+    const auto refused = parseErrors("a = 5\nZ = IF(a=5, 1, 2)\n");
+    REQUIRE(refused.size() == 1);
+    CHECK(refused[0].find("IF does not take named arguments ('a=5')") != std::string::npos);
+    // `a=>5` is a comparison: it is no more refused as the named argument a with the value >5
+    CHECK(parseErrors("a = 5\nZ = IF(a=>5, 1, 2)\n").empty());
+    CHECK(parseErrors("a = 5\nZ = IF(a=<5, 1, 2)\n").empty());
+    // a named argument of a thermophysical function is still read: the value of T is the expression 20
+    CHECK(parseErrors("h = enthalpy(Water, T=20, P=1E5)\n").empty());
+    // the indexed aggregate form too
+    CHECK(parseErrors("x[1] = 1\nx[2] = 2\nS = sum(x[i], i=1, 2)\n").empty());
+}
+
+TEST_CASE("CS-GAP-GE-ARROW: a string comparison is unaffected", "[library-gaps][ge-arrow]") {
+    const std::string code = R"(
+FUNCTION pick(s$)
+  IF (s$ = 'a=>b') THEN r = 1 ELSE r = 2
+  IF (s$ <> 'a=<b') THEN r = r + 10
+  pick = r
+END
+a = pick('a=>b')
+b = pick('A=<B')
+c = pick('x')
+)";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(11.0, 1e-12));   // a string that contains => is a string, and = is not changed
+    CHECK_THAT(run["b"], WithinAbs(2.0, 1e-12));    // 'A=<B' is 'a=<b' without regard to case: <> is false
+    CHECK_THAT(run["c"], WithinAbs(12.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-GE-ARROW: = >, ==, a missing operand and => outside a comparison stay errors", "[library-gaps][ge-arrow]") {
+    auto oneError = [](const std::string& code) {
+        const auto errors = parseErrorsWithLines(code);
+        REQUIRE(errors.size() == 1);
+        return errors[0];
+    };
+    // a blank between the = and the > (EES behaviour unknown): not an operator
+    CHECK(oneError(arrowFunction("IF (x = > 1)", "1")) == "2: Could not parse IF condition '(x = > 1)'");
+    CHECK(oneError(arrowFunction("IF (x = < 1)", "1")) == "2: Could not parse IF condition '(x = < 1)'");
+    CHECK(oneError(arrowFunction("IF (x == 1)", "1")) == "2: Could not parse IF condition '(x == 1)'");
+    CHECK(oneError(arrowFunction("IF (x ==> 1)", "1")) == "2: Could not parse IF condition '(x ==> 1)'");
+    CHECK(oneError(arrowFunction("IF (x >== 1)", "1")) == "2: Could not parse IF condition '(x >== 1)'");
+    // an operand is missing
+    CHECK(oneError(arrowFunction("IF (x =>)", "1")) == "2: Could not parse IF condition '(x =>)'");
+    CHECK(oneError(arrowFunction("IF (=< 1)", "1")) == "2: Could not parse IF condition '(=< 1)'");
+    // => and =< are no relations of an equation: the main program has no comparison, as with >= and <=
+    CHECK_FALSE(parseErrors("x => 1\n").empty());
+    CHECK_FALSE(parseErrors("x =< 1\n").empty());
+    CHECK_FALSE(parseErrors("x >= 1\n").empty());
+    // UNTIL: the same
+    const std::string loop = "FUNCTION f(n)\n  k = 0\n  REPEAT\n    k = k + 1\n  UNTIL (k = > n)\n  f = k\nEND\nz = f(3)\n";
+    CHECK(parseErrorsWithLines(loop) == std::vector<std::string>{"3: REPEAT missing UNTIL(condition)"});
+    const std::string loop2 = "FUNCTION f(n)\n  k = 0\n  REPEAT\n    k = k + 1\n  UNTIL (k == n)\n  f = k\nEND\nz = f(3)\n";
+    CHECK(parseErrorsWithLines(loop2) == std::vector<std::string>{"3: REPEAT missing UNTIL(condition)"});
+    // a named argument that is a comparison has no value
+    const auto named = parseErrors("h = enthalpy(Water, T = > 20, P=1E5)\n");
+    REQUIRE(named.size() == 1);
+    CHECK(named[0].find("Could not parse value for named argument 'T'") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-GE-ARROW: a $IF directive takes no => or =< (EES has = and <> only), as it takes no >= or <=",
+          "[library-gaps][ge-arrow]") {
+    auto directiveError = [](const std::string& condition) {
+        const auto errors = parseErrors("x$ = 'a'\n$IF " + condition + "\nz = 1\n$ENDIF\n");
+        REQUIRE(errors.size() == 1);
+        return errors[0];
+    };
+    CHECK(directiveError("x$ => 'a'") == "$IF: '=>' is not an EES condition on strings; only x$='text' is (use $IFNOT for the opposite)");
+    CHECK(directiveError("x$ >= 'a'") == "$IF: '>=' is not an EES condition on strings; only x$='text' is (use $IFNOT for the opposite)");
+    CHECK(directiveError("TABLERUN# => 1") == "$IF: TABLERUN# must be followed by =, < or > and an integer number");
+    CHECK(directiveError("TABLERUN# >= 1") == "$IF: TABLERUN# must be followed by =, < or > and an integer number");
+    CHECK(directiveError("UNITSYSTEM('K') =< 1") == "$IF: UNITSYSTEM('K') can only be compared with '='");
+    CHECK(directiveError("PROFESSIONAL =< 1") == "$IF: 'PROFESSIONAL' cannot be followed by '=<'");
+}

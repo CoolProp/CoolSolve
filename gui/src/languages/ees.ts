@@ -46,7 +46,7 @@ export function registerEESLanguage(monaco: typeof Monaco) {
     ],
     operators: [
       '=', ':=', '+', '-', '*', '/', '^',
-      '<', '>', '<=', '>=', '<>', '==',
+      '<', '>', '<=', '>=', '=<', '=>', '<>', '==',
     ],
     symbols: /[=><!~?:&|+\-*/^%]+/,
 

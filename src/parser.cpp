@@ -2457,8 +2457,24 @@ private:
         return depth == 0;
     }
 
+    // EES also writes `>=` as `=>` and `<=` as `=<` (no blank between the two characters): the usual
+    // spelling when one of them starts at s[i], "" otherwise. Shared by every place that reads a comparison.
+    static std::string reversedRelationAt(const std::string& s, size_t i) {
+        if (s[i] != '=' || i + 1 >= s.size()) return "";
+        if (s[i + 1] == '>') return ">=";
+        if (s[i + 1] == '<') return "<=";
+        return "";
+    }
+
+    // Position of the `=` of a named argument `name=value` in the argument text `arg`, npos when it has none.
+    // The `=` of `=>` and `=<` (the comparisons >= and <=) is no named-argument sign.
+    static size_t namedArgumentEquals(const std::string& arg) {
+        const size_t eq = arg.find('=');
+        return eq != std::string::npos && reversedRelationAt(arg, eq).empty() ? eq : std::string::npos;
+    }
+
     // Parse the condition of an IF statement. Relations produce BinaryOp nodes
-    // with op "=", "<>", "<", ">", "<=" or ">="; "and"/"or" combine them
+    // with op "=", "<>", "<", ">", "<=" or ">=" (`=>` and `=<` are read as `>=` and `<=`); "and"/"or" combine them
     // (OR binds weaker than AND). Evaluates to +1 (true) / -1 (false).
     ExprPtr parseCondition(const std::string& text, int lineNum) {
         const std::string s = trim(text);
@@ -2486,10 +2502,13 @@ private:
             if (c == '(' || c == '[') { depth++; continue; }
             if (c == ')' || c == ']') { depth--; continue; }
             if (depth != 0 || (c != '<' && c != '>' && c != '=')) continue;
-            std::string op(1, c);
-            if (i + 1 < s.size() && ((c == '<' && (s[i + 1] == '=' || s[i + 1] == '>')) ||
-                                     (c == '>' && s[i + 1] == '=')))
-                op += s[i + 1];
+            std::string op = reversedRelationAt(s, i);
+            if (op.empty()) {
+                op = std::string(1, c);
+                if (i + 1 < s.size() && ((c == '<' && (s[i + 1] == '=' || s[i + 1] == '>')) ||
+                                         (c == '>' && s[i + 1] == '=')))
+                    op += s[i + 1];
+            }
             auto left = parseExpression(s.substr(0, i), lineNum);
             auto right = parseExpression(s.substr(i + op.size()), lineNum);
             if (!left || !right) return nullptr;
@@ -3409,7 +3428,7 @@ private:
     ExprPtr parseComparison(const std::string& expr, int lineNum) {
         std::string trimmed = trim(expr);
         
-        // Look for comparison operators at depth 0: >=, <=, >, <
+        // Look for comparison operators at depth 0: >=, <=, >, < (and the spellings => and =<)
         // Scan left-to-right (left associative)
         int depth = 0;
         bool inString = false;
@@ -3425,6 +3444,7 @@ private:
             else if (i + 1 < trimmed.size() && trimmed[i] == '<' && trimmed[i+1] == '=') op = "<=";
             else if (trimmed[i] == '>' && (i == 0 || trimmed[i-1] != '<')) op = ">";
             else if (trimmed[i] == '<' && (i + 1 >= trimmed.size() || trimmed[i+1] != '=')) op = "<";
+            else op = reversedRelationAt(trimmed, i);   // `=>`, `=<`
             
             if (!op.empty()) {
                 std::string left = trim(trimmed.substr(0, i));
@@ -3726,7 +3746,7 @@ private:
         if (!indexable && lower != "average" && lower != "stddev" && lower != "sum2d") return "";
         std::vector<bool> named;
         for (const auto& arg : args) {
-            const size_t eq = arg.find('=');
+            const size_t eq = namedArgumentEquals(arg);
             named.push_back(eq != std::string::npos && eq > 0 && isIdentifier(trim(arg.substr(0, eq))));
         }
         if (std::find(named.begin(), named.end(), true) == named.end()) return "";
@@ -3793,7 +3813,7 @@ private:
             std::string arg = trim(argStrings[argIndex]);
             
             // Check for named argument (e.g., T=value)
-            size_t eqPos = arg.find('=');
+            size_t eqPos = namedArgumentEquals(arg);
             if (eqPos != std::string::npos && eqPos > 0) {
                 // Check if the part before = is an identifier (not an expression)
                 std::string paramName = trim(arg.substr(0, eqPos));
