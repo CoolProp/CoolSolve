@@ -15415,3 +15415,196 @@ TEST_CASE("CS-BUG-MAIN-SEMICOLON: the main program and a body read the same line
     REQUIRE(run.solveOk);
     CHECK_THAT(run["y[2]"], WithinAbs(4.0, 1e-12));
 }
+
+// ============================================================================
+// CS-BUG-DUPLICATE-HEADER-COMMENT: a "..." or // comment after the bounds of a DUPLICATE
+// header (or after the UNTIL condition) is not part of the header
+// ============================================================================
+
+TEST_CASE("CS-BUG-DUPLICATE-HEADER-COMMENT: reproducer of the register, with the three comment forms",
+          "[library-gaps][duplicate-header-comment]") {
+    // was: "Parse failed: Line 1: DUPLICATE could not parse range expressions"
+    for (const std::string comment : {"\"loop over the nodes\"", "// loop over the nodes", "{loop over the nodes}"}) {
+        INFO("comment: " << comment);
+        auto run = runModel("DUPLICATE i=1,3 " + comment + "\nx[i] = i\nEND\n");
+        INFO(run.message);
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["x[1]"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["x[2]"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["x[3]"], WithinAbs(3.0, 1e-12));
+    }
+    CHECK(parseErrorsWithLines("DUPLICATE i=1,3 \"loop over the nodes\"\nx[i] = i\nEND\n").empty());
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-HEADER-COMMENT: the text of the comment is never read (commas, parentheses, =)",
+          "[library-gaps][duplicate-header-comment]") {
+    // the comma of the comment must not split the range, nor its '=' or ')' take part in the header
+    for (const std::string comment : {"\"loop, outer\"", "// loop, outer", "\"i = 1, 3 (nodes)\"",
+                                      "// i = 1, 3 (nodes", "\"1,2,3\" // and, more"}) {
+        INFO("comment: " << comment);
+        auto run = runModel("n = 3\nDUPLICATE i=1,n " + comment + "\nx[i] = 2*i\nEND\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x[1]"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["x[3]"], WithinAbs(6.0, 1e-12));
+    }
+    // spaces around the bounds and the comment, bounds that are expressions
+    auto run = runModel("DUPLICATE  k = 1+1 , 2*2   \"from 2 to 4, inclusive\"  \nx[k] = k\nEND\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x[2]"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["x[4]"], WithinAbs(4.0, 1e-12));
+    CHECK(run.vars.count("x[1]") == 0);
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-HEADER-COMMENT: nested DUPLICATE loops with comments on every line",
+          "[library-gaps][duplicate-header-comment]") {
+    auto run = runModel(
+        "DUPLICATE i=1,2 \"outer, loop\"\n"
+        "  DUPLICATE j=1,3 // inner, loop\n"
+        "    x[i,j] = 10*i + j \"a node\"\n"
+        "  END \"end of the inner loop\"\n"
+        "END // end of the outer loop\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x[1,1]"], WithinAbs(11.0, 1e-12));
+    CHECK_THAT(run["x[2,3]"], WithinAbs(23.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-HEADER-COMMENT: in the body of a FUNCTION and of a PROCEDURE, nested or not",
+          "[library-gaps][duplicate-header-comment]") {
+    for (const std::string comment : {"\"loop, over (the) nodes\"", "// loop, over (the) nodes"}) {
+        INFO("comment: " << comment);
+        auto func = runModel(
+            "FUNCTION countpos(n)\n"
+            "  countpos = 0\n"
+            "  DUPLICATE i = 1, 4 " + comment + "\n"
+            "    IF (i > 2) THEN countpos = countpos + 1\n"
+            "  END\n"
+            "END\n"
+            "a = countpos(4)\n");
+        INFO(func.message);
+        REQUIRE(func.solveOk);
+        CHECK_THAT(func["a"], WithinAbs(2.0, 1e-12));
+
+        auto proc = runModel(
+            "PROCEDURE total(n : s)\n"
+            "  s = 0\n"
+            "  DUPLICATE i = 1, 3 " + comment + "\n"
+            "    DUPLICATE j = 1, 2 " + comment + "\n"
+            "      s = s + i*j\n"
+            "    END " + comment + "\n"
+            "  END\n"
+            "END\n"
+            "CALL total(3 : t)\n");
+        INFO(proc.message);
+        REQUIRE(proc.solveOk);
+        CHECK_THAT(proc["t"], WithinAbs(18.0, 1e-12));   // (1+2+3) * (1+2)
+    }
+    // a DUPLICATE that ends the body of a FUNCTION
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  f = a\n  DUPLICATE i=1,2 \"c, d\"\n    t[i] = i\n  END\nEND\ny = f(1)\n").empty());
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-HEADER-COMMENT: a malformed header is still an error, whatever the comment says",
+          "[library-gaps][duplicate-header-comment]") {
+    using Messages = std::vector<std::string>;
+    const std::string loop = "\nx[i] = i\nEND\n";
+    const std::string rest = "3: Could not parse line";   // the END of the loop, whose header was refused
+    // the comma of the comment is not the comma of the range
+    CHECK(parseErrorsWithLines("DUPLICATE i=1 \"a, b\"" + loop) ==
+          Messages{"1: DUPLICATE missing ',' between start and end", rest});
+    CHECK(parseErrorsWithLines("DUPLICATE i=1 // a, b" + loop) ==
+          Messages{"1: DUPLICATE missing ',' between start and end", rest});
+    // nor the '=' of the comment the '=' of the header
+    CHECK(parseErrorsWithLines("DUPLICATE i 1,3 \"i = 1\"" + loop) ==
+          Messages{"1: DUPLICATE missing '=' in header", rest});
+    CHECK(parseErrorsWithLines("DUPLICATE \"i = 1, 3\"" + loop) ==
+          Messages{"1: DUPLICATE missing '=' in header", rest});
+    // a bound that is missing is not found in the comment
+    CHECK(parseErrorsWithLines("DUPLICATE i=1, \"3\"" + loop) ==
+          Messages{"1: DUPLICATE could not parse range expressions", rest});
+    CHECK(parseErrorsWithLines("DUPLICATE i=1, // 3" + loop) ==
+          Messages{"1: DUPLICATE could not parse range expressions", rest});
+    CHECK(parseErrorsWithLines("DUPLICATE i=, 3 \"1\"" + loop) ==
+          Messages{"1: DUPLICATE could not parse range expressions", rest});
+    // a bound with a real syntax error keeps its error
+    CHECK(parseErrorsWithLines("DUPLICATE i=1,3 4 \"two numbers\"" + loop) ==
+          Messages{"1: DUPLICATE could not parse range expressions", rest});
+    // a missing END is still reported, with the line of the header
+    CHECK(parseErrorsWithLines("DUPLICATE i=1,3 \"no end\"\nx[i] = i\n") == Messages{"1: DUPLICATE missing END"});
+    // the same in the body of a FUNCTION
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  DUPLICATE i=1 \"a, b\"\n    t[i] = i\n  END\n  f = a\nEND\ny = f(1)\n") ==
+          Messages{"2: DUPLICATE missing ',' between start and end", "6: Could not parse line"});
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  DUPLICATE i=1, // 3\n    t[i] = i\n  END\n  f = a\nEND\ny = f(1)\n") ==
+          Messages{"2: DUPLICATE could not parse range expressions", "6: Could not parse line"});
+    // a "..." comment that runs on the next lines: the bounds are before it
+    CHECK(parseErrorsWithLines("DUPLICATE i=1,3 \"a comment on\n two lines\"\nx[i] = i\nEND\n").empty());
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-HEADER-COMMENT: REPEAT ... UNTIL (condition) with a comment, in all the forms",
+          "[library-gaps][duplicate-header-comment]") {
+    // was: "REPEAT missing UNTIL(condition)" when the comment of the UNTIL line contains a ')'
+    // (the closing parenthesis of the condition was searched from the end of the line)
+    for (const std::string comment : {"", " \"stop\"", " \"stop (when k is big)\"", " // stop (when k is big)",
+                                      " {stop (when k is big)}", " \"stop) now\"", " // stop) now"}) {
+        INFO("UNTIL comment: [" << comment << "]");
+        auto run = runModel(
+            "FUNCTION nsteps(a)\n"
+            "  k = 0\n"
+            "  REPEAT \"loop, here (a)\"\n"
+            "    k = k + 1\n"
+            "  UNTIL (k >= 3)" + comment + "\n"
+            "  nsteps = k\n"
+            "END\n"
+            "y = nsteps(1)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(3.0, 1e-12));
+    }
+    auto line = runModel("FUNCTION nsteps(a)\n  k = 0\n  REPEAT // loop (a)\n    k = k + 1\n"
+                         "  UNTIL ((k + 1) >= 4) // (k is big)\n  nsteps = k\nEND\ny = nsteps(1)\n");
+    INFO(line.message);
+    REQUIRE(line.solveOk);
+    CHECK_THAT(line["y"], WithinAbs(3.0, 1e-12));
+    // a condition that is missing or incomplete is still reported
+    using Messages = std::vector<std::string>;
+    const std::string head = "FUNCTION nsteps(a)\n  k = 0\n  REPEAT\n    k = k + 1\n";
+    const std::string tail = "  nsteps = k\nEND\ny = nsteps(1)\n";
+    CHECK(parseErrorsWithLines(head + "  UNTIL \"(k > 3)\"\n" + tail) == Messages{"3: REPEAT missing UNTIL(condition)"});
+    CHECK(parseErrorsWithLines(head + "  UNTIL // (k > 3)\n" + tail) == Messages{"3: REPEAT missing UNTIL(condition)"});
+    CHECK(parseErrorsWithLines(head + "  UNTIL (k > ) \"(k > 3)\"\n" + tail) ==
+          Messages{"3: REPEAT missing UNTIL(condition)"});
+}
+
+TEST_CASE("CS-BUG-DUPLICATE-HEADER-COMMENT: the other block headers accept a comment (IF, ELSE, ENDIF, FUNCTION, PROCEDURE, END)",
+          "[library-gaps][duplicate-header-comment]") {
+    for (const std::string comment : {"\"a, b (c)\"", "// a, b (c)"}) {
+        INFO("comment: " << comment);
+        auto func = runModel(
+            "FUNCTION f(a) " + comment + "\n"
+            "  IF (a > 0) THEN " + comment + "\n"
+            "    f = 1\n"
+            "  ELSE " + comment + "\n"
+            "    f = 2\n"
+            "  ENDIF " + comment + "\n"
+            "END " + comment + "\n"
+            "y = f(1)\n");
+        INFO(func.message);
+        REQUIRE(func.solveOk);
+        CHECK_THAT(func["y"], WithinAbs(1.0, 1e-12));
+
+        auto proc = runModel(
+            "PROCEDURE p(a, b : c, d) " + comment + "\n"
+            "  c = a + b\n"
+            "  d = a - b\n"
+            "END " + comment + "\n"
+            "CALL p(5, 3 : u, v)\n");
+        INFO(proc.message);
+        REQUIRE(proc.solveOk);
+        CHECK_THAT(proc["u"], WithinAbs(8.0, 1e-12));
+        CHECK_THAT(proc["v"], WithinAbs(2.0, 1e-12));
+    }
+}

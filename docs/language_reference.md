@@ -944,6 +944,11 @@ solve** (EES: "an integer number or a variable set to an integer constant"):
 A loop whose first bound is greater than the last runs downward
 (`DUPLICATE i = 3, 1` gives `i` = 3, 2, 1).
 
+A comment may follow the bounds on the header line (`DUPLICATE i = 1, 3 "loop over the
+nodes"`, `// ...` or `{...}`), in the main program and in a body: its text is never read, a comma
+or an `=` in it included (a `"..."` or `//` comment there used to be read as part of the last bound:
+*DUPLICATE could not parse range expressions*).
+
 An index with arithmetic is evaluated in each copy, in equations, function
 arguments and `CALL` inputs and outputs, with one or several indices:
 `T[i+1] = T[i] + 1` gives `T[2] = T[1] + 1`, `T[3] = T[2] + 1`, …, and
@@ -985,6 +990,9 @@ REPEAT loop in FUNCTION 'cnt' (line 3) did not end after 100000 iterations: an U
 
 The limit is per run of a loop: a loop nested in another one has its own count each time it
 starts. A loop left by a `GOTO` (§7) is not concerned.
+
+A comment may follow `REPEAT` and the `UNTIL` condition (`UNTIL(x > 10) // done (or not)`): a `)` in it is
+not the closing parenthesis of the condition.
 
 As for `IF ... THEN` and `GOTO`, the loop does not exist in the main program, where the
 equations are solved simultaneously and nothing is executed in order: a `REPEAT` there (also in the

@@ -364,40 +364,7 @@ private:
 
             // Handle DUPLICATE loop: DUPLICATE i = start, end
             if (isKeyword("DUPLICATE")) {
-                int startLine = lineNumber;
-                // Parse header: DUPLICATE varName = startExpr, endExpr
-                std::string header = trim(trimmed.substr(9));  // skip "DUPLICATE"
-                // Find '=' to get iterator variable
-                auto eqPos = header.find('=');
-                if (eqPos == std::string::npos) {
-                    result.errors.push_back({lineNumber, 0, "DUPLICATE missing '=' in header", line});
-                    continue;
-                }
-                std::string iterVar = trim(header.substr(0, eqPos));
-                std::string rangeStr = trim(header.substr(eqPos + 1));
-                // Find comma separating start and end
-                auto commaPos = rangeStr.find(',');
-                if (commaPos == std::string::npos) {
-                    result.errors.push_back({lineNumber, 0, "DUPLICATE missing ',' between start and end", line});
-                    continue;
-                }
-                std::string startStr = trim(rangeStr.substr(0, commaPos));
-                std::string endStr = trim(rangeStr.substr(commaPos + 1));
-                auto startExpr = parseExpression(startStr, lineNumber);
-                auto endExpr = parseExpression(endStr, lineNumber);
-                if (!startExpr || !endExpr) {
-                    result.errors.push_back({lineNumber, 0, "DUPLICATE could not parse range expressions", line});
-                    continue;
-                }
-                // Parse body until END
-                std::vector<StmtPtr> body;
-                std::string term = parseBodyLines(stream, lineNumber, body, result);
-                if (term != "END") {
-                    result.errors.push_back({startLine, 0, "DUPLICATE missing END", line});
-                } else {
-                    result.program.statements.push_back(makeDuplicate(iterVar, startExpr, endExpr, body, startLine));
-                    duplicateSeen_ = true;
-                }
+                parseDuplicateStatement(stream, lineNumber, result.program.statements, result, line);
                 continue;
             }
 
@@ -1261,6 +1228,43 @@ private:
             result.errors.push_back({startLine, 0, kRepeatOutsideProcedureMessage, line});
     }
 
+    /// Parses the DUPLICATE loop `DUPLICATE i = start, end` ... `END` whose header is on the current line (`line`)
+    /// and appends it to `body` (the statements of the main program, or those of the enclosing body). Inline
+    /// comments (`"..."`, `//`) are removed from the header first: their text is no part of the bounds, and a
+    /// comma in it does not split the range (CS-BUG-DUPLICATE-HEADER-COMMENT). A header that cannot be read is
+    /// reported and its lines are then read as ordinary lines (the END is reported too).
+    void parseDuplicateStatement(std::istream& stream, int& lineNumber, std::vector<StmtPtr>& body,
+                                 ParseResult& result, const std::string& line) {
+        const int startLine = lineNumber;
+        const std::string header = trim(trim(removeInlineComments(line)).substr(9));  // skip "DUPLICATE"
+        const size_t eqPos = header.find('=');
+        if (eqPos == std::string::npos) {
+            result.errors.push_back({lineNumber, 0, "DUPLICATE missing '=' in header", line});
+            return;
+        }
+        const std::string iterVar = trim(header.substr(0, eqPos));
+        const std::string rangeStr = trim(header.substr(eqPos + 1));
+        const size_t commaPos = rangeStr.find(',');
+        if (commaPos == std::string::npos) {
+            result.errors.push_back({lineNumber, 0, "DUPLICATE missing ',' between start and end", line});
+            return;
+        }
+        auto startExpr = parseExpression(trim(rangeStr.substr(0, commaPos)), lineNumber);
+        auto endExpr = parseExpression(trim(rangeStr.substr(commaPos + 1)), lineNumber);
+        if (!startExpr || !endExpr) {
+            result.errors.push_back({lineNumber, 0, "DUPLICATE could not parse range expressions", line});
+            return;
+        }
+        std::vector<StmtPtr> loopBody;
+        const std::string term = parseBodyLines(stream, lineNumber, loopBody, result);
+        if (term == "END") {
+            body.push_back(makeDuplicate(iterVar, startExpr, endExpr, loopBody, startLine));
+            duplicateSeen_ = true;
+        } else {
+            result.errors.push_back({startLine, 0, "DUPLICATE missing END", line});
+        }
+    }
+
     // ========================================================================
     // Unified body parser for function/procedure/DUPLICATE/REPEAT/IF bodies.
     // Reads lines from 'stream', parsing comments, directives, IF-THEN-ELSE,
@@ -1294,17 +1298,18 @@ private:
             };
 
             // END, possibly followed by a comment ("END // end of the function")
-            std::string codeBody = trim(removeInlineComments(bodyLine));
+            const std::string code = trim(removeInlineComments(bodyLine));
+            std::string codeBody = code;
             std::transform(codeBody.begin(), codeBody.end(), codeBody.begin(), ::toupper);
             if (codeBody == "END") return "END";
 
-            // Check for UNTIL(condition)
+            // Check for UNTIL(condition); a ')' in a comment after the condition is not its closing parenthesis
             if (isBodyKeyword("UNTIL")) {
                 if (conditionOut) {
-                    size_t parenOpen = trimmedBody.find('(');
-                    size_t parenClose = trimmedBody.rfind(')');
+                    size_t parenOpen = code.find('(');
+                    size_t parenClose = code.rfind(')');
                     if (parenOpen != std::string::npos && parenClose != std::string::npos && parenClose > parenOpen) {
-                        std::string condStr = trim(trimmedBody.substr(parenOpen + 1, parenClose - parenOpen - 1));
+                        std::string condStr = trim(code.substr(parenOpen + 1, parenClose - parenOpen - 1));
                         *conditionOut = parseExpression(condStr, lineNumber);
                     }
                 }
@@ -1356,37 +1361,7 @@ private:
                 if (terminatorLine) *terminatorLine = trimmedBody;
                 return isElse ? "ELSE" : "ENDIF";
             } else if (isBodyKeyword("DUPLICATE")) {
-                // Parse nested DUPLICATE: DUPLICATE varName = startExpr, endExpr
-                std::string header = trim(trimmedBody.substr(9));
-                auto eqPos = header.find('=');
-                if (eqPos == std::string::npos) {
-                    result.errors.push_back({lineNumber, 0, "DUPLICATE missing '=' in header", bodyLine});
-                    continue;
-                }
-                std::string iterVar = trim(header.substr(0, eqPos));
-                std::string rangeStr = trim(header.substr(eqPos + 1));
-                auto commaPos = rangeStr.find(',');
-                if (commaPos == std::string::npos) {
-                    result.errors.push_back({lineNumber, 0, "DUPLICATE missing ',' between start and end", bodyLine});
-                    continue;
-                }
-                std::string startStr = trim(rangeStr.substr(0, commaPos));
-                std::string endStr = trim(rangeStr.substr(commaPos + 1));
-                auto startExpr = parseExpression(startStr, lineNumber);
-                auto endExpr = parseExpression(endStr, lineNumber);
-                if (!startExpr || !endExpr) {
-                    result.errors.push_back({lineNumber, 0, "DUPLICATE could not parse range expressions", bodyLine});
-                    continue;
-                }
-                int dupStartLine = lineNumber;
-                std::vector<StmtPtr> dupBody;
-                std::string term = parseBodyLines(stream, lineNumber, dupBody, result);
-                if (term == "END") {
-                    body.push_back(makeDuplicate(iterVar, startExpr, endExpr, dupBody, dupStartLine));
-                    duplicateSeen_ = true;
-                } else {
-                    result.errors.push_back({dupStartLine, 0, "DUPLICATE missing END", bodyLine});
-                }
+                parseDuplicateStatement(stream, lineNumber, body, result, bodyLine);
             } else if (isBodyKeyword("REPEAT")) {
                 parseRepeatStatement(stream, lineNumber, body, result, bodyLine);
             } else if (std::isdigit(static_cast<unsigned char>(trimmedBody.empty() ? ' ' : trimmedBody[0])) &&
