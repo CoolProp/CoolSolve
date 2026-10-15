@@ -99,6 +99,24 @@ public:
      */
     std::string text(size_t row1, size_t col1) const;
 
+    /**
+     * @brief First row whose cell in column `col1` is the string `key`: EES `LOOKUP$ROW('table', col, key$)`.
+     *
+     * The cell is compared as `text()` gives it, without regard to case (accented Latin-1 letters
+     * included, `eesStringEqual`). Returns the 1-based row, 0 if no row matches.
+     * Throws std::out_of_range if `col1` is not a column of the table (and the table has rows).
+     */
+    size_t findRowByText(size_t col1, const std::string& key) const;
+
+    /**
+     * @brief First row whose cell in column `col1` is the number `key`, 0 if none.
+     *
+     * A cell matches when it equals `key` up to a relative 1e-9 (the rounding of a computed key); a text or
+     * empty cell (NaN) never matches. Returns the 1-based row.
+     * Throws std::out_of_range if `col1` is not a column of the table (and the table has rows).
+     */
+    size_t findRowByValue(size_t col1, double key) const;
+
     // ------------------------------------------------------------------
     // Interpolation
     // ------------------------------------------------------------------

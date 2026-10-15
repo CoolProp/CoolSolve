@@ -318,7 +318,7 @@ private:
     // CoolProp function evaluation
     ADValue evaluateCoolPropFunction(const FunctionCall& func);
 
-    // Lookup table function evaluation (INTERPOLATE, LOOKUP, etc.)
+    // Lookup table function evaluation (INTERPOLATE, LOOKUP, LOOKUP$ROW, etc.)
     ADValue evaluateLookupFunction(const FunctionCall& func);
 
     /// The columns and input values of an interpolation written in the EES form.
@@ -354,6 +354,10 @@ private:
     /// The 1-based column given by argument `argIdx` of the lookup function `func`: a name or a number
     /// (0 when the number is not positive).
     size_t lookupColumnOf(const FunctionCall& func, const LookupTable& tbl, size_t argIdx);
+
+    /// `lookupColumnOf` for a function that reads cells (LOOKUP$, LOOKUP$ROW): the column must be one of the
+    /// table, otherwise an error that names the table.
+    size_t lookupCellColumnOf(const FunctionCall& func, const LookupTable& tbl, size_t argIdx);
 
     /// " (in FUNCTION 'f')" inside a body, empty in the main program: where a lookup error comes from.
     std::string lookupWhere() const;

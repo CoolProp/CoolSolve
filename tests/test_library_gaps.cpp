@@ -16326,3 +16326,383 @@ TEST_CASE("CS-GAP-END-PROCEDURE: outside a routine END <word> stays a parse erro
     CHECK(parseErrorsWithLines("SUBPROGRAM s(a:b)\n b=a\nEND SUBPROGRAM\nx=1\n") ==
           Messages{"1: Construct 'SUBPROGRAM' is not yet handled by coolsolve", "3: Could not parse line"});
 }
+
+// ============================================================================
+// CS-GAP-LOOKUPROW: LOOKUP$ROW('table', col, key), the row whose column holds the key
+// ============================================================================
+
+namespace {
+
+/// Tables of the library model CSL-0012 (thermal comfort): a text key column and a numeric column.
+const std::map<std::string, std::string> kComfortTables = {
+    {"activite", "activite,alpha_E\nSommeil,41\nRepos_assis,60\nRepos_debout,70\nMarche_5km/h,160\n"
+                 "Travail_leger,120\nTravail_lourd,250\nSport,350\n"},
+    {"veture", "veture,I_cl\nTropicale,0.35\nEte,0.5\nInterieur (legere),0.7\nNormale (interieur hiver),1.0\n"
+               "Hiver,1.5\nPolaire,3.5\n"}};
+
+/// Table of the library model CSL-0160 (PV modules): a column name with a space, text and numeric columns.
+const std::map<std::string, std::string> kPvTable = {
+    {"PVModules", "PV Name,BIPV,T_NOCT,A_c\nSolarex_Multi-crystal_Si,N,25,1\nII-10,N,25.5,1.2\nII-13,Y,30,1.4\n"}};
+
+/// Run `code` with `kComfortTables` and one more table `names` that lists three clothing keys.
+ModelRun runWithComfortTables(const std::string& code) {
+    auto tables = kComfortTables;
+    tables["names"] = "key\nPolaire\nEte\nTropicale\n";
+    return runModel(code, tables);
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-LOOKUPROW: the register reproducer, LOOKUP$ROW with a numeric key", "[library-gaps][lookuprow]") {
+    // was: "Unknown or unsupported function: LOOKUP$ROW with 3 arguments" (warning "Unknown function 'LOOKUP$ROW'")
+    auto run = runModel("row = LOOKUP$ROW('t','k',2)\nx = lookup('t', row, 'v')\n", {{"t", "k,v\n1,10\n2,20\n"}});
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["row"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["x"], WithinAbs(20.0, 1e-12));
+    CHECK(run.warnings.empty());
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: the CSL-0012 pattern, a string variable as the key of a table with a text column",
+          "[library-gaps][lookuprow]") {
+    auto run = runModel(R"(
+activite$ = 'Repos_debout'
+Veture$ = 'Ete'
+row = LOOKUP$ROW('activite','activite',activite$)
+alpha_E_dot = lookup('activite',row,2)
+row2 = LOOKUP$ROW('veture','veture',veture$)
+I_cl = lookup('veture',row2,2)
+)", kComfortTables);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["row"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["alpha_E_dot"], WithinAbs(70.0, 1e-12));
+    CHECK_THAT(run["row2"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["I_cl"], WithinAbs(0.5, 1e-12));
+    CHECK(run.warnings.empty());
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: the CSL-0160 pattern, a column name with a space inside a PROCEDURE with a string input",
+          "[library-gaps][lookuprow]") {
+    auto run = runModel(R"(
+Procedure ReadPV(PVName$ : T_NOCT, A_c)
+	Row = LOOKUP$ROW('PVModules', 'PV Name', PVName$)
+	T_NOCT = Lookup('PVModules', Row, 'T_NOCT')
+	A_c = Lookup('PVModules', Row, 'A_c')
+END ReadPV
+PVModule$ = 'II-10'
+Call ReadPV(PVModule$ : T_NOCT, A_c)
+)", kPvTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["T_NOCT"], WithinAbs(25.5, 1e-12));
+    CHECK_THAT(run["A_c"], WithinAbs(1.2, 1e-12));
+    CHECK(run.warnings.empty());
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: the key matches without regard to case, accents included", "[library-gaps][lookuprow]") {
+    auto run = runModel(R"(
+a = LOOKUP$ROW('veture','veture','HIVER')
+b = LOOKUP$ROW('veture','VETURE','polaire')
+c = LOOKUP$ROW('veture','veture','interieur (LEGERE)')
+d = LOOKUP$ROW('fr','nom','INTÉRIEUR')
+e = LOOKUP$ROW('fr','nom','été')
+)", {{"veture", kComfortTables.at("veture")}, {"fr", "nom,v\nIntérieur,1\nÉté,2\n"}});
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["e"], WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: the key is a literal, a string variable, a string function or the column a number or a name",
+          "[library-gaps][lookuprow]") {
+    auto run = runWithComfortTables(R"(
+a = LOOKUP$ROW('veture', 1, 'Polaire')
+c$ = 'veture'
+b = LOOKUP$ROW('veture', c$, 'Ete')
+k$ = Uppercase$(j$)
+j$ = 'tropicale'
+c = LOOKUP$ROW('veture', 'veture', k$)
+d = LOOKUP$ROW('veture', 'veture', LOOKUP$('veture', 5, 1))
+e = LOOKUP$ROW('veture', 'veture', LOOKUP$('names', 2, 1))
+f = LOOKUP$ROW('veture', 'veture', Lowercase$('HIVER'))
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(5.0, 1e-12));   // the key read from the table gives back its own row
+    CHECK_THAT(run["e"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["f"], WithinAbs(5.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: a string key given by an equation written after the use is computed first",
+          "[library-gaps][lookuprow]") {
+    // the string variable is a dependency of the equation, like the string fluid of a property call
+    auto run = runWithComfortTables(R"(
+row = LOOKUP$ROW('veture','veture',k$)
+k$ = LOOKUP$('names', n, 1)
+n = 1 + 1
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["n"], WithinAbs(2.0, 1e-12));
+    CHECK(run.strings.at("k$") == "Ete");
+    CHECK_THAT(run["row"], WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: the key is a variable of the equation, the table and column names are not",
+          "[library-gaps][lookuprow]") {
+    EESParser parser;
+    auto parsed = parser.parse("row = LOOKUP$ROW('veture','veture',k$)\nk$ = 'Ete'\nr2 = LOOKUP$ROW('t','k',key)\nkey = 2\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    CHECK(ir.getEquations().at(0).variables == std::set<std::string, CaseInsensitiveLess>{"row", "k$"});
+    CHECK(ir.getEquations().at(2).variables == std::set<std::string, CaseInsensitiveLess>{"r2", "key"});
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: a numeric key matches the number of the cell", "[library-gaps][lookuprow]") {
+    const std::map<std::string, std::string> tables = {{"t", "k,v\n1,10\n2.5,20\n1e3,30\n"}, {"m", "name,v\nA,10\nB,20\n"}};
+    auto run = runModel(R"(
+a = LOOKUP$ROW('t','k',2.5)
+b = LOOKUP$ROW('t',1,1e3)
+c = LOOKUP$ROW('t','v',x)
+x = 2*15
+d = LOOKUP$ROW('t','k',0.5*5)
+e = LOOKUP$ROW('m','v',20)
+f = LOOKUP$ROW('t','k',0.1*3*(2.5/0.3))
+)", tables);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["e"], WithinAbs(2.0, 1e-12));    // the numeric column of a table that has a text column
+    CHECK_THAT(run["f"], WithinAbs(2.0, 1e-12));    // 0.1*3*(2.5/0.3) = 2.5 up to the rounding of the arithmetic
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: of several rows that match, the first is returned", "[library-gaps][lookuprow]") {
+    auto run = runModel(R"(
+a = LOOKUP$ROW('t','k',2)
+b = LOOKUP$ROW('t','name','x')
+c = LOOKUP$ROW('t','name','X')
+d = LOOKUP$ROW('t','name','y')
+)", {{"t", "k,name\n1,y\n2,x\n2,X\n3,x\n"}});
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: the row is used by LOOKUP and LOOKUP$, in the main program and in a body",
+          "[library-gaps][lookuprow]") {
+    auto run = runWithComfortTables(R"(
+r = LOOKUP$ROW('veture','veture','Hiver')
+s$ = LOOKUP$('veture', r, 1)
+t$ = LOOKUP$('veture', LOOKUP$ROW('veture','veture','Polaire'), 2)
+u = lookup('veture', LOOKUP$ROW('veture','veture','Ete'), 'I_cl')
+v = lookup('veture', LOOKUP$ROW('veture','veture','Tropicale') + 1, 2)
+FUNCTION f(i)
+  q = LOOKUP$ROW('veture','veture', LOOKUP$('names', i, 1))
+  f = LOOKUP('veture', q, 2)
+END
+PROCEDURE p(key$ : w$, z)
+  q = LOOKUP$ROW('veture','veture', key$)
+  w$ = LOOKUP$('veture', q + 1, 1)
+  z = LOOKUP('veture', q, 2)
+END
+a = f(1)
+b = f(2)
+CALL p('Ete' : w$, z)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["r"], WithinAbs(5.0, 1e-12));
+    CHECK(run.strings.at("s$") == "Hiver");
+    CHECK(run.strings.at("t$") == "3.5");
+    CHECK_THAT(run["u"], WithinAbs(0.5, 1e-12));
+    CHECK_THAT(run["v"], WithinAbs(0.5, 1e-12));       // the row 1 + 1
+    CHECK_THAT(run["a"], WithinAbs(3.5, 1e-12));       // Polaire
+    CHECK_THAT(run["b"], WithinAbs(0.5, 1e-12));       // Ete
+    CHECK(run.strings.at("w$") == "Interieur (legere)");
+    CHECK_THAT(run["z"], WithinAbs(0.5, 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: LOOKUP$ROW in a DUPLICATE", "[library-gaps][lookuprow]") {
+    auto run = runWithComfortTables(R"(
+DUPLICATE i = 1, 3
+  row[i] = LOOKUP$ROW('veture', 'veture', LOOKUP$('names', i, 1))
+  I[i] = LOOKUP('veture', row[i], 2)
+END
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["row[1]"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["row[2]"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["row[3]"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["I[3]"], WithinAbs(0.35, 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: the row is piecewise constant, its derivative is zero", "[library-gaps][lookuprow]") {
+    // r is the independent variable, the key of the numeric match
+    auto row = evalWithSlope("y = LOOKUP$ROW('t', 'x', r)\n", kXyzCsv, 2.0);
+    CHECK_THAT(row.value, WithinAbs(2.0, 1e-12));
+    CHECK_THAT(row.slope, WithinAbs(0.0, 1e-15));
+    // the value read at that row does not depend on the key either (the row is an integer: no interpolation)
+    auto cell = evalWithSlope("y = lookup('t', LOOKUP$ROW('t', 'x', r), 'z')\n", kXyzCsv, 3.0);
+    CHECK_THAT(cell.value, WithinAbs(900.0, 1e-12));
+    CHECK_THAT(cell.slope, WithinAbs(0.0, 1e-15));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: no row matches is an error that names the table, the column and the key, never a 0",
+          "[library-gaps][lookuprow]") {
+    auto fail = [&](const std::string& code, const std::string& expected) {
+        auto run = runWithComfortTables(code);
+        INFO(code);
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find(expected) != std::string::npos);
+    };
+    SECTION("a string key") {
+        fail("row = LOOKUP$ROW('veture','veture','Nope')\n",
+             "LOOKUP$ROW(): no row of table 'veture' holds 'Nope' in column 'veture'");
+        fail("k$ = 'Nope'\nrow = LOOKUP$ROW('activite','activite',k$)\n",
+             "LOOKUP$ROW(): no row of table 'activite' holds 'Nope' in column 'activite'");
+        fail("row = LOOKUP$ROW('veture','veture','')\n", "no row of table 'veture' holds '' in column 'veture'");
+        // the key of another column of the table is not a match
+        fail("row = LOOKUP$ROW('veture','I_cl','Ete')\n", "no row of table 'veture' holds 'Ete' in column 'I_cl'");
+    }
+    SECTION("a numeric key") {
+        fail("row = LOOKUP$ROW('veture','I_cl',0.6)\n", "LOOKUP$ROW(): no row of table 'veture' holds 0.6 in column 'I_cl'");
+        // a text column holds no number, and a number is not the text of a cell
+        fail("row = LOOKUP$ROW('veture',1,0)\n", "no row of table 'veture' holds 0 in column 'veture'");
+        fail("row = LOOKUP$ROW('veture',2,2)\n", "no row of table 'veture' holds 2 in column 'I_cl'");
+    }
+    SECTION("inside a routine the error says where") {
+        fail("PROCEDURE p(k$ : r)\n  r = LOOKUP$ROW('veture','veture',k$)\nEND\nCALL p('Nope' : x)\n",
+             "no row of table 'veture' holds 'Nope' in column 'veture' (in PROCEDURE 'p')");
+    }
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: an unknown table or column, a column outside the table and a wrong call are errors",
+          "[library-gaps][lookuprow]") {
+    auto fail = [&](const std::string& call, const std::string& expected) {
+        auto run = runWithComfortTables("row = " + call + "\n");
+        INFO(call);
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find(expected) != std::string::npos);
+    };
+    fail("LOOKUP$ROW('Nope','veture','Ete')", "LOOKUP$ROW(): lookup table 'Nope' not found");
+    fail("LOOKUP$ROW('veture','Nope','Ete')", "LOOKUP$ROW(): column 'Nope' not found in table 'veture'");
+    fail("LOOKUP$ROW('veture',3,'Ete')", "LOOKUP$ROW(): column 3 is outside the table 'veture' (1 to 2 columns)");
+    fail("LOOKUP$ROW('veture',0,'Ete')", "LOOKUP$ROW(): column 0 is outside the table 'veture'");
+    fail("LOOKUP$ROW('veture','veture')", "LOOKUP$ROW(): expects 3 arguments: (table, col, key)");
+    fail("LOOKUP$ROW('veture','veture','Ete',1)", "LOOKUP$ROW(): expects 3 arguments: (table, col, key)");
+    // a named argument is refused by the parser, as for the other lookup functions that do not take one
+    CHECK(anyContains(parseErrors("row = LOOKUP$ROW('veture','veture',veture='Ete')\n"),
+                      "LOOKUP$ROW does not take named arguments"));
+    // a string variable that has no value is not the empty key: the model is not solvable
+    auto unset = runWithComfortTables("row = LOOKUP$ROW('veture','veture',unset$)\n");
+    CHECK_FALSE(unset.solveOk);
+    CHECK(unset.vars.count("row") == 0);
+}
+
+TEST_CASE("CS-BUG-LOOKUP-STRING: the numeric cells of a table with a text column are read, not NaN",
+          "[library-gaps][lookuprow][lookup-string]") {
+    // the register reproducer: veture,clo / Tropicale,0.35 / Ete,0.5 / Hiver,1.5 (was: NaN, "residual=nan")
+    auto run = runModel(R"(
+I_cl = lookup('veture',2,2)
+J = lookup('veture',2,'clo')
+K = lookup('veture',2.5,2)
+n = nlookuprows('veture')
+s = sumlookup('veture','clo')
+)", {{"veture", "veture,clo\nTropicale,0.35\nEte,0.5\nHiver,1.5\n"}});
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["I_cl"], WithinAbs(0.5, 1e-12));
+    CHECK_THAT(run["J"], WithinAbs(0.5, 1e-12));
+    CHECK_THAT(run["K"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["n"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["s"], WithinAbs(2.35, 1e-12));
+}
+
+TEST_CASE("CS-BUG-LOOKUP-STRING: INTERPOLATE on the numeric columns of a table with a text column",
+          "[library-gaps][lookuprow][lookup-string]") {
+    const std::string csv = "name,x,y\nA,1,10\nB,2,20\nC,4,40\n";
+    auto run = runModel("a = interpolate('t','x','y',3)\nb = interpolate('t','y','x',30)\nc = interpolate('t','x','y',y=25)\n"
+                        "d = lookup('t', 2, 'y')\n", {{"t", csv}});
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(30.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(20.0, 1e-12));
+    // and the slope of INTERPOLATE is the one of the segment, as in a table without text
+    auto slope = evalWithSlope("y = interpolate('t','x','y',r)\n", csv, 3.0);
+    CHECK_THAT(slope.value, WithinAbs(30.0, 1e-12));
+    CHECK_THAT(slope.slope, WithinAbs(10.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-LOOKUP-STRING-ARG: a string function as the table or column of a lookup function",
+          "[library-gaps][lookuprow][lookup-string]") {
+    // the lookup functions are dispatched before their arguments are evaluated as numbers
+    // (was: "LOOKUP$ returns a string and cannot be used as a number")
+    auto run = runModel(R"(
+x = lookup(LOOKUP$('names',1,1), 2, 2)
+y = lookup('t2', 2, LOOKUP$('names',2,1))
+z = interpolate(Uppercase$('t2'), Lowercase$('A'), 'b', 1.5)
+)", {{"names", "n\nt2\nb\n"}, {"t2", "a,b\n1,10\n2,20\n"}});
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(20.0, 1e-12));
+    CHECK_THAT(run["y"], WithinAbs(20.0, 1e-12));
+    CHECK_THAT(run["z"], WithinAbs(15.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUPROW: LookupTable finds the first row of a key", "[library-gaps][lookuprow]") {
+    auto t = LookupTable::fromCSV("t", "Name,x\nN2,1.5\nO2,\nn2,1.5\n\"a,b\",3\n");
+    SECTION("by text, without regard to case, the first match") {
+        CHECK(t.findRowByText(1, "N2") == 1);
+        CHECK(t.findRowByText(1, "n2") == 1);
+        CHECK(t.findRowByText(1, "o2") == 2);
+        CHECK(t.findRowByText(1, "a,b") == 4);     // a quoted cell
+        CHECK(t.findRowByText(1, "CO2") == 0);
+        CHECK(t.findRowByText(2, "1.5") == 1);     // a numeric cell as its text
+        CHECK(t.findRowByText(2, "") == 2);        // an empty cell
+    }
+    SECTION("by value, a text or empty cell never matches") {
+        CHECK(t.findRowByValue(2, 1.5) == 1);
+        CHECK(t.findRowByValue(2, 3) == 4);
+        CHECK(t.findRowByValue(2, 1.5 * (1 + 1e-12)) == 1);   // the rounding of a computed key
+        CHECK(t.findRowByValue(2, 1.5 * (1 + 1e-6)) == 0);
+        CHECK(t.findRowByValue(2, std::nan("")) == 0);
+        CHECK(t.findRowByValue(1, 0) == 0);
+    }
+    SECTION("a table without text cells") {
+        auto n = LookupTable::fromCSV("n", "k,v\n1,0.5\n2,0\n3,-2\n");
+        CHECK(n.findRowByValue(1, 3) == 3);
+        CHECK(n.findRowByValue(2, 0) == 2);
+        CHECK(n.findRowByValue(2, -2) == 3);
+        CHECK(n.findRowByText(2, "0.5") == 1);
+    }
+    SECTION("a column outside the table") {
+        CHECK_THROWS_AS(t.findRowByText(3, "x"), std::out_of_range);
+        CHECK_THROWS_AS(t.findRowByValue(0, 1), std::out_of_range);
+    }
+}

@@ -1,4 +1,5 @@
 #include "coolsolve/lookup_table.h"
+#include "coolsolve/ees_string.h"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -214,6 +215,20 @@ std::string LookupTable::text(size_t row1, size_t col1) const {
     oss.precision(15);
     oss << v;
     return oss.str();
+}
+
+size_t LookupTable::findRowByText(size_t col1, const std::string& key) const {
+    for (size_t row = 1; row <= data_.size(); ++row)
+        if (eesStringEqual(text(row, col1), key)) return row;
+    return 0;
+}
+
+size_t LookupTable::findRowByValue(size_t col1, double key) const {
+    for (size_t row = 1; row <= data_.size(); ++row) {
+        const double v = value(row, col1);
+        if (v == key || std::fabs(v - key) <= 1e-9 * std::max(std::fabs(v), std::fabs(key))) return row;   // NaN: never
+    }
+    return 0;
 }
 
 // ============================================================================

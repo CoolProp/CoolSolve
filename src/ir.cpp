@@ -610,7 +610,7 @@ void IR::extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensi
             // For lookup/interpolate functions, all StringLiteral args (table
             // name and column names) must not be treated as solver variables.
             static const std::unordered_set<std::string> LOOKUP_FUNCTIONS = {
-                "lookup", "lookup$", "lookupcol", "lookupcol1", "lookupcellempty",
+                "lookup", "lookup$", "lookup$row", "lookupcol", "lookupcol1", "lookupcellempty",
                 "tablevalue", "tablevalue#", "tablerun#",
                 "interpolate", "interpolate1", "interpolate2", "interpolate2dm",
                 "nlookuprows", "nlookupcolumns",

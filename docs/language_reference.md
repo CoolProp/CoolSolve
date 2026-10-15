@@ -1811,10 +1811,57 @@ END
   (*String variables of the main program*, §2). Used as a number it is an error.
 - Numeric functions work as before on a table with text cells: `LOOKUP('Species', 2, 2)` is
   31.9988, `LOOKUP('Species', 2.5, 'M')` interpolates between the rows, and a text or empty
-  cell (read as NaN) spoils the result only where it is really read. `LOOKUP$ROW` is not
-  implemented.
+  cell (read as NaN) spoils the result only where it is really read. The row of a key is
+  found with `LOOKUP$ROW` (§11.9).
 - The GUI Lookup Tables panel shows and edits the text cells like the other cells (the table
   is kept as CSV text); no GUI setting is needed.
+
+### 11.9 Rows found by key: `LOOKUP$ROW`
+
+`LOOKUP$ROW('table', col, key)` returns the **row number** of the first row whose column `col`
+holds `key` (EES `LOOKUP$ROW`). It is how a table with a key column is read: the row of the key is
+found once, and the other columns are read at that row with `LOOKUP` / `LOOKUP$`.
+
+`thermal_comfort.eescode` with `thermal_comfort-veture.csv`:
+
+```
+veture,I_cl
+Tropicale,0.35
+Ete,0.5
+Interieur (legere),0.7
+```
+
+```ees
+Veture$ = 'Ete'
+row = LOOKUP$ROW('veture', 'veture', Veture$)      "row = 2"
+I_cl = LOOKUP('veture', row, 'I_cl')              "I_cl = 0.5"
+label$ = LOOKUP$('veture', row, 1)                 "label$ = 'Ete'"
+
+PROCEDURE ReadPV(PVName$ : A_c)
+  Row = LOOKUP$ROW('PVModules', 'PV Name', PVName$)   "a column name may contain spaces"
+  A_c = LOOKUP('PVModules', Row, 'A_c')
+END ReadPV
+```
+
+- `col` is a column name (case-insensitive, blanks allowed) or a number. `key` is a string (a
+  literal, a string variable, or a string function such as `LOOKUP$` or `Uppercase$`) or a number.
+- A **string** key is compared without regard to case (accented Latin-1 letters included, as `=`
+  on strings) with the text of the cells, the text that `LOOKUP$` reads: `'HIVER'` finds `Hiver`,
+  and `'2'` finds a numeric cell `2`. A **number** key is compared with the numeric value of the
+  cells, equal up to a relative 1e-9 (a computed key such as `0.1*3` still finds `0.3`); a text or
+  empty cell never matches a number. EES documents the string key (the help of EES was not
+  available to check the numeric one, which CoolSolve also accepts).
+- When several rows hold the key, the **first** is returned.
+- A key that no row holds is an **error** that names the table, the column and the key, e.g.
+  *LOOKUP$ROW(): no row of table 'veture' holds 'Nope' in column 'veture'* (and the
+  `FUNCTION`/`PROCEDURE` the call is in), never a row 0. An unknown table or column, a column
+  number outside the table, or a call without 3 arguments are errors too.
+- The result is a number (an integer row, at least 1), usable wherever a row is: `LOOKUP`,
+  `LOOKUP$`, `LOOKUPCELLEMPTY`. It is piecewise constant, so its derivative is zero: an unknown
+  cannot be solved *through* `LOOKUP$ROW`, the key must be known when the call is evaluated.
+  A string variable used as the key is a variable of the equation: the equation that gives it
+  its string (a literal, an alias, a function, a `CALL` output) is solved first. In a
+  `PROCEDURE` or `FUNCTION` body the key may be a string input.
 
 ---
 
