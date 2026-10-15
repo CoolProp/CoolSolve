@@ -1251,6 +1251,28 @@ are clamped to the nearest endpoint (flat extrapolation, zero derivative).
 
 Equivalent aliases: `INTERPOLATE1('table', 'xcol', 'ycol', x)`.
 
+**EES call form.** EES writes the same interpolation with the input column named in
+a last argument, `Column=value`:
+
+```ees
+M_r = INTERPOLATE('lookup_1', 'M_r', 'r_p', r_p=r_p)    "M_r where the column r_p equals the variable r_p"
+```
+
+The call lists the table and two columns; the named argument gives the **input
+column** (it must be one of the two, whatever its position, case-insensitive) and
+the value to look up (any expression, an unknown of a block included), and the
+**other** column is returned. `INTERPOLATE('t', 'A', 'B', B=v)` therefore gives the
+column `A` where `B` = `v` and is the positional `INTERPOLATE('t', 'B', 'A', v)`;
+`INTERPOLATE('t', 'A', 'B', A=v)` gives `B` where `A` = `v`. `INTERPOLATE1` takes the
+same form. Both forms use the same linear interpolation and derivative. The EES form
+takes exactly the table, two columns and one named argument (not a fourth positional
+value besides it), and the name must be a column of the call: otherwise the error
+names the function, the table and the columns of the call.
+
+> CoolSolve interpolates **linearly** and holds the end values outside the table;
+> EES `INTERPOLATE` is cubic and extrapolates, so the results can differ slightly
+> inside the table and widely outside it.
+
 Analytical derivative (for Newton/AD): slope of the active interval;
 zero when clamped at an endpoint.
 
@@ -1266,6 +1288,11 @@ CoolSolve constructs the grid automatically.  Requires at least 2 distinct
 values in each axis.
 
 Alias: `INTERPOLATE2DM(...)`.
+
+EES form: the call lists the table and **three** columns and names the two input
+columns, `INTERPOLATE2('mytable', 'x_col', 'y_col', 'z_col', x_col=x, y_col=y)`;
+the column that is not named is returned, and the two named arguments may come in
+either order (the two inputs are taken in the order of the columns of the call).
 
 Analytical partial derivatives for the Newton/AD engine.
 
@@ -1370,7 +1397,8 @@ The derivative of a lookup with respect to its row / interpolation argument is
 analytic, so a routine output that is an unknown of a block still converges with
 Newton. A wrong call is an error that names the table and the routine, e.g.
 `lookup(): lookup table 'Brine1' not found (in PROCEDURE 'brinemini')`; `LOOKUP`
-needs 3 arguments, `INTERPOLATE` 4, `INTERPOLATE2` 6.
+needs 3 arguments, `INTERPOLATE` 4 (or 3 and a named argument, §11.1), `INTERPOLATE2` 6 (or 4 and two
+named arguments, §11.2).
 
 ### 11.8 Text cells: `LOOKUP$`
 

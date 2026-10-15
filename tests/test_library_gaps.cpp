@@ -1606,7 +1606,8 @@ Ts = T_sat(Water, P=1E5)
     CHECK(run["w"] > 0.0);
 
     // the indexed aggregation and the EES INTERPOLATE form carry `name=value` arguments: not
-    // refused by the parser (their evaluation is CS-GAP-SUM-INDEXED / CS-GAP-INTERP-EES)
+    // refused by the parser (the evaluation of the first is CS-GAP-SUM-INDEXED, that of the second
+    // CS-GAP-INTERP-EES)
     CHECK(parseErrors("s = sum(x[i], i=1, 4)\n").empty());
     CHECK(parseErrors("y = interpolate('t', 'x', 'y', x=3)\n").empty());
 }
@@ -10262,5 +10263,378 @@ TEST_CASE("CS-GAP-UPPERCASE: negative tests give clear errors", "[library-gaps][
         CHECK(anyContains(run.warnings, "Unknown function 'Uppercas$'"));
         CHECK_FALSE(run.solveOk);
         CHECK(run.message.find("String-valued function not supported: Uppercas$") != std::string::npos);
+    }
+}
+
+// ============================================================================
+// CS-GAP-INTERP-EES: the EES call form INTERPOLATE('Table','Col1','Col2',Col2=value)
+// ============================================================================
+// The named argument names the column that is the input; the other column of the call is returned
+// (EES: the value of Col1 where Col2 = value). The positional form INTERPOLATE('t','xcol','ycol',x)
+// of CoolSolve is unchanged. Was: "Unknown fluid: 'T'" (the call was evaluated as a property call).
+
+namespace {
+// not equally spaced, increasing in both columns: (1,10) (2,30) (4,70)
+const std::map<std::string, std::string> kEesTable = {{"T", "A,B\n1,10\n2,30\n4,70\n"}};
+// a 2-D grid (x, y in {1, 2}): z = 11, 12 (y = 1) and 21, 22 (y = 2)
+const std::map<std::string, std::string> kEesGrid = {{"g", "x,y,z\n1,1,11\n2,1,12\n1,2,21\n2,2,22\n"}};
+}  // namespace
+
+TEST_CASE("CS-GAP-INTERP-EES: reproducer of the register", "[library-gaps][interp-ees]") {
+    // Col1 = A, Col2 = B: the value of A where B = v (linear: B = 10, 30, 70 at A = 1, 2, 4)
+    auto run = runModel(R"(
+v = 50
+a_v = INTERPOLATE('T','A','B',B=v)
+a_lit = INTERPOLATE('T','A','B',B=20)
+a_node = INTERPOLATE('T','A','B',B=30)
+a_expr = INTERPOLATE('T','A','B',B=v/5+20)
+)", kEesTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a_v"], WithinAbs(3.0, 1e-12));      // between (2,30) and (4,70)
+    CHECK_THAT(run["a_lit"], WithinAbs(1.5, 1e-12));    // between (1,10) and (2,30)
+    CHECK_THAT(run["a_node"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["a_expr"], WithinAbs(2.0, 1e-12));   // B = 30: any expression is a value
+}
+
+TEST_CASE("CS-GAP-INTERP-EES: INTERPOLATE1 and the column order", "[library-gaps][interp-ees]") {
+    auto run = runModel(R"(
+a1 = INTERPOLATE1('T','A','B',B=20)
+b1 = INTERPOLATE('T','A','B',A=3)
+b2 = INTERPOLATE1('T','A','B',A=3)
+b3 = INTERPOLATE('T','B','A',A=3)
+a3 = INTERPOLATE('T','B','A',B=20)
+)", kEesTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a1"], WithinAbs(1.5, 1e-12));   // INTERPOLATE1 takes the same form
+    // the named column is the input whichever position it has in the call: A = 3 gives B = 50
+    CHECK_THAT(run["b1"], WithinAbs(50.0, 1e-12));
+    CHECK_THAT(run["b2"], WithinAbs(50.0, 1e-12));
+    CHECK_THAT(run["b3"], WithinAbs(50.0, 1e-12));
+    CHECK_THAT(run["a3"], WithinAbs(1.5, 1e-12));
+}
+
+TEST_CASE("CS-GAP-INTERP-EES: the EES form gives what the positional form gives", "[library-gaps][interp-ees]") {
+    // the positional form is (x column, y column, x value): the EES form with the roles of the columns reversed
+    auto run = runModel(R"(
+a1 = INTERPOLATE('T','A','B',B=15)
+p1 = INTERPOLATE('T','B','A',15)
+a2 = INTERPOLATE('T','A','B',B=64)
+p2 = INTERPOLATE('T','B','A',64)
+a3 = INTERPOLATE('T','A','B',B=5)
+p3 = INTERPOLATE('T','B','A',5)
+a4 = INTERPOLATE('T','A','B',B=500)
+p4 = INTERPOLATE('T','B','A',500)
+)", kEesTable);
+    REQUIRE(run.solveOk);
+    for (const char* n : {"1", "2", "3", "4"}) {
+        INFO("point " << n);
+        CHECK(run[std::string("a") + n] == run[std::string("p") + n]);   // the same interpolation, bit for bit
+    }
+    // outside the table the behaviour of the positional form is kept (flat, CS-GAP-INTERP-EXTRAP is separate)
+    CHECK_THAT(run["a3"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["a4"], WithinAbs(4.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-INTERP-EES: names are case-insensitive and columns may be numbers", "[library-gaps][interp-ees]") {
+    auto run = runModel(R"(
+a1 = INTERPOLATE('T','a','B',b=20)
+a2 = INTERPOLATE('T','A','b',B=20)
+a3 = INTERPOLATE('T',1,2,B=20)
+a4 = INTERPOLATE('T',2,1,A=3)
+)", kEesTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    for (const char* n : {"a1", "a2", "a3"}) CHECK_THAT(run[n], WithinAbs(1.5, 1e-12));
+    CHECK_THAT(run["a4"], WithinAbs(50.0, 1e-12));   // the second column of the call is named: A = 3 gives B
+}
+
+TEST_CASE("CS-GAP-INTERP-EES: the three call shapes of the library models", "[library-gaps][interp-ees]") {
+    SECTION("CSL-0035: the variable has the name of the column and of the argument") {
+        const std::map<std::string, std::string> tables = {
+            {"lookup_1", "r_p,M_r,epsilon_s\n4.5,34.3,0.77\n4.7,33.8,0.79\n5.0,32.9,0.86\n"}};
+        auto run = runModel(R"(
+p_su_bar = 0.9
+p_ex_bar = 4.6*p_su_bar
+r_p = p_ex_bar/p_su_bar
+epsilon_s = INTERPOLATE('lookup_1','epsilon_s','r_p',r_p=r_p)
+M_r = INTERPOLATE('lookup_1','M_r','r_p',r_p=r_p)
+)", tables);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["epsilon_s"], WithinAbs(0.77 + (0.79 - 0.77) * 0.5, 1e-9));
+        CHECK_THAT(run["M_r"], WithinAbs(34.3 + (33.8 - 34.3) * 0.5, 1e-9));
+    }
+    SECTION("CSL-0011: a descending table, a literal value for the column") {
+        const std::map<std::string, std::string> tables = {
+            {"lookup_1", "N_rN,M_r_cp,r_p,epsilon_s_cp\n1,454,4.6,0.86\n0.95,420,4,0.865\n0.9,370,3.6,0.86\n"}};
+        auto run = runModel(R"(
+M_r_cp = INTERPOLATE('lookup_1','M_r_cp','N_rN',N_rN=0.95)
+r_p = INTERPOLATE('lookup_1','r_p','N_rN',N_rN=0.95)
+epsilon_s_cp = INTERPOLATE('lookup_1','epsilon_s_cp','N_rN',N_rN=0.925)
+m2 = INTERPOLATE('lookup_1','N_rN','M_r_cp',0.95)
+)", tables);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["M_r_cp"], WithinAbs(420.0, 1e-9));
+        CHECK_THAT(run["r_p"], WithinAbs(4.0, 1e-9));
+        CHECK_THAT(run["epsilon_s_cp"], WithinAbs(0.8625, 1e-9));
+        CHECK_THAT(run["m2"], WithinAbs(420.0, 1e-9));   // the positional form of the `_ambient` variant: the same value
+    }
+    SECTION("gas engine: the argument name is the first-listed input column and the value is 0") {
+        const std::map<std::string, std::string> tables = {
+            {"lookup_1", "W_dot_sh,DELTAP_throttling\n18189.2927,5000\n17738.76861,6939\n17288.24354,8878\n"}};
+        auto run = runModel("DELTAP_throttling_stb=INTERPOLATE('lookup_1','DELTAP_throttling','W_dot_sh',W_dot_sh=0)\n"
+                            "dp_at = INTERPOLATE('lookup_1','DELTAP_throttling','W_dot_sh',W_dot_sh=17500)\n", tables);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        // W = 0 is below the table: flat extrapolation, today's behaviour (CS-GAP-INTERP-EXTRAP is separate)
+        CHECK_THAT(run["DELTAP_throttling_stb"], WithinAbs(8878.0, 1e-9));
+        CHECK_THAT(run["dp_at"], WithinAbs(6939.0 + (8878.0 - 6939.0) * (17738.76861 - 17500.0) / (17738.76861 - 17288.24354), 1e-6));
+    }
+}
+
+TEST_CASE("CS-GAP-INTERP-EES: the named value is an unknown solved by the block", "[library-gaps][interp-ees]") {
+    // Newton needs the exact slope of the table: the value of the named argument counts as a
+    // variable of the equation, as the positional x does
+    SECTION("the value is the input, a second equation closes the block") {
+        auto run = runModel(R"(
+y = INTERPOLATE('T','A','B',B=x)
+x + y = 53
+)", kEesTable);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["x"], WithinAbs(50.0, 1e-9));   // A = 2 + (B - 30)/20
+        CHECK_THAT(run["y"], WithinAbs(3.0, 1e-9));
+    }
+    SECTION("the named column is the first of the call") {
+        // guess values inside the table: from the table end (x = 1, slope 0 there) Newton does not move, as with the positional form
+        auto run = runModel(R"(
+y = INTERPOLATE('T','B','A',A=x)
+x + y = 53
+)", kEesTable, "x = 3\ny = 40\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["x"], WithinAbs(3.0, 1e-9));   // B = 20 A - 10
+        CHECK_THAT(run["y"], WithinAbs(50.0, 1e-9));
+    }
+    SECTION("inverse lookup: the call is a side of the equation") {
+        auto run = runModel("INTERPOLATE('T','A','B',B=N) = 2.5\nINTERPOLATE('T','B','A',A=M) = 50\n", kEesTable);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["N"], WithinAbs(40.0, 1e-9));   // B at A = 2.5: 30 + 40 * 0.25
+        CHECK_THAT(run["M"], WithinAbs(3.0, 1e-9));
+    }
+    SECTION("the incidence: only the value counts, never the name of the argument") {
+        EESParser parser;
+        auto parsed = parser.parse("a = INTERPOLATE('T','A','B',B=v)\n");
+        REQUIRE(parsed.success);
+        IR ir = IR::fromAST(parsed.program);
+        CHECK(ir.getAlgebraicVariableCount() == 2);
+        CHECK(ir.getVariable("v") != nullptr);
+        CHECK(ir.getVariable("a") != nullptr);
+        CHECK(ir.getVariable("B") == nullptr);
+    }
+}
+
+TEST_CASE("CS-GAP-INTERP-EES: the derivative is the slope of the table", "[library-gaps][interp-ees]") {
+    // x column of the lookup t: 1 2 3; y: 10 20 30; z: 100 400 900 (r independent)
+    auto second = evalWithSlope("v = INTERPOLATE('t','z','x',x=r)\n", kXyzCsv, 2.5);
+    CHECK_THAT(second.value, WithinAbs(650.0, 1e-9));
+    CHECK_THAT(second.slope, WithinAbs(500.0, 1e-9));
+    auto first = evalWithSlope("v = INTERPOLATE('t','x','z',x=r)\n", kXyzCsv, 2.5);   // same input column, named first
+    CHECK_THAT(first.value, WithinAbs(650.0, 1e-9));
+    CHECK_THAT(first.slope, WithinAbs(500.0, 1e-9));
+    // chain rule through the value expression: y = 10 x with x = 2 r
+    auto chain = evalWithSlope("v = INTERPOLATE('t','y','x',x=2*r)\n", kXyzCsv, 1.25);
+    CHECK_THAT(chain.value, WithinAbs(25.0, 1e-9));
+    CHECK_THAT(chain.slope, WithinAbs(20.0, 1e-9));
+    // outside the table the slope is 0, as for the positional form
+    auto outside = evalWithSlope("v = INTERPOLATE('t','y','x',x=r)\n", kXyzCsv, 5.0);
+    CHECK_THAT(outside.value, WithinAbs(30.0, 1e-9));
+    CHECK_THAT(outside.slope, WithinAbs(0.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-INTERP-EES: inside FUNCTION and PROCEDURE bodies", "[library-gaps][interp-ees]") {
+    auto run = runModel(R"(
+FUNCTION g(r)
+  g = INTERPOLATE('t','y','x',x=2*r)
+END
+PROCEDURE pk(r : y, z)
+  y = INTERPOLATE('t','z','x',x=r)
+  z = INTERPOLATE1('t','x','y',y=r*10)
+END
+fv = g(1.25)
+CALL pk(2.5 : yv, zv)
+fp = INTERPOLATE('t','y','x',x=2.5)
+)", kXyzTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["fv"], WithinAbs(25.0, 1e-9));
+    CHECK_THAT(run["yv"], WithinAbs(650.0, 1e-9));
+    CHECK_THAT(run["zv"], WithinAbs(2.5, 1e-9));    // x at y = 25
+    CHECK_THAT(run["fp"], WithinAbs(25.0, 1e-9));
+
+    // the output of a routine that reads the table is an unknown of the block (Newton, analytic slope)
+    auto inverse = runModel(R"(
+FUNCTION g(x)
+  g = INTERPOLATE('t','z','x',x=x)
+END
+v = g(x)
+v = 650
+)", kXyzTable);
+    INFO(inverse.message);
+    REQUIRE(inverse.solveOk);
+    CHECK(inverse.verified);
+    CHECK_THAT(inverse["x"], WithinAbs(2.5, 1e-9));
+}
+
+TEST_CASE("CS-GAP-INTERP-EES: the EES form as the forcing of an INTEGRAL model", "[library-gaps][interp-ees]") {
+    // dy/dt = v(t) = 2 t read in the table (as CS-GAP-INTEGRAL-LOOKUP, with the EES call form): y(10) = 100
+    const std::map<std::string, std::string> tables = {{"f", "t,v\n0,0\n5,10\n10,20\n"}};
+    auto run = runIntegral(
+        "y = 0 + integral(dydt, t, 0, 10, 0.5)\n"
+        "dydt = interpolate('f', 'v', 't', t=t)\n",
+        [](SolverOptions& o) { o.integralMethod = "RK4"; }, tables);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(100.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-INTERP-EES: 2-D tables, INTERPOLATE2 and INTERPOLATE2DM", "[library-gaps][interp-ees]") {
+    // the two named arguments are the input columns, the third column of the call is returned
+    auto run = runModel(R"(
+xv = 1.25
+yv = 1.75
+z1 = INTERPOLATE2('g','x','y','z',x=xv,y=yv)
+z2 = INTERPOLATE2('g','x','y','z',y=yv,x=xv)
+z3 = INTERPOLATE2DM('g','x','y','z',x=xv,y=yv)
+z4 = INTERPOLATE2('g','z','x','y',x=xv,y=yv)
+z5 = INTERPOLATE2('g','x','y','z',xv,yv)
+)", kEesGrid);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["z1"], WithinAbs(18.75, 1e-12));   // 11 + 1*0.25 + 10*0.75
+    for (const char* n : {"z2", "z3", "z4", "z5"}) {
+        INFO(n);
+        CHECK(run[n] == run["z1"]);   // the argument order, the alias, the position of the output column: the same value
+    }
+
+    // the exact derivative (r is x, then y): z = 11 + (x - 1) + 10 (y - 1)
+    const std::string grid = kEesGrid.at("g");
+    auto dx = evalWithSlope("v = INTERPOLATE2('t','x','y','z',x=r,y=1.5)\n", grid, 1.25);
+    CHECK_THAT(dx.value, WithinAbs(16.25, 1e-12));
+    CHECK_THAT(dx.slope, WithinAbs(1.0, 1e-12));
+    auto dy = evalWithSlope("v = INTERPOLATE2('t','x','y','z',x=1.5,y=r)\n", grid, 1.75);
+    CHECK_THAT(dy.value, WithinAbs(11.5 + 7.5, 1e-12));
+    CHECK_THAT(dy.slope, WithinAbs(10.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-INTERP-EES: the EES form renders in LaTeX with its named argument", "[library-gaps][interp-ees]") {
+    EESParser parser;
+    auto parsed = parser.parse("a = INTERPOLATE('T','A','B',B=v_in)\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    const std::string latex = coolsolve::expressionToLatex(ir.getEquations()[0].rhs);
+    INFO(latex);
+    CHECK(latex.find("INTERPOLATE") != std::string::npos);
+    CHECK(latex.find("\\mathrm{A}") != std::string::npos);
+    CHECK(latex.find("\\mbox{\\ B}=") != std::string::npos);   // the named argument, then its value
+    CHECK(latex.find("v_{in}") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-INTERP-EES: the positional form and the other functions are unchanged", "[library-gaps][interp-ees]") {
+    auto run = runModel(R"(
+p1 = INTERPOLATE('T','A','B',3)
+p2 = INTERPOLATE1('T','A','B',1.5)
+h = enthalpy(Water, T=20, P=1E5)
+)", kEesTable);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["p1"], WithinAbs(50.0, 1e-12));
+    CHECK_THAT(run["p2"], WithinAbs(20.0 * 0.5 + 10.0, 1e-12));
+    CHECK_THAT(run["h"], WithinAbs(CoolProp::PropsSI("H", "T", 293.15, "P", 1e5, "Water"), 1e-3));
+    // the other table functions still refuse a named argument
+    for (const char* call : {"LOOKUP('T', 1, 2, B=3)", "NLOOKUPROWS('T', B=3)", "SUMLOOKUP('T', 'A', A=1)"}) {
+        auto errors = parseErrors(std::string("y = ") + call + "\n");
+        INFO(call);
+        REQUIRE_FALSE(errors.empty());
+        CHECK(errors[0].find("does not take named arguments") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-GAP-INTERP-EES: negative tests give clear errors", "[library-gaps][interp-ees]") {
+    auto fail = [&](const std::string& expr, const std::vector<std::string>& expected) {
+        auto run = runModel("a = " + expr + "\n", kEesTable);
+        INFO(expr);
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        for (const auto& text : expected) CHECK(run.message.find(text) != std::string::npos);
+    };
+    SECTION("the named argument is not a column of the call") {
+        fail("INTERPOLATE('T','A','B',C=3)",
+             {"INTERPOLATE(): the named argument 'C' is not one of the columns of the call ('A', 'B') of table 'T'"});
+        fail("INTERPOLATE1('T','A','B',a2=3)", {"INTERPOLATE1(): the named argument 'a2' is not one of the columns"});
+    }
+    SECTION("a column of the table that the call does not list") {
+        auto run = runModel("a = INTERPOLATE('T','A','A',B=3)\n", kEesTable);   // B is a column of T, not of this call
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("the named argument 'B' is not one of the columns of the call ('A', 'A')") != std::string::npos);
+    }
+    SECTION("two named arguments for a 1-D call") {
+        fail("INTERPOLATE('T','A','B',A=1,B=2)",
+             {"INTERPOLATE(): the EES form takes the table, 2 columns and 1 named argument", "found 3 positional and 2 named"});
+    }
+    SECTION("a named argument and a fourth positional value") {
+        fail("INTERPOLATE('T','A','B',3,B=3)", {"INTERPOLATE(): the EES form takes the table, 2 columns and 1 named argument",
+                                               "found 4 positional and 1 named"});
+        fail("INTERPOLATE('T','A','B',B=3,3)", {"found 4 positional and 1 named"});
+    }
+    SECTION("a missing column or value") {
+        fail("INTERPOLATE('T','A',B=3)", {"the EES form takes the table, 2 columns", "found 2 positional and 1 named"});
+        fail("INTERPOLATE('T',B=3)", {"found 1 positional and 1 named"});
+        fail("INTERPOLATE('T','A','B')", {"INTERPOLATE(): expects 4 arguments: (table, xcol, ycol, xval)", "EES form"});
+        auto noValue = parseErrors("a = INTERPOLATE('T','A','B',B=)\n");   // `B=` without a value is a parse error
+        REQUIRE_FALSE(noValue.empty());
+        CHECK(noValue[0].find("Could not parse value for named argument 'B'") != std::string::npos);
+    }
+    SECTION("unknown table and unknown column keep their messages") {
+        auto table = runModel("a = INTERPOLATE('nope','A','B',B=3)\n", kEesTable);
+        CHECK_FALSE(table.solveOk);
+        CHECK(table.message.find("lookup table 'nope' not found") != std::string::npos);
+        fail("INTERPOLATE('T','A','Q',Q=3)", {"INTERPOLATE(): column 'Q' not found in table 'T'"});
+        fail("INTERPOLATE('T','Q','B',B=3)", {"column 'Q' not found in table 'T'"});
+    }
+    SECTION("2-D: the number of named arguments and their names") {
+        auto fail2 = [&](const std::string& expr, const std::vector<std::string>& expected) {
+            auto run = runModel("a = " + expr + "\n", kEesGrid);
+            INFO(expr);
+            INFO(run.message);
+            CHECK_FALSE(run.solveOk);
+            for (const auto& text : expected) CHECK(run.message.find(text) != std::string::npos);
+        };
+        fail2("INTERPOLATE2('g','x','y','z',x=1)",
+              {"INTERPOLATE2(): the EES form takes the table, 3 columns and 2 named arguments", "found 4 positional and 1 named"});
+        fail2("INTERPOLATE2('g','x','y','z',x=1,y=1,z=1)", {"found 4 positional and 3 named"});
+        fail2("INTERPOLATE2DM('g','x','y','z',1,x=1,y=1)", {"INTERPOLATE2DM(): the EES form", "found 5 positional and 2 named"});
+        fail2("INTERPOLATE2('g','x','y','z',x=1,w=1)",
+              {"INTERPOLATE2(): the named argument 'w' is not one of the columns of the call ('x', 'y', 'z')"});
+        fail2("INTERPOLATE2('g','x','y','z',x=1,X=2)",
+              {"INTERPOLATE2(): the named argument 'X' names a column of the call a second time"});
+        fail2("INTERPOLATE2('g','x','y','z')", {"INTERPOLATE2(): expects 6 arguments", "EES form"});
+    }
+    SECTION("in a body the routine is named") {
+        auto run = runModel("FUNCTION gf(r)\n  gf = INTERPOLATE('T','A','B',C=r)\nEND\nz = gf(1)\n", kEesTable);
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("the named argument 'C' is not one of the columns of the call") != std::string::npos);
+        CHECK(run.message.find("FUNCTION 'gf'") != std::string::npos);
     }
 }

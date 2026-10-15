@@ -900,6 +900,19 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
     throw std::runtime_error("Unknown binary operator: " + op.op);
 }
 
+/// The lookup table / interpolation functions: their arguments mix strings (table, columns) and numbers,
+/// so they are evaluated from the call itself (evaluateLookupFunction).
+static bool isLookupFunction(const std::string& lowerName) {
+    static const std::unordered_set<std::string> names = {
+        "lookup", "lookupcol", "lookupcol1", "lookupcellempty",
+        "tablevalue", "tablevalue#", "tablerun#",
+        "interpolate", "interpolate1", "interpolate2", "interpolate2dm",
+        "nlookuprows", "nlookupcolumns",
+        "sumlookup", "avglookup", "maxlookup", "minlookup", "stddevlookup",
+    };
+    return names.count(lowerName) > 0;
+}
+
     ADValue ExpressionEvaluator::evaluateFunctionCall(const FunctionCall& func) {
     std::string name = func.name;
     std::transform(name.begin(), name.end(), name.begin(), ::tolower);
@@ -944,7 +957,8 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
         // Not a thermo function
     }
     
-    if (!func.namedArgs.empty() || isThermo) {
+    // Named arguments make a property call (T=20), except in the EES form of INTERPOLATE (Col=value)
+    if (isThermo || (!func.namedArgs.empty() && !isLookupFunction(name))) {
         return evaluateCoolPropFunction(func);
     }
     
@@ -1045,14 +1059,7 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
     // These functions have mixed arguments: string literals (table name,
     // column names) followed by numeric arguments.  We re-parse the
     // function call directly rather than using the already-evaluated args.
-    static const std::unordered_set<std::string> LOOKUP_FUNC_NAMES = {
-        "lookup", "lookupcol", "lookupcol1", "lookupcellempty",
-        "tablevalue", "tablevalue#", "tablerun#",
-        "interpolate", "interpolate1", "interpolate2", "interpolate2dm",
-        "nlookuprows", "nlookupcolumns",
-        "sumlookup", "avglookup", "maxlookup", "minlookup", "stddevlookup",
-    };
-    if (LOOKUP_FUNC_NAMES.count(name)) {
+    if (isLookupFunction(name)) {
         return evaluateLookupFunction(func);
     }
 
@@ -2754,6 +2761,55 @@ std::string ExpressionEvaluator::evaluateLookupString(const FunctionCall& func) 
     return tbl.text(static_cast<size_t>(row), col);
 }
 
+ExpressionEvaluator::EesInterpolation ExpressionEvaluator::resolveEesInterpolation(const FunctionCall& func, size_t nCols) {
+    if (func.args.size() != nCols + 1 || func.namedArgs.size() != nCols - 1) {
+        const bool oneD = nCols == 2;
+        throw std::runtime_error(func.name + "(): the EES form takes the table, " +
+            (oneD ? "2 columns and 1 named argument" : "3 columns and 2 named arguments") + " <column>=<value> for the input " +
+            (oneD ? "column: " : "columns: ") + func.name +
+            (oneD ? "('table', 'Col1', 'Col2', Col2=value)" : "('table', 'Col1', 'Col2', 'Col3', Col1=x, Col2=y)") +
+            "; found " + std::to_string(func.args.size()) + " positional and " + std::to_string(func.namedArgs.size()) +
+            " named argument(s)" + lookupWhere());
+    }
+
+    EesInterpolation call;
+    call.table = &lookupTableFor(func, evaluateString(func.args[0]));
+    std::vector<size_t> cols;
+    for (size_t i = 1; i <= nCols; ++i) cols.push_back(lookupColumnOf(func, *call.table, i));
+
+    // Each named argument stands for the first column of the call, not yet named, that has its name
+    std::vector<const ExprPtr*> valueOf(nCols, nullptr);
+    for (const auto& [argName, valueExpr] : func.namedArgs) {
+        const size_t col = call.table->columnIndex(argName);
+        size_t pos = nCols;
+        bool listed = false;
+        for (size_t p = 0; p < nCols && col != 0; ++p) {
+            if (cols[p] != col) continue;
+            listed = true;
+            if (!valueOf[p]) { pos = p; break; }
+        }
+        if (pos == nCols) {
+            std::string columns;
+            for (size_t c : cols)
+                columns += (columns.empty() ? "'" : ", '") +
+                           (c >= 1 && c <= call.table->numCols() ? call.table->columnNames()[c - 1] : std::to_string(c)) + "'";
+            throw std::runtime_error(func.name + "(): the named argument '" + argName + "' " +
+                (listed ? "names a column of the call a second time" : "is not one of the columns of the call") +
+                " (" + columns + ") of table '" + call.table->name() + "'" + lookupWhere());
+        }
+        valueOf[pos] = &valueExpr;
+    }
+    for (size_t p = 0; p < nCols; ++p) {
+        if (valueOf[p]) {
+            call.inputCols.push_back(cols[p]);
+            call.inputValues.push_back(evaluate(*valueOf[p]));
+        } else {
+            call.outputCol = cols[p];
+        }
+    }
+    return call;
+}
+
 ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     std::string name = func.name;
     std::transform(name.begin(), name.end(), name.begin(), ::tolower);
@@ -2881,11 +2937,16 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     // ------------------------------------------------------------------
     // INTERPOLATE('table', 'xcol', 'ycol', xval)
     // INTERPOLATE1 — same as INTERPOLATE
+    // EES form: INTERPOLATE('table', 'Col1', 'Col2', Col2=value), Col1 where Col2 = value
     // ------------------------------------------------------------------
     if (name == "interpolate" || name == "interpolate1") {
+        if (!func.namedArgs.empty()) {
+            const EesInterpolation call = resolveEesInterpolation(func, 2);
+            return call.table->interpolate1D(call.inputCols[0], call.outputCol, call.inputValues[0], diagnostics_);
+        }
         if (func.args.size() < 4) {
-            throw std::runtime_error(func.name + "(): expects 4 arguments: "
-                                     "(table, xcol, ycol, xval)" + lookupWhere());
+            throw std::runtime_error(func.name + "(): expects 4 arguments: (table, xcol, ycol, xval), or the "
+                                     "EES form (table, col1, col2, col2=value)" + lookupWhere());
         }
         std::string tableName = getString(0);
         const LookupTable& tbl = lookupTableFor(func, tableName);
@@ -2898,11 +2959,17 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     // ------------------------------------------------------------------
     // INTERPOLATE2('table', 'xcol', 'ycol', 'zcol', xval, yval)
     // INTERPOLATE2DM — same as INTERPOLATE2 in CoolSolve
+    // EES form: INTERPOLATE2('table', 'Col1', 'Col2', 'Col3', Col1=x, Col2=y), Col3 where Col1 = x and Col2 = y
     // ------------------------------------------------------------------
     if (name == "interpolate2" || name == "interpolate2dm") {
+        if (!func.namedArgs.empty()) {
+            const EesInterpolation call = resolveEesInterpolation(func, 3);
+            return call.table->interpolate2D(call.inputCols[0], call.inputCols[1], call.outputCol,
+                                             call.inputValues[0], call.inputValues[1], diagnostics_);
+        }
         if (func.args.size() < 6) {
-            throw std::runtime_error(func.name + "(): expects 6 arguments: "
-                                     "(table, xcol, ycol, zcol, xval, yval)" + lookupWhere());
+            throw std::runtime_error(func.name + "(): expects 6 arguments: (table, xcol, ycol, zcol, xval, yval), "
+                                     "or the EES form (table, col1, col2, col3, col1=x, col2=y)" + lookupWhere());
         }
         std::string tableName = getString(0);
         const LookupTable& tbl = lookupTableFor(func, tableName);

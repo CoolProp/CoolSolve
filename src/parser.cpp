@@ -718,9 +718,10 @@ private:
     // Built-in functions that take positional arguments only: for them `name=value` is
     // not a named argument (typically the comparison of IF(a=5, 1, 2), which EES does not
     // have). The indexed aggregations SUM(X[i], i=1, N) and the EES form of INTERPOLATE
-    // carry `name=value` arguments (CS-GAP-SUM-INDEXED, CS-GAP-INTERP-EES: not supported
-    // yet, they keep their own diagnostics). The thermophysical functions, user functions
-    // and unknown names are not listed here.
+    // carry `name=value` arguments: the latter is evaluated from the column names of the call
+    // (ExpressionEvaluator::resolveEesInterpolation), the former is not supported yet
+    // (CS-GAP-SUM-INDEXED, it keeps its own diagnostics). The thermophysical functions,
+    // user functions and unknown names are not listed here.
     static bool isPositionalOnlyBuiltin(const std::string& name) {
         static const std::unordered_set<std::string> takingNamedArguments = {
             "sum", "sum2d", "average", "product", "stddev",

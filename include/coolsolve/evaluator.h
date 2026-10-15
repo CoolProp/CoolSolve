@@ -285,6 +285,24 @@ private:
     // Lookup table function evaluation (INTERPOLATE, LOOKUP, etc.)
     ADValue evaluateLookupFunction(const FunctionCall& func);
 
+    /// The columns and input values of an interpolation written in the EES form.
+    struct EesInterpolation {
+        const LookupTable* table = nullptr;
+        std::vector<size_t> inputCols;       ///< 1-based input columns, in the order of the call
+        std::vector<ADValue> inputValues;    ///< the value of each input column (with its derivatives)
+        size_t outputCol = 0;                ///< 1-based column returned
+    };
+
+    /**
+     * @brief Read the EES form of INTERPOLATE / INTERPOLATE2: the table, `nCols` columns, then one
+     * named argument `Col=value` per input column (`nCols - 1` of them).
+     *
+     * `INTERPOLATE('t', 'Col1', 'Col2', Col2=v)` returns Col1 where Col2 = v; the column of the call
+     * that no named argument names is the one returned. Names are matched to the columns without regard
+     * to case. Throws (naming the function, the table and the columns) when the call has another shape.
+     */
+    EesInterpolation resolveEesInterpolation(const FunctionCall& func, size_t nCols);
+
     /// LOOKUP$('table', row, col): the text of a cell (a string-valued function, see evaluateString).
     /// The row is rounded to the nearest integer; the column is a name or a number.
     std::string evaluateLookupString(const FunctionCall& func);
