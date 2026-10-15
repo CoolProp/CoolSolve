@@ -111,6 +111,15 @@ struct EquationInfo {
     std::string inlineComment;                    // Inline "" comment on this equation
 };
 
+/**
+ * True for an equation of the main program that gives a string variable its string: `X$ = <string
+ * expression>`, the right side being a string literal, another string variable or a string function
+ * (Uppercase$, Lowercase$, String$, Phase$, LOOKUP$). It is not evaluated as a number: a literal is set by
+ * IR::fromAST (as is the string of an alias of a literal), the other strings by the block evaluator
+ * (BlockEvaluator::evaluate) during the solve, and the solution check compares the strings.
+ */
+bool isStringAssignment(const EquationInfo& eq);
+
 // ============================================================================
 // Intermediate Representation
 // ============================================================================
@@ -168,8 +177,11 @@ public:
      * variables of its indices; not the function names, the keys of named arguments (`T=`), the
      * fluid name of a property call (`enthalpy(R134a, ...)`) nor string literals. Also used by
      * the parser's check of FUNCTION/PROCEDURE bodies.
+     * @param stringFluids When true, a string variable in the fluid position (`enthalpy(fluid$, ...)`) is read
+     *        too, so that the equation depends on the equation that gives the string its value.
      */
-    static void extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensitiveLess>& vars);
+    static void extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensitiveLess>& vars,
+                                 bool stringFluids = false);
     
 private:
     std::map<std::string, VariableInfo, CaseInsensitiveLess> variables_;
@@ -180,6 +192,7 @@ private:
     
     // Helper functions
     void lowerCallExpressionOutputs(std::vector<StmtPtr>& statements);
+    void resolveStringAssignments();
     std::string expressionToLatex(const ExprPtr& expr) const;
     void addVariable(const std::string& name);
 };

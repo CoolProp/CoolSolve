@@ -432,10 +432,45 @@ of the caller), as an operand of `=` and `<>` in an `IF`, as the fluid of a prop
 (`enthalpy(Uppercase$(f$), T=T, P=P)`), as the string argument of a `CALL` or of a `FUNCTION`,
 and as the message of `CALL WARNING` / `CALL ERROR`. String comparisons already ignore the case
 (`IF (Pr$ = 'FREEZE')` matches `'freeze'`), so the conversion matters when the text itself is
-kept or shown: a string output, a message. In the main program a string variable is only set
-by a literal or by a `CALL` output, as for `LOOKUP$` (§11.8): `s$ = Uppercase$('ab')` at the
-top level is an error (*Uppercase$ returns a string and cannot be used as a number*), not a
-silent 0; compute the string in a procedure, or use the call where the string is needed.
+kept or shown: a string output, a message. In the main program `s$ = Uppercase$(f$)` gives the
+string variable `s$` the converted text (see *String variables of the main program* below);
+used as a number (`x = Uppercase$('a') + 1`) it is an error (*Uppercase$ returns a string and
+cannot be used as a number*).
+
+### String variables of the main program
+
+A string variable of the main program (`g$`) gets its string from one of these equations, in any
+order of the lines (the structural analysis orders them, so a chain `h$ = g$`, `g$ = f$`,
+`f$ = 'Water'` works whichever line comes first):
+
+| Equation | The string of `g$` |
+|:---------|:-------------------|
+| `g$ = 'Water'` | the literal |
+| `g$ = f$` | the string of the string variable `f$`, whatever gives `f$` its value (a literal, another alias, a function, a `CALL` output) |
+| `g$ = Uppercase$(f$)`, `Lowercase$(...)`, `STRING$(x)`, `PHASE$(fluid, T=..., P=...)`, `LOOKUP$('table', row, col)` | the text of the function; its arguments (`f$`, `x`, the state, `row`, `col`) are computed first, as for any equation |
+| `CALL proc(... : g$)` | the string output of the procedure |
+
+The string is set before the equations that read it are solved: `h = enthalpy(g$, T=100, P=1e5)`
+uses it as the fluid wherever the line is, and `CALL p(g$ : y)` passes it to a procedure whose body
+compares it (`IF (s$ = 'Water')`) or hands it on. Such an equation is never solved as a number; the
+solution check compares the strings (case aside). The strings of the solution are in the `.sol`
+file (`g$ = 'Water'`), the variable tables and the JSON result.
+
+Errors, which name the variables and are reported before the solve:
+
+- strings defined in terms of each other, directly or through a function (`f$ = g$` with
+  `g$ = f$`, `f$ = f$`): *String variables defined from each other: f$ -> g$ -> f$ (a string
+  needs a value: give one of them a string constant, e.g. f$ = 'text')*;
+- a string variable that nothing sets (`g$ = f$` with no equation for `f$`, or `enthalpy(fluid$, ...)`
+  with no `fluid$`): the model is not square and the message ends with *String variable(s) with no
+  value: f$ (a string gets its value from X$ = 'text', ...)*;
+- a string defined from a variable that holds a number (`f$ = 3`, `g$ = f$`): *String variable not
+  found: f$*.
+
+A string variable assigned a number or an arithmetic expression (`g$ = 3`) is not a string: it is
+solved as a number, as before (it is not in the string variables of the result).
+`$IF` directives still need a string constant (see §1, *Conditional compilation*), whatever the
+alias.
 
 ### String arrays are not supported
 
@@ -1630,10 +1665,8 @@ END
   to case), as the table or column argument of another lookup function and as the value of a
   string variable inside a `FUNCTION` or `PROCEDURE` body (`UO$ = LOOKUP$('Units', Pro, 1)`).
   A variable in `row` or `col` is a variable of the equation: it is computed first. In the
-  main program a string variable is only set by a literal or by a `CALL` output, so
-  `s$ = LOOKUP$(...)` at the top level is an error (*LOOKUP$ returns a string and cannot be
-  used as a number*): use the call where the string is needed, or compute the string in a
-  procedure. Used as a number it is an error too.
+  main program `s$ = LOOKUP$('Species', 2, 1)` gives the string variable `s$` the text of the cell
+  (*String variables of the main program*, §2). Used as a number it is an error.
 - Numeric functions work as before on a table with text cells: `LOOKUP('Species', 2, 2)` is
   31.9988, `LOOKUP('Species', 2.5, 'M')` interpolates between the rows, and a text or empty
   cell (read as NaN) spoils the result only where it is really read. `LOOKUP$ROW` is not

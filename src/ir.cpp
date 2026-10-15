@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <regex>
 #include <cctype>
+#include <functional>
 #include <unordered_set>
 
 namespace coolsolve {
@@ -268,10 +269,10 @@ IR IR::fromAST(const Program& program) {
             pendingComments.clear();
             
             // Extract variables from both sides
-            ir.extractVariables(eq.lhs, eqInfo.variables);
-            ir.extractVariables(eq.rhs, eqInfo.variables);
+            ir.extractVariables(eq.lhs, eqInfo.variables, true);
+            ir.extractVariables(eq.rhs, eqInfo.variables, true);
             // RHS only: for explicit-solve detection (if output var not in RHS, we can solve by direct evaluation)
-            ir.extractVariables(eq.rhs, eqInfo.rhsVariables);
+            ir.extractVariables(eq.rhs, eqInfo.rhsVariables, true);
             
             // Register all variables
             for (const auto& varName : eqInfo.variables) {
@@ -302,7 +303,7 @@ IR IR::fromAST(const Program& program) {
             // Extract all variables involved in the call
             std::set<std::string, CaseInsensitiveLess> callVars;
             for (const auto& arg : call.inputArgs) {
-                ir.extractVariables(arg, callVars);
+                ir.extractVariables(arg, callVars, true);
             }
             for (const auto& var : call.outputVars) {
                 ir.addVariable(var.flattenedName());
@@ -345,6 +346,8 @@ IR IR::fromAST(const Program& program) {
         }
     }
     
+    ir.resolveStringAssignments();
+
     // Build incidence matrix
     ir.incidenceMatrix_.resize(ir.equations_.size());
     for (size_t i = 0; i < ir.equations_.size(); ++i) {
@@ -358,6 +361,62 @@ IR IR::fromAST(const Program& program) {
     }
     
     return ir;
+}
+
+bool isStringAssignment(const EquationInfo& eq) {
+    if (eq.procedureCall || !eq.lhs || !eq.rhs || !eq.lhs->is<Variable>()) return false;
+    const Variable& var = eq.lhs->as<Variable>();
+    return var.indices.empty() && !var.name.empty() && var.name.back() == '$' && isStringExpression(eq.rhs);
+}
+
+// The equations `X$ = <string expression>` of the main program (CS-BUG-STRING-ALIAS). Strings that are
+// defined in terms of each other are an error. A string defined from another string variable gets, before
+// the solve and like a literal, the string that the chain of aliases ends in (the variable inference
+// reads it); the strings that depend on a function or a CALL are assigned during the solve.
+void IR::resolveStringAssignments() {
+    std::map<std::string, const EquationInfo*, CaseInsensitiveLess> defined;   // X$ -> its equation
+    for (const auto& eq : equations_)
+        if (isStringAssignment(eq)) defined.emplace(eq.lhs->as<Variable>().name, &eq);
+    if (defined.empty()) return;
+
+    std::map<std::string, bool, CaseInsensitiveLess> finished;   // visited: still on the path (false) or done
+    std::vector<std::string> path;
+    std::function<void(const std::string&)> visit = [&](const std::string& name) {
+        finished[name] = false;
+        path.push_back(name);
+        const EquationInfo& eq = *defined.at(name);
+        for (const auto& dependency : eq.rhsVariables) {
+            if (!defined.count(dependency)) continue;
+            const auto mark = finished.find(dependency);
+            if (mark == finished.end()) {
+                visit(dependency);
+            } else if (!mark->second) {
+                std::string cycle;
+                for (size_t i = 0; i < path.size(); ++i)
+                    if (!cycle.empty() || eesCompareFolded(path[i], dependency) == 0) cycle += path[i] + " -> ";
+                throw ModelError(eq.sourceLine, "String variables defined from each other: " + cycle + dependency +
+                                 " (a string needs a value: give one of them a string constant, e.g. " +
+                                 dependency + " = 'text')");
+            }
+        }
+        path.pop_back();
+        finished[name] = true;
+    };
+    for (const auto& entry : defined)
+        if (!finished.count(entry.first)) visit(entry.first);
+
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (const auto& [name, eq] : defined) {
+            if (!eq->rhs->is<Variable>()) continue;
+            const auto target = variables_.find(name);
+            const auto source = variables_.find(eq->rhs->as<Variable>().flattenedName());
+            if (target == variables_.end() || source == variables_.end() || target->second.solutionStringValue ||
+                !source->second.solutionStringValue) continue;
+            target->second.solutionStringValue = source->second.solutionStringValue;
+            changed = true;
+        }
+    }
 }
 
 namespace {
@@ -513,10 +572,11 @@ static bool isThermoFunction(const std::string& name) {
     return THERMO_FUNCTIONS.find(lower) != THERMO_FUNCTIONS.end();
 }
 
-void IR::extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensitiveLess>& vars) {
+void IR::extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensitiveLess>& vars,
+                          bool stringFluids) {
     if (!expr) return;
     
-    std::visit([&vars](const auto& node) {
+    std::visit([&vars, stringFluids](const auto& node) {
         using T = std::decay_t<decltype(node)>;
         
         if constexpr (std::is_same_v<T, Variable>) {
@@ -528,20 +588,20 @@ void IR::extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensi
             
             // Also extract variables from array indices
             for (const auto& idx : node.indices) {
-                extractVariables(idx, vars);
+                extractVariables(idx, vars, stringFluids);
             }
         } else if constexpr (std::is_same_v<T, UnaryOp>) {
-            extractVariables(node.operand, vars);
+            extractVariables(node.operand, vars, stringFluids);
         } else if constexpr (std::is_same_v<T, BinaryOp>) {
-            extractVariables(node.left, vars);
-            extractVariables(node.right, vars);
+            extractVariables(node.left, vars, stringFluids);
+            extractVariables(node.right, vars, stringFluids);
         } else if constexpr (std::is_same_v<T, FunctionCall>) {
             if (isIndexedAggregate(node)) {
                 // not expanded yet (the check of a body): its index is local, only its bounds and the variables
                 // of the expression, read with the index replaced by a number, belong to the equation
-                extractVariables(cloneExprWithSubstitution(node.args[0], node.namedArgs[0].first, 1.0), vars);
-                extractVariables(node.namedArgs[0].second, vars);
-                extractVariables(node.args[1], vars);
+                extractVariables(cloneExprWithSubstitution(node.args[0], node.namedArgs[0].first, 1.0), vars, stringFluids);
+                extractVariables(node.namedArgs[0].second, vars, stringFluids);
+                extractVariables(node.args[1], vars, stringFluids);
                 return;
             }
             // For thermodynamic functions, skip the first positional arg (fluid name)
@@ -566,21 +626,24 @@ void IR::extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensi
             for (const auto& arg : node.args) {
                 if (isThermo && firstArg) {
                     // Skip first argument (fluid name) for thermo functions, except a call
-                    // (LOOKUP$('table', i, 1)): its row and column are variables of the equation
+                    // (LOOKUP$('table', i, 1)): its row and column are variables of the equation,
+                    // and (stringFluids) a string variable, which another equation gives its string
                     firstArg = false;
-                    if (!(arg && arg->template is<FunctionCall>())) continue;
+                    const bool stringVariable = stringFluids && arg && arg->template is<Variable>() &&
+                                                isStringExpression(arg);
+                    if (!(arg && arg->template is<FunctionCall>()) && !stringVariable) continue;
                 }
                 // Skip string literals in lookup functions (they are table/column names)
                 if (isLookup && arg && arg->template is<StringLiteral>()) {
                     firstArg = false;
                     continue;
                 }
-                extractVariables(arg, vars);
+                extractVariables(arg, vars, stringFluids);
                 firstArg = false;
             }
             // Extract from named args
             for (const auto& [name, arg] : node.namedArgs) {
-                extractVariables(arg, vars);
+                extractVariables(arg, vars, stringFluids);
             }
         }
     }, expr->node);

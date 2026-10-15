@@ -195,8 +195,16 @@ SolutionCheckResult checkSolution(
         // Evaluate normal equation: LHS = RHS
         double lhsVal = 0.0, rhsVal = 0.0;
         try {
-            lhsVal = exprEval.evaluate(eqInfo.lhs).value;
-            rhsVal = exprEval.evaluate(eqInfo.rhs).value;
+            if (isStringAssignment(eqInfo)) {
+                // X$ = <string expression>: the strings are compared, the case aside (lhs 1, rhs 0 when they differ)
+                const std::string& name = eqInfo.lhs->as<Variable>().name;
+                const auto given = stringVars.find(name);
+                if (given == stringVars.end()) throw std::runtime_error("string variable not found: " + name);
+                lhsVal = eesStringEqual(given->second, exprEval.evaluateString(eqInfo.rhs)) ? 0.0 : 1.0;
+            } else {
+                lhsVal = exprEval.evaluate(eqInfo.lhs).value;
+                rhsVal = exprEval.evaluate(eqInfo.rhs).value;
+            }
         } catch (const std::exception& e) {
             EquationCheckResult check;
             check.equationId = eqInfo.id;

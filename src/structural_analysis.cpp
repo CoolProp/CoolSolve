@@ -495,6 +495,30 @@ std::vector<Block> StructuralAnalyzer::redecomposeBlock(
     return subBlocks;
 }
 
+namespace {
+
+/// Sentence naming the string variables of `ir` that no equation sets (not the left side of an equation,
+/// not the output of a CALL), the likely reason why a model is not square: `g$ = f$` with no value for
+/// `f$` (CS-BUG-STRING-ALIAS). Empty when there is none.
+std::string stringsWithoutValue(const IR& ir) {
+    std::set<std::string, CaseInsensitiveLess> defined;
+    for (const auto& eq : ir.getEquations()) {
+        if (eq.procedureCall) {
+            for (const auto& out : eq.procedureCall->outputVars) defined.insert(out.flattenedName());
+        } else if (eq.lhs && eq.lhs->is<Variable>()) {
+            defined.insert(eq.lhs->as<Variable>().flattenedName());
+        }
+    }
+    std::string names;
+    for (const auto& [name, info] : ir.getVariables())
+        if (info.type == VariableType::String && !defined.count(name)) names += (names.empty() ? "" : ", ") + name;
+    if (names.empty()) return "";
+    return ". String variable(s) with no value: " + names + " (a string gets its value from X$ = 'text', from "
+           "another string variable or a string function, or from a CALL output)";
+}
+
+}  // namespace
+
 // ============================================================================
 // Main Analysis Function
 // ============================================================================
@@ -531,6 +555,7 @@ StructuralAnalysisResult StructuralAnalyzer::analyze(IR& ir) {
         result.errorMessage = "There are " + std::to_string(numEq) + 
                              " equations and " + std::to_string(numVar) + 
                              " unknowns. The system is not square and cannot be solved";
+        result.errorMessage += stringsWithoutValue(ir);
         // Return early - cannot proceed with non-square system
         return result;
     }

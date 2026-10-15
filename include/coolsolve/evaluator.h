@@ -54,8 +54,9 @@ struct EvaluationResult {
     std::vector<double> residuals;           // F(x) for each equation
     std::vector<std::vector<double>> jacobian;  // J[eq][var] = dF_eq/dx_var
     std::vector<std::string> warnings;       // Any warnings during evaluation
-    /// Values of the string variables that a CALL of the block set (name -> value): a string is not
-    /// an unknown of the numeric system, so this is the only way it leaves the evaluation.
+    /// Values of the string variables that a CALL of the block set or that an equation `X$ = ...` of the
+    /// block assigns (name -> value): a string is not an unknown of the numeric system, so this is the
+    /// only way it leaves the evaluation.
     std::map<std::string, std::string> stringOutputs;
     
     size_t numEquations() const { return residuals.size(); }
@@ -418,7 +419,10 @@ public:
     /** @brief Provide lookup table access for INTERPOLATE / LOOKUP calls. */
     void setLookupTableStore(const LookupTableStore* store) { lookupTableStore_ = store; }
 
-    /** @brief True if a CALL of this block has a string output (`EvaluationResult::stringOutputs`). */
+    /**
+     * @brief True if the block sets a string (`EvaluationResult::stringOutputs`): a CALL of the block has a
+     *        string output, or one of its equations is a string assignment `X$ = ...` (isStringAssignment).
+     */
     bool hasStringCallOutputs() const { return hasStringCallOutputs_; }
 
     /**
@@ -436,8 +440,8 @@ public:
 private:
     bool hasStringCallOutputs_ = false;
     bool mayCallWarning_ = false;
-    /// Order in which `evaluate` visits the equations when a CALL of the block computes a string: those
-    /// CALLs first, so that every CALL of the block finds the strings it reads. Empty: the order of
+    /// Order in which `evaluate` visits the equations when the block sets a string: the equations that set
+    /// one first, so that every equation of the block finds the strings it reads. Empty: the order of
     /// `equations_`. The row of an equation in the residual vector and the Jacobian never changes.
     std::vector<size_t> evalOrder_;
     std::vector<std::string> variables_;

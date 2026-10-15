@@ -10217,18 +10217,21 @@ CALL copy(Lowercase$('AbC') : B$, n2)
         CHECK(run.strings.at("A$") == "WATER");
         CHECK(run.strings.at("B$") == "abc");
     }
-    SECTION("a string assigned from the function is refused as for LOOKUP$: an error, never a silent 0") {
-        // same rule as `g$ = LOOKUP$(...)` (CS-BUG-STRING-ALIAS): use it where the string is needed or in a body
-        for (const std::string call : {"Uppercase$('ab')", "Lowercase$('AB')", "Uppercase$(f$)"}) {
+    SECTION("a string variable assigned from the function holds the text (CS-BUG-STRING-ALIAS)") {
+        // was refused with "returns a string and cannot be used as a number", as `g$ = LOOKUP$(...)`
+        for (const auto& [call, expected] : std::vector<std::pair<std::string, std::string>>{
+                 {"Uppercase$('ab')", "AB"}, {"Lowercase$('AB')", "ab"}, {"Uppercase$(f$)", "AB"}}) {
             auto run = runModel("f$ = 'ab'\ng$ = " + call + "\nx = 1\n");
             INFO(call);
             INFO(run.message);
-            CHECK_FALSE(run.solveOk);
-            CHECK(run.message.find("returns a string and cannot be used as a number") != std::string::npos);
+            REQUIRE(run.solveOk);
+            CHECK(run.verified);
+            CHECK(run.strings.at("g$") == expected);
         }
-        auto lookup = runModel("g$ = LOOKUP$('Species', 1, 1)\n", kSpeciesTable);
-        CHECK_FALSE(lookup.solveOk);
-        CHECK(lookup.message.find("returns a string and cannot be used as a number") != std::string::npos);
+        auto lookup = runModel("g$ = LOOKUP$('Species', 1, 1)\nx = 1\n", kSpeciesTable);
+        INFO(lookup.message);
+        REQUIRE(lookup.solveOk);
+        CHECK(lookup.strings.at("g$") == "N2");
     }
 }
 
@@ -14061,4 +14064,310 @@ x[3] = 3
     CHECK(line[0] == line[1]);
     CHECK(line[1] == line[2]);
     CHECK(line[2] != line[3]);
+}
+
+// ============================================================================
+// CS-BUG-STRING-ALIAS: a string variable defined from another string variable (`g$ = f$`) at the top level
+// of the main program was solved as a number (`g$ = 0`) and never got the string. A string equation
+// `X$ = <string expression>` (a literal, another string variable, Uppercase$, Lowercase$, String$, Phase$,
+// LOOKUP$) now assigns the string, in whatever order the lines come and through chains; the numeric solver
+// does not evaluate it as a number. EES: `g$ = f$` gives g$ the string of f$.
+// ============================================================================
+
+namespace {
+
+/// The error of the structural analysis of `code` (empty when the model is square); the model must parse.
+std::string structuralError(const std::string& code) {
+    const auto parsed = parseFull(code);
+    REQUIRE(parsed.errors.empty());
+    IR ir = IR::fromAST(parsed.program);
+    return StructuralAnalyzer::analyze(ir).errorMessage;
+}
+
+/// Enthalpy of water vapour at 100 C and 1 bar (EES, default units), in J/kg.
+double waterEnthalpy100C() { return CoolProp::PropsSI("H", "T", 373.15, "P", 1e5, "Water"); }
+
+/// Number of occurrences of `needle` in `text`.
+int countOf(const std::string& text, const std::string& needle) {
+    int n = 0;
+    for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) ++n;
+    return n;
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-STRING-ALIAS: the register reproducer", "[library-gaps][string-alias]") {
+    // was: "Block 2 (size 1, vars: h) failed: EvaluationError - Unknown fluid: 'g'" (EES: h of water vapour, 100 C, 1 bar)
+    auto run = runModel("f$ = 'Water'\ng$ = f$\nh = enthalpy(g$, T=100, P=1e5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["h"], WithinRel(waterEnthalpy100C(), 1e-6));
+    CHECK(run.strings.at("f$") == "Water");
+    CHECK(run.strings.at("g$") == "Water");   // was missing from the string variables
+}
+
+TEST_CASE("CS-BUG-STRING-ALIAS: chains, in any order of the lines", "[library-gaps][string-alias]") {
+    const std::vector<std::string> lines = {"f$ = 'Water'\n", "g$ = f$\n", "h$ = g$\n"};
+    std::vector<int> order = {0, 1, 2};
+    int tried = 0;
+    do {
+        std::string code;
+        for (int i : order) code += lines[i];
+        code += "k = enthalpy(h$, T=100, P=1e5)\n";
+        INFO(code);
+        auto run = runModel(code);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["k"], WithinRel(waterEnthalpy100C(), 1e-6));
+        CHECK(run.strings.at("g$") == "Water");
+        CHECK(run.strings.at("h$") == "Water");
+        ++tried;
+    } while (std::next_permutation(order.begin(), order.end()));
+    CHECK(tried == 6);
+
+    // several strings defined from one, a case-insensitive name, and a number that depends on the string
+    auto fan = runModel("src$ = 'R134a'\na$ = SRC$\nb$ = src$\nx = molarmass(b$)\ny = molarmass(a$)\n");
+    REQUIRE(fan.solveOk);
+    CHECK(fan.strings.at("a$") == "R134a");
+    CHECK(fan.strings.at("b$") == "R134a");
+    CHECK_THAT(fan["x"], WithinRel(fan["y"], 1e-14));
+    CHECK_THAT(fan["x"], WithinRel(molarMassKgPerKmol("R134a"), 1e-6));
+}
+
+TEST_CASE("CS-BUG-STRING-ALIAS: the string is an argument of a CALL and is compared in the body", "[library-gaps][string-alias]") {
+    const std::string procedures = R"(
+PROCEDURE isw(s$ : y)
+  IF (s$ = 'Water') THEN
+    y = 1
+  ELSE
+    y = 2
+  ENDIF
+END
+PROCEDURE through(s$ : y)
+  CALL isw(s$ : y)
+END
+)";
+    auto water = runModel(procedures + "f$ = 'Water'\ng$ = f$\nCALL isw(g$ : y1)\nCALL through(g$ : y2)\n");
+    INFO(water.message);
+    REQUIRE(water.solveOk);
+    CHECK(water.verified);
+    CHECK_THAT(water["y1"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(water["y2"], WithinAbs(1.0, 1e-12));
+
+    auto other = runModel(procedures + "f$ = 'R134a'\ng$ = f$\nCALL isw(g$ : y1)\nCALL through(g$ : y2)\n");
+    REQUIRE(other.solveOk);
+    CHECK_THAT(other["y1"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(other["y2"], WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-STRING-ALIAS: a string defined from a string that a CALL computes", "[library-gaps][string-alias]") {
+    // the string of f$ is known only during the solve; the order of the lines does not matter
+    const std::string procedures =
+        "PROCEDURE pick(k : fl$)\n  IF (k = 1) THEN\n    fl$ = 'Water'\n  ELSE\n    fl$ = 'R134a'\n  ENDIF\nEND\n"
+        "PROCEDURE isw(s$ : y)\n  IF (s$ = 'Water') THEN\n    y = 1\n  ELSE\n    y = 2\n  ENDIF\nEND\n";
+    for (const char* order : {"CALL pick(1 : f$)\ng$ = f$\nh = enthalpy(g$, T=100, P=1e5)\nCALL isw(g$ : y)\n",
+                              "CALL isw(g$ : y)\nh = enthalpy(g$, T=100, P=1e5)\ng$ = f$\nCALL pick(1 : f$)\n"}) {
+        INFO(order);
+        auto run = runModel(procedures + order);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK(run.strings.at("f$") == "Water");
+        CHECK(run.strings.at("g$") == "Water");
+        CHECK_THAT(run["h"], WithinRel(waterEnthalpy100C(), 1e-6));
+        CHECK_THAT(run["y"], WithinAbs(1.0, 1e-12));
+    }
+
+    // the property call is the first line: it takes its fluid from the string, so it is solved after it
+    // (was: "Unknown fluid: 'fluid'", the fluid argument was no dependency of the equation)
+    auto first = runModel(procedures + "h = enthalpy(fluid$, T=100, P=1e5)\nCALL pick(1 : fluid$)\n");
+    INFO(first.message);
+    REQUIRE(first.solveOk);
+    CHECK(first.verified);
+    CHECK_THAT(first["h"], WithinRel(waterEnthalpy100C(), 1e-6));
+    auto viaFunction = runModel("h = enthalpy(g$, T=100, P=1e5)\ng$ = Uppercase$(f$)\nf$ = 'water'\n");
+    INFO(viaFunction.message);
+    REQUIRE(viaFunction.solveOk);
+    CHECK_THAT(viaFunction["h"], WithinRel(waterEnthalpy100C(), 1e-6));
+}
+
+TEST_CASE("CS-BUG-STRING-ALIAS: the string functions at the top level of the main program", "[library-gaps][string-alias]") {
+    // was: "Uppercase$ returns a string and cannot be used as a number" (same for LOOKUP$)
+    SECTION("Uppercase$, Lowercase$ and String$ of constants and of other strings") {
+        auto run = runModel("f$ = 'Water'\ng$ = Uppercase$(f$)\nh$ = Lowercase$(g$)\nk$ = String$(3)\nm$ = Uppercase$('r134a')\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK(run.strings.at("g$") == "WATER");
+        CHECK(run.strings.at("h$") == "water");
+        CHECK(run.strings.at("k$") == "3");
+        CHECK(run.strings.at("m$") == "R134A");
+    }
+    SECTION("the result is the fluid of a property call") {
+        auto run = runModel("f$ = 'water'\ng$ = Uppercase$(f$)\nh = enthalpy(g$, T=100, P=1e5)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["h"], WithinRel(waterEnthalpy100C(), 1e-6));
+    }
+    SECTION("LOOKUP$ with constant and with computed row and column") {
+        auto run = runModel("a$ = LOOKUP$('Species', 2, 1)\ni = 1 + 2\nb$ = LOOKUP$('Species', i, 1)\n"
+                            "c$ = LOOKUP$('Species', 1, 'Name')\nh = molarmass(b$)\n", kSpeciesTable);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK(run.strings.at("a$") == "O2");
+        CHECK(run.strings.at("b$") == "CO2");
+        CHECK(run.strings.at("c$") == "N2");
+        CHECK_THAT(run["h"], WithinRel(molarMassKgPerKmol("CO2"), 1e-6));
+    }
+    SECTION("Phase$ whose state is computed first") {
+        auto run = runModel("T = 90 + 11\nph$ = Phase$(Water, T=T, P=1e5)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.strings.at("ph$") == "gas");
+    }
+    SECTION("a string function that is not a string function of EES stays an error") {
+        auto run = runModel("g$ = foo$(1)\nx = 1\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("String-valued function not supported: foo$") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-BUG-STRING-ALIAS: the solution check compares the strings", "[library-gaps][string-alias]") {
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_library_gaps_string_alias";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const fs::path file = dir / "model.eescode";
+    { std::ofstream f(file); f << "f$ = 'Water'\ng$ = Uppercase$(f$)\nh$ = f$\nx = 1\n"; }
+    CoolSolveRunner runner(file.string());
+    SolverOptions options;
+    REQUIRE(runner.run(options));
+    const auto& res = runner.getSolveResult();
+    CHECK(checkSolution(runner.getIR(), res.variables, res.stringVariables, options.coolpropConfig, 1e-3).allSatisfied);
+
+    // a string that does not follow its equation is a violation (the case of the text is not)
+    auto altered = res.stringVariables;
+    altered["h$"] = "WATER";
+    CHECK(checkSolution(runner.getIR(), res.variables, altered, options.coolpropConfig, 1e-3).allSatisfied);
+    altered["h$"] = "R134a";
+    auto bad = checkSolution(runner.getIR(), res.variables, altered, options.coolpropConfig, 1e-3);
+    CHECK_FALSE(bad.allSatisfied);
+    CHECK(bad.violatedCount == 1);
+    altered = res.stringVariables;
+    altered["g$"] = "Water2";
+    CHECK_FALSE(checkSolution(runner.getIR(), res.variables, altered, options.coolpropConfig, 1e-3).allSatisfied);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("CS-BUG-STRING-ALIAS: the debug folder of a model with string equations", "[library-gaps][string-alias]") {
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_library_gaps_string_alias_debug";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const std::string code = "f$ = 'Water'\ng$ = Uppercase$(f$)\nh$ = f$\nx = 1\n";
+    const fs::path file = dir / "model.eescode";
+    { std::ofstream f(file); f << code; }
+    CoolSolveRunner runner(file.string());
+    REQUIRE(runner.run(SolverOptions()));
+    runner.generateDebugOutput((dir / "debug").string(), code);
+    for (const char* name : {"variables.md", "equations.md", "coolsolve_residuals.md"}) {
+        INFO(name);
+        std::ifstream in(dir / "debug" / name);
+        REQUIRE(in.good());
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        CHECK(text.find("g$") != std::string::npos);
+        CHECK(text.find("h$") != std::string::npos);
+    }
+    fs::remove_all(dir);
+}
+
+TEST_CASE("CS-BUG-STRING-ALIAS: the .sol file holds the string of g$", "[library-gaps][string-alias]") {
+    const fs::path binary = fs::absolute("coolsolve");
+    if (!fs::exists(binary)) SKIP("coolsolve binary not found next to the tests: " << binary.string());
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_string_alias_sol";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    { std::ofstream f(dir / "m.eescode"); f << "f$ = 'Water'\ng$ = f$\nh = enthalpy(g$, T=100, P=1e5)\n"; }
+    REQUIRE(runCli(binary, dir, ""));
+    REQUIRE(fs::exists(dir / "m.sol"));
+    const std::string sol = fileText(dir / "m.sol");
+    INFO(sol);
+    // the string, once each (the numeric `g$ = 0.0` next to it is CS-BUG-SOL-STRING, which also affects f$)
+    CHECK(countOf(sol, "g$ = 'Water'\n") == 1);
+    CHECK(countOf(sol, "f$ = 'Water'\n") == 1);
+    CHECK(countOf(sol, "h = ") == 1);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("CS-BUG-STRING-ALIAS: negative tests", "[library-gaps][string-alias]") {
+    SECTION("two strings defined from each other: an error that names them") {
+        for (const char* code : {"f$ = g$\ng$ = f$\nx = 1\n", "g$ = f$\nf$ = g$\nx = 1\n"}) {
+            INFO(code);
+            auto run = runModel(code);
+            CHECK_FALSE(run.solveOk);
+            CHECK(run.message.find("defined from each other") != std::string::npos);
+            CHECK(run.message.find("f$") != std::string::npos);
+            CHECK(run.message.find("g$") != std::string::npos);
+        }
+    }
+    SECTION("a cycle of three, a string defined from itself, a cycle through a function") {
+        auto three = runModel("a$ = b$\nb$ = c$\nc$ = a$\nx = 1\n");
+        CHECK_FALSE(three.solveOk);
+        CHECK(three.message.find("a$") != std::string::npos);
+        CHECK(three.message.find("b$") != std::string::npos);
+        CHECK(three.message.find("c$") != std::string::npos);
+        auto self = runModel("f$ = f$\nx = 1\n");
+        CHECK_FALSE(self.solveOk);
+        CHECK(self.message.find("f$") != std::string::npos);
+        auto func = runModel("g$ = Uppercase$(f$)\nf$ = g$\nx = 1\n");
+        CHECK_FALSE(func.solveOk);
+        CHECK(func.message.find("defined from each other") != std::string::npos);
+        // a chain that ends in a literal is no cycle
+        auto chain = runModel("a$ = b$\nb$ = c$\nc$ = 'Water'\nx = 1\n");
+        CHECK(chain.solveOk);
+    }
+    SECTION("a string with no value: the error names it") {
+        const std::string code = "g$ = f$\nh = enthalpy(g$, T=100, P=1e5)\n";
+        auto run = runModel(code);
+        CHECK_FALSE(run.solveOk);
+        const std::string error = structuralError(code);
+        INFO(error);
+        CHECK(error.find("no value") != std::string::npos);
+        CHECK(error.find("f$") != std::string::npos);
+        // a string that is only an argument of a property call, and a chain that starts at an unset string
+        const std::string only = structuralError("h = enthalpy(fluid$, T=100, P=1e5)\n");
+        INFO(only);
+        CHECK(only.find("no value") != std::string::npos);
+        CHECK(only.find("fluid$") != std::string::npos);
+        const std::string chain = structuralError("b$ = a$\nc$ = b$\n");
+        INFO(chain);
+        CHECK(chain.find("a$") != std::string::npos);
+        // a model whose strings all have a value is not reported
+        CHECK(structuralError("f$ = 'Water'\ng$ = f$\nh = enthalpy(g$, T=100, P=1e5)\n").empty());
+    }
+    SECTION("a string defined from a variable that holds a number is an error, not a silent 0") {
+        auto run = runModel("f$ = 3\ng$ = f$\n");
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("String variable not found: f$") != std::string::npos);
+    }
+    SECTION("a string function that fails reports its error") {
+        auto number = runModel("g$ = Uppercase$(3)\nx = 1\n");
+        CHECK_FALSE(number.solveOk);
+        CHECK(number.message.find("Uppercase$(): the argument must be a string") != std::string::npos);
+        auto missing = runModel("g$ = LOOKUP$('nope', 1, 1)\nx = 1\n");
+        CHECK_FALSE(missing.solveOk);
+        CHECK(missing.message.find("nope") != std::string::npos);
+        auto asNumber = runModel("x = Uppercase$('a') + 1\n");
+        CHECK_FALSE(asNumber.solveOk);
+        CHECK(asNumber.message.find("returns a string and cannot be used as a number") != std::string::npos);
+    }
+    SECTION("a string assigned a number keeps its behaviour: the number, no string") {
+        auto run = runModel("g$ = 3\nh = 1\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["g$"], WithinAbs(3.0, 1e-12));
+        CHECK(run.strings.count("g$") == 0);
+    }
 }

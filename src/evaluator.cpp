@@ -2190,6 +2190,10 @@ RoutineNames routinesThatWarn(const IR& ir) {
     return names;
 }
 
+/// An equation `X$ = ...` that the block evaluator assigns (CS-BUG-STRING-ALIAS): a string defined from another
+/// string variable or from a string function. A literal is set by the IR (IR::fromAST) and costs nothing here.
+bool assignsString(const EquationInfo& eq) { return isStringAssignment(eq) && !eq.rhs->is<StringLiteral>(); }
+
 }  // namespace
 
 void BlockEvaluator::markCallWarnings(const std::set<std::string, CaseInsensitiveLess>& routines) {
@@ -2214,14 +2218,16 @@ BlockEvaluator::BlockEvaluator(const Block& block, const IR& ir, const CoolPropC
     for (size_t i = 0; i < variables_.size(); ++i) {
         varToIndex_[variables_[i]] = i;
     }
-    // CALLs that compute a string (CS-BUG-STRING-CALL-OUT): the strings they set are read by other
-    // CALLs of the block, so evaluate them first, each after the producers of the strings it reads.
+    // CALLs that compute a string (CS-BUG-STRING-CALL-OUT) and string assignments `X$ = ...`
+    // (CS-BUG-STRING-ALIAS): the strings they set are read by other equations of the block, so evaluate
+    // them first, each after the producers of the strings it reads.
     auto isString = [](const std::string& name) { return !name.empty() && name.back() == '$'; };
     auto stringOutputs = [&](const EquationInfo& eq) {
         std::set<std::string, CaseInsensitiveLess> names;
         if (eq.procedureCall)
             for (const auto& out : eq.procedureCall->outputVars)
                 if (isString(out.name)) names.insert(out.name);
+        if (assignsString(eq)) names.insert(eq.lhs->as<Variable>().name);
         return names;
     };
     std::vector<size_t> producers;
@@ -2416,6 +2422,23 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
         }
 
         if (!eqInfo->lhs || !eqInfo->rhs) continue;
+
+        // `X$ = <string expression>`: X$ gets the string, handed to the caller like a string output of a
+        // CALL. The number that stands for X$ in the system stays 0 (as for a string literal).
+        if (hasStringCallOutputs_ && assignsString(*eqInfo)) {
+            const std::string& name = eqInfo->lhs->as<Variable>().name;
+            const std::string value = exprEval.evaluateString(eqInfo->rhs);
+            exprEval.setStringVariable(name, value);
+            result.stringOutputs[name] = value;
+            ADValue standIn = exprEval.evaluate(eqInfo->lhs);
+            result.residuals[eq] = standIn.value;
+            if (computeJacobian) {
+                for (size_t var = 0; var < variables_.size(); ++var) {
+                    result.jacobian[eq][var] = standIn.gradient[var];
+                }
+            }
+            continue;
+        }
 
         ADValue lhs = exprEval.evaluate(eqInfo->lhs);
         ADValue rhs = exprEval.evaluate(eqInfo->rhs);
