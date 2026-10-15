@@ -14875,3 +14875,148 @@ TEST_CASE("CS-GAP-GOTO: negative tests, the errors of GOTO and of the labels", "
         CHECK(parseErrorsWithLines("PROCEDURE p(x:y)\ny = 1\nab: y = 2\nEND\n" + call) == Messages{"3: Could not parse line"});
     }
 }
+
+// ============================================================================
+// CS-BUG-REPEAT-LIMIT: a REPEAT ... UNTIL loop in the body of a FUNCTION or PROCEDURE stopped silently after
+// 10000 iterations and the routine returned whatever it held, with SUCCESS. A run of a REPEAT loop that reaches
+// 100000 iterations without its UNTIL condition becoming true is an error naming the routine and the line.
+// ============================================================================
+
+namespace {
+
+/// FUNCTION `cnt` that counts up to `n` with a REPEAT loop that starts at line 3, called with `n`.
+std::string repeatCountModel(long n) {
+    return "FUNCTION cnt(n)\ni = 0\nREPEAT\ni = i + 1\nUNTIL (i >= n)\ncnt = i\nEND\nz = cnt(" + std::to_string(n) + ")\n";
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-REPEAT-LIMIT: reproducer of the register, 20000 iterations run to the end", "[library-gaps][repeat-limit]") {
+    auto run = runModel(repeatCountModel(20000));
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["z"], WithinAbs(20000.0, 1e-9));   // 10000 before the fix
+    CHECK(run.verified);
+}
+
+TEST_CASE("CS-BUG-REPEAT-LIMIT: a loop just below and just above the limit", "[library-gaps][repeat-limit]") {
+    SECTION("around the former limit of 10000") {
+        for (long n : {9999L, 10000L, 10001L}) {
+            INFO("n = " << n);
+            auto run = runModel(repeatCountModel(n));
+            REQUIRE(run.solveOk);
+            CHECK_THAT(run["z"], WithinAbs(static_cast<double>(n), 1e-9));
+        }
+    }
+    SECTION("exactly 100000 iterations are allowed") {
+        auto run = runModel(repeatCountModel(100000));
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["z"], WithinAbs(100000.0, 1e-9));
+    }
+    SECTION("100001 iterations are an error naming the routine and the line of the REPEAT") {
+        auto run = runModel(repeatCountModel(100001));
+        REQUIRE(run.parseOk);
+        CHECK_FALSE(run.solveOk);   // z = 10000 with SUCCESS before the fix
+        INFO(run.message);
+        CHECK(run.message.find("REPEAT loop in FUNCTION 'cnt' (line 3) did not end after 100000 iterations: "
+                               "an UNTIL condition that never becomes true?") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-BUG-REPEAT-LIMIT: a REPEAT loop in a PROCEDURE", "[library-gaps][repeat-limit]") {
+    // a loop longer than the former limit, with an output that the loop builds
+    auto run = runModel(R"EES(PROCEDURE sumto(n:s,k)
+s = 0
+k = 0
+REPEAT
+  k = k + 1
+  s = s + k
+UNTIL (k >= n)
+END
+CALL sumto(30000:total,count)
+)EES");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["count"], WithinAbs(30000.0, 1e-9));
+    CHECK_THAT(run["total"], WithinAbs(30000.0 * 30001.0 / 2.0, 1e-3));
+
+    // a loop that never ends: the error names the PROCEDURE and the line of the REPEAT, not of the UNTIL
+    auto endless = runModel("PROCEDURE p(x:y)\ny = x\nREPEAT\n  y = y + 1\n  y = y * 1\nUNTIL (y < 0)\nEND\nCALL p(1:z)\n");
+    REQUIRE(endless.parseOk);
+    CHECK_FALSE(endless.solveOk);
+    INFO(endless.message);
+    CHECK(endless.message.find("REPEAT loop in PROCEDURE 'p' (line 3) did not end after 100000 iterations") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-REPEAT-LIMIT: nested REPEAT loops, the limit applies to each run of a loop", "[library-gaps][repeat-limit]") {
+    // the inner loop runs 60000 times for each of the 2 outer iterations: 120000 passes through the body of the
+    // inner loop in all, more than the limit, but no single run of a loop reaches it
+    const std::string nest = R"EES(FUNCTION nest(n, m)
+total = 0
+i = 0
+REPEAT
+  i = i + 1
+  j = 0
+  REPEAT
+    j = j + 1
+    total = total + 1
+  UNTIL (j >= m)
+UNTIL (i >= n)
+nest = total
+END
+)EES";
+    auto run = runModel(nest + "z = nest(2, 60000)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["z"], WithinAbs(120000.0, 1e-9));
+
+    // an inner loop that never ends is reported with the line of the inner REPEAT
+    auto inner = runModel(nest + "z = nest(2, 1e9)\n");
+    REQUIRE(inner.parseOk);
+    CHECK_FALSE(inner.solveOk);
+    INFO(inner.message);
+    CHECK(inner.message.find("REPEAT loop in FUNCTION 'nest' (line 7) did not end after 100000 iterations") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-REPEAT-LIMIT: a condition true at the first iteration runs the body once", "[library-gaps][repeat-limit]") {
+    auto run = runModel(R"EES(FUNCTION once(x)
+k = 0
+v = x
+REPEAT
+  k = k + 1
+  v = v + 10
+UNTIL (k >= 1)
+once = k * 1000 + v
+END
+y = once(5)
+)EES");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(1015.0, 1e-9));   // the body ran once: k = 1, v = 15
+}
+
+TEST_CASE("CS-BUG-REPEAT-LIMIT: negative tests, an endless loop called from a routine, a loop that is left", "[library-gaps][repeat-limit]") {
+    SECTION("the routine that holds the loop is named when another routine calls it") {
+        auto run = runModel("FUNCTION spin(x)\nspin = x\nREPEAT\n  spin = spin + 1\nUNTIL (spin < 0)\nEND\n"
+                            "PROCEDURE outer(x:y)\ny = spin(x)\nEND\nCALL outer(1:z)\n");
+        REQUIRE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+        INFO(run.message);
+        CHECK(run.message.find("REPEAT loop in FUNCTION 'spin' (line 3) did not end after 100000 iterations: "
+                               "an UNTIL condition that never becomes true?") != std::string::npos);
+    }
+    SECTION("a GOTO out of a long loop is not stopped") {
+        auto run = runModel("FUNCTION leave(n)\nk = 0\nREPEAT\n  k = k + 1\n  IF (k >= n) THEN GOTO 10\nUNTIL (k < 0)\n10:\nleave = k\nEND\ny = leave(50000)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(50000.0, 1e-9));
+    }
+    SECTION("a DUPLICATE loop of a body is not limited") {
+        auto run = runModel("FUNCTION total(n)\ntotal = 0\nDUPLICATE i = 1, n\n  total = total + 1\nEND\nEND\ny = total(150000)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(150000.0, 1e-9));
+    }
+}

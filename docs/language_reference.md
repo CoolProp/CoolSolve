@@ -960,6 +960,20 @@ REPEAT
 UNTIL(x > 10)
 ```
 
+`REPEAT ... UNTIL` is a loop of the body of a `FUNCTION` or `PROCEDURE` (§7): the
+body runs, then the condition is tested, so the body runs at least once. A run of the
+loop that has not ended after **100 000** iterations (the `UNTIL` condition never becomes true)
+is an error that names the routine and the line of the `REPEAT`, and the model is not
+solved (before this limit existed, the loop stopped silently at 10 000 iterations and the routine
+returned the value it held then):
+
+```
+REPEAT loop in FUNCTION 'cnt' (line 3) did not end after 100000 iterations: an UNTIL condition that never becomes true?
+```
+
+The limit is per run of a loop: a loop nested in another one has its own count each time it
+starts. A loop left by a `GOTO` (§7) is not concerned.
+
 ### IF-THEN-ELSE (inside functions and procedures)
 
 As in EES, `IF` statements exist only in the body of a `FUNCTION` or
@@ -1051,7 +1065,8 @@ END
   `DUPLICATE` or `REPEAT` body that does not contain the `GOTO`) is refused, as is a label
   that two statements define.
 - A body that would execute more than 100 000 `GOTO`s in one call is stopped with an error
-  that names the routine and the line (a loop built with `GOTO` that never ends).
+  that names the routine and the line (a loop built with `GOTO` that never ends); a
+  `REPEAT ... UNTIL` loop has the same limit of 100 000 iterations per run (§ REPEAT-UNTIL loop).
 - The read-before-assignment check of the bodies (§7) goes in the order of the text, a
   `GOTO` does not change it; derivatives are propagated through the path taken, as for
   an `IF`.

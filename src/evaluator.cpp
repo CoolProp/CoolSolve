@@ -509,6 +509,8 @@ public:
 private:
     /// GOTOs executed by one run of a body beyond which it is taken for a loop that never ends.
     static constexpr long kMaxGotos = 100000;
+    /// Iterations of one run of a REPEAT loop beyond which it is taken for a loop that never ends.
+    static constexpr long kMaxRepeatIterations = 100000;
 
     /// The GOTO being carried out: while `pending`, the blocks are left, innermost first, up to the one that
     /// holds `label`.
@@ -2752,12 +2754,15 @@ void ProceduralEvaluator::execute(ExpressionEvaluator& eval, const StmtPtr& stmt
         }
     } else if (stmt->is<RepeatUntil>()) {
         const auto& ru = stmt->as<RepeatUntil>();
-        const int maxIter = 10000;
-        for (int iter = 0; iter < maxIter; ++iter) {
+        for (long iter = 1;; ++iter) {
             runBlock(eval, ru.body, jump);
             if (jump.pending) break;   // a GOTO out of the loop
             ADValue cond = eval.evaluate(ru.condition);
             if (cond.value > 0.5) break;
+            if (iter >= kMaxRepeatIterations)
+                throw std::runtime_error("REPEAT loop in " + jump.routine + " (line " + std::to_string(stmt->sourceLineNumber) +
+                                         ") did not end after " + std::to_string(kMaxRepeatIterations) +
+                                         " iterations: an UNTIL condition that never becomes true?");
         }
     } else if (stmt->is<Goto>()) {
         if (++jump.executed > kMaxGotos)
