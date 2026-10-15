@@ -299,25 +299,42 @@ END
 // ============================================================================
 
 TEST_CASE("REPEAT-UNTIL parsing", "[priority1][repeat]") {
+    // REPEAT ... UNTIL is a loop of the body of a FUNCTION or PROCEDURE (as in EES); in the main program it is
+    // a parse error (it used to be parsed and silently never executed: CS-BUG-MAIN-REPEAT)
     coolsolve::EESParser parser;
     std::string source = R"(
-REPEAT
-    x = x + 1
-UNTIL(x > 10)
+FUNCTION steps(x)
+    REPEAT
+        x = x + 1
+    UNTIL(x > 10)
+    steps = x
+END
+y = steps(1)
 )";
     auto parseResult = parser.parse(source);
     REQUIRE(parseResult.success);
 
     bool foundRepeat = false;
     for (const auto& stmt : parseResult.program.statements) {
-        if (stmt->is<coolsolve::RepeatUntil>()) {
-            const auto& ru = stmt->as<coolsolve::RepeatUntil>();
-            REQUIRE(ru.body.size() == 1);
-            REQUIRE(ru.condition != nullptr);
-            foundRepeat = true;
+        if (!stmt->is<coolsolve::FunctionDefinition>()) continue;
+        for (const auto& inner : stmt->as<coolsolve::FunctionDefinition>().body) {
+            if (inner->is<coolsolve::RepeatUntil>()) {
+                const auto& ru = inner->as<coolsolve::RepeatUntil>();
+                REQUIRE(ru.body.size() == 1);
+                REQUIRE(ru.condition != nullptr);
+                foundRepeat = true;
+            }
         }
     }
     REQUIRE(foundRepeat);
+
+    // the same loop in the main program is refused, with the line of the REPEAT
+    auto mainResult = parser.parse("x = 1\nREPEAT\n    x = x + 1\nUNTIL(x > 10)\n");
+    REQUIRE_FALSE(mainResult.success);
+    REQUIRE(mainResult.errors.size() == 1);
+    REQUIRE(mainResult.errors[0].line == 2);
+    REQUIRE(mainResult.errors[0].message.find("REPEAT ... UNTIL loops are only allowed inside FUNCTION and PROCEDURE") !=
+            std::string::npos);
 }
 
 // ============================================================================

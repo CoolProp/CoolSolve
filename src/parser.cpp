@@ -415,17 +415,10 @@ private:
                 continue;
             }
 
-            // Handle REPEAT-UNTIL loop
+            // REPEAT-UNTIL loops are not valid in the main program (EES): parsed to skip them, then reported
             if (isKeyword("REPEAT")) {
-                int startLine = lineNumber;
-                std::vector<StmtPtr> body;
-                ExprPtr condition;
-                std::string term = parseBodyLines(stream, lineNumber, body, result, &condition);
-                if (term != "UNTIL" || !condition) {
-                    result.errors.push_back({startLine, 0, "REPEAT missing UNTIL(condition)", line});
-                } else {
-                    result.program.statements.push_back(makeRepeatUntil(body, condition, startLine));
-                }
+                std::vector<StmtPtr> discarded;
+                parseRepeatStatement(stream, lineNumber, discarded, result, line);
                 continue;
             }
             
@@ -1285,6 +1278,30 @@ private:
         return true;
     }
 
+    static constexpr const char* kRepeatOutsideProcedureMessage =
+        "REPEAT ... UNTIL loops are only allowed inside FUNCTION and PROCEDURE bodies "
+        "(in the main program an iteration is solved by the solver as equations; to run a loop, "
+        "put it in a FUNCTION or PROCEDURE)";
+
+    /// Parses the REPEAT ... UNTIL(condition) loop whose REPEAT is on the current line (`line`) and appends it to
+    /// `body`. Like IF ... THEN, the loop exists in the body of a FUNCTION or PROCEDURE only (EES): anywhere in
+    /// the main program (a DUPLICATE body included) it is an error, with the line of the REPEAT. It used to be
+    /// parsed and then silently dropped by the IR (CS-BUG-MAIN-REPEAT).
+    void parseRepeatStatement(std::istream& stream, int& lineNumber, std::vector<StmtPtr>& body,
+                              ParseResult& result, const std::string& line) {
+        const int startLine = lineNumber;
+        std::vector<StmtPtr> repBody;
+        ExprPtr condition;
+        std::string term = parseBodyLines(stream, lineNumber, repBody, result, &condition);
+        if (term == "UNTIL" && condition) {
+            body.push_back(makeRepeatUntil(repBody, condition, startLine));
+        } else {
+            result.errors.push_back({startLine, 0, "REPEAT missing UNTIL(condition)", line});
+        }
+        if (procedureBodyDepth_ == 0)
+            result.errors.push_back({startLine, 0, kRepeatOutsideProcedureMessage, line});
+    }
+
     // ========================================================================
     // Unified body parser for function/procedure/DUPLICATE/REPEAT/IF bodies.
     // Reads lines from 'stream', parsing comments, directives, IF-THEN-ELSE,
@@ -1412,15 +1429,7 @@ private:
                     result.errors.push_back({dupStartLine, 0, "DUPLICATE missing END", bodyLine});
                 }
             } else if (isBodyKeyword("REPEAT")) {
-                int repStartLine = lineNumber;
-                std::vector<StmtPtr> repBody;
-                ExprPtr condition;
-                std::string term = parseBodyLines(stream, lineNumber, repBody, result, &condition);
-                if (term == "UNTIL" && condition) {
-                    body.push_back(makeRepeatUntil(repBody, condition, repStartLine));
-                } else {
-                    result.errors.push_back({repStartLine, 0, "REPEAT missing UNTIL(condition)", bodyLine});
-                }
+                parseRepeatStatement(stream, lineNumber, body, result, bodyLine);
             } else if (std::isdigit(static_cast<unsigned char>(trimmedBody.empty() ? ' ' : trimmedBody[0])) &&
                        parseLabelLine(bodyLine, lineNumber, body, result)) {
                 // a statement label (CS-GAP-GOTO)

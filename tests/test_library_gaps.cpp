@@ -15020,3 +15020,136 @@ TEST_CASE("CS-BUG-REPEAT-LIMIT: negative tests, an endless loop called from a ro
         CHECK_THAT(run["y"], WithinAbs(150000.0, 1e-9));
     }
 }
+
+// ============================================================================
+// CS-BUG-MAIN-REPEAT: a REPEAT ... UNTIL loop in the main program was parsed and then silently never executed
+// (no diagnostic, SUCCESS; inside a DUPLICATE of the main program the IR crashed). EES has REPEAT ... UNTIL, like
+// IF ... THEN and GOTO, in the body of a FUNCTION or PROCEDURE only: elsewhere it is a parse error with the line.
+// ============================================================================
+
+namespace {
+const std::string kMainRepeatMessage =
+    "REPEAT ... UNTIL loops are only allowed inside FUNCTION and PROCEDURE bodies "
+    "(in the main program an iteration is solved by the solver as equations; to run a loop, "
+    "put it in a FUNCTION or PROCEDURE)";
+}  // namespace
+
+TEST_CASE("CS-BUG-MAIN-REPEAT: reproducer of the register, a REPEAT in the main program is a parse error with the line",
+          "[library-gaps][main-repeat]") {
+    // was: Equations: 2, SUCCESS, x = 1 (the loop was dropped). EES refuses it: a main-program loop is not valid EES
+    const std::string model = "x = 1\nREPEAT\nx = x + 1\nUNTIL (x > 5)\ny = 2\n";
+    const auto errors = parseErrorsWithLines(model);
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0] == "2: " + kMainRepeatMessage);   // the line of the REPEAT, not of the UNTIL
+
+    auto run = runModel(model);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(run.message.find(kMainRepeatMessage) != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-MAIN-REPEAT: a REPEAT in the body of a DUPLICATE of the main program is a parse error (it crashed the IR)",
+          "[library-gaps][main-repeat]") {
+    const std::string model = "DUPLICATE i = 1, 2\n  y[i] = i\n  REPEAT\n    x[i] = i\n  UNTIL (x[i] > 5)\nEND\n";
+    const auto errors = parseErrorsWithLines(model);
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0] == "3: " + kMainRepeatMessage);
+
+    auto run = runModel(model);   // was: segmentation fault in IR::fromAST (the cloned statement was empty)
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(run.message.find(kMainRepeatMessage) != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-MAIN-REPEAT: REPEAT in a FUNCTION and in a PROCEDURE is still fine", "[library-gaps][main-repeat]") {
+    SECTION("FUNCTION") {
+        auto run = runModel("FUNCTION steps(x)\n  k = 0\n  v = x\n  REPEAT\n    k = k + 1\n    v = v + 1\n  UNTIL (v > 5)\n"
+                            "  steps = k\nEND\ny = steps(1)\n");
+        INFO(run.message);
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(5.0, 1e-12));
+    }
+    SECTION("PROCEDURE") {
+        auto run = runModel("PROCEDURE grow(x : y)\n  y = x\n  REPEAT\n    y = y * 2\n  UNTIL (y > 100)\nEND\nCALL grow(3 : z)\n");
+        INFO(run.message);
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["z"], WithinAbs(192.0, 1e-12));
+    }
+    SECTION("nested REPEAT loops and a DUPLICATE inside a REPEAT of a body") {
+        CHECK(parseErrorsWithLines("FUNCTION f(n)\n  i = 0\n  s = 0\n  REPEAT\n    i = i + 1\n    j = 0\n    REPEAT\n"
+                                   "      j = j + 1\n      s = s + 1\n    UNTIL (j >= n)\n"
+                                   "    DUPLICATE m = 1, 2\n      s = s + m\n    END\n  UNTIL (i >= n)\n  f = s\nEND\ny = f(2)\n").empty());
+    }
+    SECTION("a REPEAT in a body that holds an IF, lower case and a trailing comment") {
+        auto run = runModel("function f(x)\n  k = 0\n  repeat   // go on\n    k = k + 1\n    IF (k > 100) THEN GOTO 10\n"
+                            "  until (k >= x)\n  10:\n  f = k\nend\ny = f(4)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(4.0, 1e-12));
+    }
+    SECTION("the loop is in the AST of the body") {
+        const auto parsed = parseFull("FUNCTION f(x)\n  y = x\n  REPEAT\n    y = y + 1\n  UNTIL (y > 3)\n  f = y\nEND\nz = f(1)\n");
+        REQUIRE(parsed.errors.empty());
+        bool found = false;
+        for (const auto& stmt : parsed.program.statements)
+            if (stmt->is<FunctionDefinition>())
+                for (const auto& inner : stmt->as<FunctionDefinition>().body) found = found || inner->is<RepeatUntil>();
+        CHECK(found);
+    }
+}
+
+TEST_CASE("CS-BUG-MAIN-REPEAT: negative tests, what is an error and what is not", "[library-gaps][main-repeat]") {
+    SECTION("only the REPEAT of the main program is reported, the routines before and after are fine") {
+        const std::string routine = "FUNCTION f(x)\n  y = x\n  REPEAT\n    y = y + 1\n  UNTIL (y > 3)\n  f = y\nEND\n";
+        const auto errors = parseErrorsWithLines(routine + "a = f(1)\nREPEAT\n  b = b + 1\nUNTIL (b > 3)\n" +
+                                                 "PROCEDURE p(x : z)\n  z = x\n  REPEAT\n    z = z + 1\n  UNTIL (z > 3)\nEND\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0] == "9: " + kMainRepeatMessage);
+    }
+    SECTION("lower case, a comment after the keyword, several loops: one error per REPEAT, each with its line") {
+        const auto errors = parseErrorsWithLines("a = 1\nrepeat  // first\n  a = a + 1\nuntil (a > 3)\nb = 1\nRepeat\n  b = b + 1\nUNTIL (b > 3)\n");
+        REQUIRE(errors.size() == 2);
+        CHECK(errors[0] == "2: " + kMainRepeatMessage);
+        CHECK(errors[1] == "6: " + kMainRepeatMessage);
+    }
+    SECTION("a loop without UNTIL keeps its own error, and is also reported as not allowed here") {
+        const auto errors = parseErrorsWithLines("a = 1\nREPEAT\n  a = a + 1\n");
+        REQUIRE(errors.size() == 2);
+        CHECK(errors[0] == "2: REPEAT missing UNTIL(condition)");
+        CHECK(errors[1] == "2: " + kMainRepeatMessage);
+    }
+    SECTION("a REPEAT nested in a REPEAT of the main program is reported too") {
+        const auto errors = parseErrorsWithLines("REPEAT\n  REPEAT\n    a = a + 1\n  UNTIL (a > 3)\nUNTIL (a > 5)\n");
+        REQUIRE(errors.size() == 2);
+        CHECK(errors[0] == "2: " + kMainRepeatMessage);
+        CHECK(errors[1] == "1: " + kMainRepeatMessage);
+    }
+    SECTION("a REPEAT in an IF of the main program: both statements are reported") {
+        const auto errors = parseErrorsWithLines("a = 1\nIF (a > 0) THEN\n  REPEAT\n    a = a + 1\n  UNTIL (a > 3)\nENDIF\n");
+        REQUIRE(errors.size() == 2);
+        CHECK(errors[0] == "3: " + kMainRepeatMessage);
+        CHECK(errors[1].rfind("2: IF ... THEN statements are only allowed inside FUNCTION and PROCEDURE bodies", 0) == 0);
+    }
+    SECTION("a REPEAT in an inactive $IF branch of the main program is not parsed") {
+        auto run = runModel("act$ = 'a'\n$if act$='b'\nREPEAT\n  x = x + 1\nUNTIL (x > 5)\n$endif\ny = 2\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(2.0, 1e-12));
+    }
+    SECTION("a variable whose name starts with repeat is an ordinary variable") {
+        auto run = runModel("repeat|n = 5\nuntil_x = 2*repeat|n\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["until_x"], WithinAbs(10.0, 1e-12));
+    }
+    SECTION("the IF and GOTO errors of the main program are unchanged") {
+        const auto ifErrors = parseErrorsWithLines("a = 1\nIF (a > 0) THEN b = 1\n");
+        REQUIRE(ifErrors.size() == 1);
+        CHECK(ifErrors[0].rfind("2: IF ... THEN statements are only allowed inside FUNCTION and PROCEDURE bodies", 0) == 0);
+        const auto gotoErrors = parseErrorsWithLines("a = 1\nGOTO 10\n");
+        REQUIRE(gotoErrors.size() == 1);
+        CHECK(gotoErrors[0].rfind("2: GOTO is only allowed inside FUNCTION and PROCEDURE bodies", 0) == 0);
+    }
+}

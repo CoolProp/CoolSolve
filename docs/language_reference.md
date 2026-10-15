@@ -974,6 +974,16 @@ REPEAT loop in FUNCTION 'cnt' (line 3) did not end after 100000 iterations: an U
 The limit is per run of a loop: a loop nested in another one has its own count each time it
 starts. A loop left by a `GOTO` (§7) is not concerned.
 
+As for `IF ... THEN` and `GOTO`, the loop does not exist in the main program, where the
+equations are solved simultaneously and nothing is executed in order: a `REPEAT` there (also in the
+body of a `DUPLICATE` of the main program) is a parse error with the line of the `REPEAT`, and the model
+is not solved (such a loop used to be parsed and silently never executed). Write the iteration as
+equations, which the solver iterates on, or put the loop in a `FUNCTION` or `PROCEDURE`:
+
+```
+Line 2: REPEAT ... UNTIL loops are only allowed inside FUNCTION and PROCEDURE bodies (in the main program an iteration is solved by the solver as equations; to run a loop, put it in a FUNCTION or PROCEDURE)
+```
+
 ### IF-THEN-ELSE (inside functions and procedures)
 
 As in EES, `IF` statements exist only in the body of a `FUNCTION` or
