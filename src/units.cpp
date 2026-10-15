@@ -334,6 +334,36 @@ double unitConversionFactor(const std::string& from, const std::string& to) {
     }
 }
 
+namespace {
+
+/// The size of one degree of the temperature scale `unit` in K (1 for C and K, 5/9 for F and R): the entry of
+/// simpleUnits() (a temperature unit there is a difference of temperature), so the names and the case rule are
+/// those of CONVERT.
+/// @throws std::runtime_error when `unit` is not a temperature scale.
+double temperatureDegree(const std::string& unit) {
+    const size_t first = unit.find_first_not_of(" \t");
+    const size_t last = unit.find_last_not_of(" \t");
+    std::vector<std::string> ambiguous;
+    const UnitValue* scale = first == std::string::npos ? nullptr : findUnit(unit.substr(first, last - first + 1), ambiguous);
+    if (!scale || scale->dim != kTemperature)
+        throw std::runtime_error("CONVERTTEMP: '" + unit + "' is not a temperature unit (expected C, K, F or R, or "
+                                 "celsius, kelvin, fahrenheit or rankine)");
+    return scale->factor;
+}
+
+}  // namespace
+
+void checkTemperatureUnit(const std::string& unit) {
+    temperatureDegree(unit);
+}
+
+double convertTemperature(double value, const std::string& from, const std::string& to, double* slope) {
+    const double fromDegree = temperatureDegree(from);
+    const double toDegree = temperatureDegree(to);
+    if (slope) *slope = fromDegree / toDegree;
+    return UnitConverter::fromSI(UnitConverter::toSI(value, UnitType::Temperature, from), UnitType::Temperature, to);
+}
+
 bool unitSettingActive(const std::string& setting, const UnitSystem& units) {
     const std::string s = normalize(setting);
     if (s == "si" || s == "mass" || s == "deg") return true;

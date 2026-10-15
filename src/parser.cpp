@@ -3675,14 +3675,22 @@ private:
             isFirstPositionalArg = false;
         }
         
-        // CONVERT('from', 'to') with literal units: an unknown unit or units of different dimensions are an error
-        // of this line, found before the solve (a unit string computed at run time is checked when evaluated)
-        if (fc.args.size() == 2 && fc.args[0]->is<StringLiteral>() && fc.args[1]->is<StringLiteral>()) {
-            std::string lower = name;
-            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-            if (lower == "convert") {
+        // CONVERT('from', 'to') and CONVERTTEMP('from', 'to', value) with literal units: an unknown unit, units of
+        // different dimensions (CONVERT) or a unit that is not a temperature scale (CONVERTTEMP) are an error of
+        // this line, found before the solve (a unit string computed at run time is checked when evaluated)
+        if (fc.args.size() == 2 || fc.args.size() == 3) {
+            const bool fromLiteral = fc.args[0]->is<StringLiteral>();
+            const bool toLiteral = fc.args[1]->is<StringLiteral>();
+            if (fromLiteral || toLiteral) {
+                std::string lower = name;
+                std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
                 try {
-                    unitConversionFactor(fc.args[0]->as<StringLiteral>().value, fc.args[1]->as<StringLiteral>().value);
+                    if (lower == "convert" && fc.args.size() == 2 && fromLiteral && toLiteral) {
+                        unitConversionFactor(fc.args[0]->as<StringLiteral>().value, fc.args[1]->as<StringLiteral>().value);
+                    } else if (lower == "converttemp" && fc.args.size() == 3) {
+                        if (fromLiteral) checkTemperatureUnit(fc.args[0]->as<StringLiteral>().value);
+                        if (toLiteral) checkTemperatureUnit(fc.args[1]->as<StringLiteral>().value);
+                    }
                 } catch (const std::runtime_error& e) {
                     clearExpressionError();   // what is pending comes from a rejected alternative reading of the text
                     setExpressionError(e.what());

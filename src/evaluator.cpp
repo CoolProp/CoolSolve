@@ -1078,14 +1078,17 @@ static bool isLookupFunction(const std::string& lowerName) {
         return ADValue::constant(factor, numVariables_);
     }
     
-    // CONVERTTEMP('from', 'to', value) — converts a temperature value between scales
+    // CONVERTTEMP('from', 'to', value) — converts a temperature value between scales (C, K, F, R); another unit is
+    // an error (the parser has already checked literal units). The scales differ by a factor and an offset, so the
+    // derivative with respect to the value is the ratio of the degrees.
     if (name == "converttemp" && func.args.size() == 3) {
-        std::string fromUnit = evaluateString(func.args[0]);
-        std::string toUnit = evaluateString(func.args[1]);
-        ADValue val = evaluate(func.args[2]);
-        double inSI = UnitConverter::toSI(val.value, UnitType::Temperature, fromUnit);
-        double result = UnitConverter::fromSI(inSI, UnitType::Temperature, toUnit);
-        return ADValue::constant(result, numVariables_);
+        const std::string fromUnit = evaluateString(func.args[0]);
+        const std::string toUnit = evaluateString(func.args[1]);
+        ADValue result = evaluate(func.args[2]);
+        double slope = 1.0;
+        result.value = convertTemperature(result.value, fromUnit, toUnit, &slope);
+        for (double& g : result.gradient) g *= slope;
+        return result;
     }
 
     // UNITSYSTEM('K') — 1 if that unit setting is in use, 0 otherwise (used by EES

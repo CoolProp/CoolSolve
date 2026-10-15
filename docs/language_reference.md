@@ -473,7 +473,7 @@ END
 | Function                           | Meaning                                     |
 |:-----------------------------------|:--------------------------------------------|
 | `CONVERT('from', 'to')`            | Conversion factor so `1 [from] = factor [to]` |
-| `CONVERTTEMP('from', 'to', T)`     | Convert a temperature value between scales  |
+| `CONVERTTEMP('from', 'to', T)`     | Convert a temperature value between the scales `C`, `K`, `F`, `R` |
 | `UNITSYSTEM('setting')`            | 1 if the unit setting is in use, 0 otherwise (`'SI'`, `'Eng'`, `'Mass'`, `'Molar'`, `'Deg'`, `'Rad'`, `'C'`, `'K'`, `'F'`, `'R'`, `'Pa'`, `'kPa'`, `'bar'`, `'MPa'`, `'psia'`, `'atm'`, `'J'`, `'kJ'`, `'Btu'`, `'kcal'`) — CoolSolve always answers 1 for `SI`, `Mass`, `Deg`, `C`, `Pa` and `J` |
 
 `UNITSYSTEM` lets EES library routines check the unit settings they were
@@ -513,6 +513,19 @@ cp = 4.18*CONVERT('kJ/kg-K', 'Btu/lbm-R')
   line; for a unit computed at run time (a string variable of a FUNCTION) it is an evaluation error. A
   number of arguments other than two is an evaluation error. The factor of a pair of units is computed
   once.
+
+**`CONVERTTEMP` scales.** `CONVERTTEMP('from', 'to', T)` converts the temperature value `T` (with the offset
+of the scales, unlike `CONVERT`) and accepts the four temperature scales of EES, `C`, `K`, `F` and `R`, or
+their long names `celsius`, `kelvin`, `fahrenheit` and `rankine`; the name is read with its exact
+capitalization first, else without regard to case (`c`, `Kelvin`, `FAHRENHEIT`), and spaces around it are
+ignored: `CONVERTTEMP('C', 'F', 100)` is 212, `CONVERTTEMP('F', 'R', 212)` is 671.67
+(100 C = 373.15 K = 212 F = 671.67 R). `T` can be an unknown of the system: the derivative with respect
+to it is the ratio of the degrees of the two scales (1, 1.8 or 5/9), so a block can be solved through
+`CONVERTTEMP`. Any other unit is an error that names it (`CONVERTTEMP: 'Foo' is not a temperature unit
+(expected C, K, F or R, or celsius, kelvin, fahrenheit or rankine)`), a unit of another quantity (`'kPa'`) or
+a compound unit (`'C/s'`) included. When a unit is a string literal the error is a parse error with the line;
+for a unit computed at run time (a string variable of a FUNCTION) it is an evaluation error. A number of
+arguments other than three is an evaluation error. As for `CONVERT`, the units must be quoted.
 
 ---
 

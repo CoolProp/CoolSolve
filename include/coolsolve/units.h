@@ -78,6 +78,28 @@ bool isUnitName(const std::string& name);
  */
 double unitConversionFactor(const std::string& from, const std::string& to);
 
+/**
+ * @brief Checks that `unit` is a temperature scale of `CONVERTTEMP`: `C`, `K`, `F`, `R` or the names `celsius`,
+ *        `kelvin`, `fahrenheit`, `rankine`.
+ *
+ * The name is matched like those of `CONVERT` (exact capitalization first, else case-insensitively when only one
+ * unit fits, which holds for all the scales); spaces around it are ignored. The parser calls it for the literal
+ * units of a `CONVERTTEMP`, so that they are an error of their line.
+ *
+ * @throws std::runtime_error "CONVERTTEMP: 'unit' is not a temperature unit (expected C, K, F or R, ...)".
+ */
+void checkTemperatureUnit(const std::string& unit);
+
+/**
+ * @brief The EES function `CONVERTTEMP('from', 'to', value)`: a temperature `value` expressed in the scale `from`,
+ *        in the scale `to` (100 C = 373.15 K = 212 F = 671.67 R).
+ *
+ * @param slope when not null, receives d(result)/d(value), the ratio of the degrees of the two scales (1, 1.8,
+ *        5/9): the automatic differentiation of the evaluator needs it.
+ * @throws std::runtime_error as checkTemperatureUnit for a unit that is not a temperature scale.
+ */
+double convertTemperature(double value, const std::string& from, const std::string& to, double* slope = nullptr);
+
 class UnitConverter {
 public:
     // Convert value from the specified unit to SI (CoolProp standard)

@@ -13062,3 +13062,285 @@ TEST_CASE("CS-BUG-HUMIDAIR-PROPS: negative tests, density is not an input of the
     REQUIRE(water.solveOk);
     CHECK_THAT(water["T"], WithinAbs(CoolProp::PropsSI("T", "D", 998.2, "P", 1e5, "Water") - 273.15, 1e-6));
 }
+
+// ============================================================================
+// CS-BUG-CONVERTTEMP-UNIT: CONVERTTEMP('from', 'to', value) with an unknown temperature unit returned
+// a number (converttemp('C','Foo',100) = 373.15) and lost the derivative with respect to the value
+// ============================================================================
+
+namespace {
+
+/// The four temperature scales of EES with the value of one temperature (100 C, or 0 C) in each of them.
+struct TempScale {
+    const char* unit;
+    double at100C;   ///< 100 C
+    double at0C;     ///< 0 C
+    double step;     ///< size of one degree in K
+};
+const std::vector<TempScale> kTempScales = {
+    {"C", 100.0, 0.0, 1.0}, {"K", 373.15, 273.15, 1.0}, {"F", 212.0, 32.0, 5.0 / 9.0}, {"R", 671.67, 491.67, 5.0 / 9.0}};
+
+/// Value and derivative with respect to `x` of `converttemp(from, to, x)` at `xv`, straight from the automatic
+/// differentiation (`from` and `to` are the text of the arguments, quotes included).
+ValueAndSlope evalConvertTemp(const std::string& from, const std::string& to, double xv) {
+    EESParser parser;
+    auto parsed = parser.parse("y = converttemp(" + from + ", " + to + ", x)\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    ExpressionEvaluator ev(1);
+    ev.setVariable("x", ADValue::independent(xv, 0, 1));
+    const ADValue r = ev.evaluate(ir.getEquations().at(0).rhs);
+    REQUIRE(r.gradient.size() == 1);
+    return {r.value, r.gradient[0]};
+}
+
+/// Newton iterations that the solver spends on `code`; -1 when it does not solve.
+int solverIterations(const std::string& code) {
+    const fs::path file = fs::temp_directory_path() / "coolsolve_test_library_gaps" / "iterations.eescode";
+    fs::create_directories(file.parent_path());
+    {
+        std::ofstream f(file);
+        f << code;
+    }
+    CoolSolveRunner runner(file.string());
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    const bool ok = runner.run(options);
+    fs::remove(file);
+    return ok ? runner.getSolveResult().totalIterations : -1;
+}
+
+constexpr const char* kNotATemperature = "is not a temperature unit (expected C, K, F or R, or celsius, kelvin, fahrenheit or rankine)";
+
+}  // namespace
+
+TEST_CASE("CS-BUG-CONVERTTEMP-UNIT: register reproducer, an unknown temperature unit is a parse error with the line",
+          "[library-gaps][converttemp-unit]") {
+    // was: SUCCESS with t = 373.15 (the value in K) and t = 100 (the value unchanged)
+    CHECK(parseErrorsWithLines("x = 1\nt = converttemp('C','Foo',100)\n") ==
+          std::vector<std::string>{std::string("2: CONVERTTEMP: 'Foo' ") + kNotATemperature});
+    CHECK(parseErrorsWithLines("t = converttemp('Foo','K',100)\n") ==
+          std::vector<std::string>{std::string("1: CONVERTTEMP: 'Foo' ") + kNotATemperature});
+    for (const char* code : {"t = converttemp('C','Foo',100)\n", "t = converttemp('Foo','K',100)\n"}) {
+        INFO(code);
+        auto run = runModel(code);
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);   // no number is produced
+        CHECK(run.message.find("'Foo' is not a temperature unit") != std::string::npos);
+    }
+    // the EES value: 100 C = 373.15 K = 212 F = 671.67 R
+    auto run = runModel("a = converttemp('C','K',100)\nb = converttemp('C','F',100)\nc = converttemp('C','R',100)\n"
+                        "d = converttemp('F','C',32)\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(373.15, 1e-9));
+    CHECK_THAT(run["b"], WithinAbs(212.0, 1e-9));
+    CHECK_THAT(run["c"], WithinAbs(671.67, 1e-9));
+    CHECK_THAT(run["d"], WithinAbs(0.0, 1e-9));
+}
+
+TEST_CASE("CS-BUG-CONVERTTEMP-UNIT: every pair of scales, C K F R, against hand values", "[library-gaps][converttemp-unit]") {
+    // 100 C = 373.15 K = 212 F = 671.67 R, and 0 C = 273.15 K = 32 F = 491.67 R, in every direction
+    std::string code;
+    for (size_t i = 0; i < kTempScales.size(); ++i)
+        for (size_t j = 0; j < kTempScales.size(); ++j) {
+            const std::string name = std::to_string(i) + std::to_string(j);
+            code += "hot" + name + " = converttemp('" + kTempScales[i].unit + "', '" + kTempScales[j].unit + "', " +
+                    std::to_string(kTempScales[i].at100C) + ")\n";
+            code += "cold" + name + " = converttemp('" + kTempScales[i].unit + "', '" + kTempScales[j].unit + "', " +
+                    std::to_string(kTempScales[i].at0C) + ")\n";
+        }
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (size_t i = 0; i < kTempScales.size(); ++i)
+        for (size_t j = 0; j < kTempScales.size(); ++j) {
+            const std::string name = std::to_string(i) + std::to_string(j);
+            INFO(kTempScales[i].unit << " -> " << kTempScales[j].unit);
+            CHECK_THAT(run["hot" + name], WithinAbs(kTempScales[j].at100C, 1e-6));   // 6 digits written by to_string
+            CHECK_THAT(run["cold" + name], WithinAbs(kTempScales[j].at0C, 1e-6));
+        }
+    // absolute zero in the four scales
+    auto zero = runModel("a = converttemp('K','C',0)\nb = converttemp('K','F',0)\nc = converttemp('K','R',0)\n"
+                         "d = converttemp('R','K',0)\ne = converttemp('C','K',-273.15)\n");
+    REQUIRE(zero.solveOk);
+    CHECK_THAT(zero["a"], WithinAbs(-273.15, 1e-9));
+    CHECK_THAT(zero["b"], WithinAbs(-459.67, 1e-9));
+    CHECK_THAT(zero["c"], WithinAbs(0.0, 1e-9));
+    CHECK_THAT(zero["d"], WithinAbs(0.0, 1e-9));
+    CHECK_THAT(zero["e"], WithinAbs(0.0, 1e-9));
+    // CONVERT keeps a temperature unit as a temperature difference
+    auto diff = runModel("f = convert('C','F')\nk = convert('K','C')\n");
+    REQUIRE(diff.solveOk);
+    CHECK_THAT(diff["f"], WithinRel(1.8, 1e-14));
+    CHECK_THAT(diff["k"], WithinRel(1.0, 1e-14));
+}
+
+TEST_CASE("CS-BUG-CONVERTTEMP-UNIT: long names and the case of the unit names", "[library-gaps][converttemp-unit]") {
+    // the exact spelling first, else the only name that differs by case (all the scales are unique in lower case)
+    auto run = runModel(
+        "a = converttemp('celsius', 'kelvin', 100)\n"
+        "b = converttemp('Celsius', 'Fahrenheit', 100)\n"
+        "c = converttemp('FAHRENHEIT', 'RANKINE', 212)\n"
+        "d = converttemp('rankine', 'c', 671.67)\n"
+        "e = converttemp('c', 'k', 100)\n"
+        "f = converttemp('f', 'r', 212)\n"
+        "g = converttemp(' C ', 'K', 100)\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(373.15, 1e-9));
+    CHECK_THAT(run["b"], WithinAbs(212.0, 1e-9));
+    CHECK_THAT(run["c"], WithinAbs(671.67, 1e-9));
+    CHECK_THAT(run["d"], WithinAbs(100.0, 1e-9));
+    CHECK_THAT(run["e"], WithinAbs(373.15, 1e-9));
+    CHECK_THAT(run["f"], WithinAbs(671.67, 1e-9));
+    CHECK_THAT(run["g"], WithinAbs(373.15, 1e-9));   // spaces around the name are ignored
+    // function name in any case
+    auto upper = runModel("t = ConvertTemp('C', 'F', 100)\n");
+    REQUIRE(upper.solveOk);
+    CHECK_THAT(upper["t"], WithinAbs(212.0, 1e-9));
+}
+
+TEST_CASE("CS-BUG-CONVERTTEMP-UNIT: the derivative with respect to the value is the ratio of the scales",
+          "[library-gaps][converttemp-unit]") {
+    // was: ADValue::constant, a zero gradient (the solver fell back to finite differences, 38 iterations
+    // for the linear T_F = 212 = 1.8*T_C + 32)
+    for (const auto& from : kTempScales)
+        for (const auto& to : kTempScales) {
+            INFO(from.unit << " -> " << to.unit);
+            const auto r = evalConvertTemp(std::string("'") + from.unit + "'", std::string("'") + to.unit + "'", from.at100C);
+            CHECK_THAT(r.value, WithinAbs(to.at100C, 1e-9));
+            CHECK_THAT(r.slope, WithinRel(from.step / to.step, 1e-12));   // 1, 1.8 or 5/9
+        }
+    // C -> F is 9/5, F -> K is 5/9
+    CHECK_THAT(evalConvertTemp("'C'", "'F'", 20.0).slope, WithinRel(1.8, 1e-12));
+    CHECK_THAT(evalConvertTemp("'F'", "'K'", 20.0).slope, WithinRel(5.0 / 9.0, 1e-12));
+    // the derivative follows a chain of operations on the value: d/dx 2*converttemp('C','F',x^2) = 2*1.8*2x
+    {
+        EESParser parser;
+        auto parsed = parser.parse("y = 2*converttemp('C','F',x^2)\n");
+        REQUIRE(parsed.success);
+        IR ir = IR::fromAST(parsed.program);
+        ExpressionEvaluator ev(1);
+        ev.setVariable("x", ADValue::independent(3.0, 0, 1));
+        const ADValue r = ev.evaluate(ir.getEquations().at(0).rhs);
+        CHECK_THAT(r.value, WithinAbs(2.0 * (9.0 * 1.8 + 32.0), 1e-9));
+        CHECK_THAT(r.gradient.at(0), WithinRel(2.0 * 1.8 * 6.0, 1e-12));
+    }
+    // a constant value has a zero derivative, as before
+    {
+        EESParser parser;
+        auto parsed = parser.parse("y = converttemp('C','F',50)\n");
+        REQUIRE(parsed.success);
+        IR ir = IR::fromAST(parsed.program);
+        ExpressionEvaluator ev(1);
+        const ADValue c = ev.evaluate(ir.getEquations().at(0).rhs);
+        CHECK_THAT(c.value, WithinAbs(122.0, 1e-9));
+        REQUIRE(c.gradient.size() == 1);
+        CHECK(c.gradient[0] == 0.0);
+    }
+}
+
+TEST_CASE("CS-BUG-CONVERTTEMP-UNIT: a block solved through converttemp", "[library-gaps][converttemp-unit]") {
+    // an unknown as the value: the equation is solved for it (the derivative of CONVERTTEMP is needed)
+    auto run = runModel("T_F = 212\nT_F = converttemp('C','F',T_C)\nT_K = converttemp('C','K',T_C)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["T_C"], WithinAbs(100.0, 1e-9));
+    CHECK_THAT(run["T_K"], WithinAbs(373.15, 1e-9));
+    // ... in a few Newton iterations: the equation is linear
+    const int iterations = solverIterations("T_F = 212\nT_F = converttemp('C','F',T_C)\n");
+    INFO("iterations = " << iterations);
+    CHECK(iterations >= 0);
+    CHECK(iterations <= 5);
+    // two unknowns in one block: x + y = 10 and 1.8*x + 32 - y = 20
+    auto coupled = runModel("x + y = 10\nconverttemp('C','F',x) - y = 20\n");
+    INFO(coupled.message);
+    REQUIRE(coupled.solveOk);
+    CHECK(coupled.verified);
+    CHECK_THAT(coupled["x"], WithinAbs(-2.0 / 2.8, 1e-9));
+    CHECK_THAT(coupled["y"], WithinAbs(10.0 + 2.0 / 2.8, 1e-9));
+    // nonlinear: the value is a quadratic of the unknown, in Rankine
+    auto quad = runModel("converttemp('K','R',x^2) = 900\n", {}, "x = 20\n");
+    INFO(quad.message);
+    REQUIRE(quad.solveOk);
+    CHECK_THAT(quad["x"], WithinAbs(std::sqrt(500.0), 1e-6));
+}
+
+TEST_CASE("CS-BUG-CONVERTTEMP-UNIT: a literal unit that is not a temperature scale is a parse error with the line",
+          "[library-gaps][converttemp-unit]") {
+    // a unit of another quantity, a compound unit and the empty string are no temperature scales either
+    for (const char* bad : {"Foo", "kg", "kPa", "J/kg-K", "C/s", "K-m", "degC", "deg C", "celcius", "Kelvins", "Fahr", ""}) {
+        INFO("unit '" << bad << "'");
+        const auto from = parseErrorsWithLines(std::string("x = 1\nt = converttemp('") + bad + "','K',100)\n");
+        CHECK(from == std::vector<std::string>{std::string("2: CONVERTTEMP: '") + bad + "' " + kNotATemperature});
+        const auto to = parseErrorsWithLines(std::string("x = 1\nt = converttemp('C','") + bad + "',100)\n");
+        CHECK(to == std::vector<std::string>{std::string("2: CONVERTTEMP: '") + bad + "' " + kNotATemperature});
+    }
+    // both wrong: the first one is named
+    CHECK(parseErrorsWithLines("t = converttemp('Foo','Bar',100)\n") ==
+          std::vector<std::string>{std::string("1: CONVERTTEMP: 'Foo' ") + kNotATemperature});
+    // whatever the value is
+    CHECK(parseErrorsWithLines("t = converttemp('C','Foo',a+b)\n").size() == 1);
+    // the other literal can be a string variable: the literal is checked all the same
+    CHECK(parseErrorsWithLines("u$ = 'K'\nt = converttemp('Foo',u$,100)\n") ==
+          std::vector<std::string>{std::string("2: CONVERTTEMP: 'Foo' ") + kNotATemperature});
+    CHECK(parseErrorsWithLines("u$ = 'K'\nt = converttemp(u$,'Foo',100)\n") ==
+          std::vector<std::string>{std::string("2: CONVERTTEMP: 'Foo' ") + kNotATemperature});
+    // inside the body of a routine: the line of the body
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  b = 2\n  f = converttemp('C','Foo',a)\nEND\ny = f(1)\n") ==
+          std::vector<std::string>{std::string("3: CONVERTTEMP: 'Foo' ") + kNotATemperature});
+    CHECK(parseErrorsWithLines("PROCEDURE p(a : b)\n  b = converttemp('Foo','C',a)\nEND\nCALL p(1 : y)\n") ==
+          std::vector<std::string>{std::string("2: CONVERTTEMP: 'Foo' ") + kNotATemperature});
+    // the call is the operand of an operator, in an equation to solve
+    CHECK(parseErrorsWithLines("y = 2*converttemp('C','Foo',1)\n") ==
+          std::vector<std::string>{std::string("1: CONVERTTEMP: 'Foo' ") + kNotATemperature});
+    CHECK(parseErrorsWithLines("a = 3\ny = a + 1\nconverttemp('C','Foo',y) = a\n") ==
+          std::vector<std::string>{std::string("3: CONVERTTEMP: 'Foo' ") + kNotATemperature});
+    // the system is not solved
+    auto run = runModel("T_F = 212\nT_F = converttemp('C','Foo',T_C)\n");
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+}
+
+TEST_CASE("CS-BUG-CONVERTTEMP-UNIT: a unit string computed at run time is checked at the evaluation",
+          "[library-gaps][converttemp-unit]") {
+    const std::string conv =
+        "FUNCTION conv(u$, w$, v)\n"
+        "  conv = converttemp(u$, w$, v)\n"
+        "END\n";
+    auto run = runModel(conv + "t = conv('C', 'F', 100)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["t"], WithinAbs(212.0, 1e-9));
+    // the scale is a string variable, upper-cased at run time
+    auto upper = runModel(conv + "u$ = 'kelvin'\nt = conv(u$, 'c', 373.15)\n");
+    REQUIRE(upper.solveOk);
+    CHECK_THAT(upper["t"], WithinAbs(100.0, 1e-9));
+    // an unknown scale is an error: no number, the unit is named
+    auto unknown = runModel(conv + "t = conv('C', 'Foo', 100)\n");
+    CHECK_FALSE(unknown.solveOk);
+    CHECK(unknown.message.find(std::string("CONVERTTEMP: 'Foo' ") + kNotATemperature) != std::string::npos);
+    auto first = runModel(conv + "t = conv('Foo', 'K', 100)\n");
+    CHECK_FALSE(first.solveOk);
+    CHECK(first.message.find(std::string("CONVERTTEMP: 'Foo' ") + kNotATemperature) != std::string::npos);
+    // a unit that is not a temperature
+    auto pressure = runModel(conv + "t = conv('kPa', 'K', 100)\n");
+    CHECK_FALSE(pressure.solveOk);
+    CHECK(pressure.message.find(std::string("CONVERTTEMP: 'kPa' ") + kNotATemperature) != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-CONVERTTEMP-UNIT: wrong arity is an error", "[library-gaps][converttemp-unit]") {
+    for (const char* call : {"converttemp('C','K')", "converttemp('C','K',1,2)", "converttemp('C')", "converttemp()"}) {
+        INFO(call);
+        auto run = runModel(std::string("m = ") + call + "\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("converttemp") != std::string::npos);
+    }
+}
