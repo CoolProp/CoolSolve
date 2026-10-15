@@ -614,6 +614,24 @@ W_1   = humrat  ( 'airH2O', T=25, P=101325, R=0.5 )
 Twb_1 = wetbulb ( 'airH2O', T=25, P=101325, R=0.5 )
 ```
 
+**Validity range.** CoolProp's humid-air model is limited to temperatures (also `Twb`, `Tdp`) from
+−143.15 to 350 °C, pressures from 10 Pa to 10 MPa, `W` from 0 to 10 and `R` from 0 to 1; it gives no
+value outside, and none for the properties that CoolSolve has no humid-air output for (`density`, at
+present). Such a call is an error: during the iterations it has the placeholder value 10 000, so that
+a trial point outside the range is a bad point and not a failure of the solver, but a solution that
+contains it is refused (exit status 1, no `.sol` file) with *CoolProp evaluation failed in final
+solution*, which names the call, its inputs in your units and the limit that is exceeded:
+
+```
+HumidAir error in enthalpy(): CoolProp returned invalid result (NaN or Inf) for enthalpy(AirH2O)
+with inputs P=800000 Pa, T=1026.85 C, W=0: T=1026.85 C is outside the validity range of CoolProp's
+humid-air model (-143.15 C to 350 C). For dry air above 350 C use the ideal-gas fluid Air.
+```
+
+For dry air above 350 °C (gas turbines) use the ideal-gas substance `Air`. The relative humidity of
+supersaturated air (`W` above the saturation value) is not an error: `relhum` returns `W/W_sat`, which
+is greater than 1.
+
 ### PSYCHPROPS built-in procedure
 
 ```ees
@@ -623,7 +641,8 @@ CALL psychprops(T_1, P_1, R_1 : T, v, h, s, u, W, R, Twb, Tdp)
 Returns all nine psychrometric properties at the specified state
 (`T` in °C, `P` in Pa, `R` = relative humidity in [0..1]). Outputs are
 returned in CoolSolve's fixed unit system (temperature in °C, see the warning
-at the top of this page).
+at the top of this page). Inputs outside the validity range above are an error that names the input
+and the limit.
 
 ---
 

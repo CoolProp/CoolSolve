@@ -21,6 +21,7 @@
 #include "coolsolve/solution_checker.h"
 #include "coolsolve/units.h"
 #include "CoolProp.h"
+#include "HumidAirProp.h"
 
 #include <algorithm>
 #include <cmath>
@@ -49,6 +50,7 @@ struct ModelRun {
     bool verified = false;   ///< every equation re-evaluated with the solution (rel. 1e-3)
     std::string message;     ///< first parse error, or the solver error
     std::vector<std::string> warnings;   ///< messages of all warning diagnostics of the run
+    std::vector<std::string> checkErrors;   ///< errors of the solution check (C002: a CoolProp call failed in the solution)
     std::vector<Diagnostic> warningItems;   ///< the warning diagnostics themselves (code, line, message)
     std::map<std::string, double, CaseInsensitiveLess> vars;
     std::map<std::string, std::string, CaseInsensitiveLess> strings;   ///< string variables of the solution
@@ -101,9 +103,11 @@ ModelRun runModel(const std::string& code,
         const auto& res = runner.getSolveResult();
         run.vars = res.variables;
         run.strings = res.stringVariables;
-        run.verified = checkSolution(runner.getIR(), res.variables, res.stringVariables,
-                                     options.coolpropConfig, 1e-3,
-                                     &runner.getLookupTableStore()).allSatisfied;
+        const auto check = checkSolution(runner.getIR(), res.variables, res.stringVariables,
+                                         options.coolpropConfig, 1e-3, &runner.getLookupTableStore());
+        run.verified = check.allSatisfied;
+        for (const auto& d : check.diagnostics.items())
+            if (d.severity == DiagnosticSeverity::Error) run.checkErrors.push_back(d.message);
     } else {
         run.message = runner.getSolveResult().errorMessage;
     }
@@ -12526,4 +12530,181 @@ TEST_CASE("CS-BUG-CONVERT-UNIT: isUnitName stays consistent with the units of CO
         INFO(name);
         CHECK_FALSE(isUnitName(name));
     }
+}
+
+// ============================================================================
+// CS-BUG-HUMIDAIR-HIGHT: AirH2O outside CoolProp's humid-air range was the value 1E4 with SUCCESS
+// ============================================================================
+// CoolProp's humid-air model returns NaN/Inf (it does not throw) above 350 C, above 10 MPa, ...; the evaluator
+// kept the penalty value 1E4 for the iterations but did not record the failure, so the solution check (which
+// turns the recorded C001 into the error C002) accepted a solution made of 1E4.
+
+namespace {
+
+/// First error of the solution check of a run (empty when the solution is accepted).
+std::string checkError(const ModelRun& run) { return run.checkErrors.empty() ? std::string() : run.checkErrors.front(); }
+
+/// Model with one humid-air call `y = <call>`: the run must end with a solution check error naming `needles`.
+void requireHumidAirError(const std::string& call, const std::vector<std::string>& needles) {
+    auto run = runModel("y = " + call + "\n");
+    INFO(call << " -> " << checkError(run));
+    REQUIRE(run.solveOk);   // the penalty value is a trial point: the solver finishes, the solution check refuses it
+    CHECK_FALSE(run.verified);
+    REQUIRE_FALSE(run.checkErrors.empty());
+    for (const auto& needle : needles) CHECK(checkError(run).find(needle) != std::string::npos);
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-HUMIDAIR-HIGHT: reproducer of the register, 1300 K is an error naming the call and the limit", "[library-gaps][humidair-hight]") {
+    // was: SUCCESS, h = s = 1.0e4 (EES Air_ha: 1396.83 kJ/kg and 7.84397 kJ/kg-K)
+    auto run = runModel("T = 1300-273.15\nP = 8E5\nh = enthalpy(AirH2O,T=T,P=P)\ns = entropy(AirH2O,T=T,P=P)\n");
+    REQUIRE(run.solveOk);
+    CHECK_FALSE(run.verified);
+    REQUIRE_FALSE(run.checkErrors.empty());
+    const std::string error = checkError(run);
+    INFO(error);
+    CHECK(error.find("CoolProp evaluation failed in final solution") != std::string::npos);
+    CHECK(error.find("enthalpy") != std::string::npos);                       // the call
+    CHECK(error.find("AirH2O") != std::string::npos);
+    CHECK(error.find("T=1026.85 C") != std::string::npos);                    // the input, in the user's units
+    CHECK(error.find("P=800000 Pa") != std::string::npos);
+    CHECK(error.find("validity range of CoolProp's humid-air model (-143.15 C to 350 C)") != std::string::npos);
+    CHECK(error.find("For dry air above 350 C use the ideal-gas fluid Air") != std::string::npos);
+    // both calls are recorded during the solve (a warning each), the penalty stays the trial value
+    CHECK(anyContains(run.warnings, "enthalpy(AirH2O)"));
+    CHECK(anyContains(run.warnings, "entropy(AirH2O)"));
+    CHECK_THAT(run["h"], WithinAbs(1e4, 1e-9));
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-HIGHT: the limit is 350 C, 350 stays a value and 350.1 is an error", "[library-gaps][humidair-hight]") {
+    const double hRef = HumidAir::HAPropsSI("H", "T", 623.15, "P", 101325, "W", 0.0);
+    REQUIRE(std::isfinite(hRef));
+    auto atLimit = runModel("T = 350\nP = 101325\nh = enthalpy(AirH2O,T=T,P=P)\n");
+    REQUIRE(atLimit.solveOk);
+    CHECK(atLimit.verified);
+    CHECK(atLimit.checkErrors.empty());
+    CHECK_THAT(atLimit["h"], WithinRel(hRef, 1e-9));
+    CHECK_THAT(atLimit["h"], WithinRel(3.585e5, 1e-3));   // value of the register
+    requireHumidAirError("enthalpy(AirH2O,T=350.1,P=101325)", {"enthalpy", "T=350.1 C", "(-143.15 C to 350 C)", "ideal-gas fluid Air"});
+    // the limit does not depend on the pressure; the lower limit is -143.15 C and has no hint for dry air
+    requireHumidAirError("enthalpy(AirH2O,T=1300-273.15,P=1E5)", {"T=1026.85 C", "P=100000 Pa"});
+    requireHumidAirError("enthalpy(AirH2O,T=-143.2,P=101325)", {"T=-143.2 C", "(-143.15 C to 350 C)"});
+    auto cold = runModel("y = enthalpy(AirH2O,T=-143.2,P=101325)\n");
+    CHECK(checkError(cold).find("ideal-gas fluid Air") == std::string::npos);
+    auto lowest = runModel("y = enthalpy(AirH2O,T=-143,P=101325)\n");
+    REQUIRE(lowest.solveOk);
+    CHECK(lowest.verified);
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-HIGHT: a pressure above 10 MPa is an error, 10 MPa a value", "[library-gaps][humidair-hight]") {
+    requireHumidAirError("enthalpy(AirH2O,T=25,P=1.5E7,R=0.5)", {"enthalpy", "P=15000000 Pa", "(10 Pa to 10000000 Pa)"});
+    auto run = runModel("y = enthalpy(AirH2O,T=25,P=1.5E7,R=0.5)\n");
+    CHECK(checkError(run).find("ideal-gas fluid Air") == std::string::npos);   // the hint is about the temperature
+    auto atLimit = runModel("y = enthalpy(AirH2O,T=25,P=1E7,R=0.5)\n");
+    REQUIRE(atLimit.solveOk);
+    CHECK(atLimit.verified);
+    CHECK(atLimit.checkErrors.empty());
+    CHECK_THAT(atLimit["y"], WithinRel(HumidAir::HAPropsSI("H", "T", 298.15, "P", 1e7, "R", 0.5), 1e-9));
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-HIGHT: every humid-air output is an error out of range, the message names the call", "[library-gaps][humidair-hight]") {
+    for (const char* call : {"humrat", "relhum", "wetbulb", "dewpoint", "volume", "cp", "viscosity", "conductivity", "entropy"}) {
+        INFO(call);
+        // dewpoint/wetbulb/relhum take their own input kinds: the temperature is the input that is out of range in all
+        const std::string in = std::string(call) == "relhum" ? "W=0.01" : "R=0.1";
+        requireHumidAirError(std::string(call) + "(AirH2O,T=400,P=101325," + in + ")", {call, "T=400 C", "350 C"});
+    }
+    // the name of the input that is out of range: a wet-bulb or a dew-point temperature too
+    requireHumidAirError("humrat(AirH2O,B=400,P=101325,R=0.5)", {"humrat", "(-143.15 C to 350 C)"});
+    // the same call with the inputs in the range
+    auto ok = runModel("w = humrat(AirH2O,T=25,P=101325,R=0.5)\nTw = wetbulb(AirH2O,T=25,P=101325,R=0.5)\n");
+    REQUIRE(ok.solveOk);
+    CHECK(ok.verified);
+    CHECK(ok.checkErrors.empty());
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-HIGHT: a call that fails only at an intermediate iterate is not an error", "[library-gaps][humidair-hight]") {
+    // The Newton step from T = 340 C (R is ~0 and flat there) goes far below 0 K: the call returns the penalty
+    // value at that trial point, the solver backs off and converges inside the range.
+    const std::string code = "Rt = 0.3\nW0 = 0.01\nRt = relhum(AirH2O, T=T, P=101325, W=W0)\n";
+    auto run = runModel(code, {}, "T = 340\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.checkErrors.empty());
+    CHECK_THAT(run["T"], WithinAbs(HumidAir::HAPropsSI("T", "R", 0.3, "W", 0.01, "P", 101325) - 273.15, 1e-6));
+    // ... and the trial points that failed were recorded as warnings
+    CHECK(anyContains(run.warnings, "CoolProp returned invalid result (NaN or Inf) for relhum(AirH2O)"));
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-HIGHT: the evaluator keeps the penalty value and records the failure", "[library-gaps][humidair-hight]") {
+    EESParser parser;
+    auto parsed = parser.parse("y = enthalpy(AirH2O, T=Tv, P=8E5)\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    auto eval = [&](double T_C, DiagnosticCollector& diag) {
+        ExpressionEvaluator ev(1);
+        ev.setDiagnostics(&diag);
+        ev.setVariable("Tv", ADValue::constant(T_C, 1));
+        return ev.evaluate(ir.getEquations()[0].rhs).value;
+    };
+    DiagnosticCollector inRange;
+    CHECK_THAT(eval(25.0, inRange), WithinRel(HumidAir::HAPropsSI("H", "T", 298.15, "P", 8e5, "W", 0.0), 1e-9));
+    CHECK(inRange.size() == 0);
+    DiagnosticCollector outOfRange;
+    CHECK(eval(1026.85, outOfRange) == 1e4);   // no throw: the trial point of a solver
+    REQUIRE(outOfRange.size() == 1);
+    CHECK(outOfRange.items()[0].code == "C001");
+    CHECK(outOfRange.items()[0].severity == DiagnosticSeverity::Warning);
+    CHECK(outOfRange.items()[0].message.find("HumidAir error in enthalpy(): CoolProp returned invalid result") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-HIGHT: the supersaturated relative humidity is still a value", "[library-gaps][humidair-hight]") {
+    // W above W_sat: CoolProp gives no R; CoolSolve returns R = W/W_sat (> 1), which is not an error
+    const double wSat = HumidAir::HAPropsSI("W", "T", 293.15, "P", 101325, "R", 1.0);
+    auto run = runModel("R = relhum(AirH2O, T=20, P=101325, W=0.02)\n");
+    INFO(checkError(run));
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.checkErrors.empty());
+    CHECK_THAT(run["R"], WithinRel(0.02 / wSat, 1e-9));
+    CHECK(run["R"] > 1.0);
+    CHECK_FALSE(anyContains(run.warnings, "HumidAir error"));
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-HIGHT: other failures of CoolProp's humid-air model are recorded with its message", "[library-gaps][humidair-hight]") {
+    // an enthalpy that needs more than 350 C: no input is out of range, CoolProp says why
+    auto run = runModel("T = temperature(AirH2O, H=1.5E6, P=101325, W=0)\n");
+    REQUIRE(run.solveOk);
+    CHECK_FALSE(run.verified);
+    REQUIRE_FALSE(run.checkErrors.empty());
+    INFO(checkError(run));
+    CHECK(checkError(run).find("temperature") != std::string::npos);
+    CHECK(checkError(run).find("with inputs H=1500000 J/kg, P=101325 Pa, W=0: CoolProp: ") != std::string::npos);
+    // the properties that CoolSolve does not map to a humid-air output are an error as well
+    // (CS-BUG-HUMIDAIR-PROPS: density(AirH2O) was the value 1E4 in the register, the same silent penalty)
+    requireHumidAirError("density('AirH2O',T=50,P=8E5,R=1)", {"density", "not available for humid air (AirH2O)"});
+    // the properties that do work are untouched at that state (the reproducer of that register entry)
+    auto fine = runModel("w=humrat('AirH2O',T=50,P=8E5,R=1)\nc1=cp('AirH2O',T=50,P=8E5,R=1)\nvv=volume('AirH2O',T=50,P=8E5,R=1)\n");
+    REQUIRE(fine.solveOk);
+    CHECK(fine.verified);
+    CHECK_THAT(fine["w"], WithinAbs(0.009975, 1e-6));
+    CHECK_THAT(fine["c1"], WithinRel(HumidAir::HAPropsSI("C", "T", 323.15, "P", 8e5, "R", 1.0), 1e-9));
+    CHECK_THAT(fine["vv"], WithinRel(HumidAir::HAPropsSI("V", "T", 323.15, "P", 8e5, "R", 1.0), 1e-9));
+}
+
+TEST_CASE("CS-BUG-HUMIDAIR-HIGHT: PSYCHPROPS out of range is an error that says why", "[library-gaps][humidair-hight]") {
+    const std::string call = "CALL psychprops(T_1, P_1, R_1 : T, v, h, s, u, W, R, Twb, Tdp)\n";
+    auto hot = runModel("T_1 = 400\nP_1 = 101325\nR_1 = 0.5\n" + call);
+    CHECK_FALSE(hot.solveOk);
+    INFO(hot.message);
+    CHECK(hot.message.find("psychprops: CoolProp returned non-finite for") != std::string::npos);
+    CHECK(hot.message.find("with inputs T=400 C, P=101325 Pa, R=0.5") != std::string::npos);
+    CHECK(hot.message.find("(-143.15 C to 350 C)") != std::string::npos);
+    CHECK(hot.message.find("ideal-gas fluid Air") != std::string::npos);
+    auto ok = runModel("T_1 = 40\nP_1 = 101325\nR_1 = 0.5\n" + call);
+    REQUIRE(ok.solveOk);
+    CHECK(ok.verified);
+    CHECK_THAT(ok["W"], WithinRel(HumidAir::HAPropsSI("W", "T", 313.15, "P", 101325, "R", 0.5), 1e-9));
 }

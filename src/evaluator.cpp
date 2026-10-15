@@ -390,6 +390,58 @@ static UnitType haParamToUnitType(HAParam p) {
     }
 }
 
+/// Why CoolProp's humid-air model returned no value (NaN/Inf: it does not throw) for the inputs `valsSI` (of the
+/// kinds `params`), as the end of an error message in the user's units: "with inputs T=1026.85 C, P=800000 Pa, W=0:
+/// <reason>". The reason names the inputs outside the validity range of the model (`check_bounds` of CoolProp's
+/// HumidAirProp.cpp: T, Twb and Tdp from -143.15 to 350 C, P from 10 Pa to 10 MPa, W from 0 to 10, R from 0 to 1)
+/// and, above 350 C, the way out for dry air; without such an input it is CoolProp's own message.
+static std::string humidAirFailureDetail(const std::vector<HAParam>& params, const std::vector<double>& valsSI,
+                                         const UnitSystem& units) {
+    auto userUnit = [&](UnitType t) -> std::string {
+        return t == UnitType::Temperature ? units.temperature : t == UnitType::Pressure ? units.pressure :
+               t == UnitType::SpecificEnergy ? units.specific_energy : t == UnitType::SpecificEntropy ? units.specific_entropy :
+               t == UnitType::Density ? units.density : "";
+    };
+    auto inUserUnits = [&](HAParam p, double valueSI) {   // "<number> <unit>", the unit when there is one
+        const UnitType t = haParamToUnitType(p);
+        std::ostringstream oss;
+        oss << std::setprecision(10);
+        if (t == UnitType::Dimensionless) oss << valueSI;
+        else oss << UnitConverter::fromSI(valueSI, t, userUnit(t)) << " " << userUnit(t);
+        return oss.str();
+    };
+
+    std::string inputs, reason;
+    bool tooHot = false;
+    for (size_t i = 0; i < params.size(); ++i) {
+        const HAParam p = params[i];
+        const double v = valsSI[i];
+        const std::string state = haParamToString(p) + "=" + inUserUnits(p, v);
+        inputs += (i ? ", " : "") + state;
+
+        double lo = 0.0, hi = 0.0;
+        switch (p) {
+            case HAParam::T: case HAParam::B: case HAParam::D: lo = 130.0; hi = 623.15; break;
+            case HAParam::P: lo = 10.0; hi = 1e7; break;
+            case HAParam::W: lo = 0.0; hi = 10.0; break;
+            case HAParam::R: lo = 0.0; hi = 1.0; break;
+            default: continue;   // the other inputs have no limit
+        }
+        if (std::isfinite(v) && v >= lo && v <= hi) continue;
+        reason += (reason.empty() ? "" : " ") + state;
+        reason += !std::isfinite(v) ? " is not a finite number."
+            : " is outside the validity range of CoolProp's humid-air model (" + inUserUnits(p, lo) + " to " +
+              inUserUnits(p, hi) + ").";
+        if (std::isfinite(v) && v > hi && haParamToUnitType(p) == UnitType::Temperature) tooHot = true;
+    }
+    if (tooHot) reason += " For dry air above " + inUserUnits(HAParam::T, 623.15) + " use the ideal-gas fluid Air.";
+    if (reason.empty()) {
+        const std::string coolProp = CoolProp::get_global_param_string("errstring");
+        reason = coolProp.empty() ? "no further information from CoolProp." : "CoolProp: " + coolProp;
+    }
+    return "with inputs " + inputs + ": " + reason;
+}
+
 // Map CoolProp parameter to PropsSI string
 static std::string paramToString(CoolProp::parameters param) {
     switch (param) {
@@ -567,7 +619,9 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
                 double raw = outs[i].valueSI;
                 if (!std::isfinite(raw)) {
                     throw std::runtime_error("psychprops: CoolProp returned non-finite for '" +
-                                             outs[i].name + "'");
+                                             outs[i].name + "' " +
+                                             humidAirFailureDetail({HAParam::T, HAParam::P, HAParam::R},
+                                                                   {tSI, pSI, rVal}, units));
                 }
                 double finalVal = (outs[i].ut == UnitType::Dimensionless)
                     ? raw
@@ -1332,10 +1386,14 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                     }
                 }
                 if (!handled) {
-                    // Generic penalty for other NaN/Inf cases
-                    constexpr double PENALTY = 1e4;
-                    ADValue output(PENALTY, numVariables_);
-                    return output;
+                    // CoolProp returns NaN/Inf instead of throwing (inputs outside its validity range, output it has
+                    // no name for). Reported like every other CoolProp failure: C001 below, with the penalty value
+                    // kept for the iterations, and the solution check turns it into an error.
+                    if (outParam == HAParam::Unknown)
+                        throw std::runtime_error("'" + func.name + "' is not available for humid air (" + eesFluidName +
+                                                 "): CoolSolve has no CoolProp humid-air output for it");
+                    throw std::runtime_error("CoolProp returned invalid result (NaN or Inf) for " + func.name + "(" +
+                                             eesFluidName + ") " + humidAirFailureDetail(inParams, vals, units));
                 }
             }
             

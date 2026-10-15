@@ -332,7 +332,7 @@ HUMRAT,Thermophysical,"Humidity ratio [kg_w/kg_da], requires 3 inputs",Yes,1,"sr
 RELHUM,Thermophysical,"Relative humidity [0-1], requires 3 inputs",Yes,1,"src/evaluator.cpp, aliases: r",
 WETBULB,Thermophysical,"Wet bulb temperature, requires 3 inputs",Yes,1,"src/evaluator.cpp, aliases: b",
 DEWPOINT,Thermophysical,"Dew point temperature, requires 3 inputs",Yes,1,"src/evaluator.cpp, aliases: d",
-PSYCHPROPS,Thermophysical,General psychrometric property function,Yes,2,"src/evaluator.cpp — built-in procedure (T,P,R inputs → 9 outputs)"
+PSYCHPROPS,Thermophysical,General psychrometric property function,Yes,2,"src/evaluator.cpp — built-in procedure (T,P,R inputs → 9 outputs); inputs outside CoolProp's humid-air range are an error that names the input and the limit"
 # --- Thermophysical Functions: Lennard-Jones ---,,,,,,
 EK_LJ,Thermophysical,Lennard-Jones energy parameter ε/k [K],No,4,,
 SIGMA_LJ,Thermophysical,Lennard-Jones size parameter σ [nm],No,4,,
@@ -357,7 +357,7 @@ Real fluids — Other organic,Fluids,"Acetone, Benzene, Toluene, EthylBenzene, D
 Real fluids — Siloxanes,Fluids,"D4, D5, D6, MDM, MD2M, MD3M, MD4M, MM",Yes,3,src/fluids.cpp — niche ORC fluids,
 Real fluids — Noble/rare gases,Fluids,"Xenon, Krypton, Neon",Yes,3,src/fluids.cpp,
 Ideal gas substances,Fluids,"Air, N2, O2, H2, He, Ar, CO2, CO, CH4, C2H6, C3H8, H2O (low P)",Yes,1,"src/fluids.cpp — CoolProp equation of state at a low dummy pressure; h includes the NASA-Glenn heat of formation (elements, He and Ar: 0) and s is the absolute 1-bar entropy (same source) for all but Air (CoolProp references); docs/language_reference.md §5",
-Humid air (AirH2O),Fluids,Moist air psychrometrics via CoolProp HumidAir module,Yes,1,"src/evaluator.cpp — special 3-input handling (T,P,W/R/D/B)",
+Humid air (AirH2O),Fluids,Moist air psychrometrics via CoolProp HumidAir module,Yes,1,"src/evaluator.cpp — special 3-input handling (T,P,W/R/D/B); CoolProp's model is valid from -143.15 to 350 °C and up to 10 MPa: a call outside (or of a property without humid-air output, e.g. density) is an error naming the call at the solution (placeholder 1E4 during the iterations), use the ideal-gas Air for dry air above 350 °C; docs/language_reference.md §4",
 Real air (Air_ha),Fluids,Dry air with real gas equation of state,Yes,2,src/fluids.cpp — CoolProp EOS for dry air,
 STEAM_NBS,Fluids,"NBS/NRC steam tables (legacy EES), includes Ice",No,5,EES legacy steam formulation,
 NH3H2O,Fluids,Ammonia-water mixture,Yes,2,"src/fluids.cpp — UnsupportedFluid with clear remediation (use REFPROP::Ammonia&Water)"
