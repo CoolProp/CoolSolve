@@ -2715,6 +2715,25 @@ const LookupTable& ExpressionEvaluator::lookupTableFor(const FunctionCall& func,
     return *tbl;
 }
 
+const LookupTable& ExpressionEvaluator::defaultLookupTable(const FunctionCall& func) {
+    static const std::string defaultName = "lookup_1";
+    if (lookupTableStore_ && !lookupTableStore_->has(defaultName)) {
+        const std::vector<std::string> names = lookupTableStore_->names();
+        if (names.size() == 1) return lookupTableFor(func, names.front());   // unambiguous: EES reads its first table
+        if (names.size() > 1) {
+            std::string found;
+            for (const auto& n : names) found += (found.empty() ? "'" : ", '") + n + "'";
+            const std::string msg = func.name + "(): the nameless form " + func.name + "(row, col) reads the default "
+                "lookup table '" + defaultName + "', which this model does not have" + lookupWhere() +
+                ". To fix: place '<model>-" + defaultName + ".csv' next to the model file, or name the table: " +
+                func.name + "('table', row, col). Tables found: " + found + ".";
+            if (diagnostics_) diagnostics_->push(DiagnosticSeverity::Error, "L002", msg, "lookup_table");
+            throw std::runtime_error(msg);
+        }
+    }
+    return lookupTableFor(func, defaultName);   // not found: the usual error, which names the file to provide
+}
+
 size_t ExpressionEvaluator::lookupColumnOf(const FunctionCall& func, const LookupTable& tbl, size_t argIdx) {
     // Resolve a column by name or 1-based number (as double arg)
     // EES allows both "T_K" and a numeric column index.
@@ -2878,6 +2897,7 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
 
     // ------------------------------------------------------------------
     // LOOKUP('table', row, col)
+    // LOOKUP(row, col)  — the nameless form: the default table (see defaultLookupTable)
     // TABLEVALUE('table', row, col)
     // TABLEVALUE#('table', row, col)  — same as LOOKUP in CoolSolve
     //
@@ -2889,16 +2909,19 @@ ADValue ExpressionEvaluator::evaluateLookupFunction(const FunctionCall& func) {
     //    value that may itself be non-integer.
     // ------------------------------------------------------------------
     if (name == "lookup" || name == "tablevalue" || name == "tablevalue#" || name == "tablerun#") {
-        if (func.args.size() < 3) {
-            throw std::runtime_error(func.name + "(): expects 3 arguments: (table, row, col)" + lookupWhere());
+        // Two arguments, the first not a string: LOOKUP(row, col), the table argument is left out
+        const bool nameless = name == "lookup" && func.args.size() == 2 && !isStringExpression(func.args[0]);
+        if (!nameless && func.args.size() < 3) {
+            throw std::runtime_error(func.name + "(): expects 3 arguments: (table, row, col)" +
+                                     (name == "lookup" ? " or, for the default table, 2: (row, col)" : "") + lookupWhere());
         }
-        std::string tableName = getString(0);
-        const LookupTable& tbl = lookupTableFor(func, tableName);
-        ADValue rowV = getNum(1);
+        const size_t rowIdx = nameless ? 0 : 1;   // the row argument; the column argument follows
+        const LookupTable& tbl = nameless ? defaultLookupTable(func) : lookupTableFor(func, getString(0));
+        ADValue rowV = getNum(rowIdx);
 
         // Column: string name → exact integer; numeric → possibly non-integer
         ADValue colV;
-        const auto& colArg = func.args[2];
+        const auto& colArg = func.args[rowIdx + 1];
         if (isStringExpression(colArg)) {
             std::string colName = evaluateString(colArg);
             size_t col = tbl.columnIndex(colName);

@@ -10985,3 +10985,202 @@ TEST_CASE("CS-GAP-INTERP-EXTRAP: negative tests, the errors of INTERPOLATE are k
         CHECK(run.message.find("LookupTable 't': interpolate1D column index out of range") != std::string::npos);
     }
 }
+
+// ============================================================================
+// CS-GAP-LOOKUP-NONAME: the nameless LOOKUP(row, col), read on the default table "lookup_1"
+// ============================================================================
+
+namespace {
+
+/// Companion table `lookup_1` (EES "Lookup 1"): three rows, columns a, b, c = 10 a.
+const std::string kDefaultTableCsv = "a,b,c\n1,10,100\n2,20,400\n3,30,900\n";
+const std::map<std::string, std::string> kDefaultTable = {{"lookup_1", kDefaultTableCsv}};
+
+}  // namespace
+
+TEST_CASE("CS-GAP-LOOKUP-NONAME: register reproducer, LOOKUP(row, col) reads the table lookup_1",
+          "[library-gaps][lookup-noname]") {
+    // was: "Block 1 (size 1, vars: x) failed: EvaluationError - [Newton] Expression is not a string literal or variable"
+    auto run = runModel("x = LOOKUP(2, 2)\n", {{"lookup_1", "a,b\n1,10\n2,20\n"}});
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x"], WithinAbs(20.0, 1e-12));   // EES: x = 20
+    CHECK(run.warnings.empty());
+}
+
+TEST_CASE("CS-GAP-LOOKUP-NONAME: a DUPLICATE reads rows and columns by number and by name",
+          "[library-gaps][lookup-noname]") {
+    // the pattern of CSL-0157: W[i] = lookup(i, 4) inside a DUPLICATE
+    auto run = runModel(R"(
+n = 3
+DUPLICATE i = 1, n
+  A[i] = lookup(i, 1)
+  B[i] = lookup(i, 'b')
+  C[i] = lookup(i, 3)
+  D[i] = lookup(i, 'C') + A[i]
+END
+)", kDefaultTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (int i = 1; i <= 3; ++i) {
+        const std::string k = "[" + std::to_string(i) + "]";
+        CHECK_THAT(run["A" + k], WithinAbs(i, 1e-12));
+        CHECK_THAT(run["B" + k], WithinAbs(10.0 * i, 1e-12));
+        CHECK_THAT(run["C" + k], WithinAbs(100.0 * i * i, 1e-12));
+        CHECK_THAT(run["D" + k], WithinAbs(100.0 * i * i + i, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-LOOKUP-NONAME: the nameless and the named forms give the same values",
+          "[library-gaps][lookup-noname]") {
+    auto run = runModel(R"(
+n1 = lookup(2, 3)
+n2 = lookup(2.5, 2)
+n3 = lookup(99, 3)
+n4 = lookup(2, 'b')
+n5 = lookup(1.5, 2.5)
+v1 = lookup('lookup_1', 2, 3)
+v2 = lookup('lookup_1', 2.5, 2)
+v3 = lookup('lookup_1', 99, 3)
+v4 = lookup('lookup_1', 2, 'b')
+v5 = lookup('lookup_1', 1.5, 2.5)
+)", kDefaultTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["n1"], WithinAbs(400.0, 1e-12));
+    CHECK_THAT(run["n2"], WithinAbs(25.0, 1e-12));     // row 2.5 interpolated between rows 2 and 3
+    CHECK_THAT(run["n3"], WithinAbs(900.0, 1e-12));    // row beyond the table: the last row (as the named form)
+    CHECK_THAT(run["n4"], WithinAbs(20.0, 1e-12));
+    CHECK_THAT(run["n5"], WithinAbs(132.5, 1e-9));     // row 1.5 and column 2.5: bilinear between 10, 20, 100, 400
+    for (const char* k : {"1", "2", "3", "4", "5"})
+        CHECK(run[std::string("n") + k] == run[std::string("v") + k]);
+}
+
+TEST_CASE("CS-GAP-LOOKUP-NONAME: the default table is lookup_1, whatever its case or the other tables",
+          "[library-gaps][lookup-noname]") {
+    SECTION("lookup_1 among other tables") {
+        auto run = runModel("x = LOOKUP(2, 2)\ny = LOOKUP('other', 2, 2)\n",
+                            {{"lookup_1", "a,b\n1,10\n2,20\n"}, {"other", "a,b\n1,-1\n2,-2\n"}});
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(20.0, 1e-12));
+        CHECK_THAT(run["y"], WithinAbs(-2.0, 1e-12));
+    }
+    SECTION("the name is matched without regard to case, as the other table names") {
+        auto run = runModel("x = LOOKUP(2, 2)\n", {{"Lookup_1", "a,b\n1,10\n2,20\n"}, {"zzz", "a,b\n1,-1\n2,-2\n"}});
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(20.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-LOOKUP-NONAME: a model with one table, named otherwise, reads that table",
+          "[library-gaps][lookup-noname]") {
+    auto run = runModel("x = LOOKUP(2, 2)\ny = LOOKUP(3, 'a')\n", {{"db2", "a,b\n1,10\n2,20\n3,30\n"}});
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(20.0, 1e-12));
+    CHECK_THAT(run["y"], WithinAbs(3.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-LOOKUP-NONAME: the row and the column can be variables of the equations",
+          "[library-gaps][lookup-noname]") {
+    // the row r is an unknown: lookup(r, 2) = 25 is solved by Newton, so the derivative of the nameless form is live
+    auto run = runModel("v = LOOKUP(r, 2)\nv = 25\ncolv = LOOKUP(2, k)\ncolv = 400\n", kDefaultTable,
+                        "r = 1.5\nk = 2.2\nv = 20\ncolv = 100\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["r"], WithinAbs(2.5, 1e-9));
+    CHECK_THAT(run["k"], WithinAbs(3.0, 1e-9));
+
+    // derivative with respect to the row, straight from the automatic differentiation, as the named form
+    const std::string csv = "x,y\n1,10\n3,30\n7,10\n";   // one table (here "t"): the row is read on it
+    auto nameless = evalWithSlope("v = LOOKUP(r, 2)\n", csv, 2.5);
+    auto named = evalWithSlope("v = LOOKUP('t', r, 2)\n", csv, 2.5);
+    CHECK_THAT(nameless.value, WithinAbs(20.0, 1e-12));
+    CHECK_THAT(nameless.slope, WithinAbs(-20.0, 1e-12));   // from row 2 (30) to row 3 (10)
+    CHECK(nameless.value == named.value);
+    CHECK(nameless.slope == named.slope);
+}
+
+TEST_CASE("CS-GAP-LOOKUP-NONAME: inside FUNCTION and PROCEDURE bodies", "[library-gaps][lookup-noname]") {
+    auto run = runModel(R"(
+FUNCTION g(r)
+  g = LOOKUP(r, 2)
+END
+PROCEDURE pk(r : y, z)
+  y = LOOKUP(r, 'c')
+  DUPLICATE j = 1, 2
+    z = LOOKUP(j, 1) + LOOKUP(j, 'b')
+  END
+END
+fv = g(3)
+fh = g(1.5)
+CALL pk(2 : yv, zv)
+)", kDefaultTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["fv"], WithinAbs(30.0, 1e-12));
+    CHECK_THAT(run["fh"], WithinAbs(15.0, 1e-12));
+    CHECK_THAT(run["yv"], WithinAbs(400.0, 1e-12));
+    CHECK_THAT(run["zv"], WithinAbs(22.0, 1e-12));   // last pass j = 2: 2 + 20
+
+    // the error of a missing table names the routine, as the named form does
+    auto fail = runModel("FUNCTION g(r)\n  g = LOOKUP(r, 2)\nEND\nfv = g(3)\n");
+    CHECK_FALSE(fail.solveOk);
+    CHECK(fail.message.find("(in FUNCTION 'g')") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-LOOKUP-NONAME: the forcing of an INTEGRAL model, the row is a variable of the model",
+          "[library-gaps][lookup-noname]") {
+    // dy/dt = LOOKUP(t, 2) with the column b = 10 a on the rows 1 to 3: dy/dt = 10 t, y(2) - y(1) = 15
+    auto run = runIntegral(
+        "y = 0 + integral(dydt, t, 1, 2, 0.1)\n"
+        "dydt = lookup(t, 2)\n",
+        [](SolverOptions& o) { o.integralMethod = "RK4"; }, kDefaultTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(15.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-LOOKUP-NONAME: negative tests, what stays an error", "[library-gaps][lookup-noname]") {
+    auto fail = [&](const std::string& code, const std::map<std::string, std::string>& tables,
+                    const std::vector<std::string>& expected) {
+        auto run = runModel(code, tables);
+        INFO(code);
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        for (const auto& text : expected) CHECK(run.message.find(text) != std::string::npos);
+    };
+    SECTION("no table at all: the message names the default table and its file") {
+        fail("x = LOOKUP(2, 2)\n", {},
+             {"LOOKUP(): lookup table 'lookup_1' not found", "<model>-lookup_1.csv"});
+    }
+    SECTION("several tables, none named lookup_1: the message names the file and lists the tables") {
+        fail("x = LOOKUP(2, 2)\n", {{"alpha", "a,b\n1,10\n"}, {"beta", "a,b\n1,20\n"}},
+             {"LOOKUP(row, col)", "default lookup table 'lookup_1'", "<model>-lookup_1.csv", "alpha", "beta"});
+    }
+    SECTION("a column that does not exist") {
+        fail("x = LOOKUP(2, 'q')\n", kDefaultTable, {"LOOKUP(): column 'q' not found in table 'lookup_1'"});
+    }
+    SECTION("the named form keeps its errors: a table that does not exist, two arguments with a table name") {
+        fail("x = LOOKUP('nope', 2, 2)\n", kDefaultTable, {"lookup table 'nope' not found"});
+        fail("x = LOOKUP('lookup_1', 2)\n", kDefaultTable, {"LOOKUP(): expects 3 arguments: (table, row, col)"});
+    }
+    SECTION("one argument, or three that do not start with a table") {
+        fail("x = LOOKUP(2)\n", kDefaultTable, {"LOOKUP(): expects 3 arguments: (table, row, col)"});
+        fail("x = LOOKUP(1, 2, 3)\n", kDefaultTable, {"not a string literal or variable"});
+    }
+    SECTION("the other functions have no nameless form: LOOKUP$ and the column functions are unchanged") {
+        fail("x = MolarMass(LOOKUP$(2, 1))\n", kDefaultTable, {"LOOKUP$(): expects 3 arguments: (table, row, col)"});
+        fail("FUNCTION f(r)\n  s$ = LOOKUP$(r, 1)\n  f = LENGTH(s$)\nEND\nx = f(2)\n", kDefaultTable,
+             {"LOOKUP$(): expects 3 arguments: (table, row, col)"});
+        fail("x = NLOOKUPROWS()\n", kDefaultTable, {"NLOOKUPROWS"});
+        fail("x = SUMLOOKUP(2)\n", kDefaultTable, {"not a string literal or variable"});
+    }
+}

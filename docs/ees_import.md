@@ -277,7 +277,9 @@ Worked example: §12, Example 3.
   [Language Reference §11](language_reference.md#11-lookup-tables)). Table
   names that are not safe file names (EES default `Lookup 1`) are renamed
   (`lookup_1`) and the quoted references in the equations are updated
-  accordingly (logged in the report).
+  accordingly (logged in the report). The nameless `LOOKUP(row, col)` of EES
+  (read on *Lookup 1*) needs no rewriting: CoolSolve reads it on the table
+  `lookup_1`.
 - **External tables**: EES functions can name a file instead of a table
   (`INTERPOLATE('Pipedata.lkt', …)`). Convert `.txt`/`.csv` files directly; the
   binary `.lkt` format is not decoded yet (open it in EES and *Save As* `.csv`,

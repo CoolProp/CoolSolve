@@ -1346,6 +1346,26 @@ h_r2   = LOOKUP('data', 2, 'h_kJ_per_kg')   {column by name}
 Aliases: `TABLEVALUE('table', row, col)`, `TABLEVALUE#(...)`,
 `TABLERUN#(...)`.
 
+**Nameless form `LOOKUP(row, col)`.** Without a table name, `LOOKUP` reads the **default
+table** of the model, as in EES where it is the first Lookup table (*Lookup 1*). The default
+table is the companion table named `lookup_1` (`<modelname>-lookup_1.csv`, name matched
+without regard to case: this is how an imported EES file stores its *Lookup 1*, see
+[EES import](ees_import.md)); a model with no `lookup_1` but exactly one table reads that
+table. With several tables and none named `lookup_1` the call is an error that names the file
+to provide (`<model>-lookup_1.csv`) and lists the tables found. The form is the named one
+with the table left out: the row (rounded or interpolated), the column (a number or a name),
+the clamping, the derivatives and the use of a variable as the row or the column are the
+same, and the form works in the main program, in `DUPLICATE`, and in `FUNCTION` / `PROCEDURE`
+bodies and `INTEGRAL` models (§11.7). It exists for `LOOKUP` only: `LOOKUP$`, the table
+metadata and the aggregate functions always take the table name.
+
+```ees
+DUPLICATE i = 1, 17
+  T_cd[i] = LOOKUP(i, 1)          {same as LOOKUP('lookup_1', i, 1)}
+  W[i]    = LOOKUP(i, 'W_dot')
+END
+```
+
 ### 11.5 Aggregate functions
 
 Each function takes a table name and a column index (1-based integer or
@@ -1409,7 +1429,7 @@ The derivative of a lookup with respect to its row / interpolation argument is
 analytic, so a routine output that is an unknown of a block still converges with
 Newton. A wrong call is an error that names the table and the routine, e.g.
 `lookup(): lookup table 'Brine1' not found (in PROCEDURE 'brinemini')`; `LOOKUP`
-needs 3 arguments, `INTERPOLATE` 4 (or 3 and a named argument, §11.1), `INTERPOLATE2` 6 (or 4 and two
+needs 3 arguments (or 2, `LOOKUP(row, col)` on the default table, §11.4), `INTERPOLATE` 4 (or 3 and a named argument, §11.1), `INTERPOLATE2` 6 (or 4 and two
 named arguments, §11.2).
 
 ### 11.8 Text cells: `LOOKUP$`

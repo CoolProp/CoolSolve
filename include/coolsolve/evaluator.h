@@ -310,6 +310,11 @@ private:
     /// The table `tableName` for the lookup function `func`; an error (and a diagnostic) if there is none.
     const LookupTable& lookupTableFor(const FunctionCall& func, const std::string& tableName);
 
+    /// The default table of the nameless form `LOOKUP(row, col)`: the table `lookup_1` (the EES name of its first
+    /// Lookup table, companion file `<model>-lookup_1.csv`), else the only table of the model. An error (and a
+    /// diagnostic) if there is none, or if there are several and none is `lookup_1`.
+    const LookupTable& defaultLookupTable(const FunctionCall& func);
+
     /// The 1-based column given by argument `argIdx` of the lookup function `func`: a name or a number
     /// (0 when the number is not positive).
     size_t lookupColumnOf(const FunctionCall& func, const LookupTable& tbl, size_t argIdx);
