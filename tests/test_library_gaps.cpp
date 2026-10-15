@@ -334,8 +334,16 @@ TEST_CASE("CS-BUG-IF-IGNORED: malformed IF statements are reported", "[library-g
         auto errs = parseErrors("FUNCTION f(v)\n IF (v>0) THEN\n  f = 1\nEND\na = f(1)\n");
         REQUIRE(anyContains(errs, "without a matching ENDIF"));
     }
-    SECTION("ENDIF without IF") {
-        auto errs = parseErrors("FUNCTION f(v)\n f = 1\n ENDIF\nEND\na = f(1)\n");
+    SECTION("ENDIF without IF: ignored with a warning in a body (EES accepts it), an error outside") {
+        // CS-GAP-ELSEIF-CHAIN: the ladders of the EES libraries have ENDIFs that close nothing
+        EESParser parser;
+        const auto inBody = parser.parse("FUNCTION f(v)\n f = 1\n ENDIF\nEND\na = f(1)\n");
+        REQUIRE(inBody.errors.empty());
+        bool warned = false;
+        for (const auto& d : inBody.diagnostics.items())
+            if (d.code == "P008" && d.line == 3) warned = true;
+        REQUIRE(warned);
+        auto errs = parseErrors("DUPLICATE i = 1, 2\n x[i] = 1\n ENDIF\nEND\n");
         REQUIRE(anyContains(errs, "ENDIF without a matching IF"));
     }
     SECTION("ELSE without IF") {
@@ -9403,5 +9411,545 @@ TEST_CASE("CS-BUG-DUPLICATE-VAR-BOUND: a bound that is not known before the solv
         CHECK_FALSE(run.solveOk);
         CHECK(anyContains({run.message}, "Line 3: DUPLICATE j: the last bound is 0.5 in a copy of the enclosing loop, "
                                          "not an integer"));
+    }
+}
+
+// ============================================================================
+// CS-GAP-ELSEIF-CHAIN: IF ladders closed by `;`-joined ENDIFs, and single-line IFs
+// ending with a bare ELSE whose ELSE part runs on the following lines up to its ENDIF
+// (Brineprop.lib of the ULiege collection, library model CSL-0079)
+// ============================================================================
+
+TEST_CASE("CS-GAP-ELSEIF-CHAIN: register reproducer, nested block IFs closed by ENDIF;ENDIF",
+          "[library-gaps][elseif-chain]") {
+    // was: "Line 2: IF ... THEN without a matching ENDIF" (the whole `ENDIF;ENDIF` line closed one IF)
+    const std::string proc =
+        "PROCEDURE p(x : y)\n"
+        "  IF (x>0) THEN\n"
+        "    IF (x>1) THEN\n"
+        "      y=20\n"
+        "    ELSE\n"
+        "      y=10\n"
+        "    ENDIF;ENDIF\n"
+        "END\n";
+    REQUIRE(parseErrorsWithLines(proc).empty());
+    auto run = runModel(proc + "CALL p(2 : a)\nCALL p(1 : b)\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(20.0, 1e-12));   // EES: x>1
+    CHECK_THAT(run["b"], WithinAbs(10.0, 1e-12));   // EES: 0<x<=1
+}
+
+TEST_CASE("CS-GAP-ELSEIF-CHAIN: ladders of block IFs closed by ENDIF;ENDIF;ENDIF in a FUNCTION",
+          "[library-gaps][elseif-chain]") {
+    SECTION("ELSE and IF on separate lines, one ENDIF per IF on one line") {
+        auto run = runModel(
+            "FUNCTION lad(x)\n"
+            "  IF (x<1) THEN\n"
+            "    lad = 1\n"
+            "  ELSE\n"
+            "  IF (x<2) THEN\n"
+            "    lad = 2\n"
+            "  ELSE\n"
+            "  IF (x<3) THEN\n"
+            "    lad = 3\n"
+            "  ELSE\n"
+            "    lad = 4\n"
+            "  ENDIF;ENDIF;ENDIF\n"
+            "END\n"
+            "a = lad(0.5)\nb = lad(1.5)\nc = lad(2.5)\nd = lad(3.5)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(3.0, 1e-12));
+        CHECK_THAT(run["d"], WithinAbs(4.0, 1e-12));
+    }
+    SECTION("ELSE IF (c) THEN on one line, spaces and a comment around the ENDIFs, any letter case") {
+        auto run = runModel(
+            "FUNCTION lad(x)\n"
+            "  If (x<1) Then\n"
+            "    lad = 1\n"
+            "  Else If (x<2) Then\n"
+            "    lad = 2\n"
+            "  ELSE IF (x<3) THEN\n"
+            "    lad = 3\n"
+            "  ELSE IF (x<4) THEN\n"
+            "    lad = 4\n"
+            "  ELSE\n"
+            "    lad = 5\n"
+            "  endif ; ENDIF;  Endif ;ENDIF  \"end of the ladder\"\n"
+            "END\n"
+            "a = lad(0.5)\nb = lad(1.5)\nc = lad(2.5)\nd = lad(3.5)\ne = lad(4.5)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(3.0, 1e-12));
+        CHECK_THAT(run["d"], WithinAbs(4.0, 1e-12));
+        CHECK_THAT(run["e"], WithinAbs(5.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-ELSEIF-CHAIN: ladders closed by ENDIF;ENDIF in a PROCEDURE, with a CALL in the branches",
+          "[library-gaps][elseif-chain]") {
+    // layout of the first ladder of BRINEPROP: THEN part on the next line, ELSE on its own line,
+    // one ENDIF per IF on the last line, the last IF without ELSE
+    const std::string code =
+        "PROCEDURE chk(t$, v : r)\n"
+        "  r = 0\n"
+        "IF (t$='A') AND (v<0) THEN\n"
+        "\tCall ERROR('A: v must be >= 0')\n"
+        "\tELSE\n"
+        "\tIF (t$='A') AND (v>10) THEN\n"
+        "\tCall ERROR('A: v must be <= 10')\n"
+        "\tELSE\n"
+        "IF (t$='B') AND (v<5) THEN\n"
+        "\tCall ERROR('B: v must be >= 5')\n"
+        "ENDIF;ENDIF;ENDIF\n"
+        "  r = v\n"
+        "END\n";
+    REQUIRE(parseErrorsWithLines(code).empty());
+    auto run = runModel(code + "CALL chk('A', 3 : a)\nCALL chk('B', 6 : b)\nCALL chk('C', -1 : c)\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(-1.0, 1e-12));
+    CHECK_FALSE(runModel(code + "CALL chk('A', -3 : a)\n").solveOk);   // the CALL ERROR branch is taken
+    CHECK_FALSE(runModel(code + "CALL chk('A', 11 : a)\n").solveOk);
+    CHECK_FALSE(runModel(code + "CALL chk('B', 4 : b)\n").solveOk);
+}
+
+TEST_CASE("CS-GAP-ELSEIF-CHAIN: ENDIF; followed by statements, ELSE or END", "[library-gaps][elseif-chain]") {
+    SECTION("statements after ENDIF;ENDIF; run unconditionally") {
+        auto run = runModel(
+            "FUNCTION f(x)\n"
+            "  s = 0\n"
+            "  IF (x>0) THEN\n"
+            "    IF (x>1) THEN\n"
+            "      s = 10\n"
+            "    ENDIF;ENDIF; s = s + 1; f = s\n"
+            "END\n"
+            "a = f(2)\nb = f(1)\nc = f(0)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(11.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(1.0, 1e-12));
+    }
+    SECTION("ENDIF;ELSE: the ELSE belongs to the outer IF") {
+        auto run = runModel(
+            "FUNCTION f(x)\n"
+            "  IF (x>0) THEN\n"
+            "    f = 1\n"
+            "    IF (x>1) THEN\n"
+            "      f = 10\n"
+            "    ENDIF;ELSE\n"
+            "    f = -1\n"
+            "  ENDIF\n"
+            "END\n"
+            "a = f(2)\nb = f(1)\nc = f(-3)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(10.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(-1.0, 1e-12));
+    }
+    SECTION("ENDIF;END ends the function, as if END were on the next line") {
+        auto run = runModel(
+            "FUNCTION f(x)\n"
+            "  IF (x>0) THEN f = 1 ELSE\n"
+            "    f = 2\n"
+            "  ENDIF;END\n"
+            "a = f(2)\nb = f(-1)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(2.0, 1e-12));
+    }
+    SECTION("a multi-line comment opened after ENDIF;ENDIF does not swallow the second ENDIF") {
+        for (const char* open : {"{note on the ladder\n  second line of the note}", "\"note on the ladder\n  second line of the note\""}) {
+            auto run = runModel(
+                std::string("FUNCTION f(x)\n"
+                            "  f = 0\n"
+                            "  IF (x>0) THEN\n"
+                            "    IF (x>1) THEN f = 2 ELSE\n"
+                            "      f = 1\n"
+                            "    ENDIF;ENDIF ") + open + "\n"
+                            "  f = f + 10\n"
+                            "END\n"
+                            "a = f(5)\nb = f(0.5)\nc = f(-1)\n");
+            REQUIRE(run.solveOk);
+            CHECK_THAT(run["a"], WithinAbs(12.0, 1e-12));
+            CHECK_THAT(run["b"], WithinAbs(11.0, 1e-12));
+            CHECK_THAT(run["c"], WithinAbs(10.0, 1e-12));
+        }
+    }
+    SECTION("an empty segment between the ENDIFs is allowed") {
+        auto run = runModel(
+            "FUNCTION f(x)\n"
+            "  f = 0\n"
+            "  IF (x>0) THEN\n"
+            "    IF (x>1) THEN f = 2 ELSE\n"
+            "      f = 1\n"
+            "    ENDIF;;ENDIF;\n"
+            "END\n"
+            "a = f(5)\nb = f(0.5)\nc = f(-1)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(0.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-ELSEIF-CHAIN: single-line IF ending with a bare ELSE, string conditions as in BrineProp",
+          "[library-gaps][elseif-chain]") {
+    // was: the empty ELSE part was taken as empty, the next lines ran unconditionally and the
+    // ENDIFs were orphans
+    const std::string proc =
+        "PROCEDURE sel(Pr$ : Pro)\n"
+        "Pro=0\n"
+        "Freeze=1;Density=2;SpecHeat=3;ThermalC=4;DynVisc=5\n"
+        "IF (Pr$='FREEZE') THEN Pro:=Freeze ELSE\n"
+        "\tIF (Pr$='DENSITY') THEN Pro:=Density ELSE\n"
+        "\t\tIF (Pr$='SPECHEAT') THEN Pro:=SpecHeat ELSE\n"
+        "\t\t\tIF (Pr$='THERMALC') THEN Pro:=ThermalC ELSE\n"
+        "\t\t\t\tIF (Pr$='DYNVISC') THEN Pro:=DynVisc\n"
+        "ENDIF;ENDIF;ENDIF;ENDIF\n"
+        "END\n";
+    REQUIRE(parseErrorsWithLines(proc).empty());
+    auto run = runModel(proc +
+        "CALL sel('FREEZE' : a1)\nCALL sel('DENSITY' : a2)\nCALL sel('SPECHEAT' : a3)\n"
+        "CALL sel('THERMALC' : a4)\nCALL sel('DYNVISC' : a5)\nCALL sel('NONE' : a6)\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a1"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["a2"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["a3"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["a4"], WithinAbs(4.0, 1e-12));
+    CHECK_THAT(run["a5"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["a6"], WithinAbs(0.0, 1e-12));   // no branch taken: Pro keeps its initial value
+}
+
+TEST_CASE("CS-GAP-ELSEIF-CHAIN: the ELSE part of a bare ELSE runs to its ENDIF", "[library-gaps][elseif-chain]") {
+    SECTION("several statements in the ELSE part, comments after ELSE and after ENDIF, statements after") {
+        const std::string code =
+            "FUNCTION f(x)\n"
+            "  IF (x>0) THEN r = 1; s = 1 ELSE {else part below}\n"
+            "    r = 2\n"
+            "    s = 20\n"
+            "  ENDIF \"end\"\n"
+            "  f = r + s\n"
+            "END\n"
+            "a = f(1)\nb = f(-1)\n";
+        REQUIRE(parseErrorsWithLines(code).empty());
+        auto run = runModel(code);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(22.0, 1e-12));
+    }
+    SECTION("a block IF with its own ELSE and ENDIF inside the ELSE part") {
+        auto run = runModel(
+            "FUNCTION f(x)\n"
+            "  IF (x>0) THEN f = 1 ELSE\n"
+            "    IF (x<-5) THEN\n"
+            "      f = -2\n"
+            "    ELSE\n"
+            "      f = -1\n"
+            "    ENDIF\n"
+            "  ENDIF\n"
+            "END\n"
+            "a = f(3)\nb = f(-1)\nc = f(-9)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(-1.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(-2.0, 1e-12));
+    }
+    SECTION("single-line IFs with a trailing ELSE and block IFs mixed, closed by one ENDIF line") {
+        auto run = runModel(
+            "FUNCTION f(x)\n"
+            "  IF (x=1) THEN f = 10 ELSE\n"
+            "  IF (x=2) THEN\n"
+            "    f = 20\n"
+            "  ELSE\n"
+            "    IF (x=3) THEN f = 30 ELSE\n"
+            "      f = 99\n"
+            "  ENDIF;ENDIF;ENDIF\n"
+            "END\n"
+            "a = f(1)\nb = f(2)\nc = f(3)\nd = f(4)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(10.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(20.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(30.0, 1e-12));
+        CHECK_THAT(run["d"], WithinAbs(99.0, 1e-12));
+    }
+    SECTION("the single-line forms without a trailing ELSE are unchanged") {
+        auto run = runModel(
+            "FUNCTION f(x)\n"
+            "  f = 0\n"
+            "  IF (x>0) THEN f = 1\n"
+            "  IF (x>1) THEN f = 2 ELSE f = f + 10\n"
+            "END\n"
+            "a = f(3)\nb = f(0.5)\nc = f(-1)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(11.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(10.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-ELSEIF-CHAIN: ladders inside DUPLICATE and REPEAT loops of a body", "[library-gaps][elseif-chain]") {
+    auto run = runModel(
+        "FUNCTION g(n)\n"
+        "  s = 0\n"
+        "  DUPLICATE i = 1, n\n"
+        "    IF (i > 2) THEN\n"
+        "      IF (i > 3) THEN\n"
+        "        s = s + 10\n"
+        "      ELSE\n"
+        "        s = s + 1\n"
+        "      ENDIF;ENDIF\n"
+        "  END\n"
+        "  g = s\n"
+        "END\n"
+        "FUNCTION h(n)\n"
+        "  s = 0\n"
+        "  k = 0\n"
+        "  REPEAT\n"
+        "    k = k + 1\n"
+        "    IF (k > 2) THEN s = s + 1 ELSE\n"
+        "      IF (k > 1) THEN s = s + 100\n"
+        "    ENDIF;\n"
+        "  UNTIL (k >= n)\n"
+        "  h = s\n"
+        "END\n"
+        "a = g(5)\nb = h(5)\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(21.0, 1e-12));    // i = 3: +1, i = 4, 5: +10 each
+    CHECK_THAT(run["b"], WithinAbs(103.0, 1e-12));   // k = 2: +100, k = 3, 4, 5: +1 each
+}
+
+namespace {
+
+/// "line: message" of the P008 warnings (an ENDIF that closes no IF) of the diagnostics `items`.
+std::vector<std::string> ignoredEndifWarnings(const std::vector<Diagnostic>& items) {
+    std::vector<std::string> out;
+    for (const auto& d : items)
+        if (d.code == "P008") {
+            CHECK(d.severity == DiagnosticSeverity::Warning);
+            out.push_back(std::to_string(d.line) + ": " + d.message);
+        }
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-ELSEIF-CHAIN: an ENDIF that closes no IF in a body is a warning, as EES accepts it",
+          "[library-gaps][elseif-chain]") {
+    const std::string orphan = "ENDIF without a matching IF ... THEN: ignored (EES accepts it)";
+    SECTION("one ENDIF too many on a joined line: one warning at its line, the model solves") {
+        const std::string code =
+            "FUNCTION f(x)\n"
+            "  IF (x>0) THEN\n"
+            "    f = 1\n"
+            "  ELSE\n"
+            "    f = 2\n"
+            "  ENDIF;ENDIF\n"
+            "END\n"
+            "a = f(1)\nb = f(-1)\n";
+        const auto parsed = parseFull(code);
+        CHECK(parsed.errors.empty());
+        CHECK(ignoredEndifWarnings(parsed.diagnostics.items()) == std::vector<std::string>{"6: " + orphan});
+        auto run = runModel(code);
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(2.0, 1e-12));
+        CHECK(ignoredEndifWarnings(run.warningItems) == std::vector<std::string>{"6: " + orphan});
+    }
+    SECTION("ENDIF;ENDIF with no open IF: one warning for the line, not one per ENDIF; one per line") {
+        const std::string code =
+            "FUNCTION f(x)\n"
+            "  f = 1\n"
+            "  ENDIF;ENDIF\n"
+            "  f = f + x\n"
+            "  ENDIF\n"
+            "END\n"
+            "a = f(1)\n";
+        const auto parsed = parseFull(code);
+        CHECK(parsed.errors.empty());
+        CHECK(ignoredEndifWarnings(parsed.diagnostics.items()) ==
+              std::vector<std::string>{"3: " + orphan, "5: " + orphan});
+        auto run = runModel(code);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(2.0, 1e-12));
+    }
+    SECTION("the surplus ENDIF of a loop in a body is a warning too, and statements after it run") {
+        auto run = runModel(
+            "FUNCTION g(n)\n"
+            "  s = 0\n"
+            "  DUPLICATE i = 1, n\n"
+            "    s = s + i\n"
+            "    ENDIF; s = s + 100\n"
+            "  END\n"
+            "  g = s\n"
+            "END\n"
+            "a = g(3)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(306.0, 1e-12));
+        CHECK(ignoredEndifWarnings(run.warningItems) == std::vector<std::string>{"5: " + orphan});
+    }
+    SECTION("the two-THEN single line of the register: its orphan ENDIFs are ignored with one warning") {
+        // The help of EES documents one THEN on a single-line IF; this line is read as nested single-line
+        // IFs, and what closes nothing is reported (it used to be two errors).
+        const std::string code =
+            "PROCEDURE p(x : y)\n"
+            "IF (x=1) THEN y=10 ELSE IF (x=2) THEN y=20\n"
+            "ENDIF;ENDIF\n"
+            "END\n"
+            "CALL p(2 : yv)\nz=yv\n";
+        auto run = runModel(code);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["z"], WithinAbs(20.0, 1e-12));
+        CHECK(ignoredEndifWarnings(run.warningItems) == std::vector<std::string>{"3: " + orphan});
+    }
+    SECTION("reduced copies of the BrineProp ladders, which have more ENDIFs than IFs") {
+        // 3 block IFs closed by 4 ENDIFs (23 for 22 in the library), 3 single-line IFs of which two end
+        // with ELSE closed by 3 ENDIFs (11 for 10 in the library)
+        const std::string code =
+            "PROCEDURE brine(Fl$, Conc : output)\n"
+            "IF (Fl$='EG') AND (Conc<0) THEN\n"
+            "\tCall ERROR('EG: Conc must be >= 0')\n"
+            "\tELSE\n"
+            "\tIF (Fl$='EG') AND (Conc>56.1) THEN\n"
+            "\tCall ERROR('EG: Conc must be <= 56.1')\n"
+            "\tELSE\n"
+            "IF (Fl$='PG') AND (Conc<15.2) THEN\n"
+            "\tCall ERROR('PG: Conc must be >= 15.2')\n"
+            "ENDIF;ENDIF;ENDIF;ENDIF\n"
+            "IF (Fl$='EG') THEN Flu:=1 ELSE\n"
+            "\tIF (Fl$='PG') THEN Flu:=2 ELSE\n"
+            "\t\tIF (Fl$='EA') THEN Flu:=3\n"
+            "ENDIF;ENDIF;ENDIF\n"
+            "output = Flu*100 + Conc\n"
+            "END\n";
+        const auto parsed = parseFull(code);
+        CHECK(parsed.errors.empty());
+        CHECK(ignoredEndifWarnings(parsed.diagnostics.items()) ==
+              std::vector<std::string>{"10: " + orphan, "14: " + orphan});
+        auto run = runModel(code + "CALL brine('EG', 25 : a)\nCALL brine('PG', 30 : b)\nCALL brine('EA', 5 : c)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(125.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(230.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(305.0, 1e-12));
+        CHECK(ignoredEndifWarnings(run.warningItems) == std::vector<std::string>{"10: " + orphan, "14: " + orphan});
+        CHECK_FALSE(runModel(code + "CALL brine('EG', -1 : a)\n").solveOk);        // the CALL ERROR branches
+        CHECK_FALSE(runModel(code + "CALL brine('EG', 60 : a)\n").solveOk);
+        CHECK_FALSE(runModel(code + "CALL brine('PG', 10 : a)\n").solveOk);
+    }
+}
+
+TEST_CASE("CS-GAP-ELSEIF-CHAIN: unmatched ENDIFs and ELSEs: what stays an error", "[library-gaps][elseif-chain]") {
+    SECTION("one ENDIF too few: the outer IF is reported at its own line") {
+        const std::string code =
+            "FUNCTION f(x)\n"
+            "  f = 0\n"
+            "  IF (x>0) THEN\n"
+            "    IF (x>1) THEN\n"
+            "      f = 1\n"
+            "    ENDIF\n"
+            "END\n"
+            "a = f(1)\n";
+        CHECK(parseErrorsWithLines(code) ==
+              std::vector<std::string>{"3: IF ... THEN without a matching ENDIF"});
+        CHECK_FALSE(runModel(code).parseOk);
+    }
+    SECTION("one ENDIF too few on a joined line") {
+        const std::string code =
+            "FUNCTION f(x)\n"
+            "  f = 0\n"
+            "  IF (x>0) THEN\n"
+            "    IF (x>1) THEN\n"
+            "      IF (x>2) THEN\n"
+            "        f = 1\n"
+            "      ENDIF;ENDIF\n"
+            "END\n"
+            "a = f(1)\n";
+        CHECK(parseErrorsWithLines(code) ==
+              std::vector<std::string>{"3: IF ... THEN without a matching ENDIF"});
+    }
+    SECTION("an ENDIF with no IF outside a body (DUPLICATE of the main program): one error per ENDIF") {
+        const std::string code =
+            "DUPLICATE i = 1, 2\n"
+            "  x[i] = i\n"
+            "  ENDIF;ENDIF\n"
+            "END\n";
+        const auto parsed = parseFull(code);
+        CHECK(parseErrorsWithLines(code) ==
+              std::vector<std::string>{"3: ENDIF without a matching IF ... THEN",
+                                       "3: ENDIF without a matching IF ... THEN"});
+        CHECK(ignoredEndifWarnings(parsed.diagnostics.items()).empty());
+    }
+    SECTION("an ELSE with no IF is an error, in a body too") {
+        const std::string code =
+            "FUNCTION f(x)\n"
+            "  f = 1\n"
+            "  ELSE\n"
+            "  f = 2\n"
+            "END\n"
+            "a = f(1)\n";
+        CHECK(parseErrorsWithLines(code) ==
+              std::vector<std::string>{"3: ELSE without a matching IF ... THEN"});
+    }
+    SECTION("text after ENDIF that is not separated by ';' is an error, never dropped") {
+        const std::string code =
+            "FUNCTION f(x)\n"
+            "  f = 0\n"
+            "  IF (x>0) THEN\n"
+            "    f = 1\n"
+            "  ENDIF f = 5\n"
+            "END\n"
+            "a = f(1)\n";
+        CHECK(parseErrorsWithLines(code) ==
+              std::vector<std::string>{"5: Unexpected text 'f = 5' after ENDIF (separate statements with ';')"});
+        CHECK_FALSE(runModel(code).parseOk);
+        // the same text after a ';', or a comment after the ENDIF, is fine
+        CHECK(parseErrorsWithLines("FUNCTION f(x)\n  f = 0\n  IF (x>0) THEN\n    f = 1\n  ENDIF; f = f + 5\nEND\na = f(1)\n").empty());
+        CHECK(parseErrorsWithLines("FUNCTION f(x)\n  f = 0\n  IF (x>0) THEN\n    f = 1\n  ENDIF // end\n  f = f + 5\nEND\na = f(1)\n").empty());
+        CHECK(parseErrorsWithLines("FUNCTION f(x)\n  f = 0\n  IF (x>0) THEN\n    f = 1\n  ENDIF {end} \"done\"\n  f = f + 5\nEND\na = f(1)\n").empty());
+        // `ENDIF ELSE` is no ENDIF followed by an ELSE either
+        CHECK(anyContains(parseErrorsWithLines("FUNCTION f(x)\n  IF (x>0) THEN\n    IF (x>1) THEN f = 2 ELSE\n      f = 1\n    ENDIF ELSE\n    f = 0\n  ENDIF\nEND\n"),
+                          "Unexpected text 'ELSE' after ENDIF"));
+    }
+    SECTION("a bare ELSE without ENDIF: the IF is reported at its line (it used to run the rest unconditionally)") {
+        const std::string code =
+            "FUNCTION f(x)\n"
+            "  IF (x>0) THEN f = 1 ELSE\n"
+            "    f = 2\n"
+            "END\n"
+            "a = f(1)\n";
+        CHECK(parseErrorsWithLines(code) ==
+              std::vector<std::string>{"2: IF ... THEN without a matching ENDIF"});
+    }
+    SECTION("two ELSE parts") {
+        const std::string code =
+            "FUNCTION f(x)\n"
+            "  IF (x>0) THEN f = 1 ELSE\n"
+            "    f = 2\n"
+            "  ELSE\n"
+            "    f = 3\n"
+            "  ENDIF\n"
+            "END\n"
+            "a = f(1)\n";
+        CHECK(parseErrorsWithLines(code) ==
+              std::vector<std::string>{"4: IF statement with two ELSE parts"});
+    }
+    SECTION("the one-word ELSEIF is not EES and stays a parse error") {
+        const std::string code =
+            "FUNCTION f(x)\n"
+            "  IF (x>0) THEN\n"
+            "    f = 1\n"
+            "  ELSEIF (x<0) THEN\n"
+            "    f = -1\n"
+            "  ENDIF\n"
+            "END\n"
+            "a = f(1)\n";
+        const auto errors = parseErrorsWithLines(code);
+        REQUIRE_FALSE(errors.empty());
+        CHECK(errors[0] == "4: Could not parse line");
+        CHECK_FALSE(runModel(code).parseOk);
     }
 }

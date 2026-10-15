@@ -33,7 +33,7 @@ AND,Operators,Logical AND,Yes,1,Used in IF conditions,
 OR,Operators,Logical OR,Yes,1,Used in IF conditions,
 NOT,Operators,Logical NOT,Yes,1,Used in IF conditions,
 # --- Control Flow ---,,,,,,
-IF-THEN-ELSE,Control Flow,Conditional execution in procedural blocks,Yes,1,"FUNCTION/PROCEDURE bodies only (as in EES): single-line and block (ENDIF) forms; conditions = <> < > <= >= (numbers and strings; strings compared without regard to case, as in EES) with AND/OR; src/parser.cpp + IfThenElse AST node",
+IF-THEN-ELSE,Control Flow,Conditional execution in procedural blocks,Yes,1,"FUNCTION/PROCEDURE bodies only (as in EES): single-line and block (ENDIF) forms, ENDIFs joined by `;` (`ENDIF;ENDIF`), single-line IF ending with ELSE continued on the following lines up to its ENDIF (IF ladders of EES libraries); conditions = <> < > <= >= (numbers and strings; strings compared without regard to case, as in EES) with AND/OR; src/parser.cpp + IfThenElse AST node",
 IFNOT-THEN-ELSE,Control Flow,Negated conditional execution,Yes,1,Variation of IF-THEN-ELSE,
 "IF(cond, true_val, false_val)",Control Flow,Inline conditional function (expression-level),Yes,1,"src/autodiff_node.cpp — 3-arg IF function, cond>0 returns true_val; a comparison inside the call (IF(a=5,1,2)) is a parse error (named-argument misparse): use the 5-argument form"
 "IF(A, B, X, Y, Z)",Control Flow,"Inline 3-way conditional (X if A<B, Y if A=B, Z if A>B)",Yes,1,src/autodiff_node.cpp — 5-arg form of the IF function; exact equality for A=B; derivative of the selected branch only (A and B are selectors); other arities are an error

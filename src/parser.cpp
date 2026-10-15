@@ -243,6 +243,7 @@ private:
         procedureNames_.clear();
         userConstants_.clear();
         routineChecked_ = constantAfterRoutine_ = rangeSeen_ = duplicateSeen_ = false;
+        lastIgnoredEndifLine_ = 0;
         ParseResult result;
         result.success = false;
         result.program.sourceFilename = filename;
@@ -530,6 +531,9 @@ private:
     int procedureBodyDepth_ = 0;
     // The routine whose body is being parsed ("FUNCTION" or "PROCEDURE", and its name).
     std::string routineKind_, routineName_;
+    // Text that follows `ENDIF;` on a body line, returned by nextBodyLine before the stream is read.
+    std::string pendingBodyText_;
+    int lastIgnoredEndifLine_ = 0;  // the line of the last ENDIF ignored in a body (one warning per line)
     // The PROCEDUREs defined so far (EES: a routine is defined before it is called); one of them
     // named like a built-in procedure replaces it (see isBuiltinColebrook).
     std::set<std::string, CaseInsensitiveLess> procedureNames_;
@@ -1156,6 +1160,20 @@ private:
             [](char c) { return std::isspace(static_cast<unsigned char>(c)); });
     }
 
+    // Next line of a body: the text kept after an `ENDIF;` (see parseBodyLines), else the next line of
+    // the stream. `resumed` is set for that text: its comments and directives are already dealt with.
+    bool nextBodyLine(std::istream& stream, int& lineNumber, std::string& line, bool& resumed) {
+        resumed = !pendingBodyText_.empty();
+        if (resumed) {   // same line number as the ENDIF it follows
+            line.swap(pendingBodyText_);
+            pendingBodyText_.clear();
+            return true;
+        }
+        if (!std::getline(stream, line)) return false;
+        lineNumber++;
+        return true;
+    }
+
     // ========================================================================
     // Unified body parser for function/procedure/DUPLICATE/REPEAT/IF bodies.
     // Reads lines from 'stream', parsing comments, directives, IF-THEN-ELSE,
@@ -1163,7 +1181,9 @@ private:
     // Returns "END" if END keyword terminates, "UNTIL" if UNTIL(condition)
     // terminates (conditionOut set), "" on EOF, and — only when called for the
     // block of an IF statement (inIfBlock) — "ELSE" (the text of the ELSE line
-    // is stored in *terminatorLine) or "ENDIF".
+    // is stored in *terminatorLine) or "ENDIF". `;` separates statements: what follows
+    // `ENDIF;` on a line (another ENDIF, an ELSE, statements) is read as the next line, so
+    // that `ENDIF;ENDIF;ENDIF` closes three IF blocks.
     // ========================================================================
     std::string parseBodyLines(std::istream& stream, int& lineNumber,
                                std::vector<StmtPtr>& body, ParseResult& result,
@@ -1171,11 +1191,11 @@ private:
                                bool inIfBlock = false,
                                std::string* terminatorLine = nullptr) {
         std::string bodyLine;
-        while (std::getline(stream, bodyLine)) {
-            lineNumber++;
-            if (skipCommentLine(bodyLine, lineNumber, result)) continue;
+        bool resumed;
+        while (nextBodyLine(stream, lineNumber, bodyLine, resumed)) {
+            if (!resumed && skipCommentLine(bodyLine, lineNumber, result)) continue;
             std::string trimmedBody = trim(bodyLine);
-            if (handleConditionalDirective(trimmedBody, lineNumber, bodyLine, result)) continue;
+            if (!resumed && handleConditionalDirective(trimmedBody, lineNumber, bodyLine, result)) continue;
             if (!conditionalActive()) continue;
             std::string upperBody = trimmedBody;
             std::transform(upperBody.begin(), upperBody.end(), upperBody.begin(), ::toupper);
@@ -1220,9 +1240,30 @@ private:
                 if (!term.empty()) return term;  // block ended prematurely (END/UNTIL)
             } else if (isBodyKeyword("ELSE") || isBodyKeyword("ENDIF")) {
                 const bool isElse = isBodyKeyword("ELSE");
+                if (!isElse) {  // `ENDIF;text`: the text is read as the next line
+                    const std::string code = trim(removeInlineComments(bodyLine));
+                    const size_t semicolon = code.find(';');
+                    const std::string stray = trim(code.substr(5, semicolon == std::string::npos ? semicolon
+                                                                                               : semicolon - 5));
+                    if (!stray.empty())
+                        result.errors.push_back({lineNumber, 0, "Unexpected text '" + stray +
+                                                 "' after ENDIF (separate statements with ';')", bodyLine});
+                    const size_t next = semicolon == std::string::npos ? semicolon
+                                                                        : code.find_first_not_of("; \t", semicolon);
+                    if (next != std::string::npos) pendingBodyText_ = code.substr(next);
+                }
                 if (!inIfBlock) {
-                    result.errors.push_back({lineNumber, 0,
-                        std::string(isElse ? "ELSE" : "ENDIF") + " without a matching IF ... THEN", bodyLine});
+                    if (!isElse && procedureBodyDepth_ > 0) {
+                        // EES ignores an ENDIF that closes nothing (the ladders of its libraries have some)
+                        if (lastIgnoredEndifLine_ != lineNumber)
+                            result.diagnostics.push(DiagnosticSeverity::Warning, "P008",
+                                "ENDIF without a matching IF ... THEN: ignored (EES accepts it)",
+                                "parser", lineNumber, 0);
+                        lastIgnoredEndifLine_ = lineNumber;
+                    } else {
+                        result.errors.push_back({lineNumber, 0,
+                            std::string(isElse ? "ELSE" : "ENDIF") + " without a matching IF ... THEN", bodyLine});
+                    }
                     continue;
                 }
                 if (terminatorLine) *terminatorLine = trimmedBody;
@@ -1982,12 +2023,17 @@ private:
     // IF ... THEN ... ELSE ... ENDIF (EES: only inside FUNCTION/PROCEDURE bodies)
     //
     //   IF (cond) THEN stmts [ELSE stmts]        single line, no ENDIF
+    //   IF (cond) THEN stmts ELSE                single line ending with ELSE: the ELSE part
+    //       stmts                                is on the following lines, up to the ENDIF
+    //   ENDIF
     //   IF (cond) THEN                           block form, closed by ENDIF
     //       stmts
     //   [ELSE [stmt]
     //       stmts]
     //   ENDIF
     //
+    // ENDIFs may share a line (`ENDIF;ENDIF`: one per open IF) and be followed by statements after a `;`.
+    // An ENDIF that closes no IF is a warning (P008) in a body, as EES accepts it; an error elsewhere.
     // The condition may use = <> < > <= >= (numbers or strings) combined with
     // AND / OR and parentheses; the parentheses around the whole condition are
     // optional. Branch statements may themselves be IF statements.
@@ -2108,8 +2154,9 @@ private:
     }
 
     // Parse an IF statement whose first line is `ifText` (comments removed,
-    // trimmed, starting with IF) and append it to `body`. For the block form the
-    // following lines are read from `stream` up to the matching ENDIF.
+    // trimmed, starting with IF) and append it to `body`. For the block form, and for
+    // a single-line form ending with ELSE, the following lines are read from `stream`
+    // up to the matching ENDIF.
     // Returns "" when the statement is complete, or the terminator ("END",
     // "UNTIL") that ended the enclosing block before the ENDIF, which the caller
     // must propagate.
@@ -2132,18 +2179,27 @@ private:
         std::vector<StmtPtr> thenBranch, elseBranch;
         std::string premature;
         const std::string rest = trim(ifText.substr(thenPos + 4));
+        std::vector<StmtPtr>* current = &thenBranch;
+        bool sawElse = false;
+        bool readBlock = rest.empty();
         if (!rest.empty()) {
             // Single-line form: IF (cond) THEN stmts [ELSE stmts]
             const size_t elsePos = findKeywordAtDepth0(rest, "ELSE");
             premature = parseBranchText(elsePos == std::string::npos ? rest : rest.substr(0, elsePos),
                                         stream, lineNumber, thenBranch, result, srcLine);
-            if (premature.empty() && elsePos != std::string::npos)
-                premature = parseBranchText(rest.substr(elsePos + 4), stream, lineNumber,
-                                            elseBranch, result, srcLine);
-        } else {
+            if (premature.empty() && elsePos != std::string::npos) {
+                const std::string elseText = rest.substr(elsePos + 4);
+                premature = parseBranchText(elseText, stream, lineNumber, elseBranch, result, srcLine);
+                if (premature.empty() && trim(elseText).empty()) {
+                    // The line ends with ELSE: the ELSE part is on the following lines, up to the ENDIF
+                    current = &elseBranch;
+                    sawElse = true;
+                    readBlock = true;
+                }
+            }
+        }
+        if (readBlock) {
             // Block form: lines up to ENDIF, with an optional ELSE
-            std::vector<StmtPtr>* current = &thenBranch;
-            bool sawElse = false;
             for (;;) {
                 std::string elseLine;
                 const std::string term = parseBodyLines(stream, lineNumber, *current, result,

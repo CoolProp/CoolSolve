@@ -790,6 +790,11 @@ IF (Re < 2300) THEN                     "block form: closed by ENDIF"
 ELSE
     f = 0.316*Re^(-0.25)
 ENDIF
+
+IF (Pr$ = 'DENSITY') THEN Pro = 2 ELSE  "single line ending with ELSE: the ELSE part follows"
+    IF (Pr$ = 'SPECHEAT') THEN Pro = 3 ELSE
+        IF (Pr$ = 'DYNVISC') THEN Pro = 5
+ENDIF;ENDIF                             "one ENDIF per IF ending with ELSE"
 ```
 
 - Only the branch selected by the condition is executed; the other one is
@@ -802,6 +807,20 @@ ENDIF
 - A branch holds any statements of a body, including other `IF` statements and
   `DUPLICATE` / `REPEAT` loops; `ELSE IF (c) THEN ...` is an `IF` statement
   inside the `ELSE` branch (a block-form `IF` always has its own `ENDIF`).
+- The `;` that separates statements also separates `ENDIF`s: `ENDIF;ENDIF` closes
+  two open `IF`s (one `ENDIF` per `IF`), and the text after an `ENDIF;` is read as
+  the next line (`ENDIF; y = 1`, `ENDIF;ELSE`, `ENDIF;END`). Text after an `ENDIF`
+  that is not separated by `;` is an error (*"Unexpected text 'y = 1' after ENDIF"*).
+  An `IF` left open at the `END` of the body is an error (*"IF ... THEN without a
+  matching ENDIF"*). An `ENDIF` that closes no `IF` is ignored in a body, with a
+  warning (`P008`, one per line), because EES accepts it (the `IF` ladders of EES
+  libraries often have one `ENDIF` too many); outside a body, and for an `ELSE` with
+  no `IF`, it is an error (*"ENDIF without a matching IF ... THEN"*).
+- A single-line `IF (c) THEN a ELSE` whose line ends with `ELSE` (only a comment
+  may follow) has its `ELSE` part on the following lines, up to the `ENDIF` that
+  closes it: this is how EES libraries write `IF` ladders (see the example; the
+  last `IF` of the ladder has no `ELSE` and needs no `ENDIF`).
+- The one-word `ELSEIF` is not an EES keyword: it is a parse error.
 - Derivatives are propagated through the branch taken, so the function can be
   used on unknowns.
 
