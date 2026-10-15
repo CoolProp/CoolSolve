@@ -31,6 +31,7 @@
 #include <functional>
 #include <iomanip>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -15152,4 +15153,265 @@ TEST_CASE("CS-BUG-MAIN-REPEAT: negative tests, what is an error and what is not"
         REQUIRE(gotoErrors.size() == 1);
         CHECK(gotoErrors[0].rfind("2: GOTO is only allowed inside FUNCTION and PROCEDURE bodies", 0) == 0);
     }
+}
+
+// ============================================================================
+// CS-BUG-MAIN-SEMICOLON: a line of the main program with several `;`-separated statements is read by the
+// statement parser of the bodies (parseSimpleStatements), so that a comment after a separator and a CALL
+// among the statements are accepted, as in a FUNCTION or PROCEDURE body. EES: `a = 1 ; // comment` is a = 1.
+// ============================================================================
+
+namespace {
+const std::string kMainSemicolonProc = "PROCEDURE p(x : y)\n  y = 2*x\nEND\n";
+const std::string kMainIfMessage =
+    "IF ... THEN statements are only allowed inside FUNCTION and PROCEDURE bodies "
+    "(in the main program use the IF(cond, a, b) or IF(A, B, X, Y, Z) function)";
+}  // namespace
+
+TEST_CASE("CS-BUG-MAIN-SEMICOLON: register reproducer, a comment after a separator",
+          "[library-gaps][main-semicolon]") {
+    // was: "Parse failed: Line 1: Could not parse segment: // comment"
+    auto run = runModel("a = 1 ; // comment\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+    CHECK(parseErrorsWithLines("a = 1 ; // comment\n").empty());
+}
+
+TEST_CASE("CS-BUG-MAIN-SEMICOLON: comments among the statements of a line", "[library-gaps][main-semicolon]") {
+    SECTION("a comment after the last statement, without a separator in between") {
+        auto run = runModel("a = 1 ; b = 2 // c\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(2.0, 1e-12));
+    }
+    SECTION("a display comment (double quotes) after a separator") {
+        auto run = runModel("a = 1 ; \"display comment\"\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+    }
+    SECTION("a display comment after the last separator of several statements") {
+        auto run = runModel("a = 1 ; b = 2 ; \"two constants\"\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["b"], WithinAbs(2.0, 1e-12));
+    }
+    SECTION("a {comment} between two statements") {
+        auto run = runModel("a = 1 ; {c} ; b = a + 1\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["b"], WithinAbs(2.0, 1e-12));
+    }
+    SECTION("a // comment hides the statements after it, separators included") {
+        auto run = runModel("a = 1 ; // b = 2 ; c = 3\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+        CHECK_FALSE(hasVar(run, "b"));
+        CHECK_FALSE(hasVar(run, "c"));
+    }
+    SECTION("separators only: a trailing, a doubled and a leading separator") {
+        auto run = runModel("a = 1 ; ; b = 2 ;\n; c = 3\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["c"], WithinAbs(3.0, 1e-12));
+    }
+    SECTION("a unit comment and a ';' inside a comment of the statement") {
+        auto run = runModel("a = 1 \"[m]\" ; b = 2 \"x ; y\" ; c = a + b // d ; e\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["c"], WithinAbs(3.0, 1e-12));
+        CHECK_FALSE(hasVar(run, "e"));
+    }
+}
+
+TEST_CASE("CS-BUG-MAIN-SEMICOLON: a CALL among the statements of a line", "[library-gaps][main-semicolon]") {
+    SECTION("a CALL after an equation") {
+        // was: "Could not parse segment: CALL p(1 : y)"
+        auto run = runModel(kMainSemicolonProc + "z = 2 ; CALL p(1 : y)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["z"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["y"], WithinAbs(2.0, 1e-12));
+    }
+    SECTION("a CALL before an equation") {
+        // was: "Unexpected text '; z = 2' after the arguments of 'p'"
+        auto run = runModel(kMainSemicolonProc + "CALL p(1 : y) ; z = 2\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["z"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["y"], WithinAbs(2.0, 1e-12));
+    }
+    SECTION("an equation, a CALL and an equation, with a comment at the end") {
+        auto run = runModel(kMainSemicolonProc + "a = 3 ; CALL p(a : y) ; z = y + 1 // chained\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(6.0, 1e-12));
+        CHECK_THAT(run["z"], WithinAbs(7.0, 1e-12));
+    }
+    SECTION("a CALL alone on its line, with a comment and a display comment") {
+        auto run = runModel(kMainSemicolonProc + "CALL p(1 : y) // c\nCALL p(2 : w) \"d\" ; \"e\"\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["w"], WithinAbs(4.0, 1e-12));
+    }
+    SECTION("an output that is an expression stays accepted in the main program") {
+        auto run = runModel(kMainSemicolonProc + "z = 2 ; CALL p(3 : q/2)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["q"], WithinAbs(12.0, 1e-9));
+    }
+    SECTION("the string output of a CALL after a separator is a computed string for $IF") {
+        const std::string proc = "PROCEDURE ps(a : r$)\n  r$ = 'ON'\nEND\n";
+        const auto errors = parseErrorsWithLines(proc + "y = 1 ; CALL ps(1 : regime$)\n$if regime$='ON'\nx = 1\n$endif\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].rfind("5: ", 0) == 0);
+        CHECK(errors[0].find("regime$") != std::string::npos);
+        CHECK(errors[0].find("CALL") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-BUG-MAIN-SEMICOLON: two CALLs on one line are two calls (CS-BUG-DUPLICATE-CALL-BLOCK)",
+          "[library-gaps][main-semicolon]") {
+    const std::string code = kMainSemicolonProc + "CALL p(1 : y) ; CALL p(2 : w)\n";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["y"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(run["w"], WithinAbs(4.0, 1e-12));
+    // they share the source line, not the call id
+    EESParser parser;
+    auto parsed = parser.parse(code);
+    REQUIRE(parsed.success);
+    const IR ir = IR::fromAST(parsed.program);
+    std::set<int> callIds;
+    std::set<int> lines;
+    for (const auto& eq : ir.getEquations()) {
+        if (!eq.procedureCall) continue;
+        callIds.insert(eq.callId);
+        lines.insert(eq.sourceLine);
+    }
+    CHECK(callIds.size() == 2);
+    CHECK(lines.size() == 1);
+}
+
+TEST_CASE("CS-BUG-MAIN-SEMICOLON: a ';' in a string literal does not separate", "[library-gaps][main-semicolon]") {
+    SECTION("alone on its line") {
+        auto run = runModel("f$ = 'a;b'\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.strings.at("f$") == "a;b");
+    }
+    SECTION("among other statements, with a comment") {
+        auto run = runModel("f$ = 'a;b' ; g$ = 'c' ; // d\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.strings.at("f$") == "a;b");
+        CHECK(run.strings.at("g$") == "c");
+    }
+    SECTION("a string constant set after a separator is known to $IF") {
+        auto run = runModel("a = 1 ; m$ = 'ON'\n$if m$='ON'\nx = 1\n$endif\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(hasVar(run, "x"));
+    }
+}
+
+TEST_CASE("CS-BUG-MAIN-SEMICOLON: the rules of the main program hold for each statement of a line",
+          "[library-gaps][main-semicolon]") {
+    SECTION("IF ... THEN at the start of a line keeps its message, with statements after a separator") {
+        const auto errors = parseErrorsWithLines("a = 1\nIF (a > 0) THEN b = 1 ; c = 2\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0] == "2: " + kMainIfMessage);
+    }
+    SECTION("IF ... THEN after a separator is an error, with its line") {
+        const auto errors = parseErrorsWithLines("x = 1\na = 1 ; IF (a > 0) THEN b = 1\n");
+        REQUIRE_FALSE(errors.empty());
+        CHECK(errors[0].rfind("2: ", 0) == 0);
+        CHECK_FALSE(runModel("x = 1\na = 1 ; IF (a > 0) THEN b = 1\n").parseOk);
+    }
+    SECTION("CALL WARNING and CALL ERROR are refused in the main program, on their own line or after a separator") {
+        const std::string warning = "CALL WARNING can only be used inside a FUNCTION or PROCEDURE (as in EES)";
+        const std::string error = "CALL ERROR can only be used inside a FUNCTION or PROCEDURE (as in EES)";
+        auto own = parseErrorsWithLines("x = 1\nCALL WARNING('a', x)\n");
+        REQUIRE(own.size() == 1);
+        CHECK(own[0] == "2: " + warning);
+        auto after = parseErrorsWithLines("x = 1 ; CALL WARNING('a', x)\n");
+        REQUIRE(after.size() == 1);
+        CHECK(after[0] == "1: " + warning);
+        auto before = parseErrorsWithLines("CALL ERROR('a', x) ; x = 1\n");
+        REQUIRE(before.size() == 1);
+        CHECK(before[0] == "1: " + error);
+        CHECK_FALSE(runModel("x = 1 ; CALL WARNING('a', x)\n").parseOk);
+    }
+    SECTION("GOTO after a separator is refused with its message") {
+        const auto errors = parseErrorsWithLines("x = 1\na = 1 ; GOTO 10\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].rfind("2: GOTO is only allowed inside FUNCTION and PROCEDURE bodies", 0) == 0);
+        CHECK_FALSE(runModel("x = 1\na = 1 ; GOTO 10\n").parseOk);
+    }
+    SECTION("REPEAT and a statement label after a separator are errors, with their line") {
+        const auto repeat = parseErrorsWithLines("x = 1\na = 1 ; REPEAT\n");
+        REQUIRE_FALSE(repeat.empty());
+        CHECK(repeat[0].rfind("2: ", 0) == 0);
+        const auto label = parseErrorsWithLines("x = 1\na = 1 ; 10: b = 2\n");
+        REQUIRE_FALSE(label.empty());
+        CHECK(label[0].rfind("2: ", 0) == 0);
+        CHECK_FALSE(runModel("x = 1\na = 1 ; REPEAT\n").parseOk);
+        CHECK_FALSE(runModel("x = 1\na = 1 ; 10: b = 2\n").parseOk);
+    }
+    SECTION("GOTO, label and REPEAT at the start of a line keep their messages") {
+        CHECK(parseErrorsWithLines("x = 1\nGOTO 10 ; a = 1\n")[0].rfind("2: GOTO is only allowed inside", 0) == 0);
+        CHECK(parseErrorsWithLines("x = 1\n10: a = 1 ; b = 2\n")[0].rfind("2: statement labels are only allowed", 0) == 0);
+        const auto repeat = parseErrorsWithLines("x = 1\nREPEAT\n  x = x + 1\nUNTIL (x > 3)\n");
+        REQUIRE(repeat.size() == 1);
+        CHECK(repeat[0] == "2: " + kMainRepeatMessage);
+    }
+    SECTION("an unparsable statement is reported with its segment and its line, the others are kept") {
+        const auto errors = parseErrorsWithLines("a = 1\nb = 2 ; this is not a statement ; c = 3\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0] == "2: Could not parse segment: this is not a statement");
+        const auto equals = parseErrorsWithLines("a = 1\nb = 2 ; c == 3\n");
+        REQUIRE(equals.size() == 1);
+        CHECK(equals[0] == "2: Invalid operator '=='. EES uses '=' for equations, not '=='");
+        const auto faulty = parseErrorsWithLines(kMainSemicolonProc + "b = 2 ; CALL p(1 + : y)\n");
+        REQUIRE(faulty.size() == 1);
+        CHECK(faulty[0] == "4: Could not parse argument 1 of 'p': '1 +'");
+        const auto trailing = parseErrorsWithLines(kMainSemicolonProc + "CALL p(1 : y) z ; b = 2\n");
+        REQUIRE(trailing.size() == 1);
+        CHECK(trailing[0].rfind("4: Unexpected text 'z' after the arguments of 'p'", 0) == 0);
+    }
+    SECTION("a single statement that cannot be parsed keeps its message") {
+        const auto errors = parseErrorsWithLines("a = 1\nthis is not a statement\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0] == "2: Could not parse line");
+    }
+    SECTION("a CALL to an undefined procedure is still reported") {
+        auto run = runModel("z = 2 ; CALL nosuch(1 : y)\n");
+        CHECK_FALSE(run.solveOk);
+    }
+}
+
+TEST_CASE("CS-BUG-MAIN-SEMICOLON: the main program and a body read the same line the same way",
+          "[library-gaps][main-semicolon]") {
+    // one line, in the main program and in the body of a PROCEDURE: the statements are the same
+    const std::string line = "u = 1 ; // c1\n";
+    CHECK(parseErrorsWithLines(line).empty());
+    CHECK(parseErrorsWithLines("PROCEDURE q(x : y)\n  y = x\n  " + line + "END\n").empty());
+    const std::string withCall = "CALL p(1 : y) ; z = 2 \"d\"\n";
+    CHECK(parseErrorsWithLines(kMainSemicolonProc + withCall).empty());
+    CHECK(parseErrorsWithLines(kMainSemicolonProc + "PROCEDURE q(x : r)\n  " + withCall + "  r = z\nEND\n").empty());
+    // and inside a DUPLICATE of the main program
+    auto run = runModel(kMainSemicolonProc + "DUPLICATE i = 1, 2\n  x[i] = i ; CALL p(x[i] : y[i]) ; // c\nEND\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y[2]"], WithinAbs(4.0, 1e-12));
 }

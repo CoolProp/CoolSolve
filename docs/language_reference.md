@@ -27,6 +27,18 @@ h_1 = enthalpy('Water', T=T_1, P=P_1)
 
 Equations are not executed top-to-bottom — they are solved simultaneously.
 
+A `;` separates several statements on one line (equations, assignments and
+`CALL`s), as in the body of a FUNCTION or PROCEDURE. A comment may follow a
+separator, and a `;` inside a string (`'a;b'`) or a comment does not separate:
+
+```ees
+a = 1 ; b = 2 ; "two constants"
+z = 2 ; CALL p(1 : y) ; // an equation and a CALL
+```
+
+`IF ... THEN`, `REPEAT`, `GOTO` and statement labels are not statements of the
+main program (see section 6): they are errors there, after a `;` too.
+
 ### Comments
 
 Three comment styles are supported:

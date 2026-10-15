@@ -8,6 +8,7 @@ Object,Category,Description,Implemented,Priority,Notes,
 - (unary),Core Syntax,Unary negation,Yes,1,src/autodiff_node.cpp,
 = (equation),Core Syntax,Equation definition (LHS = RHS),Yes,1,Parser creates Equation AST node,
 := (assignment),Core Syntax,Procedural assignment,Yes,1,Parser creates Assignment AST node inside FUNCTION/PROCEDURE,
+"; (statement separator)",Core Syntax,"Several statements on one line: a = 1 ; b = 2 ; CALL p(a : y)",Yes,1,"src/parser.cpp — the main program reads a line with the statement parser of the bodies (parseSimpleStatements): equations, assignments and CALLs separated by `;`, a comment (// or ""..."") after a separator is ignored, a `;` inside a string or a comment does not separate; a statement that cannot be parsed is an error with its line (a comment or a CALL after a separator used to be refused: CS-BUG-MAIN-SEMICOLON); IF-THEN, REPEAT, GOTO and labels stay errors in the main program, after a separator too",
 Quoted comment,Core Syntax,"Display comment ""...""",Yes,1,"src/parser.cpp — three comment styles; a comment not closed on its line (alone or after an equation) continues up to the next quote, as in EES",
 {Brace comment},Core Syntax,"Hidden comment {...}, supports nesting",Yes,1,src/parser.cpp,
 // Line comment,Core Syntax,C-style line comment,Yes,2,Not standard EES, CoolSolve extension

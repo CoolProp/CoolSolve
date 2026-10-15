@@ -362,20 +362,6 @@ private:
                 }
             }
 
-            // Handle Procedure Call
-            if (isKeyword("CALL")) {
-                std::string callError;
-                if (auto stmt = tryParseProcedureCall(line, lineNumber, &callError)) {
-                    result.program.statements.push_back(stmt);
-                    noteComputedStrings(stmt);
-                    continue;
-                }
-                if (!callError.empty()) {
-                    result.errors.push_back({lineNumber, 0, callError, line});
-                    continue;
-                }
-            }
-
             // Handle DUPLICATE loop: DUPLICATE i = start, end
             if (isKeyword("DUPLICATE")) {
                 int startLine = lineNumber;
@@ -438,49 +424,22 @@ private:
                 continue;
             }
             
-            // Handle equations — split on semicolons first (EES uses ; as
-            // a statement separator, e.g. `a = 1 ; b = 2 ; c = 3`).
+            // Equations, assignments and CALLs, one or several per line (`a = 1 ; CALL p(1 : y) ; // c`):
+            // read by the statement parser of the bodies, so that a line means the same in the main program
+            // and in a body (CS-BUG-MAIN-SEMICOLON)
             {
-                auto segments = splitOnSemicolons(line);
-                if (segments.size() > 1) {
-                    // Multiple statements on one line
-                    bool allOk = true;
-                    for (const auto& seg : segments) {
-                        std::string segError;
-                        if (auto stmt = tryParseEquationOrAssignment(seg, lineNumber, &segError)) {
-                            result.program.statements.push_back(stmt);
-                            result.equationCount++;
-                            noteStringAssignment(stmt);
-                        } else {
-                            allOk = false;
-                            std::string msg = segError.empty() ? ("Could not parse segment: " + seg) : segError;
-                            result.errors.push_back({lineNumber, 0, msg, line});
-                        }
-                    }
-                    if (allOk) continue;
-                    // Even if some segments failed, we already pushed the
-                    // successful ones; skip the fallback single-parse path.
-                    continue;
-                }
-            }
-
-            {
-                std::string parseError;
-                if (auto stmt = tryParseEquationOrAssignment(line, lineNumber, &parseError)) {
+                std::vector<StmtPtr> statements;
+                parseSimpleStatements(line, lineNumber, statements, result, line);
+                for (const auto& stmt : statements) {
                     result.program.statements.push_back(stmt);
-                    result.equationCount++;
-                    noteStringAssignment(stmt);
-                    continue;
-                }
-                if (!parseError.empty()) {
-                    result.errors.push_back({lineNumber, 0, parseError, line});
-                    continue;
+                    if (stmt->is<ProcedureCall>()) {
+                        noteComputedStrings(stmt);
+                    } else {
+                        result.equationCount++;
+                        noteStringAssignment(stmt);
+                    }
                 }
             }
-            
-            // If we couldn't parse the line, record an error but continue
-            // We don't set unsupportedFound here, as it might just be a line we don't understand yet
-            result.errors.push_back({lineNumber, 0, "Could not parse line", line});
         }
         
         for (auto it = conditionalStack_.rbegin(); it != conditionalStack_.rend(); ++it) {
@@ -1512,9 +1471,10 @@ private:
     }
 
     // Parse the equations/assignments and procedure calls of `text` (one line
-    // of a body, or one branch of a single-line IF), split on semicolons.
+    // of a body, one branch of a single-line IF, or one line of the main program),
+    // split on semicolons.
     // `errorLine` is the source line reported with parse errors. A statement that
-    // cannot be parsed is an error, as in the main program: it is never dropped
+    // cannot be parsed is an error: it is never dropped
     // (CS-BUG-BODY-LINE-DROP); only a segment that holds nothing but comments (or
     // separators) is skipped.
     void parseSimpleStatements(const std::string& text, int lineNumber,
