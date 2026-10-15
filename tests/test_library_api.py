@@ -353,7 +353,12 @@ def test_pages(index):
 
     check("not embedded: sources/ → 404", raw("GET", "/library/sources/thermo_models/inventory.csv")[0] == 404)
     check("not embedded: tools/ → 404", raw("GET", "/library/tools/build_index.py")[0] == 404)
-    check("path traversal rejected", raw("GET", "/library/models/../../etc/passwd")[0] in (400, 404))
+    # Behind a reverse proxy that resolves ".." itself (Apache), the server receives /etc/passwd
+    # and answers with the app page: either way, no file outside the library is served
+    status, _, content = raw("GET", "/library/models/../../etc/passwd")
+    check("path traversal rejected",
+          status in (400, 404) or (status == 200 and b"<!doctype html>" in content[:100].lower()),
+          f"status={status}")
     check("the documentation links to the library",
           b"/library/" in raw("GET", "/docs/")[2])
 
