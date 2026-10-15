@@ -2884,11 +2884,13 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
             blockIdx, opts, trace, &blockError, &multistartInfo);
         
         // A CALL that computes a string (CS-BUG-STRING-CALL-OUT) hands it to the next blocks, and the
-        // CALL WARNING that holds at the solution is reported (not those of the iterates)
+        // CALL WARNING that holds at the solution is reported (not those of the iterates); a property
+        // input that the solver had to limit at the solution is an error (CS-BUG-INPUT-CLAMP)
         if (blockStatus == SolverStatus::Success) {
             try {
                 evaluator_.publishStringOutputs(blockIdx);
                 evaluator_.reportCallWarnings(blockIdx, blockDiag);
+                evaluator_.checkInputClamps(blockIdx);
             } catch (const std::exception& e) {
                 blockStatus = SolverStatus::EvaluationError;
                 blockError = e.what();

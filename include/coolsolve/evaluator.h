@@ -7,7 +7,9 @@
 #include "autodiff_node.h"
 #include "units.h"
 #include "diagnostic.h"
+#include <atomic>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 #include <functional>
@@ -99,6 +101,23 @@ struct CoolPropConfig {
     
     // Unit system configuration
     UnitSystem units;
+};
+
+// ============================================================================
+// Input Clamping Log
+// ============================================================================
+
+/**
+ * @brief Where the property calls note that they limited one of their inputs (CS-BUG-INPUT-CLAMP).
+ *
+ * A property call limits an input that depends on the unknowns of its block (an unphysical Newton trial
+ * point: a negative pressure, a temperature below the fluid's minimum) to a lower bound. An input that
+ * does not depend on them is never limited. A clamp that is still active at the converged point means
+ * that the solution does not satisfy the equation, which `SystemEvaluator::checkInputClamps` reports.
+ */
+struct InputClampLog {
+    bool fired = false;                          ///< an input was limited
+    std::vector<std::string>* report = nullptr;  ///< when given, one message per limited input (call, value, bound)
 };
 
 // ============================================================================
@@ -237,11 +256,13 @@ public:
     void setLookupTableStore(const LookupTableStore* store) { lookupTableStore_ = store; }
     const LookupTableStore* getLookupTableStore() const { return lookupTableStore_; }
 
-    /// When true, skip input clamping (P >= 1000 Pa, T >= 50 K, etc.).
-    /// Used for final solution verification so that out-of-range inputs
-    /// are caught as errors rather than silently corrected.
+    /// When true, skip input clamping (the quality, and the lower bounds of pressure, temperature and
+    /// density of the property calls). Used for the final solution verification.
     void setDisableClamping(bool disable) { disableClamping_ = disable; }
     bool isClampingDisabled() const { return disableClamping_; }
+
+    /// Where the property calls note the inputs they limit (see InputClampLog); null (the default) notes nothing.
+    void setInputClampLog(InputClampLog* log) { clampLog_ = log; }
     
 private:
     size_t numVariables_;
@@ -249,6 +270,7 @@ private:
     bool disableClamping_ = false;
     DiagnosticCollector* diagnostics_ = nullptr;
     std::vector<Diagnostic>* callWarningSink_ = nullptr;   ///< see setCallWarningSink
+    InputClampLog* clampLog_ = nullptr;                    ///< see setInputClampLog
     const LookupTableStore* lookupTableStore_ = nullptr;
     /// "FUNCTION 'name'" / "PROCEDURE 'name'" when this evaluator runs the body of a user routine
     /// (empty in the main program); only used to say where a lookup error comes from.
@@ -377,12 +399,21 @@ public:
      *        (saves CoolProp calls during line search; residuals only).
      * @param callWarnings When given, the `CALL WARNING` statements executed by the evaluation push their
      *        warnings (code `W001`) there; when null they do nothing (the case of every iteration).
+     * @param clampReport When given, receives one message for each property-call input that the evaluation
+     *        limited (see InputClampLog); when null nothing is described (the case of every iteration).
      */
     EvaluationResult evaluate(const std::vector<double>& x,
                               const std::map<std::string, double>& externalVars = {},
                               const std::map<std::string, std::string>& externalStringVars = {},
                               bool computeJacobian = true,
-                              std::vector<Diagnostic>* callWarnings = nullptr);
+                              std::vector<Diagnostic>* callWarnings = nullptr,
+                              std::vector<std::string>* clampReport = nullptr);
+
+    /**
+     * @brief True, once, if an evaluation of the block limited a property-call input since the last call
+     *        (the flag is cleared). Only an input that depends on the unknowns of the block is limited.
+     */
+    bool takeInputClamped() { return inputClamped_->exchange(false, std::memory_order_relaxed); }
     
     /**
      * @brief Get the variable names in this block.
@@ -440,6 +471,9 @@ public:
 private:
     bool hasStringCallOutputs_ = false;
     bool mayCallWarning_ = false;
+    /// Set by `evaluate` when it limited a property-call input; an atomic because the multi-start
+    /// candidates evaluate the same block from several threads. Shared so that the evaluator stays copyable.
+    std::shared_ptr<std::atomic<bool>> inputClamped_ = std::make_shared<std::atomic<bool>>(false);
     /// Order in which `evaluate` visits the equations when the block sets a string: the equations that set
     /// one first, so that every equation of the block finds the strings it reads. Empty: the order of
     /// `equations_`. The row of an equation in the residual vector and the Jacobian never changes.
@@ -556,14 +590,31 @@ public:
     void reportCallWarnings(size_t blockIndex, DiagnosticCollector& out);
 
     /**
+     * @brief Refuse a solved block whose solution rests on a limited property-call input.
+     *
+     * The property calls limit an input that depends on the unknowns of its block to a lower bound (a
+     * negative pressure, a temperature below the fluid's minimum in CoolProp) so that an unphysical Newton
+     * trial point gives a finite residual. If that limit is still active at the solution, the equation is
+     * evaluated at a value that is not the solution's, and the final verification would see a different
+     * residual. One more evaluation of the block at its solution finds out and throws a
+     * `std::runtime_error` that names each call, its input and the bound. Does nothing, and costs nothing,
+     * for a block in which no input was ever limited (`BlockEvaluator::takeInputClamped`), that is for
+     * nearly every block.
+     * @param blockIndex The block, solved
+     */
+    void checkInputClamps(size_t blockIndex);
+
+    /**
      * @brief Evaluate a specific block with current state.
      * @param blockIndex The block to evaluate
      * @param computeJacobian false: residuals only
      * @param callWarnings Receives the `CALL WARNING` raised by the evaluation, none if null
+     * @param clampReport Receives a message for each property-call input the evaluation limited, none if null
      * @return Evaluation result for that block
      */
     EvaluationResult evaluateBlock(size_t blockIndex, bool computeJacobian = true,
-                                   std::vector<Diagnostic>* callWarnings = nullptr);
+                                   std::vector<Diagnostic>* callWarnings = nullptr,
+                                   std::vector<std::string>* clampReport = nullptr);
     
 private:
     const IR& ir_;

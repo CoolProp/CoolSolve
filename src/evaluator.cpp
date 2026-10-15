@@ -44,11 +44,19 @@ static std::shared_ptr<CoolProp::AbstractState> createState(const std::string& b
     return state;
 }
 
+/// CoolProp's own lower limits of a fluid: its minimum temperature and its minimum pressure (the triple
+/// point). 0 when the backend has none (a value CoolProp cannot give: incompressible fluids have no triple point).
+struct FluidLimits {
+    double Tmin = 0.0;
+    double pMin = 0.0;
+};
+
 /// Per-thread cache of AbstractState objects keyed by "backend::fluidName".
 /// Avoids repeated string parsing, fluid lookup, and EOS initialisation that
 /// PropsSI performs on every call.
 struct AbstractStateCache {
     std::map<std::string, std::shared_ptr<CoolProp::AbstractState>> states;
+    std::map<std::string, FluidLimits> limits;   ///< see fluidLimits
     size_t hits = 0;
     size_t misses = 0;
 
@@ -66,7 +74,23 @@ struct AbstractStateCache {
         return state;
     }
 
-    void clear() { states.clear(); hits = misses = 0; }
+    /// The limits of a fluid, read from CoolProp once and cached; 0 for a limit it does not give.
+    FluidLimits fluidLimits(const std::string& backend, const std::string& fluidName) {
+        const std::string key = backend + "::" + fluidName;
+        auto it = limits.find(key);
+        if (it != limits.end()) return it->second;
+        FluidLimits found;
+        try {
+            auto state = getOrCreate(backend, fluidName);
+            try { found.Tmin = state->Tmin(); } catch (...) {}
+            try { found.pMin = state->p_triple(); } catch (...) {}
+            if (!(found.Tmin > 0.0)) found.Tmin = 0.0;   // also NaN
+            if (!(found.pMin > 0.0)) found.pMin = 0.0;
+        } catch (...) {}   // an unknown fluid: the property call itself reports it
+        return limits[key] = found;
+    }
+
+    void clear() { states.clear(); limits.clear(); hits = misses = 0; }
 };
 
 static thread_local AbstractStateCache g_abstractStateCache;
@@ -1153,6 +1177,7 @@ ExpressionEvaluator ExpressionEvaluator::makeBodyEvaluator(const char* kind, con
     body.lookupTableStore_ = lookupTableStore_;
     body.diagnostics_ = diagnostics_;   // warnings raised in a body (mixtures, CoolProp errors) are reported too
     body.callWarningSink_ = callWarningSink_;   // and so are the CALL WARNING of the bodies
+    body.clampLog_ = clampLog_;                 // and the inputs they limit
     body.routine_ = std::string(kind) + " '" + name + "'";
     body.routineName_ = name;
     return body;
@@ -1800,31 +1825,64 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     // step direction), we clamp the inputs to physically valid ranges and
     // let the solver see a finite (but poor) residual, keeping the
     // optimization landscape smooth and allowing it to navigate back.
+    //
+    // Only an input that depends on the unknowns of the block is a trial point
+    // (its AD gradient is not zero). An input that does not (a constant, a
+    // variable solved by an earlier block, the injected pressure of an
+    // ideal-gas call) is a value of the model: it reaches CoolProp unchanged,
+    // here and in the final verification, which evaluates the same call.
+    // The lower bound of a trial point is the one below, or the minimum of the
+    // fluid in CoolProp when that is lower (Hydrogen, Helium: Tmin < 50 K).
+    // A clamp that is still active at the converged point is refused by
+    // SystemEvaluator::checkInputClamps.
     // Clamping is disabled during final solution verification so that
     // out-of-range inputs are caught as errors.
     if (!disableClamping_) {
     constexpr double P_MIN_SI  = 1000.0;   // 1000 Pa (0.01 bar) — low but CoolProp-safe
     constexpr double T_MIN_SI  = 50.0;     // 50 K   — below triple point of most fluids
     constexpr double RHO_MIN_SI = 1e-4;    // near-vacuum density floor
-    
-    auto clampInput = [&](CoolProp::parameters param, double& v,
-                          std::vector<double>& grad) {
-        // The injected ideal-gas pressure (e.g. 100 Pa for H2O) is below P_MIN_SI by design:
-        // clamping it would change the result between the solve and the verification pass.
-        if (pressureInjected && param == CoolProp::iP) return;
-        if (param == CoolProp::iP && v < P_MIN_SI) {
-            v = P_MIN_SI;
-            // Don't zero gradient: keep the derivative information so the solver
-            // has a non-singular Jacobian and a direction back to valid region
-        } else if (param == CoolProp::iT && v < T_MIN_SI) {
-            v = T_MIN_SI;
-        } else if (param == CoolProp::iDmass && v < RHO_MIN_SI) {
-            v = RHO_MIN_SI;
+
+    auto clampInput = [&](size_t index, CoolProp::parameters param, double& v) {
+        double bound;
+        if (param == CoolProp::iP && v < P_MIN_SI) bound = P_MIN_SI;
+        else if (param == CoolProp::iT && v < T_MIN_SI) bound = T_MIN_SI;
+        else if (param == CoolProp::iDmass && v < RHO_MIN_SI) bound = RHO_MIN_SI;
+        else return;   // every evaluation of a value above the bounds ends here
+        // Below a bound: the rare case, the one that is worth looking at the gradient and the fluid.
+        const auto& grad = inputValues[index].gradient;
+        if (std::none_of(grad.begin(), grad.end(), [](double g) { return g != 0.0; })) return;
+        const char* quantity = param == CoolProp::iP ? "pressure" : param == CoolProp::iT ? "temperature" : "density";
+        const char* unit = param == CoolProp::iP ? " Pa" : param == CoolProp::iT ? " K" : " kg/m³";
+        std::string source = std::string("the lowest ") + quantity + " the solver evaluates";
+        if (param != CoolProp::iDmass) {
+            const FluidLimits limits = g_abstractStateCache.fluidLimits(coolpropConfig_.getBackendString(), cpFluidName);
+            const double fluidLimit = (param == CoolProp::iP) ? limits.pMin : limits.Tmin;
+            if (fluidLimit > 0.0 && fluidLimit < bound) {
+                bound = fluidLimit;
+                source = std::string("the minimum ") + quantity + " of " + eesFluidName + " in CoolProp" +
+                         (param == CoolProp::iP ? ", its triple point" : "");
+            }
+            if (!(v < bound)) return;
         }
+        if (clampLog_) {
+            clampLog_->fired = true;
+            if (clampLog_->report) {
+                std::ostringstream oss;
+                oss << func.name << "(" << eesFluidName;
+                for (const auto& named : func.namedArgs) oss << ", " << named.first;
+                oss << ")" << (routine_.empty() ? "" : " in " + routine_) << ": " << quantity << " " << v << unit
+                    << " is below " << source << " (" << bound << unit
+                    << "); an input that depends on the unknowns of its block is limited there during the iterations,"
+                       " so the solution would not satisfy this equation";
+                clampLog_->report->push_back(oss.str());
+            }
+        }
+        // The gradient is kept: the solver still has a direction back to the valid region
+        v = bound;
     };
-    
-    clampInput(input1Param, val1, inputValues[0].gradient);
-    clampInput(input2Param, val2, inputValues[1].gradient);
+
+    clampInput(0, input1Param, val1);
+    clampInput(1, input2Param, val2);
     // ─────────────────────────────────────────────────────────────────
     } // end of clamping block
     
@@ -2282,7 +2340,8 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
                                            const std::map<std::string, double>& externalVars,
                                            const std::map<std::string, std::string>& externalStringVars,
                                            bool computeJacobian,
-                                           std::vector<Diagnostic>* callWarnings) {
+                                           std::vector<Diagnostic>* callWarnings,
+                                           std::vector<std::string>* clampReport) {
     auto eval_start = std::chrono::high_resolution_clock::now();
     g_profilingStats.block_evaluations++;
     
@@ -2300,6 +2359,9 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     exprEval.setResidualOnly(!computeJacobian);
     if (diagnostics_) exprEval.setDiagnostics(diagnostics_);
     if (callWarnings) exprEval.setCallWarningSink(callWarnings);
+    InputClampLog clampLog;
+    clampLog.report = clampReport;
+    exprEval.setInputClampLog(&clampLog);
     if (lookupTableStore_) exprEval.setLookupTableStore(lookupTableStore_);
     for (const auto& [name, func] : functions_) exprEval.registerFunction(func);
     for (const auto& [name, proc] : procedures_) exprEval.registerProcedure(proc);
@@ -2471,6 +2533,7 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     for (const auto& var : exprEval.getMissingVariables()) {
         result.warnings.push_back("Undefined variable: " + var + " (using default value 1.0)");
     }
+    if (clampLog.fired) inputClamped_->store(true, std::memory_order_relaxed);
     
     auto eval_end = std::chrono::high_resolution_clock::now();
     g_profilingStats.block_eval_time_ms += std::chrono::duration<double, std::milli>(eval_end - eval_start).count();
@@ -2564,8 +2627,20 @@ void SystemEvaluator::reportCallWarnings(size_t blockIndex, DiagnosticCollector&
         if (reportedCallWarnings_.insert({warning.line, warning.message}).second) out.push(std::move(warning));
 }
 
+void SystemEvaluator::checkInputClamps(size_t blockIndex) {
+    if (blockIndex >= blockEvaluators_.size() || !blockEvaluators_[blockIndex].takeInputClamped()) return;
+    std::vector<std::string> clamps;
+    evaluateBlock(blockIndex, false, nullptr, &clamps);
+    if (clamps.empty()) return;   // the iterates were limited, the solution is not
+    std::string message = clamps.front();
+    for (size_t i = 1; i < clamps.size(); ++i)
+        if (std::find(clamps.begin(), clamps.begin() + i, clamps[i]) == clamps.begin() + i) message += "; " + clamps[i];
+    throw std::runtime_error(message);
+}
+
 EvaluationResult SystemEvaluator::evaluateBlock(size_t blockIndex, bool computeJacobian,
-                                                std::vector<Diagnostic>* callWarnings) {
+                                                std::vector<Diagnostic>* callWarnings,
+                                                std::vector<std::string>* clampReport) {
     if (blockIndex >= blockEvaluators_.size()) throw std::out_of_range("Block index out of range");
     BlockEvaluator& blockEval = blockEvaluators_[blockIndex];
     std::vector<double> x;
@@ -2576,7 +2651,7 @@ EvaluationResult SystemEvaluator::evaluateBlock(size_t blockIndex, bool computeJ
     for (const auto& [name, value] : currentState_) externalVars[name] = value;
     std::map<std::string, std::string> externalStringVars;
     for (const auto& [name, value] : currentStringState_) externalStringVars[name] = value;
-    return blockEval.evaluate(x, externalVars, externalStringVars, computeJacobian, callWarnings);
+    return blockEval.evaluate(x, externalVars, externalStringVars, computeJacobian, callWarnings, clampReport);
 }
 
 // ============================================================================

@@ -630,6 +630,28 @@ J/(kg·K). See the warning at the top of this page.
 | `t_sat` / `tsat`                     | `P=...` (returns saturation temperature) |
 | `p_sat` / `psat`                     | `T=...` (returns saturation pressure)    |
 
+### Inputs below the usual range (vacuum, cryogenic fluids)
+
+Pressures below 1 kPa (`entropy(Water, T=25, P=100)`, `T_sat(Water, P=500)`) and cryogenic fluids below 50 K
+(`enthalpy(Hydrogen, T=-250, P=1E5)`, `enthalpy(Helium, T=-268, P=1E5)`) are valid inputs. An input that does
+not depend on the unknowns of its block (a number, a variable computed by an earlier block, the internal
+pressure of an ideal-gas call) reaches CoolProp unchanged, in the solve and in the final verification. If
+CoolProp cannot evaluate it (liquid water at -100 °C, Hydrogen at 10 K), the call is an error that names it
+(*CoolProp evaluation failed in final solution*).
+
+An input that depends on the unknowns of its block is a Newton trial point: during the iterations it is brought
+back to a lower bound, so that a trial point with a negative pressure gives a finite residual instead of an
+error. The bound is 1000 Pa for a pressure, 50 K for a temperature and 1e-4 kg/m³ for a density, or the minimum
+of the fluid in CoolProp when that is lower (triple-point pressure: 611.655 Pa for `Water`; minimum temperature:
+13.957 K for `Hydrogen`, 2.1768 K for `Helium`). If the solution of the block sits at the bound, the call was not
+evaluated at the solution and the solve ends with an error that names the call, the input and the bound:
+
+```
+enthalpy(Hydrogen, T, P): temperature 10 K is below the minimum temperature of Hydrogen in CoolProp
+(13.957 K); an input that depends on the unknowns of its block is limited there during the iterations, so
+the solution would not satisfy this equation
+```
+
 ### Additional EES-compatible thermophysical properties (priority 2)
 
 | Function                               | Result                      |

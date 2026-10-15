@@ -15843,3 +15843,276 @@ TEST_CASE("CS-BUG-NEWTON1D-DIVERGE: Newton keeps SingularJacobian for a Jacobian
         CHECK_FALSE(trace.singularJacobianF.empty());
     }
 }
+
+// ============================================================================
+// CS-BUG-INPUT-CLAMP: the lower bounds of the property inputs apply to the unknowns only
+// ============================================================================
+//
+// The evaluator raised a pressure below 1000 Pa and a temperature below 50 K to that value in the
+// solve, and not in the final verification: a constant input below the bound (vacuum, Hydrogen,
+// Helium) gave "Solution Verification Failed". Now only an input that depends on the unknowns of
+// its block (a Newton trial point) is limited, to the bound or to the fluid's minimum in CoolProp
+// when that is lower, and a limit still active at the solution is an error naming the call.
+
+namespace {
+
+/// `PropsSI(output, in1, v1, in2, v2, fluid)` with the temperature given in degrees Celsius.
+double propsC(const char* output, const char* in1, double v1, const char* in2, double v2, const char* fluid) {
+    const auto si = [](const std::string& name, double v) { return (name == "T") ? v + 273.15 : v; };
+    return CoolProp::PropsSI(output, in1, si(in1, v1), in2, si(in2, v2), fluid);
+}
+
+/// Value of the property call `call` (written with the variable Tv, a temperature in C) at Tv = `T_C`, either
+/// an unknown of the block (`unknown`) or a constant; `clamps` receives the inputs the evaluator limited.
+double evalClampCall(const std::string& call, double T_C, bool unknown, std::vector<std::string>* clamps = nullptr) {
+    EESParser parser;
+    auto parsed = parser.parse("y = " + call + "\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    ExpressionEvaluator ev(1);
+    ev.setVariable("Tv", unknown ? ADValue::independent(T_C, 0, 1) : ADValue::constant(T_C, 1));
+    InputClampLog log;
+    log.report = clamps;
+    ev.setInputClampLog(&log);
+    const double value = ev.evaluate(ir.getEquations()[0].rhs).value;
+    if (clamps) CHECK(log.fired == !clamps->empty());
+    return value;
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-INPUT-CLAMP: reproducer of the register, constant inputs below the old bounds",
+          "[library-gaps][input-clamp]") {
+    SECTION("entropy(H2O, T=25, P=100): a pressure of 100 Pa (vacuum)") {
+        // Before the fix: "Solution Verification Failed ... residual=1.06e+03" (the solve used 1000 Pa).
+        auto run = runModel("s_100 = entropy(H2O,T=25,P=100)\ns_1000 = entropy(H2O,T=25,P=1000)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        // the H2O ideal gas adds a constant reference offset: compare the difference
+        CHECK_THAT(run["s_100"] - run["s_1000"],
+                   WithinRel(propsC("S", "T", 25, "P", 100, "Water") - propsC("S", "T", 25, "P", 1000, "Water"), 1e-9));
+    }
+    SECTION("enthalpy(Hydrogen, T=-250, P=1E5): 23.15 K") {
+        auto run = runModel("h = enthalpy(Hydrogen, T=-250, P=1E5)\n");   // residual 2.87e+05 before
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["h"], WithinRel(propsC("H", "T", -250, "P", 1e5, "Hydrogen"), 1e-9));
+    }
+    SECTION("enthalpy(Helium, T=-268, P=1E5): 5.15 K") {
+        auto run = runModel("h = enthalpy(Helium, T=-268, P=1E5)\n");   // residual 2.37e+05 before
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["h"], WithinRel(propsC("H", "T", -268, "P", 1e5, "Helium"), 1e-9));
+    }
+    SECTION("enthalpy(Water, x=1, P=500): saturated vapour at 500 Pa, which CoolProp evaluates") {
+        auto run = runModel("h = enthalpy(Water, x=1, P=500)\n");   // residual 1.78e+04 before
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["h"], WithinRel(CoolProp::PropsSI("H", "Q", 1, "P", 500, "Water"), 1e-9));
+    }
+    SECTION("T_sat(Water, P=500)") {
+        auto run = runModel("Ts = T_sat(Water, P=500)\n");   // residual 9.7 before
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["Ts"] + 273.15, WithinRel(CoolProp::PropsSI("T", "Q", 1, "P", 500, "Water"), 1e-9));
+    }
+    SECTION("a density below 1e-4 kg/m3") {
+        auto run = runModel("rho = 1e-6\np = pressure(Water, T=300, D=rho)\n");   // residual 2.6e+01 before
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["p"], WithinRel(CoolProp::PropsSI("P", "T", 573.15, "D", 1e-6, "Water"), 1e-9));
+    }
+}
+
+TEST_CASE("CS-BUG-INPUT-CLAMP: a constant stays a constant in a block that is solved iteratively",
+          "[library-gaps][input-clamp]") {
+    // T = 28.15 K is constant, P1 is the unknown of a Newton block: only P1 may be limited, T never.
+    auto run = runModel(R"(
+h_t = enthalpy(Hydrogen, T=-245, P=1E5)
+h_t = enthalpy(Hydrogen, T=-245, P=P1) + 1e-3*P1
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run["P1"] > 5e4);
+    CHECK(run["P1"] < 2e5);
+    CHECK_THAT(CoolProp::PropsSI("H", "T", 28.15, "P", run["P1"], "Hydrogen") + 1e-3 * run["P1"],
+               WithinRel(run["h_t"], 1e-9));
+}
+
+TEST_CASE("CS-BUG-INPUT-CLAMP: a property call in a FUNCTION body takes its constants as they are",
+          "[library-gaps][input-clamp]") {
+    // The body evaluator did not inherit the switch of the verification: the call was limited to 50 K in
+    // both passes and the 23.15 K gave the enthalpy of 50 K, silently.
+    auto run = runModel(R"(
+FUNCTION f(T)
+  f = enthalpy(Hydrogen, T=T, P=1E5)
+END
+h = f(-250)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["h"], WithinRel(propsC("H", "T", -250, "P", 1e5, "Hydrogen"), 1e-9));
+}
+
+TEST_CASE("CS-BUG-INPUT-CLAMP: an unknown temperature below 50 K (cryogenic fluids)", "[library-gaps][input-clamp]") {
+    // Hydrogen heated by a wall at 73.15 K (-200 C): the unknown T_out is solved at 38.7 K. The bound of an
+    // unknown is the minimum of Hydrogen in CoolProp (13.957 K), not 50 K. Before the fix: the residual was flat
+    // below 50 K, Newton ended at a spurious root and the verification found 8e5 J/kg.
+    auto run = runModel(R"(
+h_in = 4.8E5
+h_out = enthalpy(Hydrogen, T=T_out, P=1E5)
+h_out - h_in = 5000 * (-200 - T_out)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run["T_out"] + 273.15 < 45.0);
+    CHECK(run["T_out"] + 273.15 > 30.0);
+    CHECK_THAT(run["h_out"], WithinRel(propsC("H", "T", run["T_out"], "P", 1e5, "Hydrogen"), 1e-7));
+    CHECK_THAT(run["h_out"] - run["h_in"], WithinRel(5000.0 * (-200.0 - run["T_out"]), 1e-7));
+}
+
+TEST_CASE("CS-BUG-INPUT-CLAMP: Newton trial points below the bound are still limited", "[library-gaps][input-clamp]") {
+    SECTION("a trial pressure that Newton drives below zero: the volume of steam at 200 C and 1 bar") {
+        // v(P) ~ 1/P: from 3 bar the Newton step lands on -3 bar. The unknown is limited, the run ends at 1 bar.
+        auto run = runModel(R"(
+v_t = volume(Water, T=200, P=1E5)
+v_t = volume(Water, T=200, P=P1)
+)", {}, "P1 = 300000\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["P1"], WithinRel(1e5, 1e-6));
+    }
+    SECTION("a start below the minimum temperature of Hydrogen (3.15 K) is limited to 13.957 K") {
+        auto run = runModel(R"(
+h_in = 4.8E5
+h_out = enthalpy(Hydrogen, T=T_out, P=1E5)
+h_out - h_in = 5000 * (-200 - T_out)
+)", {}, "T_out = -270\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK(run["T_out"] + 273.15 < 45.0);
+        CHECK(run["T_out"] + 273.15 > 30.0);
+    }
+    SECTION("the evaluator: an unknown below the minimum of the fluid is limited to it, a constant is not") {
+        std::vector<std::string> clamps;
+        const double atTmin = CoolProp::PropsSI("H", "T", 13.957, "P", 1e5, "Hydrogen");
+        const double unknown = evalClampCall("enthalpy(Hydrogen, T=Tv, P=1E5)", -265.15, true, &clamps);   // 8 K
+        CHECK_THAT(unknown, WithinRel(atTmin, 1e-6));
+        REQUIRE(clamps.size() == 1);
+        CHECK(clamps[0].find("enthalpy(Hydrogen, T, P)") != std::string::npos);   // the inputs in the order of the call
+        CHECK(clamps[0].find("temperature 8 K is below the minimum temperature of Hydrogen in CoolProp (13.957 K)") !=
+              std::string::npos);
+
+        clamps.clear();
+        const double constant = evalClampCall("enthalpy(Hydrogen, T=Tv, P=1E5)", -250.0, false, &clamps);   // 23.15 K
+        CHECK_THAT(constant, WithinRel(propsC("H", "T", -250, "P", 1e5, "Hydrogen"), 1e-12));
+        CHECK(clamps.empty());
+        // 8 K is a value of the model when it does not depend on the unknowns: CoolProp decides (it cannot)
+        clamps.clear();
+        evalClampCall("enthalpy(Hydrogen, T=Tv, P=1E5)", -265.15, false, &clamps);
+        CHECK(clamps.empty());
+    }
+    SECTION("the bound is the old one when the fluid's minimum is higher, and the fluid's when it is lower") {
+        std::vector<std::string> clamps;
+        evalClampCall("enthalpy(Water, T=Tv, P=1E5)", -250.0, true, &clamps);   // Tmin of Water: 273.16 K
+        REQUIRE(clamps.size() == 1);
+        CHECK(clamps[0].find("below the lowest temperature the solver evaluates (50 K)") != std::string::npos);
+        clamps.clear();
+        evalClampCall("enthalpy(Helium, T=Tv, P=1E5)", -273.0, true, &clamps);   // 0.15 K, Tmin of Helium: 2.1768 K
+        REQUIRE(clamps.size() == 1);
+        CHECK(clamps[0].find("below the minimum temperature of Helium in CoolProp (2.1768 K)") != std::string::npos);
+        clamps.clear();
+        evalClampCall("enthalpy(Helium, T=Tv, P=1E5)", -268.0, true, &clamps);   // 5.15 K: not limited
+        CHECK(clamps.empty());
+    }
+}
+
+TEST_CASE("CS-BUG-INPUT-CLAMP: a limit still active at the solution is an error naming the call",
+          "[library-gaps][input-clamp]") {
+    // The unknown is fixed by the equation, below the bound, and the result of the call does not weigh on the
+    // residual: the iteration converges with the property call evaluated at the bound, not at the solution.
+    // (When the result does weigh on it, the residual cannot vanish at a limited input: the block does not
+    // converge, as before.) The verification then found the call at another value.
+    SECTION("temperature below the minimum of the fluid in CoolProp") {
+        auto run = runModel("T1 = -263.15 + 0*enthalpy(Hydrogen, T=T1, P=1E5)\n");   // 10 K
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "enthalpy(Hydrogen, T, P)"));
+        CHECK(anyContains({run.message}, "temperature 10 K is below the minimum temperature of Hydrogen in CoolProp (13.957 K)"));
+        CHECK(anyContains({run.message}, "solution would not satisfy this equation"));
+    }
+    SECTION("temperature below the 50 K of the solver, for a fluid whose minimum is higher") {
+        auto run = runModel("T1 = -250 + 0*enthalpy(Water, T=T1, P=1E5)\n");   // 23.15 K
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "enthalpy(Water, T, P)"));
+        CHECK(anyContains({run.message}, "is below the lowest temperature the solver evaluates (50 K)"));
+    }
+    SECTION("pressure below the triple point of the fluid") {
+        auto run = runModel(R"(
+P1 = 500 + 0*v1
+v1 = volume(Water, T=100, P=P1)
+)");   // residual 1.72e+02 in the verification before
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "volume(Water, T, P)"));
+        CHECK(anyContains({run.message},
+                          "pressure 500 Pa is below the minimum pressure of Water in CoolProp, its triple point (611.655 Pa)"));
+    }
+    SECTION("pressure below the 1000 Pa of the solver, for a fluid whose triple point is higher") {
+        auto run = runModel(R"(
+P1 = 500 + 0*h1
+h1 = enthalpy(Hydrogen, T=-200, P=P1)
+)");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "pressure 500 Pa is below the lowest pressure the solver evaluates (1000 Pa)"));
+    }
+    SECTION("the call is in a FUNCTION: the message says which") {
+        auto run = runModel(R"(
+FUNCTION h_H2(T)
+  h_H2 = enthalpy(Hydrogen, T=T, P=1E5)
+END
+T1 = -263.15 + 0*h_H2(T1)
+)");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "enthalpy(Hydrogen, T, P) in FUNCTION 'h_H2': temperature 10 K is below the minimum"));
+    }
+    SECTION("density below 1e-4 kg/m3") {
+        auto run = runModel(R"(
+rho1 = 1e-6 + 0*p1
+p1 = pressure(Water, T=300, D=rho1)
+)");   // residual 2.6e+01 in the verification before
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "pressure(Water, T, D)"));
+        CHECK(anyContains({run.message}, "density 1e-06 kg/m³ is below the lowest density the solver evaluates (0.0001 kg/m³)"));
+    }
+}
+
+TEST_CASE("CS-BUG-INPUT-CLAMP: a constant outside the range of CoolProp is still an error", "[library-gaps][input-clamp]") {
+    // CoolProp itself cannot evaluate these: the call fails in the solve and in the verification, the
+    // same way, and the verification names the call (no residual mismatch between the two passes).
+    SECTION("Hydrogen at 10 K") {
+        auto run = runModel("h = enthalpy(Hydrogen, T=-263.15, P=1E5)\n");
+        CHECK_FALSE(run.verified);
+        REQUIRE_FALSE(run.checkErrors.empty());
+        CHECK(anyContains(run.checkErrors, "CoolProp evaluation failed in final solution"));
+        CHECK(anyContains(run.checkErrors, "enthalpy()"));
+    }
+    SECTION("liquid Water at -100 C") {
+        auto run = runModel("h = enthalpy(Water, T=-100, P=1E5)\n");
+        CHECK_FALSE(run.verified);
+        CHECK(anyContains(run.checkErrors, "CoolProp evaluation failed in final solution"));
+    }
+}
+
+TEST_CASE("CS-BUG-INPUT-CLAMP: the injected pressure of an ideal-gas call is unchanged", "[library-gaps][input-clamp]") {
+    // H2O with the temperature alone: 100 Pa is a constant of the model, in the solve and in the verification.
+    auto run = runModel("dh = enthalpy(H2O,T=200) - enthalpy(H2O,T=25)\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["dh"], WithinRel(propsC("H", "T", 200, "P", 100, "Water") - propsC("H", "T", 25, "P", 100, "Water"), 1e-9));
+    // with an unknown temperature of the ideal gas
+    auto unknown = runModel(R"(
+dh = 3e5
+dh = enthalpy(H2O,T=T_x) - enthalpy(H2O,T=25)
+)");
+    REQUIRE(unknown.solveOk);
+    CHECK(unknown.verified);
+}
