@@ -1002,7 +1002,15 @@ UNTIL(x > 10)
 ```
 
 `REPEAT ... UNTIL` is a loop of the body of a `FUNCTION` or `PROCEDURE` (§7): the
-body runs, then the condition is tested, so the body runs at least once. A run of the
+body runs, then the condition is tested, so the body runs at least once. The condition
+is the whole text after `UNTIL`, written like the condition of an `IF` (§ IF-THEN-ELSE):
+the parentheses around it are optional (`UNTIL x > 10` is `UNTIL(x > 10)`), it may use
+`=`, `<>`, `<`, `>`, `<=`, `>=` (and the spellings `=>`, `=<`), compare strings
+(`UNTIL s$ = 'done'`, without regard to case) and combine relations with `AND` and `OR`
+(`UNTIL (a > 1) AND (b < 2)`); a value without a relation is true when it is greater than 0.5.
+An `UNTIL` with no condition (nothing, a comment or `()` after it), or with one that
+cannot be read, is an error (*"REPEAT missing UNTIL(condition)"*, with the line of the `REPEAT`).
+A run of the
 loop that has not ended after **100 000** iterations (the `UNTIL` condition never becomes true)
 is an error that names the routine and the line of the `REPEAT`, and the model is not
 solved (before this limit existed, the loop stopped silently at 10 000 iterations and the routine
@@ -1015,9 +1023,8 @@ REPEAT loop in FUNCTION 'cnt' (line 3) did not end after 100000 iterations: an U
 The limit is per run of a loop: a loop nested in another one has its own count each time it
 starts. A loop left by a `GOTO` (§7) is not concerned.
 
-A comment may follow `REPEAT` and the `UNTIL` condition (`UNTIL(x > 10) // done (or not)`): a `)` in it is
-not the closing parenthesis of the condition. The condition may use `=>` and `=<` for `>=` and `<=`
-(`UNTIL (k => n)`).
+A comment may follow `REPEAT` and the `UNTIL` condition (`UNTIL x > 10 // done (or not)`): a `)` in it is
+not the closing parenthesis of the condition.
 
 As for `IF ... THEN` and `GOTO`, the loop does not exist in the main program, where the
 equations are solved simultaneously and nothing is executed in order: a `REPEAT` there (also in the

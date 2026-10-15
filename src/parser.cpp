@@ -1211,7 +1211,7 @@ private:
         "(in the main program an iteration is solved by the solver as equations; to run a loop, "
         "put it in a FUNCTION or PROCEDURE)";
 
-    /// Parses the REPEAT ... UNTIL(condition) loop whose REPEAT is on the current line (`line`) and appends it to
+    /// Parses the REPEAT ... UNTIL condition loop whose REPEAT is on the current line (`line`) and appends it to
     /// `body`. Like IF ... THEN, the loop exists in the body of a FUNCTION or PROCEDURE only (EES): anywhere in
     /// the main program (a DUPLICATE body included) it is an error, with the line of the REPEAT. It used to be
     /// parsed and then silently dropped by the IR (CS-BUG-MAIN-REPEAT).
@@ -1303,7 +1303,7 @@ private:
     // Unified body parser for function/procedure/DUPLICATE/REPEAT/IF bodies.
     // Reads lines from 'stream', parsing comments, directives, IF-THEN-ELSE,
     // DUPLICATE, REPEAT-UNTIL, equations/assignments, and procedure calls.
-    // Returns "END" if END keyword terminates, "UNTIL" if UNTIL(condition)
+    // Returns "END" if END keyword terminates, "UNTIL" if UNTIL condition
     // terminates (conditionOut set), "" on EOF, and — only when called for the
     // block of an IF statement (inIfBlock) — "ELSE" (the text of the ELSE line
     // is stored in *terminatorLine) or "ENDIF". `;` separates statements: what follows
@@ -1338,15 +1338,15 @@ private:
             if (codeBody == "END") return "END";
             if (procedureBodyDepth_ > 0 && parseRoutineEnd(code, lineNumber, bodyLine, result)) return "END";
 
-            // Check for UNTIL(condition); a ')' in a comment after the condition is not its closing parenthesis
+            // UNTIL condition: the text after UNTIL (comments removed, so a ')' in a comment is no part of it; a
+            // closing ';' neither), read like the condition of an IF: parentheses optional, =, <>, AND and OR
+            // (CS-GAP-REPEAT-UNTIL-BARE)
             if (isBodyKeyword("UNTIL")) {
                 if (conditionOut) {
-                    size_t parenOpen = code.find('(');
-                    size_t parenClose = code.rfind(')');
-                    if (parenOpen != std::string::npos && parenClose != std::string::npos && parenClose > parenOpen) {
-                        std::string condStr = trim(code.substr(parenOpen + 1, parenClose - parenOpen - 1));
-                        *conditionOut = parseExpression(condStr, lineNumber);
-                    }
+                    std::string condition = code.substr(5);
+                    const size_t last = condition.find_last_not_of("; \t");
+                    condition.erase(last == std::string::npos ? 0 : last + 1);
+                    *conditionOut = parseCondition(condition, lineNumber);   // null when empty
                 }
                 return "UNTIL";
             }

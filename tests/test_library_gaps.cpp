@@ -16952,3 +16952,225 @@ TEST_CASE("CS-GAP-GE-ARROW: a $IF directive takes no => or =< (EES has = and <> 
     CHECK(directiveError("UNITSYSTEM('K') =< 1") == "$IF: UNITSYSTEM('K') can only be compared with '='");
     CHECK(directiveError("PROFESSIONAL =< 1") == "$IF: 'PROFESSIONAL' cannot be followed by '=<'");
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// CS-GAP-REPEAT-UNTIL-BARE: the UNTIL condition without parentheses, read like the condition of an IF
+// ---------------------------------------------------------------------------------------------------------------
+
+namespace {
+
+/// `FUNCTION cnt(n)` counting `i` with the statements `step` (default `i = i+1`) until `until` (the text after
+/// UNTIL: with or without parentheses, possibly followed by a comment); `cnt` returns `i`; z = cnt(0).
+std::string untilLoop(const std::string& until, const std::string& step = "i = i+1") {
+    return "FUNCTION cnt(n)\n  i = 0\n  REPEAT\n    " + step + "\n  UNTIL " + until + "\n  cnt = i\nEND\nz = cnt(0)\n";
+}
+
+/// Run the loop of untilLoop(...) and return z, after checking that the model solved.
+double untilValue(const std::string& until, const std::string& step = "i = i+1") {
+    auto run = runModel(untilLoop(until, step));
+    INFO(until);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    return run["z"];
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-REPEAT-UNTIL-BARE: register reproducer, UNTIL i>9 without parentheses", "[library-gaps][until-bare]") {
+    // was: "REPEAT missing UNTIL(condition)"; EES value: z = 10
+    auto run = runModel("FUNCTION cnt(n)\n  i = 0\n  repeat\n    i = i+1\n  until i>9\n  cnt = i\nEND\nz = cnt(0)\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["z"], WithinAbs(10.0, 1e-12));
+    // blanks, case, and the UNTIL directly followed by a parenthesis
+    CHECK_THAT(untilValue("i > 9"), WithinAbs(10.0, 1e-12));
+    CHECK_THAT(untilValue("i>9"), WithinAbs(10.0, 1e-12));
+    CHECK_THAT(untilValue("  i  >  9  "), WithinAbs(10.0, 1e-12));
+    CHECK_THAT(untilValue("(i>9)"), WithinAbs(10.0, 1e-12));   // unchanged
+    CHECK_THAT(untilValue("(i > 9)"), WithinAbs(10.0, 1e-12));
+    const auto lower = runModel("function cnt(n)\n  i = 0\n  repeat\n    i = i+1\n  until i>=3\n  cnt = i\nend\nz = cnt(0)\n");
+    REQUIRE(lower.solveOk);
+    CHECK_THAT(lower["z"], WithinAbs(3.0, 1e-12));
+    const auto tight = runModel("FUNCTION cnt(n)\n  i = 0\n  REPEAT\n    i = i+1\n  UNTIL(i>9)\n  cnt = i\nEND\nz = cnt(0)\n");
+    REQUIRE(tight.solveOk);
+    CHECK_THAT(tight["z"], WithinAbs(10.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-REPEAT-UNTIL-BARE: a bare condition that starts with a function call or that has several parenthesised groups",
+          "[library-gaps][until-bare]") {
+    // the condition was cut between the first '(' and the last ')': abs(i-9) < 0.5 became i-9 > 0.5
+    CHECK_THAT(untilValue("abs(i-9) < 0.5"), WithinAbs(9.0, 1e-12));
+    CHECK_THAT(untilValue("(abs(i-9) < 0.5)"), WithinAbs(9.0, 1e-12));
+    CHECK_THAT(untilValue("abs(i-9) < 0.5 // (a comment)"), WithinAbs(9.0, 1e-12));
+    // a bare condition whose right side is a parenthesised expression
+    CHECK_THAT(untilValue("i > (2*3)"), WithinAbs(7.0, 1e-12));
+    CHECK_THAT(untilValue("(i) > (2*3)"), WithinAbs(7.0, 1e-12));
+    CHECK_THAT(untilValue("min(i, 4) = 4"), WithinAbs(4.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-REPEAT-UNTIL-BARE: AND and OR in the UNTIL condition", "[library-gaps][until-bare]") {
+    const std::string step = "a = i\n    b = 10 - i\n    i = i + 1";   // a = 0, 1, 2 ...; b = 10, 9, 8 ...; i is one more
+    // (a > 1) AND (b < 2): the first i with both is 9, and the loop ends with i = 10
+    CHECK_THAT(untilValue("(a > 1) AND (b < 2)", step), WithinAbs(10.0, 1e-12));
+    CHECK_THAT(untilValue("a > 1 AND b < 2", step), WithinAbs(10.0, 1e-12));
+    CHECK_THAT(untilValue("((a > 1) AND (b < 2))", step), WithinAbs(10.0, 1e-12));
+    CHECK_THAT(untilValue("(a > 1) and (b < 2)", step), WithinAbs(10.0, 1e-12));
+    // OR: the first one true ends the loop (a > 1 at a = 2, i.e. i = 3)
+    CHECK_THAT(untilValue("(a > 1) OR (b < 2)", step), WithinAbs(3.0, 1e-12));
+    CHECK_THAT(untilValue("a>1 OR b<2", step), WithinAbs(3.0, 1e-12));
+    CHECK_THAT(untilValue("b < 2 OR a > 1", step), WithinAbs(3.0, 1e-12));
+    // AND binds stronger than OR, as in an IF: (a > 100 AND b > 0) OR (a > 2) is true at a = 3 (read the other way,
+    // a > 100 AND (b > 0 OR a > 2), the loop would never end)
+    CHECK_THAT(untilValue("a > 100 AND b > 0 OR a > 2", step), WithinAbs(4.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-REPEAT-UNTIL-BARE: the UNTIL condition is read like an IF condition (=, <>, strings, numeric truth value)",
+          "[library-gaps][until-bare]") {
+    // = and <> were refused by the expression parser (REPEAT missing UNTIL(condition))
+    CHECK_THAT(untilValue("(i = 3)"), WithinAbs(3.0, 1e-12));
+    CHECK_THAT(untilValue("i = 3"), WithinAbs(3.0, 1e-12));
+    CHECK_THAT(untilValue("(i <> 1)"), WithinAbs(2.0, 1e-12));
+    CHECK_THAT(untilValue("i <> 1"), WithinAbs(2.0, 1e-12));
+    // the other relations, bare, and the EES spellings of >= and <=
+    CHECK_THAT(untilValue("i >= 4"), WithinAbs(4.0, 1e-12));
+    CHECK_THAT(untilValue("i => 4"), WithinAbs(4.0, 1e-12));
+    CHECK_THAT(untilValue("i=>4"), WithinAbs(4.0, 1e-12));
+    CHECK_THAT(untilValue("i =< 5", "i = i - 1"), WithinAbs(-1.0, 1e-12));   // -1 =< 5 at once
+    CHECK_THAT(untilValue("i <= -3", "i = i - 1"), WithinAbs(-3.0, 1e-12));
+    CHECK_THAT(untilValue("i =< -3", "i = i - 1"), WithinAbs(-3.0, 1e-12));
+    CHECK_THAT(untilValue("i < -3", "i = i - 1"), WithinAbs(-4.0, 1e-12));
+    // a number is a truth value (> 0.5 ends the loop), as in an IF
+    CHECK_THAT(untilValue("(flag)", "i = i + 1\n    flag = i - 2"), WithinAbs(3.0, 1e-12));
+    CHECK_THAT(untilValue("flag", "i = i + 1\n    flag = i - 2"), WithinAbs(3.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-REPEAT-UNTIL-BARE: a string comparison in the UNTIL condition", "[library-gaps][until-bare]") {
+    auto loop = [](const std::string& until) {
+        return "FUNCTION cnt(n)\n  i = 0\n  s$ = 'a'\n  REPEAT\n    i = i + 1\n    IF (i > 2) THEN s$ = 'x'\n"
+               "  UNTIL " + until + "\n  cnt = i\nEND\nz = cnt(0)\n";
+    };
+    for (const std::string until : {"s$ = 'x'", "(s$ = 'x')", "s$ <> 'a'", "(s$ <> 'a')", "s$ = 'X'", "s$ = 'x' // done"}) {
+        INFO(until);
+        auto run = runModel(loop(until));
+        INFO(run.message);
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["z"], WithinAbs(3.0, 1e-12));
+    }
+    // a relation operator inside a string is no operator, and a parenthesis inside a string no parenthesis
+    auto inString = runModel(
+        "FUNCTION cnt(n)\n  i = 0\n  s$ = 'a'\n  REPEAT\n    i = i + 1\n    IF (i > 2) THEN s$ = 'x=>(y'\n"
+        "  UNTIL s$ = 'x=>(y'\n  cnt = i\nEND\nz = cnt(0)\n");
+    INFO(inString.message);
+    REQUIRE(inString.solveOk);
+    CHECK_THAT(inString["z"], WithinAbs(3.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-REPEAT-UNTIL-BARE: a comment after the bare condition", "[library-gaps][until-bare]") {
+    CHECK_THAT(untilValue("i>9 // done (or not)"), WithinAbs(10.0, 1e-12));
+    CHECK_THAT(untilValue("i>9 \"the end (of the loop)\""), WithinAbs(10.0, 1e-12));
+    CHECK_THAT(untilValue("i>9 {the end (of the loop)}"), WithinAbs(10.0, 1e-12));
+    CHECK_THAT(untilValue("(i>9) // done (or not)"), WithinAbs(10.0, 1e-12));   // unchanged
+    CHECK_THAT(untilValue("(i>9) \"x)\""), WithinAbs(10.0, 1e-12));
+    // a closing ; is no part of the condition (it was ignored after the last parenthesis)
+    CHECK_THAT(untilValue("(i>9);"), WithinAbs(10.0, 1e-12));
+    CHECK_THAT(untilValue("(i>9) ; // done"), WithinAbs(10.0, 1e-12));
+    CHECK_THAT(untilValue("i>9;"), WithinAbs(10.0, 1e-12));
+    CHECK_THAT(untilValue("i > 9 ;"), WithinAbs(10.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-REPEAT-UNTIL-BARE: nested REPEAT loops and loops in other blocks, with bare conditions",
+          "[library-gaps][until-bare]") {
+    const std::string code = R"(
+FUNCTION nest(n)
+  total = 0
+  i = 0
+  REPEAT
+    i = i + 1
+    j = 0
+    REPEAT
+      j = j + 1
+      total = total + 1
+    UNTIL j >= i
+  UNTIL i >= n
+  nest = total
+END
+z = nest(4)
+)";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["z"], WithinAbs(10.0, 1e-12));   // 1 + 2 + 3 + 4
+
+    // a bare UNTIL after an IF block, in a DUPLICATE, and an IF in the loop that ends with UNTIL
+    const std::string mixed = R"(
+FUNCTION mix(n)
+  total = 0
+  DUPLICATE k = 1, 2
+    i = 0
+    REPEAT
+      i = i + 1
+      IF (i > 1) THEN
+        total = total + k
+      ENDIF
+    UNTIL i > 2 AND total > 0
+  END
+  mix = total
+END
+z = mix(0)
+)";
+    auto second = runModel(mixed);
+    INFO(second.message);
+    REQUIRE(second.parseOk);
+    REQUIRE(second.solveOk);
+    CHECK_THAT(second["z"], WithinAbs(2.0 * (1 + 2), 1e-12));   // i = 2 and 3 add k each: 2k, for k = 1 and 2
+}
+
+TEST_CASE("CS-GAP-REPEAT-UNTIL-BARE: a REPEAT loop in a PROCEDURE ends with a bare UNTIL", "[library-gaps][until-bare]") {
+    auto run = runModel("PROCEDURE p(a : y, k)\n  k = 0\n  y = a\n  REPEAT\n    y = y/2\n    k = k + 1\n  UNTIL y < 1\nEND\n"
+                        "CALL p(20 : y, k)\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["k"], WithinAbs(5.0, 1e-12));   // 20, 10, 5, 2.5, 1.25, 0.625
+    CHECK_THAT(run["y"], WithinAbs(0.625, 1e-12));
+}
+
+TEST_CASE("CS-GAP-REPEAT-UNTIL-BARE: an empty or unreadable UNTIL condition stays an error", "[library-gaps][until-bare]") {
+    const std::vector<std::string> missing{"3: REPEAT missing UNTIL(condition)"};   // the line of the REPEAT
+    // nothing after UNTIL, or only a comment, or only parentheses
+    CHECK(parseErrorsWithLines(untilLoop("")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop("   ")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop("// (i>9)")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop("\"(i>9)\"")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop("{i>9}")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop("()")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop("( )")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop(";")) == missing);
+    // a condition that cannot be read, bare or not
+    CHECK(parseErrorsWithLines(untilLoop("i >")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop("i > 9 AND")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop("OR i > 9")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop("i = > 9")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop("i == 9")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop("(i > 9")) == missing);
+    CHECK(parseErrorsWithLines(untilLoop("i > 9)")) == missing);
+    // the loop is dropped: nothing is solved
+    auto run = runModel(untilLoop(""));
+    CHECK_FALSE(run.parseOk);
+    CHECK(run.message.find("REPEAT missing UNTIL(condition)") != std::string::npos);
+    // a REPEAT without any UNTIL
+    const auto noUntil = parseErrorsWithLines("FUNCTION cnt(n)\n  i = 0\n  REPEAT\n    i = i+1\n  cnt = i\nEND\nz = cnt(0)\n");
+    CHECK(anyContains(noUntil, "REPEAT missing UNTIL(condition)"));
+}
+
+TEST_CASE("CS-GAP-REPEAT-UNTIL-BARE: a REPEAT loop in the main program stays an error, with a bare condition too",
+          "[library-gaps][until-bare]") {
+    const auto errors = parseErrorsWithLines("i = 0\nREPEAT\n  i = i + 1\nUNTIL i > 9\nz = i\n");
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0].find("2: REPEAT ... UNTIL loops are only allowed inside FUNCTION and PROCEDURE bodies") == 0);
+}
