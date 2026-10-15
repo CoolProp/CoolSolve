@@ -239,9 +239,9 @@ FUNCTIONs and PROCEDUREs:
 11. Log the conversion in the README: the converted inputs, the modified
     equations and the constants found.
 
-`CONVERT('kPa','Pa')` and `CONVERTTEMP('K','C',T)` exist (with quoted unit
-names — `ConvertTemp(K, C, T)` without quotes, valid in EES, fails in CoolSolve:
-`CS-GAP-CONVERT-UNQUOTED`). In the library, prefer converted numbers with the
+`CONVERT('kPa','Pa')` and `CONVERTTEMP('K','C',T)` exist; as in EES the quotes
+around the unit names are optional (`CONVERT(kPa, Pa)`, `ConvertTemp(K, C, T)`).
+In the library, prefer converted numbers with the
 original value in a comment; keep `CONVERT` only where a model deliberately
 reports a result in another unit (e.g. an energy in kWh).
 

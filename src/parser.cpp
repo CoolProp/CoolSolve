@@ -3548,6 +3548,21 @@ private:
         return "Unexpected text '" + t + "' after " + what + " '" + after + "'";
     }
 
+    /// Whether `arg`, an argument of CONVERT or CONVERTTEMP as written, is the name of a unit given without quotes
+    /// (CONVERT(lbm/hr, kg/s), CONVERTTEMP(C, K, T)), which EES allows. It is read from the text, before it becomes
+    /// an expression (lbm/hr is no division of two variables, kJ/kg-K is no subtraction): a text made of the
+    /// characters of a unit string only (names, digits, - * / ^ . and parentheses) with at least one letter. A string
+    /// ('..', u$, a string function) and a number or an expression with other operators are not.
+    static bool isUnquotedUnitText(const std::string& arg) {
+        bool hasLetter = false;
+        for (const char c : arg) {
+            const unsigned char u = static_cast<unsigned char>(c);
+            if (std::isalpha(u) || c == '_' || u >= 0x80) hasLetter = true;
+            else if (!std::isdigit(u) && std::string(" \t-*/^.()").find(c) == std::string::npos) return false;
+        }
+        return hasLetter;
+    }
+
     /// The aggregate built-ins take a named argument only in the EES indexed form `SUM(expr, i=first, last)`
     /// (and PRODUCT): an error message for any other use, empty when `args` (the argument texts of the call
     /// `call`) is fine. AVERAGE, STDDEV and SUM2D have no indexed form: the named argument would be taken
@@ -3613,6 +3628,10 @@ private:
         
         // Parse arguments
         std::vector<std::string> argStrings = splitArguments(argsStr);
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        // CONVERT(from, to) and CONVERTTEMP(from, to, value): `from` and `to` are unit names, the quotes of which are optional
+        const bool unitArguments = lower == "convert" || lower == "converttemp";
 
         const std::string aggregateError = indexedAggregateError(name, argStrings, expr);
         if (!aggregateError.empty()) {
@@ -3650,6 +3669,10 @@ private:
             }
             
             // Regular argument
+            if (unitArguments && argIndex < 2 && isUnquotedUnitText(arg)) {
+                fc.args.push_back(makeString(arg, lineNum));   // the unit as written, checked below like a quoted one
+                continue;
+            }
             auto argExpr = parseExpression(arg, lineNum);
             if (!argExpr) {
                 // Never skip an argument: the call would be evaluated with fewer
@@ -3682,8 +3705,6 @@ private:
             const bool fromLiteral = fc.args[0]->is<StringLiteral>();
             const bool toLiteral = fc.args[1]->is<StringLiteral>();
             if (fromLiteral || toLiteral) {
-                std::string lower = name;
-                std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
                 try {
                     if (lower == "convert" && fc.args.size() == 2 && fromLiteral && toLiteral) {
                         unitConversionFactor(fc.args[0]->as<StringLiteral>().value, fc.args[1]->as<StringLiteral>().value);

@@ -13344,3 +13344,381 @@ TEST_CASE("CS-BUG-CONVERTTEMP-UNIT: wrong arity is an error", "[library-gaps][co
         CHECK(run.message.find("converttemp") != std::string::npos);
     }
 }
+
+// ============================================================================
+// CS-GAP-CONVERT-UNQUOTED: EES accepts the unit names of CONVERT(from, to) and CONVERTTEMP(from, to, value)
+// without quotes (CONVERT(lbm/hr, kg/s), ConvertTemp(C, K, T)); they were read as variables of the model
+// ============================================================================
+
+namespace {
+
+/// The text of the string literals that are the first two arguments of the call that is the right-hand side of the
+/// first equation of `code` (empty strings when an argument is not a string literal).
+std::vector<std::string> unitArgumentsOfFirstCall(const std::string& code) {
+    EESParser parser;
+    auto parsed = parser.parse(code);
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    const ExprPtr& rhs = ir.getEquations().at(0).rhs;
+    REQUIRE(rhs->is<FunctionCall>());
+    std::vector<std::string> units;
+    for (size_t i = 0; i < 2; ++i) {
+        const ExprPtr& arg = rhs->as<FunctionCall>().args.at(i);
+        units.push_back(arg->is<StringLiteral>() ? arg->as<StringLiteral>().value : "");
+    }
+    return units;
+}
+
+/// Unit pairs written without quotes, with their EES factor (hand-computed, as in the CS-BUG-CONVERT-UNIT tests).
+struct UnquotedPair {
+    const char* from;
+    const char* to;
+    double factor;
+};
+const std::vector<UnquotedPair> kUnquotedPairs = {
+    {"kPa", "Pa", 1000.0},
+    {"lbm/hr", "kg/s", 0.45359237 / 3600.0},
+    {"kJ/kg-K", "Btu/lbm-R", 0.238845896627},
+    {"W/m^2-K", "Btu/hr-ft^2-R", 0.1761101838},
+    {"m^3/s", "ft^3/min", 60.0 / (0.3048 * 0.3048 * 0.3048)},
+    {"kg/(m-s)", "cP", 1000.0},
+    {"ft-lbf/lbm", "kJ/kg", 0.00298906692},
+    {"lbm / hr", "kg / s", 0.45359237 / 3600.0},      // spaces around the operators
+    {"m", "ft", 1.0 / 0.3048},                          // the units that are also the names of the usual variables
+    {"in", "cm", 2.54},
+    {"min", "s", 60.0},                                 // ... and of the built-in functions
+    {"s", "hr", 1.0 / 3600.0},
+};
+
+}  // namespace
+
+TEST_CASE("CS-GAP-CONVERT-UNQUOTED: register reproducer, convert(lbm/hr,kg/s) and ConvertTemp(C, K, T) without quotes",
+          "[library-gaps][convert-unquoted]") {
+    // was: 'lbm/hr' read as the division of two variables, 'kg/s' as another: a system that is not square.
+    // EES: 1.259978805556e-4 (and the factor of the native model CSL-0116, M_dot_ari = copeland(...) * convert(lbm/hr,kg/s))
+    auto run = runModel("m = convert(lbm/hr,kg/s)\nk = convert(kPa, Pa)\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["m"], WithinRel(1.259978805556e-4, 1e-9));
+    CHECK_THAT(run["k"], WithinRel(1000.0, 1e-14));
+    // the unit names are no unknowns of the model: m and k are the only variables
+    CHECK(userVariables(run) == std::vector<std::string>{"k", "m"});
+
+    // the shape of CSL-0116: the factor multiplies another term
+    auto catalogue = runModel("M_lbmhr = 437.704975\nM_dot = (M_lbmhr * 2) / 2 * convert(lbm/hr,kg/s)\n");
+    INFO(catalogue.message);
+    REQUIRE(catalogue.solveOk);
+    CHECK_THAT(catalogue["M_dot"], WithinRel(0.05514989912, 1e-8));
+
+    // the shape of CSL-0160: ConvertTemp(C, K, T) with T an input, then with T an unknown of a block
+    auto pv = runModel("T_c_ref = 25\nT_c = 45\nTK_c_ref = ConvertTemp(C, K, T_c_ref)\nTK_c = ConvertTemp(C, K, T_c)\n");
+    INFO(pv.message);
+    REQUIRE(pv.parseOk);
+    REQUIRE(pv.solveOk);
+    CHECK(pv.verified);
+    CHECK_THAT(pv["TK_c_ref"], WithinAbs(298.15, 1e-9));
+    CHECK_THAT(pv["TK_c"], WithinAbs(318.15, 1e-9));
+    CHECK(userVariables(pv) == std::vector<std::string>{"T_c", "T_c_ref", "TK_c", "TK_c_ref"});
+    auto block = runModel("TK_c = 318.15\nTK_c = ConvertTemp(C, K, T_c)\n");
+    INFO(block.message);
+    REQUIRE(block.solveOk);
+    CHECK(block.verified);
+    CHECK_THAT(block["T_c"], WithinAbs(45.0, 1e-9));
+    CHECK(userVariables(block) == std::vector<std::string>{"T_c", "TK_c"});
+}
+
+TEST_CASE("CS-GAP-CONVERT-UNQUOTED: the unit is the argument text as written, not an expression",
+          "[library-gaps][convert-unquoted]") {
+    // lbm/hr is not lbm divided by hr, kJ/kg-K is not kJ/kg minus K: the literal is the trimmed text
+    CHECK(unitArgumentsOfFirstCall("m = convert(lbm/hr,kg/s)\n") == std::vector<std::string>{"lbm/hr", "kg/s"});
+    CHECK(unitArgumentsOfFirstCall("m = convert( kJ/kg-K , Btu/lbm-R )\n") == std::vector<std::string>{"kJ/kg-K", "Btu/lbm-R"});
+    CHECK(unitArgumentsOfFirstCall("m = convert(m^3/s, L/min)\n") == std::vector<std::string>{"m^3/s", "L/min"});
+    CHECK(unitArgumentsOfFirstCall("m = convert(kg/(m-s), cP)\n") == std::vector<std::string>{"kg/(m-s)", "cP"});
+    CHECK(unitArgumentsOfFirstCall("m = convert(W/m^2-K, W/m^2*K)\n") == std::vector<std::string>{"W/m^2-K", "W/m^2*K"});
+    CHECK(unitArgumentsOfFirstCall("m = converttemp(C, K, T)\n") == std::vector<std::string>{"C", "K"});
+    CHECK(unitArgumentsOfFirstCall("m = ConvertTemp( F , R , T)\n") == std::vector<std::string>{"F", "R"});
+    // the same literals as with the quotes
+    CHECK(unitArgumentsOfFirstCall("m = convert('lbm/hr','kg/s')\n") == std::vector<std::string>{"lbm/hr", "kg/s"});
+    // neither the IR nor the LaTeX report see the unit names as variables
+    EESParser parser;
+    auto parsed = parser.parse("m = 2 * convert(lbm/hr, kg/s)\nt = converttemp(C, K, T_c)\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    std::vector<std::string> names;
+    for (const auto& [name, info] : ir.getVariables()) { (void)info; names.push_back(name); }
+    CHECK(names == std::vector<std::string>{"m", "t", "T_c"});
+    auto quoted = parser.parse("m = 2 * convert('lbm/hr', 'kg/s')\nt = converttemp('C', 'K', T_c)\n");
+    REQUIRE(quoted.success);
+    IR quotedIr = IR::fromAST(quoted.program);
+    for (size_t i = 0; i < 2; ++i)
+        CHECK(coolsolve::expressionToLatex(ir.getEquations().at(i).rhs) == coolsolve::expressionToLatex(quotedIr.getEquations().at(i).rhs));
+    const std::string tex = latexOf("T_c = 20\nm = 2 * convert(lbm/hr, kg/s)\nt = converttemp(C, K, T_c)\n");
+    CHECK(tex.find("lbm/hr") != std::string::npos);
+    CHECK(tex.find("\\mathrm{hr}") == std::string::npos);
+    CHECK(tex.find("\\mathrm{lbm}") == std::string::npos);
+}
+
+TEST_CASE("CS-GAP-CONVERT-UNQUOTED: the unquoted units give the factors of the quoted ones",
+          "[library-gaps][convert-unquoted]") {
+    std::string unquoted, quoted;
+    for (size_t i = 0; i < kUnquotedPairs.size(); ++i) {
+        const auto& p = kUnquotedPairs[i];
+        unquoted += "x" + std::to_string(i) + " = convert(" + p.from + ", " + p.to + ")\n";
+        quoted += "x" + std::to_string(i) + " = convert('" + p.from + "', '" + p.to + "')\n";
+    }
+    auto run = runModel(unquoted);
+    auto reference = runModel(quoted);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    REQUIRE(reference.solveOk);
+    CHECK(run.verified);
+    for (size_t i = 0; i < kUnquotedPairs.size(); ++i) {
+        const auto& p = kUnquotedPairs[i];
+        const std::string name = "x" + std::to_string(i);
+        INFO("CONVERT(" << p.from << ", " << p.to << ") = " << std::setprecision(15) << run[name] << ", expected " << p.factor);
+        CHECK_THAT(run[name], WithinRel(p.factor, 1e-7));   // the constants are hand-computed with 10 digits
+        CHECK(run[name] == reference[name]);   // the very same factor
+    }
+}
+
+TEST_CASE("CS-GAP-CONVERT-UNQUOTED: ConvertTemp(C, K, T) in every direction, and its derivative",
+          "[library-gaps][convert-unquoted]") {
+    // 100 C = 373.15 K = 212 F = 671.67 R
+    auto run = runModel("a = ConvertTemp(C, K, 100)\nb = ConvertTemp(C, F, 100)\nc = ConvertTemp(C, R, 100)\n"
+                        "d = ConvertTemp(F, C, 32)\ne = ConvertTemp(K, R, 0)\nf = converttemp(celsius, kelvin, 100)\n"
+                        "g = converttemp(K, C, 373.15)\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(373.15, 1e-9));
+    CHECK_THAT(run["b"], WithinAbs(212.0, 1e-9));
+    CHECK_THAT(run["c"], WithinAbs(671.67, 1e-9));
+    CHECK_THAT(run["d"], WithinAbs(0.0, 1e-9));
+    CHECK_THAT(run["e"], WithinAbs(0.0, 1e-9));
+    CHECK_THAT(run["f"], WithinAbs(373.15, 1e-9));
+    CHECK_THAT(run["g"], WithinAbs(100.0, 1e-9));
+    // the derivative with respect to the value (CS-BUG-CONVERTTEMP-UNIT) is kept: 1.8 for C -> F, 5/9 for F -> K
+    const auto cf = evalConvertTemp("C", "F", 20.0);
+    CHECK_THAT(cf.value, WithinAbs(68.0, 1e-9));
+    CHECK_THAT(cf.slope, WithinRel(1.8, 1e-12));
+    CHECK_THAT(evalConvertTemp("F", "K", 20.0).slope, WithinRel(5.0 / 9.0, 1e-12));
+    CHECK_THAT(evalConvertTemp("C", "K", 20.0).slope, WithinRel(1.0, 1e-12));
+    // an unknown of a coupled block solved through the unquoted CONVERTTEMP: x + y = 10, 1.8 x + 32 - y = 20
+    auto coupled = runModel("x + y = 10\nconverttemp(C, F, x) - y = 20\n");
+    INFO(coupled.message);
+    REQUIRE(coupled.solveOk);
+    CHECK(coupled.verified);
+    CHECK_THAT(coupled["x"], WithinAbs(-2.0 / 2.8, 1e-9));
+    CHECK_THAT(coupled["y"], WithinAbs(10.0 + 2.0 / 2.8, 1e-9));
+    // ... and a linear equation takes a few Newton iterations, as with the quotes
+    const int iterations = solverIterations("T_F = 212\nT_F = converttemp(C, F, T_C)\n");
+    INFO("iterations = " << iterations);
+    CHECK(iterations >= 0);
+    CHECK(iterations <= 5);
+}
+
+TEST_CASE("CS-GAP-CONVERT-UNQUOTED: quoted and unquoted arguments mixed, string variables stay string variables",
+          "[library-gaps][convert-unquoted]") {
+    auto run = runModel(
+        "u$ = 'Pa'\n"
+        "w$ = 'C'\n"
+        "a = convert(kPa, 'Pa')\n"
+        "b = convert('kPa', Pa)\n"
+        "c = convert(kPa, u$)\n"          // a unit that is a string variable is read at run time
+        "d = convert(u$, kPa)\n"
+        "e = converttemp(C, 'K', 100)\n"
+        "f = converttemp('C', K, 100)\n"
+        "g = converttemp(K, w$, 373.15)\n"
+        "h = converttemp(w$, K, 100)\n"
+        "j = convert(lowercase$('KPA'), Pa)\n");   // ... or computed by a string function
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinRel(1000.0, 1e-14));
+    CHECK_THAT(run["b"], WithinRel(1000.0, 1e-14));
+    CHECK_THAT(run["c"], WithinRel(1000.0, 1e-14));
+    CHECK_THAT(run["d"], WithinRel(1.0 / 1000.0, 1e-14));
+    CHECK_THAT(run["e"], WithinAbs(373.15, 1e-9));
+    CHECK_THAT(run["f"], WithinAbs(373.15, 1e-9));
+    CHECK_THAT(run["g"], WithinAbs(100.0, 1e-9));
+    CHECK_THAT(run["h"], WithinAbs(373.15, 1e-9));
+    CHECK_THAT(run["j"], WithinRel(1000.0, 1e-14));
+    // the unit names are no variables (the string variables are in the list of the unknowns of the solution)
+    CHECK(userVariables(run) == std::vector<std::string>{"a", "b", "c", "d", "e", "f", "g", "h", "j", "u$", "w$"});
+    CHECK(unitArgumentsOfFirstCall("c = convert(kPa, u$)\n") == std::vector<std::string>{"kPa", ""});
+    CHECK(unitArgumentsOfFirstCall("c = convert(u$, kPa)\n") == std::vector<std::string>{"", "kPa"});
+}
+
+TEST_CASE("CS-GAP-CONVERT-UNQUOTED: in expressions, equations to solve, DUPLICATE and routine bodies",
+          "[library-gaps][convert-unquoted]") {
+    auto run = runModel(
+        "x*Convert(kJ,J) = 5000\n"                        // an unknown multiplied by a factor
+        "P = 3.5*CONVERT(bar, Pa)\n"
+        "FUNCTION f(a)\n"
+        "  f = a*convert(lbm/hr,kg/s)\n"
+        "END\n"
+        "PROCEDURE p(a : b)\n"
+        "  b = a*convert(kJ/kg-K,Btu/lbm-R)\n"
+        "  c = ConvertTemp(C, K, 100)\n"
+        "END\n"
+        "y = f(437.704975)\n"
+        "CALL p(4.1868 : z)\n"
+        "DUPLICATE i = 1, 3\n"
+        "  q[i] = i*convert(kPa, Pa)\n"
+        "END\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["P"], WithinRel(3.5e5, 1e-14));
+    CHECK_THAT(run["y"], WithinRel(0.05514989912, 1e-8));
+    CHECK_THAT(run["z"], WithinRel(1.0, 1e-8));
+    CHECK_THAT(run["q[2]"], WithinRel(2000.0, 1e-14));
+    // a function whose result is the unquoted conversion of a temperature, with an unknown as the argument
+    auto routine = runModel(
+        "FUNCTION toK(T)\n"
+        "  toK = ConvertTemp(C, K, T)\n"
+        "END\n"
+        "toK(T_c) = 318.15\n");
+    INFO(routine.message);
+    REQUIRE(routine.solveOk);
+    CHECK_THAT(routine["T_c"], WithinAbs(45.0, 1e-9));
+    // wrong arity is still an error, with the unit names as written
+    for (const char* call : {"convert(kPa)", "convert(kPa, Pa, 'bar')", "converttemp(C, K)", "converttemp(C, K, 1, 2)"}) {
+        INFO(call);
+        auto bad = runModel(std::string("m = ") + call + "\n");
+        CHECK_FALSE(bad.solveOk);
+        CHECK(bad.message.find("convert") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-GAP-CONVERT-UNQUOTED: a unit text that is also the name of a variable is the unit",
+          "[library-gaps][convert-unquoted]") {
+    // EES accepts the unit names without quotes, so the unit reading is chosen: the variables C, K and m of the model
+    // keep their value, and the call converts the unit. (A string variable, u$, is the variable.)
+    auto run = runModel(
+        "C = 5\n"
+        "K = 7\n"
+        "m = 11\n"
+        "a = ConvertTemp(C, K, 100)\n"
+        "b = convert(m, ft)\n"
+        "d = convert(K, C)\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(373.15, 1e-9));
+    CHECK_THAT(run["b"], WithinRel(1.0 / 0.3048, 1e-12));
+    CHECK_THAT(run["d"], WithinRel(1.0, 1e-14));
+    CHECK_THAT(run["C"], WithinAbs(5.0, 1e-14));
+    CHECK_THAT(run["K"], WithinAbs(7.0, 1e-14));
+    CHECK_THAT(run["m"], WithinAbs(11.0, 1e-14));
+    // a variable that is no unit name cannot be given as a unit: the string variable is the way
+    auto variable = runModel("u$ = 'kPa'\nunit_in = 3\nx = convert(u$, Pa)\n");
+    REQUIRE(variable.solveOk);
+    CHECK_THAT(variable["x"], WithinRel(1000.0, 1e-14));
+}
+
+TEST_CASE("CS-GAP-CONVERT-UNQUOTED: an unknown unquoted unit is a parse error with the line",
+          "[library-gaps][convert-unquoted]") {
+    // was: a system that is not square (foo and Pa taken for variables)
+    CHECK(parseErrorsWithLines("x = 1\nm = convert(foo, Pa)\n") ==
+          std::vector<std::string>{"2: CONVERT('foo','Pa'): unknown unit 'foo'"});
+    CHECK(parseErrorsWithLines("m = convert(kg, furlong)\n") ==
+          std::vector<std::string>{"1: CONVERT('kg','furlong'): unknown unit 'furlong'"});
+    CHECK(parseErrorsWithLines("m = convert(lbm/hrr, kg/s)\n") ==
+          std::vector<std::string>{"1: CONVERT('lbm/hrr','kg/s'): unknown unit 'hrr' in 'lbm/hrr' (did you mean 'hr'?)"});
+    CHECK(parseErrorsWithLines("m = convert(kg/m3, kg/m^3)\n") ==
+          std::vector<std::string>{"1: CONVERT('kg/m3','kg/m^3'): unknown unit 'm3' in 'kg/m3' (write 'm^3' for a power)"});
+    // a quoted and an unquoted unit: the same message
+    CHECK(parseErrorsWithLines("m = convert('foo', Pa)\n") ==
+          std::vector<std::string>{"1: CONVERT('foo','Pa'): unknown unit 'foo'"});
+    CHECK(parseErrorsWithLines("m = convert(kPa, 'foo')\n") ==
+          std::vector<std::string>{"1: CONVERT('kPa','foo'): unknown unit 'foo'"});
+    // a malformed unit string (unbalanced parentheses and // are refused earlier, with their own message)
+    for (const char* bad : {"kg/", "/s", "m^x", "m^2.5", "kg s", "kg-", "kg.m", "m^"}) {
+        INFO("unit string " << bad);
+        const auto errors = parseErrorsWithLines(std::string("m = convert(") + bad + ", kg)\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].rfind(std::string("1: CONVERT('") + bad + "','kg'): ", 0) == 0);
+    }
+    // inside the body of a routine: the line of the body
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  b = 2\n  f = a*convert(foo,kg)\nEND\ny = f(1)\n") ==
+          std::vector<std::string>{"3: CONVERT('foo','kg'): unknown unit 'foo'"});
+    // as the operand of an operator
+    CHECK(parseErrorsWithLines("y = 2*convert(foo, kg)\n") ==
+          std::vector<std::string>{"1: CONVERT('foo','kg'): unknown unit 'foo'"});
+    // the system is not solved: no number is produced
+    auto run = runModel("m = convert(foo, Pa)\n");
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(run.message.find("unknown unit 'foo'") != std::string::npos);
+    // the other unit is a string variable: the unknown unit is found when the call is evaluated
+    auto runtime = runModel("u$ = 'Pa'\nm = convert(foo, u$)\n");
+    CHECK_FALSE(runtime.solveOk);
+    CHECK(runtime.message.find("CONVERT('foo','Pa'): unknown unit 'foo'") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-CONVERT-UNQUOTED: incompatible unquoted units are an error", "[library-gaps][convert-unquoted]") {
+    CHECK(parseErrorsWithLines("x = 1\nm = convert(kJ, Pa)\n") ==
+          std::vector<std::string>{"2: CONVERT('kJ','Pa'): incompatible units (energy vs. pressure)"});
+    CHECK(parseErrorsWithLines("m = convert(lbm/hr, kg)\n") ==
+          std::vector<std::string>{"1: CONVERT('lbm/hr','kg'): incompatible units (mass flow rate vs. mass)"});
+    CHECK(parseErrorsWithLines("m = convert(kJ/kg-K, kJ/kg)\n") ==
+          std::vector<std::string>{"1: CONVERT('kJ/kg-K','kJ/kg'): incompatible units (specific heat vs. specific energy)"});
+    CHECK(parseErrorsWithLines("a = 3\ny = a*convert(kJ, Pa) + 1\n") ==
+          std::vector<std::string>{"2: CONVERT('kJ','Pa'): incompatible units (energy vs. pressure)"});
+    auto run = runModel("m = convert(kJ, Pa)\n");
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    // the other unit is a string variable: the dimensions are compared when the call is evaluated
+    auto runtime = runModel("u$ = 'Pa'\nm = convert(kJ, u$)\n");
+    CHECK_FALSE(runtime.solveOk);
+    CHECK(runtime.message.find("CONVERT('kJ','Pa'): incompatible units (energy vs. pressure)") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-CONVERT-UNQUOTED: an unquoted CONVERTTEMP unit that is not a temperature scale is a parse error",
+          "[library-gaps][convert-unquoted]") {
+    for (const char* bad : {"Foo", "kg", "kPa", "J/kg-K", "C/s", "K-m", "degC", "celcius"}) {
+        INFO("unit " << bad);
+        const auto from = parseErrorsWithLines(std::string("x = 1\nt = converttemp(") + bad + ", K, 100)\n");
+        CHECK(from == std::vector<std::string>{std::string("2: CONVERTTEMP: '") + bad + "' " + kNotATemperature});
+        const auto to = parseErrorsWithLines(std::string("x = 1\nt = converttemp(C, ") + bad + ", 100)\n");
+        CHECK(to == std::vector<std::string>{std::string("2: CONVERTTEMP: '") + bad + "' " + kNotATemperature});
+    }
+    // an unquoted and a string variable unit: the unquoted one is checked all the same
+    CHECK(parseErrorsWithLines("u$ = 'K'\nt = converttemp(Foo, u$, 100)\n") ==
+          std::vector<std::string>{std::string("2: CONVERTTEMP: 'Foo' ") + kNotATemperature});
+    // whatever the value is, and as the operand of an operator
+    CHECK(parseErrorsWithLines("t = converttemp(C, Foo, a+b)\n").size() == 1);
+    CHECK(parseErrorsWithLines("y = 2*converttemp(Foo, K, 1)\n") ==
+          std::vector<std::string>{std::string("1: CONVERTTEMP: 'Foo' ") + kNotATemperature});
+    auto run = runModel("T_F = 212\nT_F = converttemp(C, Foo, T_C)\n");
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(run.message.find("'Foo' is not a temperature unit") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-CONVERT-UNQUOTED: only the unit arguments are read as units",
+          "[library-gaps][convert-unquoted]") {
+    // the value of CONVERTTEMP is an expression of the model: its variables are variables
+    auto run = runModel("T_c = 20\nT_k = ConvertTemp(C, K, T_c + 5)\nS = 2\nT_f = ConvertTemp(C, F, S*T_c)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["T_k"], WithinAbs(298.15, 1e-9));
+    CHECK_THAT(run["T_f"], WithinAbs(104.0, 1e-9));
+    // a numeric expression is no unit: still an error of the call, as with the quotes
+    auto sum = runModel("a = 1\nb = 2\nx = convert(a+b, Pa)\n");
+    CHECK_FALSE(sum.solveOk);
+    // other built-in calls with an unquoted name are unchanged: the fluid of a property call is a name
+    auto fluid = runModel("h = enthalpy(Water, T=100, x=0)\n");
+    INFO(fluid.message);
+    REQUIRE(fluid.solveOk);
+    CHECK_THAT(fluid["h"], WithinRel(CoolProp::PropsSI("H", "T", 373.15, "Q", 0, "Water"), 1e-6));   // J/kg, SI
+}

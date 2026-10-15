@@ -480,9 +480,9 @@ END
 written for; in CoolSolve such a guard never fires (the unit system is fixed).
 An unknown setting name is an error.
 
-**`CONVERT` unit strings.** The units are quoted strings (`CONVERT('lbm/hr', 'kg/s')`; the
-unquoted form of EES is not implemented). A unit string is a product of unit names with `-` or
-`*` between them, a quotient with `/` (everything after a `/` is in the denominator:
+**`CONVERT` unit strings.** The units are strings (`CONVERT('lbm/hr', 'kg/s')`) or, as in EES, unit
+names written without quotes (`CONVERT(lbm/hr, kg/s)`, see below). A unit string is a product of unit
+names with `-` or `*` between them, a quotient with `/` (everything after a `/` is in the denominator:
 `kJ/kg-K` is kJ/(kg·K)), `^n` for an integer power (`m^2`, `K^-1`), parentheses and the number
 1 (`1/s`): `lbm/hr`, `W/m^2-K`, `Btu/hr-ft^2-R`, `ft^3/min`, `kg/(m-s)`. The result is the
 product of the factors, checked for the dimension:
@@ -513,6 +513,17 @@ cp = 4.18*CONVERT('kJ/kg-K', 'Btu/lbm-R')
   line; for a unit computed at run time (a string variable of a FUNCTION) it is an evaluation error. A
   number of arguments other than two is an evaluation error. The factor of a pair of units is computed
   once.
+- **Quotes are optional.** The first two arguments of `CONVERT` and `CONVERTTEMP` may be written
+  without quotes, as in EES: `CONVERT(lbm/hr, kg/s)`, `CONVERT(kPa, Pa)`, `CONVERT(kJ/kg-K, Btu/lbm-R)`,
+  `ConvertTemp(C, K, T)`. An argument made of unit characters only (letters, digits, `-`, `*`, `/`, `^`, `.`,
+  parentheses and spaces, with at least one letter) is read as the unit text *as written*, before it becomes an
+  expression (`lbm/hr` is not a division of two variables, `kJ/kg-K` is not a subtraction), and is checked like
+  the quoted unit: `CONVERT(foo, Pa)` is a parse error with the line (`CONVERT('foo','Pa'): unknown unit 'foo'`).
+  Quoted and unquoted arguments can be mixed (`CONVERT(kPa, 'Pa')`). When the unquoted text is also the name
+  of a variable of the model (`C = 5` then `ConvertTemp(C, K, T)`), it is the unit that is meant: the
+  variable is not read. A string variable (`u$`) or a string function is a run-time unit as before. The
+  unit names are not variables of the model (no unknown, nothing in the LaTeX report). An argument with
+  other characters (`a+b`, `x[1]`) is an expression, not a unit.
 
 **`CONVERTTEMP` scales.** `CONVERTTEMP('from', 'to', T)` converts the temperature value `T` (with the offset
 of the scales, unlike `CONVERT`) and accepts the four temperature scales of EES, `C`, `K`, `F` and `R`, or
@@ -525,7 +536,8 @@ to it is the ratio of the degrees of the two scales (1, 1.8 or 5/9), so a block 
 (expected C, K, F or R, or celsius, kelvin, fahrenheit or rankine)`), a unit of another quantity (`'kPa'`) or
 a compound unit (`'C/s'`) included. When a unit is a string literal the error is a parse error with the line;
 for a unit computed at run time (a string variable of a FUNCTION) it is an evaluation error. A number of
-arguments other than three is an evaluation error. As for `CONVERT`, the units must be quoted.
+arguments other than three is an evaluation error. As for `CONVERT`, the quotes around the units are
+optional: `ConvertTemp(C, K, T)`.
 
 ---
 
