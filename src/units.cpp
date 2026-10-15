@@ -1,6 +1,7 @@
 #include "coolsolve/units.h"
 #include <algorithm>
 #include <stdexcept>
+#include <unordered_set>
 #include <cmath>
 
 namespace coolsolve {
@@ -12,6 +13,21 @@ static std::string normalize(const std::string& unit) {
     // Remove spaces
     s.erase(std::remove_if(s.begin(), s.end(), ::isspace), s.end());
     return s;
+}
+
+bool isUnitName(const std::string& name) {
+    // the symbols of the units that UnitConverter::toSI recognises that are written as one identifier, spelled
+    // as in EES (case-sensitive: `j`, `k`, `c` are the usual names of an index, `J`, `K`, `C` are units)
+    static const std::unordered_set<std::string> units = {
+        "K", "C", "F", "R",
+        "Pa", "kPa", "MPa", "bar", "atm", "psi", "psia",
+        "J", "kJ", "MJ", "cal", "kcal", "Btu",
+        "kg", "g", "lb", "lbm",
+        "m", "cm", "mm", "ft", "in",
+        "s", "sec", "min", "h", "hr",
+        "W", "kW", "MW",
+        "cP"};
+    return units.count(name) > 0;
 }
 
 bool unitSettingActive(const std::string& setting, const UnitSystem& units) {

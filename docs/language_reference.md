@@ -112,8 +112,26 @@ follows, at the end of a right-hand side as well as inside an expression. The
 number (or the term) is used as written and the unit is dropped: **nothing is
 converted** (`P=1e2[kPa]` is 100 Pa, not 100 kPa). One annotation per term;
 after a call or an array element it must hold a unit, not a number (`f(x)[2]`
-and `A[1][2]` are not annotations, see below). A plain variable does not carry
-an annotation: `x [m]` is the array element `x[m]`.
+and `A[1][2]` are not annotations, see below).
+
+A **plain variable** does not carry an annotation: `y = a [kW]` has the form of
+the array element `a[kW]`, so the unit would be read as an index. When the
+index is a single identifier that names a unit (`K`, `C`, `Pa`, `kPa`, `bar`,
+`J`, `kJ`, `kg`, `m`, `s`, `W`, `kW`, ... spelled as in EES: `[kw]` is not
+recognised, nor is a lower-case `j` or `k`, usual names of indices) and is not
+set in the scope, it is a parse error with the line: the main program is the scope of
+its equations, a `FUNCTION` / `PROCEDURE` the scope of its inputs and of the
+variables its body assigns. A loop index (`DUPLICATE`, the index of an indexed
+`SUM`) or a variable of that name that the scope sets stays a valid index
+(`DUPLICATE s = 1, 3` ⏎ `x[s] = 2*s`; `K = 2` ⏎ `y = x[K]`). Compound units
+(`a [kg/s]`) are not covered. Put the unit in the comment of the equation
+(`y = a "[kW]"`) or after a number:
+
+```ees
+y = a [kW]           "'a [kW]': a unit annotation after a variable is not supported ('kW' would be read as an array index, and nothing sets 'kW' here); ..."
+y = a "[kW]"         "accepted: the unit in the comment of the equation"
+y = 3600 [s] * a     "accepted: the unit after a number"
+```
 
 **Nothing else may follow** the closing parenthesis of a call or the closing
 bracket of an array element (nor the closing quote of a string): the text used

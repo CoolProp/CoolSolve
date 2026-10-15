@@ -51,6 +51,15 @@ struct UnitSystem {
  */
 bool unitSettingActive(const std::string& setting, const UnitSystem& units);
 
+/**
+ * @brief Whether `name` is the symbol of a unit that UnitConverter converts (K, C, kPa, bar, kJ, kg, m, s, kW, ...).
+ *
+ * Case-sensitive, spelled as in EES (`kW`, not `kw`; `J`, not `j`, which is the usual name of an index), and only
+ * the units written as one identifier (not `kg/s`, `J/kg-K`). The parser uses it to recognise `a [kW]`, a unit
+ * written after a variable, which has the form of the array element `a[kW]` (CS-BUG-VAR-ANNOTATION).
+ */
+bool isUnitName(const std::string& name);
+
 class UnitConverter {
 public:
     // Convert value from the specified unit to SI (CoolProp standard)

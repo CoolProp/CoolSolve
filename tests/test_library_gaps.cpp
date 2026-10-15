@@ -11983,3 +11983,251 @@ TEST_CASE("CS-BUG-RECURSION-CRASH: the evaluator stops a runaway nesting of rout
         CHECK_THAT(ok.evaluate(makeFunctionCall("r1", {makeNumber(1)})).value, WithinAbs(1.0 + limit - 1, 1e-12));
     }
 }
+
+// ============================================================================
+// CS-BUG-VAR-ANNOTATION: a unit annotation after a plain variable (`y = a [kW]`) has the form of an array
+// element and was read as `a[kW]`, the unit being the index. An array subscript that is a single identifier
+// naming a unit (the symbols UnitConverter knows, spelled as in EES: K, C, kW, Pa, kJ, kg, s, m, ...) and
+// that is neither a loop index, nor assigned in the scope (the main program, or the body of the routine) is a
+// parse error with the line.
+// The unit after a number, a parenthesised group, a call or an element (CS-BUG-TRAILING-TEXT) is unchanged.
+// ============================================================================
+
+namespace {
+
+/// "line: message" (parseErrorsWithLines) of the unit annotation `unit` after the variable `var`.
+std::string varAnnotationError(int line, const std::string& var, const std::string& unit) {
+    return std::to_string(line) + ": '" + var + " [" + unit + "]': a unit annotation after a variable is not "
+           "supported ('" + unit + "' would be read as an array index, and nothing sets '" + unit + "' here); put "
+           "the unit in the comment of the equation (\"[" + unit + "]\") or after a number";
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-VAR-ANNOTATION: reproducer, a unit after a variable in the main program is an error that says why",
+          "[library-gaps][var-annotation]") {
+    // was "Structural Analysis Error", unmatched a[kW] and kW: the user was not told why
+    const std::string code = "a = 5\ny = a [kW]\n";
+    CHECK(parseErrorsWithLines(code) == Messages{varAnnotationError(2, "a", "kW")});
+
+    const auto result = parseFull(code);
+    CHECK_FALSE(result.success);
+    REQUIRE(result.errors.size() == 1);
+    CHECK(result.errors[0].context == "y = a [kW]");   // the source line, as for the other parse errors
+
+    auto run = runModel(code);   // like any parse error: the model is not solved
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(run.message.find("Line 2: 'a [kW]': a unit annotation after a variable is not supported") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-VAR-ANNOTATION: reproducer, a unit after a variable in a FUNCTION body is an error that says why",
+          "[library-gaps][var-annotation]") {
+    // was "variable 'K' is read in FUNCTION 'f' before it is assigned": the unit was still read as an index
+    const std::string code = "FUNCTION f(a)\ns = 2*a\nf = s [K]\nEND\ny = f(4)\n";
+    CHECK(parseErrorsWithLines(code) == Messages{varAnnotationError(3, "s", "K")});
+
+    const auto result = parseFull(code);
+    REQUIRE(result.errors.size() == 1);
+    CHECK(result.errors[0].context == "f = s [K]");
+
+    auto run = runModel(code);
+    CHECK_FALSE(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(run.message.find("Line 3: 's [K]': a unit annotation after a variable is not supported") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-VAR-ANNOTATION: the units of the vocabulary, in the main program and in a body",
+          "[library-gaps][var-annotation]") {
+    for (const char* unit : {"K", "C", "Pa", "kPa", "bar", "kW", "W", "J", "kJ", "kg", "s", "m", "MPa", "min", "h"}) {
+        INFO("unit " << unit);
+        CHECK(parseErrorsWithLines(std::string("a = 5\ny = a [") + unit + "]\n") ==
+              Messages{varAnnotationError(2, "a", unit)});
+        CHECK(parseErrorsWithLines(std::string("FUNCTION f(a)\n  t = 2*a\n  f = t [") + unit + "]\nEND\ny = f(4)\n") ==
+              Messages{varAnnotationError(3, "t", unit)});
+    }
+    // the same with the unit next to the variable, or with blanks inside the brackets
+    CHECK(parseErrorsWithLines("a = 5\ny = a[kW]\n") == Messages{varAnnotationError(2, "a", "kW")});
+    CHECK(parseErrorsWithLines("a = 5\ny = a   [  kW  ]\n") == Messages{varAnnotationError(2, "a", "kW")});
+}
+
+TEST_CASE("CS-BUG-VAR-ANNOTATION: every place where a variable is read", "[library-gaps][var-annotation]") {
+    // inside an expression, an argument, a function argument, an array index, a named argument
+    CHECK(parseErrorsWithLines("a = 5\nb = 2\ny = 2*a [kW] + b\n") == Messages{varAnnotationError(3, "a", "kW")});
+    CHECK(parseErrorsWithLines("a = 5\ny = max(a [kW], 1)\n") == Messages{varAnnotationError(2, "a", "kW")});
+    CHECK(parseErrorsWithLines("a = 5\nx[1] = 1\nx[2] = 2\ny = x[a [kW]]\n") == Messages{varAnnotationError(4, "a", "kW")});
+    CHECK(parseErrorsWithLines("T = 300\nh = enthalpy(Water, T=T [K], P=1E5)\n") == Messages{varAnnotationError(2, "T", "K")});
+    // the left-hand side, a CALL argument, a DUPLICATE body
+    CHECK(parseErrorsWithLines("a = 5\na [kW] = y\n") == Messages{varAnnotationError(2, "a", "kW")});
+    CHECK(parseErrorsWithLines("PROCEDURE p(u : v)\n  v = u\nEND\na = 5\nCALL p(a [kW] : z)\n") ==
+          Messages{varAnnotationError(5, "a", "kW")});
+    CHECK(parseErrorsWithLines("a = 5\nDUPLICATE i = 1, 3\n  y[i] = a [kW]\nEND\n") == Messages{varAnnotationError(3, "a", "kW")});
+    // every annotated variable is reported, with its line, in the order of the file
+    CHECK(parseErrorsWithLines("a = 5\nb = 6\ny = a [kW]\nz = b [kW] + a [K]\n") ==
+          Messages{varAnnotationError(3, "a", "kW"), varAnnotationError(4, "b", "kW"), varAnnotationError(4, "a", "K")});
+
+    // in a body: a PROCEDURE, an IF condition (single-line and block), a REPEAT condition, a DUPLICATE, a CALL
+    CHECK(parseErrorsWithLines("PROCEDURE p(a : b)\n  b = a [kW]\nEND\nCALL p(1 : z)\n") == Messages{varAnnotationError(2, "a", "kW")});
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  IF (a [K] > 0) THEN f = 1 ELSE f = 2\nEND\ny = f(1)\n") ==
+          Messages{varAnnotationError(2, "a", "K")});
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  IF (a > 0) THEN\n    f = a [kW]\n  ELSE\n    f = 2\n  ENDIF\nEND\ny = f(1)\n") ==
+          Messages{varAnnotationError(3, "a", "kW")});
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  k = 0\n  REPEAT\n    k = k + 1\n  UNTIL (k [s] > a)\n  f = k\nEND\ny = f(1)\n") ==
+          Messages{varAnnotationError(5, "k", "s")});
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  DUPLICATE i = 1, 3\n    y[i] = a [kW]\n  END\n  f = y[1]\nEND\nz = f(1)\n") ==
+          Messages{varAnnotationError(3, "a", "kW")});
+    CHECK(parseErrorsWithLines("PROCEDURE p(u : v)\n  v = u\nEND\nFUNCTION f(a)\n  CALL p(a [kW] : s)\n  f = s\nEND\ny = f(1)\n") ==
+          Messages{varAnnotationError(5, "a", "kW")});
+    // every one is reported, with its line, not only the first read
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  s = a [kW]\n  t = a [kW]\n  f = s + t\nEND\ny = f(1)\n") ==
+          Messages{varAnnotationError(2, "a", "kW"), varAnnotationError(3, "a", "kW")});
+}
+
+TEST_CASE("CS-BUG-VAR-ANNOTATION: an identifier that is not a unit is unchanged", "[library-gaps][var-annotation]") {
+    // not a unit: still an array index, undefined here; the main program is a structural error, a body the error
+    // of CS-BUG-LOCAL-UNASSIGNED
+    CHECK(parseErrors("a = 5\ny = a [foo]\n").empty());
+    auto run = runModel("a = 5\ny = a [foo]\n");
+    CHECK(run.parseOk);
+    CHECK_FALSE(run.solveOk);
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  s = 2*a\n  f = s [foo]\nEND\ny = f(4)\n") ==
+          Messages{unassignedLocalError(3, "foo", "FUNCTION 'f'")});
+    // the units are spelled as in EES (case-sensitive): the lower-case `j`, `k`, `c`, `kw`, `pa` are names of
+    // indices, as in the test of CS-BUG-LOCAL-UNASSIGNED (`f = x[j]`, error: j is not assigned)
+    for (const char* name : {"j", "k", "c", "kw", "pa", "KW", "KPA"}) {
+        INFO("name " << name);
+        CHECK(parseErrors(std::string("a = 5\ny = a [") + name + "]\n").empty());
+        CHECK(parseErrorsWithLines(std::string("FUNCTION f(a)\n  t = 2*a\n  f = t [") + name + "]\nEND\ny = f(4)\n") ==
+              Messages{unassignedLocalError(3, name, "FUNCTION 'f'")});
+    }
+    // an index that is not a bare identifier is not an annotation either: arithmetic, a number, a compound unit
+    CHECK(parseErrors("a = 5\nx[1] = 1\nx[2] = 2\nn = 1\ny = a [n+1]\n").empty());
+    CHECK(parseErrors("x[1] = 1\nx[2] = 2\ny = x[1+1]\n").empty());
+}
+
+TEST_CASE("CS-BUG-VAR-ANNOTATION: a unit-named index that the scope sets stays an index (main program)",
+          "[library-gaps][var-annotation]") {
+    // the loop index of a DUPLICATE, named like a unit (s: second)
+    CHECK(parseErrors("DUPLICATE s = 1, 3\n  x[s] = 2*s\nEND\ny = x[2]\n").empty());
+    auto run = runModel("DUPLICATE s = 1, 3\n  x[s] = 2*s\nEND\ny = x[2]\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(4.0, 1e-12));
+    // a variable of the model named like a unit, used as an index on purpose, set before or after its use
+    CHECK(parseErrors("K = 2\nx[K] = 5\n").empty());
+    CHECK(parseErrors("x[K] = 5\nK = 2\n").empty());
+    CHECK(parseErrors("K = 2\ny = x[K]\nx[2] = 7\n").empty());
+    CHECK(parseErrors("K + 1 = 3\nx[K] = 5\n").empty());
+    // an annotation after an element whose index is such a variable, or after a call: not touched
+    CHECK(parseErrors("K = 2\nx[2] = 7\ny = x[K] [kW]\nz = max(x[K], 1) [kW]\n").empty());
+    CHECK(parseErrorsWithLines("a = 5\ny = x[a [kW]] [K]\n") == Messages{varAnnotationError(2, "a", "kW")});
+    // the same name used as an index and elsewhere
+    CHECK(parseErrors("K = 2\nx[K] = 5\ny = K + 1\nz = 2*x[K]\n").empty());
+    // set by the output of a CALL
+    CHECK(parseErrors("PROCEDURE p(a : b)\n  b = a\nEND\nCALL p(2 : K)\nx[K] = 5\n").empty());
+    // the index of a SUM, a DUPLICATE nested in another
+    CHECK(parseErrors("x[1] = 1\nx[2] = 2\nx[3] = 3\ns1 = SUM(x[s], s=1, 3)\n").empty());
+    CHECK(parseErrors("DUPLICATE m = 1, 2\n  DUPLICATE s = 1, 2\n    y[m, s] = m + s\n  END\nEND\n").empty());
+    // a constant of a number, an arithmetic index, a number
+    CHECK(parseErrors("n = 3\nx[n] = 5\nx[1] = 1\nT[2] = 4\nDUPLICATE i = 1, 3\n  T[i+1] = i\nEND\n").empty());
+}
+
+TEST_CASE("CS-BUG-VAR-ANNOTATION: a unit-named index that the body sets stays an index (FUNCTION / PROCEDURE)",
+          "[library-gaps][var-annotation]") {
+    // a local that a REPEAT loop of the body increments
+    const std::string repeat =
+        "FUNCTION f(a)\n"
+        "  k = 1\n"
+        "  s = 0\n"
+        "  REPEAT\n"
+        "    v[k] = a*k\n"
+        "    s = s + v[k]\n"
+        "    k = k + 1\n"
+        "  UNTIL (k > 3)\n"
+        "  f = s\n"
+        "END\n"
+        "y = f(2)\n";
+    CHECK(parseErrors(repeat).empty());
+    auto run = runModel(repeat);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["y"], WithinAbs(12.0, 1e-12));   // 2*(1+2+3)
+
+    // an input, a DUPLICATE index, a local set earlier, a PROCEDURE output set by a CALL
+    CHECK(parseErrors("FUNCTION f(a, K)\n  s = a[K]\n  f = s\nEND\ny = f(1, 2)\n").empty());
+    CHECK(parseErrors("FUNCTION f(a)\n  DUPLICATE s = 1, 3\n    v[s] = a*s\n  END\n  f = v[2]\nEND\ny = f(2)\n").empty());
+    CHECK(parseErrors("FUNCTION f(a)\n  K = 2\n  v[K] = a\n  f = v[K]\nEND\ny = f(2)\n").empty());
+    CHECK(parseErrors("PROCEDURE p(a : b)\n  b = a\nEND\nFUNCTION f(a)\n  CALL p(2 : K)\n  v[K] = a\n  f = v[K]\nEND\ny = f(2)\n").empty());
+    CHECK(parseErrors("PROCEDURE q(a : b)\n  K = 1\n  v[K] = a\n  b = v[K]\nEND\nCALL q(2 : y)\n").empty());
+    // the index of a SUM in a body
+    CHECK(parseErrors("FUNCTION f(v[1..3])\n  f = SUM(v[s], s=1, 3)\nEND\nu[1] = 1\nu[2] = 2\nu[3] = 3\ny = f(u[1..3])\n").empty());
+    // a name set later in the body is read before its assignment: the error of CS-BUG-LOCAL-UNASSIGNED, as before
+    CHECK(parseErrorsWithLines("FUNCTION f(a, v)\n  s = v [K]\n  K = 2\n  f = s\nEND\ny = f(1, 2)\n") ==
+          Messages{unassignedLocalError(2, "K", "FUNCTION 'f'")});
+    // the same name read as a variable on another line keeps its own error; in the same expression the
+    // annotation is reported (the plain read follows once it is fixed)
+    CHECK(parseErrorsWithLines("FUNCTION f(a, v)\n  s = K + 1\n  t = v [K]\n  f = s + t\nEND\ny = f(1, 2)\n") ==
+          Messages{unassignedLocalError(2, "K", "FUNCTION 'f'"), varAnnotationError(3, "v", "K")});
+    CHECK(parseErrorsWithLines("FUNCTION f(a, v)\n  s = K + v [K]\n  f = s\nEND\ny = f(1, 2)\n") ==
+          Messages{varAnnotationError(2, "v", "K")});
+    // a main-program value does not set the index of a body
+    CHECK(parseErrorsWithLines("K = 2\nFUNCTION f(a)\n  f = a [K]\nEND\ny = f(1)\n") == Messages{varAnnotationError(3, "a", "K")});
+}
+
+TEST_CASE("CS-BUG-VAR-ANNOTATION: the scope of the main program is its own", "[library-gaps][var-annotation]") {
+    // a name set in a body only is not set in the main program
+    CHECK(parseErrorsWithLines("FUNCTION f(a)\n  K = 2\n  f = a*K\nEND\ny = f(1)\nz = y [K]\n") ==
+          Messages{varAnnotationError(6, "y", "K")});
+    // a loop index is an index in its loop only
+    CHECK(parseErrorsWithLines("a = 5\nDUPLICATE s = 1, 3\n  x[s] = s\nEND\ny = a [s]\n") ==
+          Messages{varAnnotationError(5, "a", "s")});
+    CHECK(parseErrorsWithLines("x[1] = 1\nx[2] = 2\nx[3] = 3\na = 5\ns1 = SUM(x[s], s=1, 3) + a [s]\n") ==
+          Messages{varAnnotationError(5, "a", "s")});
+}
+
+TEST_CASE("CS-BUG-VAR-ANNOTATION: the units after a number, a group, a call or an element are still accepted",
+          "[library-gaps][var-annotation]") {
+    // the forms of CS-BUG-TRAILING-TEXT: none of them is an element indexed by a bare variable
+    auto run = runModel(R"(
+x[1] = 5
+a = 3
+b = 4
+FUNCTION f(p)
+  f = 2*p
+END
+y1 = x[1] [K]
+y2 = f(a) [kW]
+y3 = 3600[s]
+y4 = (a + b) [kW]
+y5 = 0.05 [kg/s]
+y6 = max(a, b) [W]
+y7 = a "[kW]"
+y8 = f(a) [J/kg-K] "comment"
+y9 = x[1] [kPa] + a
+)");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["y1"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["y2"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["y3"], WithinAbs(3600.0, 1e-12));
+    CHECK_THAT(run["y4"], WithinAbs(7.0, 1e-12));
+    CHECK_THAT(run["y5"], WithinAbs(0.05, 1e-12));
+    CHECK_THAT(run["y6"], WithinAbs(4.0, 1e-12));
+    CHECK_THAT(run["y7"], WithinAbs(3.0, 1e-12));
+    CHECK_THAT(run["y8"], WithinAbs(6.0, 1e-12));
+    CHECK_THAT(run["y9"], WithinAbs(8.0, 1e-12));
+    // the same in a body, where `x[1] [K]` and `f(a) [kW]` stand in an assignment
+    CHECK(parseErrors("FUNCTION g(a)\n  s = 2*a\n  t = s*2 [K]\n  u = (s + t) [kW]\n  g = max(s, u) [W]\nEND\ny = g(4)\n").empty());
+}
+
+TEST_CASE("CS-BUG-VAR-ANNOTATION: the workarounds of the message solve", "[library-gaps][var-annotation]") {
+    // the unit in the comment of the equation, or after a number
+    auto run = runModel("a = 5 \"[kW]\"\ny = a \"[kW]\"\nz = 3600 [s] * a\n");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["y"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["z"], WithinAbs(18000.0, 1e-9));
+}

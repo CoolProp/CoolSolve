@@ -243,7 +243,7 @@ private:
         integralTableTested_ = false;
         procedureNames_.clear();
         userConstants_.clear();
-        routineChecked_ = constantAfterRoutine_ = rangeSeen_ = duplicateSeen_ = indexedAggregateSeen_ = false;
+        routineChecked_ = constantAfterRoutine_ = rangeSeen_ = duplicateSeen_ = indexedAggregateSeen_ = unitIndexSeen_ = false;
         lastIgnoredEndifLine_ = 0;
         ParseResult result;
         result.success = false;
@@ -490,7 +490,8 @@ private:
         }
         result.totalLines = lineNumber;
         checkRoutineCycles(result, preprocessed);
-        if (result.errors.empty() && (rangeSeen_ || duplicateSeen_ || indexedAggregateSeen_ || !userConstants_.empty()))
+        if (result.errors.empty() && (rangeSeen_ || duplicateSeen_ || indexedAggregateSeen_ || unitIndexSeen_ ||
+                                      !userConstants_.empty()))
             resolveCompileTimeValues(result, preprocessed);
         // Success if no errors AND we found something valid
         bool somethingParsed = result.equationCount > 0 || result.commentCount > 0 || result.directiveCount > 0 || !result.program.statements.empty();
@@ -552,6 +553,7 @@ private:
     bool rangeSeen_ = false;             // an array range X[a..b] was parsed (a header included)
     bool duplicateSeen_ = false;         // a DUPLICATE loop was parsed
     bool indexedAggregateSeen_ = false;  // SUM(expr, i=a, b) or PRODUCT(expr, i=a, b) was parsed
+    bool unitIndexSeen_ = false;         // an element indexed by a bare unit name (a[kW]) was parsed
 
     // ------------------------------------------------------------------------
     // Compile-time directives $IF / $IFNOT / $ELSE / $ENDIF (CS-GAP-IF-DIRECTIVE)
@@ -1439,6 +1441,39 @@ private:
     }
 
     // ------------------------------------------------------------------------
+    // A unit annotation after a variable (CS-BUG-VAR-ANNOTATION)
+    //
+    // `y = a [kW]` has the form of the array element `a[kW]`, so the unit was read as its index: a variable
+    // `kW` that nothing sets, a structural error of the main program or the read of an unassigned local in a
+    // body, neither saying why. An element whose only index is a bare identifier that names a unit
+    // (isUnitName) is therefore an error, with the line, unless that identifier is a valid index in its scope:
+    // the index of an enclosing DUPLICATE or indexed SUM, or a variable of the scope (main program: one of its
+    // equations uses it, see walkExpression; body: an input or a local that the body assigns, see
+    // checkBodyReads). What EES does with a unit after a variable is not established. The unit after a number,
+    // a parenthesised group, a call or an element is accepted (parsePrimary, CS-BUG-TRAILING-TEXT) and is no
+    // element of that form.
+    // ------------------------------------------------------------------------
+    /// An element `variable[unit]` whose index is a bare unit name, at `line`.
+    struct UnitSubscript {
+        int line;
+        std::string variable;
+        std::string unit;
+    };
+
+    /// The bare unit name that is the only index of `var` (`a[kW]`); null for any other variable.
+    static const std::string* unitIndexOf(const Variable& var) {
+        if (var.indices.size() != 1 || !var.indices[0]->is<Variable>()) return nullptr;
+        const Variable& index = var.indices[0]->as<Variable>();
+        return index.indices.empty() && isUnitName(index.name) ? &index.name : nullptr;
+    }
+
+    static std::string unitAnnotationMessage(const UnitSubscript& element) {
+        return "'" + element.variable + " [" + element.unit + "]': a unit annotation after a variable is not "
+               "supported ('" + element.unit + "' would be read as an array index, and nothing sets '" + element.unit +
+               "' here); put the unit in the comment of the equation (\"[" + element.unit + "]\") or after a number";
+    }
+
+    // ------------------------------------------------------------------------
     // Check of a FUNCTION / PROCEDURE body (CS-BUG-IMPLICIT-PROC, CS-BUG-LOCAL-UNASSIGNED,
     // CS-GAP-STRING-LOCAL-UNSET; maintainer decision of 2026-10-12)
     //
@@ -1466,16 +1501,24 @@ private:
         const std::string& source;                            // the preprocessed source (error context)
         ParseResult& result;
         std::set<std::string, CaseInsensitiveLess> constants; // the $CONSTANTs (global, above or below)
+        std::vector<UnitSubscript> unitSubscripts;            // the elements a[kW] whose index is not assigned (yet)
     };
 
     void checkRoutineBody(const std::vector<std::string>& inputs, const std::vector<std::string>& outputs,
                           const std::vector<StmtPtr>& body, int headerLine, const std::string& source,
                           ParseResult& result) {
-        BodyCheck check{routineKind_ + " '" + routineName_ + "'", {}, {}, source, result, presetConstants_};
+        BodyCheck check{routineKind_ + " '" + routineName_ + "'", {}, {}, source, result, presetConstants_, {}};
         for (const auto& entry : userConstants_) check.constants.insert(entry.first);
         routineChecked_ = true;
         for (const auto& input : inputs) check.assigned.insert(arrayBaseName(input));   // an array input `SP[1..5]`: SP
         checkBodyStatements(body, check);
+        // `a [kW]` is the element a[kW] read before `kW` is assigned, unless the body assigns `kW` further down
+        for (const auto& element : check.unitSubscripts) {
+            if (!check.assigned.count(element.unit))
+                bodyError(check, element.line, unitAnnotationMessage(element));
+            else if (check.reported.insert(element.unit).second)
+                bodyError(check, element.line, unassignedReadMessage(element.unit, check));
+        }
         for (const auto& output : outputs)
             if (!check.assigned.count(arrayBaseName(output)))
                 bodyError(check, headerLine, check.routine + " never assigns its output '" + arrayBaseName(output) +
@@ -1541,17 +1584,30 @@ private:
     }
 
     static void checkBodyReads(const ExprPtr& expr, int line, BodyCheck& check) {
-        std::set<std::string, CaseInsensitiveLess> read;
+        std::set<std::string, CaseInsensitiveLess> read, annotated;
         IR::extractVariables(expr, read);
+        const auto unset = [&](const std::string& name) {
+            return !check.assigned.count(name) && !Constants::isConstant(name) && !check.constants.count(name);
+        };
+        for (const auto& flattened : read) {   // `a [kW]` reads the element a[kW]: kW is an index (or the unit)
+            const size_t open = flattened.find('[');
+            if (open == std::string::npos || flattened.back() != ']') continue;
+            const std::string unit = flattened.substr(open + 1, flattened.size() - open - 2);
+            if (!isUnitName(unit) || !unset(unit)) continue;
+            check.unitSubscripts.push_back({line, flattened.substr(0, open), unit});   // reported once the body is read
+            annotated.insert(unit);
+        }
         for (const auto& flattened : read) {
             const std::string name = arrayBaseName(flattened);
-            if (check.assigned.count(name) || Constants::isConstant(name) || check.constants.count(name) ||
-                !check.reported.insert(name).second)
-                continue;
-            bodyError(check, line, "variable '" + name + "' is read in " + check.routine + " before it is assigned: "
-                      "the variables of a FUNCTION or PROCEDURE other than its inputs are local and not initialised "
-                      "(pass main-program values as input arguments)");
+            if (unset(name) && !annotated.count(name) && check.reported.insert(name).second)
+                bodyError(check, line, unassignedReadMessage(name, check));
         }
+    }
+
+    static std::string unassignedReadMessage(const std::string& name, const BodyCheck& check) {
+        return "variable '" + name + "' is read in " + check.routine + " before it is assigned: "
+               "the variables of a FUNCTION or PROCEDURE other than its inputs are local and not initialised "
+               "(pass main-program values as input arguments)";
     }
 
     static void markBodyAssigned(const ExprPtr& expr, BodyCheck& check) {
@@ -1676,6 +1732,8 @@ private:
         std::string routine;   // "FUNCTION 'f'" while a routine is walked, empty in the main program
         NameSet locals;        // the names its header declares (they hide a $CONSTANT)
         int line = 0;          // line of the statement being walked
+        std::vector<UnitSubscript> unitSubscripts;   // the elements a[kW] of the main program (CS-BUG-VAR-ANNOTATION)
+        NameSet used;          // the variables of the main program that the walk met (filled when unitIndexSeen_)
 
         void error(const std::string& message) {
             result.errors.push_back({line, 0, message, sourceLineText(source, line)});
@@ -1778,6 +1836,11 @@ private:
         }
         ctx.routine.clear();
         walkStatements(statements, ctx);
+        for (const auto& element : ctx.unitSubscripts)   // `a [kW]`, unless the main program uses a variable `kW`
+            if (!ctx.used.count(element.unit)) {
+                ctx.line = element.line;
+                ctx.error(unitAnnotationMessage(element));
+            }
     }
 
     // --- bounds ---------------------------------------------------------------
@@ -2030,13 +2093,24 @@ private:
         if (added) ctx.iterators.erase(index);
     }
 
+    /// The main program uses `name` as a variable (and it is no loop index): it is a real index when a unit
+    /// is its name (CS-BUG-VAR-ANNOTATION). Only recorded when such an index was parsed.
+    void noteUsed(const std::string& name, CompileTimeContext& ctx) const {
+        if (unitIndexSeen_ && ctx.routine.empty() && !ctx.iterators.count(name)) ctx.used.insert(name);
+    }
+
     void walkExpression(ExprPtr& expr, CompileTimeContext& ctx) {
         if (!expr) return;
         if (expr->is<Variable>()) {
             auto& var = expr->as<Variable>();
             if (var.indices.empty()) {   // a $CONSTANT becomes its value
+                noteUsed(var.name, ctx);
                 const auto it = ctx.locals.count(var.name) ? userConstants_.end() : userConstants_.find(var.name);
                 if (it != userConstants_.end()) expr->node = NumberLiteral{it->second.value};
+                return;
+            }
+            if (const std::string* unit = unitIndexOf(var)) {   // `a [kW]`, unless `kW` is a loop index
+                if (ctx.routine.empty() && !ctx.iterators.count(*unit)) ctx.unitSubscripts.push_back({ctx.line, var.name, *unit});
                 return;
             }
             if (hasRange(var)) {
@@ -2063,6 +2137,7 @@ private:
     void walkAssigned(ExprPtr& lhs, CompileTimeContext& ctx) {
         if (!lhs->is<Variable>()) return walkExpression(lhs, ctx);   // an implicit equation of the main program
         checkNotConstant(lhs->as<Variable>(), ctx);
+        noteUsed(lhs->as<Variable>().name, ctx);
         if (!lhs->as<Variable>().indices.empty()) walkExpression(lhs, ctx);
     }
 
@@ -2077,6 +2152,7 @@ private:
             if (expression || !hasRange(var)) {
                 if (expression) walkExpression(expression, ctx);
                 checkNotConstant(var, ctx);
+                noteUsed(var.name, ctx);
                 for (auto& index : var.indices) walkExpression(index, ctx);
                 outputs.push_back(var);
                 outputExprs.push_back(expression);
@@ -3651,7 +3727,9 @@ private:
             indices.push_back(indexExpr);
         }
         
-        return makeArrayVariable(name, indices, lineNum);
+        ExprPtr element = makeArrayVariable(name, indices, lineNum);
+        if (unitIndexOf(element->as<Variable>())) unitIndexSeen_ = true;
+        return element;
     }
 
     // An index, or a range `a..b` of indices (EES array range notation, CS-GAP-ARRAY-ARG): the binary
