@@ -794,6 +794,17 @@ std::string ExpressionEvaluator::evaluateString(const ExprPtr& expr) {
         // LOOKUP$('table', row, col) — the text of a lookup-table cell.
         if (lname == "lookup$") return evaluateLookupString(call);
 
+        // UPPERCASE$(s$) / LOWERCASE$(s$) — the string in upper / lower case.
+        if (lname == "uppercase$" || lname == "lowercase$") {
+            if (call.args.size() != 1 || !call.namedArgs.empty())
+                throw std::runtime_error(call.name + "(): expects 1 argument: a string");
+            if (!isStringExpression(call.args[0]))
+                throw std::runtime_error(call.name + "(): the argument must be a string ('text', a string variable "
+                                         "ending in $, or a string function), not a number; STRING$(x) converts a number");
+            const std::string text = evaluateString(call.args[0]);
+            return lname == "uppercase$" ? eesUpperCase(text) : eesFoldCase(text);
+        }
+
         throw std::runtime_error("String-valued function not supported: " + call.name);
     }
     
@@ -942,6 +953,13 @@ ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
         throw std::runtime_error(func.name + " returns a string and cannot be used as a number; use it where a "
             "string is expected (a fluid argument, a string comparison, a string variable set in a "
             "PROCEDURE or FUNCTION), or STRINGVAL(LOOKUP$(...)) to convert a numeric cell" + lookupWhere());
+    }
+
+    // UPPERCASE$ and LOWERCASE$ give text too
+    if (name == "uppercase$" || name == "lowercase$") {
+        throw std::runtime_error(func.name + " returns a string and cannot be used as a number; use it where a "
+            "string is expected (a fluid argument, a string comparison, a string variable set in a "
+            "PROCEDURE or FUNCTION)");
     }
 
     // STRINGVAL(s$) — parse a numeric string to a number.

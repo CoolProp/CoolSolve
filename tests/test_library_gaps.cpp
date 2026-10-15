@@ -9953,3 +9953,314 @@ TEST_CASE("CS-GAP-ELSEIF-CHAIN: unmatched ENDIFs and ELSEs: what stays an error"
         CHECK_FALSE(runModel(code).parseOk);
     }
 }
+
+// ============================================================================
+// CS-GAP-UPPERCASE: the string functions Uppercase$(S$) and Lowercase$(S$)
+// ============================================================================
+
+TEST_CASE("CS-GAP-UPPERCASE: reproducer of the register", "[library-gaps][uppercase]") {
+    // was: warning "Unknown function 'Uppercase$'", then "String-valued function not supported: Uppercase$"
+    auto run = runModel(
+        "PROCEDURE pe(Pr$:y)\n"
+        "w$=Uppercase$('ab')\n"
+        "y=1\n"
+        "END\n"
+        "CALL pe('ab':yv)\n"
+        "z=yv\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["yv"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["z"], WithinAbs(1.0, 1e-12));
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+    CHECK(parseErrors("w$ = Uppercase$('ab')\n").empty());
+    // the case of the function name does not matter
+    CHECK_FALSE(anyContains(runModel("PROCEDURE p(s$ : n)\nw$ = UPPERCASE$(s$)\nv$ = lowerCASE$(w$)\nn = 1\nEND\nCALL p('a' : x)\n").warnings,
+                            "Unknown function"));
+}
+
+TEST_CASE("CS-GAP-UPPERCASE: the text that comes out of the two functions", "[library-gaps][uppercase]") {
+    // the strings come out of the PROCEDURE as outputs: the comparison of EES ignores the case, so only the
+    // text of a string variable shows what the function did
+    auto run = runModel(R"(
+PROCEDURE conv(s$ : U$, L$, n)
+  U$ = Uppercase$(s$)
+  L$ = Lowercase$(s$)
+  n = 1
+END
+CALL conv('Brine-1 ab_c, 9%' : U1$, L1$, n1)
+CALL conv('' : U2$, L2$, n2)
+CALL conv('ÉcoLe à ß × ÷ ÿ ç' : U3$, L3$, n3)
+CALL conv('already UPPER' : U4$, L4$, n4)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.strings.at("U1$") == "BRINE-1 AB_C, 9%");
+    CHECK(run.strings.at("L1$") == "brine-1 ab_c, 9%");
+    CHECK(run.strings.at("U2$") == "");                 // the empty string
+    CHECK(run.strings.at("L2$") == "");
+    // the accented letters of Latin-1 follow, as in the folding of the comparisons (ees_string.h); the
+    // signs, the sharp s and y with diaeresis (whose capital is not in Latin-1) are kept
+    CHECK(run.strings.at("U3$") == "ÉCOLE À ß × ÷ ÿ Ç");
+    CHECK(run.strings.at("L3$") == "école à ß × ÷ ÿ ç");
+    CHECK(run.strings.at("U4$") == "ALREADY UPPER");
+    CHECK(run.strings.at("L4$") == "already upper");
+}
+
+TEST_CASE("CS-GAP-UPPERCASE: BrineProp pattern, an input of the PROCEDURE is reassigned", "[library-gaps][uppercase]") {
+    // PROCEDURE BRINEPROP(Pr$, ... : ...): `Pr$=Uppercase$(Pr$)` then `IF (Pr$='FREEZE') THEN ...`
+    const std::string code = R"(
+PROCEDURE brine(Pr$, Conc : out, Name$)
+  Pr$ = Uppercase$(Pr$)
+  out = -1
+  IF (Pr$ = 'FREEZE') THEN out = 10*Conc
+  IF (Pr$ = 'DENSITY') THEN out = 1000 + Conc
+  IF (Pr$ <> 'FREEZE') AND (Pr$ <> 'DENSITY') THEN CALL ERROR('unknown property XXX$', Pr$)
+  Name$ = Pr$
+END
+f$ = 'freeze'
+CALL brine(f$, 3 : a, A$)
+CALL brine('Density', 3 : b, B$)
+CALL brine('FREEZE', 3 : c, C$)
+)";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinAbs(30.0, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(1003.0, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(30.0, 1e-12));
+    CHECK(run.strings.at("A$") == "FREEZE");
+    CHECK(run.strings.at("B$") == "DENSITY");
+    CHECK(run.strings.at("C$") == "FREEZE");
+    CHECK(run.strings.at("f$") == "freeze");   // the input is a copy: the caller's string is not changed
+
+    auto bad = runModel(code + "CALL brine('nonsense', 3 : d, D$)\n");
+    INFO(bad.message);
+    CHECK_FALSE(bad.solveOk);
+    CHECK(bad.message.find("unknown property NONSENSE") != std::string::npos);   // the converted text
+}
+
+TEST_CASE("CS-GAP-UPPERCASE: in FUNCTION and PROCEDURE bodies: locals, IF operands, nesting, CALL arguments",
+          "[library-gaps][uppercase]") {
+    SECTION("a local string of a FUNCTION") {
+        auto run = runModel(R"(
+FUNCTION isEG(s$)
+  w$ = Lowercase$(s$)
+  isEG = 0
+  IF (w$ = 'eg') THEN isEG = 1
+END
+a = isEG('EG')
+b = isEG('Eg')
+c = isEG('PG')
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(0.0, 1e-12));
+    }
+    SECTION("an operand of an IF comparison, either side, = and <>") {
+        auto run = runModel(R"(
+FUNCTION f(s$)
+  f = 0
+  IF (Uppercase$(s$) = 'EG') THEN f = f + 1
+  IF ('eg' = Lowercase$(s$)) THEN f = f + 10
+  IF (Uppercase$(s$) <> Lowercase$('XX')) THEN f = f + 100
+  IF (Uppercase$(s$) = Lowercase$(s$)) THEN f = f + 1000
+END
+a = f('Eg')
+b = f('xx')
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1111.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(1000.0, 1e-12));
+    }
+    SECTION("nested, and applied to the other string functions") {
+        auto run = runModel(R"(
+PROCEDURE nest(s$ : A$, B$, C$, D$, E$, n)
+  A$ = Uppercase$(Lowercase$(s$))
+  B$ = Lowercase$(Uppercase$(Lowercase$(s$)))
+  C$ = Uppercase$(String$(2.5))
+  D$ = Uppercase$(LOOKUP$('Names', 2, 1))
+  E$ = Lowercase$(Uppercase$('aB'))
+  n = 1
+END
+CALL nest('aBcD' : A$, B$, C$, D$, E$, n)
+)", {{"Names", "Name\nnitrogen\nwater\n"}});
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.strings.at("A$") == "ABCD");
+        CHECK(run.strings.at("B$") == "abcd");
+        CHECK(run.strings.at("C$") == "2.5");
+        CHECK(run.strings.at("D$") == "WATER");
+        CHECK(run.strings.at("E$") == "ab");
+    }
+    SECTION("as the fluid of a property call, in a FUNCTION and a PROCEDURE") {
+        auto run = runModel(R"(
+FUNCTION h(f$, T, P)
+  h = enthalpy(Uppercase$(f$), T=T, P=P)
+END
+PROCEDURE props(f$, T, P : rho, cpv)
+  rho = density(Lowercase$(f$), T=T, P=P)
+  cpv = cp(Uppercase$(Lowercase$(f$)), T=T, P=P)
+END
+h1 = h('water', 80, 2E5)
+h2 = h('WaTeR', 80, 2E5)
+h_ref = enthalpy(Water, T=80, P=2E5)
+CALL props('WATER', 80, 2E5 : rho, cpv)
+rho_ref = density(Water, T=80, P=2E5)
+cp_ref = cp(Water, T=80, P=2E5)
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["h1"], WithinRel(run["h_ref"], 1e-12));
+        CHECK_THAT(run["h2"], WithinRel(run["h_ref"], 1e-12));
+        CHECK_THAT(run["rho"], WithinRel(run["rho_ref"], 1e-12));
+        CHECK_THAT(run["cpv"], WithinRel(run["cp_ref"], 1e-12));
+    }
+    SECTION("as the fluid argument of PHASE$ and as the argument of a CALL, inside a body") {
+        auto run = runModel(R"(
+PROCEDURE inner(s$ : T$, n)
+  T$ = s$
+  n = 1
+END
+PROCEDURE outer(s$ : O$, g)
+  CALL inner(Uppercase$(s$) : O$, n)
+  g = 0
+  IF (PHASE$(Uppercase$(s$), T=120, P=1E5) = 'gas') THEN g = 1
+END
+CALL outer('water' : A$, g)
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.strings.at("A$") == "WATER");
+        CHECK_THAT(run["g"], WithinAbs(1.0, 1e-12));
+    }
+    SECTION("as the argument of a user FUNCTION and of STRINGVAL") {
+        auto run = runModel(R"(
+FUNCTION isEG(s$)
+  isEG = 0
+  IF (s$ = 'EG') THEN isEG = 1
+END
+f$ = 'eg'
+a = isEG(Uppercase$(f$))
+b = isEG(Lowercase$('XX'))
+c = StringVal(Uppercase$('2.5e1'))
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(0.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(25.0, 1e-12));
+    }
+    SECTION("as the message of CALL WARNING and of CALL ERROR") {
+        auto run = runModel(R"(
+FUNCTION w(s$)
+  CALL WARNING(Uppercase$('low text XXX$'), s$)
+  CALL WARNING(Lowercase$(s$))
+  w = 1
+END
+x = w('Value')
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        const auto messages = userWarningMessages(run);
+        REQUIRE(messages.size() == 2);
+        CHECK(messages[0] == "LOW TEXT Value");   // the converted text: the placeholder is the value of s$
+        CHECK(messages[1] == "value");
+        auto err = runModel("FUNCTION w(s$)\n  CALL ERROR(Uppercase$(s$))\n  w = 1\nEND\nx = w('stop here')\n");
+        INFO(err.message);
+        CHECK_FALSE(err.solveOk);
+        CHECK(err.message.find("STOP HERE") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-GAP-UPPERCASE: in the main program", "[library-gaps][uppercase]") {
+    SECTION("as the fluid of a property call, literal or string variable") {
+        auto run = runModel(R"(
+f$ = 'water'
+h1 = enthalpy(Uppercase$('water'), T=80, P=2E5)
+h2 = enthalpy(Uppercase$(f$), T=80, P=2E5)
+h3 = enthalpy(Lowercase$('WATER'), T=80, P=2E5)
+h_ref = enthalpy(Water, T=80, P=2E5)
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["h1"], WithinRel(run["h_ref"], 1e-12));
+        CHECK_THAT(run["h2"], WithinRel(run["h_ref"], 1e-12));
+        CHECK_THAT(run["h3"], WithinRel(run["h_ref"], 1e-12));
+    }
+    SECTION("as an input of a CALL, the result a string output") {
+        auto run = runModel(R"(
+PROCEDURE copy(s$ : t$, n)
+  t$ = s$
+  n = 1
+END
+f$ = 'Water'
+CALL copy(Uppercase$(f$) : A$, n1)
+CALL copy(Lowercase$('AbC') : B$, n2)
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.strings.at("A$") == "WATER");
+        CHECK(run.strings.at("B$") == "abc");
+    }
+    SECTION("a string assigned from the function is refused as for LOOKUP$: an error, never a silent 0") {
+        // same rule as `g$ = LOOKUP$(...)` (CS-BUG-STRING-ALIAS): use it where the string is needed or in a body
+        for (const std::string call : {"Uppercase$('ab')", "Lowercase$('AB')", "Uppercase$(f$)"}) {
+            auto run = runModel("f$ = 'ab'\ng$ = " + call + "\nx = 1\n");
+            INFO(call);
+            INFO(run.message);
+            CHECK_FALSE(run.solveOk);
+            CHECK(run.message.find("returns a string and cannot be used as a number") != std::string::npos);
+        }
+        auto lookup = runModel("g$ = LOOKUP$('Species', 1, 1)\n", kSpeciesTable);
+        CHECK_FALSE(lookup.solveOk);
+        CHECK(lookup.message.find("returns a string and cannot be used as a number") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-GAP-UPPERCASE: negative tests give clear errors", "[library-gaps][uppercase]") {
+    auto fail = [&](const std::string& expr, const std::string& expected) {
+        auto run = runModel("PROCEDURE p(s$, v : t$, n)\n  t$ = " + expr + "\n  n = v\nEND\nCALL p('a', 1 : A$, n)\n");
+        INFO(expr);
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find(expected) != std::string::npos);
+    };
+    SECTION("wrong number of arguments") {
+        fail("Uppercase$('a', 'b')", "Uppercase$(): expects 1 argument: a string");
+        fail("Lowercase$(s$, s$)", "Lowercase$(): expects 1 argument: a string");
+        fail("Uppercase$()", "Uppercase$(): expects 1 argument: a string");
+        fail("Lowercase$(s$, T=1)", "Lowercase$ does not take named arguments ('T=1')");   // a parse error
+    }
+    SECTION("a number is not a string") {
+        fail("Uppercase$(3)", "Uppercase$(): the argument must be a string");
+        fail("Lowercase$(v)", "Lowercase$(): the argument must be a string");
+        fail("Uppercase$(v + 1)", "Uppercase$(): the argument must be a string");
+        fail("Uppercase$(sqrt(v))", "Uppercase$(): the argument must be a string");
+    }
+    SECTION("used as a number") {
+        auto run = runModel("PROCEDURE p(s$ : n)\n  n = Uppercase$(s$)\nEND\nCALL p('a' : x)\n");
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("Uppercase$ returns a string and cannot be used as a number") != std::string::npos);
+        auto top = runModel("x = Lowercase$('A') + 1\n");
+        CHECK_FALSE(top.solveOk);
+        CHECK(top.message.find("Lowercase$ returns a string and cannot be used as a number") != std::string::npos);
+    }
+    SECTION("an unknown fluid text is reported with the converted name") {
+        auto run = runModel("h = enthalpy(Uppercase$('unobtainium'), T=300, P=1E5)\n");
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("Unknown fluid: 'UNOBTAINIUM'") != std::string::npos);
+    }
+    SECTION("a misspelt name still gives the unknown function warning") {
+        auto run = runModel("PROCEDURE p(s$ : n)\n  w$ = Uppercas$(s$)\n  n = 1\nEND\nCALL p('a' : x)\n");
+        CHECK(anyContains(run.warnings, "Unknown function 'Uppercas$'"));
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("String-valued function not supported: Uppercas$") != std::string::npos);
+    }
+}

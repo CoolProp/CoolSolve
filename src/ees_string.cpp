@@ -16,6 +16,19 @@ std::string eesFoldCase(const std::string& s) {
     return out;
 }
 
+std::string eesUpperCase(const std::string& s) {
+    std::string out = s;
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(out[i]);
+        if (c >= 'a' && c <= 'z') {
+            out[i] = static_cast<char>(c - ('a' - 'A'));
+        } else if (c >= 0xA0 && c <= 0xBE && c != 0xB7 && i > 0 && static_cast<unsigned char>(out[i - 1]) == 0xC3) {
+            out[i] = static_cast<char>(c - 0x20);   // à..þ (not ÷) after the lead byte C3
+        }
+    }
+    return out;
+}
+
 bool eesStringEqual(const std::string& a, const std::string& b) {
     return a.size() == b.size() && eesCompareFolded(a, b) == 0;
 }

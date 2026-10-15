@@ -170,7 +170,7 @@ public:
     ADValue evaluate(const ExprPtr& expr);
     
     /**
-     * @brief Evaluate a string expression (literal, variable or string function: STRING$, PHASE$, LOOKUP$).
+     * @brief Evaluate a string expression (literal, variable or string function: STRING$, PHASE$, LOOKUP$, UPPERCASE$, LOWERCASE$).
      */
     std::string evaluateString(const ExprPtr& expr);
     

@@ -701,7 +701,7 @@ private:
             "nday_", "numday_", "aveday_", "eqntime_",  // EES time functions (SETP.LIB)
             "min", "max", "sum", "sum2d", "average", "product", "stddev",
             "if", "convert", "converttemp", "pi",
-            "tablevalue", "tablevalue#", "tablerun#", "lookup", "lookup$",
+            "tablevalue", "tablevalue#", "tablerun#", "lookup", "lookup$", "uppercase$", "lowercase$",
             "interpolate", "interpolate1", "interpolate2", "interpolate2dm",
             "nlookuprows", "nlookupcolumns",
             "sumlookup", "avglookup", "maxlookup", "minlookup", "stddevlookup",

@@ -375,6 +375,24 @@ Q = if(tau, 3600, 10000, 10000, 0)      "10000 W until tau = 3600 s, then 0"
 |:-------------------------|:-------------------------------------|
 | `STRING$(x)`             | Format a numeric value as a string   |
 | `STRINGVAL(s$)`          | Parse a numeric string to a number   |
+| `UPPERCASE$(s$)`         | The string in upper case             |
+| `LOWERCASE$(s$)`         | The string in lower case             |
+
+`UPPERCASE$` and `LOWERCASE$` take one string (a `'literal'`, a string variable or another
+string function, nesting included); a number is an error (*Uppercase$(): the argument must be a
+string*, `STRING$(x)` converts a number), and so is any other number of arguments. The ASCII
+letters and the accented letters of Latin-1 are converted (`é` becomes `É`); every other
+character (digits, signs, `ß`, ...) is kept. The result is a string, used where a string is
+expected: as the value of a string variable in a `FUNCTION` or `PROCEDURE` body, also to
+reassign an input (`Pr$ = Uppercase$(Pr$)` changes the copy of the procedure, not the string
+of the caller), as an operand of `=` and `<>` in an `IF`, as the fluid of a property function
+(`enthalpy(Uppercase$(f$), T=T, P=P)`), as the string argument of a `CALL` or of a `FUNCTION`,
+and as the message of `CALL WARNING` / `CALL ERROR`. String comparisons already ignore the case
+(`IF (Pr$ = 'FREEZE')` matches `'freeze'`), so the conversion matters when the text itself is
+kept or shown: a string output, a message. In the main program a string variable is only set
+by a literal or by a `CALL` output, as for `LOOKUP$` (§11.8): `s$ = Uppercase$('ab')` at the
+top level is an error (*Uppercase$ returns a string and cannot be used as a number*), not a
+silent 0; compute the string in a procedure, or use the call where the string is needed.
 
 ### String arrays are not supported
 

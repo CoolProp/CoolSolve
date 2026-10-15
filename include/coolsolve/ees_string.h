@@ -52,6 +52,10 @@ inline int eesCompareFolded(const std::string& a, const std::string& b) {
 /// The lower-case form of `s` (see above); the same length as `s`.
 std::string eesFoldCase(const std::string& s);
 
+/// The upper-case form of `s`: the inverse of the folding above (ASCII letters and the Latin-1
+/// letters in UTF-8: `é` becomes `É`); `ß`, `ÿ` and every other byte are kept. The same length as `s`.
+std::string eesUpperCase(const std::string& s);
+
 /**
  * @brief Equality of two user strings as EES defines it: without regard to case.
  *
