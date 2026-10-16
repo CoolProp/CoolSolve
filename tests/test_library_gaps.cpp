@@ -19514,3 +19514,247 @@ TEST_CASE("CS-GAP-UNITSYSTEM: what stays as before (negative tests)", "[library-
     auto bad = runModel("$UnitSystem SI Mass Deg kPa C kJ\nx = \n");
     CHECK_FALSE(bad.parseOk);
 }
+
+// ============================================================================
+// CS-GAP-MOLARMASS-ELEMENT: MOLARMASS of a chemical element (molarmass(C), molarmass(H))
+// ============================================================================
+
+TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: reproducer of the register, C and H as EES returns them",
+          "[library-gaps][molarmass-element]") {
+    // before the fix: Unknown fluid: 'C' (and 'H')
+    auto run = runModel("m_C = molarmass(C)\nm_H = molarmass(H)\nm_CO2 = molarmass(CO2)\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run["m_C"] == 12.0107);    // IUPAC 2005 standard atomic weights, kg/kmol
+    CHECK(run["m_H"] == 1.00794);
+    CHECK_THAT(run["m_CO2"], WithinRel(44.0095, 1e-4));   // a fluid is unaffected
+}
+
+TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: the fuel CmHn of CSL-0152 from its mass composition",
+          "[library-gaps][molarmass-element]") {
+    // the lines of the EES file (TM-0240, EES X10.589) and the values it stores
+    auto run = runModel(R"(
+"C% is the mass percentage of carbon, a variable unrelated to the symbol C of the call"
+C% = 86.9
+m = (C%/100)/MolarMass(C)
+n = ((100-C%)/100)/MolarMass(H)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["m"], WithinAbs(0.07235215266, 1e-9));
+    CHECK_THAT(run["n"], WithinAbs(0.1299680537, 1e-9));
+}
+
+TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: the symbol is never read as a variable of the model",
+          "[library-gaps][molarmass-element]") {
+    // a variable with the name of the symbol, set or unknown, does not change the call or become an unknown
+    auto run = runModel("C = 5\nH = 7\nm = molarmass(C) + molarmass(H)\nx = C + H\n");
+    REQUIRE(run.solveOk);
+    CHECK(run["C"] == 5.0);
+    CHECK(run["H"] == 7.0);
+    CHECK_THAT(run["m"], WithinAbs(12.0107 + 1.00794, 1e-12));
+    CHECK(run["x"] == 12.0);
+    // the call alone leaves no variable C or H in the model
+    auto alone = runModel("m = molarmass(C) + molarmass(H)\n");
+    REQUIRE(alone.solveOk);
+    CHECK(alone.vars.count("C") == 0);
+    CHECK(alone.vars.count("H") == 0);
+}
+
+TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: the elements of combustion and thermal models",
+          "[library-gaps][molarmass-element]") {
+    // IUPAC 2005 standard atomic weights (Wieser, Pure Appl. Chem. 78 (2006) 2051, table 2), kg/kmol
+    const std::vector<std::pair<std::string, double>> weights = {
+        {"H", 1.00794},    {"C", 12.0107},      {"N", 14.0067},    {"O", 15.9994},    {"F", 18.9984032},
+        {"Ne", 20.1797},   {"Na", 22.98976928}, {"Mg", 24.3050},   {"Al", 26.9815386}, {"Si", 28.0855},
+        {"P", 30.973762},  {"S", 32.065},       {"Cl", 35.453},    {"K", 39.0983},    {"Ca", 40.078},
+        {"Fe", 55.845},    {"Cu", 63.546},      {"Zn", 65.409},    {"Kr", 83.798},    {"Xe", 131.293},
+        {"Pb", 207.2},     {"U", 238.02891},    {"Li", 6.941},     {"Br", 79.904},    {"Ni", 58.6934},
+    };
+    std::string code;
+    for (const auto& [symbol, weight] : weights) code += "m_" + symbol + " = molarmass(" + symbol + ")\n";
+    auto run = runModel(code);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const auto& [symbol, weight] : weights) {
+        INFO(symbol);
+        CHECK(run["m_" + symbol] == weight);
+    }
+    // the ratio EES models build from them: the air-fuel stoichiometry of CH4, from the elements and from the fluid
+    auto ch4 = runModel("M_CH4 = molarmass(C) + 4*molarmass(H)\nM_fluid = molarmass(CH4)\n");
+    REQUIRE(ch4.solveOk);
+    CHECK_THAT(ch4["M_CH4"], WithinRel(ch4["M_fluid"], 1e-4));
+}
+
+TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: written quoted, in any case, through a string variable, with the alias MM",
+          "[library-gaps][molarmass-element]") {
+    auto run = runModel(R"(
+a = molarmass('C')
+b = molarmass(c)
+e$ = 'H'
+f = molarmass(e$)
+g = mm('C')
+fl$ = 'Fe'
+h = molarmass(fl$)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run["a"] == 12.0107);
+    CHECK(run["b"] == 12.0107);
+    CHECK(run["f"] == 1.00794);
+    CHECK(run["g"] == 12.0107);
+    CHECK(run["h"] == 55.845);
+}
+
+TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: a string variable that holds the symbol, set in a PROCEDURE or FUNCTION",
+          "[library-gaps][molarmass-element]") {
+    auto run = runModel(R"(
+FUNCTION atomic(el$)
+  atomic = molarmass(el$)
+END
+PROCEDURE both(el1$, el2$ : m1, m2)
+  m1 = molarmass(el1$)
+  m2 = molarmass(el2$)
+END
+w_C = atomic('C')
+w_O = atomic('O')
+CALL both('N', 'S' : m_N, m_S)
+n = 3*molarmass(C) + 4*molarmass(H)
+)");
+    REQUIRE(run.solveOk);
+    CHECK(run["w_C"] == 12.0107);
+    CHECK(run["w_O"] == 15.9994);
+    CHECK(run["m_N"] == 14.0067);
+    CHECK(run["m_S"] == 32.065);
+    CHECK_THAT(run["n"], WithinAbs(3 * 12.0107 + 4 * 1.00794, 1e-12));
+}
+
+TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: the result is a constant, its derivative is 0, inside an implicit equation",
+          "[library-gaps][molarmass-element]") {
+    // direct evaluation: no gradient
+    EESParser parser;
+    auto parsed = parser.parse("y = x*molarmass(C) + molarmass(H)\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    ExpressionEvaluator ev(1);
+    ev.setVariable("x", ADValue::independent(2.0, 0, 1));
+    const ADValue r = ev.evaluate(ir.getEquations()[0].rhs);
+    CHECK_THAT(r.value, WithinAbs(2 * 12.0107 + 1.00794, 1e-12));
+    REQUIRE(r.gradient.size() == 1);
+    CHECK_THAT(r.gradient[0], WithinAbs(12.0107, 1e-12));   // the only dependence is the factor x
+    auto constantParsed = parser.parse("y = molarmass(C)\n");
+    REQUIRE(constantParsed.success);
+    IR constantIr = IR::fromAST(constantParsed.program);
+    ExpressionEvaluator ev0(1);
+    const ADValue c = ev0.evaluate(constantIr.getEquations()[0].rhs);
+    REQUIRE(c.gradient.size() == 1);
+    CHECK(c.value == 12.0107);
+    CHECK(c.gradient[0] == 0.0);
+    // implicit use: the number of kmol of C in 24.0214 kg
+    auto run = runModel("24.0214 = n*molarmass(C)\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["n"], WithinAbs(2.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: a registered fluid keeps the name, the element is the fallback",
+          "[library-gaps][molarmass-element]") {
+    auto run = runModel(R"(
+m_N2 = molarmass(N2)
+m_O2 = molarmass(O2)
+m_H2 = molarmass(H2)
+m_He = molarmass(He)
+m_Ar = molarmass(Ar)
+m_CO = molarmass(Co)
+m_CO_up = molarmass(CO)
+m_Ne = molarmass(Ne)
+)");
+    REQUIRE(run.solveOk);
+    // the molecules of the fluids registry, not 2 x the atom (or an element)
+    CHECK_THAT(run["m_N2"], WithinRel(28.0134, 1e-5));   // CoolProp: 28.01348
+    CHECK_THAT(run["m_O2"], WithinRel(31.9988, 1e-5));
+    CHECK_THAT(run["m_H2"], WithinRel(2.01588, 1e-5));
+    CHECK_THAT(run["m_N2"], WithinRel(molarMassKgPerKmol("Nitrogen"), 1e-9));
+    // He and Ar are fluids (ideal gases): the same molar mass as the atomic weight of the element
+    CHECK_THAT(run["m_He"], WithinAbs(4.002602, 1e-9));
+    CHECK_THAT(run["m_Ar"], WithinAbs(39.948, 1e-9));
+    CHECK_THAT(run["m_He"], WithinAbs(*elementAtomicWeight("He"), 1e-9));
+    CHECK_THAT(run["m_Ar"], WithinAbs(*elementAtomicWeight("Ar"), 1e-9));
+    // CO is the carbon monoxide fluid whatever the case: the symbol Co (cobalt) is hidden by it
+    CHECK_THAT(run["m_CO"], WithinRel(molarMassKgPerKmol("CarbonMonoxide"), 1e-9));
+    CHECK_THAT(run["m_CO_up"], WithinRel(molarMassKgPerKmol("CarbonMonoxide"), 1e-9));
+    // Ne is not a registered name (Neon is): the element
+    CHECK(run["m_Ne"] == 20.1797);
+}
+
+TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: the table of elements: lookup, case, what is not in it",
+          "[library-gaps][molarmass-element]") {
+    REQUIRE(elementAtomicWeight("C").has_value());
+    CHECK(*elementAtomicWeight("C") == 12.0107);
+    CHECK(*elementAtomicWeight("c") == 12.0107);   // names are not case-sensitive in EES
+    CHECK(*elementAtomicWeight("H") == 1.00794);
+    CHECK(*elementAtomicWeight("Fe") == 55.845);
+    CHECK(*elementAtomicWeight("FE") == 55.845);
+    CHECK_FALSE(elementAtomicWeight("").has_value());
+    CHECK_FALSE(elementAtomicWeight("Xx").has_value());
+    CHECK_FALSE(elementAtomicWeight("CO2").has_value());   // a molecule is a fluid, not an element
+    CHECK_FALSE(elementAtomicWeight("Carbon").has_value());   // the name is not the symbol
+    CHECK_FALSE(elementAtomicWeight("Tc").has_value());   // no stable nuclide: IUPAC gives no standard weight
+    CHECK_FALSE(elementAtomicWeight("C ").has_value());
+}
+
+TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: an unknown symbol is still the unknown-fluid error (negative tests)",
+          "[library-gaps][molarmass-element]") {
+    for (const std::string call : {"molarmass(Xx)", "molarmass('Xx')", "molarmass(Carbon)", "molarmass(Tc)",
+                                   "molarmass(fl$)", "molarmass(CC)"}) {
+        INFO(call);
+        const std::string fluid = call == "molarmass(fl$)" ? "fl$ = 'Q'\n" : "";
+        auto run = runModel(fluid + "m = " + call + "\n");
+        REQUIRE_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "Unknown fluid"));
+    }
+    auto run = runModel("m = molarmass(Xx)\n");
+    REQUIRE_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "Unknown fluid: 'Xx'. The first argument must be a fluid name"));
+    // no suggestion pointing at a fluid for a symbol that is an element
+    auto elem = runModel("m = enthalpy(C, T=25)\n");
+    REQUIRE_FALSE(elem.solveOk);
+    CHECK_FALSE(anyContains({elem.message}, "Did you mean"));
+}
+
+TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: only MOLARMASS accepts an element, the other property functions do not",
+          "[library-gaps][molarmass-element]") {
+    for (const std::string call : {"enthalpy(C, T=25)", "enthalpy(H, T=25, P=1E5)", "cp(C, T=25)", "entropy(O, T=25, P=1E5)",
+                                   "density(N, T=25, P=1E5)", "viscosity(S, T=25)", "t_crit(C)", "p_sat(Fe, T=25)",
+                                   "conductivity(Cu, T=25)", "intenergy(C, T=25, P=1E5)", "molarmass(C, T=25)"}) {
+        INFO(call);
+        auto run = runModel("x = " + call + "\n");
+        REQUIRE_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "Unknown fluid"));
+    }
+    // a string variable holding a symbol: the same
+    auto run = runModel("el$ = 'C'\nh = enthalpy(el$, T=25)\n");
+    REQUIRE_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "Unknown fluid: 'C'"));
+}
+
+TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: the fluids and their molar masses are unchanged",
+          "[library-gaps][molarmass-element]") {
+    auto run = runModel(R"(
+mm_CO2 = molarmass(CO2)
+mm_N2 = molarmass(N2)
+mm_H2O = molarmass(H2O)
+mm_R134a = molarmass(R134a)
+mm_air = molarmass(Air_ha)
+mm_C4H10 = molarmass(C4H10)
+mm_C8H18 = molarmass(C8H18)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["mm_CO2"], WithinRel(44.01, 1e-3));
+    CHECK_THAT(run["mm_N2"], WithinRel(28.013, 1e-3));
+    CHECK_THAT(run["mm_H2O"], WithinRel(18.015, 1e-3));
+    CHECK_THAT(run["mm_R134a"], WithinRel(102.03, 1e-3));
+    CHECK_THAT(run["mm_air"], WithinRel(28.965, 1e-3));
+    CHECK_THAT(run["mm_C4H10"], WithinRel(58.12, 1e-3));
+    CHECK_THAT(run["mm_C8H18"], WithinRel(114.23, 1e-3));
+    // an unquoted name that is neither fluid nor element keeps the unknown-fluid error
+    CHECK_FALSE(runModel("m = molarmass(NoSuchFluid)\n").solveOk);
+}

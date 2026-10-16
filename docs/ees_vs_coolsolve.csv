@@ -303,7 +303,7 @@ T_MELTING,Thermophysical,Melting temperature at given pressure,Partial,3,Recogni
 P_MELTING,Thermophysical,Melting pressure at given temperature,Partial,3,Recognized in parser,
 P_SUBLIMATION,Thermophysical,Sublimation pressure at given temperature,Partial,3,Recognized in parser,
 # --- Thermophysical Functions: Molar & Chemical ---,,,,,,
-MOLARMASS,Thermophysical,Molar mass of fluid [kg/kmol = g/mol],Yes,1,"src/evaluator.cpp, aliases: mm; kg/kmol as in EES",
+MOLARMASS,Thermophysical,Molar mass of fluid [kg/kmol = g/mol],Yes,1,"src/evaluator.cpp, aliases: mm; kg/kmol as in EES; the symbol of a chemical element (C, H, O, N, S, Fe, ...; any case) gives its standard atomic weight, IUPAC 2005 table (C 12.0107, H 1.00794, as EES returns), when the name is not a registered fluid (N2, H2, He, Ar, CO stay the fluids): the fuel CmHn of a mass composition, m = (C%/100)/MolarMass(C); no state inputs; every other property function with an element stays an Unknown fluid error (src/fluids.cpp: elementAtomicWeight) (CS-GAP-MOLARMASS-ELEMENT)",
 MOLARMASS_SOLN,Thermophysical,Molar mass of a solution,Partial,3,Recognized in parser,
 ACENTRICFACTOR,Thermophysical,Acentric factor (Pitzer) (dimensionless),Partial,3,Recognized in parser, maps to CoolProp acentric
 COMPRESSIBILITYFACTOR,Thermophysical,Compressibility factor Z = Pv/(RT),Yes,2,"src/evaluator.cpp — CoolProp iZ"

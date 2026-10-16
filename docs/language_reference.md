@@ -657,7 +657,30 @@ J/(kg·K). See the warning at the top of this page.
 | `viscosity` / `mu`                   | Pa·s                       |
 | `conductivity` / `k`                 | W/(m·K)                    |
 | `speed_of_sound` / `soundspeed`      | m/s                        |
-| `molarmass` / `MM`                   | kg/kmol, as in EES (no state needed) |
+| `molarmass` / `MM`                   | kg/kmol, as in EES (no state needed); also the atomic weight of an element symbol (below) |
+
+### Molar mass of a chemical element
+
+`MOLARMASS` also takes the **symbol of a chemical element**, written like a fluid (`molarmass(C)`, `molarmass('C')`,
+a string variable): it returns the standard atomic weight in kg/kmol, from the IUPAC 2005 table
+(M. E. Wieser, *Pure Appl. Chem.* **78** (2006) 2051, table 2), which are the values EES returns (C 12.0107,
+H 1.00794). It is the usual way to build a fuel C<sub>m</sub>H<sub>n</sub> from its mass composition:
+
+```ees
+C% = 86.9                                  "mass percentage of carbon"
+m = (C%/100)/MolarMass(C)                  "kmol of C per kg of fuel: 0.0723522"
+n = ((100-C%)/100)/MolarMass(H)            "kmol of H per kg of fuel: 0.129968"
+M_CH4 = molarmass(C) + 4*molarmass(H)      "16.0425 kg/kmol"
+```
+
+The table holds every element that has a standard atomic weight (hydrogen to bismuth except the radioactive
+elements that have none, Tc, Pm, Po, At, Rn, Fr, Ra and Ac, and Th, Pa and U), the symbol is read in any case, and
+the result is a constant. A name that is a
+**registered fluid** is the fluid, not the element: `molarmass(N2)`, `H2`, `O2`, `CO` (so the symbol `Co` of
+cobalt is `CO`, carbon monoxide), `He` and `Ar` (the same value as the element) keep the molar mass of the molecule
+or of the fluid. A symbol that is neither a fluid nor an element is the *Unknown fluid* error, and so is an element
+in any other property function (`enthalpy(C, T=25)`) or with state inputs (`molarmass(C, T=25)`): CoolSolve has no
+thermodynamic data for the elements as substances (`C`, `H`, `O`, `N` atoms).
 
 ### Saturation properties
 

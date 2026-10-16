@@ -214,6 +214,18 @@ private:
     std::string reason_;
 };
 
+/**
+ * @brief Standard atomic weight of a chemical element, the argument of MOLARMASS(C), MOLARMASS(H), ...
+ *
+ * The symbol is read without regard to case, as every EES name. These are not fluids: a name that is a
+ * registered fluid (N2, He, CO, ...) is looked up in FluidRegistry first, and only the other names are tried here.
+ *
+ * @param symbol  element symbol such as "C", "H", "Fe"
+ * @return the atomic weight in kg/kmol (IUPAC 2005, Wieser, Pure Appl. Chem. 78 (2006) 2051), or nothing when
+ *         the symbol is not an element with a standard atomic weight (also the elements without stable nuclide)
+ */
+std::optional<double> elementAtomicWeight(const std::string& symbol);
+
 class FluidRegistry {
 public:
     /**

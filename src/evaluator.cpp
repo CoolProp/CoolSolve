@@ -1237,7 +1237,13 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     std::transform(funcName.begin(), funcName.end(), funcName.begin(), ::tolower);
     
     const std::string eesFluidName = fluidNameOf(func.args.empty() ? nullptr : func.args[0]);
-    
+
+    // MOLARMASS(C), MOLARMASS(H), ...: the standard atomic weight of a chemical element, a constant. Only this call
+    // takes an element, and a name that is a fluid (N2, He, CO, ...) is the fluid: the table is tried when there is none.
+    if ((funcName == "molarmass" || funcName == "mm") && func.namedArgs.empty() && !FluidRegistry::getFluid(eesFluidName)) {
+        if (const auto weight = elementAtomicWeight(eesFluidName)) return ADValue::constant(*weight, numVariables_);
+    }
+
     auto fluid = resolveFluid(eesFluidName, diagnostics_);
     
     // Derived thermophysical properties — compute by combining base CoolProp calls
