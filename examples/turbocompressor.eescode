@@ -28,9 +28,9 @@ w=h_t_2-h_1
 w=U_2^2+U_2*W_2*cos(beta_2)
 h_t_2=h_2+C_2^2/2
 h_2s+C_2^2/2-h_1=epsilon_s_i*w
-//r_p_i=p_2/p_1
+r_p_i=p_2/p_1
 "provisional estimate, without diffuser:"
-r_p_i=1.25
+"r_p_i=1.25"
 C_2^2=W_2^2+U_2^2+2*U_2*W_2*cos(beta_2)
 h_3=h_2+C_2^2/2
 "h_3-h_1=w"
