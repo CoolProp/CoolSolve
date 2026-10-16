@@ -689,7 +689,7 @@ These take *only* the fluid (no state):
 
 `ISIDEALGAS(Fluid)` returns **1** if CoolSolve models the substance as an ideal gas, **0** otherwise. It
 selects the arguments of property calls, since a real fluid needs two state inputs and an ideal gas needs only
-the temperature for `enthalpy`, `cp`, `cv`:
+the temperature for `enthalpy`, `cp`, `cv`, `viscosity`, `conductivity` and `prandtl`:
 
 ```ees
 PROCEDURE gam(Fluid$, Temp, Pres : Gamma)
@@ -713,7 +713,8 @@ CALL gam('Nitrogen', 20, 1E5 : g_real)       "Nitrogen is the real fluid"
 - The function takes the fluid and nothing else (no `T=` or `P=`). It is a constant of the fluid, with derivative 0,
   usable in the main program and in the bodies of functions and procedures.
 - It only tells the substances apart: what a property call accepts is unchanged (the single-input call of an ideal
-  gas is limited to the temperature-only properties of §5; `viscosity(Air, T=T)` still needs `P=`).
+  gas is limited to the temperature-only properties of §5: `enthalpy`, `cp`, `cv`, `viscosity`, `conductivity`,
+  `prandtl`; `density(Air, T=T)` still needs `P=`).
 
 ---
 
@@ -819,6 +820,27 @@ CoolSolve evaluates them at an internal reference pressure (101325 Pa; 100 Pa
 for `H2O`, which keeps the vapor phase down to −20 °C). This pressure is part
 of the model: it is never clamped by the solver and is identical in the solve
 and in the final verification.
+
+The transport properties of the dilute gas depend on the temperature only too:
+`viscosity`, `conductivity` and `prandtl` (alias `mu`, `k`, `l`) can be called with `T`
+alone (or with an `h` or `u` that fixes it), at the same internal pressure, with the
+derivative with respect to `T`:
+
+```ees
+mu_air = viscosity(Air, T=25)        "= 1.845e-5 Pa-s"
+k_n2 = conductivity(N2, T=25)        "= 0.0258 W/m-K"
+Pr = prandtl(Air, T=25)              "= 0.707"
+```
+
+The value is CoolProp's at the internal pressure, a few tenths of a percent from its
+dilute-gas limit (`viscosity(Air, T=25)`: 0.08 % above CoolProp at 100 Pa, 0.001 % from its value at 1 bar;
+`conductivity(CO2, T=25)`: 0.3 % above the limit). A model that needs the property at another
+pressure gives it (`viscosity(Air, T=T, P=P)`: with `T` and `P` the call is unchanged, for ideal gases
+too). What depends on the density needs `P` and stays an error with `T` alone (*Ideal gas property
+'kinematicviscosity' requires pressure input*): `density`, `entropy`, `kinematicviscosity`,
+`thermaldiffusivity`, `soundspeed`. The limits are CoolProp's: `CO` has no transport model, and the transport
+properties of `H2O` vapor are defined from its triple point (0.01 °C) up; below, the call is an error
+(*CoolProp returned invalid result*).
 
 **Reference states of the enthalpy and of the entropy.** As in EES (JANAF convention), the
 ideal gases `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`, `C2H6`, `C3H8` and `H2O`

@@ -17932,9 +17932,8 @@ e = flag('Steam')
 namespace {
 
 /// The `fluidprop` procedure of the ULiège model bank (any-fluid property retrieval; source of CSL-0075), with the
-/// specific heat in place of the viscosity: the single-input call `viscosity(Fluid$, T=Temp)` of the ideal-gas
-/// branch is a limitation of the property calls that is independent of ISIDEALGAS (a transport property of an
-/// ideal gas needs its pressure in CoolSolve), `cp` and `cv` of an ideal gas need the temperature only.
+/// specific heat in place of the viscosity (the viscosity of the ideal-gas branch is tested with
+/// CS-GAP-IDEAL-TRANSPORT-T).
 const char* kFluidPropProcedure = R"(
 PROCEDURE fluidprop(Fluid$,Temp, Pres,Rh:Rho,Cpf,Gamma)
 if (Fluid$ <> 'AirH2O') THEN
@@ -18044,5 +18043,330 @@ TEST_CASE("CS-GAP-ISIDEALGAS: negative tests, what stays an error", "[library-ga
     SECTION("the property calls themselves are unchanged: a real fluid still needs two inputs") {
         // this is why the fluidprop pattern tests ISIDEALGAS before calling viscosity(Fluid$, T=Temp)
         fail("mu = viscosity('R134a', T=20)\n", "requires exactly 2 input properties");
+    }
+}
+
+// ============================================================================
+// CS-GAP-IDEAL-TRANSPORT-T: viscosity, conductivity and Prandtl number of an ideal gas with the
+// temperature alone (the dilute-gas properties of EES), evaluated at the internal pressure of the
+// ideal-gas model like enthalpy, cp and cv
+// ============================================================================
+
+namespace {
+
+/// CoolProp name of an EES ideal gas, and the internal pressure of its single-input calls [Pa].
+struct IdealGasRef { const char* ees; const char* coolProp; double dummyP; };
+
+/// The ideal gases of the registry whose transport properties CoolProp has (CO has none).
+const std::vector<IdealGasRef> kIdealGasesWithTransport = {
+    {"Air", "Air", 101325.0},        {"N2", "Nitrogen", 101325.0}, {"O2", "Oxygen", 101325.0},
+    {"H2", "Hydrogen", 101325.0},    {"He", "Helium", 101325.0},   {"Ar", "Argon", 101325.0},
+    {"CO2", "CarbonDioxide", 101325.0}, {"CH4", "Methane", 101325.0}, {"C2H6", "Ethane", 101325.0},
+    {"C3H8", "Propane", 101325.0},   {"H2O", "Water", 100.0},
+};
+
+/// Value and derivative with respect to T [C] of a property call written with the variable Tv, at T [C].
+std::pair<double, double> idealTransportAD(const std::string& call, double T_C) {
+    EESParser parser;
+    auto parsed = parser.parse("y = " + call + "\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    ExpressionEvaluator ev(1);
+    ev.setVariable("Tv", ADValue::independent(T_C, 0, 1));
+    ADValue r = ev.evaluate(ir.getEquations()[0].rhs);
+    return {r.value, r.gradient[0]};
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: register reproducer, the viscosity of Air with the temperature alone",
+          "[library-gaps][ideal-transport-t]") {
+    auto run = runModel(R"(
+mu = viscosity(Air, T=25)
+mu_p = viscosity(Air, T=25, P=101325)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // the internal pressure of the ideal gas: the call with T and that pressure gives the same
+    CHECK_THAT(run["mu"], WithinRel(run["mu_p"], 1e-12));
+    CHECK_THAT(run["mu"], WithinRel(CoolProp::PropsSI("V", "T", 298.15, "P", 101325.0, "Air"), 1e-9));
+    // reference value of air at 25 C: 1.85e-5 Pa-s (the textbook tables: 1.846e-5 at 300 K)
+    CHECK_THAT(run["mu"], WithinRel(1.85e-5, 0.01));
+    // close to the CoolProp value at 1 bar (the dilute gas has no pressure dependence)
+    CHECK_THAT(run["mu"], WithinRel(CoolProp::PropsSI("V", "T", 298.15, "P", 1e5, "Air"), 1e-3));
+    CHECK_FALSE(anyContains(run.warnings, "requires pressure input"));
+}
+
+TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: the conductivity of N2 and the Prandtl number of Air with the temperature alone",
+          "[library-gaps][ideal-transport-t]") {
+    auto run = runModel(R"(
+k = conductivity(N2, T=25)
+Pr = prandtl(Air, T=25)
+cp_a = cp(Air, T=25)
+mu_a = viscosity(Air, T=25)
+k_a = conductivity(Air, T=25)
+Pr_ref = cp_a*mu_a/k_a
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["k"], WithinRel(CoolProp::PropsSI("L", "T", 298.15, "P", 101325.0, "Nitrogen"), 1e-9));
+    CHECK_THAT(run["k"], WithinRel(0.0258, 0.01));   // N2 at 25 C: 0.0258 W/m-K (tables)
+    CHECK_THAT(run["k"], WithinRel(CoolProp::PropsSI("L", "T", 298.15, "P", 1e5, "Nitrogen"), 5e-3));
+    CHECK_THAT(run["Pr"], WithinRel(CoolProp::PropsSI("Prandtl", "T", 298.15, "P", 101325.0, "Air"), 1e-9));
+    CHECK_THAT(run["Pr"], WithinRel(0.707, 0.01));
+    CHECK_THAT(run["Pr"], WithinRel(run["Pr_ref"], 1e-9));   // cp*mu/k, each one with the temperature alone
+}
+
+TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: every ideal gas with a CoolProp transport model, at 25 C and 500 C",
+          "[library-gaps][ideal-transport-t]") {
+    // H2O is a vapor at its internal pressure (100 Pa), as for enthalpy and cp
+    for (const auto& g : kIdealGasesWithTransport) {
+        for (double T_C : {25.0, 500.0}) {
+            INFO(g.ees << " at " << T_C << " C");
+            const std::string T = numText(T_C);
+            auto run = runModel("mu = viscosity(" + std::string(g.ees) + ", T=" + T + ")\n"
+                                "k = conductivity(" + g.ees + ", T=" + T + ")\n"
+                                "Pr = prandtl(" + g.ees + ", T=" + T + ")\n"
+                                "mu_p = viscosity(" + g.ees + ", T=" + T + ", P=" + numText(g.dummyP) + ")\n"
+                                "k_p = conductivity(" + g.ees + ", T=" + T + ", P=" + numText(g.dummyP) + ")\n");
+            INFO(run.message);
+            REQUIRE(run.solveOk);
+            CHECK(run.verified);
+            const double TK = T_C + 273.15;
+            CHECK_THAT(run["mu"], WithinRel(CoolProp::PropsSI("V", "T", TK, "P", g.dummyP, g.coolProp), 1e-9));
+            CHECK_THAT(run["k"], WithinRel(CoolProp::PropsSI("L", "T", TK, "P", g.dummyP, g.coolProp), 1e-9));
+            CHECK_THAT(run["Pr"], WithinRel(CoolProp::PropsSI("Prandtl", "T", TK, "P", g.dummyP, g.coolProp), 1e-9));
+            CHECK_THAT(run["mu"], WithinRel(run["mu_p"], 1e-12));
+            CHECK_THAT(run["k"], WithinRel(run["k_p"], 1e-12));
+            // the dilute-gas value is the 1 bar value to a few tenths of a percent (not for the vapor
+            // of H2O at 25 C: at 1 bar it is a liquid)
+            if (std::string(g.ees) != "H2O" || T_C > 100.0) {
+                CHECK_THAT(run["mu"], WithinRel(CoolProp::PropsSI("V", "T", TK, "P", 1e5, g.coolProp), 5e-3));
+                CHECK_THAT(run["k"], WithinRel(CoolProp::PropsSI("L", "T", TK, "P", 1e5, g.coolProp), 5e-3));
+            }
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: the vapor of H2O at the internal pressure, not the liquid",
+          "[library-gaps][ideal-transport-t]") {
+    auto run = runModel(R"(
+mu = viscosity(H2O, T=25)
+k = conductivity(H2O, T=25)
+mu_w = viscosity(Water, T=25, P=1E5)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["mu"], WithinRel(9.7e-6, 0.01));   // the vapor, 9.7e-6 Pa-s
+    CHECK_THAT(run["k"], WithinRel(0.0184, 0.01));
+    CHECK(run["mu_w"] > 8e-4);   // the liquid water of the real fluid
+}
+
+TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: derivatives with respect to the temperature, from CoolProp",
+          "[library-gaps][ideal-transport-t]") {
+    const double T0 = 300.0;
+    const double h = 0.01;   // central difference [K]
+    for (const std::string call : {"viscosity(Air, T=Tv)", "conductivity(N2, T=Tv)", "prandtl(Air, T=Tv)",
+                                   "viscosity(CO2, T=Tv)", "conductivity(H2O, T=Tv)"}) {
+        INFO(call);
+        const double dT = idealTransportAD(call, T0).second;
+        const double vp = idealTransportAD(call, T0 + h).first;
+        const double vm = idealTransportAD(call, T0 - h).first;
+        CHECK(dT != 0.0);
+        CHECK_THAT(dT, WithinRel((vp - vm) / (2.0 * h), 1e-4));
+    }
+    // viscosity increases with the temperature for a gas: for Air about 4e-8 Pa-s/K at 300 C
+    CHECK_THAT(idealTransportAD("viscosity(Air, T=Tv)", T0).second, WithinRel(3.7e-8, 0.1));
+}
+
+TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: an unknown temperature solved through the viscosity of Air",
+          "[library-gaps][ideal-transport-t]") {
+    auto run = runModel(R"(
+viscosity(Air, T=T) = 2E-5
+mu_check = viscosity(Air, T=T, P=101325)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // the solver tolerance is on the residual, 1e-9 Pa-s on a value of 2e-5
+    CHECK_THAT(run["mu_check"], WithinRel(2e-5, 1e-4));
+    const double T_K = run["T"] + 273.15;
+    CHECK_THAT(CoolProp::PropsSI("V", "T", T_K, "P", 101325.0, "Air"), WithinRel(2e-5, 1e-4));
+    CHECK(run["T"] > 40.0);
+    CHECK(run["T"] < 70.0);
+}
+
+TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: an unknown temperature solved through the conductivity of H2O vapor",
+          "[library-gaps][ideal-transport-t]") {
+    auto run = runModel(R"(
+k_target = 0.05
+conductivity(H2O, T=T) = k_target
+k_check = conductivity(H2O, T=T, P=100)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["k_check"], WithinRel(0.05, 1e-6));
+}
+
+TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: an enthalpy or an internal energy is a temperature-only input as well",
+          "[library-gaps][ideal-transport-t]") {
+    auto run = runModel(R"(
+h_a = enthalpy(Air, T=100)
+mu_h = viscosity(Air, h=h_a)
+u_a = internalenergy('Air', T=100)
+k_u = conductivity(Air, u=u_a)
+mu_T = viscosity(Air, T=100)
+k_T = conductivity(Air, T=100)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["mu_h"], WithinRel(run["mu_T"], 1e-9));
+    CHECK_THAT(run["k_u"], WithinRel(run["k_T"], 1e-9));
+}
+
+TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: T and P given, or a real fluid, are unchanged",
+          "[library-gaps][ideal-transport-t]") {
+    auto run = runModel(R"(
+mu_hp = viscosity(CO2, T=25, P=1E7)
+mu_lp = viscosity(CO2, T=25)
+k_hp = conductivity(Air, T=25, P=2E7)
+mu_r = viscosity(R134a, T=25, P=1E6)
+Pr_hp = prandtl(N2, T=25, P=1E7)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["mu_hp"], WithinRel(CoolProp::PropsSI("V", "T", 298.15, "P", 1e7, "CarbonDioxide"), 1e-9));
+    CHECK_THAT(run["k_hp"], WithinRel(CoolProp::PropsSI("L", "T", 298.15, "P", 2e7, "Air"), 1e-9));
+    CHECK_THAT(run["mu_r"], WithinRel(CoolProp::PropsSI("V", "T", 298.15, "P", 1e6, "R134a"), 1e-9));
+    CHECK_THAT(run["Pr_hp"], WithinRel(CoolProp::PropsSI("Prandtl", "T", 298.15, "P", 1e7, "Nitrogen"), 1e-9));
+    CHECK(run["mu_hp"] > 3.0 * run["mu_lp"]);   // the pressure is used when it is given (liquid CO2 at 100 bar)
+}
+
+namespace {
+
+/// The `fluidprop` procedure of the ULiège model bank (source of CSL-0075): the viscosity, the conductivity and the
+/// Prandtl number of any fluid, with the temperature alone for an ideal gas.
+const char* kFluidPropTransport = R"(
+PROCEDURE fluidtransport(Fluid$,Temp,Pres:Mu,Lambda,Pr)
+IF isidealgas(Fluid$) = 1 THEN
+Mu = viscosity(Fluid$,T=Temp)
+Lambda = conductivity(Fluid$,T=Temp)
+Pr = prandtl(Fluid$,T=Temp)
+ELSE
+Mu = viscosity(Fluid$,T=Temp,P=Pres)
+Lambda = conductivity(Fluid$,T=Temp,P=Pres)
+Pr = prandtl(Fluid$,T=Temp,P=Pres)
+ENDIF
+END
+)";
+
+}  // namespace
+
+TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: the fluidprop pattern with an ideal gas and a real fluid",
+          "[library-gaps][ideal-transport-t]") {
+    auto run = runModel(std::string(kFluidPropTransport) + R"(
+T = 20
+P = 1E5
+CALL fluidtransport('Air', T, P : mu1, k1, Pr1)
+CALL fluidtransport('N2', T, P : mu2, k2, Pr2)
+CALL fluidtransport('Water', T, P : mu3, k3, Pr3)
+CALL fluidtransport('H2O', T, P : mu4, k4, Pr4)
+mu1_ref = viscosity('Air', T=T)
+k2_ref = conductivity('N2', T=T)
+mu3_ref = viscosity('Water', T=T, P=P)
+k3_ref = conductivity('Water', T=T, P=P)
+mu4_ref = viscosity('H2O', T=T, P=100)
+)");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["mu1"], WithinRel(run["mu1_ref"], 1e-12));   // ideal gas: T alone
+    CHECK_THAT(run["mu1"], WithinRel(CoolProp::PropsSI("V", "T", 293.15, "P", 101325.0, "Air"), 1e-9));
+    CHECK_THAT(run["k2"], WithinRel(run["k2_ref"], 1e-12));
+    CHECK_THAT(run["Pr2"], WithinRel(CoolProp::PropsSI("Prandtl", "T", 293.15, "P", 101325.0, "Nitrogen"), 1e-9));
+    CHECK_THAT(run["mu3"], WithinRel(run["mu3_ref"], 1e-12));   // real fluid: T and P
+    CHECK_THAT(run["k3"], WithinRel(run["k3_ref"], 1e-12));
+    CHECK(run["mu3"] > 9e-4);   // liquid water at 1 bar
+    CHECK_THAT(run["mu4"], WithinRel(run["mu4_ref"], 1e-12));   // H2O: the vapor at the internal pressure, not the liquid at P
+    CHECK(run["mu4"] < 1.5e-5);
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+}
+
+TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: the fluidprop pattern in a model whose fluid is a string variable",
+          "[library-gaps][ideal-transport-t]") {
+    auto run = runModel(std::string(kFluidPropTransport) + R"(
+Fluid$ = 'Air'
+CALL fluidtransport(Fluid$, 300, 1E5 : mu, k, Pr)
+mu_ref = viscosity('Air', T=300, P=101325)
+Re = 1.2*5*0.05/mu
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["mu"], WithinRel(run["mu_ref"], 1e-9));
+    CHECK(run["Pr"] > 0.69);
+    CHECK(run["Pr"] < 0.72);
+}
+
+TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: negative tests, what stays an error", "[library-gaps][ideal-transport-t]") {
+    auto fail = [&](const std::string& code, const std::string& expected) {
+        auto run = runModel(code);
+        INFO(code);
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find(expected) != std::string::npos);
+    };
+    SECTION("the kinematic viscosity and the thermal diffusivity depend on the density, so on the pressure") {
+        fail("nu = kinematicviscosity(Air, T=25)\n", "Ideal gas property 'kinematicviscosity' requires pressure input");
+        fail("alpha = thermaldiffusivity(N2, T=25)\n", "Ideal gas property 'thermaldiffusivity' requires pressure input");
+        fail("alpha = thermaldiffusivity(Air, T=25)\n", "requires pressure input");
+    }
+    SECTION("with the pressure they are unchanged") {
+        auto run = runModel("nu = kinematicviscosity(Air, T=25, P=101325)\n"
+                            "alpha = thermaldiffusivity(Air, T=25, P=101325)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["nu"], WithinRel(CoolProp::PropsSI("V", "T", 298.15, "P", 101325.0, "Air") /
+                                        CoolProp::PropsSI("D", "T", 298.15, "P", 101325.0, "Air"), 1e-9));
+        CHECK_THAT(run["alpha"], WithinRel(CoolProp::PropsSI("L", "T", 298.15, "P", 101325.0, "Air") /
+                                           (CoolProp::PropsSI("D", "T", 298.15, "P", 101325.0, "Air") *
+                                            CoolProp::PropsSI("C", "T", 298.15, "P", 101325.0, "Air")), 1e-9));
+    }
+    SECTION("the density and the other properties that depend on the pressure still need it") {
+        fail("rho = density(Air, T=25)\n", "Ideal gas property 'density' requires pressure input");
+        fail("s = entropy(N2, T=25)\n", "Ideal gas property 'entropy' requires pressure input");
+        fail("a = soundspeed(Air, T=25)\n", "Ideal gas property 'soundspeed' requires pressure input");
+    }
+    SECTION("a state that is not fixed by the temperature does not get the internal pressure") {
+        fail("mu = viscosity(Air, s=7000)\n", "Ideal gas property 'viscosity' requires pressure input");
+        fail("k = conductivity(Air, d=1.2)\n", "Ideal gas property 'conductivity' requires pressure input");
+        fail("Pr = prandtl(Air, x=1)\n", "Ideal gas property 'prandtl' requires pressure input");
+    }
+    SECTION("a real fluid or a mixture still needs two inputs") {
+        fail("mu = viscosity('R134a', T=20)\n", "requires exactly 2 input properties");
+        fail("k = conductivity(Water, T=20)\n", "requires exactly 2 input properties");
+        fail("Pr = prandtl('R245fa[0.5]&R134a[0.5]', T=20)\n", "requires exactly 2 input properties");
+    }
+    SECTION("an ideal gas without a transport model in CoolProp is the CoolProp error (CO)") {
+        auto run = runModel("mu = viscosity(CO, T=25)\n");
+        INFO(run.message);
+        CHECK_FALSE((run.solveOk && run.verified));
+        CHECK((anyContains(run.checkErrors, "NaN or Inf") || run.message.find("NaN or Inf") != std::string::npos));
+    }
+    SECTION("the vapor of H2O below its triple point is the CoolProp error, never a value") {
+        auto run = runModel("mu = viscosity(H2O, T=-30)\n");
+        INFO(run.message);
+        CHECK_FALSE((run.solveOk && run.verified));
+        CHECK((anyContains(run.checkErrors, "NaN or Inf") || run.message.find("NaN or Inf") != std::string::npos));
+    }
+    SECTION("an unknown fluid is the usual error") {
+        fail("mu = viscosity(Unobtainium, T=25)\n", "Unknown fluid: 'Unobtainium'");
     }
 }

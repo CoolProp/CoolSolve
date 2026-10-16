@@ -283,12 +283,12 @@ CV,Thermophysical,Constant-volume specific heat [J/(kg·K)],Yes,1,"src/evaluator
 INTENERGY,Thermophysical,Specific internal energy [J/kg],Yes,1,"src/evaluator.cpp, aliases: u, internalenergy",
 SPECHEAT,Thermophysical,Alias for CP,Yes,1,"src/evaluator.cpp, aliases: c",
 # --- Thermophysical Functions: Transport ---,,,,,,
-VISCOSITY,Thermophysical,Dynamic viscosity [Pa·s],Yes,1,"src/evaluator.cpp, aliases: mu",
-CONDUCTIVITY,Thermophysical,Thermal conductivity [W/(m·K)],Yes,1,"src/evaluator.cpp, aliases: k, l",
-PRANDTL,Thermophysical,Prandtl number (dimensionless),Yes,1,src/evaluator.cpp,
+VISCOSITY,Thermophysical,Dynamic viscosity [Pa·s],Yes,1,"src/evaluator.cpp, aliases: mu; an ideal gas takes T alone (dilute gas: evaluated at the internal pressure of its enthalpy/cp calls, 101325 Pa, 100 Pa for H2O; docs/language_reference.md §5)",
+CONDUCTIVITY,Thermophysical,Thermal conductivity [W/(m·K)],Yes,1,"src/evaluator.cpp, aliases: k, l; an ideal gas takes T alone (as VISCOSITY)",
+PRANDTL,Thermophysical,Prandtl number (dimensionless),Yes,1,"src/evaluator.cpp; an ideal gas takes T alone (as VISCOSITY)",
 SOUNDSPEED,Thermophysical,Speed of sound [m/s],Yes,1,"src/evaluator.cpp, aliases: speed_of_sound, a",
-KINEMATICVISCOSITY,Thermophysical,Kinematic viscosity ν = μ/ρ [m²/s],Yes,2,"src/evaluator.cpp — derived from viscosity/density in AD space; an error for AirH2O (its density is per kg of dry air: use viscosity*volume/(1+humrat))"
-THERMALDIFFUSIVITY,Thermophysical,Thermal diffusivity α = k/(ρ·cp) [m²/s],Yes,2,"src/evaluator.cpp — derived from k/(ρ·cp) in AD space"
+KINEMATICVISCOSITY,Thermophysical,Kinematic viscosity ν = μ/ρ [m²/s],Yes,2,"src/evaluator.cpp — derived from viscosity/density in AD space; an error for AirH2O (its density is per kg of dry air: use viscosity*volume/(1+humrat)); an ideal gas needs P too (the density): an error with T alone"
+THERMALDIFFUSIVITY,Thermophysical,Thermal diffusivity α = k/(ρ·cp) [m²/s],Yes,2,"src/evaluator.cpp — derived from k/(ρ·cp) in AD space; an ideal gas needs P too (the density): an error with T alone"
 # --- Thermophysical Functions: Surface ---,,,,,,
 SURFACETENSION,Thermophysical,Surface tension [N/m],Yes,2,src/evaluator.cpp — CoolProp isurface_tension,
 # --- Thermophysical Functions: Critical & Triple ---,,,,,,
@@ -358,7 +358,7 @@ Real fluids — Permanent gases,Fluids,"Nitrogen/N2, Oxygen/O2, Argon/Ar, Helium
 Real fluids — Other organic,Fluids,"Acetone, Benzene, Toluene, EthylBenzene, DiethylEther, DimethylEther, etc.",Yes,2,src/fluids.cpp — CoolProp native,
 Real fluids — Siloxanes,Fluids,"D4, D5, D6, MDM, MD2M, MD3M, MD4M, MM",Yes,3,src/fluids.cpp — niche ORC fluids,
 Real fluids — Noble/rare gases,Fluids,"Xenon, Krypton, Neon",Yes,3,src/fluids.cpp,
-Ideal gas substances,Fluids,"Air, N2, O2, H2, He, Ar, CO2, CO, CH4, C2H6, C3H8, H2O (low P)",Yes,1,"src/fluids.cpp — CoolProp equation of state at a low dummy pressure; h includes the NASA-Glenn heat of formation (elements, He and Ar: 0) and s is the absolute 1-bar entropy (same source) for all but Air (CoolProp references); docs/language_reference.md §5",
+Ideal gas substances,Fluids,"Air, N2, O2, H2, He, Ar, CO2, CO, CH4, C2H6, C3H8, H2O (low P)",Yes,1,"src/fluids.cpp — CoolProp equation of state at a low dummy pressure (enthalpy, internal energy, cp, cv and the dilute-gas transport properties viscosity, conductivity, prandtl take T alone); h includes the NASA-Glenn heat of formation (elements, He and Ar: 0) and s is the absolute 1-bar entropy (same source) for all but Air (CoolProp references); docs/language_reference.md §5",
 Humid air (AirH2O),Fluids,Moist air psychrometrics via CoolProp HumidAir module,Yes,1,"src/evaluator.cpp — special 3-input handling (T,P,W/R/D/B); CoolProp's model is valid from -143.15 to 350 °C and up to 10 MPa: a call outside (or of a property without humid-air output, e.g. soundspeed or kinematicviscosity) is an error naming the call at the solution (placeholder 1E4 during the iterations); enthalpy, entropy, intenergy, volume, density (= 1/volume), cp and cv are per kg of dry air as in EES, use the ideal-gas Air for dry air above 350 °C; docs/language_reference.md §4",
 Real air (Air_ha),Fluids,Dry air with real gas equation of state,Yes,2,src/fluids.cpp — CoolProp EOS for dry air,
 STEAM_NBS,Fluids,"NBS/NRC steam tables (legacy EES), includes Ice",No,5,EES legacy steam formulation,

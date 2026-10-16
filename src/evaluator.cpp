@@ -1219,6 +1219,11 @@ ADValue ExpressionEvaluator::evaluateUserFunction(const FunctionDefinition& func
     return localEval.getVariable(func.name);
 }
 
+/// Error of a single-input call of an ideal gas whose property depends on the pressure (density, entropy, ...).
+static std::runtime_error idealGasNeedsPressure(const std::string& funcName) {
+    return std::runtime_error("Ideal gas property '" + funcName + "' requires pressure input");
+}
+
 ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) {
     std::string funcName = func.name;
     std::transform(funcName.begin(), funcName.end(), funcName.begin(), ::tolower);
@@ -1236,6 +1241,10 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     // property without output, naming the function.
     if (funcName == "thermaldiffusivity" ||
         (funcName == "kinematicviscosity" && fluid->getType() != FluidType::HumidAir)) {
+        // The density of an ideal gas needs its pressure, unlike the viscosity and the conductivity alone: name
+        // the call that was written, not the density it divides by
+        if (fluid->getType() == FluidType::IdealGas && func.namedArgs.size() == 1)
+            throw idealGasNeedsPressure(funcName);
         auto makeSubCall = [&](const std::string& name) {
             FunctionCall sub = func;
             sub.name = name;
@@ -1625,6 +1634,11 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         // the requested output and the provided input belong to this
         // "thermal-only" set.  If so, inject a dummy pressure so CoolProp gets
         // its required 2-input state; otherwise require explicit pressure.
+        // The transport properties of the dilute gas (viscosity, conductivity, Prandtl
+        // number) depend on the temperature only too: they are outputs of this set,
+        // evaluated at the dummy pressure (a few tenths of a percent from the
+        // dilute-gas limit); the density-dependent ones (kinematic viscosity, thermal
+        // diffusivity) are not, they need the pressure.
         auto isThermalOnly = [](const std::string& prop) {
             std::string p = prop;
             for (auto& c : p) c = std::tolower(c);
@@ -1632,9 +1646,13 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                    p == "cp" || p == "cv" || p == "specheat" ||
                    p == "t" || p == "temperature";
         };
+        auto isTransport = [](const std::string& prop) {
+            return prop == "viscosity" || prop == "mu" || prop == "conductivity" ||
+                   prop == "k" || prop == "l" || prop == "prandtl";
+        };
         
         std::string inputName = inputs.begin()->first;
-        if (isThermalOnly(funcName) && isThermalOnly(inputName)) {
+        if ((isThermalOnly(funcName) || isTransport(funcName)) && isThermalOnly(inputName)) {
             // Both output and input are T-dependent-only → inject dummy pressure
             // Use fluid-specific dummy pressure (e.g. 100 Pa for H2O to avoid
             // liquid phase at room temperature).
@@ -1649,7 +1667,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             inputs["p"] = ADValue::constant(UnitConverter::fromSI(dummyP, UnitType::Pressure, units.pressure), numVariables_);
             pressureInjected = true;
         } else {
-            throw std::runtime_error("Ideal gas property '" + funcName + "' requires pressure input");
+            throw idealGasNeedsPressure(funcName);
         }
     }
     
