@@ -685,6 +685,36 @@ These take *only* the fluid (no state):
 `liquid`, `gas`, `twophase`, `supercritical`, `supercritical_gas`,
 `supercritical_liquid`, `critical_point`, `unknown`, `not_imposed`.
 
+### Ideal-gas test
+
+`ISIDEALGAS(Fluid)` returns **1** if CoolSolve models the substance as an ideal gas, **0** otherwise. It
+selects the arguments of property calls, since a real fluid needs two state inputs and an ideal gas needs only
+the temperature for `enthalpy`, `cp`, `cv`:
+
+```ees
+PROCEDURE gam(Fluid$, Temp, Pres : Gamma)
+  IF isidealgas(Fluid$) = 1 THEN
+    Gamma = cp(Fluid$, T=Temp)/cv(Fluid$, T=Temp)
+  ELSE
+    Gamma = cp(Fluid$, T=Temp, P=Pres)/cv(Fluid$, T=Temp, P=Pres)
+  ENDIF
+END
+CALL gam('N2', 20, 1E5 : g_ideal)            "N2 is an ideal gas"
+CALL gam('Nitrogen', 20, 1E5 : g_real)       "Nitrogen is the real fluid"
+```
+
+- The ideal gases are the substances of the ideal-gas group of §5 (`Air`, `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`,
+  `CO`, `CH4`, `C2H6`, `C3H8`, `H2O`); the answer is read from the fluid registry. Every other known fluid gives
+  0: the real fluids (`Water`, `R134a`, `Nitrogen`, `CarbonDioxide`, `Air_ha`, …), the incompressible substances, the
+  CoolProp mixtures and the humid air `AirH2O` (not an ideal-gas substance; the answer 0 is to be confirmed against EES).
+- The fluid is written as in a property call: a quoted name, an unquoted name (`isidealgas(Air)`), a string variable
+  or a string function such as `LOOKUP$('Species', i, 1)`, in any case. An unknown fluid is an error (*Unknown fluid*),
+  as in a property call.
+- The function takes the fluid and nothing else (no `T=` or `P=`). It is a constant of the fluid, with derivative 0,
+  usable in the main program and in the bodies of functions and procedures.
+- It only tells the substances apart: what a property call accepts is unchanged (the single-input call of an ideal
+  gas is limited to the temperature-only properties of §5; `viscosity(Air, T=T)` still needs `P=`).
+
 ---
 
 ## 4. Humid-air / psychrometric functions

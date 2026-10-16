@@ -562,7 +562,8 @@ static const std::set<std::string> THERMO_FUNCTIONS = {
     "gibbsfreeenergy", "helmholtzfreeenergy", "phase$",
     "higherheatingvalue", "lowerheatingvalue", "enthalpy_formation",
     "massfraction", "molarmass_soln", "saturation%",
-    "p_melting", "p_sublimation", "t_melting"
+    "p_melting", "p_sublimation", "t_melting",
+    "isidealgas"
 };
 
 // Check if a function name is a thermodynamic function

@@ -1063,6 +1063,18 @@ static bool isLookupFunction(const std::string& lowerName) {
         }
     }
     
+    // ISIDEALGAS(Fluid$) — 1 if the substance is modelled as an ideal gas (the IdealGas fluids of the registry:
+    // Air, N2, CO2, H2O, ...), 0 for the real fluids, humid air, incompressibles and mixtures; an unknown fluid is
+    // an error, as in a property call. A constant, so its derivative is 0. Before the property calls: it takes
+    // the fluid only, and no state (T=..., P=...).
+    if (name == "isidealgas") {
+        if (func.args.size() != 1 || !func.namedArgs.empty())
+            throw std::runtime_error(func.name + "(): expects 1 argument, the fluid (a name, a quoted string or a "
+                                     "string variable), no state inputs such as T= or P=");
+        auto fluid = resolveFluid(fluidNameOf(func.args[0]), diagnostics_);
+        return ADValue::constant(fluid->getType() == FluidType::IdealGas ? 1.0 : 0.0, numVariables_);
+    }
+
     // Check if it's a thermodynamic function handled by CoolProp
     bool isThermo = false;
     try {

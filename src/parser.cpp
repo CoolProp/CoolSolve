@@ -44,7 +44,8 @@ static const std::set<std::string> EES_THERMOPHYSICAL_FUNCTIONS = {
     "gibbsfreeenergy", "helmholtzfreeenergy", "phase$",
     "higherheatingvalue", "lowerheatingvalue", "enthalpy_formation",
     "massfraction", "molarmass_soln", "saturation%",
-    "p_melting", "p_sublimation", "t_melting"
+    "p_melting", "p_sublimation", "t_melting",
+    "isidealgas"  // ISIDEALGAS(Fluid$): 1 for an ideal-gas substance, 0 otherwise
 };
 
 // Check if a function name is an EES thermophysical function (case-insensitive)
@@ -52,6 +53,14 @@ static bool isEESThermophysicalFunction(const std::string& name) {
     std::string lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
     return EES_THERMOPHYSICAL_FUNCTIONS.find(lower) != EES_THERMOPHYSICAL_FUNCTIONS.end();
+}
+
+/// ISIDEALGAS(Fluid) takes the fluid like a property function but computes no property: the hints given to
+/// property calls (units of the inputs, suggestions for the fluid name such as "'Air' is not moist air") do not apply.
+static bool isFluidQueryFunction(const std::string& name) {
+    std::string lower = name;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    return lower == "isidealgas";
 }
 
 // ============================================================================
@@ -922,7 +931,7 @@ private:
         std::set<std::string, CaseInsensitiveLess> fluidWarningsDone;
 
         auto inspectThermoCall = [&](const FunctionCall& call, int line) {
-            if (!isEESThermophysicalFunction(call.name)) return;
+            if (!isEESThermophysicalFunction(call.name) || isFluidQueryFunction(call.name)) return;
 
             // First positional argument: fluid name patterns
             if (!call.args.empty() && call.args[0]->is<Variable>()) {

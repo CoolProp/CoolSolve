@@ -326,7 +326,7 @@ GIBBSFREEENERGY,Thermophysical,Gibbs free energy [J/kg],Partial,3,Recognized in 
 HELMHOLTZFREEENERGY,Thermophysical,Helmholtz free energy [J/kg],Partial,3,Recognized in parser, EES uses HelmholtzFreeEnergy
 MASSFRACTION,Thermophysical,Mass fraction in mixture,Partial,3,Recognized in parser,
 SATURATION%,Thermophysical,Saturation percentage,No,3,,
-ISIDEALGAS,Thermophysical,Check if fluid is ideal gas (returns 0 or 1),No,3,,
+ISIDEALGAS,Thermophysical,Check if fluid is ideal gas (returns 0 or 1),Yes,3,"src/evaluator.cpp — 1 for the IdealGas fluids of the registry (Air N2 O2 H2 He Ar CO2 CO CH4 C2H6 C3H8 H2O), 0 for real fluids, incompressibles, mixtures and AirH2O (to confirm); unknown fluid is an error; fluid argument as in a property call",
 IDEALGASTHERMOPROPS,Thermophysical,Force ideal gas property calculation,No,3,,
 REALTHERMOPROPS,Thermophysical,Force real fluid property calculation,No,3,,
 # --- Thermophysical Functions: Psychrometric ---,,,,,,

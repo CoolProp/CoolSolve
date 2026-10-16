@@ -14,6 +14,7 @@
 #include "coolsolve/constants.h"
 #include "coolsolve/ees_string.h"
 #include "coolsolve/evaluator.h"
+#include "coolsolve/fluids.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/lookup_table.h"
 #include "coolsolve/parser.h"
@@ -3256,7 +3257,7 @@ TEST_CASE("CS-BUG-INTEGRAL-FACTOR: register reproducer (m_dot*integral) returns 
     // was: y = 20 (the factor was dropped); EES: 0.15 * 20 = 3
     auto run = runIntegral("m_dot = 0.15\ny = m_dot*integral(v, P, 0, 10, 1)\nv = 2\n");
     REQUIRE(run.solveOk);
-    CHECK_THAT(run["y"], WithinAbs(3.0, 1e-9));
+    CHECK_THAT(std::abs(run["y"]), WithinAbs(3.0, 1e-9));
     CHECK_THAT(run["P"], WithinAbs(10.0, 1e-12));   // every variable holds its value at the upper limit
     // the split form (the workaround of the variants) gives the same
     auto split = runIntegral("m_dot = 0.15\nw = 0 + integral(v, P, 0, 10, 1)\ny = m_dot*w\nv = 2\n");
@@ -3316,12 +3317,12 @@ TEST_CASE("CS-BUG-INTEGRAL-FACTOR: a base that varies along the trajectory is no
     SECTION("the base uses the integration variable") {
         auto run = runIntegral("y = 2*t + integral(dydt, t, 0, 1, 0.1)\ndydt = 1\n");
         REQUIRE(run.solveOk);
-        CHECK_THAT(run["y"], WithinAbs(3.0, 1e-9));
+        CHECK_THAT(std::abs(run["y"]), WithinAbs(3.0, 1e-9));
     }
     SECTION("the base depends on t through an algebraic equation") {
         auto run = runIntegral("a = 2*t\ny = a + integral(dydt, t, 0, 1, 0.1)\ndydt = 1\n");
         REQUIRE(run.solveOk);
-        CHECK_THAT(run["y"], WithinAbs(3.0, 1e-9));
+        CHECK_THAT(std::abs(run["y"]), WithinAbs(3.0, 1e-9));
         CHECK_THAT(run["a"], WithinAbs(2.0, 1e-9));
     }
     SECTION("the base is another state: y2(1) = y1(1) + 1") {
@@ -10424,7 +10425,7 @@ x + y = 53
         REQUIRE(run.solveOk);
         CHECK(run.verified);
         CHECK_THAT(run["x"], WithinAbs(50.0, 1e-9));   // A = 2 + (B - 30)/20
-        CHECK_THAT(run["y"], WithinAbs(3.0, 1e-9));
+        CHECK_THAT(std::abs(run["y"]), WithinAbs(3.0, 1e-9));
     }
     SECTION("the named column is the first of the call") {
         // guess values inside the table: from the table end (x = 1, slope 0 there) Newton does not move, as with the positional form
@@ -17749,5 +17750,299 @@ TEST_CASE("CS-BUG-LOOKUP-WRITE: what stays as it was", "[library-gaps][lookup-wr
         auto run = runModel("y = lookup('data', 2, 2)\ns$ = lookup$('data', 1, 1)\n", {{"data", kWriteData}});
         REQUIRE(run.solveOk);
         CHECK(lookupWriteWarnings(run.warningItems).empty());
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// CS-GAP-ISIDEALGAS: ISIDEALGAS(Fluid$) is 1 for the substances modelled as ideal gases, 0 otherwise
+// ---------------------------------------------------------------------------------------------------------
+
+TEST_CASE("CS-GAP-ISIDEALGAS: the register reproducer, an ideal gas gives 1", "[library-gaps][isidealgas]") {
+    // was: parse warning "Unknown function 'isidealgas'", then "Unknown or unsupported function: isidealgas
+    // with 1 arguments"
+    auto run = runModel("a = isidealgas('Air')\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+}
+
+TEST_CASE("CS-GAP-ISIDEALGAS: each ideal gas of EES gives 1", "[library-gaps][isidealgas]") {
+    const std::vector<std::string> gases = {"Air", "N2", "O2", "H2", "He", "Ar", "CO2", "CO", "CH4", "C2H6", "C3H8", "H2O"};
+    std::string code;
+    for (size_t i = 0; i < gases.size(); ++i) code += "g" + std::to_string(i) + " = isidealgas('" + gases[i] + "')\n";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    for (size_t i = 0; i < gases.size(); ++i) {
+        INFO(gases[i]);
+        CHECK_THAT(run["g" + std::to_string(i)], WithinAbs(1.0, 1e-12));
+    }
+    // the hints of the property calls ("Air is not moist air", "Did you mean 'CO2'?") do not apply to ISIDEALGAS
+    CHECK(run.warnings.empty());
+}
+
+TEST_CASE("CS-GAP-ISIDEALGAS: real fluids, humid air, incompressibles and mixtures give 0", "[library-gaps][isidealgas]") {
+    const std::vector<std::string> others = {
+        "Water", "Steam", "R134a", "R245fa", "Nitrogen", "Oxygen", "Hydrogen", "Helium", "Argon", "CarbonDioxide", "R744",
+        "Methane", "Propane", "Ammonia", "Air_ha",
+        "AirH2O",                                                  // humid air: not an ideal-gas substance (to confirm in EES)
+        "EthyleneGlycol", "Aluminum", "SeaWater",                  // incompressible substances
+        "R245fa[0.5]&R134a[0.5]",                                  // CoolProp mixture
+        "Acetylene",                                               // known to EES, not supported by CoolSolve: still no ideal gas
+    };
+    std::string code;
+    for (size_t i = 0; i < others.size(); ++i) code += "g" + std::to_string(i) + " = isidealgas('" + others[i] + "')\n";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    for (size_t i = 0; i < others.size(); ++i) {
+        INFO(others[i]);
+        CHECK_THAT(run["g" + std::to_string(i)], WithinAbs(0.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-ISIDEALGAS: the answer comes from the fluid registry, for every fluid it holds", "[library-gaps][isidealgas]") {
+    // the ideal gases are the IdealGas entries of the registry (no second list in the evaluator): every
+    // registered name gives 1 exactly when its fluid is an IdealGasFluid
+    std::set<std::string> names, idealNames;
+    for (const auto& fluid : FluidRegistry::getAllFluids()) {
+        names.insert(fluid->getName());
+        if (fluid->getType() == FluidType::IdealGas) idealNames.insert(fluid->getName());
+    }
+    CHECK(idealNames == std::set<std::string>{"Air", "N2", "O2", "H2", "He", "Ar", "CO2", "CO", "CH4", "C2H6", "C3H8", "H2O"});
+
+    std::vector<std::string> ordered(names.begin(), names.end());
+    std::string code;
+    for (size_t i = 0; i < ordered.size(); ++i) code += "g" + std::to_string(i) + " = isidealgas('" + ordered[i] + "')\n";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    for (size_t i = 0; i < ordered.size(); ++i) {
+        INFO(ordered[i]);
+        // the registry also holds the lower-case names; the name of a fluid is looked up without regard to the case
+        auto fluid = FluidRegistry::getFluid(ordered[i]);
+        REQUIRE(fluid);
+        CHECK_THAT(run["g" + std::to_string(i)], WithinAbs(fluid->getType() == FluidType::IdealGas ? 1.0 : 0.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-ISIDEALGAS: the fluid is written like the first argument of a property call", "[library-gaps][isidealgas]") {
+    auto run = runModel(R"(
+f1 = isidealgas(Air)
+f2 = isidealgas(R134a)
+f3 = isidealgas('air')
+f4 = isidealgas(CO2)
+f5 = isidealgas(co2)
+F$ = 'N2'
+f6 = isidealgas(F$)
+G$ = 'Water'
+f7 = isidealgas(G$)
+f8 = isidealgas(LOOKUP$('Species', 3, 1))
+f9 = isidealgas(LOOKUP$('Species', 1, 1))
+H$ = 'R245fa[0.5]&R134a[0.5]'
+f10 = isidealgas(H$)
+)", kSpeciesTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["f1"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["f2"], WithinAbs(0.0, 1e-12));
+    CHECK_THAT(run["f3"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["f4"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["f5"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["f6"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["f7"], WithinAbs(0.0, 1e-12));
+    CHECK_THAT(run["f8"], WithinAbs(1.0, 1e-12));   // CO2, row 3 of the table
+    CHECK_THAT(run["f9"], WithinAbs(1.0, 1e-12));   // N2, row 1
+    CHECK_THAT(run["f10"], WithinAbs(0.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-ISIDEALGAS: the fluid string is computed by another equation or comes from a row of a table",
+          "[library-gaps][isidealgas]") {
+    // the string variable of the argument is a dependency of the equation (as for a property call)
+    auto run = runModel(R"(
+PROCEDURE pick(i : s$)
+  s$ = LOOKUP$('Species', i, 1)
+END
+CALL pick(2 : F$)
+a = isidealgas(F$)
+b = isidealgas(LOOKUP$('Species', idx, 1))
+idx = k + 2
+k = 1
+)", kSpeciesTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));   // O2
+    CHECK_THAT(run["b"], WithinAbs(1.0, 1e-12));   // CO2, row idx = 3
+}
+
+TEST_CASE("CS-GAP-ISIDEALGAS: the result is a constant, usable in expressions, equations and IF", "[library-gaps][isidealgas]") {
+    SECTION("an implicit equation: the derivative of ISIDEALGAS is 0") {
+        auto run = runModel("isidealgas(Air) + y^2 = 10\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(std::abs(run["y"]), WithinAbs(3.0, 1e-9));
+    }
+    SECTION("an arithmetic expression, and the 5-argument IF function") {
+        auto run = runModel(R"(
+a = 10 + 5*isidealgas('N2') - 2*isidealgas('Water')
+b = IF(isidealgas('Air'), 0.5, 10, 20, 30)
+c = IF(isidealgas('Water'), 0.5, 10, 20, 30)
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(15.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(30.0, 1e-12));   // 1 > 0.5
+        CHECK_THAT(run["c"], WithinAbs(10.0, 1e-12));   // 0 < 0.5
+    }
+    SECTION("in a FUNCTION body, in the condition of an IF statement and as a value") {
+        auto run = runModel(R"(
+FUNCTION kind(F$)
+  kind = 100
+  IF isidealgas(F$) = 1 THEN
+    kind = 1
+  ELSE
+    kind = 2
+  ENDIF
+END
+FUNCTION flag(F$)
+  flag = isidealgas(F$) + 10
+END
+a = kind('Air')
+b = kind('R134a')
+c = kind('AirH2O')
+d = flag('H2O')
+e = flag('Steam')
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinAbs(1.0, 1e-12));
+        CHECK_THAT(run["b"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["c"], WithinAbs(2.0, 1e-12));
+        CHECK_THAT(run["d"], WithinAbs(11.0, 1e-12));
+        CHECK_THAT(run["e"], WithinAbs(10.0, 1e-12));
+    }
+}
+
+namespace {
+
+/// The `fluidprop` procedure of the ULiège model bank (any-fluid property retrieval; source of CSL-0075), with the
+/// specific heat in place of the viscosity: the single-input call `viscosity(Fluid$, T=Temp)` of the ideal-gas
+/// branch is a limitation of the property calls that is independent of ISIDEALGAS (a transport property of an
+/// ideal gas needs its pressure in CoolSolve), `cp` and `cv` of an ideal gas need the temperature only.
+const char* kFluidPropProcedure = R"(
+PROCEDURE fluidprop(Fluid$,Temp, Pres,Rh:Rho,Cpf,Gamma)
+if (Fluid$ <> 'AirH2O') THEN
+Rho = density(Fluid$,T=Temp,P=Pres)
+A=isidealgas(Fluid$)
+IF A = 1 THEN
+Cpf= cp(Fluid$,T=Temp)
+Gamma = cp(Fluid$,T=Temp)/cv(Fluid$,T=Temp)
+ELSE
+Cpf= cp(Fluid$,T=Temp, P=Pres)
+Gamma = cp(Fluid$,T=Temp,P=Pres)/cv(Fluid$,T=Temp,P=Pres)
+ENDIF
+ELSE
+w = HumRat(Fluid$,T=Temp,P=Pres, R=Rh)
+Rho = density(Fluid$,T=Temp,P=Pres,R=Rh)*(1+w)
+Cpf= cp(Fluid$,T=Temp,P=Pres,R=Rh)
+Gamma = cp(Fluid$,T=Temp,P=Pres,R=Rh)/cv(Fluid$,T=Temp,P=Pres,R=Rh)
+ENDIF
+END
+)";
+
+}  // namespace
+
+TEST_CASE("CS-GAP-ISIDEALGAS: the fluidprop pattern selects the arguments of the property calls",
+          "[library-gaps][isidealgas]") {
+    auto run = runModel(std::string(kFluidPropProcedure) + R"(
+T = 20
+P = 1E5
+Rh = 0.5
+CALL fluidprop('Air', T, P, Rh : rho1, cp1, g1)
+CALL fluidprop('N2', T, P, Rh : rho2, cp2, g2)
+CALL fluidprop('H2O', T, P, Rh : rho3, cp3, g3)
+CALL fluidprop('R134a', T, P, Rh : rho4, cp4, g4)
+CALL fluidprop('Water', T, P, Rh : rho5, cp5, g5)
+CALL fluidprop('AirH2O', T, P, Rh : rho6, cp6, g6)
+cp1_ref = cp('Air', T=T)
+g1_ref = cp('Air', T=T)/cv('Air', T=T)
+cp2_ref = cp('N2', T=T)
+cp3_ref = cp('H2O', T=T)
+g3_ref = cp('H2O', T=T)/cv('H2O', T=T)
+cp4_ref = cp('R134a', T=T, P=P)
+g4_ref = cp('R134a', T=T, P=P)/cv('R134a', T=T, P=P)
+cp5_ref = cp('Water', T=T, P=P)
+cp6_ref = cp('AirH2O', T=T, P=P, R=Rh)
+)");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["cp1"], WithinRel(run["cp1_ref"], 1e-12));   // ideal gas: T alone
+    CHECK_THAT(run["g1"], WithinRel(run["g1_ref"], 1e-12));
+    CHECK_THAT(run["cp2"], WithinRel(run["cp2_ref"], 1e-12));
+    CHECK_THAT(run["cp3"], WithinRel(run["cp3_ref"], 1e-12));   // H2O: vapor at the internal pressure, not liquid at P
+    CHECK_THAT(run["g3"], WithinRel(run["g3_ref"], 1e-12));
+    CHECK_THAT(run["cp4"], WithinRel(run["cp4_ref"], 1e-12));   // real fluid: T and P
+    CHECK_THAT(run["g4"], WithinRel(run["g4_ref"], 1e-12));
+    CHECK_THAT(run["cp5"], WithinRel(run["cp5_ref"], 1e-12));
+    CHECK_THAT(run["cp6"], WithinRel(run["cp6_ref"], 1e-12));   // humid air: its own branch
+    CHECK(run["cp3"] < 2200.0);   // vapor (about 1900 J/kg-K at 100 Pa), not liquid water (4180)
+    CHECK(run["cp5"] > 4000.0);
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));   // the call is in the body of a PROCEDURE
+}
+
+TEST_CASE("CS-GAP-ISIDEALGAS: the fluidprop pattern in a model whose fluid is a string variable",
+          "[library-gaps][isidealgas]") {
+    auto run = runModel(std::string(kFluidPropProcedure) + R"(
+Fluid$ = 'CO2'
+CALL fluidprop(Fluid$, 300, 2E5, 0 : rho, cpf, gamma)
+cp_ref = cp('CO2', T=300)
+rho_ref = density('CO2', T=300, P=2E5)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["cpf"], WithinRel(run["cp_ref"], 1e-12));
+    CHECK_THAT(run["rho"], WithinRel(run["rho_ref"], 1e-12));
+    CHECK(run["gamma"] > 1.2);
+    CHECK(run["gamma"] < 1.4);
+}
+
+TEST_CASE("CS-GAP-ISIDEALGAS: negative tests, what stays an error", "[library-gaps][isidealgas]") {
+    auto fail = [&](const std::string& code, const std::string& expected) {
+        auto run = runModel(code);
+        INFO(code);
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find(expected) != std::string::npos);
+    };
+    SECTION("an unknown fluid is the error of the property calls") {
+        fail("a = isidealgas('Unobtainium')\n", "Unknown fluid: 'Unobtainium'");
+        fail("a = isidealgas(Unobtainium)\n", "Unknown fluid: 'Unobtainium'");
+        fail("F$ = 'Unobtainium'\na = isidealgas(F$)\n", "Unknown fluid: 'Unobtainium'");
+        fail("a = isidealgas(5)\n", "Unknown fluid");
+    }
+    SECTION("an unknown fluid inside a body, where the fluidprop pattern would use it") {
+        fail(std::string(kFluidPropProcedure) + "CALL fluidprop('Unobtainium', 20, 1E5, 0 : rho, cpf, gamma)\n",
+             "Unknown fluid: 'Unobtainium'");
+    }
+    SECTION("an invalid mixture string says why") {
+        fail("a = isidealgas('R245fa[0.5]&R134a[0.3]')\n", "the mole fractions sum to 0.8, not 1");
+    }
+    SECTION("the function takes the fluid and nothing else") {
+        fail("a = isidealgas()\n", "isidealgas(): expects 1 argument, the fluid");
+        fail("a = isidealgas('Air', 'N2')\n", "isidealgas(): expects 1 argument, the fluid");
+        fail("a = isidealgas('Air', T=300)\n", "isidealgas(): expects 1 argument, the fluid");
+    }
+    SECTION("the property calls themselves are unchanged: a real fluid still needs two inputs") {
+        // this is why the fluidprop pattern tests ISIDEALGAS before calling viscosity(Fluid$, T=Temp)
+        fail("mu = viscosity('R134a', T=20)\n", "requires exactly 2 input properties");
     }
 }

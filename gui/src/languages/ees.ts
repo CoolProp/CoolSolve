@@ -27,7 +27,7 @@ export function registerEESLanguage(monaco: typeof Monaco) {
       'enthalpy', 'entropy', 'density', 'pressure', 'temperature',
       'quality', 'cp', 'cv', 'specheat', 'volume',
       'viscosity', 'conductivity', 'prandtl', 'surfacetension',
-      'soundspeed', 'internalenergy',
+      'soundspeed', 'internalenergy', 'isidealgas',
       'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
       'exp', 'ln', 'log', 'log10', 'sqrt', 'abs',
       'min', 'max', 'round', 'trunc', 'ceil', 'floor',
