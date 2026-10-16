@@ -452,6 +452,17 @@ embedding): same process, one Sonnet agent per gap, reviewed and committed one g
 examples 41/46 → 43/46 (`simple_centrifugal_compressor`, `water_libr`). The CoolSolve Library is being edited by another agent in parallel: the
 re-checks run on scratch copies and the library changes are listed for the maintainer.
 
+**State at the pause (2026-10-16, `609238c`).** The last block of round 3 closed the absorption and
+incompressible items: `CS-GAP-FLUIDS-ABS` (ASHRAE LiBr part: `X_LIBR`, `H_LIBR`, `T_LIBR`, `P_LIBR` in their own
+module `src/libr_ashrae.cpp`; solved in CoolSolve, not CoolProp: EES's ASHRAE correlation and API are needed, and
+CoolProp's `INCOMP::LiBr` has no enthalpy of mixing), `CS-BUG-INCOMP-LIBR`, `CS-GAP-INCOMPRESSIBLE` (EES form
+`cp('EG',T=T,C=30)`), `CS-BUG-INCOMP-SEAWATER`, `CS-BUG-INCOMP-SOLIDS` and `CS-BUG-INCOMP-CONC-AD` (incompressibles now
+go through CoolProp's AbstractState). Placeholders for future work: `CS-GAP-LIBR-PK` (a more recent LiBr-H2O
+correlation, the EES `LiBrH2O` library of Pátek & Klomfar) and `CS-GAP-NH3H2O` (ammonia-water) are register rows,
+and their EES routines are known names that fail with a message naming the register item (one dispatch point,
+`evaluateAbsorptionFunction`, `src/evaluator.cpp`; module layout in `include/coolsolve/libr_ashrae.h`). Registered
+along the way (P3, open): `CS-BUG-INTERNALENERGY-UNQUOTED`, `CS-BUG-HINT-ARG-DEFAULT`. Nothing is pushed.
+
 **Open points of round 3** (choices of the implementers, to confirm in EES or by the maintainer):
 an `ENDIF` that closes no `IF` in a body is ignored with warning `P008` (evidence: `Brineprop.lib`);
 `Uppercase$`/`Lowercase$` convert ASCII and Latin-1 letters only; in `INTERPOLATE('t','A','B',A=3)` the named
@@ -604,7 +615,12 @@ work there allows it; library workflow §6):
   caches another tag (`cmake -DCOOLSOLVE_COOLPROP_TAG=75af7816 ..` aligns it) and
   `coolsolve --version` prints the CoolProp revision linked. A bump is deliberate
   ([contributing.md](contributing.md#pinned-coolprop-version)). New `.cpp` files need `cmake .`.
-- *Baselines* (pin `75af7816`, `5f9ed66`): unit suite 727 test cases; examples 41/46 solve,
+- *Baselines* at the pause of round 3 (pin `75af7816`, `609238c`): unit suite 1176 test cases (2 skipped
+  without `pdflatex`); examples 43/46 solve, not solving `cooling_tower2`, `orc_complex`,
+  `turbocompressor_interpolate`; library regression (`tools/test_models.py --exclude CSL-0009:coolsolve`, library
+  working tree of 2026-10-16) 249 targets, 244 OK, 5 expected deviations: the re-baselines `CSL-0008` (3 variants),
+  `CSL-0146`, `CSL-0160:coolsolve` listed in the library follow-ups of round 3.
+- *Baselines* of round 2 (pin `75af7816`, `5f9ed66`): unit suite 727 test cases; examples 41/46 solve,
   not solving `cooling_tower2`, `orc_complex`, `simple_centrifugal_compressor`,
   `turbocompressor_interpolate`, `water_libr` (`orc_solar_complex` is skipped by the test:
   it starts with `$bookmark`; it still fails on `MODULE` and `$COMMON`); library regression
@@ -615,6 +631,25 @@ work there allows it; library workflow §6):
   `solver_roadmap.md` §3.2).
 
 **Queue** (next first):
+0. **Next CoolSolve tasks (from 2026-10-16)**, by priority, same process (tests first, one Sonnet agent per gap,
+   review, commit):
+   (a) the P2 silent items `CS-BUG-TINY-IMPLICIT` and `CS-GAP-IDEAL-GAS-MODEL`;
+   (b) `CS-GAP-INTEGRAL-DECREASING`, `CS-GAP-CALL-OUT-OMITTED`, `CS-BUG-CALL-ERROR-ITERATE`;
+   (c) a cosmetic batch: `CS-BUG-INTERNALENERGY-UNQUOTED`, `CS-BUG-HINT-ARG-DEFAULT`, `CS-BUG-FLUID-HINT-CO2`,
+   `CS-BUG-STRING-FUNC-WARNING`, `CS-BUG-GUI-WARNING-CASE` (and the rest of item 6);
+   (d) `CS-GAP-INCLUDE` / `CS-FEAT-IMPORT` (item 7): the next blocker of `CSL-0116`, `CSL-0011`, `CSL-0149`;
+   (e) future work, absorption machines (P3, no library model needs them yet): `CS-GAP-LIBR-PK` — first decide the
+   route: a CoolSolve module `libr_patek_klomfar` next to `libr_ashrae`, or a generic CoolProp contribution (a
+   Gibbs-energy solution class that would also give `INCOMP::LiBr` its enthalpy of mixing; CoolProp
+   `dev/incompressible_liquids/NOTES_mixing_models.md`), then check the EES `*_LiBrH2O` signatures in the EES help
+   (online: `https://fchartsoftware.com/ees/libr_help/`) and take reference values from an EES run; `CS-GAP-NH3H2O`
+   (verify the `NH3H2O` procedure signature; reference implementation: teqp `AmmoniaWaterTillnerRoth`); the
+   remainders `CS-GAP-FLUIDS-ABS` (`V_LIBR`: coefficients unpublished; `Q_LIBR`, `VISC_LIBR`, `COND_LIBR`) and
+   `CS-GAP-INCOMPRESSIBLE` (thermal oils); small: CoolProp's `MITSW` has a saturation pressure that CoolSolve's
+   `p_sat` of an incompressible does not expose yet (not registered).
+   Library re-checks of this block (library tasks, in the follow-ups of round 3 above): `CSL-0043` (native file
+   solves, COP 0.74665 vs EES 0.74670), `CSL-0152` (native file equals its variant; needs the variant's
+   `.initials`), `CSL-0116` (now stops at `CS-GAP-INCLUDE`), and the 5 re-baselines of the regression above.
 1. Library follow-ups of round 2 (library tasks, no CoolSolve change expected):
    (a) re-baseline `CSL-0124`, `CSL-0113` and `CSL-0153:coolsolve` (the old values had `g#` = 1
    in the Kuo procedure: `alpha_tp_cd` 211.1 → 170.8 in `CSL-0124`, `a_cd` 5.59 → 5.85 in
