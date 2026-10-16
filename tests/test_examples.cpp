@@ -80,7 +80,9 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"orc_solar_complex.eescode", {"eta_overall", 0.05895}},
     {"pressuredrop.eescode",      {"DELTAP", 236849}},
     {"rankine1.eescode",          {"eta", 0.284}},
-    {"rankine2.eescode",          {"eta", 0.3033}},
+    // EES reference (EES_ok/rankine2.EES, EES 7.210, stored solution, 25 bar extraction): eta = 0.29853
+    // (CoolSolve 0.29847) (CS-BUG-EX-RANKINE2)
+    {"rankine2.eescode",          {"eta", 0.2985}},
     {"refrigeration1.eescode",    {"COP", 4.818}},
     {"refrigeration2.eescode",    {"COP", 4.472}},
     {"refrigeration3.eescode",    {"COP", 3.481}},

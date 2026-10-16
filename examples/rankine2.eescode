@@ -26,7 +26,7 @@ epsilon_s_p=(h_2_s-h_1)/(h_2-h_1)
 h_2_s=enthalpy(water,s=s_1,P=P_2)
 P_2=P_2a{+DELTA_P}
 P_2a=P_3a
-P_3a=14E5 "see parametric table"
+P_3a=25E5 "extraction pressure: 25 bar [Pa]"
 P_3=70E5
 
 "POINT 2A: mixer outlet"
