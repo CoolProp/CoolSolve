@@ -136,8 +136,8 @@ public:
 class IncompressibleFluid : public Fluid {
 public:
     // `isSolution` indicates whether the fluid requires a mass-fraction
-    // concentration (e.g. MEG, MPG, brines).  Pure incompressibles (water,
-    // aluminum, copper, LiBr pure) do not need one.
+    // concentration (e.g. MEG, MPG, brines, LiBr solution).  Pure incompressibles (water,
+    // aluminum, copper) do not need one.
     // `coolPropKey` optionally overrides the CoolProp key used for PropsSI.
     IncompressibleFluid(const std::string& name,
                         bool isSolution = false,

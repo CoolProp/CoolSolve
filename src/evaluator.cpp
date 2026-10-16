@@ -1765,6 +1765,18 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     CoolPropParamInfo outputInfo = getCoolPropOutputParam(funcName);
     CoolProp::parameters input1Param = getCoolPropInputParam(inputNamesList[0]);
     CoolProp::parameters input2Param = getCoolPropInputParam(inputNamesList[1]);
+
+    // The caloric properties of the incompressible LiBr solution (as output or as input) have no enthalpy of
+    // mixing: warning C004, once per run. Only the incompressibles are looked at.
+    if (fluid->getType() == FluidType::Incompressible) {
+        const auto* incomp = dynamic_cast<const IncompressibleFluid*>(fluid.get());
+        auto isCaloric = [](CoolProp::parameters p) {
+            return p == CoolProp::iHmass || p == CoolProp::iSmass || p == CoolProp::iUmass;
+        };
+        if (incomp && incomp->getCoolPropKey() == "LiBr" &&
+            (isCaloric(outputInfo.param) || isCaloric(input1Param) || isCaloric(input2Param)))
+            warnLiBrSolutionCaloric(diagnostics_);
+    }
     
     std::string outputStr = paramToString(outputInfo.param);
     std::string input1Str = paramToString(input1Param);

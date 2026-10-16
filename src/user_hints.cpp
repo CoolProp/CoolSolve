@@ -359,6 +359,15 @@ void warnMixtureFluid(DiagnosticCollector* diag, const std::string& mixtureName)
              0, "C003");
 }
 
+void warnLiBrSolutionCaloric(DiagnosticCollector* diag) {
+    emitHint(diag, "libr-caloric",
+             "LiBr: CoolProp's incompressible LiBr solution has no enthalpy of mixing (its enthalpy, entropy and internal "
+             "energy are integrated from cp at each concentration) and its reference state is not that of H_LIBR. "
+             "For energy balances between streams of different concentration (absorption machines) use H_LIBR and "
+             "X_LIBR. Density and cp are not concerned.",
+             0, "C004");
+}
+
 std::string coolPropUnitsReminder(const UnitSystem& units) {
     return " (CoolSolve default units: T in " + units.temperature +
            ", P in " + units.pressure +

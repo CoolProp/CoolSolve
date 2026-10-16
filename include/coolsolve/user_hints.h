@@ -42,6 +42,13 @@ void checkThermoInputValueHint(DiagnosticCollector* diag,
  */
 void warnMixtureFluid(DiagnosticCollector* diag, const std::string& mixtureName);
 
+/**
+ * @brief Emit a C004 warning, once per run, that the caloric properties (enthalpy, entropy, internal energy)
+ * of CoolProp's incompressible LiBr solution have no enthalpy of mixing and a reference state of their own:
+ * energy balances between streams of different concentration (absorption machines) need H_LIBR / X_LIBR.
+ */
+void warnLiBrSolutionCaloric(DiagnosticCollector* diag);
+
 std::string coolPropUnitsReminder(const UnitSystem& units);
 
 std::string unknownFluidErrorMessage(const std::string& eesFluidName);

@@ -1016,7 +1016,7 @@ of `Air`, as the EES help recommends. `Air_ha`, `AirH2O` and the real fluids (`W
 
 ### Incompressible substances
 
-Pure: `Aluminum`, `Copper`, `LiBr`, `SeaWater`.
+Pure: `Aluminum`, `Copper`, `SeaWater`.
 
 **Solutions** (require a concentration as the *second positional argument*
 in mass %, or the named `C=...` argument):
@@ -1031,6 +1031,7 @@ in mass %, or the named `C=...` argument):
 | `Methanol` / `MMA`            | Methanol/water           |
 | `EthanolSolution` / `MEA`     | Ethanol/water            |
 | `Glycerol` / `MGL`            | Glycerol/water           |
+| `LiBr`                        | Lithium bromide/water solution (CoolProp, Pátek-Klomfar fits, 0–75 %, 0–227 °C; density, cp, h, s; no viscosity/conductivity) |
 
 Example:
 
@@ -1038,6 +1039,17 @@ Example:
 rho = density('MEG', 30, T=10, P=101325)   "30 % MEG at 10 °C"
 cp  = cp('EthyleneGlycol', T=10, P=101325, C=30)
 ```
+
+**`LiBr` is the aqueous solution, not a pure fluid**: it needs its concentration like the other solutions
+(`density(LiBr, 50, T=40, P=1E5)` or `C=50`; without it the call is the usual error asking for one). CoolProp has the
+density and the specific heat of the solution, and its enthalpy, entropy and internal energy integrated from the specific
+heat; it has no viscosity and no conductivity (`viscosity(LiBr, 50, …)` is an error naming the call). The concentration
+is limited to 0–75 % (an error naming the call above it). The solution has **no enthalpy of mixing**: its enthalpy and
+entropy are integrated from `cp` at each concentration, with a reference state that is not that of `H_LIBR`, so they
+cannot be used in the energy balance between streams of different concentration (the absorber and the generator of an
+absorption machine): use `H_LIBR` and `X_LIBR` for that (next section). CoolSolve warns about it (code `C004`, in the CLI
+and in the GUI console) when the enthalpy, the entropy or the internal energy of `LiBr` is an output or an input of a
+call, once per run; the density and the specific heat give no warning.
 
 ### CoolProp mixtures
 
@@ -1077,8 +1089,10 @@ M = molarmass(fl$)                      "mole-weighted, in kg/kmol: 118.04"
 
 ### LiBr-H2O solutions (EES ASHRAE routines)
 
-The lithium bromide - water solution of the absorption machines is not a CoolProp fluid. CoolSolve has the four
-routines of the EES *ASHRAE* library, which take a unit string as first argument (`'SI'`) and two numbers:
+The lithium bromide - water solution of the absorption machines (vapour pressure, enthalpy of mixing) is not a CoolProp
+fluid; only its density and specific heat are (the solution `LiBr` of [Incompressible substances](#incompressible-substances)).
+CoolSolve has the four routines of the EES *ASHRAE* library, which take a unit string as first argument (`'SI'`) and two
+numbers:
 
 | Routine                  | Returns                                                          |
 |:-------------------------|:-----------------------------------------------------------------|
@@ -1121,6 +1135,11 @@ h_abs = H_LIBR('SI', T_abs, x_abs)*1000     "107.2 kJ/kg, in J/kg"
   an implicit solve that leaves the validity of `X_LIBR` stops with the error above, an initial guess near the
   solution avoids it.
 - A `FUNCTION` of the model with the name of a routine replaces it.
+- **Density and specific heat** of the solution (which the routines above do not give, `V_LIBR` and the transport
+  routines being missing) can be taken from the CoolProp solution `LiBr` of
+  [Incompressible substances](#incompressible-substances): `density(LiBr, X, T=T, P=P)`, `cp(LiBr, X, T=T, P=P)`, with
+  `X` in mass %. Its enthalpy and entropy have no enthalpy of mixing and another reference state than `H_LIBR`
+  (warning `C004`): keep `H_LIBR` for the energy balances.
 - **Not implemented yet** (a call is an error that names the routine and its register item, see
   [Model library support](model_library_support.md) §4): `V_LIBR`, `Q_LIBR`, `VISC_LIBR` and `COND_LIBR`
   (`CS-GAP-FLUIDS-ABS`); the `*_LiBrH2O` functions of the Pátek-Klomfar library and `Q_LiBrH2O` (`CS-GAP-LIBR-PK`);

@@ -20265,3 +20265,343 @@ TEST_CASE("CS-GAP-FLUIDS-ABS: LaTeX rendering writes the underscore of the routi
     CHECK(x.find("\\mathrm{X\\_LIBR} \\left(\\mathrm{SI}, T, ") == 0);
     CHECK(h.find("\\mathrm{H\\_LIBR} \\left(\\mathrm{SI}, T, x") == 0);
 }
+
+// ============================================================================
+// CS-BUG-INCOMP-LIBR: the incompressible LiBr is CoolProp's aqueous solution (mass based), not a pure fluid
+// ============================================================================
+// `LiBr` was registered as a pure incompressible: with no concentration every call failed ("CoolProp returned invalid
+// result (NaN or Inf) for H(INCOMP::LiBr)"). It is a solution like MEG: a concentration in mass % (second positional
+// argument or C=), 0 to 75 %. CoolProp has density, specific heat and the caloric properties integrated from it, no
+// viscosity and no conductivity. The caloric properties get the warning C004 (no enthalpy of mixing, other reference
+// state than H_LIBR).
+
+namespace {
+
+/// CoolProp's INCOMP::LiBr at mass fraction `x` (0..1), T [K] and P [Pa].
+double librCoolProp(const char* output, double x, double T_K, double P_Pa) {
+    return CoolProp::PropsSI(output, "T", T_K, "P", P_Pa, "INCOMP::LiBr[" + numText(x) + "]");
+}
+
+/// Warnings C004 of a run (the caloric properties of the LiBr solution).
+size_t librCaloricWarnings(const ModelRun& run) {
+    size_t n = 0;
+    for (const auto& d : run.warningItems)
+        if (d.code == "C004") ++n;
+    return n;
+}
+
+/// The message of the warning C004 (empty when there is none).
+std::string librCaloricWarning(const ModelRun& run) {
+    for (const auto& d : run.warningItems)
+        if (d.code == "C004") return d.message;
+    return {};
+}
+
+/// Model with one LiBr call `y = <call>` that CoolProp cannot evaluate: the run finishes (the penalty value is a trial
+/// point) and the solution check refuses it with an error naming `needles`; no value is ever returned silently.
+void requireLiBrCallError(const std::string& call, const std::vector<std::string>& needles) {
+    auto run = runModel("y = " + call + "\n");
+    INFO(call << " -> " << (run.solveOk ? checkError(run) : run.message));
+    if (!run.solveOk) {   // an error raised by the evaluation itself
+        for (const auto& needle : needles) CHECK(run.message.find(needle) != std::string::npos);
+        return;
+    }
+    CHECK_FALSE(run.verified);
+    REQUIRE_FALSE(run.checkErrors.empty());
+    for (const auto& needle : needles) CHECK(checkError(run).find(needle) != std::string::npos);
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: the fluid LiBr is a solution of the registry, whatever the spelling", "[library-gaps][incomp-libr]") {
+    for (const char* name : {"LiBr", "libr", "LIBR"}) {
+        INFO(name);
+        auto fluid = FluidRegistry::getFluid(name);
+        REQUIRE(fluid);
+        REQUIRE(fluid->getType() == FluidType::Incompressible);
+        auto incomp = std::dynamic_pointer_cast<IncompressibleFluid>(fluid);
+        REQUIRE(incomp);
+        CHECK(incomp->isSolution());
+        CHECK(incomp->getCoolPropName() == "INCOMP::LiBr");
+    }
+    // the pure incompressibles are still pure, the other solutions still solutions
+    CHECK_FALSE(std::dynamic_pointer_cast<IncompressibleFluid>(FluidRegistry::getFluid("Aluminum"))->isSolution());
+    CHECK(std::dynamic_pointer_cast<IncompressibleFluid>(FluidRegistry::getFluid("MEG"))->isSolution());
+}
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: register reproducer, enthalpy(LiBr, T=40, P=1e5) needs a concentration like every solution",
+          "[library-gaps][incomp-libr]") {
+    // was: "CoolProp returned invalid result (NaN or Inf) for H(INCOMP::LiBr)" (the penalty value 1e4 and an error of the check)
+    auto run = runModel("h1 = enthalpy(LiBr, T=40, P=1e5)\n");
+    REQUIRE(run.parseOk);
+    REQUIRE_FALSE(run.solveOk);
+    INFO(run.message);
+    CHECK(anyContains({run.message}, "Incompressible solution 'LiBr' requires a concentration (mass %, 0..100)"));
+    CHECK(anyContains({run.message}, "C=..."));
+    // the message is the one of the other solutions
+    auto meg = runModel("h1 = enthalpy(MEG, T=40, P=1e5)\n");
+    REQUIRE_FALSE(meg.solveOk);
+    CHECK(anyContains({meg.message}, "Incompressible solution 'MEG' requires a concentration (mass %, 0..100)"));
+    // with the concentration the call is a value
+    auto ok = runModel("h1 = enthalpy(LiBr, 50, T=40, P=1e5)\n");
+    REQUIRE(ok.solveOk);
+    CHECK(ok.verified);
+    CHECK_THAT(ok["h1"], WithinRel(librCoolProp("H", 0.5, 313.15, 1e5), 1e-9));
+}
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: density of the solution, concentration as second argument or C=", "[library-gaps][incomp-libr]") {
+    const double ref = librCoolProp("D", 0.5, 313.15, 1e5);
+    REQUIRE(std::isfinite(ref));
+    CHECK(ref > 1400.0);
+    CHECK(ref < 1600.0);
+    auto run = runModel(
+        "a = density(LiBr, 50, T=40, P=1e5)\n"
+        "b = density(LiBr, T=40, P=1e5, C=50)\n"
+        "c = density('LiBr', 50, T=40, P=1e5)\n"
+        "d = density(libr, T=40, P=1e5, concentration=50)\n"
+        "e = density(LIBR, 50, P=1e5, T=40)\n"
+        "f = density(LiBr, T=40, P=1e5, conc=50)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const char* name : {"a", "b", "c", "d", "e", "f"}) {
+        INFO(name);
+        CHECK_THAT(run[name], WithinRel(ref, 1e-9));
+        CHECK(run[name] > 1400.0);
+        CHECK(run[name] < 1600.0);
+    }
+    // the density is that of the solution: pure water at 0 %, denser with the salt
+    auto trend = runModel(
+        "r0 = density(LiBr, 0, T=40, P=1e5)\n"
+        "r30 = density(LiBr, 30, T=40, P=1e5)\n"
+        "r60 = density(LiBr, 60, T=40, P=1e5)\n"
+        "rw = density(Water, T=40, P=1e5)\n");
+    REQUIRE(trend.solveOk);
+    CHECK_THAT(trend["r0"], WithinRel(trend["rw"], 1e-3));
+    CHECK(trend["r30"] > trend["r0"]);
+    CHECK(trend["r60"] > trend["r30"]);
+    CHECK_THAT(trend["r30"], WithinRel(librCoolProp("D", 0.3, 313.15, 1e5), 1e-9));
+    CHECK_THAT(trend["r60"], WithinRel(librCoolProp("D", 0.6, 313.15, 1e5), 1e-9));
+    CHECK(librCaloricWarnings(run) == 0);   // density gives no warning
+    CHECK(librCaloricWarnings(trend) == 0);
+}
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: specific heat of the solution, no warning", "[library-gaps][incomp-libr]") {
+    const double ref = librCoolProp("C", 0.5, 313.15, 1e5);
+    REQUIRE(std::isfinite(ref));
+    CHECK(ref > 2000.0);   // a salt solution has a lower cp than water (4180 J/kg-K)
+    CHECK(ref < 2400.0);
+    auto run = runModel(
+        "a = cp(LiBr, 50, T=40, P=1e5)\n"
+        "b = specheat(LiBr, T=40, P=1e5, C=50)\n"
+        "c = cp('LiBr', 50, P=1e5, T=40)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const char* name : {"a", "b", "c"}) {
+        INFO(name);
+        CHECK_THAT(run[name], WithinRel(ref, 1e-9));
+    }
+    CHECK(run.warnings.empty());   // cp is not a caloric property of the warning, nor is a hint raised by T=40, P=1e5
+}
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: enthalpy, entropy and internal energy are CoolProp's, in J/kg and J/kg-K", "[library-gaps][incomp-libr]") {
+    auto run = runModel(
+        "h1 = enthalpy(LiBr, 50, T=40, P=1e5)\n"
+        "h2 = enthalpy(LiBr, T=50, P=1e5, C=50)\n"
+        "s1 = entropy(LiBr, 50, T=40, P=1e5)\n"
+        "u1 = intenergy(LiBr, 50, T=40, P=1e5)\n"
+        "u2 = internalenergy('LiBr', T=40, P=1e5, C=50)\n"
+        "cp1 = cp(LiBr, 50, T=45, P=1e5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["h1"], WithinRel(librCoolProp("H", 0.5, 313.15, 1e5), 1e-9));
+    CHECK_THAT(run["h2"], WithinRel(librCoolProp("H", 0.5, 323.15, 1e5), 1e-9));
+    CHECK_THAT(run["s1"], WithinRel(librCoolProp("S", 0.5, 313.15, 1e5), 1e-9));
+    CHECK_THAT(run["u1"], WithinRel(librCoolProp("U", 0.5, 313.15, 1e5), 1e-9));
+    CHECK_THAT(run["u2"], WithinRel(librCoolProp("U", 0.5, 313.15, 1e5), 1e-9));
+    // h is the integral of cp: a 10 K step at the cp of the middle of the interval
+    CHECK_THAT(run["h2"] - run["h1"], WithinRel(run["cp1"] * 10.0, 2e-3));
+}
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: Newton solves an unknown temperature through the solution properties", "[library-gaps][incomp-libr]") {
+    SECTION("through the density") {
+        auto run = runModel("rho = " + numText(librCoolProp("D", 0.6, 333.15, 2e5)) + "\n"
+                            "density(LiBr, 60, T=T, P=2E5) = rho\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["T"], WithinAbs(60.0, 1e-6));
+    }
+    SECTION("through the enthalpy, given as an input of temperature()") {
+        const double h = librCoolProp("H", 0.5, 323.15, 1e5);
+        auto run = runModel("h = " + numText(h) + "\n"
+                            "enthalpy(LiBr, 50, T=T1, P=1E5) = h\n"
+                            "T2 = temperature(LiBr, 50, h=h, P=1E5)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["T1"], WithinAbs(50.0, 1e-6));
+        CHECK_THAT(run["T2"], WithinAbs(50.0, 1e-6));
+        CHECK_THAT(run["T2"] + 273.15, WithinRel(CoolProp::PropsSI("T", "H", h, "P", 1e5, "INCOMP::LiBr[0.5]"), 1e-9));
+    }
+}
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: the concentration is checked, 0 to 75 % is the range of CoolProp's fit", "[library-gaps][incomp-libr]") {
+    SECTION("the end points of the range are values") {
+        auto run = runModel("a = density(LiBr, 0, T=40, P=1e5)\nb = density(LiBr, 75, T=40, P=1e5)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["a"], WithinRel(librCoolProp("D", 0.0, 313.15, 1e5), 1e-9));
+        CHECK_THAT(run["b"], WithinRel(librCoolProp("D", 0.75, 313.15, 1e5), 1e-9));
+    }
+    SECTION("above 75 % CoolProp has no fit: an error naming the call, never a NaN or a value") {
+        requireLiBrCallError("density(LiBr, 80, T=40, P=1e5)", {"density", "LiBr"});
+        requireLiBrCallError("enthalpy(LiBr, 80, T=40, P=1e5)", {"enthalpy", "LiBr"});
+        requireLiBrCallError("cp(LiBr, T=40, P=1e5, C=75.1)", {"cp", "LiBr"});
+    }
+    SECTION("outside 0..100 % it is the error of the other solutions") {
+        for (const char* conc : {"-1", "101", "150"}) {
+            INFO(conc);
+            auto run = runModel(std::string("y = density(LiBr, ") + conc + ", T=40, P=1e5)\n");
+            REQUIRE_FALSE(run.solveOk);
+            CHECK(anyContains({run.message}, "Incompressible solution 'LiBr' requires a concentration (mass %, 0..100)"));
+        }
+    }
+}
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: CoolProp has no viscosity and no conductivity for the solution: an error naming the call", "[library-gaps][incomp-libr]") {
+    // CoolProp: "INCOMP::LiBr does not define a viscosity" (it returns Inf): never a value, never a silent 1e4
+    requireLiBrCallError("viscosity(LiBr, 50, T=40, P=1e5)", {"viscosity", "LiBr"});
+    requireLiBrCallError("conductivity(LiBr, 50, T=40, P=1e5)", {"conductivity", "LiBr"});
+    requireLiBrCallError("viscosity(LiBr, T=40, P=1e5, C=50)", {"viscosity"});
+    requireLiBrCallError("kinematicviscosity(LiBr, 50, T=40, P=1e5)", {"viscosity", "LiBr"});
+    // the other solutions have them (the error is about LiBr, not about the path)
+    auto meg = runModel("mu = viscosity(MEG, 30, T=40, P=1e5)\nk = conductivity(MEG, 30, T=40, P=1e5)\n");
+    REQUIRE(meg.solveOk);
+    CHECK(meg.verified);
+}
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: the caloric properties give one warning C004 per run, density and cp none", "[library-gaps][incomp-libr]") {
+    SECTION("enthalpy") {
+        auto run = runModel("h = enthalpy(LiBr, 50, T=40, P=1e5)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);   // a warning, not an error
+        REQUIRE(librCaloricWarnings(run) == 1);
+        const std::string w = librCaloricWarning(run);
+        INFO(w);
+        CHECK(w.find("LiBr") != std::string::npos);
+        CHECK(w.find("incompressible LiBr solution") != std::string::npos);
+        CHECK(w.find("enthalpy of mixing") != std::string::npos);
+        CHECK(w.find("integrated from cp") != std::string::npos);
+        CHECK(w.find("reference state") != std::string::npos);
+        CHECK(w.find("different concentration") != std::string::npos);
+        CHECK(w.find("absorption") != std::string::npos);
+        CHECK(w.find("H_LIBR") != std::string::npos);
+        CHECK(w.find("X_LIBR") != std::string::npos);
+        CHECK(run.warningItems.back().severity == DiagnosticSeverity::Warning);
+    }
+    SECTION("entropy, internal energy and the named concentration") {
+        CHECK(librCaloricWarnings(runModel("s = entropy(LiBr, 50, T=40, P=1e5)\n")) == 1);
+        CHECK(librCaloricWarnings(runModel("u = intenergy(LiBr, T=40, P=1e5, C=50)\n")) == 1);
+        CHECK(librCaloricWarnings(runModel("u = internalenergy('LiBr', 50, T=40, P=1e5)\n")) == 1);
+        CHECK(librCaloricWarnings(runModel("h = enthalpy(libr, T=40, P=1e5, C=50)\n")) == 1);
+    }
+    SECTION("an enthalpy or an entropy given as input is on the same reference state: the call warns too") {
+        auto h = runModel("T1 = temperature(LiBr, 50, h=40000, P=1e5)\n");
+        REQUIRE(h.solveOk);
+        CHECK(librCaloricWarnings(h) == 1);
+        auto s = runModel("T1 = temperature(LiBr, 50, s=141, P=1e5)\n");
+        REQUIRE(s.solveOk);
+        CHECK(librCaloricWarnings(s) == 1);
+        auto d = runModel("rho = density(LiBr, 50, h=40000, P=1e5)\n");
+        REQUIRE(d.solveOk);
+        CHECK(librCaloricWarnings(d) == 1);
+    }
+    SECTION("density and cp: no warning") {
+        auto run = runModel("rho = density(LiBr, 50, T=40, P=1e5)\nc = cp(LiBr, T=40, P=1e5, C=60)\nrho2 = density(LiBr, 70, T=60, P=1e5)\n");
+        REQUIRE(run.solveOk);
+        CHECK(librCaloricWarnings(run) == 0);
+        CHECK(run.warnings.empty());
+    }
+}
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: the warning C004 is emitted once per run, whatever the number of calls", "[library-gaps][incomp-libr]") {
+    const std::string code =
+        "h1 = enthalpy(LiBr, 50, T=40, P=1e5)\n"
+        "h2 = enthalpy(LiBr, 60, T=40, P=1e5)\n"
+        "h3 = enthalpy(LiBr, T=70, P=1e5, C=40)\n"
+        "s1 = entropy('LiBr', 50, T=40, P=1e5)\n"
+        "u1 = intenergy(libr, T=40, P=1e5, C=50)\n"
+        "T1 = temperature(LiBr, 50, h=h1, P=1e5)\n"
+        "rho = density(LiBr, 50, T=40, P=1e5)\n";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(librCaloricWarnings(run) == 1);
+    CHECK_THAT(run["T1"], WithinAbs(40.0, 1e-6));
+    // the warning comes again in the next run
+    CHECK(librCaloricWarnings(runModel(code)) == 1);
+    CHECK(librCaloricWarnings(runModel(code)) == 1);
+}
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: the warning also comes from a FUNCTION or PROCEDURE body", "[library-gaps][incomp-libr]") {
+    auto run = runModel(
+        "FUNCTION hl(x)\n"
+        "  hl = enthalpy(LiBr, x, T=40, P=1e5)\n"
+        "END\n"
+        "PROCEDURE sl(x : s)\n"
+        "  s = entropy(LiBr, x, T=40, P=1e5)\n"
+        "END\n"
+        "h = hl(50)\n"
+        "CALL sl(60 : s)\n"
+        "h0 = enthalpy(LiBr, 50, T=40, P=1e5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["h"], WithinRel(librCoolProp("H", 0.5, 313.15, 1e5), 1e-9));
+    CHECK_THAT(run["s"], WithinRel(librCoolProp("S", 0.6, 313.15, 1e5), 1e-9));
+    CHECK(librCaloricWarnings(run) == 1);
+    // used only inside a body, it still warns
+    auto only = runModel("FUNCTION hl(x)\n  hl = enthalpy(LiBr, x, T=40, P=1e5)\nEND\nh = hl(50)\n");
+    REQUIRE(only.solveOk);
+    CHECK(librCaloricWarnings(only) == 1);
+}
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: the other fluids and solutions give no warning C004", "[library-gaps][incomp-libr]") {
+    // the unsupported fluid LiBrH2O keeps its own error (it points to the ASHRAE routines)
+    auto unsupported = runModel("h7 = enthalpy(LiBrH2O, T=40, P=1e5)\n");
+    REQUIRE_FALSE(unsupported.solveOk);
+    CHECK(anyContains({unsupported.message}, "LiBrH2O"));
+    CHECK(librCaloricWarnings(unsupported) == 0);
+    auto ok = runModel(
+        "h1 = enthalpy(MEG, 30, T=40, P=1e5)\n"
+        "h2 = enthalpy(PG, 30, T=40, P=1e5)\n"
+        "h3 = enthalpy(CaCl2, 20, T=40, P=1e5)\n"
+        "s1 = entropy(MEG, 30, T=40, P=1e5)\n"
+        "h4 = enthalpy(Water, T=40, P=1e5)\n"
+        "h5 = enthalpy('R134a', T=40, P=1e6)\n"
+        "h6 = enthalpy(Aluminum, T=40, P=1e5)\n");
+    INFO(ok.message);
+    REQUIRE(ok.solveOk);
+    CHECK(librCaloricWarnings(ok) == 0);
+    for (const auto& w : ok.warnings) CHECK(w.find("LiBr") == std::string::npos);
+}
+
+TEST_CASE("CS-BUG-INCOMP-LIBR: the LiBr solution of CoolProp and the ASHRAE routines coexist in one model", "[library-gaps][incomp-libr][libr]") {
+    // density and cp from CoolProp at the concentration of X_LIBR, the enthalpy from H_LIBR: the combination the warning recommends
+    auto run = runModel(
+        "x = X_LIBR('SI', 40, 0.8726)\n"
+        "h = H_LIBR('SI', 40, x)*1000\n"
+        "rho = density(LiBr, x, T=40, P=1e5)\n"
+        "c = cp(LiBr, x, T=40, P=1e5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x"], WithinAbs(58.3, 0.1));
+    // the concentration reaches CoolProp as the mass fraction written with 6 digits (as for the other solutions)
+    CHECK_THAT(run["rho"], WithinRel(librCoolProp("D", run["x"] / 100.0, 313.15, 1e5), 1e-5));
+    CHECK_THAT(run["c"], WithinRel(librCoolProp("C", run["x"] / 100.0, 313.15, 1e5), 1e-5));
+    CHECK(librCaloricWarnings(run) == 0);   // H_LIBR is the reference: no warning
+}

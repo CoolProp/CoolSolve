@@ -267,8 +267,10 @@ void FluidRegistry::initialize() {
     addIncompSolution("Glycerol", "MGL");
     addIncompSolution("MGL", "MGL");
     
+    // Lithium bromide solution in water (CoolProp INCOMP::LiBr: mass fraction 0..0.75, no viscosity or conductivity)
+    addIncompSolution("LiBr", "LiBr");
+
     // Pure incompressible
-    addIncomp("LiBr", "LiBr");   // pure LiBr correlations
     addIncomp("SeaWater", "MITSW");
     
     // --- Mixtures (unsupported in CoolProp with EES parameterization) ---
