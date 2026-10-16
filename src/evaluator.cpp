@@ -34,6 +34,13 @@ namespace coolsolve {
 /// from its components, with its mole fractions set.
 static std::shared_ptr<CoolProp::AbstractState> createState(const std::string& backend,
                                                             const std::string& fluidName) {
+    // `INCOMP::MEG` names the fluid MEG of CoolProp's incompressible backend, as for PropsSI: the configured backend
+    // (HEOS) does not know it. The concentration of a solution is not part of the name: setMassFraction sets it.
+    constexpr char incompPrefix[] = "INCOMP::";
+    constexpr size_t incompPrefixSize = sizeof(incompPrefix) - 1;
+    if (fluidName.compare(0, incompPrefixSize, incompPrefix) == 0)
+        return std::shared_ptr<CoolProp::AbstractState>(
+            CoolProp::AbstractState::factory("INCOMP", fluidName.substr(incompPrefixSize)));
     if (fluidName.find('&') == std::string::npos)
         return std::shared_ptr<CoolProp::AbstractState>(CoolProp::AbstractState::factory(backend, fluidName));
     std::string reason;
@@ -45,14 +52,20 @@ static std::shared_ptr<CoolProp::AbstractState> createState(const std::string& b
     return state;
 }
 
-/// CoolProp's own lower limits of a fluid: its minimum temperature and its minimum pressure (the triple
+/// CoolProp's own limits of a fluid: its minimum temperature and its minimum pressure (the triple
 /// point). 0 when the backend has none (a value CoolProp cannot give: incompressible fluids have no triple point).
+/// For an incompressible solution also the range of its concentration (mass fraction), the same at every
+/// concentration like the temperature range; 0 to 1 when the backend gives none.
 struct FluidLimits {
     double Tmin = 0.0;
     double pMin = 0.0;
+    double xMin = 0.0;
+    double xMax = 1.0;
 };
 
-/// Per-thread cache of AbstractState objects keyed by "backend::fluidName".
+/// Per-thread cache of AbstractState objects keyed by "backend::fluidName". The name of an incompressible solution is
+/// the base name (`INCOMP::MEG`), one state per fluid whatever the concentration: every call sets the mass fraction on
+/// the state before it updates it (setMassFraction), so a state never carries the fraction of a previous call.
 /// Avoids repeated string parsing, fluid lookup, and EOS initialisation that
 /// PropsSI performs on every call.
 struct AbstractStateCache {
@@ -85,8 +98,12 @@ struct AbstractStateCache {
             auto state = getOrCreate(backend, fluidName);
             try { found.Tmin = state->Tmin(); } catch (...) {}
             try { found.pMin = state->p_triple(); } catch (...) {}
+            try { found.xMin = state->keyed_output(CoolProp::ifraction_min); } catch (...) {}
+            try { found.xMax = state->keyed_output(CoolProp::ifraction_max); } catch (...) {}
             if (!(found.Tmin > 0.0)) found.Tmin = 0.0;   // also NaN
             if (!(found.pMin > 0.0)) found.pMin = 0.0;
+            if (!(found.xMin >= 0.0)) found.xMin = 0.0;
+            if (!(found.xMax <= 1.0 && found.xMax > found.xMin)) found.xMax = 1.0;
         } catch (...) {}   // an unknown fluid: the property call itself reports it
         return limits[key] = found;
     }
@@ -95,6 +112,37 @@ struct AbstractStateCache {
 };
 
 static thread_local AbstractStateCache g_abstractStateCache;
+
+/// Set the mass fraction of an incompressible solution on its state (CoolProp's IncompressibleBackend::set_mass_fractions:
+/// nothing happens when the fraction is unchanged, otherwise the state also resets its reference state). The vector is
+/// reused: no allocation per call.
+static void setMassFraction(CoolProp::AbstractState& state, double massFraction) {
+    static thread_local std::vector<CoolPropDbl> fraction(1);
+    fraction[0] = massFraction;
+    state.set_mass_fractions(fraction);
+}
+
+/// Derivative of a property of an incompressible solution with respect to its mass fraction x, by a central difference
+/// over x -/+ 1e-6 (`outputAt(x)` is the property at the fraction x), cut to the range [xMin, xMax] of the fluid: one-sided
+/// at an end of the range, 0 for a range reduced to a point or when CoolProp gives no value at one of the two points.
+/// A finite difference is the only way: CoolProp has no derivative with respect to the concentration of an
+/// incompressible (its partial derivatives are at constant composition). It is the only finite difference of the
+/// derivatives of a property call that is not a check or a fallback of CoolProp's analytical derivatives with respect
+/// to the other inputs (T, P, ...), and it is taken only when the concentration depends on the unknowns.
+template <typename OutputAt>
+static double massFractionDerivative(OutputAt&& outputAt, double x, double xMin, double xMax) {
+    constexpr double step = 1e-6;
+    const double lo = std::max(x - step, xMin);
+    const double hi = std::min(x + step, xMax);
+    if (!(hi > lo)) return 0.0;
+    try {
+        const double fLo = outputAt(lo);
+        const double fHi = outputAt(hi);
+        return (std::isfinite(fLo) && std::isfinite(fHi)) ? (fHi - fLo) / (hi - lo) : 0.0;
+    } catch (const std::exception&) {
+        return 0.0;
+    }
+}
 
 /// Map two CoolProp parameter enums to the correct input_pairs enum.
 static CoolProp::input_pairs getInputPair(CoolProp::parameters p1,
@@ -1623,17 +1671,23 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     // For solutions, resolve concentration from a second positional argument
     // (mass fraction in %, e.g. density('MEG', 30, T=280, P=1e5)) or from a
     // `C` named argument.
+    // `cpFluidName` is the name of the fluid for the cache of CoolProp states and their limits: the base name of a
+    // solution (`INCOMP::MEG`), whatever its concentration (CS-BUG-INCOMP-CONC-AD). The concentration is `concentration`
+    // (mass %, with its gradient) and `massFraction` (0..1): the state gets it with setMassFraction before each update,
+    // PropsSI gets it in the name `callFluidName()`, written with every digit.
     std::string cpFluidName = fluid->getCoolPropName();
+    const IncompressibleFluid* solution = nullptr;
+    ADValue concentration;
+    double massFraction = 0.0;
     if (fluid->getType() == FluidType::Incompressible) {
         auto incomp = std::dynamic_pointer_cast<IncompressibleFluid>(fluid);
         if (incomp && incomp->isSolution()) {
-            double massFraction = -1.0;
+            bool given = false;
             // 2nd positional argument (numeric literal or any expression)
             if (func.args.size() >= 2) {
                 try {
-                    ADValue v = evaluate(func.args[1]);
-                    // Interpret as mass percent 0..100 → fraction 0..1
-                    massFraction = v.value / 100.0;
+                    concentration = evaluate(func.args[1]);
+                    given = true;
                 } catch (...) {
                     // Not an expression — ignore
                 }
@@ -1641,18 +1695,21 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             // C or concentration named arg (mass percent)
             for (auto it = inputs.begin(); it != inputs.end(); ) {
                 if (isConcentrationArgName(it->first)) {
-                    massFraction = it->second.value / 100.0;
+                    concentration = std::move(it->second);
+                    given = true;
                     it = inputs.erase(it);
                 } else {
                     ++it;
                 }
             }
-            if (massFraction < 0.0 || massFraction > 1.0) {
+            // Interpret as mass percent 0..100 → fraction 0..1
+            massFraction = concentration.value / 100.0;
+            if (!given || massFraction < 0.0 || massFraction > 1.0) {
                 throw std::runtime_error("Incompressible solution '" + eesFluidName +
                     "' requires a concentration (mass %, 0..100) as a second positional "
                     "argument or a C=... named argument.");
             }
-            cpFluidName = incomp->getCoolPropNameWithFraction(massFraction);
+            solution = incomp.get();
         }
         // Reject quality-based inputs — saturation is not defined for incompressibles.
         for (const auto& [k, v] : inputs) {
@@ -1668,6 +1725,15 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         }
     }
     
+    // The fluid as PropsSI reads it, for the PropsSI path and the messages: the base name, with the mass fraction of a
+    // solution at full precision (getCoolPropNameWithFraction), so that both paths see the same concentration.
+    auto callFluidName = [&]() { return solution ? solution->getCoolPropNameWithFraction(massFraction) : cpFluidName; };
+    // The concentration of a solution depends on the unknowns of the block (its gradient is not zero): only then does the
+    // property have a derivative with respect to it to add (a finite difference, massFractionDerivative); a constant
+    // concentration costs nothing more than the test of its gradient, and none when only the residuals are needed.
+    const bool concentrationVaries = solution && !residualOnly_ &&
+        std::any_of(concentration.gradient.begin(), concentration.gradient.end(), [](double g) { return g != 0.0; });
+
     // True when the pressure was injected below (single-input ideal-gas call): it is
     // an internal constant of the ideal-gas model, not a user input, so it must be the
     // same in every pass — never clamped, never checked against the unit hints.
@@ -2050,7 +2116,8 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     };
     
     // Common post-processing: unit conversion, volume inversion, gradient assembly
-    auto postProcess = [&](double result, double dResult_dInput1, double dResult_dInput2) -> ADValue {
+    auto postProcess = [&](double result, double dResult_dInput1, double dResult_dInput2,
+                           double dResult_dFraction = 0.0) -> ADValue {
         // Clamp quality output
         if (outputInfo.param == CoolProp::iQ) {
             if (result < 0.0) result = 0.0;
@@ -2072,6 +2139,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             result *= KG_PER_KMOL;
             dResult_dInput1 *= KG_PER_KMOL;
             dResult_dInput2 *= KG_PER_KMOL;
+            dResult_dFraction *= KG_PER_KMOL;
         }
 
         // Volume inversion (density→specific volume)
@@ -2083,6 +2151,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             result = 1.0 / result;
             dResult_dInput1 *= -invDensity2;
             dResult_dInput2 *= -invDensity2;
+            dResult_dFraction *= -invDensity2;
         }
         
         // Apply unit scale factors to derivatives
@@ -2091,12 +2160,19 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         double in2Scale = getScale(type2, unitStringFor(type2), true);
         dResult_dInput1 *= outScale * in1Scale;
         dResult_dInput2 *= outScale * in2Scale;
+        dResult_dFraction *= outScale;
         
         // Assemble ADValue
         ADValue output(result, numVariables_);
         for (size_t i = 0; i < numVariables_; ++i) {
             output.gradient[i] = dResult_dInput1 * inputValues[0].gradient[i] + 
                                  dResult_dInput2 * inputValues[1].gradient[i];
+        }
+        // The concentration [mass %] of an incompressible solution: d(fraction) = d(concentration) / 100
+        if (concentrationVaries) {
+            const size_t n = std::min(numVariables_, concentration.gradient.size());
+            for (size_t i = 0; i < n; ++i)
+                output.gradient[i] += dResult_dFraction * concentration.gradient[i] / 100.0;
         }
         return output;
     };
@@ -2105,6 +2181,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         double result = 0.0;
         double dResult_dInput1 = 0.0;
         double dResult_dInput2 = 0.0;
+        double dResult_dFraction = 0.0;   // mass fraction of an incompressible solution that depends on the unknowns
         
         // ── AbstractState path (low-level API) ──────────────────────
         bool usedAbstractState = false;
@@ -2114,6 +2191,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 
                 auto state = g_abstractStateCache.getOrCreate(
                     coolpropConfig_.getBackendString(), cpFluidName);
+                if (solution) setMassFraction(*state, massFraction);
                 
                 // Determine input pair and canonical ordering
                 double iv1 = 0, iv2 = 0;
@@ -2131,7 +2209,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 if (!std::isfinite(result)) {
                     std::ostringstream oss;
                     oss << "CoolProp returned invalid result (NaN or Inf) for " << outputStr 
-                        << "(" << cpFluidName << ") with inputs: " 
+                        << "(" << callFluidName() << ") with inputs: " 
                         << input1Str << "=" << val1 << siUnitLabel(input1Param) << ", "
                         << input2Str << "=" << val2 << siUnitLabel(input2Param)
                         << coolPropUnitsReminder(units);
@@ -2242,6 +2320,18 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                             dResult_dInput2 = 0.0;
                         }
                     }
+                    
+                    // Derivative with respect to the concentration of the solution, on the same state: two more updates
+                    // at the nominal inputs (the fraction is set before each; the next call sets its own).
+                    if (concentrationVaries) {
+                        const FluidLimits limits =
+                            g_abstractStateCache.fluidLimits(coolpropConfig_.getBackendString(), cpFluidName);
+                        dResult_dFraction = massFractionDerivative([&](double x) {
+                            setMassFraction(*state, x);
+                            state->update(ipair, iv1, iv2);
+                            return getOutputValue(*state, outputInfo.param);
+                        }, massFraction, limits.xMin, limits.xMax);
+                    }
                 }
                 // else: residualOnly_ → derivatives stay 0
                 
@@ -2266,12 +2356,13 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         
         // ── PropsSI fallback path ────────────────────────────────────
         if (!usedAbstractState) {
-            result = timedPropsSI(outputStr, input1Str, val1, input2Str, val2, cpFluidName);
+            const std::string propsName = callFluidName();
+            result = timedPropsSI(outputStr, input1Str, val1, input2Str, val2, propsName);
             
             if (!std::isfinite(result)) {
                 std::ostringstream oss;
                 oss << "CoolProp returned invalid result (NaN or Inf) for " << outputStr 
-                    << "(" << cpFluidName << ") with inputs: " 
+                    << "(" << propsName << ") with inputs: " 
                     << input1Str << "=" << val1 << siUnitLabel(input1Param) << ", "
                     << input2Str << "=" << val2 << siUnitLabel(input2Param)
                     << coolPropUnitsReminder(units);
@@ -2284,17 +2375,27 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 double step1 = std::max(relEps * std::abs(val1), absEps);
                 double step2 = std::max(relEps * std::abs(val2), absEps);
                 
-                double resultPlus1 = timedPropsSI(outputStr, input1Str, val1 + step1, input2Str, val2, cpFluidName);
-                double resultMinus1 = timedPropsSI(outputStr, input1Str, val1 - step1, input2Str, val2, cpFluidName);
+                double resultPlus1 = timedPropsSI(outputStr, input1Str, val1 + step1, input2Str, val2, propsName);
+                double resultMinus1 = timedPropsSI(outputStr, input1Str, val1 - step1, input2Str, val2, propsName);
                 dResult_dInput1 = (std::isfinite(resultPlus1) && std::isfinite(resultMinus1)) ? (resultPlus1 - resultMinus1) / (2.0 * step1) : 0.0;
                 
-                double resultPlus2 = timedPropsSI(outputStr, input1Str, val1, input2Str, val2 + step2, cpFluidName);
-                double resultMinus2 = timedPropsSI(outputStr, input1Str, val1, input2Str, val2 - step2, cpFluidName);
+                double resultPlus2 = timedPropsSI(outputStr, input1Str, val1, input2Str, val2 + step2, propsName);
+                double resultMinus2 = timedPropsSI(outputStr, input1Str, val1, input2Str, val2 - step2, propsName);
                 dResult_dInput2 = (std::isfinite(resultPlus2) && std::isfinite(resultMinus2)) ? (resultPlus2 - resultMinus2) / (2.0 * step2) : 0.0;
+                
+                // Derivative with respect to the concentration of the solution (see the AbstractState path)
+                if (concentrationVaries) {
+                    const FluidLimits limits =
+                        g_abstractStateCache.fluidLimits(coolpropConfig_.getBackendString(), cpFluidName);
+                    dResult_dFraction = massFractionDerivative([&](double x) {
+                        return timedPropsSI(outputStr, input1Str, val1, input2Str, val2,
+                                            solution->getCoolPropNameWithFraction(x));
+                    }, massFraction, limits.xMin, limits.xMax);
+                }
             }
         }
         
-        return postProcess(result, dResult_dInput1, dResult_dInput2);
+        return postProcess(result, dResult_dInput1, dResult_dInput2, dResult_dFraction);
     } catch (const std::exception& e) {
         // ── Penalty-based CoolProp error handling ────────────────────
         // Return a large penalty value with zero gradient rather than

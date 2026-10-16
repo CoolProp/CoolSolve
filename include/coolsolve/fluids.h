@@ -2,6 +2,8 @@
 
 #include <string>
 #include <sstream>
+#include <iomanip>
+#include <locale>
 #include <vector>
 #include <memory>
 #include <map>
@@ -158,12 +160,26 @@ public:
     /// pressure; its enthalpy, entropy and internal energy do (a p/rho term), so they are those at this pressure.
     static constexpr double kInternalPressureSI = 101325.0;
     
-    /// Build a CoolProp fluid name for a given mass fraction (0..1).
-    /// Only meaningful when isSolution() is true.
+    /// Build a CoolProp fluid name for a given mass fraction (0..1), the form that PropsSI reads
+    /// (`INCOMP::MEG[0.3]`). Only meaningful when isSolution() is true.
+    /// The fraction is written with every digit it has: the shortest text of 15 to 17 significant digits that CoolProp
+    /// reads back as exactly `massFraction` (the default stream precision, 6 digits, rounded it: CS-BUG-INCOMP-CONC-AD).
+    /// The evaluator asks CoolProp's cached state for the base name getCoolPropName() and sets the fraction on it;
+    /// this name is for PropsSI and for the messages.
     std::string getCoolPropNameWithFraction(double massFraction) const {
-        std::ostringstream oss;
-        oss << "INCOMP::" << coolPropKey_ << "[" << massFraction << "]";
-        return oss.str();
+        std::string text;
+        for (int digits = 15; digits <= 17; ++digits) {
+            std::ostringstream number;
+            number.imbue(std::locale::classic());
+            number << std::setprecision(digits) << massFraction;
+            text = number.str();
+            if (digits == 17) break;   // 17 digits always read back exactly
+            std::istringstream back(text);
+            back.imbue(std::locale::classic());
+            double value = 0.0;
+            if ((back >> value) && value == massFraction) break;
+        }
+        return "INCOMP::" + coolPropKey_ + "[" + text + "]";
     }
 
 private:

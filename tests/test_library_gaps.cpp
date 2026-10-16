@@ -20599,7 +20599,7 @@ TEST_CASE("CS-BUG-INCOMP-LIBR: the LiBr solution of CoolProp and the ASHRAE rout
     REQUIRE(run.solveOk);
     CHECK(run.verified);
     CHECK_THAT(run["x"], WithinAbs(58.3, 0.1));
-    // the concentration reaches CoolProp as the mass fraction written with 6 digits (as for the other solutions)
+    // the concentration reaches CoolProp as the mass fraction, at full precision since CS-BUG-INCOMP-CONC-AD
     CHECK_THAT(run["rho"], WithinRel(librCoolProp("D", run["x"] / 100.0, 313.15, 1e5), 1e-5));
     CHECK_THAT(run["c"], WithinRel(librCoolProp("C", run["x"] / 100.0, 313.15, 1e5), 1e-5));
     CHECK(librCaloricWarnings(run) == 0);   // H_LIBR is the reference: no warning
@@ -21472,4 +21472,420 @@ TEST_CASE("CS-BUG-INCOMP-SOLIDS: the unsupported solids are not ideal gases and 
     auto ok = runModel("y = cp(Water, T=50, P=101325)\nz = cp(MEG, 30, T=50, P=101325)\n");
     REQUIRE(ok.solveOk);
     CHECK(ok.verified);
+}
+
+// ============================================================================
+// CS-BUG-INCOMP-CONC-AD: the concentration of an incompressible solution has a derivative and reaches CoolProp exactly
+// ============================================================================
+// The concentration of a solution (second positional argument or C=, conc=, concentration=; mass %) was read as a plain
+// double: its gradient was dropped (an unknown concentration had a zero Jacobian column: `rho = density(MEG, C, T=20,
+// P=1e5)` ⏎ `rho = 1040` ended after 50 iterations at C = 31.39765, 7 digits) and it reached CoolProp in the fluid name
+// `INCOMP::MEG[0.313977]`, written with 6 significant digits. Now the fraction is set on the cached CoolProp state of the
+// base name (`INCOMP::MEG`) before each update, at full precision (the cache holds one state per fluid, not one per
+// iterate), and the derivative with respect to the concentration, which CoolProp does not give, is a central difference
+// in the mass fraction on that state, computed only when the concentration depends on the unknowns.
+
+namespace {
+
+/// Value and derivatives with respect to Cv [mass %] and Tv [C] of the property call `call` (written with the variables
+/// Cv and Tv) at (C, T), straight from the automatic differentiation.
+struct IncompConcCall { double value, dC, dT; };
+
+IncompConcCall evalIncompConcCall(const std::string& call, double C, double T, const CoolPropConfig& cfg = CoolPropConfig()) {
+    EESParser parser;
+    auto parsed = parser.parse("y = " + call + "\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    ExpressionEvaluator ev(2, cfg);
+    ev.setVariable("Cv", ADValue::independent(C, 0, 2));
+    ev.setVariable("Tv", ADValue::independent(T, 1, 2));
+    const ADValue r = ev.evaluate(ir.getEquations()[0].rhs);
+    REQUIRE(r.gradient.size() == 2);
+    return {r.value, r.gradient[0], r.gradient[1]};
+}
+
+/// The concentration [mass %] in [lo, hi] at which CoolProp's `output` of INCOMP::<key> at T [C], P [Pa] equals `target`,
+/// by bisection on PropsSI (the property must be monotone in the concentration there): independent of CoolSolve.
+double incompRootPercent(const char* output, const char* key, double target, double T_C, double P_Pa, double lo, double hi) {
+    const double flo = incompRef(output, key, lo, T_C, P_Pa) - target;
+    for (int i = 0; i < 200; ++i) {
+        const double mid = 0.5 * (lo + hi);
+        const double fm = incompRef(output, key, mid, T_C, P_Pa) - target;
+        if ((fm < 0.0) == (flo < 0.0)) lo = mid; else hi = mid;
+    }
+    return 0.5 * (lo + hi);
+}
+
+/// Misses of the thread-local state cache (the states created) since the last reset; -1 when no property call went
+/// through the cache. Read from the profiling report ("Cache hits/misses: H/M").
+long cacheMisses(long* hits = nullptr) {
+    const std::string report = getProfilingStatsString();
+    const std::string key = "Cache hits/misses: ";
+    const auto at = report.find(key);
+    if (at == std::string::npos) return -1;
+    const auto slash = report.find('/', at + key.size());
+    if (hits) *hits = std::stol(report.substr(at + key.size(), slash - at - key.size()));
+    return std::stol(report.substr(slash + 1));
+}
+
+/// A model `y = <call>` ⏎ `y = <value of the call at x0>` with the unknown concentration named C in `call`: the solution
+/// must be x0 [mass %] to full precision, in a few Newton iterations.
+void requireConcentrationSolved(const std::string& call, const char* output, const char* key, double x0, double T_C,
+                                double P_Pa) {
+    const std::string code = "y = " + call + "\ny = " + numText(incompRef(output, key, x0, T_C, P_Pa)) + "\n";
+    INFO(code);
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["C"], WithinRel(x0, 1e-9));
+    const int iterations = solverIterations(code);
+    CHECK(iterations > 0);
+    CHECK(iterations <= 10);
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: register reproducer, an unknown MEG concentration is solved to full precision in a few iterations",
+          "[library-gaps][incomp-conc-ad]") {
+    // was: SUCCESS after 50 iterations, C = 31.39765 (7 digits), a zero Jacobian column
+    const std::string code = "rho = density(MEG, C, T=20, P=1e5)\nrho = 1040\n";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // the root by bisection on CoolProp's own PropsSI, independent of CoolSolve
+    const double Cref = incompRootPercent("D", "MEG", 1040.0, 20, 1e5, 5.0, 55.0);
+    CHECK_THAT(Cref, WithinAbs(31.3976, 1e-3));   // the register's value, 31.39765, is the one the 6 digits of the fraction gave
+    CHECK_THAT(run["C"], WithinRel(Cref, 1e-9));
+    CHECK_THAT(run["rho"], WithinRel(1040.0, 1e-12));
+    // CoolProp at the solved concentration, written with all its digits: 1040 kg/m3
+    CHECK_THAT(incompRef("D", "MEG", run["C"], 20, 1e5), WithinRel(1040.0, 1e-10));
+    const int iterations = solverIterations(code);
+    INFO("iterations: " << iterations);
+    CHECK(iterations > 0);
+    CHECK(iterations <= 10);
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: C=, conc= and concentration= are solved like the second positional argument",
+          "[library-gaps][incomp-conc-ad]") {
+    const double Cref = incompRootPercent("D", "MEG", 1040.0, 20, 1e5, 5.0, 55.0);
+    for (const char* spelling : {"C=C", "conc=C", "concentration=C", "c=C"}) {
+        INFO(spelling);
+        const std::string code = std::string("rho = density(MEG, T=20, P=1e5, ") + spelling + ")\nrho = 1040\n";
+        auto run = runModel(code);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["C"], WithinRel(Cref, 1e-9));
+        CHECK(solverIterations(code) <= 10);
+    }
+    // a concentration that is an expression of the unknown: 2*C + 1 = 31 mass %, so C = 15
+    const std::string code = "y = density(MEG, 2*C + 1, T=20, P=1e5)\ny = " + numText(incompRef("D", "MEG", 31.0, 20, 1e5)) + "\n";
+    auto expr = runModel(code);
+    INFO(expr.message);
+    REQUIRE(expr.solveOk);
+    CHECK(expr.verified);
+    CHECK_THAT(expr["C"], WithinRel(15.0, 1e-9));
+    CHECK(solverIterations(code) <= 10);
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: cp, conductivity and the EES form with T alone of an unknown MEG concentration",
+          "[library-gaps][incomp-conc-ad]") {
+    requireConcentrationSolved("cp(MEG, C, T=40, P=1e5)", "C", "MEG", 37.123456789, 40, 1e5);
+    requireConcentrationSolved("cp(EG, T=40, C=C)", "C", "MEG", 37.123456789, 40, 101325.0);   // T alone: internal pressure
+    requireConcentrationSolved("conductivity(MEG, T=30, P=1e5, conc=C)", "L", "MEG", 22.987654321, 30, 1e5);
+    requireConcentrationSolved("density(MEG, C, T=20, P=1e5)", "D", "MEG", 31.39765432109, 20, 1e5);
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: an unknown concentration of a LiBr, SeaWater, MPG or brine solution", "[library-gaps][incomp-conc-ad]") {
+    requireConcentrationSolved("density(LiBr, C, T=40, P=1e5)", "D", "LiBr", 47.123456789, 40, 1e5);
+    requireConcentrationSolved("cp(LiBr, T=40, C=C)", "C", "LiBr", 52.5, 40, 101325.0);
+    requireConcentrationSolved("density(SeaWater, C, T=20, P=1e5)", "D", "MITSW", 3.512345678, 20, 1e5);
+    requireConcentrationSolved("cp(SeaWater, C, T=20, P=1e5)", "C", "MITSW", 7.654321098, 20, 1e5);
+    requireConcentrationSolved("density(MPG, C, T=30, P=1e5)", "D", "MPG", 41.2345678, 30, 1e5);
+    requireConcentrationSolved("density(MCA, C, T=10, P=1e5)", "D", "MCA", 18.8765432, 10, 1e5);
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: the derivative with respect to the concentration is the central difference of CoolProp",
+          "[library-gaps][incomp-conc-ad]") {
+    struct Case { const char* fluid; const char* key; double C; double T; std::vector<std::pair<const char*, const char*>> props; };
+    // (EES name, CoolProp output)
+    const std::vector<Case> cases = {
+        {"MEG", "MEG", 30.0, 50.0, {{"cp", "C"}, {"density", "D"}, {"viscosity", "V"}, {"conductivity", "L"},
+                                    {"enthalpy", "H"}, {"entropy", "S"}, {"intenergy", "U"}}},
+        {"MPG", "MPG", 40.0, 30.0, {{"cp", "C"}, {"density", "D"}, {"viscosity", "V"}, {"conductivity", "L"}}},
+        {"MCA", "MCA", 20.0, 10.0, {{"cp", "C"}, {"density", "D"}, {"viscosity", "V"}, {"conductivity", "L"}}},
+        {"LiBr", "LiBr", 50.0, 40.0, {{"cp", "C"}, {"density", "D"}, {"enthalpy", "H"}}},
+        {"SeaWater", "MITSW", 3.5, 20.0, {{"cp", "C"}, {"density", "D"}, {"viscosity", "V"}, {"conductivity", "L"},
+                                          {"enthalpy", "H"}}},
+    };
+    const double h = 1e-3;   // mass %
+    for (const auto& c : cases) {
+        for (const auto& [eesName, output] : c.props) {
+            INFO(c.fluid << " " << eesName);
+            const double fd = (incompRef(output, c.key, c.C + h, c.T, 1e5) - incompRef(output, c.key, c.C - h, c.T, 1e5)) / (2.0 * h);
+            // positional concentration, and the named spellings (the temperature as an input of the call)
+            for (const std::string& conc : {std::string("Cv, T=Tv, P=1e5"), std::string("T=Tv, P=1e5, C=Cv"),
+                                            std::string("T=Tv, P=1e5, conc=Cv"), std::string("T=Tv, P=1e5, concentration=Cv")}) {
+                INFO(conc);
+                const IncompConcCall r = evalIncompConcCall(std::string(eesName) + "(" + c.fluid + ", " + conc + ")", c.C, c.T);
+                CHECK_THAT(r.value, WithinRel(incompRef(output, c.key, c.C, c.T, 1e5), 1e-12));
+                CHECK_THAT(r.dC, WithinRel(fd, 1e-5));
+                CHECK(r.dC != 0.0);
+                // the derivative with respect to T is CoolProp's slope as well (the AbstractState path serves the
+                // incompressibles since CS-BUG-INCOMP-CONC-AD, with CoolProp's analytical derivatives)
+                const double dT = (incompRef(output, c.key, c.C, c.T + h, 1e5) - incompRef(output, c.key, c.C, c.T - h, 1e5)) / (2.0 * h);
+                CHECK_THAT(r.dT, WithinRel(dT, 1e-4));
+            }
+        }
+    }
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: the derivative with respect to T is untouched, the concentration enters the chain rule",
+          "[library-gaps][incomp-conc-ad]") {
+    const double C = 30.0, T = 50.0;
+    for (const char* prop : {"cp", "density", "viscosity", "conductivity", "enthalpy"}) {
+        INFO(prop);
+        const IncompConcCall dependent = evalIncompConcCall(std::string(prop) + "(MEG, Cv, T=Tv, P=1e5)", C, T);
+        const IncompConcCall fixed = evalIncompConcCall(std::string(prop) + "(MEG, 30, T=Tv, P=1e5)", C, T);
+        CHECK(dependent.value == fixed.value);
+        CHECK(dependent.dT == fixed.dT);   // a constant concentration: the same path, no extra term
+        CHECK(fixed.dC == 0.0);            // and no derivative with respect to it
+        // a concentration that is an expression of Cv: d/dCv = f'(x) * dx/dCv
+        const IncompConcCall chained = evalIncompConcCall(std::string(prop) + "(MEG, 2*Cv + 5, T=Tv, P=1e5)", 12.5, T);
+        const IncompConcCall plain = evalIncompConcCall(std::string(prop) + "(MEG, Cv, T=Tv, P=1e5)", 30.0, T);
+        CHECK_THAT(chained.value, WithinRel(plain.value, 1e-12));
+        CHECK_THAT(chained.dC, WithinRel(2.0 * plain.dC, 1e-7));
+    }
+    // a derivative through the temperature and the concentration both depending on one unknown
+    const double h = 1e-4;
+    EESParser parser;
+    auto parsed = parser.parse("y = density(MEG, 10 + 2*u, T=20 + 5*u, P=1e5)\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    ExpressionEvaluator ev(1);
+    ev.setVariable("u", ADValue::independent(3.0, 0, 1));
+    const ADValue r = ev.evaluate(ir.getEquations()[0].rhs);
+    auto at = [](double u) { return incompRef("D", "MEG", 10 + 2 * u, 20 + 5 * u, 1e5); };
+    CHECK_THAT(r.gradient[0], WithinRel((at(3.0 + h) - at(3.0 - h)) / (2 * h), 1e-5));
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: the derivative at the ends of the fluid's range is one-sided and finite",
+          "[library-gaps][incomp-conc-ad]") {
+    const double h = 1e-3;
+    // MEG is defined from 0 to 60 %: the step is clipped inside, no error and no zero from a failed CoolProp call
+    const IncompConcCall top = evalIncompConcCall("density(MEG, Cv, T=Tv, P=1e5)", 60.0, 20.0);
+    CHECK_THAT(top.value, WithinRel(incompRef("D", "MEG", 60.0, 20.0, 1e5), 1e-12));
+    CHECK_THAT(top.dC, WithinRel((incompRef("D", "MEG", 60.0, 20.0, 1e5) - incompRef("D", "MEG", 60.0 - h, 20.0, 1e5)) / h, 1e-3));
+    const IncompConcCall bottom = evalIncompConcCall("density(MEG, Cv, T=Tv, P=1e5)", 0.0, 20.0);
+    CHECK_THAT(bottom.value, WithinRel(incompRef("D", "MEG", 0.0, 20.0, 1e5), 1e-12));
+    CHECK_THAT(bottom.dC, WithinRel((incompRef("D", "MEG", h, 20.0, 1e5) - incompRef("D", "MEG", 0.0, 20.0, 1e5)) / h, 1e-3));
+    // 75 % is the end of the LiBr fit, 12 % that of the sea water
+    const IncompConcCall libr = evalIncompConcCall("density(LiBr, Cv, T=Tv, P=1e5)", 75.0, 40.0);
+    CHECK_THAT(libr.dC, WithinRel((incompRef("D", "LiBr", 75.0, 40.0, 1e5) - incompRef("D", "LiBr", 75.0 - h, 40.0, 1e5)) / h, 1e-3));
+    const IncompConcCall sea = evalIncompConcCall("density(SeaWater, Cv, T=Tv, P=1e5)", 12.0, 20.0);
+    CHECK_THAT(sea.dC, WithinRel((incompRef("D", "MITSW", 12.0, 20.0, 1e5) - incompRef("D", "MITSW", 12.0 - h, 20.0, 1e5)) / h, 1e-3));
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: a constant concentration with many digits reaches CoolProp unrounded",
+          "[library-gaps][incomp-conc-ad]") {
+    // was: the fraction written with 6 significant digits, INCOMP::MEG[0.313977]
+    const double percent = 31.39765432109;
+    const double exact = incompRef("D", "MEG", percent, 20, 1e5);   // PropsSI on "INCOMP::MEG[<17 digits>]"
+    const double rounded = incompRef("D", "MEG", 31.3977, 20, 1e5);   // what 6 digits of the fraction gave
+    REQUIRE(std::abs(exact - rounded) > 1e-9 * exact);   // the test can see a rounding
+    auto run = runModel(
+        "a = density(MEG, 31.39765432109, T=20, P=1e5)\n"
+        "b = density(MEG, T=20, P=1e5, C=31.39765432109)\n"
+        "c = density(MEG, T=20, P=1e5, conc=31.39765432109)\n"
+        "x = 31.39765432109\n"
+        "d = density(MEG, x, T=20, P=1e5)\n"
+        "e = density(MEG, T=20, P=1e5, concentration=x)\n"
+        "f = cp(EG, T=20, C=31.39765432109)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const char* name : {"a", "b", "c", "d", "e"}) {
+        INFO(name);
+        CHECK_THAT(run[name], WithinRel(exact, 1e-13));
+    }
+    CHECK_THAT(run["f"], WithinRel(incompRef("C", "MEG", percent, 20, 101325.0), 1e-13));
+    // PropsSI path (no AbstractState): the same value, from the same full-precision name
+    CoolPropConfig viaPropsSI;
+    viaPropsSI.useAbstractState = false;
+    CHECK_THAT(evalIncompConcCall("density(MEG, 31.39765432109, T=Tv, P=1e5)", 0.0, 20.0, viaPropsSI).value, WithinRel(exact, 1e-13));
+    CHECK_THAT(evalIncompConcCall("density(MEG, 31.39765432109, T=Tv, P=1e5)", 0.0, 20.0).value, WithinRel(exact, 1e-13));
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: the fluid name with the fraction round-trips every digit", "[library-gaps][incomp-conc-ad]") {
+    auto meg = std::dynamic_pointer_cast<IncompressibleFluid>(FluidRegistry::getFluid("MEG"));
+    REQUIRE(meg);
+    for (double x : {0.3139765432109, 1.0 / 3.0, 0.035, 0.12, 1e-7, 0.6, 0.0, 0.30000000000000004, 0.7499999999999999}) {
+        INFO(numText(x));
+        const std::string name = meg->getCoolPropNameWithFraction(x);
+        REQUIRE(name.rfind("INCOMP::MEG[", 0) == 0);
+        REQUIRE(name.back() == ']');
+        const std::string digits = name.substr(12, name.size() - 13);
+        CHECK(std::stod(digits) == x);   // the text is read back as exactly the same fraction
+    }
+    // readable when a few digits are enough
+    CHECK(meg->getCoolPropNameWithFraction(0.3) == "INCOMP::MEG[0.3]");
+    CHECK(meg->getCoolPropNameWithFraction(0.035) == "INCOMP::MEG[0.035]");
+    // the name of the fluid itself (the cached state) has no fraction
+    CHECK(meg->getCoolPropName() == "INCOMP::MEG");
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: both CoolProp paths agree, value and derivatives", "[library-gaps][incomp-conc-ad]") {
+    CoolPropConfig viaPropsSI;
+    viaPropsSI.useAbstractState = false;
+    for (const char* call : {"density(MEG, Cv, T=Tv, P=1e5)", "cp(MEG, T=Tv, P=1e5, C=Cv)", "viscosity(PG, Cv, T=Tv, P=1e5)",
+                             "enthalpy(MEG, Cv, T=Tv, P=1e5)", "density(LiBr, Cv, T=Tv, P=1e5)",
+                             "conductivity(SeaWater, Cv, T=Tv, P=1e5)"}) {
+        INFO(call);
+        const bool sea = std::string(call).find("SeaWater") != std::string::npos;
+        const bool libr = std::string(call).find("LiBr") != std::string::npos;
+        const double C = sea ? 3.5 : libr ? 50.0 : 30.0, T = 40.0;
+        const IncompConcCall as = evalIncompConcCall(call, C, T);
+        const IncompConcCall ps = evalIncompConcCall(call, C, T, viaPropsSI);
+        CHECK_THAT(as.value, WithinRel(ps.value, 1e-12));
+        CHECK_THAT(as.dC, WithinRel(ps.dC, 1e-6));
+        CHECK_THAT(as.dT, WithinRel(ps.dT, 1e-4));   // CoolProp's analytical slope against the central difference of PropsSI
+    }
+    // and the solve with the PropsSI path takes the derivative too
+    const std::string code = "rho = density(MEG, C, T=20, P=1e5)\nrho = 1040\n";
+    const double Cref = incompRootPercent("D", "MEG", 1040.0, 20, 1e5, 5.0, 55.0);
+    const std::string file = (fs::temp_directory_path() / "coolsolve_test_library_gaps" / "incomp_conc_propssi.eescode").string();
+    fs::create_directories(fs::path(file).parent_path());
+    { std::ofstream f(file); f << code; }
+    CoolSolveRunner runner(file);
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    options.coolpropConfig.useAbstractState = false;
+    REQUIRE(runner.run(options));
+    fs::remove(file);
+    CHECK_THAT(runner.getSolveResult().variables.at("C"), WithinRel(Cref, 1e-9));
+    CHECK(runner.getSolveResult().totalIterations <= 10);
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: volume, kinematic viscosity, Prandtl number and thermal diffusivity carry the derivative",
+          "[library-gaps][incomp-conc-ad]") {
+    const double C = 30.0, T = 40.0, h = 1e-3;
+    auto ref = [&](const char* output, double percent) { return incompRef(output, "MEG", percent, T, 1e5); };
+    struct Derived { const char* call; std::function<double(double)> at; };
+    const std::vector<Derived> derived = {
+        {"volume(MEG, Cv, T=Tv, P=1e5)", [&](double x) { return 1.0 / ref("D", x); }},
+        {"kinematicviscosity(MEG, Cv, T=Tv, P=1e5)", [&](double x) { return ref("V", x) / ref("D", x); }},
+        {"prandtl(MEG, Cv, T=Tv, P=1e5)", [&](double x) { return ref("C", x) * ref("V", x) / ref("L", x); }},
+        {"thermaldiffusivity(MEG, T=Tv, P=1e5, C=Cv)", [&](double x) { return ref("L", x) / (ref("D", x) * ref("C", x)); }},
+    };
+    for (const auto& d : derived) {
+        INFO(d.call);
+        const IncompConcCall r = evalIncompConcCall(d.call, C, T);
+        CHECK_THAT(r.value, WithinRel(d.at(C), 1e-9));
+        CHECK_THAT(r.dC, WithinRel((d.at(C + h) - d.at(C - h)) / (2.0 * h), 1e-5));
+    }
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: the derivative follows the units of the output, the concentration is always mass %",
+          "[library-gaps][incomp-conc-ad]") {
+    // enthalpy in kJ/kg, T in K, P in bar: the derivative per mass % of the output is that of the SI one in kJ/kg
+    CoolPropConfig si;
+    CoolPropConfig other;
+    other.units.temperature = "K";
+    other.units.pressure = "bar";
+    other.units.specific_energy = "kJ/kg";
+    const IncompConcCall a = evalIncompConcCall("enthalpy(MEG, Cv, T=Tv, P=1e5)", 30.0, 50.0, si);
+    const IncompConcCall b = evalIncompConcCall("enthalpy(MEG, Cv, T=Tv, P=1.0)", 30.0, 323.15, other);
+    CHECK_THAT(b.value, WithinRel(a.value / 1000.0, 1e-9));
+    CHECK_THAT(b.dC, WithinRel(a.dC / 1000.0, 1e-9));
+    CHECK_THAT(b.dT, WithinRel(a.dT / 1000.0, 1e-9));
+    // the concentration is mass % in every unit system: the same solved concentration
+    const double h = 1e-3;
+    CHECK_THAT(b.dC * 1000.0, WithinRel((incompRef("H", "MEG", 30.0 + h, 50.0, 1e5) - incompRef("H", "MEG", 30.0 - h, 50.0, 1e5)) / (2 * h), 1e-5));
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: the state cache holds one state per fluid, not one per concentration", "[library-gaps][incomp-conc-ad]") {
+    // the unknown concentration: every Newton iterate is a new fraction
+    resetProfilingStats();
+    auto run = runModel("rho = density(MEG, C, T=20, P=1e5)\nrho = 1040\n");
+    REQUIRE(run.solveOk);
+    long hits = 0;
+    const long misses = cacheMisses(&hits);
+    INFO("hits " << hits << ", misses " << misses);
+    REQUIRE(misses >= 0);          // the property calls go through the cache of CoolProp states
+    CHECK(misses <= 2);            // INCOMP::MEG (once), not one state per iterate
+    CHECK(hits >= 3);
+    // many constant concentrations of the same fluid in one model, and two fluids
+    std::string code;
+    for (int i = 0; i < 40; ++i)
+        code += "r" + std::to_string(i) + " = density(MEG, " + numText(10.0 + 0.7131 * i) + ", T=20, P=1e5)\n";
+    code += "w = density(SeaWater, 3.3333, T=20, P=1e5)\nv = cp(MEG, T=20, C=33.3333)\n";
+    resetProfilingStats();
+    auto many = runModel(code);
+    REQUIRE(many.solveOk);
+    CHECK(many.verified);
+    const long manyMisses = cacheMisses();
+    INFO("misses " << manyMisses);
+    CHECK(manyMisses >= 1);
+    CHECK(manyMisses <= 3);        // INCOMP::MEG and INCOMP::MITSW
+    for (int i = 0; i < 40; ++i) {   // and every one of them is exact: the fraction is set before each update
+        INFO(i);
+        CHECK_THAT(many["r" + std::to_string(i)], WithinRel(incompRef("D", "MEG", 10.0 + 0.7131 * i, 20, 1e5), 1e-12));
+    }
+    CHECK_THAT(many["w"], WithinRel(seawaterRef("D", 3.3333, 20, 1e5), 1e-12));
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: a state shared by calls of different concentrations gives each its own value",
+          "[library-gaps][incomp-conc-ad]") {
+    // the same cached state is used by every call of the fluid: the fraction set by one call must not leak into the next
+    auto run = runModel(
+        "a = density(MEG, 20, T=20, P=1e5)\n"
+        "b = density(MEG, 50, T=20, P=1e5)\n"
+        "c = density(MEG, 20, T=20, P=1e5)\n"
+        "d = enthalpy(MEG, 50, T=20, P=1e5)\n"
+        "e = enthalpy(MEG, 20, T=20, P=1e5)\n"
+        "f = enthalpy(MEG, 50, T=20, P=1e5)\n"
+        "g = density(MPG, 20, T=20, P=1e5)\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinRel(incompRef("D", "MEG", 20, 20), 1e-12));
+    CHECK_THAT(run["b"], WithinRel(incompRef("D", "MEG", 50, 20), 1e-12));
+    CHECK(run["a"] == run["c"]);
+    CHECK_THAT(run["d"], WithinRel(incompRef("H", "MEG", 50, 20, 1e5), 1e-12));
+    CHECK_THAT(run["e"], WithinRel(incompRef("H", "MEG", 20, 20, 1e5), 1e-12));
+    CHECK(run["d"] == run["f"]);
+    CHECK_THAT(run["g"], WithinRel(incompRef("D", "MPG", 20, 20), 1e-12));
+}
+
+TEST_CASE("CS-BUG-INCOMP-CONC-AD: a concentration outside the range keeps the existing errors", "[library-gaps][incomp-conc-ad]") {
+    SECTION("outside 0..100 %: the usual error of the solutions, also for an unknown concentration") {
+        for (const char* call : {"density(MEG, 150, T=20, P=1e5)", "density(MEG, -5, T=20, P=1e5)", "cp(EG, T=20, C=101)",
+                                 "density(LiBr, T=40, P=1e5, C=-1)"}) {
+            INFO(call);
+            auto run = runModel(std::string("y = ") + call + "\n");
+            REQUIRE(run.parseOk);
+            REQUIRE_FALSE(run.solveOk);
+            CHECK(anyContains({run.message}, "requires a concentration (mass %, 0..100)"));
+        }
+    }
+    SECTION("above the range of the fluid's fit: CoolProp's failure, never a silent value, the fraction named in full") {
+        requireLiBrCallError("density(MEG, 61, T=20, P=1e5)", {"density", "INCOMP::MEG[0.61]"});
+        requireLiBrCallError("density(LiBr, 80, T=40, P=1e5)", {"density", "INCOMP::LiBr[0.8]"});
+        requireLiBrCallError("density(SeaWater, 13, T=20, P=1e5)", {"density", "INCOMP::MITSW[0.13]"});
+    }
+    SECTION("an unreachable value of an unknown concentration is not a solution") {
+        auto run = runModel("rho = density(MEG, C, T=20, P=1e5)\nrho = 5000\n");
+        INFO(run.message);
+        CHECK_FALSE((run.solveOk && run.verified));
+    }
+    SECTION("a real fluid still has no concentration, an incompressible one needs it") {
+        auto water = runModel("y = density(Water, T=20, C=30)\n");
+        REQUIRE_FALSE(water.solveOk);
+        CHECK(anyContains({water.message}, "Unknown CoolProp input: c"));
+        auto meg = runModel("y = density(MEG, T=20, P=1e5)\n");
+        REQUIRE_FALSE(meg.solveOk);
+        CHECK(anyContains({meg.message}, "Incompressible solution 'MEG' requires a concentration (mass %, 0..100)"));
+    }
 }

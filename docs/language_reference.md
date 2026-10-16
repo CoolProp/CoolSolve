@@ -1045,6 +1045,17 @@ cp_w = cp(EG, T=50, C=30)                  "the EES form: T and the concentratio
 rho_sw = density(SeaWater, 3.5, T=20, P=101325)   "sea water, salinity 3.5 % (35 g/kg): 1024.9 kg/m3"
 ```
 
+**The concentration can be an unknown of the model.** `rho = density(MEG, C, T=20, P=1E5)` ⏎ `rho = 1040` solves for
+`C` (31.39764 % in 4 iterations), with the second positional argument as well as with `C=`, `conc=` or `concentration=`,
+and for every solution of the table. The concentration reaches CoolProp **at full precision** (not rounded), and the
+derivative of the property with respect to it is part of the Jacobian. The derivatives with respect to the other inputs
+(`T`, `P`, …) are CoolProp's analytical ones; CoolProp has **none with respect to the concentration** of an
+incompressible, so that one is a **central finite difference** in the mass fraction (step 1E-6, one-sided at the ends of
+the fluid's range: 0–60 % for `MEG`, 0–75 % for `LiBr`, 0–12 % for `SeaWater`), taken only when the concentration depends
+on the unknowns of the block: a constant concentration costs nothing more. During the iterations a concentration
+outside 0–100 % is the usual error asking for a concentration, and one inside that but above the range of the fluid is a
+CoolProp failure (a penalty value for the iterations, an error in the final check of the solution).
+
 **The EES form: the temperature and the concentration alone.** EES evaluates an incompressible substance with the
 temperature as its only state input and the concentration `C` in mass %: `cp('EG',T=T,C=30)`,
 `density(EG,T=T,C=30)`, `viscosity(...)`, `conductivity(...)`. CoolSolve accepts it for every substance of this section
