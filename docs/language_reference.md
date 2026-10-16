@@ -810,7 +810,8 @@ SulfurDioxide, SulfurHexafluoride, Xenon, Air_ha (real dry air).
 
 The properties that depend on temperature only (`enthalpy`, `intenergy`,
 `cp`, `cv`) can be called with `T` alone, as in EES — typically for mean
-specific heats:
+specific heats. Every spelling of these functions takes `T` alone, as it takes `T` and `P`
+(`intenergy`, `internalenergy`, `u`; `h`; `specheat`, `specificheat`, `c_p`, `c`; `c_v`; `t`):
 
 ```ees
 c_bar_p = (enthalpy(CO2,T=T_p1) - enthalpy(CO2,T=T_p2)) / (T_p1 - T_p2)
@@ -825,7 +826,12 @@ temperature (or h or u), or two inputs such as T and P / d and P*). Give two inp
 CoolSolve evaluates them at an internal reference pressure (101325 Pa; 100 Pa
 for `H2O`, which keeps the vapor phase down to −20 °C). This pressure is part
 of the model: it is never clamped by the solver and is identical in the solve
-and in the final verification.
+and in the final verification. `intenergy(CO2, T=25)` is the call with `T=25, P=101325`, and
+`h − P/ρ` of that state: the internal energy has the reference of the enthalpy (the enthalpy of
+formation for the species of the table below), and since CoolSolve evaluates the gases with CoolProp's
+real-gas equations of state, `u = h − Z·R·T` with `R = R̄/M` and the compressibility factor `Z` at the
+internal pressure (at 25 °C: `Z` = 0.9950 for `CO2`, 0.9998 for `N2`, 0.9997 for `Air`, 0.99994 for `H2O` vapor
+at 100 Pa): the ideal-gas value `h − R·T` to that factor, not to the last digit.
 
 The transport properties of the dilute gas depend on the temperature only too:
 `viscosity`, `conductivity` and `prandtl` (alias `mu`, `k`, `l`) can be called with `T`

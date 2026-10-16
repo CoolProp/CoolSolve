@@ -1649,12 +1649,24 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         // evaluated at the dummy pressure (a few tenths of a percent from the
         // dilute-gas limit); the density-dependent ones (kinematic viscosity, thermal
         // diffusivity) are not, they need the pressure.
+        // The outputs are those of the table of the two-input path (getCoolPropOutputParam), so that every
+        // spelling that works with T and P works with T alone: h, u (intenergy, internalenergy), cp (specheat,
+        // specificheat, c_p, c), cv (c_v) and T. t_sat, wetbulb... share CoolProp's T parameter but are not T.
         auto isThermalOnly = [](const std::string& prop) {
-            std::string p = prop;
-            for (auto& c : p) c = std::tolower(c);
-            return p == "h" || p == "enthalpy" || p == "u" || p == "internalenergy" ||
-                   p == "cp" || p == "cv" || p == "specheat" ||
-                   p == "t" || p == "temperature";
+            CoolProp::parameters out;
+            try {
+                out = getCoolPropOutputParam(prop).param;
+            } catch (const std::exception&) {
+                return false;   // not an output: the error of the caller names it
+            }
+            switch (out) {
+                case CoolProp::iHmass: case CoolProp::iUmass: case CoolProp::iCpmass: case CoolProp::iCvmass:
+                    return true;
+                case CoolProp::iT:
+                    return prop == "t" || prop == "temperature";
+                default:
+                    return false;
+            }
         };
         auto isTransport = [](const std::string& prop) {
             return prop == "viscosity" || prop == "mu" || prop == "conductivity" ||

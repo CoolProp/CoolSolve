@@ -18590,3 +18590,319 @@ TEST_CASE("CS-BUG-IDEAL-SINGLE-INPUT: negative tests, what stays an error", "[li
         CHECK(run.message.find("does not support T,H as input pair") != std::string::npos);
     }
 }
+
+// ============================================================================
+// CS-BUG-IDEAL-INTENERGY: the alias `intenergy` of the internal energy (and every other spelling of the
+// temperature-only outputs: specificheat, c_p, c_v, c) is accepted with the temperature alone, like
+// enthalpy, cp and cv: the single-input path of an ideal gas takes its outputs from the table of the
+// two-input path (getCoolPropOutputParam) instead of a second list of names
+// ============================================================================
+
+namespace {
+
+/// The ideal gases of the registry, whose enthalpy, internal energy, cp and cv take T alone (CO included).
+const std::vector<IdealGasRef> kIdealGasesAll = [] {
+    std::vector<IdealGasRef> all = kIdealGasesWithTransport;
+    all.push_back({"CO", "CarbonMonoxide", 101325.0});
+    return all;
+}();
+
+/// Gas constant per kg of a CoolProp fluid, R = Rbar/M [J/kg-K], with CoolProp's molar mass.
+double gasConstantPerKg(const char* coolProp) {
+    return 8.314462618 / CoolProp::PropsSI("molar_mass", "", 0.0, "", 0.0, coolProp);
+}
+
+/// Enthalpy of formation per kg minus CoolProp's enthalpy at (T [K], P [Pa]): the offset that puts the
+/// enthalpy and the internal energy of CO2 on the EES basis (reference at 25 C and the internal pressure).
+double co2ReferenceOffset() {
+    return -393510e3 / (1000.0 * CoolProp::PropsSI("molar_mass", "", 0.0, "", 0.0, "CarbonDioxide")) -
+           CoolProp::PropsSI("H", "T", 298.15, "P", 101325.0, "CarbonDioxide");
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-IDEAL-INTENERGY: register reproducer, intenergy(CO2, T=25) with the temperature alone",
+          "[library-gaps][ideal-intenergy]") {
+    // used to fail: "Ideal gas property 'intenergy' requires pressure input"
+    auto run = runModel(R"(
+u = intenergy(CO2, T=25)
+h = enthalpy(CO2, T=25)
+u_p = intenergy(CO2, T=25, P=101325)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_FALSE(anyContains(run.warnings, "requires pressure input"));
+    // the internal pressure of the ideal-gas model: the call with T and that pressure gives the same
+    CHECK_THAT(run["u"], WithinRel(run["u_p"], 1e-12));
+    // same reference as the enthalpy: CoolProp's u and h differ by P/rho at the state, and the formation
+    // enthalpy of CO2 (-393 510 kJ/kmol) is the offset of both
+    const double rho = CoolProp::PropsSI("D", "T", 298.15, "P", 101325.0, "CarbonDioxide");
+    CHECK_THAT(run["u"], WithinRel(run["h"] - 101325.0 / rho, 1e-9));
+    // u = h - R T of the ideal gas, with R = Rbar/M: within the real-gas residual of CoolProp's CO2 at 1 atm
+    // (Z = 0.995, so P/rho = 0.995 R T)
+    const double RT = gasConstantPerKg("CarbonDioxide") * 298.15;
+    CHECK_THAT(run["u"], WithinAbs(run["h"] - RT, 0.01 * RT));
+    CHECK_THAT(run["u"], WithinRel(CoolProp::PropsSI("U", "T", 298.15, "P", 101325.0, "CarbonDioxide") + co2ReferenceOffset(), 1e-9));
+    CHECK(run["u"] < -8.9e6);   // the formation enthalpy -393 510 kJ/kmol / 44.0098 = -8.94e6 J/kg
+}
+
+TEST_CASE("CS-BUG-IDEAL-INTENERGY: every spelling of the internal energy takes the temperature alone",
+          "[library-gaps][ideal-intenergy]") {
+    // the same value for intenergy, internalenergy and u, quoted or not, any case, for each ideal gas
+    for (const auto& g : kIdealGasesAll) {
+        INFO(g.ees);
+        const std::string fluid = g.ees;
+        const double ref = idealTransportAD("intenergy(" + fluid + ", T=25, P=" + numText(g.dummyP) + ")", 25.0).first;
+        for (const std::string call : {"intenergy(" + fluid + ", T=25)", "intenergy('" + fluid + "', T=25)",
+                                       "IntEnergy(" + fluid + ", T=25)", "internalenergy('" + fluid + "', T=25)",
+                                       "InternalEnergy('" + fluid + "', T=25)", "u('" + fluid + "', T=25)",
+                                       "U('" + fluid + "', T=25)"}) {
+            INFO(call);
+            CHECK(idealCallError(call) == "");
+            CHECK_THAT(idealTransportAD(call, 25.0).first, WithinRel(ref, 1e-12));
+        }
+    }
+    // the same through the whole pipeline
+    auto run = runModel(R"(
+u1 = intenergy(N2, T=25)
+u2 = internalenergy('N2', T=25)
+u3 = u('N2', T=25)
+u4 = intenergy(N2, T=25, P=101325)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const char* name : {"u2", "u3", "u4"}) {
+        INFO(name);
+        CHECK_THAT(run[name], WithinRel(run["u1"], 1e-12));
+    }
+}
+
+TEST_CASE("CS-BUG-IDEAL-INTENERGY: the temperature-only outputs accept the same single input with every alias",
+          "[library-gaps][ideal-intenergy]") {
+    // every name that getCoolPropOutputParam maps to h, u, cp, cv or T works with T alone, as with T and P
+    const std::vector<std::vector<std::string>> aliases = {
+        {"enthalpy", "h"},
+        {"intenergy", "internalenergy", "u"},
+        {"cp", "specheat", "specificheat", "c_p", "c"},
+        {"cv", "c_v"},
+        {"temperature", "t"},
+    };
+    for (const std::string fluid : {"Air", "N2", "CO2", "H2O"}) {
+        const double dummyP = fluid == "H2O" ? 100.0 : 101325.0;
+        for (const auto& group : aliases) {
+            const double ref = idealTransportAD(group[0] + "('" + fluid + "', T=100, P=" + numText(dummyP) + ")", 100.0).first;
+            for (const auto& fn : group) {
+                const std::string call = fn + "('" + fluid + "', T=100)";
+                INFO(call);
+                CHECK(idealCallError(call) == "");
+                CHECK_THAT(idealTransportAD(call, 100.0).first, WithinRel(ref, 1e-12));
+                // an h or a u that fixes T is a single input as well
+                const std::string withP = fn + "('" + fluid + "', T=100, P=" + numText(dummyP) + ")";
+                CHECK_THAT(idealTransportAD(withP, 100.0).first, WithinRel(ref, 1e-12));
+            }
+        }
+    }
+    // cp and cv are CoolProp's at the internal pressure
+    CHECK_THAT(idealTransportAD("c_p('N2', T=25)", 25.0).first,
+               WithinRel(CoolProp::PropsSI("C", "T", 298.15, "P", 101325.0, "Nitrogen"), 1e-9));
+    CHECK_THAT(idealTransportAD("c_v('N2', T=25)", 25.0).first,
+               WithinRel(CoolProp::PropsSI("O", "T", 298.15, "P", 101325.0, "Nitrogen"), 1e-9));
+    CHECK_THAT(idealTransportAD("specificheat('Air', T=25)", 25.0).first,
+               WithinRel(CoolProp::PropsSI("C", "T", 298.15, "P", 101325.0, "Air"), 1e-9));
+    CHECK_THAT(idealTransportAD("c('H2O', T=25)", 25.0).first,
+               WithinRel(CoolProp::PropsSI("C", "T", 298.15, "P", 100.0, "Water"), 1e-9));
+}
+
+TEST_CASE("CS-BUG-IDEAL-INTENERGY: u = h - P/rho and u = h - R T for CO2, N2, H2O and Air",
+          "[library-gaps][ideal-intenergy]") {
+    // The internal energy has the reference of the enthalpy (the formation enthalpy for the species of
+    // CS-GAP-FORMATION-ENTHALPY, CoolProp's for Air): u = h - P/rho exactly, with the state CoolProp has at
+    // the internal pressure. CoolSolve evaluates the species with CoolProp's real-gas equations of state, so
+    // P/rho = Z R T: u = h - R T of the ideal gas holds to the compressibility factor (CO2 0.5 %, N2 and Air
+    // 0.05 % of R T at 1 atm, H2O vapor at 100 Pa 6e-5), not to 1e-9.
+    struct Case { const char* ees; const char* coolProp; double P; double zTol; };
+    const std::vector<Case> cases = {{"CO2", "CarbonDioxide", 101325.0, 6e-3}, {"N2", "Nitrogen", 101325.0, 1e-3},
+                                     {"H2O", "Water", 100.0, 1e-4},            {"Air", "Air", 101325.0, 1e-3}};
+    for (const auto& c : cases) {
+        for (double T_C : {25.0, 200.0, 500.0}) {
+            INFO(c.ees << " at " << T_C << " C");
+            const std::string T = numText(T_C);
+            auto run = runModel("u = intenergy(" + std::string(c.ees) + ", T=" + T + ")\n"
+                                "h = enthalpy(" + c.ees + ", T=" + T + ")\n");
+            INFO(run.message);
+            REQUIRE(run.solveOk);
+            CHECK(run.verified);
+            const double TK = T_C + 273.15;
+            const double rho = CoolProp::PropsSI("D", "T", TK, "P", c.P, c.coolProp);
+            const double R = gasConstantPerKg(c.coolProp);
+            const double scale = std::max(std::abs(run["h"]), 1e3);
+            CHECK(std::abs(run["u"] - (run["h"] - c.P / rho)) <= 1e-9 * scale);
+            CHECK(std::abs(run["u"] - (run["h"] - R * TK)) <= c.zTol * R * TK);
+            // and u is below h by about R T, never equal to it
+            CHECK(run["h"] - run["u"] > 0.99 * R * TK * (1.0 - c.zTol));
+        }
+    }
+    // The enthalpy of formation is in u: at 25 C, u(CO2) = dHf/M - R T (and N2, an element: -R T)
+    auto run = runModel("u_co2 = intenergy(CO2, T=25)\nu_n2 = intenergy(N2, T=25)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    const double M_CO2 = CoolProp::PropsSI("molar_mass", "", 0.0, "", 0.0, "CarbonDioxide");
+    const double RT_CO2 = gasConstantPerKg("CarbonDioxide") * 298.15;
+    const double RT_N2 = gasConstantPerKg("Nitrogen") * 298.15;
+    CHECK_THAT(run["u_co2"], WithinAbs(-393510e3 / (1000.0 * M_CO2) - RT_CO2, 0.006 * RT_CO2));
+    CHECK_THAT(run["u_n2"], WithinAbs(-RT_N2, 3e-4 * RT_N2));
+}
+
+TEST_CASE("CS-BUG-IDEAL-INTENERGY: T alone, T and the internal pressure, and the same in the solve and the check",
+          "[library-gaps][ideal-intenergy]") {
+    // an ideal-gas call with T alone is the call with T and the internal pressure of the model, for all the
+    // species at several temperatures (what the solution check re-evaluates too)
+    for (const auto& g : kIdealGasesAll) {
+        for (double T_C : {-20.0, 25.0, 300.0, 800.0}) {
+            if (std::string(g.ees) == "H2O" && T_C < 0.0) continue;
+            INFO(g.ees << " at " << T_C << " C");
+            const std::string T = numText(T_C);
+            auto run = runModel("u = intenergy(" + std::string(g.ees) + ", T=" + T + ")\n"
+                                "u_p = intenergy(" + g.ees + ", T=" + T + ", P=" + numText(g.dummyP) + ")\n");
+            INFO(run.message);
+            REQUIRE(run.solveOk);
+            CHECK(run.verified);
+            CHECK_THAT(run["u"], WithinRel(run["u_p"], 1e-12));
+        }
+    }
+}
+
+TEST_CASE("CS-BUG-IDEAL-INTENERGY: derivative with respect to T, from CoolProp", "[library-gaps][ideal-intenergy]") {
+    const double T0 = 300.0;
+    const double h = 0.01;   // central difference [K]
+    for (const std::string call : {"intenergy(N2, T=Tv)", "intenergy(CO2, T=Tv)", "intenergy(Air, T=Tv)",
+                                   "intenergy(H2O, T=Tv)", "u('CO2', T=Tv)", "internalenergy('N2', T=Tv)"}) {
+        INFO(call);
+        const double dT = idealTransportAD(call, T0).second;
+        const double up = idealTransportAD(call, T0 + h).first;
+        const double um = idealTransportAD(call, T0 - h).first;
+        CHECK(dT != 0.0);
+        CHECK_THAT(dT, WithinRel((up - um) / (2.0 * h), 1e-4));
+    }
+    // du/dT at constant P of a nearly ideal gas is cv: 772.6 J/kg-K for N2 at 300 C
+    CHECK_THAT(idealTransportAD("intenergy(N2, T=Tv)", T0).second, WithinRel(idealTransportAD("cv(N2, T=Tv)", T0).first, 0.01));
+    // the derivative of the enthalpy and of the specific heat spelled c_p are those of cp and enthalpy
+    CHECK_THAT(idealTransportAD("c_p('N2', T=Tv)", T0).second, WithinRel(idealTransportAD("cp(N2, T=Tv)", T0).second, 1e-12));
+    CHECK_THAT(idealTransportAD("c_v('CO2', T=Tv)", T0).second, WithinRel(idealTransportAD("cv(CO2, T=Tv)", T0).second, 1e-12));
+}
+
+TEST_CASE("CS-BUG-IDEAL-INTENERGY: an unknown temperature solved through intenergy", "[library-gaps][ideal-intenergy]") {
+    auto run = runModel(R"(
+u_target = -50000
+intenergy(N2, T=T) = u_target
+u_check = intenergy(N2, T=T, P=101325)
+h_check = enthalpy(N2, T=T)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["u_check"], WithinRel(-50000.0, 1e-6));
+    // u(N2) = h - R T with h = 0 at 25 C: -88.5 kJ/kg at 25 C and +0.74 kJ/kg-K from there
+    CHECK(run["T"] > 70.0);
+    CHECK(run["T"] < 85.0);
+    CHECK_THAT(run["h_check"], WithinRel(run["u_check"] + gasConstantPerKg("Nitrogen") * (run["T"] + 273.15), 2e-3));
+
+    // the same with the internalenergy spelled u, CO2 and the formation enthalpy in the target
+    auto co2 = runModel(R"(
+u_target = -8.9E6
+u('CO2', T=T) = u_target
+u_check = intenergy(CO2, T=T, P=101325)
+)");
+    INFO(co2.message);
+    REQUIRE(co2.solveOk);
+    CHECK(co2.verified);
+    CHECK_THAT(co2["u_check"], WithinRel(-8.9e6, 1e-6));
+    CHECK(co2["T"] > 100.0);
+    CHECK(co2["T"] < 300.0);
+}
+
+TEST_CASE("CS-BUG-IDEAL-INTENERGY: the temperature recovered from the internal energy (round trip)",
+          "[library-gaps][ideal-intenergy]") {
+    auto run = runModel(R"(
+u_c = intenergy(CO2, T=40)
+T_c = temperature(CO2, u=u_c)
+u_n = intenergy(N2, T=300)
+T_n = temperature(N2, u=u_n)
+u_w = intenergy(H2O, T=120)
+T_w = temperature(H2O, u=u_w)
+u_a = intenergy(Air, T=-10)
+T_a = temperature(Air, u=u_a)
+h_a = enthalpy(Air, T=-10)
+c_h = specificheat('Air', h=h_a)
+c_T = specificheat('Air', T=-10)
+c_u = c_p('Air', u=u_a)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["T_c"], WithinAbs(40.0, 1e-6));
+    CHECK_THAT(run["T_n"], WithinAbs(300.0, 1e-6));
+    CHECK_THAT(run["T_w"], WithinAbs(120.0, 1e-6));
+    CHECK_THAT(run["T_a"], WithinAbs(-10.0, 1e-6));
+    CHECK_THAT(run["c_h"], WithinRel(run["c_T"], 1e-6));
+    CHECK_THAT(run["c_u"], WithinRel(run["c_T"], 1e-6));
+}
+
+TEST_CASE("CS-BUG-IDEAL-INTENERGY: with T and P given, nothing changes", "[library-gaps][ideal-intenergy]") {
+    auto run = runModel(R"(
+u_tp = intenergy(CO2, T=25, P=101325)
+u_hi = intenergy(CO2, T=25, P=1E6)
+u_dp = intenergy(Air, d=1.2, P=101325)
+u_dt = intenergy(Air, d=1.2, T=25)
+c_tp = c_p('CO2', T=25, P=101325)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["u_tp"], WithinRel(CoolProp::PropsSI("U", "T", 298.15, "P", 101325.0, "CarbonDioxide") + co2ReferenceOffset(), 1e-9));
+    // CoolSolve's ideal gases are CoolProp's real-gas states with the offset of the reference: the internal
+    // energy at 10 bar is CoolProp's, shifted by the same offset (it is not the dilute-gas value)
+    CHECK_THAT(run["u_hi"], WithinRel(CoolProp::PropsSI("U", "T", 298.15, "P", 1e6, "CarbonDioxide") + co2ReferenceOffset(), 1e-9));
+    CHECK(std::abs(run["u_hi"] - run["u_tp"]) > 1e3);
+    CHECK_THAT(run["u_dp"], WithinRel(CoolProp::PropsSI("U", "D", 1.2, "P", 101325.0, "Air"), 1e-9));
+    CHECK_THAT(run["u_dt"], WithinRel(CoolProp::PropsSI("U", "D", 1.2, "T", 298.15, "Air"), 1e-9));
+    CHECK_THAT(run["c_tp"], WithinRel(CoolProp::PropsSI("C", "T", 298.15, "P", 101325.0, "CarbonDioxide"), 1e-9));
+}
+
+TEST_CASE("CS-BUG-IDEAL-INTENERGY: negative tests, what stays an error", "[library-gaps][ideal-intenergy]") {
+    SECTION("a single input that does not fix the temperature asks for a second one (CS-BUG-IDEAL-SINGLE-INPUT)") {
+        CHECK(idealCallError("intenergy(Air, d=1)") == idealSecondInputMessage("intenergy", "Air", "d"));
+        CHECK(idealCallError("intenergy(Air, P=1E5)") == idealSecondInputMessage("intenergy", "Air", "p"));
+        CHECK(idealCallError("intenergy(N2, s=7000)") == idealSecondInputMessage("intenergy", "N2", "s"));
+        CHECK(idealCallError("intenergy(H2O, x=0.5)") == idealSecondInputMessage("intenergy", "H2O", "x"));
+        CHECK(idealCallError("intenergy(CO2, v=0.8)") == idealSecondInputMessage("intenergy", "CO2", "v"));
+        for (const std::string fn : {"internalenergy", "u", "specificheat", "c_p", "c_v", "c", "h"}) {
+            INFO(fn);
+            CHECK(idealCallError(fn + "('Air', d=1)") == idealSecondInputMessage(fn, "Air", "d"));
+        }
+    }
+    SECTION("the properties that depend on the pressure still need it, with the temperature alone") {
+        CHECK(idealCallError("density(Air, T=25)") == "Ideal gas property 'density' requires pressure input");
+        CHECK(idealCallError("entropy(CO2, T=25)") == "Ideal gas property 'entropy' requires pressure input");
+        CHECK(idealCallError("volume('N2', T=25)") == "Ideal gas property 'volume' requires pressure input");
+        CHECK(idealCallError("soundspeed(Air, T=25)") == "Ideal gas property 'soundspeed' requires pressure input");
+        // the outputs that share the CoolProp temperature parameter with T but are not T
+        CHECK(idealCallError("t_sat(Air, T=25)") == "Ideal gas property 't_sat' requires pressure input");
+        CHECK(idealCallError("tsat('Air', T=25)") == "Ideal gas property 'tsat' requires pressure input");
+    }
+    SECTION("a real fluid or a mixture still needs two inputs, whatever the spelling") {
+        for (const std::string fn : {"intenergy", "internalenergy", "u", "specificheat", "c_p", "c_v", "c"}) {
+            INFO(fn);
+            CHECK(idealCallError(fn + "('Water', T=25)").find("requires exactly 2 input properties") != std::string::npos);
+            CHECK(idealCallError(fn + "('R134a', T=25)").find("requires exactly 2 input properties") != std::string::npos);
+        }
+    }
+    SECTION("T and h together are CoolProp's unsupported pair, as before") {
+        auto run = runModel("u = intenergy(Air, T=25, h=300000)\n");
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("does not support T,H as input pair") != std::string::npos);
+    }
+}
