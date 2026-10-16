@@ -17812,7 +17812,8 @@ TEST_CASE("CS-GAP-ISIDEALGAS: the answer comes from the fluid registry, for ever
         names.insert(fluid->getName());
         if (fluid->getType() == FluidType::IdealGas) idealNames.insert(fluid->getName());
     }
-    CHECK(idealNames == std::set<std::string>{"Air", "N2", "O2", "H2", "He", "Ar", "CO2", "CO", "CH4", "C2H6", "C3H8", "H2O"});
+    CHECK(idealNames == std::set<std::string>{"Air", "N2", "O2", "H2", "He", "Ar", "CO2", "CO", "CH4", "C2H6", "C3H8",
+                                              "C4H10", "C5H12", "C6H14", "C7H16", "C8H18", "H2O"});   // + the alkanes of CS-GAP-FLUIDS-C8H18
 
     std::vector<std::string> ordered(names.begin(), names.end());
     std::string code;
@@ -18905,4 +18906,406 @@ TEST_CASE("CS-BUG-IDEAL-INTENERGY: negative tests, what stays an error", "[libra
         CHECK_FALSE(run.solveOk);
         CHECK(run.message.find("does not support T,H as input pair") != std::string::npos);
     }
+}
+
+// ============================================================================
+// CS-GAP-FLUIDS-C8H18: the ideal-gas alkanes C4H10 (n-butane) ... C8H18 (n-octane) of the EES substance list
+// ============================================================================
+
+namespace {
+
+/// An alkane ideal gas of the registry, with its NASA-Glenn data (McBride, Zehe, Gordon, NASA/TP-2002-211556;
+/// github.com/nasa/cea data/thermo.inp, species "C4H10,n-butane" ... "C8H18,n-octane"; R = 8.314462618 J/mol-K).
+/// The reference values of the increments and of the specific heat are the 9-coefficient polynomials of the file
+/// (computed in Python), i.e. what EES evaluates.
+struct AlkaneGas {
+    const char* ees;        ///< EES name
+    const char* coolProp;   ///< CoolProp fluid behind it
+    double molarMass;       ///< [kg/kmol], header of the species
+    double hf;              ///< standard enthalpy of formation of the gas at 298.15 K [kJ/kmol] (header, J/mol x 1000)
+    double s0;              ///< standard entropy at 298.15 K and 1 bar [kJ/kmol-K] (polynomial at 298.15 K)
+    double dh100;           ///< h(100 C) - h(25 C) [J/kg]
+    double dh300;           ///< h(300 C) - h(25 C) [J/kg]
+    double cp25;            ///< cp at 25 C [J/kg-K]
+};
+const AlkaneGas kAlkaneGases[] = {
+    {"C4H10", "n-Butane",  58.1222,   -125790.0, 309.8795, 139806.6, 628931.8, 1697.40},
+    {"C5H12", "n-Pentane", 72.14878,  -146760.0, 349.5580, 137160.5, 620215.3, 1663.77},
+    {"C6H14", "n-Hexane",  86.17536,  -166920.0, 388.8478, 136535.3, 617777.0, 1654.64},
+    {"C7H16", "n-Heptane", 100.20194, -187780.0, 428.0870, 136174.1, 616322.6, 1648.46},
+    {"C8H18", "n-Octane",  114.22852, -208750.0, 467.3473, 135828.3, 614835.7, 1643.89},
+};
+
+/// The internal pressure of the ideal-gas model of the species [Pa].
+double internalPressure(const std::string& ees) {
+    auto fluid = std::dynamic_pointer_cast<IdealGasFluid>(FluidRegistry::getFluid(ees));
+    REQUIRE(fluid);
+    return fluid->getDummyPressureSI();
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: register reproducer, molarmass(C8H18) and molarmass(C4H10) are the EES values", "[library-gaps][fluids-c8h18]") {
+    // CSL-0046 (TM-0393): MM_f = molarmass(C8H18); stored by EES: 114.23 kg/kmol. CSL-0080 (TM-0494): MM_C4H10 = molarmass(C4H10),
+    // value returned by EES 58.12. Both were "Unknown fluid".
+    auto run = runModel(R"(
+MM_f = molarmass(C8H18)
+MM_C4H10 = molarmass(C4H10)
+MM_C5H12 = molarmass(C5H12)
+MM_C6H14 = molarmass(C6H14)
+MM_C7H16 = molarmass(C7H16)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["MM_f"], WithinAbs(114.23, 0.005));
+    CHECK_THAT(run["MM_C4H10"], WithinAbs(58.12, 0.005));
+    // NASA-Glenn headers: 72.14878, 86.17536, 100.20194 (CoolProp's n-alkanes are the same to 1e-5)
+    CHECK_THAT(run["MM_C5H12"], WithinAbs(72.1488, 0.001));
+    CHECK_THAT(run["MM_C6H14"], WithinAbs(86.1754, 0.001));
+    CHECK_THAT(run["MM_C7H16"], WithinAbs(100.2019, 0.001));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: the species name is written as for any fluid", "[library-gaps][fluids-c8h18]") {
+    auto run = runModel(R"(
+MM_a = molarmass(C8H18)
+MM_b = molarmass('C8H18')
+MM_c = molarmass(c8h18)
+Fluid$ = 'C4H10'
+MM_d = molarmass(Fluid$)
+h_e = ENTHALPY(C4H10,T=20)
+h_f = enthalpy('c4h10',T=20)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["MM_b"], WithinRel(run["MM_a"], 1e-12));
+    CHECK_THAT(run["MM_c"], WithinRel(run["MM_a"], 1e-12));
+    CHECK_THAT(run["MM_d"], WithinAbs(58.12, 0.005));
+    CHECK_THAT(run["h_f"], WithinRel(run["h_e"], 1e-12));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: h(25 C) is the NASA-Glenn enthalpy of formation of the gas", "[library-gaps][fluids-c8h18]") {
+    std::string code;
+    for (const auto& g : kAlkaneGases) {
+        const std::string n = g.ees;
+        code += "hf_" + n + " = enthalpy(" + n + ",T=25)*molarmass(" + n + ")\n";
+    }
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const auto& g : kAlkaneGases) {
+        INFO("species " << g.ees);
+        CHECK_THAT(run[std::string("hf_") + g.ees], WithinRel(g.hf * 1e3, 1e-9));   // J/kmol
+    }
+    // the registry carries the same data as the guard table of the entropy
+    for (const auto& g : kAlkaneGases) {
+        auto fluid = std::dynamic_pointer_cast<IdealGasFluid>(FluidRegistry::getFluid(g.ees));
+        REQUIRE(fluid);
+        REQUIRE(fluid->getFormationEnthalpy());
+        REQUIRE(fluid->getStandardEntropy());
+        CHECK_THAT(*fluid->getFormationEnthalpy(), WithinRel(g.hf * 1e3, 1e-12));
+        CHECK_THAT(*fluid->getStandardEntropy(), WithinAbs(g.s0 * 1e3, 0.06));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: the enthalpy rise and the specific heat follow CoolProp's ideal gas, and NASA-Glenn's within 1 %", "[library-gaps][fluids-c8h18]") {
+    std::string code;
+    for (const auto& g : kAlkaneGases) {
+        const std::string n = g.ees;
+        code += "dh100_" + n + " = enthalpy(" + n + ",T=100) - enthalpy(" + n + ",T=25)\n";
+        code += "dh300_" + n + " = enthalpy(" + n + ",T=300) - enthalpy(" + n + ",T=25)\n";
+        code += "cp25_" + n + " = cp(" + n + ",T=25)\n";
+        code += "cp300_" + n + " = cp(" + n + ",T=300)\n";
+    }
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const auto& g : kAlkaneGases) {
+        INFO("species " << g.ees);
+        const std::string n = g.ees;
+        const double P = internalPressure(n);
+        auto coolProp = [&](const char* prop, double TK) { return CoolProp::PropsSI(prop, "T", TK, "P", P, g.coolProp); };
+        // CoolProp's equation of state at the internal pressure: the reference constant is the only change
+        CHECK_THAT(run["dh100_" + n], WithinRel(coolProp("H", 373.15) - coolProp("H", 298.15), 1e-9));
+        CHECK_THAT(run["dh300_" + n], WithinRel(coolProp("H", 573.15) - coolProp("H", 298.15), 1e-9));
+        CHECK_THAT(run["cp25_" + n], WithinRel(coolProp("C", 298.15), 1e-9));
+        CHECK_THAT(run["cp300_" + n], WithinRel(coolProp("C", 573.15), 1e-9));
+        // NASA-Glenn polynomials (EES): CoolProp's ideal-gas specific heat differs by up to 0.7 % (measured: the rise to
+        // 100 and 300 C within 0.5 and 0.64 % (n-hexane), cp at 25 C within 0.68 % (n-octane))
+        CHECK_THAT(run["dh100_" + n], WithinRel(g.dh100, 1e-2));
+        CHECK_THAT(run["dh300_" + n], WithinRel(g.dh300, 1e-2));
+        CHECK_THAT(run["cp25_" + n], WithinRel(g.cp25, 1e-2));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: u = h - R T, the real-gas residual of the internal state is negligible", "[library-gaps][fluids-c8h18]") {
+    // unlike CO2 (-284 J/kg, CS-GAP-IDEAL-GAS-MODEL) the internal pressure of the alkanes is so low that the equation of
+    // state of CoolProp is the ideal gas: h - u = R T to 0.01 J/kg (2e-6 of R T; measured -0.008 J/kg for n-octane at 25 C)
+    std::string code;
+    for (const auto& g : kAlkaneGases) {
+        const std::string n = g.ees;
+        code += "h_" + n + " = enthalpy(" + n + ",T=25)\n";
+        code += "u_" + n + " = intenergy(" + n + ",T=25)\n";
+    }
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const auto& g : kAlkaneGases) {
+        INFO("species " << g.ees);
+        // the gas constant of the equation of state of the fluid (n-heptane: 8.31451, Span & Wagner, 6e-6 above CODATA)
+        const double RT = CoolProp::Props1SI(g.coolProp, "gas_constant") * 1000.0 / molarMassKgPerKmol(g.coolProp) * 298.15;
+        CHECK_THAT(run[std::string("h_") + g.ees] - run[std::string("u_") + g.ees], WithinAbs(RT, 0.05));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: the temperature from the enthalpy, and an implicit solve on the enthalpy", "[library-gaps][fluids-c8h18]") {
+    // an enthalpy given as input is on the same basis (the enthalpy of formation included), and the Jacobian of the
+    // T-only call is that of CoolProp at the internal pressure: the unknown temperature of an enthalpy balance converges
+    auto run = runModel(R"(
+h0 = enthalpy(C8H18,T=200)
+T_a = temperature(C8H18,h=h0)
+h1 = -1.5E6
+enthalpy(C4H10,T=T_b) = h1
+cp_b = cp(C4H10,T=T_b)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["T_a"], WithinAbs(200.0, 1e-6));
+    const double Pb = internalPressure("C4H10");
+    const double offset = -125790e3 / molarMassKgPerKmol("n-Butane") - CoolProp::PropsSI("H", "T", 298.15, "P", Pb, "n-Butane");
+    CHECK_THAT(run["T_b"], WithinAbs(CoolProp::PropsSI("T", "H", -1.5e6 - offset, "P", Pb, "n-Butane") - 273.15, 1e-3));
+    CHECK((run["T_b"] > 300.0 && run["T_b"] < 400.0));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: the transport properties of the dilute gas take T alone", "[library-gaps][fluids-c8h18]") {
+    auto run = runModel(R"(
+mu_o = viscosity(C8H18,T=100)
+k_o = conductivity(C8H18,T=100)
+Pr_o = prandtl(C8H18,T=100)
+mu_b = viscosity(C4H10,T=25)
+k_b = conductivity(C4H10,T=25)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const double Po = internalPressure("C8H18"), Pb = internalPressure("C4H10");
+    CHECK_THAT(run["mu_o"], WithinRel(CoolProp::PropsSI("V", "T", 373.15, "P", Po, "n-Octane"), 1e-9));
+    CHECK_THAT(run["k_o"], WithinRel(CoolProp::PropsSI("L", "T", 373.15, "P", Po, "n-Octane"), 1e-9));
+    CHECK_THAT(run["Pr_o"], WithinRel(CoolProp::PropsSI("Prandtl", "T", 373.15, "P", Po, "n-Octane"), 1e-9));
+    CHECK_THAT(run["mu_b"], WithinRel(CoolProp::PropsSI("V", "T", 298.15, "P", Pb, "n-Butane"), 1e-9));
+    CHECK_THAT(run["k_b"], WithinRel(CoolProp::PropsSI("L", "T", 298.15, "P", Pb, "n-Butane"), 1e-9));
+    // orders of magnitude of the dilute vapours (n-octane at 100 C, n-butane at 25 C)
+    CHECK((run["mu_o"] > 6e-6 && run["mu_o"] < 9e-6));
+    CHECK((run["k_o"] > 0.012 && run["k_o"] < 0.03));
+    CHECK((run["mu_b"] > 7e-6 && run["mu_b"] < 8e-6));
+    CHECK((run["k_b"] > 0.014 && run["k_b"] < 0.02));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: the absolute entropy at 25 C and 1 bar is the NASA-Glenn one", "[library-gaps][fluids-c8h18][ideal-entropy]") {
+    // M*s [kJ/kmol-K] at 100 Pa, where every species is a vapour at 25 C (n-octane: Psat = 1.87 kPa) and CoolProp's real-gas
+    // residual vanishes: s0 - R ln(100 Pa / 1 bar). The other values of the same species at 1 bar are the entropy of the
+    // liquid for CoolProp, not the ideal gas (docs/language_reference.md, ideal gases).
+    std::string code;
+    for (const auto& g : kAlkaneGases) {
+        const std::string n = g.ees;
+        code += "s_" + n + " = molarmass(" + n + ")*entropy(" + n + ",T=25,P=100)/1000\n";
+    }
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const auto& g : kAlkaneGases) {
+        INFO("species " << g.ees);
+        CHECK_THAT(run[std::string("s_") + g.ees], WithinAbs(g.s0 - 8.314462618 * std::log(100.0 / 1.0e5), 0.05));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: entropy and Gibbs energy of the combustion of n-octane, on the basis of the other species", "[library-gaps][fluids-c8h18][ideal-entropy]") {
+    // C8H18 + 12.5 O2 -> 8 CO2 + 9 H2O(g) at 25 C, every species an ideal gas at 100 Pa: 3.5 kmol more of gas on the right,
+    // dS = dS0 - 3.5 R ln(100 Pa / 1 bar) and dG = dH0 - T dS = dG0 + 3.5 R T ln(100 Pa / 1 bar), with the NASA-Glenn
+    // dH0 = (8*-393 510 + 9*-241 826 + 208 750) = -5 115 764 kJ/kmol and dS0 from the standard entropies of the five species
+    // (378.04 kJ/kmol-K, dG0 = -5 228 477 kJ/kmol). The enthalpies of formation or the entropies of another source, as
+    // the CoolProp references (tens of MJ/kmol), would show up directly.
+    auto run = runModel(R"(
+P = 100
+g_f = molarmass(C8H18)*enthalpy(C8H18,T=25) - 298.15*molarmass(C8H18)*entropy(C8H18,T=25,P=P)
+g_O2 = molarmass(O2)*enthalpy(O2,T=25) - 298.15*molarmass(O2)*entropy(O2,T=25,P=P)
+g_CO2 = molarmass(CO2)*enthalpy(CO2,T=25) - 298.15*molarmass(CO2)*entropy(CO2,T=25,P=P)
+g_H2O = molarmass(H2O)*enthalpy(H2O,T=25) - 298.15*molarmass(H2O)*entropy(H2O,T=25,P=P)
+dG = 8*g_CO2 + 9*g_H2O - g_f - 12.5*g_O2
+dS = (8*molarmass(CO2)*entropy(CO2,T=25,P=P) + 9*molarmass(H2O)*entropy(H2O,T=25,P=P) - molarmass(C8H18)*entropy(C8H18,T=25,P=P) - 12.5*molarmass(O2)*entropy(O2,T=25,P=P))/1000
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const double dS0 = 8 * standardEntropy("CO2").s0 + 9 * standardEntropy("H2O").s0 - kAlkaneGases[4].s0 - 12.5 * standardEntropy("O2").s0;
+    const double dH0 = -5115764e3, lnP = std::log(100.0 / 1.0e5), R = 8.314462618;   // J/kmol, ln(P/P0)
+    CHECK_THAT(dS0, WithinAbs(378.04, 0.01));
+    CHECK_THAT(run["dS"], WithinAbs(dS0 - 3.5 * R * lnP, 0.02));                               // kJ/kmol-K
+    CHECK_THAT(run["dG"], WithinAbs(dH0 - 298.15 * (dS0 - 3.5 * R * lnP) * 1e3, 1e4));          // J/kmol
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: heat of combustion of n-octane gas from the species enthalpies", "[library-gaps][fluids-c8h18]") {
+    // Lower heating value of gaseous n-octane: (8 hf_CO2 + 9 hf_H2O(g) - hf_C8H18) from the enthalpies of the species at 25 C,
+    // with the existing CO2 and H2O: (8*393 510 + 9*241 826 - 208 750) kJ/kmol = 5 115 764 kJ/kmol = 44.785 MJ/kg.
+    // The 44.4 MJ/kg of the tables is for the liquid fuel, lower by the latent heat of vaporisation at 25 C (CoolProp: 363 kJ/kg).
+    auto run = runModel(R"(
+MM_f = molarmass(C8H18)
+LHV_mol = enthalpy(C8H18,T=25)*MM_f + 12.5*enthalpy(O2,T=25)*molarmass(O2) - 8*enthalpy(CO2,T=25)*molarmass(CO2) - 9*enthalpy(H2O,T=25)*molarmass(H2O)
+LHV = LHV_mol/MM_f
+LHV_C4H10 = (enthalpy(C4H10,T=25)*molarmass(C4H10) + 6.5*enthalpy(O2,T=25)*molarmass(O2) - 4*enthalpy(CO2,T=25)*molarmass(CO2) - 5*enthalpy(H2O,T=25)*molarmass(H2O))/molarmass(C4H10)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["LHV_mol"], WithinRel(5115764e3, 1e-9));
+    CHECK_THAT(run["LHV"], WithinRel(5115764e3 / molarMassKgPerKmol("n-Octane"), 1e-9));
+    const double hfg = CoolProp::PropsSI("H", "T", 298.15, "Q", 1, "n-Octane") - CoolProp::PropsSI("H", "T", 298.15, "Q", 0, "n-Octane");
+    CHECK_THAT(run["LHV"] - hfg, WithinAbs(44.4e6, 0.1e6));   // liquid n-octane
+    // n-butane gas: 4*393 510 + 5*241 826 - 125 790 = 2 657 380 kJ/kmol (45.72 MJ/kg)
+    CHECK_THAT(run["LHV_C4H10"], WithinRel((4 * 393510e3 + 5 * 241826e3 - 125790e3) / 58.1222, 1e-6));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: the adiabatic flame temperature of the octane of CSL-0046, with the fuel as an ideal gas", "[library-gaps][fluids-c8h18]") {
+    // CSL-0046 (TM-0393): n-octane burned with 400 % theoretical air, reactants at 25 C, adiabatic: H_R = H_P. The file takes
+    // the enthalpy of formation of the liquid fuel (-249 952 kJ/kmol, EES TAF = 688.7 C); with the gas of the registry
+    // (NASA-Glenn -208 750 kJ/kmol) the products are hotter by the heat of vaporisation. Reference: the same balance with the
+    // NASA-Glenn polynomials of all species (Python): 693.84 C (CoolProp's CO2, H2O, O2 and N2 within 0.1 %).
+    auto run = runModel(R"(
+lambda = 4
+a = 8 + 18/4
+H_R = molarmass(C8H18)*enthalpy(C8H18,T=25)
+H_P = 8*molarmass(CO2)*enthalpy(CO2,T=TAF) + 9*molarmass(H2O)*enthalpy(H2O,T=TAF) + (lambda-1)*a*molarmass(O2)*enthalpy(O2,T=TAF) + 3.76*lambda*a*molarmass(N2)*enthalpy(N2,T=TAF)
+H_R = H_P
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["TAF"], WithinAbs(693.84, 1.5));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: ISIDEALGAS is 1 for the alkane gases and 0 for the real fluids behind them", "[library-gaps][fluids-c8h18]") {
+    auto run = runModel(R"(
+i_C4H10 = isidealgas(C4H10)
+i_C5H12 = isidealgas(C5H12)
+i_C6H14 = isidealgas(C6H14)
+i_C7H16 = isidealgas(C7H16)
+i_C8H18 = isidealgas(C8H18)
+i_q = isidealgas('C8H18')
+i_octane = isidealgas('n-Octane')
+i_butane = isidealgas('n-Butane')
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    for (const auto& g : kAlkaneGases) CHECK(run[std::string("i_") + g.ees] == 1.0);
+    CHECK(run["i_q"] == 1.0);
+    CHECK(run["i_octane"] == 0.0);
+    CHECK(run["i_butane"] == 0.0);
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: the internal pressure keeps the gas phase down to the minimum temperature of CoolProp", "[library-gaps][fluids-c8h18]") {
+    // The internal pressure of the T-only calls is below the triple-point pressure of the fluid (n-octane 2.1 Pa, n-butane
+    // 0.67 Pa, n-pentane 0.08 Pa): whatever the temperature, down to the minimum of the equation of state, the state is a gas
+    // and never the liquid that 1 atm or 100 Pa would give at 25 C (n-octane: Psat = 1.87 kPa) or below -18 C (100 Pa).
+    for (const auto& g : kAlkaneGases) {
+        INFO("species " << g.ees);
+        const double P = internalPressure(g.ees);
+        const double Tmin = CoolProp::Props1SI(g.coolProp, "Tmin");
+        CHECK(P < CoolProp::Props1SI(g.coolProp, "ptriple"));
+        CHECK(P < CoolProp::PropsSI("P", "T", Tmin, "Q", 1, g.coolProp));
+        for (const double TK : {Tmin + 0.01, Tmin + 1.0, 273.15, 298.15, 500.0, 1000.0}) {
+            INFO("T = " << TK << " K");
+            const std::string phase = CoolProp::PhaseSI("T", TK, "P", P, g.coolProp);   // "supercritical_gas" above Tc
+            CHECK((phase == "gas" || phase == "supercritical_gas"));
+        }
+    }
+    // and CoolSolve gives the gas value 1 K above the minimum temperature: the sensible enthalpy from 25 C is a few
+    // 100 kJ/kg (cp 1.0 to 1.7 kJ/kg-K), the liquid would be below -300 kJ/kg of the vapour
+    auto run = runModel(R"(
+dh_o = enthalpy(C8H18,T=-55.5) - enthalpy(C8H18,T=25)
+dh_b = enthalpy(C4H10,T=-137) - enthalpy(C4H10,T=25)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["dh_o"], WithinRel(CoolProp::PropsSI("H", "T", 217.65, "P", internalPressure("C8H18"), "n-Octane") -
+                                      CoolProp::PropsSI("H", "T", 298.15, "P", internalPressure("C8H18"), "n-Octane"), 1e-9));
+    CHECK_THAT(run["dh_b"], WithinRel(CoolProp::PropsSI("H", "T", 136.15, "P", internalPressure("C4H10"), "n-Butane") -
+                                      CoolProp::PropsSI("H", "T", 298.15, "P", internalPressure("C4H10"), "n-Butane"), 1e-9));
+    CHECK(run["dh_o"] < -1.0e5);
+    CHECK(run["dh_o"] > -1.5e5);   // 80 K x 1.4 kJ/kg-K
+    CHECK(run["dh_b"] < -2.0e5);
+    CHECK(run["dh_b"] > -3.0e5);   // 161 K x 1.5 kJ/kg-K
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: negative tests, a temperature below the range of CoolProp is an error, never a liquid value", "[library-gaps][fluids-c8h18]") {
+    // n-octane: Tmin = 216.37 K (-56.8 C), n-butane 134.895 K (-138.3 C), n-pentane -129.7 C, n-hexane -95.3 C, n-heptane -90.6 C
+    for (const auto& g : kAlkaneGases) {
+        INFO("species " << g.ees);
+        const double Tmin = CoolProp::Props1SI(g.coolProp, "Tmin");
+        std::ostringstream code;
+        code << std::setprecision(10) << "h = enthalpy(" << g.ees << ",T=" << (Tmin - 3.0 - 273.15) << ")\n";
+        auto run = runModel(code.str());
+        INFO(code.str() << " -> " << checkError(run));
+        CHECK_FALSE(run.verified);
+        REQUIRE_FALSE(run.checkErrors.empty());
+        CHECK(anyContains(run.checkErrors, "CoolProp evaluation failed in final solution"));
+        CHECK(anyContains(run.checkErrors, "enthalpy()"));
+    }
+    SECTION("the property calls with a second input are the real-fluid state of CoolProp, as for every ideal gas") {
+        // a single input that does not fix the temperature, or a property that needs the pressure: the usual errors
+        CHECK(idealCallError("enthalpy(C8H18, P=1E5)") == idealSecondInputMessage("enthalpy", "C8H18", "p"));
+        CHECK(idealCallError("cp(C4H10, d=1)") == idealSecondInputMessage("cp", "C4H10", "d"));
+        CHECK(idealCallError("density(C8H18, T=25)") == "Ideal gas property 'density' requires pressure input");
+        CHECK(idealCallError("entropy(C5H12, T=25)") == "Ideal gas property 'entropy' requires pressure input");
+    }
+    SECTION("a longer chain is not registered") {
+        auto run = runModel("MM = molarmass(C9H20)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "Unknown fluid: 'C9H20'"));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: the real fluids n-Octane and n-Butane keep CoolProp's reference state", "[library-gaps][fluids-c8h18]") {
+    auto run = runModel(R"(
+h_o = enthalpy('n-Octane',T=25,P=1E5)
+h_b = enthalpy('n-Butane',T=25,P=1E5)
+MM_o = molarmass('n-Octane')
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["h_o"], WithinRel(CoolProp::PropsSI("H", "T", 298.15, "P", 1e5, "n-Octane"), 1e-9));
+    CHECK_THAT(run["h_b"], WithinRel(CoolProp::PropsSI("H", "T", 298.15, "P", 1e5, "n-Butane"), 1e-9));
+    CHECK_THAT(run["MM_o"], WithinAbs(114.229, 1e-3));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-C8H18: the library models CSL-0046 and CSL-0080 lines", "[library-gaps][fluids-c8h18]") {
+    // The calls of CSL-0080 (condensing_boiler_refsim): MM_C4H10 = molarmass(C4H10), h_C4H10_su = ENTHALPY(C4H10,T=T_f_su_boil),
+    // h_C4H10_ref = ENTHALPY(C4H10,T=T_ref) and the fuel enthalpy difference Q_dot_2_bis (x_C4H10 = 0 there).
+    auto run = runModel(R"(
+T_ref = 25
+T_f_su_boil = 15
+MM_C4H10 = molarmass(C4H10)
+h_C4H10_su = ENTHALPY(C4H10,T=T_f_su_boil)
+h_C4H10_ref = ENTHALPY(C4H10,T=T_ref)
+h_C3H8_su = ENTHALPY(C3H8,T=T_f_su_boil)
+h_C3H8_ref = ENTHALPY(C3H8,T=T_ref)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["MM_C4H10"], WithinAbs(58.12, 0.005));
+    // NASA-Glenn -125 790 kJ/kmol; EES 7.888 (JANAF type, Cengel & Boles -126 150) differs by 3e-3 of this value
+    CHECK_THAT(run["h_C4H10_ref"], WithinRel(-125790e3 / 58.1222, 1e-9));
+    CHECK(run["h_C4H10_ref"] > run["h_C4H10_su"]);
+    // the enthalpy difference of a species is its specific heat times the temperature difference (cp = 1.69 kJ/kg-K at 25 C, 1.62 at 15 C)
+    CHECK_THAT(run["h_C4H10_ref"] - run["h_C4H10_su"], WithinRel(10.0 * 1655.0, 0.02));
+    // butane and propane are on one basis: the heats of formation per kmol differ by the CH2 increment (-21 110 kJ/kmol)
+    CHECK_THAT(run["h_C4H10_ref"] * 58.1222 - run["h_C3H8_ref"] * 44.09562, WithinAbs(-21110e3, 1e3));
 }

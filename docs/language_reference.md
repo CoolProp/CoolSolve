@@ -704,7 +704,8 @@ CALL gam('Nitrogen', 20, 1E5 : g_real)       "Nitrogen is the real fluid"
 ```
 
 - The ideal gases are the substances of the ideal-gas group of §5 (`Air`, `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`,
-  `CO`, `CH4`, `C2H6`, `C3H8`, `H2O`); the answer is read from the fluid registry. Every other known fluid gives
+  `CO`, `CH4`, `C2H6`, `C3H8`, `C4H10`, `C5H12`, `C6H14`, `C7H16`, `C8H18`, `H2O`); the answer is read from the
+  fluid registry. Every other known fluid gives
   0: the real fluids (`Water`, `R134a`, `Nitrogen`, `CarbonDioxide`, `Air_ha`, …), the incompressible substances, the
   CoolProp mixtures and the humid air `AirH2O` (not an ideal-gas substance; the answer 0 is to be confirmed against EES).
 - The fluid is written as in a property call: a quoted name, an unquoted name (`isidealgas(Air)`), a string variable
@@ -806,7 +807,8 @@ SulfurDioxide, SulfurHexafluoride, Xenon, Air_ha (real dry air).
 ### Ideal gases
 
 `Air`, `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`, `C2H6`, `C3H8`,
-`H2O` (as vapor, low pressure only).
+`C4H10`, `C5H12`, `C6H14`, `C7H16`, `C8H18` (the normal alkanes n-butane to n-octane, as vapor,
+at a very low pressure only), `H2O` (as vapor, low pressure only).
 
 The properties that depend on temperature only (`enthalpy`, `intenergy`,
 `cp`, `cv`) can be called with `T` alone, as in EES — typically for mean
@@ -824,7 +826,9 @@ temperature (or h or u), or two inputs such as T and P / d and P*). Give two inp
 `cp(Air, d=1.2, P=101325)`.
 
 CoolSolve evaluates them at an internal reference pressure (101325 Pa; 100 Pa
-for `H2O`, which keeps the vapor phase down to −20 °C). This pressure is part
+for `H2O`, which keeps the vapor phase down to the triple point, 0.01 °C (CoolProp has no state of water
+below it: an error); 0.01 Pa for the alkanes `C4H10` to `C8H18`,
+see below). This pressure is part
 of the model: it is never clamped by the solver and is identical in the solve
 and in the final verification. `intenergy(CO2, T=25)` is the call with `T=25, P=101325`, and
 `h − P/ρ` of that state: the internal energy has the reference of the enthalpy (the enthalpy of
@@ -855,8 +859,8 @@ properties of `H2O` vapor are defined from its triple point (0.01 °C) up; below
 (*CoolProp returned invalid result*).
 
 **Reference states of the enthalpy and of the entropy.** As in EES (JANAF convention), the
-ideal gases `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`, `C2H6`, `C3H8` and `H2O`
-(vapor) have absolute properties from **one source**, the NASA-Glenn thermodynamic
+ideal gases `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`, `C2H6`, `C3H8`, `C4H10`, `C5H12`, `C6H14`,
+`C7H16`, `C8H18` and `H2O` (vapor) have absolute properties from **one source**, the NASA-Glenn thermodynamic
 data (McBride, Zehe and Gordon, NASA/TP-2002-211556; `thermo.inp` of NASA CEA), the
 data family of the EES ideal gases: `h(25 °C)` is the standard **enthalpy of formation**
 (the elements `N2`, `O2`, `H2`, `He`, `Ar` are 0) and `s(25 °C, 1 bar)` the standard
@@ -869,7 +873,9 @@ data family of the EES ideal gases: `h(25 °C)` is the standard **enthalpy of fo
 | `H2` | 0 | 130.680 | `C2H6` | −83 851.5 | 229.220 |
 | `He` | 0 | 126.153 | `C3H8` | −104 680 | 270.313 |
 | `Ar` | 0 | 154.846 | `H2O` (vapor) | −241 826 | 188.828 |
-| `CO2` | −393 510 | 213.786 | | | |
+| `CO2` | −393 510 | 213.786 | `C4H10` | −125 790 | 309.880 |
+| `C5H12` | −146 760 | 349.558 | `C6H14` | −166 920 | 388.848 |
+| `C7H16` | −187 780 | 428.087 | `C8H18` | −208 750 | 467.347 |
 
 The enthalpies of formation are the values of the species headers of `thermo.inp`; `s°` is
 the 9-coefficient polynomial of the same file at 298.15 K (R = 8.314462618 J/mol-K). EES uses the
@@ -879,6 +885,28 @@ same data with R = 8.314, which puts its values 6e-5 lower (EES help: `CO2` −3
 Earlier CoolSolve versions used the rounded JANAF values of Çengel & Boles (Table A-26),
 5 to 830 kJ/kmol away (`C2H6` and `C3H8` the most), and `He` and `Ar` kept CoolProp's
 enthalpy reference.
+
+**The alkanes `C4H10` to `C8H18`** are the normal alkanes n-butane, n-pentane, n-hexane,
+n-heptane and n-octane (the NASA-Glenn species `C4H10,n-butane` … `C8H18,n-octane`, evaluated with
+the CoolProp fluids `n-Butane` … `n-Octane`; the first interval of their polynomials starts at 300 K, so
+`s°` is extrapolated by 1.85 K, as for `C2H6` and `C3H8`). The real fluids `n-Butane`, `n-Octane`, …
+stay real fluids with CoolProp's reference states. These vapors condense at room conditions (n-octane
+at 25 °C: saturation pressure 1.87 kPa; n-butane: 243 kPa), so the calls with `T` alone (`enthalpy`,
+`intenergy`, `cp`, `cv`, `viscosity`, `conductivity`, `prandtl`) are evaluated at an internal pressure of
+**0.01 Pa**, below the triple-point pressure of the five fluids (0.08 to 2.1 Pa): the state is a gas at every
+temperature CoolProp can evaluate, from the triple point up (−138.3 °C `C4H10`, −129.7 °C `C5H12`,
+−95.3 °C `C6H14`, −90.6 °C `C7H16`, −56.8 °C `C8H18`), and the real-gas residual is below 1e-6 of the
+ideal-gas value (`h − u = R·T` to 0.05 J/kg). Below that temperature the call is an error
+(*CoolProp returned invalid result*), never the enthalpy of the liquid. Their enthalpy rise from 25 °C
+follows the specific heat of CoolProp's ideal gas, which is within 0.7 % of NASA's (EES) up to 1500 °C
+(specific heat at 25 °C: within 0.7 %, `C8H18`), except `C5H12` above 500 °C (1.2 % at 1000 °C, 3.2 % at
+1500 °C).
+
+With `T` **and** `P` given, the call is CoolProp's real-fluid state at that pressure, as for `H2O`
+(EES gives the ideal gas at any pressure): `C8H18` at 25 °C is a liquid above 1.87 kPa, and
+`enthalpy(C8H18,T=25,P=1E5)`, `entropy(C8H18,T=25,P=1E5)` are the properties of the liquid. Evaluate the
+entropy of the vapor at a pressure below its saturation pressure and add `−R ln(P/P_low)`
+(`entropy(C8H18,T=25,P=100)` is `s° + R ln(1000)`).
 
 **Enthalpy.** The enthalpy and internal energy of the species include the enthalpy of
 formation, so heats of reaction can be written with species enthalpies:
