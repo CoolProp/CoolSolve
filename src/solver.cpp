@@ -571,13 +571,13 @@ bool Solver::tryExplicitSolve(size_t blockIndex) {
         externalStringVars[name] = value;
     }
 
-    const double xCurrent = evaluator_.getVariableValue(outVar);
     try {
-        EvaluationResult result = blockEval.evaluate({xCurrent}, externalVars, externalStringVars);
+        // The residual is LHS - RHS = x - expr. At x = 0 it is -expr, exactly: the value is the right-hand
+        // side as evaluated. (Evaluating at the current guess and taking x - residual loses everything below
+        // ulp(x): a value below 1E-16 became 0 from the default guess 1, and 0.02 became 0.02 + 1.7E-17.)
+        EvaluationResult result = blockEval.evaluate({0.0}, externalVars, externalStringVars);
         if (result.residuals.empty()) return false;
-        // Residual is LHS - RHS; for x = expr we have residual = x - expr, so x_solution = expr = x - residual
-        const double xSolution = xCurrent - result.residuals[0];
-        evaluator_.setVariableValue(outVar, xSolution);
+        evaluator_.setVariableValue(outVar, 0.0 - result.residuals[0]);   // 0.0 - r: a zero stays +0
         return true;
     } catch (const std::exception&) {
         return false;

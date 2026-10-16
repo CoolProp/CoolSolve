@@ -1212,7 +1212,8 @@ private:
     /**
      * @brief Try to solve an explicit block directly.
      *
-     * For size-1 blocks where the equation can be rearranged to x = expr(other_vars).
+     * For size-1 blocks where the equation can be rearranged to x = expr(other_vars): x is set to the
+     * value of expr, exactly (not to x - residual, which loses the digits of expr below ulp(x)).
      *
      * @return true if solved directly, false if Newton iteration needed
      */

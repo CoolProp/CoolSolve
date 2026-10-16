@@ -17174,3 +17174,202 @@ TEST_CASE("CS-GAP-REPEAT-UNTIL-BARE: a REPEAT loop in the main program stays an 
     REQUIRE(errors.size() == 1);
     CHECK(errors[0].find("2: REPEAT ... UNTIL loops are only allowed inside FUNCTION and PROCEDURE bodies") == 0);
 }
+
+// ============================================================================
+// CS-BUG-TINY-VALUE / CS-BUG-EXPLICIT-ROUNDOFF: the value of an explicit equation is the exact value
+// of its right-hand side (it was computed as x - (x - rhs), which loses everything below ulp(x))
+// ============================================================================
+
+TEST_CASE("CS-BUG-TINY-VALUE: a computed variable below 1E-16 keeps its value (register reproducer)",
+          "[library-gaps][tiny-value]") {
+    auto run = runModel("c = 2.33E-20\n"
+                        "d = c/1E-22\n"
+                        "e = (2.33E-20)/1E-22\n"
+                        "m = e#\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // EES: c = 2.33e-20, d = 233, e = 233, m = 1.602e-19
+    CHECK(run["c"] == 2.33e-20);
+    CHECK_THAT(run["d"], WithinRel(233.0, 1e-12));
+    CHECK_THAT(run["e"], WithinRel(233.0, 1e-12));
+    CHECK(run["m"] == 1.602176634e-19);
+    CHECK(run["m"] == run["e#"]);
+}
+
+TEST_CASE("CS-BUG-TINY-VALUE: the tiny built-in constants are not lost when a variable takes their value",
+          "[library-gaps][tiny-value]") {
+    auto run = runModel("k = k#\n"
+                        "h = h#\n"
+                        "q = e#\n"
+                        "me = me#\n"
+                        "mp = mp#\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run["k"] == 1.380649e-23);
+    CHECK(run["h"] == 6.62607015e-34);
+    CHECK(run["q"] == 1.602176634e-19);
+    CHECK(run["me"] == 9.10938356e-31);
+    CHECK(run["mp"] == 1.6726219e-27);
+}
+
+TEST_CASE("CS-BUG-TINY-VALUE: tiny values go through the explicit equations that use them", "[library-gaps][tiny-value]") {
+    auto run = runModel("y = 3\n"
+                        "x = 2.33E-20*y\n"          // a product of a tiny constant: 6.99e-20
+                        "kT = k#*T\n"               // 4.14e-21 J at 300 K
+                        "T = 300\n"
+                        "p = c*1E20\n"              // c is used by an equation of ordinary magnitude
+                        "c = 2.33E-20\n"
+                        "q = 2*r\n"                 // an explicit equation whose value is below 1E-16
+                        "r = 3.3E-30\n"
+                        "s = 1E-25 + 1E-26\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x"], WithinRel(6.99e-20, 1e-14));
+    CHECK_THAT(run["kT"], WithinRel(1.380649e-23 * 300.0, 1e-14));
+    CHECK_THAT(run["c"], WithinRel(2.33e-20, 1e-14));
+    CHECK_THAT(run["p"], WithinRel(2.33, 1e-14));
+    CHECK_THAT(run["q"], WithinRel(6.6e-30, 1e-14));
+    CHECK_THAT(run["s"], WithinRel(1.1e-25, 1e-14));
+}
+
+TEST_CASE("CS-BUG-TINY-VALUE: tiny values in arrays and in DUPLICATE loops", "[library-gaps][tiny-value]") {
+    auto run = runModel("DUPLICATE i = 1, 3\n"
+                        "  v[i] = i*1E-25\n"
+                        "END\n"
+                        "w = v[1] + v[2] + v[3]\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["v[1]"], WithinRel(1e-25, 1e-14));
+    CHECK_THAT(run["v[2]"], WithinRel(2e-25, 1e-14));
+    CHECK_THAT(run["v[3]"], WithinRel(3e-25, 1e-14));
+    CHECK_THAT(run["w"], WithinRel(6e-25, 1e-14));
+}
+
+TEST_CASE("CS-BUG-TINY-VALUE: a tiny value solved by an implicit size-1 block", "[library-gaps][tiny-value]") {
+    auto run = runModel("c*1E20 = 2.33\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["c"], WithinRel(2.33e-20, 1e-8));
+}
+
+TEST_CASE("CS-BUG-TINY-VALUE: tiny values in and after a coupled block", "[library-gaps][tiny-value]") {
+    SECTION("an ordinary coupled block gives a tiny explicit value") {
+        auto run = runModel("x - y = 1\n"
+                            "x + y = 5\n"
+                            "z = x*y*1E-25\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinRel(3.0, 1e-9));
+        CHECK_THAT(run["y"], WithinRel(2.0, 1e-9));
+        CHECK_THAT(run["z"], WithinRel(6e-25, 1e-9));
+    }
+    SECTION("a coupled block whose unknowns are tiny, with guess values of their magnitude") {
+        // the unknowns are of the order of 1E-20 and the equations are scaled by 1E20 (EES: the guess
+        // values of such variables are set in the Variable Info, as here in the .initials file)
+        auto run = runModel("a*1E20 + b*1E20 = 5\n"
+                            "a*1E20 - b*1E20 = 1\n"
+                            "s = a + b\n",
+                            {}, "a = 1E-20\nb = 1E-20\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinRel(3e-20, 1e-8));
+        CHECK_THAT(run["b"], WithinRel(2e-20, 1e-8));
+        CHECK_THAT(run["s"], WithinRel(5e-20, 1e-8));
+    }
+}
+
+TEST_CASE("CS-BUG-TINY-VALUE: the .sol written for a tiny value reads back", "[library-gaps][tiny-value]") {
+    auto run = runModel("c = 2.33E-20\nm = e#\nk = k#\n");
+    REQUIRE(run.solveOk);
+    // the text of a .sol file as the CLI and the GUI server write it
+    std::ostringstream sol;
+    sol << std::scientific << std::setprecision(12);
+    for (const auto& [name, value] : run.vars) sol << name << " = " << value << "\n";
+    const std::string text = sol.str();
+    CHECK(text.find("c = 2.330000000000e-20\n") != std::string::npos);
+    CHECK(text.find("m = 1.602176634000e-19\n") != std::string::npos);
+    CHECK(text.find("k = 1.380649000000e-23\n") != std::string::npos);
+
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_tiny_value";
+    fs::create_directories(dir);
+    { std::ofstream f(dir / "m.sol"); f << text; }
+    EESParser parser;
+    auto parsed = parser.parse("c = 2.33E-20\nm = e#\nk = k#\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    CHECK(ir.loadSolutionFromFile((dir / "m.sol").string()) >= 3);
+    REQUIRE(ir.getVariable("c") != nullptr);
+    REQUIRE(ir.getVariable("c")->solutionValue.has_value());
+    CHECK_THAT(*ir.getVariable("c")->solutionValue, WithinRel(2.33e-20, 1e-12));
+    CHECK_THAT(*ir.getVariable("m")->solutionValue, WithinRel(1.602176634e-19, 1e-12));
+    fs::remove_all(dir);
+}
+
+TEST_CASE("CS-BUG-EXPLICIT-ROUNDOFF: an explicit equation stores the exact value of its right-hand side",
+          "[library-gaps][tiny-value][explicit-roundoff]") {
+    SECTION("the register reproducer: a strict bound test at the bound does not fire") {
+        auto run = runModel("FUNCTION t(v)\n"
+                            "  IF (v > 0.02) THEN CALL WARNING('x XXXE4', v)\n"
+                            "  t = v\n"
+                            "END\n"
+                            "D = 0.02\n"
+                            "a = t(D)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run["D"] == 0.02);
+        CHECK(run["a"] == 0.02);
+        CHECK(userWarnings(run).empty());   // EES: no warning
+    }
+    SECTION("constants are not rounded, whatever the guess value") {
+        auto run = runModel("x = 0.1\ny = 0.3\ng = 9.81\nP = 1.5E7\nn = 12345.678\n");
+        REQUIRE(run.solveOk);
+        CHECK(run["x"] == 0.1);
+        CHECK(run["y"] == 0.3);
+        CHECK(run["g"] == 9.81);
+        CHECK(run["P"] == 1.5e7);
+        CHECK(run["n"] == 12345.678);
+        auto guessed = runModel("x = 0.001\ny = 7\n", {}, "x = 12345.678\ny = 1E9\n");
+        REQUIRE(guessed.solveOk);
+        CHECK(guessed["x"] == 0.001);
+        CHECK(guessed["y"] == 7.0);
+    }
+    SECTION("an expression is evaluated as written, with no residual of the solve added to it") {
+        auto run = runModel("a = 0.1\nb = 0.2\nc = a + b\nd = a*b/3\n");
+        REQUIRE(run.solveOk);
+        CHECK(run["c"] == 0.1 + 0.2);
+        CHECK(run["d"] == 0.1*0.2/3);
+    }
+    SECTION("an explicit value that is exactly zero is +0") {
+        auto run = runModel("a = 2\nz = a - 2\nw = 0*a\n");
+        REQUIRE(run.solveOk);
+        CHECK(run["z"] == 0.0);
+        CHECK_FALSE(std::signbit(run["z"]));
+        CHECK_FALSE(std::signbit(run["w"]));
+    }
+}
+
+TEST_CASE("CS-BUG-TINY-VALUE: what stays an error", "[library-gaps][tiny-value]") {
+    SECTION("two conflicting tiny values for one variable") {
+        const fs::path dir = fs::temp_directory_path() / "coolsolve_test_tiny_value";
+        fs::create_directories(dir);
+        const fs::path file = dir / "conflict.eescode";
+        { std::ofstream f(file); f << "c = 2.33E-20\nc = 4E-20\n"; }
+        CoolSolveRunner runner(file.string());
+        CHECK_FALSE(runner.run(SolverOptions()));
+        CHECK(runner.getAnalysisResult().errorMessage ==
+              "There are 2 equations and 1 unknowns. The system is not square and cannot be solved");
+        fs::remove_all(dir);
+    }
+    SECTION("an equation without a real solution is still not solved") {
+        auto run = runModel("x^2 = -1\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("Block 0 (size 1, vars: x) failed") != std::string::npos);
+    }
+    SECTION("an explicit equation that is not defined at the solution is still reported") {
+        // 1/0: the value is not finite; the solution check reports the equation, as before
+        auto run = runModel("x = 1/y\ny = 0\n");
+        CHECK_FALSE(run.verified);
+    }
+}
