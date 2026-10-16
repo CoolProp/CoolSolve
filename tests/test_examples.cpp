@@ -113,7 +113,10 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"cooling_tower2.eescode",                  {"Q_dot", 1977305}},
     {"evaporator.eescode",                      {"epsilon_ev_f", 0.7153}},
     {"heat_pump_MSTh_SB_R10.eescode",           {"COP", 3.311}},
-    {"refrigeration_compressor.eescode",        {"epsilon_v_1", 0.4729}},
+    // EES reference (MSTh-SB-R1-Ex2.EES, TM-0016, stored solution): epsilon_v_1 = 0.8880 (CoolSolve 0.88717).
+    // The SB variant MSTh-SB-R1-Ex2_2.EES (TM-0017) has the typo V_dot_su_2 = M_dot_1*v_1_2 and stores 0.4729
+    // (CS-BUG-EX-REFRIGERATION-COMPRESSOR)
+    {"refrigeration_compressor.eescode",        {"epsilon_v_1", 0.8872}},
     // EES reference (MSTH_041012_exercice_6.EES, TM-0057, EES 7.210, solved from the default guesses): A = 0.01566
     // (CoolSolve 0.015657); the size-1 block phi = V_dot_su/(U*A) is hyperbolic in A (CS-BUG-NEWTON1D-DIVERGE)
     {"simple_centrifugal_compressor.eescode",   {"A", 0.01566}},

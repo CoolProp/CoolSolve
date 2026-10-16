@@ -56,7 +56,7 @@ V_dot_s=N*V_s
 V_dot_su_1=M_dot_1*v_1_1
 v_1_1=VOLUME(R22,T=T_1_1,P=P_ev_1)
 epsilon_v_1=1-C*(r_v_1-1)
-//C = 0.28
+//C = 0.06
 r_v_1=v_1_1/v_2_1
 //r_v_1 = 2.86
 v_2_1=VOLUME(R22,h=h_2_1,P=P_cd_1)
@@ -91,7 +91,7 @@ s_1_2=ENTROPY(R22,T=T_1_2,P=P_ev_2)
 W_dot_2=W_dot_loss_0+(1+alpha)*W_dot_s_2
 
 epsilon_v_2=V_dot_su_2/V_dot_s
-V_dot_su_2=M_dot_1*v_1_2
+V_dot_su_2=M_dot_2*v_1_2
 v_1_2=VOLUME(R22,T=T_1_2,P=P_ev_2)
 epsilon_v_2=1-C*(r_v_2-1)
 r_v_2=v_1_2/v_2_2
