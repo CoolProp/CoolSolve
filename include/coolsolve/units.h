@@ -52,6 +52,18 @@ struct UnitSystem {
 bool unitSettingActive(const std::string& setting, const UnitSystem& units);
 
 /**
+ * @brief What CoolSolve does with a unit setting of EES that is not in use.
+ *
+ * Used to warn about a `$UnitSystem` directive, which CoolSolve ignores (its units are fixed).
+ * @return empty when `setting` is in use (`unitSettingActive`), else a phrase such as
+ *         `pressures are read in Pa` (for `kPa`, `bar`, ...), `energies are read in J`,
+ *         `temperatures are read in °C`, `angles are read in degrees`,
+ *         `CoolSolve works in SI` (`Eng`) or `CoolSolve works on a mass basis` (`Molar`).
+ * @throws std::runtime_error for an unknown setting, as unitSettingActive.
+ */
+std::string unitSettingReplacement(const std::string& setting, const UnitSystem& units);
+
+/**
  * @brief Whether `name` is the symbol of a unit that `CONVERT` knows (K, C, kPa, bar, kJ, kg, m, s, kW, hp, lbf, ...).
  *
  * Case-sensitive, spelled as in EES (`kW`, not `kw`; `J`, not `j`, which is the usual name of an index), and only

@@ -378,6 +378,19 @@ bool unitSettingActive(const std::string& setting, const UnitSystem& units) {
         "' (expected SI, Eng, Mass, Molar, Deg, Rad, C, K, F, R, Pa, kPa, bar, MPa, psia, atm, J, kJ, Btu or kcal)");
 }
 
+std::string unitSettingReplacement(const std::string& setting, const UnitSystem& units) {
+    if (unitSettingActive(setting, units)) return "";   // throws for an unknown setting
+    const std::string s = normalize(setting);
+    if (s == "eng") return "CoolSolve works in SI";
+    if (s == "molar") return "CoolSolve works on a mass basis";
+    if (s == "rad") return "angles are read in degrees";
+    for (const char* t : {"c", "k", "f", "r"})
+        if (s == t) return std::string("temperatures are read in ") + (normalize(units.temperature) == "k" ? "" : "°") + units.temperature;
+    for (const char* p : {"pa", "kpa", "mpa", "bar", "psia", "atm"})
+        if (s == p) return "pressures are read in " + units.pressure;
+    return "energies are read in " + units.energy;   // J, kJ, Btu, kcal: the settings left
+}
+
 double UnitConverter::toSI(double value, UnitType type, const std::string& unit) {
     std::string u = normalize(unit);
     

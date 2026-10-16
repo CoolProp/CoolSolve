@@ -186,11 +186,44 @@ Parser-level directives begin with `$` and span a single line:
 
 - `$if <cond>` / `$ifnot <cond>` / `$else` / `$endif` — conditional compilation,
   see below.
-- `$unitSystem SI` — recognised for EES compatibility but currently **ignored**;
-  the unit system is fixed (see the warning at the top of this page).
+- `$UnitSystem SI Mass Deg Pa C J` — recognised for EES compatibility but **ignored**; the unit
+  system is fixed (see the warning at the top of this page). A directive that asks for
+  other units gets a **warning**, see below.
 - `$warnings ON` / `OFF` — recognised and **ignored**; the warnings of `CALL WARNING` are
   always reported, as in EES (see *CALL ERROR and CALL WARNING* in §7).
 - `$CONSTANT Name# = value [units]` — a constant of the model, see below.
+
+#### `$UnitSystem`
+
+CoolSolve's units are fixed: **SI, mass basis, degrees, Pa, °C, J**, whatever the
+directive says. A model written for another setting (kPa, bar, MPa, kJ, K, molar, radians,
+English units) would therefore be read in the fixed units, with wrong results and no other
+sign, so the parser warns (`P010`, at the line of the directive) when the settings of a
+`$UnitSystem` directive differ from them, and names what CoolSolve uses instead:
+
+```ees
+$UnitSystem SI Mass Deg kPa C kJ
+P = 100                          "read as 100 Pa"
+```
+
+```
+warning (line 1): $UnitSystem SI Mass Deg kPa C kJ: CoolSolve's units are fixed (SI, mass basis,
+degrees, Pa, °C, J) and the directive does not change them: this model asks for kPa (pressures
+are read in Pa), kJ (energies are read in J). Convert the model to SI-C-Pa-J (docs/ees_import.md §6)
+```
+
+- The settings are those of the `UNITSYSTEM()` function, in any case: `SI`/`Eng`, `Mass`/`Molar`,
+  `Deg`/`Rad`, `C`/`K`/`F`/`R`, `Pa`/`kPa`/`bar`/`MPa`/`psia`/`atm`, `J`/`kJ`/`Btu`/`kcal`
+  (separated by blanks or commas). `SI Mass Deg Pa C J`, or any part of it, gives no warning.
+- A word that is none of these settings is named in the same warning
+  (`'furlong' is not a unit setting CoolSolve knows`); it is not an error.
+- There is one warning per `$UnitSystem` line that differs. A directive in a comment or in a
+  removed `$IF` branch is not read.
+- The warning does not change the solve: the model is solved in the fixed units. `UNITSYSTEM('kPa')`
+  and `$IF UNITSYSTEM('kPa')` stay false, `UNITSYSTEM('Pa')` stays true, whatever the directive says.
+
+To use such a model, convert it by hand
+([EES import §6](ees_import.md#6-unit-system--manual-conversion)).
 
 #### `$CONSTANT`
 
@@ -527,7 +560,8 @@ END
 
 `UNITSYSTEM` lets EES library routines check the unit settings they were
 written for; in CoolSolve such a guard never fires (the unit system is fixed).
-An unknown setting name is an error.
+It reports the fixed units whatever a `$UnitSystem` directive of the file says (that
+directive only gets a warning, see *Directives*). An unknown setting name is an error.
 
 **`CONVERT` unit strings.** The units are strings (`CONVERT('lbm/hr', 'kg/s')`) or, as in EES, unit
 names written without quotes (`CONVERT(lbm/hr, kg/s)`, see below). A unit string is a product of unit

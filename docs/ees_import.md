@@ -165,8 +165,10 @@ and some the RAD trigonometric setting.
 
 > **Rule: when the EES model uses another unit system, the whole model is
 > converted by hand, equation by equation, by the person doing the import.**
-> Do not rely on the `$UnitSystem` directive (CoolSolve parses but ignores it:
-> a kPa/kJ model would silently give wrong results), do not scale results
+> Do not rely on the `$UnitSystem` directive (CoolSolve ignores it: a kPa/kJ
+> model would give wrong results; the parser only warns, `P010` with the line of
+> the directive, when the directive differs from `SI MASS DEG PA C J`, and a
+> model with no directive gets no warning at all), do not scale results
 > automatically, and do not wrap property calls in conversion factors: the
 > converted model must read naturally in SI-°C-Pa-J, like any other library
 > model. Every converted value and every modified equation is checked by hand
@@ -235,7 +237,9 @@ FUNCTIONs and PROCEDUREs:
    ×1000, temperatures −273.15), or delete the converted entries and obtain new
    guesses with a simplified model
    ([Debugging Models §5](debugging_models.md#step-5-break-the-loop-simplified-model)).
-10. Replace the `$UnitSystem` line by `$UnitSystem SI MASS DEG PA C J`.
+10. Replace the `$UnitSystem` line by `$UnitSystem SI MASS DEG PA C J` (the
+    `P010` warning of the unconverted file, *"CoolSolve's units are fixed …"*,
+    must be gone when the model is run).
 11. Log the conversion in the README: the converted inputs, the modified
     equations and the constants found.
 

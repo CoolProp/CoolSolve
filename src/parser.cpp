@@ -2842,6 +2842,30 @@ private:
                (routineKind_ == "FUNCTION" ? " (and in each call)" : " (and in each CALL)");
     }
 
+    /// Text of the P010 warning for the settings of a `$UnitSystem` directive (`SI Mass Deg kPa C kJ`) that are
+    /// not CoolSolve's fixed units, or "" when they all are (or when there is none).
+    std::string unitSystemWarning(const std::string& settings) const {
+        const UnitSystem fixedUnits;
+        std::string asked, unknown;
+        std::string words = settings;
+        std::replace(words.begin(), words.end(), ',', ' ');
+        std::istringstream in(words);
+        for (std::string word; in >> word;) {
+            try {
+                const std::string replacement = unitSettingReplacement(word, fixedUnits);
+                if (!replacement.empty()) asked += (asked.empty() ? "" : ", ") + word + " (" + replacement + ")";
+            } catch (const std::runtime_error&) {
+                unknown += (unknown.empty() ? "'" : ", '") + word + "' is not a unit setting CoolSolve knows";
+            }
+        }
+        if (asked.empty() && unknown.empty()) return "";
+        std::string clauses = asked.empty() ? "" : "this model asks for " + asked;
+        if (!unknown.empty()) clauses += (clauses.empty() ? "" : "; ") + unknown;
+        return "$UnitSystem " + settings + ": CoolSolve's units are fixed (SI, mass basis, degrees, " + fixedUnits.pressure +
+               ", °" + fixedUnits.temperature + ", " + fixedUnits.energy + ") and the directive does not change them: " +
+               clauses + ". Convert the model to SI-C-Pa-J (docs/ees_import.md §6)";
+    }
+
     StmtPtr tryParseDirective(const std::string& line, int lineNum, DiagnosticCollector* diag = nullptr) {
         std::string trimmed = trim(line);
         
@@ -2885,6 +2909,12 @@ private:
                            "'$" + name + "' is recognised but not interpreted; "
                            "configure integration via the 'integral*' keys in coolsolve.conf.",
                            "parser", lineNum, 1);
+            }
+            // $UnitSystem is ignored: CoolSolve's units are fixed, so a model in kPa, kJ, K, ... would be
+            // read in Pa, J, °C silently (CS-GAP-UNITSYSTEM)
+            if (lower == "unitsystem") {
+                const std::string message = unitSystemWarning(trim(removeInlineComments(content)));
+                if (!message.empty()) diag->push(DiagnosticSeverity::Warning, "P010", message, "parser", lineNum, 1);
             }
         }
 

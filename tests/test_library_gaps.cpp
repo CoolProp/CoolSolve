@@ -19309,3 +19309,208 @@ h_C3H8_ref = ENTHALPY(C3H8,T=T_ref)
     // butane and propane are on one basis: the heats of formation per kmol differ by the CH2 increment (-21 110 kJ/kmol)
     CHECK_THAT(run["h_C4H10_ref"] * 58.1222 - run["h_C3H8_ref"] * 44.09562, WithinAbs(-21110e3, 1e3));
 }
+
+// ============================================================================
+// CS-GAP-UNITSYSTEM: a $UnitSystem directive that differs from CoolSolve's fixed units gives a warning
+// ============================================================================
+
+namespace {
+
+/// "line: message" of the P010 warnings ($UnitSystem different from CoolSolve's fixed units) of the diagnostics `items`.
+std::vector<std::string> unitSystemWarnings(const std::vector<Diagnostic>& items) {
+    std::vector<std::string> out;
+    for (const auto& d : items)
+        if (d.code == "P010") {
+            CHECK(d.severity == DiagnosticSeverity::Warning);
+            CHECK(d.source == "parser");
+            out.push_back(std::to_string(d.line) + ": " + d.message);
+        }
+    return out;
+}
+
+/// The warning for the directive `$UnitSystem <settings>` whose differences read `clauses`.
+std::string unitSystemMessage(const std::string& settings, const std::string& clauses) {
+    return "$UnitSystem " + settings + ": CoolSolve's units are fixed (SI, mass basis, degrees, Pa, \xC2\xB0" "C, J) and the "
+           "directive does not change them: " + clauses + ". Convert the model to SI-C-Pa-J (docs/ees_import.md \xC2\xA7" "6)";
+}
+
+/// The only P010 warning of `code` ("line: message"), or "" when there is none (CHECKs that there are not several).
+std::string unitSystemWarningOf(const std::string& code) {
+    const auto warnings = unitSystemWarnings(parseFull(code).diagnostics.items());
+    CHECK(warnings.size() <= 1);
+    return warnings.empty() ? std::string() : warnings.front();
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-UNITSYSTEM: the register reproducer ($UnitSystem SI Mass Deg kPa C kJ) warns at the directive line",
+          "[library-gaps][unitsystem]") {
+    // was: SUCCESS with no warning on the directive; P = 100 was read in Pa (EES with kPa: 100 kPa)
+    const std::string code = "$UnitSystem SI Mass Deg kPa C kJ\nP = 100\nh = enthalpy(Water, T=25, P=P)\n";
+    const auto parsed = parseFull(code);
+    CHECK(parsed.errors.empty());
+    CHECK(parsed.equationCount == 2);
+    CHECK(unitSystemWarnings(parsed.diagnostics.items()) ==
+          std::vector<std::string>{"1: " + unitSystemMessage("SI Mass Deg kPa C kJ",
+              "this model asks for kPa (pressures are read in Pa), kJ (energies are read in J)")});
+
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);   // the warning is not an error: the model solves, in Pa and J
+    CHECK(run.verified);
+    CHECK(anyContains(run.warnings, "this model asks for kPa (pressures are read in Pa), kJ (energies are read in J)"));
+    CHECK_THAT(run["h"], WithinRel(CoolProp::PropsSI("H", "T", 298.15, "P", 100.0, "Water"), 1e-9));   // 100 Pa, not 100 kPa
+}
+
+TEST_CASE("CS-GAP-UNITSYSTEM: each setting that differs is named, with what CoolSolve uses instead",
+          "[library-gaps][unitsystem]") {
+    CHECK(unitSystemWarningOf("$UnitSystem Eng Mass Deg F psia Btu\nx = 1\n") ==
+          "1: " + unitSystemMessage("Eng Mass Deg F psia Btu",
+              "this model asks for Eng (CoolSolve works in SI), F (temperatures are read in \xC2\xB0" "C), "
+              "psia (pressures are read in Pa), Btu (energies are read in J)"));
+    CHECK(unitSystemWarningOf("$UnitSystem SI Molar Deg Pa C J\nx = 1\n") ==
+          "1: " + unitSystemMessage("SI Molar Deg Pa C J", "this model asks for Molar (CoolSolve works on a mass basis)"));
+    CHECK(unitSystemWarningOf("$UnitSystem SI Mass Rad Pa C J\nx = 1\n") ==
+          "1: " + unitSystemMessage("SI Mass Rad Pa C J", "this model asks for Rad (angles are read in degrees)"));
+    CHECK(unitSystemWarningOf("$UnitSystem SI Mass Deg Pa K J\nx = 1\n") ==
+          "1: " + unitSystemMessage("SI Mass Deg Pa K J", "this model asks for K (temperatures are read in \xC2\xB0" "C)"));
+    CHECK(unitSystemWarningOf("$UnitSystem SI Mass Deg Pa R J\nx = 1\n") ==
+          "1: " + unitSystemMessage("SI Mass Deg Pa R J", "this model asks for R (temperatures are read in \xC2\xB0" "C)"));
+    for (const std::string pressure : {"kPa", "MPa", "bar", "psia", "atm"})
+        CHECK(unitSystemWarningOf("$UnitSystem SI Mass Deg " + pressure + " C J\nx = 1\n") ==
+              "1: " + unitSystemMessage("SI Mass Deg " + pressure + " C J",
+                  "this model asks for " + pressure + " (pressures are read in Pa)"));
+    for (const std::string energy : {"kJ", "Btu", "kcal"})
+        CHECK(unitSystemWarningOf("$UnitSystem SI Mass Deg Pa C " + energy + "\nx = 1\n") ==
+              "1: " + unitSystemMessage("SI Mass Deg Pa C " + energy,
+                  "this model asks for " + energy + " (energies are read in J)"));
+}
+
+TEST_CASE("CS-GAP-UNITSYSTEM: the directive that matches CoolSolve's units gives no warning",
+          "[library-gaps][unitsystem]") {
+    // the form of the one library model with the directive (ball_valve_authority), then every spelling
+    for (const std::string directive : {"$UnitSystem SI MASS DEG PA C J", "$UnitSystem SI Mass Deg Pa C J",
+                                        "$unitsystem si mass deg pa c j", "$UNITSYSTEM SI MASS DEG PA C J",
+                                        "  $UnitSystem  SI   Mass  Deg  Pa  C  J  ", "$UnitSystem SI Mass Deg Pa C J \"SI-C-Pa-J\"",
+                                        "$UnitSystem SI Mass Deg Pa C J {as EES}", "$UnitSystem SI Mass Deg Pa C J // as EES",
+                                        "$UnitSystem SI", "$UnitSystem Pa", "$UnitSystem", "$UnitSystem SI,Mass,Deg,Pa,C,J"}) {
+        INFO(directive);
+        const std::string code = directive + "\nP = 1E5\nh = enthalpy(Water, T=25, P=P)\n";
+        CHECK(unitSystemWarningOf(code) == "");
+        auto run = runModel(code);
+        REQUIRE(run.solveOk);
+        for (const auto& w : run.warnings) CHECK(w.find("$UnitSystem") == std::string::npos);
+        CHECK_THAT(run["h"], WithinRel(CoolProp::PropsSI("H", "T", 298.15, "P", 1e5, "Water"), 1e-9));
+    }
+}
+
+TEST_CASE("CS-GAP-UNITSYSTEM: the keywords are case-insensitive and shown as the model spells them",
+          "[library-gaps][unitsystem]") {
+    const std::string clauses = "this model asks for KPA (pressures are read in Pa), kj (energies are read in J)";
+    CHECK(unitSystemWarningOf("$UNITSYSTEM SI MASS DEG KPA C kj\nx = 1\n") == "1: " + unitSystemMessage("SI MASS DEG KPA C kj", clauses));
+    CHECK(unitSystemWarningOf("$unitsystem si mass deg KPA c kj\nx = 1\n") == "1: " + unitSystemMessage("si mass deg KPA c kj", clauses));
+    CHECK(unitSystemWarningOf("$UnitSystem SI Mass Deg KPA C kj\nx = 1\n") == "1: " + unitSystemMessage("SI Mass Deg KPA C kj", clauses));
+}
+
+TEST_CASE("CS-GAP-UNITSYSTEM: an unknown setting is reported in the same warning", "[library-gaps][unitsystem]") {
+    const std::string unknown = "'furlong' is not a unit setting CoolSolve knows";
+    // alone: the directive is otherwise the matching one, the warning is still given
+    CHECK(unitSystemWarningOf("$UnitSystem SI Mass Deg Pa C J furlong\nx = 1\n") ==
+          "1: " + unitSystemMessage("SI Mass Deg Pa C J furlong", unknown));
+    // with a setting that differs: one warning with both
+    CHECK(unitSystemWarningOf("$UnitSystem SI Mass Deg kPa C kJ furlong\nx = 1\n") ==
+          "1: " + unitSystemMessage("SI Mass Deg kPa C kJ furlong",
+              "this model asks for kPa (pressures are read in Pa), kJ (energies are read in J); " + unknown));
+    // an unknown setting is not an error: the model parses and solves
+    auto run = runModel("$UnitSystem SI Mass Deg Pa C furlong\nx = 2\n");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(2.0, 1e-12));
+    CHECK(anyContains(run.warnings, unknown));
+}
+
+TEST_CASE("CS-GAP-UNITSYSTEM: one warning per $UnitSystem line that differs, at its line", "[library-gaps][unitsystem]") {
+    const auto warnings = unitSystemWarnings(parseFull(
+        "$UnitSystem SI Mass Deg kPa C kJ\nx = 1\n$UnitSystem SI Mass Deg Pa C J\ny = 2\n$UnitSystem Eng Mass Deg Pa C J\n")
+        .diagnostics.items());
+    REQUIRE(warnings.size() == 2);
+    CHECK(warnings[0].rfind("1: $UnitSystem SI Mass Deg kPa C kJ: ", 0) == 0);
+    CHECK(warnings[1].rfind("5: $UnitSystem Eng Mass Deg Pa C J: ", 0) == 0);
+    // not at the top of the file
+    CHECK(unitSystemWarningOf("x = 1\n\"a comment\"\n  $UnitSystem SI Mass Deg Pa K J\ny = x + 1\n") ==
+          "3: " + unitSystemMessage("SI Mass Deg Pa K J", "this model asks for K (temperatures are read in \xC2\xB0" "C)"));
+}
+
+TEST_CASE("CS-GAP-UNITSYSTEM: a directive that is commented out or in a removed $IF branch gives no warning",
+          "[library-gaps][unitsystem]") {
+    CHECK(unitSystemWarningOf("{$UnitSystem SI Mass Deg kPa C kJ}\nx = 1\n") == "");
+    CHECK(unitSystemWarningOf("\"$UnitSystem SI Mass Deg kPa C kJ\"\nx = 1\n") == "");
+    CHECK(unitSystemWarningOf("// $UnitSystem SI Mass Deg kPa C kJ\nx = 1\n") == "");
+    CHECK(unitSystemWarningOf("$IF UNITSYSTEM('kPa')\n$UnitSystem SI Mass Deg kPa C kJ\n$ENDIF\nx = 1\n") == "");
+    CHECK(unitSystemWarningOf("$IFNOT UNITSYSTEM('Pa')\n$UnitSystem SI Mass Deg kPa C kJ\n$ENDIF\nx = 1\n") == "");
+    // the selected branch is read: the line is that of the file
+    CHECK(unitSystemWarningOf("$IF UNITSYSTEM('Pa')\nx = 1\n$ELSE\n$UnitSystem SI Mass Deg kPa C kJ\n$ENDIF\n") == "");
+    CHECK(unitSystemWarningOf("$IFNOT UNITSYSTEM('Pa')\nx = 1\n$ELSE\n$UnitSystem SI Mass Deg kPa C kJ\n$ENDIF\n").rfind("4: ", 0) == 0);
+}
+
+TEST_CASE("CS-GAP-UNITSYSTEM: the directive does not change the results, UNITSYSTEM() reports the fixed units",
+          "[library-gaps][unitsystem]") {
+    const std::string body = R"(
+P = 100
+T = 25
+h = enthalpy(Water, T=T, P=P)
+s = entropy(Water, T=T, P=P)
+rho = density(Water, T=T, P=P)
+u_Pa = unitsystem('Pa')
+u_kPa = unitsystem('kPa')
+u_C = unitsystem('C')
+u_K = unitsystem('K')
+u_J = unitsystem('J')
+u_kJ = unitsystem('kJ')
+u_Deg = unitsystem('Deg')
+u_Rad = unitsystem('Rad')
+)";
+    const auto plain = runModel(body);
+    REQUIRE(plain.solveOk);
+    for (const std::string directive : {"$UnitSystem SI Mass Deg kPa C kJ", "$UnitSystem Eng Molar Rad psia F Btu",
+                                        "$UnitSystem SI Mass Deg Pa K J"}) {
+        INFO(directive);
+        const auto run = runModel(directive + "\n" + body);
+        REQUIRE(run.solveOk);
+        CHECK(run.vars == plain.vars);   // identical: the directive is ignored
+        CHECK(run["u_Pa"] == 1.0);
+        CHECK(run["u_kPa"] == 0.0);   // whatever the directive says
+        CHECK(run["u_C"] == 1.0);
+        CHECK(run["u_K"] == 0.0);
+        CHECK(run["u_J"] == 1.0);
+        CHECK(run["u_kJ"] == 0.0);
+        CHECK(run["u_Deg"] == 1.0);
+        CHECK(run["u_Rad"] == 0.0);
+        CHECK(anyContains(run.warnings, "CoolSolve's units are fixed"));
+    }
+    // $IF UNITSYSTEM('kPa') is false after a kPa directive too: the branch that is selected is the one of the fixed units
+    const auto branch = runModel("$UnitSystem SI Mass Deg kPa C kJ\n$IF UNITSYSTEM('kPa')\nP = 100\n$ELSE\nP = 1E5\n$ENDIF\n");
+    REQUIRE(branch.solveOk);
+    CHECK_THAT(branch["P"], WithinAbs(1e5, 1e-9));
+}
+
+TEST_CASE("CS-GAP-UNITSYSTEM: what stays as before (negative tests)", "[library-gaps][unitsystem]") {
+    // no directive, no warning, and the usual P002 for an unknown directive is not replaced by this one
+    CHECK(unitSystemWarningOf("x = 1\n") == "");
+    {
+        const auto parsed = parseFull("$UnitSystems SI Mass Deg kPa C kJ\nx = 1\n");
+        CHECK(unitSystemWarnings(parsed.diagnostics.items()).empty());
+        bool unknownDirective = false;
+        for (const auto& d : parsed.diagnostics.items())
+            if (d.code == "P002") unknownDirective = true;
+        CHECK(unknownDirective);
+    }
+    // the function with an unknown setting is still an error, with its message
+    auto run = runModel("$UnitSystem SI Mass Deg kPa C kJ\na = unitsystem('furlong')\n");
+    CHECK_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "UNITSYSTEM: unknown unit setting 'furlong'"));
+    // a model that is wrong for another reason keeps its error, the warning is only a warning
+    auto bad = runModel("$UnitSystem SI Mass Deg kPa C kJ\nx = \n");
+    CHECK_FALSE(bad.parseOk);
+}
