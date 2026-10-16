@@ -306,6 +306,11 @@ static const std::unordered_map<std::string, std::string>& fluidNameHints() {
 
 }  // namespace
 
+bool isConcentrationArgName(const std::string& name) {
+    const std::string n = lowerCopy(name);
+    return n == "c" || n == "conc" || n == "concentration";
+}
+
 void resetThermoInputHints() {
     g_thermoHintKeys.clear();
 }

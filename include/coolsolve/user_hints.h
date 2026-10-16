@@ -19,6 +19,10 @@ enum class ThermoInputKind {
     RelativeHumidity,
 };
 
+/// True for the name of the concentration argument of a property call on an incompressible solution (`C=30`,
+/// `conc=30`, `concentration=30`, any case): a mass percent, never a state input, so never a temperature to the hints.
+bool isConcentrationArgName(const std::string& name);
+
 /// Clear per-run deduplication state (call at the start of each solve).
 void resetThermoInputHints();
 

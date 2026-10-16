@@ -972,6 +972,9 @@ private:
 
             // Literal named arguments: static unit hints with line numbers
             for (const auto& [argName, argExpr] : call.namedArgs) {
+                // C=30 of an incompressible solution is a concentration (mass %), not a state input: the fluid is
+                // unknown here (a string variable), and no other call takes a `C` argument
+                if (isConcentrationArgName(argName)) continue;
                 double lit = 0.0;
                 if (!tryGetNumericLiteral(argExpr, lit)) continue;
                 checkThermoInputValueHint(&result.diagnostics, call.name,

@@ -1038,7 +1038,25 @@ Example:
 ```ees
 rho = density('MEG', 30, T=10, P=101325)   "30 % MEG at 10 °C"
 cp  = cp('EthyleneGlycol', T=10, P=101325, C=30)
+cp_w = cp(EG, T=50, C=30)                  "the EES form: T and the concentration alone, 3802.5 J/kg-K"
 ```
+
+**The EES form: the temperature and the concentration alone.** EES evaluates an incompressible substance with the
+temperature as its only state input and the concentration `C` in mass %: `cp('EG',T=T,C=30)`,
+`density(EG,T=T,C=30)`, `viscosity(...)`, `conductivity(...)`. CoolSolve accepts it for every substance of this section
+(the concentration as the second positional argument, `C=`, `conc=` or `concentration=`; any fluid spelling, a string
+variable too). The call is evaluated at an **internal pressure of 101325 Pa**: its value is exactly that of the same call with
+`P=101325`, with the same derivative with respect to `T` (the pressure is a constant of the model, never clamped by
+the solver). The pressure matters for few outputs: CoolProp's `density`, `cp`, `cv`, `viscosity`, `conductivity` (and
+what is built on them: `prandtl`, `kinematicviscosity`, `thermaldiffusivity`, `volume`) of an incompressible do **not**
+depend on it, so the value is the EES one whatever the pressure; `enthalpy`, `entropy` and `intenergy` do, through a
+`p/ρ` term (for 30 % ethylene glycol at 50 °C the enthalpy rises by 0.8 J/kg per kPa): the T-only value is the one at
+101325 Pa, and a model that needs another pressure writes `P=`. Any other single input (`P`, `h`, `s`, `d`, …) does not
+fix the state and stays the error naming the call (*cp requires exactly 2 input properties … got 1*); `pressure` and the
+saturation functions of an incompressible are not evaluated at the internal pressure (no pressure is ever returned as a
+result); without a concentration the call is the usual error of the solutions. A real fluid still needs two state
+inputs. The named `C=`, `conc=` and `concentration=` are never read as a temperature by the unit hints, so `C=30` gives
+no *"looks like Fahrenheit"* warning (a genuine `T=32` still does).
 
 **`LiBr` is the aqueous solution, not a pure fluid**: it needs its concentration like the other solutions
 (`density(LiBr, 50, T=40, P=1E5)` or `C=50`; without it the call is the usual error asking for one). CoolProp has the

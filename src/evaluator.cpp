@@ -1619,7 +1619,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         throw std::runtime_error("Fluid '" + eesFluidName + "' is not supported: " + (unsupported ? unsupported->getReason() : "Unknown reason"));
     }
     
-    // Incompressible fluid: accept T,P inputs; reject saturation-style inputs.
+    // Incompressible fluid: accept T,P inputs (or T alone, see below); reject saturation-style inputs.
     // For solutions, resolve concentration from a second positional argument
     // (mass fraction in %, e.g. density('MEG', 30, T=280, P=1e5)) or from a
     // `C` named argument.
@@ -1640,7 +1640,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             }
             // C or concentration named arg (mass percent)
             for (auto it = inputs.begin(); it != inputs.end(); ) {
-                if (it->first == "c" || it->first == "conc" || it->first == "concentration") {
+                if (isConcentrationArgName(it->first)) {
                     massFraction = it->second.value / 100.0;
                     it = inputs.erase(it);
                 } else {
@@ -1731,6 +1731,33 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             pressureInjected = true;
         } else {
             throw idealGasNeedsPressure(funcName);
+        }
+    }
+    
+    // Incompressible substance (pure or solution) with the temperature as its only state input, the concentration
+    // being already taken out: the EES form cp('EG',T=T,C=30), density(EG,T=T,C=30), viscosity, conductivity. EES
+    // takes no pressure there; CoolProp needs one, so the call is evaluated at the fixed internal pressure
+    // IncompressibleFluid::kInternalPressureSI (101325 Pa): the value is that of the call with P=101325 at the same
+    // T and C, by the same code (the derivative with respect to T included: the injected pressure is a constant).
+    // CoolProp's density, specific heat, viscosity and conductivity of an incompressible do not depend on the
+    // pressure, so the choice does not matter for them; its enthalpy, entropy and internal energy do (a p/rho term,
+    // h = int(cp dT) + p/rho (1 + T/rho drho/dT)): they are the values at 101325 Pa. Any other single input (P, h,
+    // s, rho, ...) does not fix the state and stays the error of the call below. The output must not be a pressure
+    // (the injected value would come back as a result) nor a saturation temperature (undefined for an
+    // incompressible): those calls are unchanged.
+    if (fluid->getType() == FluidType::Incompressible && inputs.size() == 1 &&
+        (inputs.begin()->first == "t" || inputs.begin()->first == "temperature")) {
+        bool echoesPressure = funcName == "t_sat" || funcName == "tsat";
+        try {
+            echoesPressure = echoesPressure || getCoolPropOutputParam(funcName).param == CoolProp::iP;
+        } catch (const std::exception&) {
+            // not an output: the error of the call below names it
+        }
+        if (!echoesPressure) {
+            inputs["p"] = ADValue::constant(
+                UnitConverter::fromSI(IncompressibleFluid::kInternalPressureSI, UnitType::Pressure, units.pressure),
+                numVariables_);
+            pressureInjected = true;
         }
     }
     

@@ -151,6 +151,11 @@ public:
     bool isSolution() const { return isSolution_; }
     FluidType getType() const override { return FluidType::Incompressible; }
     int getMinInputs() const override { return 2; }
+
+    /// Pressure [Pa] of a property call whose only state input is the temperature (EES: `cp('EG',T=T,C=30)`).
+    /// CoolProp's density, specific heat, viscosity and conductivity of an incompressible do not depend on the
+    /// pressure; its enthalpy, entropy and internal energy do (a p/rho term), so they are those at this pressure.
+    static constexpr double kInternalPressureSI = 101325.0;
     
     /// Build a CoolProp fluid name for a given mass fraction (0..1).
     /// Only meaningful when isSolution() is true.

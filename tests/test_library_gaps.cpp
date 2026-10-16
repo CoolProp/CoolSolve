@@ -20605,3 +20605,438 @@ TEST_CASE("CS-BUG-INCOMP-LIBR: the LiBr solution of CoolProp and the ASHRAE rout
     CHECK_THAT(run["c"], WithinRel(librCoolProp("C", run["x"] / 100.0, 313.15, 1e5), 1e-5));
     CHECK(librCaloricWarnings(run) == 0);   // H_LIBR is the reference: no warning
 }
+
+// ============================================================================
+// CS-GAP-INCOMPRESSIBLE: EES evaluates an incompressible substance at the temperature (and the concentration) alone
+// ============================================================================
+// EES: cp('EG',T=T,C=30), density(EG,T=T,C=30), viscosity(...), conductivity(...): no pressure. CoolSolve asked for two
+// state inputs ("cp requires exactly 2 input properties ... got 1") and read the named C=30 as a temperature at parse
+// time (warning "C=30 looks like Fahrenheit"). The temperature as the only state input is now evaluated at the internal
+// pressure of 101325 Pa (the value of the call with P=101325 at the same T, C), like the single-input call of an ideal
+// gas; CoolProp's density, specific heat, viscosity and conductivity of an incompressible do not depend on the pressure,
+// its enthalpy, entropy and internal energy do (a p/rho term). The concentration C=, conc= or concentration= is never
+// a temperature input of a property call.
+
+namespace {
+
+/// CoolProp's INCOMP::<key> (MEG, MPG, MCA, ...) at the mass percent `percent`, T [C] and P [Pa].
+double incompRef(const char* output, const char* key, double percent, double T_C, double P_Pa = 101325.0) {
+    return CoolProp::PropsSI(output, "T", T_C + 273.15, "P", P_Pa,
+                             std::string("INCOMP::") + key + "[" + numText(percent / 100.0) + "]");
+}
+
+/// Messages of the warnings of the parse of `code` (the static hints, with their line).
+std::vector<std::string> parseWarnings(const std::string& code) {
+    EESParser parser;
+    auto parsed = parser.parse(code);
+    std::vector<std::string> messages;
+    for (const auto& d : parsed.diagnostics.items())
+        if (d.severity == DiagnosticSeverity::Warning) messages.push_back(d.message);
+    return messages;
+}
+
+/// Value and derivative with respect to Tv of the property call `call` (written with the variable Tv, in the unit
+/// system of `cfg`) at Tv = `T`.
+struct IncompCall { double value, dT; };
+
+IncompCall evalIncompCall(const std::string& call, double T, const CoolPropConfig& cfg = CoolPropConfig()) {
+    EESParser parser;
+    auto parsed = parser.parse("y = " + call + "\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    ExpressionEvaluator ev(1, cfg);
+    ev.setVariable("Tv", ADValue::independent(T, 0, 1));
+    ADValue r = ev.evaluate(ir.getEquations()[0].rhs);
+    return {r.value, r.gradient[0]};
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: register reproducer, cp('EG',T=50,C=30) is a value without warning",
+          "[library-gaps][incompressible]") {
+    // was: warning "C=30 looks like Fahrenheit" and the error "cp requires exactly 2 input properties ... got 1"
+    auto run = runModel("cp_w = cp('EG',T=50,C=30)\ny = cp_w\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    const double ref = incompRef("C", "MEG", 30, 50);
+    CHECK_THAT(run["cp_w"], WithinRel(ref, 1e-9));
+    CHECK(run["cp_w"] > 3750.0);   // 30 % ethylene glycol at 50 C: about 3.80 kJ/kg-K (EES stores 3804.9 at 52.9 C in CSL-0116)
+    CHECK(run["cp_w"] < 3850.0);
+    CHECK(run["y"] == run["cp_w"]);
+    // the same value as the call with the pressure written: the internal pressure is 101325 Pa
+    auto two = runModel("a = cp('EG',T=50,C=30)\nb = cp('EG',T=50,P=101325,C=30)\n");
+    REQUIRE(two.solveOk);
+    CHECK(two["a"] == two["b"]);
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: every property of the substance equals the call with P=101325, T and C alone",
+          "[library-gaps][incompressible]") {
+    struct Prop { const char* eesName; const char* coolProp; const char* fluid; };   // coolProp: "" when it is a derived EES property
+    // (`internalenergy` is not in the parser's list of functions: CS-BUG-INTERNALENERGY-UNQUOTED, the alias `intenergy` is)
+    const Prop props[] = {
+        {"cp", "C", "EG"}, {"specheat", "C", "EG"}, {"cv", "O", "EG"}, {"density", "D", "EG"}, {"viscosity", "V", "EG"},
+        {"conductivity", "L", "EG"}, {"enthalpy", "H", "EG"}, {"entropy", "S", "EG"}, {"intenergy", "U", "EG"},
+        {"prandtl", "", "EG"}, {"kinematicviscosity", "", "EG"}, {"thermaldiffusivity", "", "EG"}, {"volume", "", "EG"},
+    };
+    std::string code;
+    for (const auto& p : props)
+        code += std::string("a_") + p.eesName + " = " + p.eesName + "(" + p.fluid + ", T=50, C=30)\n" +
+                "b_" + p.eesName + " = " + p.eesName + "(" + p.fluid + ", T=50, P=101325, C=30)\n";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    for (const auto& p : props) {
+        INFO(p.eesName);
+        CHECK(run[std::string("a_") + p.eesName] == run[std::string("b_") + p.eesName]);
+        if (std::string(p.coolProp).empty()) continue;
+        CHECK_THAT(run[std::string("a_") + p.eesName], WithinRel(incompRef(p.coolProp, "MEG", 30, 50), 1e-9));
+    }
+    // the derived ones are the quotients of the others
+    CHECK_THAT(run["a_kinematicviscosity"], WithinRel(run["a_viscosity"] / run["a_density"], 1e-12));
+    CHECK_THAT(run["a_thermaldiffusivity"], WithinRel(run["a_conductivity"] / (run["a_density"] * run["a_cp"]), 1e-12));
+    CHECK_THAT(run["a_volume"], WithinRel(1.0 / run["a_density"], 1e-12));
+    CHECK_THAT(run["a_prandtl"], WithinRel(run["a_cp"] * run["a_viscosity"] / run["a_conductivity"], 1e-9));
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: spellings of the fluid, of T and of the concentration", "[library-gaps][incompressible]") {
+    auto run = runModel(
+        "v1 = cp(EG, T=50, C=30)\n"
+        "v2 = cp('EG', T=50, C=30)\n"
+        "fl$ = 'EG'\n"
+        "v3 = cp(fl$, T=50, C=30)\n"
+        "v4 = cp(EG, t=50, c=30)\n"
+        "v5 = cp(EG, temperature=50, concentration=30)\n"
+        "v6 = cp(EG, T=50, conc=30)\n"
+        "v7 = cp(EG, 30, T=50)\n"
+        "Conc = 30\n"
+        "v8 = cp(EG, T=50, C=Conc)\n"
+        "v9 = cp(ethyleneglycol, T=50, C=30)\n"
+        "v10 = cp(MEG, T=50, C=30)\n"
+        "v11 = specheat(EG, T=50, C=30)\n"
+        "v12 = cp(fl$, 30, t=50)\n"
+        "v13 = cp(EG, T=50, C=15*2)\n"
+        "T1 = 25 + 25\n"
+        "v14 = cp(EG, T=T1, C=Conc)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    const double ref = incompRef("C", "MEG", 30, 50);
+    for (int i = 1; i <= 14; ++i) {
+        INFO("v" << i);
+        CHECK_THAT(run["v" + std::to_string(i)], WithinRel(ref, 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: the other glycols, brines and secondary refrigerants", "[library-gaps][incompressible]") {
+    auto run = runModel(
+        "a1 = cp(PG, T=40, C=30)\n"
+        "a2 = density(PropyleneGlycol, T=40, C=30)\n"
+        "a3 = viscosity(MPG, T=40, C=30)\n"
+        "b1 = cp(CaCl2, T=10, C=20)\n"
+        "b2 = density(NaCl, T=10, C=10)\n"
+        "b3 = conductivity(MNA, T=10, C=10)\n"
+        "c1 = density(Methanol, T=5, C=25)\n"
+        "c2 = cp(Glycerol, T=20, C=30)\n"
+        "c3 = cp(EthanolSolution, T=20, C=20)\n"
+        "c4 = density(LiCl, T=20, C=10)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    CHECK_THAT(run["a1"], WithinRel(incompRef("C", "MPG", 30, 40), 1e-9));
+    CHECK_THAT(run["a2"], WithinRel(incompRef("D", "MPG", 30, 40), 1e-9));
+    CHECK_THAT(run["a3"], WithinRel(incompRef("V", "MPG", 30, 40), 1e-9));
+    CHECK_THAT(run["b1"], WithinRel(incompRef("C", "MCA", 20, 10), 1e-9));
+    CHECK_THAT(run["b2"], WithinRel(incompRef("D", "MNA", 10, 10), 1e-9));
+    CHECK_THAT(run["b3"], WithinRel(incompRef("L", "MNA", 10, 10), 1e-9));
+    CHECK_THAT(run["c1"], WithinRel(incompRef("D", "MMA", 25, 5), 1e-9));
+    CHECK_THAT(run["c2"], WithinRel(incompRef("C", "MGL", 30, 20), 1e-9));
+    CHECK_THAT(run["c3"], WithinRel(incompRef("C", "MEA", 20, 20), 1e-9));
+    CHECK_THAT(run["c4"], WithinRel(incompRef("D", "MLI", 10, 20), 1e-9));
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: the point of CSL-0152, cp of 40 % ethylene glycol at the outlet water temperature",
+          "[library-gaps][incompressible]") {
+    // EES (10.589, stored solution of SURALIMENTATION_FORMULATION SIMPLE_V2017-1.EES): c_w = 3615.074561 J/kg-K for
+    // c_w = Cp(EG,T=T_bar_w_hex,C=Conc), Conc = 40. T_bar_w_hex = 44.70429091 C is CoolSolve's value (EES's differs
+    // slightly: the two programs solve the same exchanger with slightly different air properties), hence 2e-4.
+    auto run = runModel("Conc = 40\nT_bar_w_hex = 44.70429091\nc_w = Cp(EG,T=T_bar_w_hex,C=Conc)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    CHECK_THAT(run["c_w"], WithinRel(3615.074561, 2e-4));
+    CHECK_THAT(run["c_w"], WithinRel(incompRef("C", "MEG", 40, 44.70429091), 1e-9));
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: Newton solves an unknown temperature through the T-only call (derivative of the AD)",
+          "[library-gaps][incompressible]") {
+    SECTION("cp(EG,T=T,C=40) = the EES value of CSL-0152") {
+        auto run = runModel("cp(EG,T=T,C=40) = 3615.074561\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK(run.warnings.empty());
+        CHECK_THAT(incompRef("C", "MEG", 40, run["T"]), WithinRel(3615.074561, 1e-9));
+        CHECK(run["T"] > 40.0);
+        CHECK(run["T"] < 50.0);
+    }
+    SECTION("through the density, the viscosity and the conductivity") {
+        auto rho = runModel("density(EG, T=T, C=30) = 1040\n");
+        REQUIRE(rho.solveOk);
+        CHECK(rho.verified);
+        CHECK_THAT(incompRef("D", "MEG", 30, rho["T"]), WithinRel(1040.0, 1e-9));
+        auto mu = runModel("viscosity(EG, T=T, C=30) = 0.002\n");
+        REQUIRE(mu.solveOk);
+        CHECK(mu.verified);
+        CHECK_THAT(incompRef("V", "MEG", 30, mu["T"]), WithinRel(0.002, 1e-9));
+        auto k = runModel("conductivity(EG, T=T, C=30) = 0.45\n");
+        REQUIRE(k.solveOk);
+        CHECK(k.verified);
+        CHECK_THAT(incompRef("L", "MEG", 30, k["T"]), WithinRel(0.45, 1e-9));
+    }
+    SECTION("an energy balance with the mean temperature, as the exchanger of CSL-0152") {
+        auto run = runModel(
+            "Conc = 40\n"
+            "m_dot = 0.5\n"
+            "T_in = 20\n"
+            "Q_dot = 12000\n"
+            "T_bar = (T_in + T_out) / 2\n"
+            "c_w = Cp(EG, T=T_bar, C=Conc)\n"
+            "Q_dot = m_dot * c_w * (T_out - T_in)\n",
+            {}, "T_out = 30\nT_bar = 25\nc_w = 3600\n");   // guesses: the default 1 is out of CoolProp's range, as with P=101325
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["c_w"], WithinRel(incompRef("C", "MEG", 40, run["T_bar"]), 1e-9));
+        CHECK_THAT(run["m_dot"] * run["c_w"] * (run["T_out"] - run["T_in"]), WithinRel(12000.0, 1e-9));
+    }
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: the derivative with respect to T is that of the call with P=101325",
+          "[library-gaps][incompressible]") {
+    for (const char* prop : {"cp", "density", "viscosity", "conductivity", "enthalpy", "entropy", "intenergy"}) {
+        INFO(prop);
+        const std::string only = std::string(prop) + "(EG, T=Tv, C=30)";
+        const std::string both = std::string(prop) + "(EG, T=Tv, P=101325, C=30)";
+        const IncompCall a = evalIncompCall(only, 50.0);
+        const IncompCall b = evalIncompCall(both, 50.0);
+        CHECK(a.value == b.value);
+        CHECK(a.dT == b.dT);   // the same path: no other finite-difference, the injected pressure is a constant
+        CHECK(a.dT != 0.0);
+    }
+    // and it is the slope of CoolProp's property (central difference, 1e-3 K)
+    const double h = 1e-3;
+    const IncompCall cp = evalIncompCall("cp(EG, T=Tv, C=30)", 50.0);
+    CHECK_THAT(cp.dT, WithinRel((incompRef("C", "MEG", 30, 50 + h) - incompRef("C", "MEG", 30, 50 - h)) / (2 * h), 1e-4));
+    const IncompCall rho = evalIncompCall("density(EG, T=Tv, C=30)", 50.0);
+    CHECK_THAT(rho.dT, WithinRel((incompRef("D", "MEG", 30, 50 + h) - incompRef("D", "MEG", 30, 50 - h)) / (2 * h), 1e-4));
+    const IncompCall enthalpy = evalIncompCall("enthalpy(EG, T=Tv, C=30)", 50.0);
+    CHECK_THAT(enthalpy.dT, WithinRel(cp.value, 1e-4));   // dh/dT at constant P is cp
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: the internal pressure is 101325 Pa whatever the pressure and temperature units",
+          "[library-gaps][incompressible]") {
+    // the enthalpy is the one property that depends on the pressure: it shows which pressure was used
+    const double h = incompRef("H", "MEG", 30, 50);
+    CHECK(std::abs(h - incompRef("H", "MEG", 30, 50, 1e5)) > 1.0);   // 101325 Pa is not 1 bar for CoolProp
+    CHECK_THAT(evalIncompCall("enthalpy(EG, T=Tv, C=30)", 50.0).value, WithinRel(h, 1e-12));
+    for (const char* unit : {"Pa", "kPa", "bar", "MPa", "atm"}) {
+        INFO(unit);
+        CoolPropConfig cfg;
+        cfg.units.pressure = unit;
+        cfg.units.temperature = "K";
+        CHECK_THAT(evalIncompCall("enthalpy(EG, T=Tv, C=30)", 323.15, cfg).value, WithinRel(h, 1e-12));
+        CHECK_THAT(evalIncompCall("cp(EG, T=Tv, C=30)", 323.15, cfg).value, WithinRel(incompRef("C", "MEG", 30, 50), 1e-12));
+    }
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: CoolProp's density, specific heat, viscosity and conductivity do not depend on the pressure; "
+          "enthalpy, entropy and internal energy do", "[library-gaps][incompressible]") {
+    // The documented choice of the internal pressure rests on this: pins it to the CoolProp of the build.
+    for (const char* independent : {"D", "C", "V", "L"}) {
+        INFO(independent);
+        CHECK(incompRef(independent, "MEG", 30, 50, 1e5) == incompRef(independent, "MEG", 30, 50, 5e6));
+    }
+    for (const char* dependent : {"H", "S", "U"}) {
+        INFO(dependent);
+        CHECK(incompRef(dependent, "MEG", 30, 50, 1e5) != incompRef(dependent, "MEG", 30, 50, 5e6));
+    }
+    // so the T-only call differs from the call at another pressure only for these three
+    auto run = runModel(
+        "d1 = density(EG, T=50, C=30)\nd2 = density(EG, T=50, P=5e6, C=30)\n"
+        "c1 = cp(EG, T=50, C=30)\nc2 = cp(EG, T=50, P=5e6, C=30)\n"
+        "h1 = enthalpy(EG, T=50, C=30)\nh2 = enthalpy(EG, T=50, P=5e6, C=30)\n");
+    REQUIRE(run.solveOk);
+    CHECK(run["d1"] == run["d2"]);
+    CHECK(run["c1"] == run["c2"]);
+    CHECK(run["h1"] != run["h2"]);
+    CHECK_THAT(run["h1"], WithinRel(incompRef("H", "MEG", 30, 50, 101325.0), 1e-9));
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: inside a FUNCTION and a PROCEDURE, with a string-variable fluid", "[library-gaps][incompressible]") {
+    auto run = runModel(
+        "FUNCTION cpg(T, x)\n"
+        "  cpg = cp(EG, T=T, C=x)\n"
+        "END\n"
+        "PROCEDURE props(f$, T, x : rho, mu, k)\n"
+        "  rho = density(f$, T=T, C=x)\n"
+        "  mu = viscosity(f$, T=T, C=x)\n"
+        "  k = conductivity(f$, T=T, C=x)\n"
+        "END\n"
+        "y = cpg(50, 30)\n"
+        "CALL props('EG', 50, 30 : r, m, kk)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    CHECK_THAT(run["y"], WithinRel(incompRef("C", "MEG", 30, 50), 1e-12));
+    CHECK_THAT(run["r"], WithinRel(incompRef("D", "MEG", 30, 50), 1e-12));
+    CHECK_THAT(run["m"], WithinRel(incompRef("V", "MEG", 30, 50), 1e-12));
+    CHECK_THAT(run["kk"], WithinRel(incompRef("L", "MEG", 30, 50), 1e-12));
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: the LiBr solution with T and C alone, density and cp without warning, enthalpy with C004",
+          "[library-gaps][incompressible][incomp-libr]") {
+    auto ok = runModel("rho = density(LiBr, T=40, C=50)\nc = cp(LiBr, T=40, C=50)\n");
+    INFO(ok.message);
+    REQUIRE(ok.solveOk);
+    CHECK(ok.verified);
+    CHECK(ok.warnings.empty());
+    CHECK_THAT(ok["rho"], WithinRel(librCoolProp("D", 0.5, 313.15, 101325.0), 1e-9));
+    CHECK_THAT(ok["c"], WithinRel(librCoolProp("C", 0.5, 313.15, 101325.0), 1e-9));
+    auto h = runModel("h = enthalpy(LiBr, T=40, C=50)\n");
+    REQUIRE(h.solveOk);
+    CHECK(librCaloricWarnings(h) == 1);
+    CHECK_THAT(h["h"], WithinRel(librCoolProp("H", 0.5, 313.15, 101325.0), 1e-9));
+    // CoolProp has no viscosity of it: still an error naming the call
+    requireLiBrCallError("viscosity(LiBr, T=40, C=50)", {"viscosity", "LiBr"});
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: the concentration is never read as a temperature by the parse-time hints",
+          "[library-gaps][incompressible]") {
+    // C=30 is within 3 of 32 (water freezing in Fahrenheit): was "C=30 looks like Fahrenheit ... T=-1.11"
+    for (const char* arg : {"C=30", "c=30", "C=32", "conc=30", "conc=32", "concentration=30", "Concentration=32",
+                            "C=40", "C=77", "C=212", "C=300", "C=5"}) {
+        INFO(arg);
+        const auto warnings = parseWarnings(std::string("y = cp('EG', T=50, ") + arg + ")\n");
+        CHECK(warnings.empty());
+        // whatever the fluid is: the hint cannot know it for a string variable, and C is no temperature input
+        CHECK(parseWarnings(std::string("y = cp(fl$, T=50, ") + arg + ")\n").empty());
+        CHECK(parseWarnings(std::string("y = density(EG, ") + arg + ", T=50)\n").empty());
+    }
+    SECTION("the whole run gives no warning either") {
+        for (const char* arg : {"C=30", "C=32", "conc=32", "concentration=30"}) {
+            INFO(arg);
+            auto run = runModel(std::string("y = cp('EG', T=50, ") + arg + ")\n");
+            REQUIRE(run.solveOk);
+            CHECK(run.warnings.empty());
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: the temperature hints of a genuine T= stay, with or without a concentration",
+          "[library-gaps][incompressible]") {
+    // T=32 is water freezing in Fahrenheit, T=300 is a Kelvin value in Celsius: the hints of the existing tests
+    auto f = parseWarnings("y = cp('EG', T=32, C=30)\n");
+    REQUIRE(f.size() == 1);
+    CHECK(f[0].find("T=32 looks like Fahrenheit") != std::string::npos);
+    CHECK(f[0].find("C=30") == std::string::npos);
+    auto lower = parseWarnings("y = cp('EG', t=77, C=30)\n");
+    REQUIRE(lower.size() == 1);
+    CHECK(lower[0].find("t=77 looks like Fahrenheit") != std::string::npos);
+    auto kelvin = parseWarnings("y = cp('EG', T=300, C=30)\n");
+    REQUIRE(kelvin.size() == 1);
+    CHECK(kelvin[0].find("T=300") != std::string::npos);
+    CHECK(kelvin[0].find("K") != std::string::npos);
+    // the same without the concentration (a real fluid) and in the run
+    CHECK(parseWarnings("h = enthalpy(Water, T=77, P=101325)\n").size() == 1);
+    auto run = runModel("y = cp('EG', T=32, C=30)\n");
+    REQUIRE(run.solveOk);
+    CHECK(anyContains(run.warnings, "T=32 looks like Fahrenheit"));
+    CHECK_FALSE(anyContains(run.warnings, "C=30"));
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: any other single state input stays an error naming the call", "[library-gaps][incompressible]") {
+    SECTION("the pressure alone does not fix the state of the substance") {
+        for (const char* call : {"cp(EG, P=1e5, C=30)", "cp(EG, 30, P=1e5)", "density(EG, P=1e5, C=30)",
+                                 "viscosity(EG, pressure=1e5, C=30)"}) {
+            INFO(call);
+            auto run = runModel(std::string("y = ") + call + "\n");
+            REQUIRE(run.parseOk);
+            REQUIRE_FALSE(run.solveOk);
+            CHECK(anyContains({run.message}, " requires exactly 2 input properties"));
+            CHECK(anyContains({run.message}, "got 1"));
+            CHECK_FALSE(anyContains({run.message}, "Fahrenheit"));
+        }
+        auto named = runModel("y = cp(EG, P=1e5, C=30)\n");
+        CHECK(anyContains({named.message}, "cp requires exactly 2 input properties"));
+    }
+    SECTION("neither does an enthalpy, a density or an entropy") {
+        for (const char* call : {"temperature(EG, h=1e5, C=30)", "cp(EG, h=1e5, C=30)", "cp(EG, rho=1050, C=30)",
+                                 "cp(EG, s=1000, C=30)", "cp(EG, u=1e5, C=30)"}) {
+            INFO(call);
+            auto run = runModel(std::string("y = ") + call + "\n");
+            REQUIRE_FALSE(run.solveOk);
+            CHECK(anyContains({run.message}, " requires exactly 2 input properties"));
+        }
+    }
+    SECTION("the pressure is not a property of the temperature alone: the internal pressure never comes back as a value") {
+        for (const char* call : {"pressure(EG, T=50, C=30)", "pressure(EG, 30, T=50)"}) {
+            INFO(call);
+            auto run = runModel(std::string("y = ") + call + "\n");
+            REQUIRE_FALSE(run.solveOk);
+            CHECK(anyContains({run.message}, " requires exactly 2 input properties"));
+        }
+        // the saturation pressure and temperature of an incompressible are undefined: unchanged, never the injected value
+        auto psat = runModel("y = p_sat(EG, T=50, C=30)\n");
+        CHECK_FALSE(psat.verified);
+        CHECK((!psat.solveOk || !psat.checkErrors.empty()));
+    }
+    SECTION("the quality is still refused for an incompressible") {
+        auto run = runModel("y = cp(EG, x=0.5, C=30)\n");
+        REQUIRE_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "does not support saturation (quality) inputs"));
+    }
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: a real fluid with the temperature alone is unchanged, two inputs", "[library-gaps][incompressible]") {
+    for (const char* call : {"cp(Water, T=50)", "cp('R134a', T=50)", "enthalpy(Water, T=50)", "density(Nitrogen, T=50)"}) {
+        INFO(call);
+        auto run = runModel(std::string("y = ") + call + "\n");
+        REQUIRE(run.parseOk);
+        REQUIRE_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, " requires exactly 2 input properties (e.g. T=..., P=...), got 1"));
+    }
+    // the named C= of a call on a real fluid is no concentration, still an unknown input
+    auto conc = runModel("y = cp(Water, T=50, C=30)\n");
+    REQUIRE_FALSE(conc.solveOk);
+    CHECK(anyContains({conc.message}, "Unknown CoolProp input: c"));
+    auto ok = runModel("y = cp(Water, T=50, P=101325)\n");
+    REQUIRE(ok.solveOk);
+    CHECK_THAT(ok["y"], WithinRel(CoolProp::PropsSI("C", "T", 323.15, "P", 101325.0, "Water"), 1e-9));
+    // an ideal gas keeps its own single-input rule (internal pressure of the ideal-gas model)
+    auto gas = runModel("y = cp(N2, T=50)\n");
+    REQUIRE(gas.solveOk);
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: a solution with T alone and no concentration keeps the error of the concentration",
+          "[library-gaps][incompressible]") {
+    for (const char* call : {"cp(EG, T=50)", "density('EG', T=50)", "viscosity(PG, T=40)", "cp(LiBr, T=40)"}) {
+        INFO(call);
+        auto run = runModel(std::string("y = ") + call + "\n");
+        REQUIRE(run.parseOk);
+        REQUIRE_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "requires a concentration (mass %, 0..100)"));
+    }
+    // a concentration outside 0..100 is the same error with T alone
+    auto run = runModel("y = cp(EG, T=50, C=150)\n");
+    REQUIRE_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "Incompressible solution 'EG' requires a concentration (mass %, 0..100)"));
+}
