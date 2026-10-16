@@ -1224,6 +1224,14 @@ static std::runtime_error idealGasNeedsPressure(const std::string& funcName) {
     return std::runtime_error("Ideal gas property '" + funcName + "' requires pressure input");
 }
 
+/// Error of a single-input call of an ideal gas whose input does not fix the temperature (density, specific volume,
+/// entropy, quality, pressure): not even a property of the temperature alone (cp, h, u, ...) is defined by it.
+static std::runtime_error idealGasNeedsSecondInput(const std::string& funcName, const std::string& fluidName,
+                                                   const std::string& inputName) {
+    return std::runtime_error(funcName + "(" + fluidName + ", " + inputName + "=...): an ideal gas needs the "
+                              "temperature (or h or u), or two inputs such as T and P / d and P");
+}
+
 ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) {
     std::string funcName = func.name;
     std::transform(funcName.begin(), funcName.end(), funcName.begin(), ::tolower);
@@ -1628,12 +1636,14 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     bool pressureInjected = false;
 
     if (fluid->getType() == FluidType::IdealGas && inputs.size() == 1) {
-        // For ideal gases, properties that depend only on temperature {T, h, u,
+        // The properties of an ideal gas that depend only on temperature {T, h, u,
         // cp, cv} can be computed from any other member of this set without
-        // knowing pressure.  When exactly one input is given, check that both
-        // the requested output and the provided input belong to this
-        // "thermal-only" set.  If so, inject a dummy pressure so CoolProp gets
-        // its required 2-input state; otherwise require explicit pressure.
+        // knowing pressure.  When exactly one input is given, it must fix the
+        // temperature (T, h or u) and the requested output must belong to this
+        // "thermal-only" set: a dummy pressure is then injected so CoolProp gets
+        // its required 2-input state.  Any other single input (density, specific
+        // volume, entropy, quality, pressure) does not fix the state, whatever the
+        // output: a second input is required, the dummy pressure is never a state.
         // The transport properties of the dilute gas (viscosity, conductivity, Prandtl
         // number) depend on the temperature only too: they are outputs of this set,
         // evaluated at the dummy pressure (a few tenths of a percent from the
@@ -1650,18 +1660,21 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             return prop == "viscosity" || prop == "mu" || prop == "conductivity" ||
                    prop == "k" || prop == "l" || prop == "prandtl";
         };
+        auto fixesTemperature = [](const std::string& prop) {
+            std::string p = prop;
+            for (auto& c : p) c = std::tolower(c);
+            return p == "t" || p == "temperature" || p == "h" || p == "enthalpy" ||
+                   p == "u" || p == "internalenergy" || p == "intenergy";
+        };
         
         std::string inputName = inputs.begin()->first;
-        if ((isThermalOnly(funcName) || isTransport(funcName)) && isThermalOnly(inputName)) {
-            // Both output and input are T-dependent-only → inject dummy pressure
+        (void)getCoolPropInputParam(inputName);   // an unknown input name keeps its own error
+        if (!fixesTemperature(inputName)) {
+            throw idealGasNeedsSecondInput(func.name, eesFluidName, inputName);
+        } else if (isThermalOnly(funcName) || isTransport(funcName)) {
+            // The input fixes T and the output depends on T only → inject dummy pressure
             // Use fluid-specific dummy pressure (e.g. 100 Pa for H2O to avoid
             // liquid phase at room temperature).
-            auto idealGas = std::dynamic_pointer_cast<IdealGasFluid>(fluid);
-            double dummyP = idealGas ? idealGas->getDummyPressureSI() : 101325.0;
-            inputs["p"] = ADValue::constant(UnitConverter::fromSI(dummyP, UnitType::Pressure, units.pressure), numVariables_);
-            pressureInjected = true;
-        } else if (!fluid->propertyDependsOnPressure(funcName)) {
-            // Output doesn't depend on pressure (old path for h(T), cp(T), etc.)
             auto idealGas = std::dynamic_pointer_cast<IdealGasFluid>(fluid);
             double dummyP = idealGas ? idealGas->getDummyPressureSI() : 101325.0;
             inputs["p"] = ADValue::constant(UnitConverter::fromSI(dummyP, UnitType::Pressure, units.pressure), numVariables_);

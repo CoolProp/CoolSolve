@@ -18345,9 +18345,10 @@ TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: negative tests, what stays an error", "[lib
         fail("a = soundspeed(Air, T=25)\n", "Ideal gas property 'soundspeed' requires pressure input");
     }
     SECTION("a state that is not fixed by the temperature does not get the internal pressure") {
-        fail("mu = viscosity(Air, s=7000)\n", "Ideal gas property 'viscosity' requires pressure input");
-        fail("k = conductivity(Air, d=1.2)\n", "Ideal gas property 'conductivity' requires pressure input");
-        fail("Pr = prandtl(Air, x=1)\n", "Ideal gas property 'prandtl' requires pressure input");
+        // the message of CS-BUG-IDEAL-SINGLE-INPUT: a second input is needed
+        fail("mu = viscosity(Air, s=7000)\n", "viscosity(Air, s=...): an ideal gas needs the temperature (or h or u)");
+        fail("k = conductivity(Air, d=1.2)\n", "conductivity(Air, d=...): an ideal gas needs the temperature (or h or u)");
+        fail("Pr = prandtl(Air, x=1)\n", "prandtl(Air, x=...): an ideal gas needs the temperature (or h or u)");
     }
     SECTION("a real fluid or a mixture still needs two inputs") {
         fail("mu = viscosity('R134a', T=20)\n", "requires exactly 2 input properties");
@@ -18368,5 +18369,224 @@ TEST_CASE("CS-GAP-IDEAL-TRANSPORT-T: negative tests, what stays an error", "[lib
     }
     SECTION("an unknown fluid is the usual error") {
         fail("mu = viscosity(Unobtainium, T=25)\n", "Unknown fluid: 'Unobtainium'");
+    }
+}
+
+// ============================================================================
+// CS-BUG-IDEAL-SINGLE-INPUT: a single-input call of an ideal gas is accepted only when the input fixes
+// the temperature (T, h, u). A density, an entropy, a quality or a pressure alone does not: the call
+// used to be evaluated at the internal pressure of the ideal-gas model as if that were the state.
+// ============================================================================
+
+namespace {
+
+/// Message of the error raised when the property call `call` is evaluated; empty when it evaluates.
+std::string idealCallError(const std::string& call) {
+    EESParser parser;
+    auto parsed = parser.parse("y = " + call + "\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    ExpressionEvaluator ev(1);
+    try {
+        ev.evaluate(ir.getEquations()[0].rhs);
+    } catch (const std::exception& e) {
+        return e.what();
+    }
+    return "";
+}
+
+/// The error of an ideal-gas call with a single input that does not fix the temperature.
+std::string idealSecondInputMessage(const std::string& fn, const std::string& fluid, const std::string& input) {
+    return fn + "(" + fluid + ", " + input + "=...): an ideal gas needs the temperature (or h or u), "
+           "or two inputs such as T and P / d and P";
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-IDEAL-SINGLE-INPUT: register reproducer, cp of Air with the density alone is an error",
+          "[library-gaps][ideal-single-input]") {
+    // used to be SUCCESS with cp = 1006.18 (d=1.2) and 1102.38 J/kg-K (d=5): the real-gas cp at 1 atm
+    // and the temperature that goes with that density at 1 atm, not the state of the call
+    for (const std::string d : {"1.2", "5"}) {
+        auto run = runModel("c = cp(Air, d=" + d + ")\n");
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find(idealSecondInputMessage("cp", "Air", "d")) != std::string::npos);
+    }
+    auto both = runModel("c1 = cp(Air, d=1.2)\nc2 = cp(Air, d=5)\n");
+    INFO(both.message);
+    CHECK_FALSE(both.solveOk);
+    CHECK(both.message.find("an ideal gas needs the temperature (or h or u), or two inputs") != std::string::npos);
+
+    // with the second input the EES value is returned: the state is fixed by d and P (T about 294 K and 70 K)
+    auto ok = runModel("c1 = cp(Air, d=1.2, P=101325)\nc2 = cp(Air, d=5, P=1E5)\n");
+    INFO(ok.message);
+    REQUIRE(ok.solveOk);
+    CHECK(ok.verified);
+    CHECK_THAT(ok["c1"], WithinRel(CoolProp::PropsSI("C", "D", 1.2, "P", 101325.0, "Air"), 1e-9));
+    CHECK_THAT(ok["c2"], WithinRel(CoolProp::PropsSI("C", "D", 5.0, "P", 1e5, "Air"), 1e-9));
+    CHECK(ok["c2"] > 1100.0);   // the dense gas near 70 K is not the 1006 J/kg-K of air at 300 K
+}
+
+TEST_CASE("CS-BUG-IDEAL-SINGLE-INPUT: enthalpy(Air, s=7000) is the clear message, not NaN",
+          "[library-gaps][ideal-single-input]") {
+    auto run = runModel("h = enthalpy(Air, s=7000)\n");
+    INFO(run.message);
+    CHECK_FALSE(run.solveOk);
+    CHECK(run.message.find(idealSecondInputMessage("enthalpy", "Air", "s")) != std::string::npos);
+    CHECK(run.message.find("NaN") == std::string::npos);
+    // with the pressure the call is a state
+    const double s400 = CoolProp::PropsSI("S", "T", 400.0, "P", 1e5, "Air");
+    auto ok = runModel("h = enthalpy(Air, s=" + numText(s400) + ", P=1E5)\n");
+    INFO(ok.message);
+    REQUIRE(ok.solveOk);
+    CHECK_THAT(ok["h"], WithinRel(CoolProp::PropsSI("H", "T", 400.0, "P", 1e5, "Air"), 1e-6));
+}
+
+TEST_CASE("CS-BUG-IDEAL-SINGLE-INPUT: every temperature-only property with an input that does not fix T",
+          "[library-gaps][ideal-single-input]") {
+    // outputs: the temperature-only properties and the transport properties of the dilute gas; inputs: the
+    // density (and its aliases), the specific volume, the entropy, the quality and the pressure
+    const std::vector<std::string> outputs = {"cp", "cv", "enthalpy", "intenergy", "temperature",
+                                              "viscosity", "conductivity", "prandtl"};
+    const std::vector<std::pair<std::string, std::string>> inputs = {
+        {"d", "5"}, {"rho", "5"}, {"density", "5"}, {"v", "0.8"}, {"volume", "0.8"}, {"s", "7000"},
+        {"entropy", "7000"}, {"x", "0.5"}, {"q", "0.5"}, {"quality", "0.5"}, {"P", "1E5"}, {"pressure", "1E5"}};
+    // H2O has the internal pressure of 100 Pa, the others 101325 Pa: none of them is a state of the call
+    for (const std::string fluid : {"Air", "N2", "H2O"}) {
+        for (const auto& fn : outputs) {
+            for (const auto& [name, value] : inputs) {
+                const std::string call = fn + "(" + fluid + ", " + name + "=" + value + ")";
+                INFO(call);
+                std::string lower = name;
+                for (auto& c : lower) c = static_cast<char>(std::tolower(c));
+                CHECK(idealCallError(call) == idealSecondInputMessage(fn, fluid, lower));
+            }
+        }
+    }
+}
+
+TEST_CASE("CS-BUG-IDEAL-SINGLE-INPUT: the same through the whole pipeline, with a fluid held in a string variable",
+          "[library-gaps][ideal-single-input]") {
+    auto run = runModel("Fluid$ = 'N2'\nc = cp(Fluid$, d=5)\n");
+    INFO(run.message);
+    CHECK_FALSE(run.solveOk);
+    CHECK(run.message.find(idealSecondInputMessage("cp", "N2", "d")) != std::string::npos);
+    auto mu = runModel("mu = viscosity(Air, s=7000)\n");
+    INFO(mu.message);
+    CHECK_FALSE(mu.solveOk);
+    CHECK(mu.message.find(idealSecondInputMessage("viscosity", "Air", "s")) != std::string::npos);
+    auto p = runModel("c = cp(Air, P=1E5)\n");
+    INFO(p.message);
+    CHECK_FALSE(p.solveOk);
+    CHECK(p.message.find(idealSecondInputMessage("cp", "Air", "p")) != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-IDEAL-SINGLE-INPUT: the single inputs that fix the temperature (T, h, u) are unchanged",
+          "[library-gaps][ideal-single-input]") {
+    auto run = runModel(R"(
+c_T = cp(N2, T=25)
+c_T_p = cp(N2, T=25, P=101325)
+cv_T = cv(N2, T=25)
+cv_T_p = cv(N2, T=25, P=101325)
+h_T = enthalpy(N2, T=25)
+h_T_p = enthalpy(N2, T=25, P=101325)
+u_T = intenergy(N2, T=25, P=101325)
+c_h = cp(N2, h=h_T)
+c_enthalpy = cp(N2, enthalpy=h_T)
+c_u = cp(N2, u=u_T)
+c_ie = cp(N2, internalenergy=u_T)
+c_ie2 = cp(N2, intenergy=u_T)
+c_temp = cp(N2, temperature=25)
+T_h = temperature(N2, h=h_T)
+T_u = temperature(N2, u=u_T)
+mu_T = viscosity(Air, T=25)
+h_a = enthalpy(Air, T=25)
+u_a = intenergy(Air, T=25, P=101325)
+mu_h = viscosity(Air, h=h_a)
+k_u = conductivity(Air, u=u_a)
+Pr_T = prandtl(Air, T=25)
+c_w = cp(H2O, T=25)
+h_w = enthalpy(H2O, T=500)
+h_w_p = enthalpy(H2O, T=500, P=100)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const double cRef = CoolProp::PropsSI("C", "T", 298.15, "P", 101325.0, "Nitrogen");
+    CHECK_THAT(run["c_T"], WithinRel(cRef, 1e-9));
+    CHECK_THAT(run["c_T"], WithinRel(run["c_T_p"], 1e-12));
+    CHECK_THAT(run["cv_T"], WithinRel(run["cv_T_p"], 1e-12));
+    CHECK_THAT(run["h_T"], WithinRel(run["h_T_p"], 1e-12));
+    for (const char* name : {"c_h", "c_enthalpy", "c_u", "c_ie", "c_ie2", "c_temp"}) {
+        INFO(name);
+        CHECK_THAT(run[name], WithinRel(cRef, 1e-6));
+    }
+    CHECK_THAT(run["T_h"], WithinAbs(25.0, 1e-6));
+    CHECK_THAT(run["T_u"], WithinAbs(25.0, 1e-6));
+    CHECK_THAT(run["mu_h"], WithinRel(run["mu_T"], 1e-6));
+    CHECK_THAT(run["mu_T"], WithinRel(CoolProp::PropsSI("V", "T", 298.15, "P", 101325.0, "Air"), 1e-9));
+    CHECK_THAT(run["Pr_T"], WithinRel(CoolProp::PropsSI("Prandtl", "T", 298.15, "P", 101325.0, "Air"), 1e-9));
+    CHECK(run["k_u"] > 0.025);
+    CHECK(run["k_u"] < 0.027);
+    // H2O: the vapor at its internal pressure of 100 Pa
+    CHECK_THAT(run["c_w"], WithinRel(CoolProp::PropsSI("C", "T", 298.15, "P", 100.0, "Water"), 1e-9));
+    CHECK_THAT(run["h_w"], WithinRel(run["h_w_p"], 1e-12));
+}
+
+TEST_CASE("CS-BUG-IDEAL-SINGLE-INPUT: two inputs, with d, s, v, x or P, are unchanged",
+          "[library-gaps][ideal-single-input]") {
+    const double s400 = CoolProp::PropsSI("S", "T", 400.0, "P", 1e5, "Air");
+    auto run = runModel(R"(
+SV = )" + numText(s400) + R"(
+c_dP = cp(Air, d=1.2, P=101325)
+cv_dP = cv(Air, d=1.2, P=101325)
+c_dT = cp(Air, d=1.2, T=25)
+h_sP = enthalpy(Air, s=SV, P=1E5)
+u_dP = intenergy(Air, d=1.2, P=101325)
+mu_dP = viscosity(Air, d=1.2, P=101325)
+c_TP = cp(Air, T=25, P=1E5)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["c_dP"], WithinRel(CoolProp::PropsSI("C", "D", 1.2, "P", 101325.0, "Air"), 1e-9));
+    CHECK_THAT(run["cv_dP"], WithinRel(CoolProp::PropsSI("O", "D", 1.2, "P", 101325.0, "Air"), 1e-9));
+    CHECK_THAT(run["c_dT"], WithinRel(CoolProp::PropsSI("C", "D", 1.2, "T", 298.15, "Air"), 1e-9));
+    CHECK_THAT(run["h_sP"], WithinRel(CoolProp::PropsSI("H", "T", 400.0, "P", 1e5, "Air"), 1e-6));
+    CHECK_THAT(run["u_dP"], WithinRel(CoolProp::PropsSI("U", "D", 1.2, "P", 101325.0, "Air"), 1e-9));
+    CHECK_THAT(run["mu_dP"], WithinRel(CoolProp::PropsSI("V", "D", 1.2, "P", 101325.0, "Air"), 1e-9));
+    CHECK_THAT(run["c_TP"], WithinRel(CoolProp::PropsSI("C", "T", 298.15, "P", 1e5, "Air"), 1e-9));
+    CHECK(run["c_dP"] > 1000.0);
+    CHECK(run["c_dP"] < 1010.0);
+}
+
+TEST_CASE("CS-BUG-IDEAL-SINGLE-INPUT: negative tests, what stays an error", "[library-gaps][ideal-single-input]") {
+    SECTION("the properties that depend on the pressure still need it, with the temperature alone") {
+        CHECK(idealCallError("density(Air, T=25)") == "Ideal gas property 'density' requires pressure input");
+        CHECK(idealCallError("entropy(N2, T=25)") == "Ideal gas property 'entropy' requires pressure input");
+        CHECK(idealCallError("entropy(N2, h=300000)") == "Ideal gas property 'entropy' requires pressure input");
+        CHECK(idealCallError("kinematicviscosity(Air, T=25)") ==
+              "Ideal gas property 'kinematicviscosity' requires pressure input");
+    }
+    SECTION("a pressure-dependent property with an input that does not fix T asks for a second input") {
+        CHECK(idealCallError("density(Air, P=1E5)") == idealSecondInputMessage("density", "Air", "p"));
+        CHECK(idealCallError("entropy(Air, d=5)") == idealSecondInputMessage("entropy", "Air", "d"));
+    }
+    SECTION("no input: the usual error") {
+        CHECK(idealCallError("cp(Air)").find("requires exactly 2 input properties") != std::string::npos);
+    }
+    SECTION("an unknown input keeps its own error") {
+        CHECK(idealCallError("cp(Air, foo=3)") == "Unknown CoolProp input: foo");
+    }
+    SECTION("a real fluid or a mixture still needs two inputs") {
+        CHECK(idealCallError("cp(Water, d=1000)").find("requires exactly 2 input properties") != std::string::npos);
+        CHECK(idealCallError("cp(R134a, T=20)").find("requires exactly 2 input properties") != std::string::npos);
+    }
+    SECTION("T and h together are CoolProp's unsupported pair, as before") {
+        auto run = runModel("c = cp(Air, T=25, h=300000)\n");
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("does not support T,H as input pair") != std::string::npos);
     }
 }

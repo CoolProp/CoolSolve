@@ -816,6 +816,12 @@ specific heats:
 c_bar_p = (enthalpy(CO2,T=T_p1) - enthalpy(CO2,T=T_p2)) / (T_p1 - T_p2)
 ```
 
+The single input must fix the temperature: `T`, or `h` or `u` (`cp(N2, h=h_1)`,
+`temperature(N2, h=h_1)`). Any other single input (`d`, `v`, `s`, `x`, `P`) does not fix the
+state, for any property: the call is an error that names it (*cp(Air, d=...): an ideal gas needs the
+temperature (or h or u), or two inputs such as T and P / d and P*). Give two inputs, such as
+`cp(Air, d=1.2, P=101325)`.
+
 CoolSolve evaluates them at an internal reference pressure (101325 Pa; 100 Pa
 for `H2O`, which keeps the vapor phase down to −20 °C). This pressure is part
 of the model: it is never clamped by the solver and is identical in the solve

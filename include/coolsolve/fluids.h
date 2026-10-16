@@ -40,11 +40,6 @@ public:
         (void)backend;
         return {0.0, 0.0};
     }
-    
-    // Check if a property depends on pressure for this fluid
-    virtual bool propertyDependsOnPressure(const std::string& prop) const {
-        return true; 
-    }
 };
 
 class RealFluid : public Fluid {
@@ -119,15 +114,6 @@ public:
     // requested.  For most ideal gases 101325 Pa is fine; for H2O a lower
     // pressure (e.g. 100 Pa) keeps us in the gas phase at all temperatures.
     double getDummyPressureSI() const { return dummyPressure_; }
-    
-    bool propertyDependsOnPressure(const std::string& prop) const override {
-        std::string p = prop;
-        for (auto& c : p) c = std::tolower(c);
-        if (p == "h" || p == "enthalpy" || p == "u" || p == "internalenergy" || p == "cp" || p == "cv") {
-            return false;
-        }
-        return true;
-    }
 
 private:
     std::string name_;
