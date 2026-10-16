@@ -731,9 +731,11 @@ This extraction is the only new per-solve cost — negligible.
 
 ### 8.4 Fluid Types
 
-The `FluidRegistry` (`src/fluids.cpp`) registers 90+ real fluids, 11 ideal
-gases, 2 incompressibles, and 2 mixtures.  Only fluids of type `FluidType::Real`
-have saturation curves and are enabled in the diagram fluid selector.
+The `FluidRegistry` (`src/fluids.cpp`) registers 90+ real fluids, the ideal
+gases, humid air, the incompressible solutions (glycols, brines, `LiBr`,
+`SeaWater`) and, built from their string, CoolProp mixtures.  Only fluids of type
+`FluidType::Real` have saturation curves and are enabled in the diagram fluid
+selector.
 
 ---
 

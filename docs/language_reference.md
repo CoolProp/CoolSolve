@@ -1016,7 +1016,9 @@ of `Air`, as the EES help recommends. `Air_ha`, `AirH2O` and the real fluids (`W
 
 ### Incompressible substances
 
-Pure: `Aluminum`, `Copper`, `SeaWater`.
+CoolSolve's incompressible substances are the liquid **solutions** of CoolProp's incompressible library (`INCOMP::…`):
+no pure incompressible is registered. The EES solids `Aluminum` and `Copper` are not available (CoolProp has no solid
+properties, see *Unsupported EES fluids* below).
 
 **Solutions** (require a concentration as the *second positional argument*
 in mass %, or the named `C=...` argument):
@@ -1032,6 +1034,7 @@ in mass %, or the named `C=...` argument):
 | `EthanolSolution` / `MEA`     | Ethanol/water            |
 | `Glycerol` / `MGL`            | Glycerol/water           |
 | `LiBr`                        | Lithium bromide/water solution (CoolProp, Pátek-Klomfar fits, 0–75 %, 0–227 °C; density, cp, h, s; no viscosity/conductivity) |
+| `SeaWater`                    | Sea water, salinity in mass % (0–12 %, 3.5 % = 35 g/kg), Sharqawy et al. 2010 via CoolProp, 0–120 °C, liquid only; density, cp, viscosity, conductivity, h, s |
 
 Example:
 
@@ -1039,6 +1042,7 @@ Example:
 rho = density('MEG', 30, T=10, P=101325)   "30 % MEG at 10 °C"
 cp  = cp('EthyleneGlycol', T=10, P=101325, C=30)
 cp_w = cp(EG, T=50, C=30)                  "the EES form: T and the concentration alone, 3802.5 J/kg-K"
+rho_sw = density(SeaWater, 3.5, T=20, P=101325)   "sea water, salinity 3.5 % (35 g/kg): 1024.9 kg/m3"
 ```
 
 **The EES form: the temperature and the concentration alone.** EES evaluates an incompressible substance with the
@@ -1068,6 +1072,21 @@ cannot be used in the energy balance between streams of different concentration 
 absorption machine): use `H_LIBR` and `X_LIBR` for that (next section). CoolSolve warns about it (code `C004`, in the CLI
 and in the GUI console) when the enthalpy, the entropy or the internal energy of `LiBr` is an output or an input of a
 call, once per run; the density and the specific heat give no warning.
+
+**`SeaWater` is a salinity solution, not a pure fluid**: it needs its salinity like the other solutions, in mass %
+(`density(SeaWater, 3.5, T=20, P=1E5)` or `C=3.5`; 3.5 % is 35 g/kg, a mean sea water; without it the call is the
+usual error asking for a concentration). The properties are those of CoolProp's `INCOMP::MITSW` (the correlations of
+Sharqawy, Lienhard and Zubair 2010, MIT seawater library): density (1024.9 kg/m³ at 3.5 % and 20 °C), specific heat,
+viscosity and conductivity, and the enthalpy, entropy and internal energy integrated from the specific heat. The
+validity range is a salinity of 0–12 % (an error naming the call above it), a temperature of 0–120 °C and the **liquid
+phase only**: CoolProp refuses a state whose pressure is below the saturation pressure of the solution, so that the
+limit at a given pressure is the boiling point of the solution (3.5 %: 100.3 °C at 1 bar, 100.6 °C at 101325 Pa, the
+pressure of the temperature-only form above); a higher temperature needs a higher pressure (`P=5E5`). The vapour
+pressure of sea water is not available (`p_sat` and `t_sat` of an incompressible are errors). As for every
+incompressible solution, the enthalpy and the entropy are zero at 20 °C and 101325 Pa for **each** salinity (no
+enthalpy of mixing): differences of enthalpy between streams of different salinity (desalination, brine mixing) are
+not energy balances. The salinity is CoolSolve's convention for the solutions (mass % as second positional argument
+or `C=`); the EES syntax for sea water was not checked, no compatibility with it is claimed.
 
 ### CoolProp mixtures
 
@@ -1172,7 +1191,11 @@ triggers a clear runtime error with the fluid name and a remediation
 suggestion:
 
 `NH3H2O`, `LiBrH2O`, `Acetylene`, `Chlorine`, `Chloroethene`,
-`EthyleneOxide`, `Helium3`, `Potassium`, `Sodium`.
+`EthyleneOxide`, `Helium3`, `Potassium`, `Sodium`, `Aluminum`, `Copper`.
+
+`Aluminum` and `Copper` are EES solids of its property library; CoolProp has no solid properties, so their
+properties are not available (the call is an error naming the fluid, never a NaN): give them as constants or as a
+correlation in the model (`CS-BUG-INCOMP-SOLIDS`).
 
 For the ammonia-water system, use an external correlation written as a
 `FUNCTION` (the REFPROP library is not available in CoolSolve; the EES

@@ -20324,8 +20324,7 @@ TEST_CASE("CS-BUG-INCOMP-LIBR: the fluid LiBr is a solution of the registry, wha
         CHECK(incomp->isSolution());
         CHECK(incomp->getCoolPropName() == "INCOMP::LiBr");
     }
-    // the pure incompressibles are still pure, the other solutions still solutions
-    CHECK_FALSE(std::dynamic_pointer_cast<IncompressibleFluid>(FluidRegistry::getFluid("Aluminum"))->isSolution());
+    // the other solutions are still solutions
     CHECK(std::dynamic_pointer_cast<IncompressibleFluid>(FluidRegistry::getFluid("MEG"))->isSolution());
 }
 
@@ -20582,7 +20581,7 @@ TEST_CASE("CS-BUG-INCOMP-LIBR: the other fluids and solutions give no warning C0
         "s1 = entropy(MEG, 30, T=40, P=1e5)\n"
         "h4 = enthalpy(Water, T=40, P=1e5)\n"
         "h5 = enthalpy('R134a', T=40, P=1e6)\n"
-        "h6 = enthalpy(Aluminum, T=40, P=1e5)\n");
+        "h6 = enthalpy(SeaWater, 3.5, T=40, P=1e5)\n");
     INFO(ok.message);
     REQUIRE(ok.solveOk);
     CHECK(librCaloricWarnings(ok) == 0);
@@ -21039,4 +21038,438 @@ TEST_CASE("CS-GAP-INCOMPRESSIBLE: a solution with T alone and no concentration k
     auto run = runModel("y = cp(EG, T=50, C=150)\n");
     REQUIRE_FALSE(run.solveOk);
     CHECK(anyContains({run.message}, "Incompressible solution 'EG' requires a concentration (mass %, 0..100)"));
+}
+
+// ============================================================================
+// CS-BUG-INCOMP-SEAWATER: the incompressible SeaWater is CoolProp's MITSW salinity solution, not a pure fluid
+// ============================================================================
+// `SeaWater` was registered as a pure incompressible (`addIncomp("SeaWater", "MITSW")`), but CoolProp's INCOMP::MITSW
+// (Sharqawy et al. 2010, MIT seawater library) is a solution in salt, mass based: mass fraction 0 to 0.12, 273.15 to
+// 393.15 K, liquid only (the pressure must be at least the saturation pressure of the solution). Every call failed
+// ("CoolProp returned invalid result (NaN or Inf) for D(INCOMP::MITSW)"), also with a salinity as second argument.
+// It is now a solution like MEG: the salinity in mass % (3.5 % = 35 g/kg) is the second positional argument or C=.
+// CoolProp has density, specific heat, viscosity and conductivity, and the caloric properties integrated from the
+// specific heat (no enthalpy of mixing, as for every incompressible solution); the saturation pressure of the
+// incompressible backend is not reachable with the quality of p_sat.
+
+namespace {
+
+/// CoolProp's INCOMP::MITSW at the salinity `percent` (mass %, 0..12), T [C] and P [Pa] (101325 Pa by default).
+double seawaterRef(const char* output, double percent, double T_C, double P_Pa = 101325.0) {
+    return incompRef(output, "MITSW", percent, T_C, P_Pa);
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-INCOMP-SEAWATER: the fluid SeaWater is a solution of the registry, whatever the spelling",
+          "[library-gaps][incomp-seawater]") {
+    for (const char* name : {"SeaWater", "seawater", "SEAWATER", "sEaWaTeR"}) {
+        INFO(name);
+        auto fluid = FluidRegistry::getFluid(name);
+        REQUIRE(fluid);
+        REQUIRE(fluid->getType() == FluidType::Incompressible);
+        auto incomp = std::dynamic_pointer_cast<IncompressibleFluid>(fluid);
+        REQUIRE(incomp);
+        CHECK(incomp->isSolution());
+        CHECK(incomp->getCoolPropName() == "INCOMP::MITSW");
+        CHECK(incomp->getCoolPropNameWithFraction(0.035) == "INCOMP::MITSW[0.035]");
+    }
+    // the other solutions are unchanged
+    CHECK(std::dynamic_pointer_cast<IncompressibleFluid>(FluidRegistry::getFluid("MEG"))->isSolution());
+    CHECK(std::dynamic_pointer_cast<IncompressibleFluid>(FluidRegistry::getFluid("LiBr"))->isSolution());
+}
+
+TEST_CASE("CS-BUG-INCOMP-SEAWATER: register reproducer, density(SeaWater, 3.5, T=20, P=1e5) is a value, without salinity the usual error",
+          "[library-gaps][incomp-seawater]") {
+    // was: "CoolProp returned invalid result (NaN or Inf) for D(INCOMP::MITSW)" for both calls
+    auto run = runModel("rho = density(SeaWater, 3.5, T=20, P=1e5)\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    const double ref = CoolProp::PropsSI("D", "T", 293.15, "P", 1e5, "INCOMP::MITSW[0.035]");
+    REQUIRE(std::isfinite(ref));
+    CHECK_THAT(run["rho"], WithinRel(ref, 1e-9));
+    CHECK(run["rho"] > 1020.0);   // sea water at 35 g/kg and 20 C: about 1025 kg/m3
+    CHECK(run["rho"] < 1030.0);
+    // the register reproducer without salinity: the error of the solutions, naming the fluid
+    auto none = runModel("rho = density(SeaWater, T=20, P=1e5)\n");
+    REQUIRE(none.parseOk);
+    REQUIRE_FALSE(none.solveOk);
+    INFO(none.message);
+    CHECK(anyContains({none.message}, "Incompressible solution 'SeaWater' requires a concentration (mass %, 0..100)"));
+    CHECK(anyContains({none.message}, "C=..."));
+    CHECK_FALSE(anyContains({none.message}, "NaN"));
+    // the message is the one of the other solutions
+    auto meg = runModel("rho = density(MEG, T=20, P=1e5)\n");
+    REQUIRE_FALSE(meg.solveOk);
+    CHECK(anyContains({meg.message}, "Incompressible solution 'MEG' requires a concentration (mass %, 0..100)"));
+}
+
+TEST_CASE("CS-BUG-INCOMP-SEAWATER: density, specific heat, viscosity and conductivity of 3.5 % sea water at 20 C are CoolProp's",
+          "[library-gaps][incomp-seawater]") {
+    auto run = runModel(
+        "rho = density(SeaWater, 3.5, T=20, P=1e5)\n"
+        "c = cp(SeaWater, 3.5, T=20, P=1e5)\n"
+        "cv1 = cv(SeaWater, 3.5, T=20, P=1e5)\n"
+        "mu = viscosity(SeaWater, 3.5, T=20, P=1e5)\n"
+        "k = conductivity(SeaWater, 3.5, T=20, P=1e5)\n"
+        "nu = kinematicviscosity(SeaWater, 3.5, T=20, P=1e5)\n"
+        "Pr = prandtl(SeaWater, 3.5, T=20, P=1e5)\n"
+        "v = volume(SeaWater, 3.5, T=20, P=1e5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    CHECK_THAT(run["rho"], WithinRel(seawaterRef("D", 3.5, 20, 1e5), 1e-9));
+    CHECK_THAT(run["c"], WithinRel(seawaterRef("C", 3.5, 20, 1e5), 1e-9));
+    CHECK_THAT(run["cv1"], WithinRel(seawaterRef("O", 3.5, 20, 1e5), 1e-9));
+    CHECK_THAT(run["mu"], WithinRel(seawaterRef("V", 3.5, 20, 1e5), 1e-9));
+    CHECK_THAT(run["k"], WithinRel(seawaterRef("L", 3.5, 20, 1e5), 1e-9));
+    // plausibility (Sharqawy et al. 2010): cp 4.0 kJ/kg-K, viscosity 1.1 mPa-s, conductivity 0.60 W/m-K
+    CHECK(run["c"] > 3950.0);
+    CHECK(run["c"] < 4050.0);
+    CHECK(run["mu"] > 1.0e-3);
+    CHECK(run["mu"] < 1.2e-3);
+    CHECK(run["k"] > 0.59);
+    CHECK(run["k"] < 0.61);
+    // the derived ones are the quotients of the others
+    CHECK_THAT(run["nu"], WithinRel(run["mu"] / run["rho"], 1e-12));
+    CHECK_THAT(run["v"], WithinRel(1.0 / run["rho"], 1e-12));
+    CHECK_THAT(run["Pr"], WithinRel(run["c"] * run["mu"] / run["k"], 1e-9));
+}
+
+TEST_CASE("CS-BUG-INCOMP-SEAWATER: enthalpy, entropy and internal energy are CoolProp's, in J/kg and J/kg-K",
+          "[library-gaps][incomp-seawater]") {
+    auto run = runModel(
+        "h1 = enthalpy(SeaWater, 3.5, T=40, P=1e5)\n"
+        "h2 = enthalpy(SeaWater, T=50, P=1e5, C=3.5)\n"
+        "s1 = entropy(SeaWater, 3.5, T=40, P=1e5)\n"
+        "u1 = intenergy(SeaWater, 3.5, T=40, P=1e5)\n"
+        "cp1 = cp(SeaWater, 3.5, T=45, P=1e5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // they have no enthalpy of mixing like those of every incompressible solution, but the warning C004 is the
+    // LiBr one only: sea water gives none (MEG and the brines give none either)
+    CHECK(run.warnings.empty());
+    CHECK_THAT(run["h1"], WithinRel(seawaterRef("H", 3.5, 40, 1e5), 1e-9));
+    CHECK_THAT(run["h2"], WithinRel(seawaterRef("H", 3.5, 50, 1e5), 1e-9));
+    CHECK_THAT(run["s1"], WithinRel(seawaterRef("S", 3.5, 40, 1e5), 1e-9));
+    CHECK_THAT(run["u1"], WithinRel(seawaterRef("U", 3.5, 40, 1e5), 1e-9));
+    // h is the integral of cp: a 10 K step at the cp of the middle of the interval
+    CHECK_THAT(run["h2"] - run["h1"], WithinRel(run["cp1"] * 10.0, 2e-3));
+}
+
+TEST_CASE("CS-BUG-INCOMP-SEAWATER: the salinity as second argument or C=, any spelling of the fluid", "[library-gaps][incomp-seawater]") {
+    const double ref = seawaterRef("D", 3.5, 20, 1e5);
+    auto run = runModel(
+        "a = density(SeaWater, 3.5, T=20, P=1e5)\n"
+        "b = density(SeaWater, T=20, P=1e5, C=3.5)\n"
+        "c = density('SeaWater', 3.5, T=20, P=1e5)\n"
+        "d = density(seawater, T=20, P=1e5, concentration=3.5)\n"
+        "e = density(SEAWATER, 3.5, P=1e5, T=20)\n"
+        "f = density(SeaWater, T=20, P=1e5, conc=3.5)\n"
+        "fl$ = 'SeaWater'\n"
+        "g = density(fl$, 3.5, T=20, P=1e5)\n"
+        "S = 3.5\n"
+        "h = density(SeaWater, S, T=20, P=1e5)\n"
+        "i = density(SeaWater, T=20, P=1e5, C=35/10)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    for (const char* name : {"a", "b", "c", "d", "e", "f", "g", "h", "i"}) {
+        INFO(name);
+        CHECK_THAT(run[name], WithinRel(ref, 1e-9));
+    }
+}
+
+TEST_CASE("CS-BUG-INCOMP-SEAWATER: the density is that of the solution, 0 to 12 % is the range of CoolProp's fit",
+          "[library-gaps][incomp-seawater]") {
+    SECTION("the trend: pure water at 0 %, denser with the salt, the end points are values") {
+        auto run = runModel(
+            "r0 = density(SeaWater, 0, T=20, P=1e5)\n"
+            "r35 = density(SeaWater, 3.5, T=20, P=1e5)\n"
+            "r12 = density(SeaWater, 12, T=20, P=1e5)\n"
+            "rw = density(Water, T=20, P=1e5)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["r0"], WithinRel(run["rw"], 1e-3));
+        CHECK(run["r35"] > run["r0"]);
+        CHECK(run["r12"] > run["r35"]);
+        CHECK_THAT(run["r0"], WithinRel(seawaterRef("D", 0, 20, 1e5), 1e-9));
+        CHECK_THAT(run["r12"], WithinRel(seawaterRef("D", 12, 20, 1e5), 1e-9));
+    }
+    SECTION("above 12 % CoolProp has no fit: an error naming the call, never a NaN or a value") {
+        requireLiBrCallError("density(SeaWater, 15, T=20, P=1e5)", {"density", "MITSW"});
+        requireLiBrCallError("cp(SeaWater, T=20, P=1e5, C=12.5)", {"cp", "MITSW"});
+        requireLiBrCallError("enthalpy(SeaWater, 15, T=20, P=1e5)", {"enthalpy", "MITSW"});
+        requireLiBrCallError("viscosity(SeaWater, 20, T=20, P=1e5)", {"viscosity", "MITSW"});
+        requireLiBrCallError("density(SeaWater, T=20, C=15)", {"density", "MITSW"});   // the T-only form too
+    }
+    SECTION("outside 0..100 % it is the error of the other solutions") {
+        for (const char* conc : {"-1", "101", "150"}) {
+            INFO(conc);
+            auto run = runModel(std::string("y = density(SeaWater, ") + conc + ", T=20, P=1e5)\n");
+            REQUIRE_FALSE(run.solveOk);
+            CHECK(anyContains({run.message}, "Incompressible solution 'SeaWater' requires a concentration (mass %, 0..100)"));
+        }
+    }
+}
+
+TEST_CASE("CS-BUG-INCOMP-SEAWATER: CoolProp's temperature range is 0 to 120 C, liquid only (P at least the saturation pressure)",
+          "[library-gaps][incomp-seawater]") {
+    SECTION("the end of the range at 0 C is a value, below it an error naming the call") {
+        auto ok = runModel("a = density(SeaWater, 3.5, T=0, P=1e5)\n");
+        REQUIRE(ok.solveOk);
+        CHECK(ok.verified);
+        CHECK_THAT(ok["a"], WithinRel(seawaterRef("D", 3.5, 0, 1e5), 1e-9));
+        requireLiBrCallError("density(SeaWater, 3.5, T=-1, P=1e5)", {"density", "MITSW"});
+        requireLiBrCallError("cp(SeaWater, 3.5, T=130, P=1e6)", {"cp", "MITSW"});
+    }
+    SECTION("above its boiling point at the pressure the liquid is not defined: an error, at a higher pressure it is a value") {
+        // 3.5 % sea water boils at 100.3 C at 1 bar (100.6 C at 101325 Pa): CoolProp's fits are valid for the liquid phase only
+        requireLiBrCallError("density(SeaWater, 3.5, T=110, P=1e5)", {"density", "MITSW"});
+        auto ok = runModel("a = density(SeaWater, 3.5, T=110, P=5e5)\nb = cp(SeaWater, 3.5, T=110, P=5e5)\n");
+        INFO(ok.message);
+        REQUIRE(ok.solveOk);
+        CHECK(ok.verified);
+        CHECK_THAT(ok["a"], WithinRel(seawaterRef("D", 3.5, 110, 5e5), 1e-9));
+        CHECK_THAT(ok["b"], WithinRel(seawaterRef("C", 3.5, 110, 5e5), 1e-9));
+    }
+}
+
+TEST_CASE("CS-BUG-INCOMP-SEAWATER: the T-only form density(SeaWater, T=20, C=3.5) is evaluated at 101325 Pa",
+          "[library-gaps][incomp-seawater][incompressible]") {
+    // CS-GAP-INCOMPRESSIBLE: the temperature and the concentration alone, the value of the call with P=101325
+    auto run = runModel(
+        "a1 = density(SeaWater, T=20, C=3.5)\n"
+        "b1 = density(SeaWater, T=20, P=101325, C=3.5)\n"
+        "a2 = cp(SeaWater, T=20, C=3.5)\n"
+        "b2 = cp(SeaWater, T=20, P=101325, C=3.5)\n"
+        "a3 = viscosity(SeaWater, 3.5, T=20)\n"
+        "a4 = conductivity('SeaWater', T=20, conc=3.5)\n"
+        "a5 = enthalpy(SeaWater, T=20, C=3.5)\n"
+        "b5 = enthalpy(SeaWater, T=20, P=101325, C=3.5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    CHECK(run["a1"] == run["b1"]);
+    CHECK(run["a2"] == run["b2"]);
+    CHECK(run["a5"] == run["b5"]);
+    CHECK_THAT(run["a1"], WithinRel(seawaterRef("D", 3.5, 20), 1e-9));
+    CHECK_THAT(run["a2"], WithinRel(seawaterRef("C", 3.5, 20), 1e-9));
+    CHECK_THAT(run["a3"], WithinRel(seawaterRef("V", 3.5, 20), 1e-9));
+    CHECK_THAT(run["a4"], WithinRel(seawaterRef("L", 3.5, 20), 1e-9));
+    CHECK_THAT(run["a5"], WithinRel(seawaterRef("H", 3.5, 20), 1e-9));
+    // no concentration: the usual error of the solutions; another single input: the error naming the call
+    auto none = runModel("y = density(SeaWater, T=20)\n");
+    REQUIRE_FALSE(none.solveOk);
+    CHECK(anyContains({none.message}, "Incompressible solution 'SeaWater' requires a concentration (mass %, 0..100)"));
+    auto pOnly = runModel("y = density(SeaWater, 3.5, P=1e5)\n");
+    REQUIRE_FALSE(pOnly.solveOk);
+    CHECK(anyContains({pOnly.message}, "density requires exactly 2 input properties"));
+    // above the boiling point at 1 atm the liquid is not defined: an error naming the call
+    requireLiBrCallError("density(SeaWater, T=105, C=3.5)", {"density", "MITSW"});
+    // the derivative with respect to T is that of the call with P=101325 (and the slope of CoolProp's density)
+    const IncompCall only = evalIncompCall("density(SeaWater, T=Tv, C=3.5)", 20.0);
+    const IncompCall both = evalIncompCall("density(SeaWater, T=Tv, P=101325, C=3.5)", 20.0);
+    CHECK(only.value == both.value);
+    CHECK(only.dT == both.dT);
+    const double h = 1e-3;
+    CHECK_THAT(only.dT, WithinRel((seawaterRef("D", 3.5, 20 + h) - seawaterRef("D", 3.5, 20 - h)) / (2 * h), 1e-4));
+    CHECK(only.dT < 0.0);   // the density of water falls with the temperature
+}
+
+TEST_CASE("CS-BUG-INCOMP-SEAWATER: Newton solves an unknown temperature through the sea water properties", "[library-gaps][incomp-seawater]") {
+    SECTION("through the density") {
+        auto run = runModel("rho = " + numText(seawaterRef("D", 3.5, 35, 2e5)) + "\n"
+                            "density(SeaWater, 3.5, T=T, P=2E5) = rho\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["T"], WithinAbs(35.0, 1e-6));
+    }
+    SECTION("through the T-only form") {
+        auto run = runModel("density(SeaWater, T=T, C=3.5) = 1020\n", {}, "T = 30\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(seawaterRef("D", 3.5, run["T"]), WithinRel(1020.0, 1e-9));
+    }
+    SECTION("through the enthalpy, given as an input of temperature()") {
+        const double h = seawaterRef("H", 3.5, 50, 1e5);
+        auto run = runModel("h = " + numText(h) + "\n"
+                            "enthalpy(SeaWater, 3.5, T=T1, P=1E5) = h\n"
+                            "T2 = temperature(SeaWater, 3.5, h=h, P=1E5)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["T1"], WithinAbs(50.0, 1e-6));
+        CHECK_THAT(run["T2"], WithinAbs(50.0, 1e-6));
+    }
+}
+
+TEST_CASE("CS-BUG-INCOMP-SEAWATER: a property CoolProp does not give for sea water is an error naming the call",
+          "[library-gaps][incomp-seawater]") {
+    // the saturation functions of an incompressible are not evaluated (the quality 0.5 of CoolSolve's p_sat has no
+    // state in the incompressible backend), whatever the fluid: never a value
+    requireLiBrCallError("p_sat(SeaWater, 3.5, T=20)", {"p_sat", "MITSW"});
+    requireLiBrCallError("t_sat(SeaWater, 3.5, P=1e5)", {"t_sat", "MITSW"});
+    // the quality is refused with its own message
+    auto quality = runModel("y = cp(SeaWater, 3.5, x=0.5)\n");
+    REQUIRE_FALSE(quality.solveOk);
+    CHECK(anyContains({quality.message}, "does not support saturation (quality) inputs"));
+}
+
+TEST_CASE("CS-BUG-INCOMP-SEAWATER: inside a FUNCTION and a PROCEDURE, with a string-variable fluid", "[library-gaps][incomp-seawater]") {
+    auto run = runModel(
+        "FUNCTION rho_sw(T, S)\n"
+        "  rho_sw = density(SeaWater, S, T=T, P=1E5)\n"
+        "END\n"
+        "PROCEDURE props(f$, T, S : c, mu, k)\n"
+        "  c = cp(f$, S, T=T, P=1E5)\n"
+        "  mu = viscosity(f$, T=T, C=S)\n"
+        "  k = conductivity(f$, T=T, C=S)\n"
+        "END\n"
+        "y = rho_sw(20, 3.5)\n"
+        "CALL props('SeaWater', 20, 3.5 : c1, m1, k1)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    CHECK_THAT(run["y"], WithinRel(seawaterRef("D", 3.5, 20, 1e5), 1e-12));
+    CHECK_THAT(run["c1"], WithinRel(seawaterRef("C", 3.5, 20, 1e5), 1e-12));
+    CHECK_THAT(run["m1"], WithinRel(seawaterRef("V", 3.5, 20, 1e5), 1e-12));
+    CHECK_THAT(run["k1"], WithinRel(seawaterRef("L", 3.5, 20, 1e5), 1e-12));
+}
+
+TEST_CASE("CS-BUG-INCOMP-SEAWATER: the other solutions and the LiBr warning are unchanged", "[library-gaps][incomp-seawater]") {
+    auto run = runModel(
+        "a = density(MEG, 30, T=20, P=1e5)\n"
+        "b = cp(NaCl, 10, T=20, P=1e5)\n"
+        "h = enthalpy(LiBr, 50, T=40, P=1e5)\n"
+        "w = enthalpy(SeaWater, 3.5, T=40, P=1e5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["a"], WithinRel(incompRef("D", "MEG", 30, 20, 1e5), 1e-9));
+    CHECK_THAT(run["b"], WithinRel(incompRef("C", "MNA", 10, 20, 1e5), 1e-9));
+    CHECK(librCaloricWarnings(run) == 1);   // one warning, from LiBr only
+    CHECK_THAT(run["w"], WithinRel(seawaterRef("H", 3.5, 40, 1e5), 1e-9));
+}
+
+// ============================================================================
+// CS-BUG-INCOMP-SOLIDS: Aluminum and Copper are not CoolProp incompressibles
+// ============================================================================
+// `Aluminum` and `Copper` were registered as pure incompressibles (and documented as supported), but CoolProp has no
+// solid (`dev/incompressible_liquids/json` holds liquids and solutions): every call failed with "CoolProp returned
+// invalid result (NaN or Inf) for C(INCOMP::Aluminum)". They are EES solids of its property library: registered as
+// unsupported fluids (as NH3H2O), the error names the fluid and says that its properties are not available.
+
+TEST_CASE("CS-BUG-INCOMP-SOLIDS: Aluminum and Copper are unsupported fluids of the registry, whatever the spelling",
+          "[library-gaps][incomp-solids]") {
+    for (const char* name : {"Aluminum", "aluminum", "ALUMINUM", "Copper", "copper", "COPPER"}) {
+        INFO(name);
+        auto fluid = FluidRegistry::getFluid(name);
+        REQUIRE(fluid);
+        CHECK(fluid->getType() == FluidType::Unknown);   // no longer an incompressible: no CoolProp name to ask
+        auto unsupported = std::dynamic_pointer_cast<UnsupportedFluid>(fluid);
+        REQUIRE(unsupported);
+        CHECK(unsupported->getCoolPropName().empty());
+        const std::string reason = unsupported->getReason();
+        INFO(reason);
+        CHECK(reason.find("EES solid") != std::string::npos);
+        CHECK(reason.find("CoolProp has no solid properties") != std::string::npos);
+        CHECK(reason.find("not available") != std::string::npos);
+        CHECK(reason.find("constants or a correlation") != std::string::npos);
+        CHECK(reason.find("CS-BUG-INCOMP-SOLIDS") != std::string::npos);
+    }
+    CHECK(FluidRegistry::getFluid("Aluminum")->getName() == "Aluminum");
+    CHECK(FluidRegistry::getFluid("copper")->getName() == "Copper");
+    // the liquids of CoolProp's incompressible library are still incompressibles
+    CHECK(FluidRegistry::getFluid("MEG")->getType() == FluidType::Incompressible);
+    CHECK(FluidRegistry::getFluid("SeaWater")->getType() == FluidType::Incompressible);
+}
+
+TEST_CASE("CS-BUG-INCOMP-SOLIDS: register reproducer, cp(Aluminum, T=50, P=101325) is an error naming the fluid, not a NaN",
+          "[library-gaps][incomp-solids]") {
+    // was: "CoolProp returned invalid result (NaN or Inf) for C(INCOMP::Aluminum)"
+    for (const char* fluid : {"Aluminum", "Copper"}) {
+        INFO(fluid);
+        auto run = runModel(std::string("c = cp(") + fluid + ", T=50, P=101325)\n");
+        REQUIRE(run.parseOk);
+        REQUIRE_FALSE(run.solveOk);
+        INFO(run.message);
+        CHECK(anyContains({run.message}, std::string("Fluid '") + fluid + "' is not supported"));
+        CHECK(anyContains({run.message}, "CoolProp has no solid properties"));
+        CHECK(anyContains({run.message}, "not available"));
+        CHECK(anyContains({run.message}, "CS-BUG-INCOMP-SOLIDS"));
+        CHECK_FALSE(anyContains({run.message}, "NaN"));
+        CHECK_FALSE(anyContains({run.message}, "INCOMP::"));
+        CHECK_FALSE(run.verified);
+    }
+}
+
+TEST_CASE("CS-BUG-INCOMP-SOLIDS: every spelling of the fluid and every property is the same error", "[library-gaps][incomp-solids]") {
+    const std::vector<std::string> calls = {
+        "cp(Aluminum, T=50, P=101325)", "cp('Aluminum', T=50, P=101325)", "cp(ALUMINUM, T=50, P=101325)",
+        "cp(aluminum, T=50, P=101325)", "cp('copper', T=50, P=101325)", "cp(COPPER, T=50, P=101325)",
+        "cp(Copper, 50, T=50, P=101325)",        // a (meaningless) concentration
+        "cp(Aluminum, T=50)", "cp(Copper, T=50, C=10)",   // the T-only forms of the incompressibles
+        "density(Aluminum, T=50, P=101325)", "enthalpy(Copper, T=50, P=101325)", "entropy(Aluminum, T=50, P=101325)",
+        "intenergy(Copper, T=50, P=101325)", "conductivity(Copper, T=50, P=101325)", "viscosity(Aluminum, T=50, P=101325)",
+        "specheat(Aluminum, T=50, P=101325)", "temperature(Aluminum, h=1e5, P=101325)", "molarmass(Aluminum)",
+        "p_sat(Copper, T=50)", "t_crit(Aluminum)",
+    };
+    for (const auto& call : calls) {
+        INFO(call);
+        auto run = runModel("y = " + call + "\n");
+        REQUIRE(run.parseOk);
+        REQUIRE_FALSE(run.solveOk);
+        INFO(run.message);
+        // the message names the fluid as the call spells it (any case)
+        std::string lowerCall = call, lowerMessage = run.message;
+        for (auto* text : {&lowerCall, &lowerMessage})
+            std::transform(text->begin(), text->end(), text->begin(), [](unsigned char c) { return std::tolower(c); });
+        const std::string fluid = lowerCall.find("copper") != std::string::npos ? "copper" : "aluminum";
+        CHECK(lowerMessage.find("fluid '" + fluid + "' is not supported: ") != std::string::npos);
+        CHECK(anyContains({run.message}, "CoolProp has no solid properties"));
+        CHECK_FALSE(anyContains({run.message}, "NaN"));
+    }
+    // a string variable, inside a FUNCTION, and in an implicit equation: the same error, never a silent value
+    auto sv = runModel("fl$ = 'Copper'\ny = cp(fl$, T=50, P=101325)\n");
+    REQUIRE_FALSE(sv.solveOk);
+    CHECK(anyContains({sv.message}, "Fluid 'Copper' is not supported"));
+    auto fn = runModel("FUNCTION cps(T)\n  cps = cp(Aluminum, T=T, P=101325)\nEND\ny = cps(50)\n");
+    REQUIRE_FALSE(fn.solveOk);
+    CHECK(anyContains({fn.message}, "Aluminum"));
+    CHECK(anyContains({fn.message}, "not supported"));
+    auto impl = runModel("cp(Copper, T=T, P=101325) = 385\n", {}, "T = 50\n");
+    REQUIRE_FALSE(impl.solveOk);
+    CHECK(anyContains({impl.message}, "Fluid 'Copper' is not supported"));
+}
+
+TEST_CASE("CS-BUG-INCOMP-SOLIDS: the unsupported solids are not ideal gases and the other unsupported fluids keep their message",
+          "[library-gaps][incomp-solids]") {
+    auto run = runModel("g1 = isidealgas('Aluminum')\ng2 = isidealgas('Copper')\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["g1"], WithinAbs(0.0, 1e-12));
+    CHECK_THAT(run["g2"], WithinAbs(0.0, 1e-12));
+    // the other unsupported fluids: their own reason, unchanged
+    auto nh3 = runModel("y = density('NH3H2O', T=300, P=101325)\n");
+    REQUIRE_FALSE(nh3.solveOk);
+    CHECK(anyContains({nh3.message}, "CS-GAP-NH3H2O"));
+    CHECK_FALSE(anyContains({nh3.message}, "CS-BUG-INCOMP-SOLIDS"));
+    auto libr = runModel("y = enthalpy(LiBrH2O, T=40, P=1e5)\n");
+    REQUIRE_FALSE(libr.solveOk);
+    CHECK(anyContains({libr.message}, "X_LIBR"));
+    // the liquids still evaluate
+    auto ok = runModel("y = cp(Water, T=50, P=101325)\nz = cp(MEG, 30, T=50, P=101325)\n");
+    REQUIRE(ok.solveOk);
+    CHECK(ok.verified);
 }

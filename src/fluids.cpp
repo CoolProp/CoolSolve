@@ -223,15 +223,10 @@ void FluidRegistry::initialize() {
     registry_["airh2o"] = std::make_shared<HumidAirFluid>();
     
     // --- Incompressible Fluids ---
-    // Pure incompressibles (no concentration): solids, pure liquids
-    auto addIncomp = [](const std::string& name, const std::string& cpKey = "") {
-        auto fluid = std::make_shared<IncompressibleFluid>(name, /*isSolution=*/false, cpKey);
-        registry_[name] = fluid;
-        std::string lower = name;
-        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-        if (lower != name) registry_[lower] = fluid;
-    };
-    // Solutions: glycols, brines, secondary refrigerants (need concentration)
+    // CoolSolve registers the liquid solutions of CoolProp's incompressible library (INCOMP::<key>[x], mass
+    // fraction x): no pure incompressible (IncompressibleFluid(name, false, key) would be one), and no solid:
+    // CoolProp has none (CS-BUG-INCOMP-SOLIDS, below).
+    // Solutions: glycols, brines, secondary refrigerants, sea water (need concentration)
     auto addIncompSolution = [](const std::string& name, const std::string& cpKey) {
         auto fluid = std::make_shared<IncompressibleFluid>(name, /*isSolution=*/true, cpKey);
         registry_[name] = fluid;
@@ -239,9 +234,6 @@ void FluidRegistry::initialize() {
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
         if (lower != name) registry_[lower] = fluid;
     };
-    
-    addIncomp("Aluminum");
-    addIncomp("Copper");
     
     // Glycols
     addIncompSolution("EthyleneGlycol", "MEG");
@@ -270,8 +262,15 @@ void FluidRegistry::initialize() {
     // Lithium bromide solution in water (CoolProp INCOMP::LiBr: mass fraction 0..0.75, no viscosity or conductivity)
     addIncompSolution("LiBr", "LiBr");
 
-    // Pure incompressible
-    addIncomp("SeaWater", "MITSW");
+    // Sea water: CoolProp INCOMP::MITSW (Sharqawy et al. 2010), a salinity solution: mass fraction 0..0.12, 273.15..393.15 K,
+    // liquid phase only; no h/s of mixing (CS-BUG-INCOMP-SEAWATER)
+    addIncompSolution("SeaWater", "MITSW");
+
+    // EES solids of its property library: CoolProp has no solid properties (CS-BUG-INCOMP-SOLIDS)
+    for (const char* solid : {"Aluminum", "Copper"})
+        addUnsupported(solid,
+            "EES solid of its property library; CoolProp has no solid properties, so they are not available here: "
+            "give the properties as constants or a correlation in the model (register CS-BUG-INCOMP-SOLIDS).");
     
     // --- Mixtures (unsupported in CoolProp with EES parameterization) ---
     addUnsupported("NH3H2O",
