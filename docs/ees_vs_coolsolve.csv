@@ -166,6 +166,7 @@ LOOKUPCOL1,Math — Lookup Table,Look up column number variant,Yes,3,Same as LOO
 LOOKUPCOLNAME$,Math — Lookup Table,Get column name from Lookup table,No,3,,
 LOOKCOLNUMBER,Math — Lookup Table,Get column number,No,3,,
 LOOKUPCELLEMPTY,Math — Lookup Table,Check if Lookup cell is empty,Yes,3,src/evaluator.cpp — companion table <model>-<table>.csv; also inside FUNCTION/PROCEDURE bodies and INTEGRAL models,
+"LOOKUP('table',row,col) = value",Math — Lookup Table,"Write a Lookup table cell (LOOKUP / LOOKUP$ on the left-hand side): how an EES model exports results",No,3,"Not supported by decision (results are in the solution, the GUI and the debug folder): the statement (main program, FUNCTION/PROCEDURE body, IF, DUPLICATE) is not an equation and not a statement of the body, it is ignored with a warning P009 (one per source line; its value is not evaluated), and an error when the model also reads the table it writes (src/parser.cpp noteLookupWrite, checkLookupWrites; language reference §11.10)",
 TABLEVALUE,Math — Lookup Table,Get/set value in Parametric or Lookup table,Partial,3,"Reads Lookup tables only (same as LOOKUP; no Parametric table, no set)",
 NLOOKUPROWS,Math — Lookup Table,Number of rows in Lookup table,Yes,3,src/evaluator.cpp — companion table <model>-<table>.csv; also inside FUNCTION/PROCEDURE bodies and INTEGRAL models,
 NLOOKUPCOLUMNS,Math — Lookup Table,Number of columns in Lookup table,Yes,3,src/evaluator.cpp — companion table <model>-<table>.csv; also inside FUNCTION/PROCEDURE bodies and INTEGRAL models,

@@ -2800,8 +2800,9 @@ void ProceduralEvaluator::execute(ExpressionEvaluator& eval, const StmtPtr& stmt
         }
     } else if (stmt->is<Equation>()) {
         // In EES procedural blocks, '=' is also treated as assignment. A left-hand side that is not
-        // a variable is refused by the parser's check of the bodies (CS-BUG-IMPLICIT-PROC), except a
-        // lookup-table cell write `LOOKUP(...) = ...`, the one statement still skipped here (CS-BUG-LOOKUP-WRITE).
+        // a variable is refused by the parser's check of the bodies (CS-BUG-IMPLICIT-PROC); a
+        // lookup-table cell write `LOOKUP(...) = ...` is reported by the parser and not in the body
+        // (CS-BUG-LOOKUP-WRITE).
         const auto& eq = stmt->as<Equation>();
         if (eq.lhs->is<Variable>()) {
             const auto& var = eq.lhs->as<Variable>();

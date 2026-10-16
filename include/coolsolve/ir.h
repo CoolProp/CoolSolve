@@ -182,7 +182,11 @@ public:
      */
     static void extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensitiveLess>& vars,
                                  bool stringFluids = false);
-    
+
+    /// True for a function whose string arguments name a lookup table and its columns (`LOOKUP`, `LOOKUP$`,
+    /// `INTERPOLATE`, `NLOOKUPROWS`, `SUMLOOKUP`, ...), in any case.
+    static bool isLookupFunction(const std::string& name);
+
 private:
     std::map<std::string, VariableInfo, CaseInsensitiveLess> variables_;
     std::vector<EquationInfo> equations_;

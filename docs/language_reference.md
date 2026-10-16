@@ -1269,8 +1269,8 @@ error with its line, like a syntax error, and the model is not solved:
   in the main program, or iterate explicitly in the body (REPEAT ... UNTIL)
   ```
 
-  (A lookup-table cell write `LOOKUP('t', 1, 1) = x` is not concerned: writing a
-  cell is not supported yet and the statement has no effect.)
+  (A lookup-table cell write `LOOKUP('t', 1, 1) = x` is not concerned: it is no
+  statement of the body, see §11.10.)
 - **A variable is assigned before it is read.** The variables of a body other
   than its inputs are local and *"not initialised"* (EES help, *Internal
   Functions*): the outputs (the function's own name, the outputs of a procedure)
@@ -1873,6 +1873,47 @@ END ReadPV
   A string variable used as the key is a variable of the equation: the equation that gives it
   its string (a literal, an alias, a function, a `CALL` output) is solved first. In a
   `PROCEDURE` or `FUNCTION` body the key may be a string input.
+
+### 11.10 Writing a cell: `LOOKUP('table', row, col) = value`
+
+In EES a `LOOKUP` or `LOOKUP$` on the **left-hand side** writes a cell of a lookup table (a way to
+export results). **CoolSolve does not support writing a cell and never does it silently**: the
+results are in the solution, the GUI and the debug folder, not in a written table. The statement
+(`=` or `:=`, in the main program, in a `FUNCTION` or `PROCEDURE` body, in an `IF` or a loop, in a
+`DUPLICATE`) is
+
+- **not an equation** and not a statement of the body: the model has the equations it has without
+  it (the main program of `x = 5`, `y = 2*x`, `lookup('t', 1, 1) = x` has 2 equations in 2
+  unknowns, it used to be refused as *"There are 3 equations and 2 unknowns"*), and a body does the
+  same as without it. Its value is **not evaluated** (no side effect: an expression that fails, or
+  a variable that nothing sets, does no harm);
+- reported with a **warning** `P009` at its line, **one per source line** (not one per copy of a
+  `DUPLICATE`, not one per statement of a line with `;`):
+
+  ```
+  warning (line 3): lookup('t', 1, 1) = ...: writing a lookup-table cell is not supported;
+  the value is not stored (the results are in the solution)
+  ```
+
+- an **error** if the model **also reads** a table it writes (any lookup function on the same
+  table name, anywhere: `LOOKUP`, `LOOKUP$`, `INTERPOLATE`, `NLOOKUPROWS`, the aggregates, ..., in
+  the main program or in a body, before or after the write, names compared without regard to case;
+  the nameless `LOOKUP(row, col)` is the table `lookup_1`), because the results would depend on a
+  value that CoolSolve does not store. One error per table, at its first write, with the line of
+  its first read:
+
+  ```
+  Line 2: lookup table 't' is written at line 2 and read at line 3: a lookup-table cell write is
+  not supported (the value is not stored), so the read would not see it; remove the write or the
+  read (the results are in the solution)
+  ```
+
+A table written and never read is only a warning, whether or not the model has a file for it: a
+table that the model reads and does not write is read from its file as always. When the table is
+named by a string variable (`LOOKUP(table$, row, 1) = x`) the name is not known when the file is
+read, so only the warning is given (no check against the reads of the model). Only `LOOKUP` and
+`LOOKUP$` on the left-hand side are cell writes: any other implicit statement keeps its
+behaviour (an equation in the main program, an error in a body, *"implicit equation in ..."*).
 
 ---
 

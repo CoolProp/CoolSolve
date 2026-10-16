@@ -4834,8 +4834,8 @@ TEST_CASE("CS-BUG-STRING-CALL-OUT: a string computed by a CALL reaches the next 
 }
 
 TEST_CASE("CS-BUG-STRING-CALL-OUT: the register reproducer", "[library-gaps][string-call-out]") {
-    // The reproducer of the register writes into a lookup table (CS-BUG-LOOKUP-WRITE, a separate bug).
-    // Whatever becomes of those statements, the string must be found.
+    // The reproducer of the register writes into a lookup table (CS-BUG-LOOKUP-WRITE: a warning, the statements
+    // are left out). The string must be found.
     auto run = runModel(R"(
 PROCEDURE gen(x:r$)
 IF (x>1) THEN
@@ -7950,7 +7950,7 @@ TEST_CASE("CS-BUG-IMPLICIT-PROC: implicit statements in IF, REPEAT and DUPLICATE
 
 TEST_CASE("CS-BUG-IMPLICIT-PROC: a lookup-table cell write in a body is unchanged (CS-BUG-LOOKUP-WRITE)",
           "[library-gaps][implicit-proc]") {
-    // an open item of its own: no new error, the statement is still skipped when the body runs
+    // no implicit-equation error: the write is reported by the parser and left out of the body (CS-BUG-LOOKUP-WRITE)
     auto run = runModel("PROCEDURE w(M, h : y)\n  lookup('ev', 1, 1) = M*h\n  Lookup('ev', 2, 1) = M\n  y = M + h\nEND\n"
                         "CALL w(2, 3 : z)\n");
     REQUIRE(run.parseOk);
@@ -17371,5 +17371,383 @@ TEST_CASE("CS-BUG-TINY-VALUE: what stays an error", "[library-gaps][tiny-value]"
         // 1/0: the value is not finite; the solution check reports the equation, as before
         auto run = runModel("x = 1/y\ny = 0\n");
         CHECK_FALSE(run.verified);
+    }
+}
+
+// ============================================================================
+// CS-BUG-LOOKUP-WRITE: a lookup-table cell write is a warning, never an equation, never silent
+// ============================================================================
+
+namespace {
+
+/// "line: message" of the P009 warnings (a lookup-table cell write that is ignored) of the diagnostics `items`.
+std::vector<std::string> lookupWriteWarnings(const std::vector<Diagnostic>& items) {
+    std::vector<std::string> out;
+    for (const auto& d : items)
+        if (d.code == "P009") {
+            CHECK(d.severity == DiagnosticSeverity::Warning);
+            out.push_back(std::to_string(d.line) + ": " + d.message);
+        }
+    return out;
+}
+
+/// The warning for the write whose left-hand side reads `target` (`lookup('t', 1, 1)`).
+std::string lookupWriteMessage(const std::string& target) {
+    return target + " = ...: writing a lookup-table cell is not supported; the value is not stored "
+                    "(the results are in the solution)";
+}
+
+/// The error of a table that the model both writes and reads.
+std::string lookupWriteReadMessage(const std::string& table, int writeLine, int readLine) {
+    return "lookup table '" + table + "' is written at line " + std::to_string(writeLine) + " and read at line " +
+           std::to_string(readLine) + ": a lookup-table cell write is not supported (the value is not stored), so the "
+           "read would not see it; remove the write or the read (the results are in the solution)";
+}
+
+const std::string kWriteData = "k,v\n1,10\n2,20\n3,30\n";
+
+}  // namespace
+
+TEST_CASE("CS-BUG-LOOKUP-WRITE: the register reproducer solves, with one warning at the line of the write",
+          "[library-gaps][lookup-write]") {
+    // was: "There are 3 equations and 2 unknowns. The system is not square" (valid EES, table written)
+    const std::string code = "x = 5\ny = 2*x\nlookup('t', 1, 1) = x\n";
+    const auto parsed = parseFull(code);
+    CHECK(parsed.errors.empty());
+    CHECK(parsed.equationCount == 2);   // the write is not an equation
+    CHECK(lookupWriteWarnings(parsed.diagnostics.items()) ==
+          std::vector<std::string>{"3: " + lookupWriteMessage("lookup('t', 1, 1)")});
+
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x"], WithinAbs(5.0, 1e-12));
+    CHECK_THAT(run["y"], WithinAbs(10.0, 1e-12));
+    CHECK(lookupWriteWarnings(run.warningItems) ==
+          std::vector<std::string>{"3: " + lookupWriteMessage("lookup('t', 1, 1)")});
+    CHECK(run.vars.count("t") == 0);   // nothing of the statement reaches the solution
+}
+
+TEST_CASE("CS-BUG-LOOKUP-WRITE: a write in the main program, in any spelling", "[library-gaps][lookup-write]") {
+    SECTION("the statement as written, `:=`, upper case, spaces and comments after the value") {
+        const std::string code =
+            "x = 5\n"
+            "Lookup('ev',2,1) := x*2   \"export\"\n"
+            "LOOKUP( 'ev' , 3 , 'col b' ) = x   // a comment\n"
+            "y = x + 1\n";
+        const auto parsed = parseFull(code);
+        CHECK(parsed.errors.empty());
+        CHECK(lookupWriteWarnings(parsed.diagnostics.items()) ==
+              std::vector<std::string>{"2: " + lookupWriteMessage("Lookup('ev',2,1)"),
+                                       "3: " + lookupWriteMessage("LOOKUP( 'ev' , 3 , 'col b' )")});
+        auto run = runModel(code);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(6.0, 1e-12));
+    }
+    SECTION("a text cell: LOOKUP$(...) = 'text'") {
+        const std::string code = "x = 5\nlookup$('t', 1, 2) = 'text'\ny = 2*x\n";
+        auto run = runModel(code);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["y"], WithinAbs(10.0, 1e-12));
+        CHECK(lookupWriteWarnings(run.warningItems) ==
+              std::vector<std::string>{"2: " + lookupWriteMessage("lookup$('t', 1, 2)")});
+    }
+    SECTION("a text cell written from a string variable") {
+        auto run = runModel("s$ = 'abc'\nx = 1\nLookup$('t', 1, 2) = s$\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.strings.at("s$") == "abc");
+        CHECK(lookupWriteWarnings(run.warningItems).size() == 1);
+    }
+    SECTION("two writes on one line: one warning for the line; one per line otherwise") {
+        auto run = runModel("x = 5\nlookup('t', 1, 1) = x ; lookup('t', 2, 1) = 2*x\nlookup('t', 3, 1) = 3*x\n");
+        REQUIRE(run.solveOk);
+        CHECK(lookupWriteWarnings(run.warningItems) ==
+              std::vector<std::string>{"2: " + lookupWriteMessage("lookup('t', 1, 1)"),
+                                       "3: " + lookupWriteMessage("lookup('t', 3, 1)")});
+    }
+    SECTION("the value is not evaluated: it may hold a variable that nothing sets, and the model is unchanged") {
+        const std::string base = "x = 5\ny = 2*x\n";
+        auto written = runModel(base + "lookup('t', 1, 1) = unset_variable/0\n");
+        auto plain = runModel(base);
+        REQUIRE(written.solveOk);
+        REQUIRE(plain.solveOk);
+        CHECK(written.vars == plain.vars);
+    }
+}
+
+TEST_CASE("CS-BUG-LOOKUP-WRITE: a write in a PROCEDURE or a FUNCTION: a warning, the routine is unchanged",
+          "[library-gaps][lookup-write]") {
+    // was: silently dropped (no warning at all)
+    SECTION("PROCEDURE: the outputs are those of the same routine without the writes") {
+        const std::string code =
+            "PROCEDURE w(M, h : y)\n"
+            "  lookup('ev', 1, 1) = M*h\n"
+            "  Lookup('ev', 2, 1) = M\n"
+            "  y = M + h\n"
+            "END\n"
+            "CALL w(2, 3 : z)\n";
+        const auto parsed = parseFull(code);
+        CHECK(parsed.errors.empty());
+        CHECK(lookupWriteWarnings(parsed.diagnostics.items()) ==
+              std::vector<std::string>{"2: " + lookupWriteMessage("lookup('ev', 1, 1)"),
+                                       "3: " + lookupWriteMessage("Lookup('ev', 2, 1)")});
+        auto run = runModel(code);
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["z"], WithinAbs(5.0, 1e-12));
+        CHECK(lookupWriteWarnings(run.warningItems).size() == 2);
+    }
+    SECTION("FUNCTION") {
+        auto run = runModel("FUNCTION f(a)\n  f = a + 1\n  lookup('ev', 1, 1) = f\nEND\nr = f(4)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["r"], WithinAbs(5.0, 1e-12));
+        CHECK(lookupWriteWarnings(run.warningItems) ==
+              std::vector<std::string>{"3: " + lookupWriteMessage("lookup('ev', 1, 1)")});
+    }
+    SECTION("a text cell, the value being the routine's string input") {
+        auto run = runModel("PROCEDURE wr(i, regime$ : res$)\n  lookup('noTable', i, 1) = i\n  lookup$('noTable', i, 2) = regime$\n"
+                            "  res$ = 'OK'\nEND\ni = 1\nr$ = 'ON'\nCALL wr(i, r$ : res$)\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.strings.at("res$") == "OK");
+        CHECK(lookupWriteWarnings(run.warningItems).size() == 2);
+    }
+    SECTION("inside an IF (single-line and block form) and a REPEAT loop of the body") {
+        const std::string code =
+            "PROCEDURE w(a : y)\n"
+            "  y = 0\n"
+            "  IF (a > 0) THEN lookup('t', 1, 1) = a\n"
+            "  IF (a > 1) THEN\n"
+            "    lookup('t', 2, 1) = a\n"
+            "    y = a\n"
+            "  ELSE\n"
+            "    lookup('t', 3, 1) = a\n"
+            "  ENDIF\n"
+            "  i = 0\n"
+            "  REPEAT\n"
+            "    i = i + 1\n"
+            "    lookup('t', i, 2) = a\n"
+            "  UNTIL (i >= 2)\n"
+            "END\n"
+            "CALL w(3 : z)\n";
+        auto run = runModel(code);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["z"], WithinAbs(3.0, 1e-12));
+        std::vector<std::string> lines;
+        for (const auto& d : run.warningItems)
+            if (d.code == "P009") lines.push_back(std::to_string(d.line));
+        CHECK(lines == std::vector<std::string>{"3", "5", "8", "13"});
+    }
+    SECTION("a body that holds nothing but writes is a valid body") {
+        auto run = runModel("PROCEDURE w(a : y)\n  y = a\n  lookup('t', 1, 1) = y\nEND\nCALL w(3 : z)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["z"], WithinAbs(3.0, 1e-12));
+    }
+    SECTION("the value is not evaluated: a variable that nothing sets is no error of the body") {
+        auto run = runModel("PROCEDURE w(a : y)\n  y = a\n  lookup('t', 1, 1) = never_set/0\nEND\nCALL w(3 : z)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["z"], WithinAbs(3.0, 1e-12));
+    }
+}
+
+TEST_CASE("CS-BUG-LOOKUP-WRITE: a write in a DUPLICATE: one warning per source line, not per copy",
+          "[library-gaps][lookup-write]") {
+    SECTION("main program") {
+        const std::string code =
+            "x = 5\n"
+            "DUPLICATE i = 1, 3\n"
+            "  lookup('t', i, 1) = i*x\n"
+            "  z[i] = i*x\n"
+            "END\n";
+        auto run = runModel(code);
+        INFO(run.message);
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["z[3]"], WithinAbs(15.0, 1e-12));
+        CHECK(lookupWriteWarnings(run.warningItems) ==
+              std::vector<std::string>{"3: " + lookupWriteMessage("lookup('t', i, 1)")});
+    }
+    SECTION("a loop that holds nothing but the write") {
+        auto run = runModel("x = 5\nDUPLICATE i = 1, 3\n  lookup('t', i, 1) = x\nEND\ny = x + 1\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(6.0, 1e-12));
+        CHECK(lookupWriteWarnings(run.warningItems).size() == 1);
+    }
+    SECTION("body of a PROCEDURE") {
+        const std::string code =
+            "PROCEDURE w(a : y)\n"
+            "  y = 0\n"
+            "  DUPLICATE k = 1, 4\n"
+            "    lookup('t', k, 1) = a*k\n"
+            "    y = y + k\n"
+            "  END\n"
+            "END\n"
+            "CALL w(2 : z)\n";
+        auto run = runModel(code);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["z"], WithinAbs(10.0, 1e-12));
+        CHECK(lookupWriteWarnings(run.warningItems) ==
+              std::vector<std::string>{"4: " + lookupWriteMessage("lookup('t', k, 1)")});
+    }
+}
+
+TEST_CASE("CS-BUG-LOOKUP-WRITE: a table that the model writes and reads is an error",
+          "[library-gaps][lookup-write]") {
+    // the results would depend on a value that CoolSolve does not store: refused, naming the table and both lines
+    SECTION("main program: write, then read the same table") {
+        const std::string code = "x = 5\nlookup('t', 1, 1) = x\ny = lookup('t', 1, 1) + 1\n";
+        CHECK(parseErrorsWithLines(code) == std::vector<std::string>{"2: " + lookupWriteReadMessage("t", 2, 3)});
+        auto run = runModel(code);
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, lookupWriteReadMessage("t", 2, 3)));
+    }
+    SECTION("the read comes first") {
+        CHECK(parseErrorsWithLines("x = lookup('t', 2, 1)\nlookup('t', 1, 1) = x\n") ==
+              std::vector<std::string>{"2: " + lookupWriteReadMessage("t", 2, 1)});
+    }
+    SECTION("the table name is compared without regard to case") {
+        CHECK(parseErrorsWithLines("x = 1\nLookup('Ev', 1, 1) = x\ny = LOOKUP('eV', 2, 1)\n") ==
+              std::vector<std::string>{"2: " + lookupWriteReadMessage("Ev", 2, 3)});
+    }
+    SECTION("any lookup function reads the table") {
+        const std::vector<std::string> reads = {
+            "y = lookup$('t', 1, 1)",         "y = STRINGVAL(LOOKUP$('t', 1, 2))", "y = interpolate('t', 'k', 'v', k=2)",
+            "y = INTERPOLATE1('t', 'k', 'v', 2)", "y = interpolate2('t', 'k', 'v', 'k', 1, 2)",
+            "y = nlookuprows('t')",           "y = NLOOKUPCOLUMNS('t')",           "y = sumlookup('t', 1)",
+            "y = avglookup('t', 1)",          "y = maxlookup('t', 1)",             "y = lookupcol('t', 'v')",
+            "y = lookup$row('t', 1, 'a')",    "y = lookupcellempty('t', 1, 1)",    "y = tablevalue('t', 1, 1)",
+        };
+        for (const auto& read : reads) {
+            INFO(read);
+            const auto errors = parseErrorsWithLines("x = 1\nlookup('t', 1, 1) = x\n" + read + "\n");
+            REQUIRE(errors.size() == 1);
+            CHECK(errors[0] == "2: " + lookupWriteReadMessage("t", 2, 3));
+        }
+    }
+    SECTION("a LOOKUP$ write and a LOOKUP read of one table") {
+        CHECK(parseErrorsWithLines("lookup$('t', 1, 2) = 'a'\ny = lookup('t', 1, 1)\n") ==
+              std::vector<std::string>{"1: " + lookupWriteReadMessage("t", 1, 2)});
+    }
+    SECTION("the read is in a FUNCTION body (the line of the read is the line in the body)") {
+        const std::string code =
+            "FUNCTION f(a)\n"
+            "  f = a + lookup('t', 1, 1)\n"
+            "END\n"
+            "x = 1\n"
+            "lookup('t', 1, 1) = x\n"
+            "y = f(2)\n";
+        CHECK(parseErrorsWithLines(code) == std::vector<std::string>{"5: " + lookupWriteReadMessage("t", 5, 2)});
+    }
+    SECTION("the write is in a PROCEDURE body, the read in the main program") {
+        const std::string code =
+            "PROCEDURE w(a : y)\n"
+            "  y = a\n"
+            "  lookup('t', 1, 1) = y\n"
+            "END\n"
+            "CALL w(3 : z)\n"
+            "r = lookup('t', 1, 1)\n";
+        CHECK(parseErrorsWithLines(code) == std::vector<std::string>{"3: " + lookupWriteReadMessage("t", 3, 6)});
+        auto run = runModel(code);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, lookupWriteReadMessage("t", 3, 6)));
+    }
+    SECTION("the read is in the loop of another body, or in a DUPLICATE of the main program") {
+        CHECK(parseErrorsWithLines("PROCEDURE p(a : y)\n  y = 0\n  DUPLICATE k = 1, 2\n    y = y + lookup('t', k, 1)\n  END\nEND\n"
+                                   "lookup('t', 1, 1) = 5\nCALL p(1 : z)\n") ==
+              std::vector<std::string>{"7: " + lookupWriteReadMessage("t", 7, 4)});
+        CHECK(parseErrorsWithLines("lookup('t', 1, 1) = 5\nDUPLICATE i = 1, 2\n  v[i] = lookup('t', i, 2)\nEND\n") ==
+              std::vector<std::string>{"1: " + lookupWriteReadMessage("t", 1, 3)});
+    }
+    SECTION("the nameless LOOKUP(row, col) reads (and writes) the default table lookup_1") {
+        CHECK(parseErrorsWithLines("x = 1\nlookup('lookup_1', 1, 1) = x\ny = lookup(2, 1)\n") ==
+              std::vector<std::string>{"2: " + lookupWriteReadMessage("lookup_1", 2, 3)});
+        CHECK(parseErrorsWithLines("x = 1\nlookup(1, 1) = x\ny = lookup('Lookup_1', 2, 1)\n") ==
+              std::vector<std::string>{"2: " + lookupWriteReadMessage("lookup_1", 2, 3)});
+    }
+    SECTION("one error per table, at its first write, naming its first read") {
+        const std::string code =
+            "x = 1\n"
+            "lookup('a', 1, 1) = x\n"
+            "lookup('b', 1, 1) = x\n"
+            "lookup('a', 2, 1) = x\n"
+            "y1 = lookup('b', 1, 1)\n"
+            "y2 = lookup('a', 1, 1)\n"
+            "y3 = lookup('a', 2, 1)\n";
+        CHECK(parseErrorsWithLines(code) == std::vector<std::string>{"2: " + lookupWriteReadMessage("a", 2, 6),
+                                                                      "3: " + lookupWriteReadMessage("b", 3, 5)});
+    }
+    SECTION("a read in a branch removed by $IF is no read") {
+        auto run = runModel("act$ = 'a'\nx = 1\n$if act$='b'\ny = lookup('t', 1, 1)\n$endif\nlookup('t', 1, 1) = x\n");
+        INFO(run.message);
+        CHECK(run.parseOk);
+        CHECK(run.solveOk);
+        CHECK(lookupWriteWarnings(run.warningItems).size() == 1);
+    }
+}
+
+TEST_CASE("CS-BUG-LOOKUP-WRITE: a table that is written and never read is a warning, whether or not it exists",
+          "[library-gaps][lookup-write]") {
+    SECTION("the table exists as a companion file and the model reads another one") {
+        const std::string code = "x = 5\nlookup('out', 1, 1) = x\ny = lookup('data', 2, 2)\n";
+        auto run = runModel(code, {{"out", "a,b\n0,0\n0,0\n"}, {"data", kWriteData}});
+        INFO(run.message);
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["y"], WithinAbs(20.0, 1e-12));
+        CHECK(lookupWriteWarnings(run.warningItems) ==
+              std::vector<std::string>{"2: " + lookupWriteMessage("lookup('out', 1, 1)")});
+    }
+    SECTION("the table written is also the one the model has a file for, but nothing reads it") {
+        auto run = runModel("x = 5\nlookup('data', 1, 1) = x\ny = 2*x\n", {{"data", kWriteData}});
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(10.0, 1e-12));
+        CHECK(lookupWriteWarnings(run.warningItems).size() == 1);
+    }
+    SECTION("the value of the write reads the table that it writes: nothing that is kept reads it") {
+        auto run = runModel("x = 5\nlookup('t', 1, 1) = lookup('t', 2, 1) + x\ny = 2*x\n");
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(10.0, 1e-12));
+    }
+    SECTION("the table is named by a string variable: it is not known, so only the warning") {
+        auto run = runModel("tab$ = 't'\nx = 1\nlookup(tab$, 1, 1) = x\ny = lookup('t', 2, 2)\n", {{"t", kWriteData}});
+        INFO(run.message);
+        REQUIRE(run.parseOk);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["y"], WithinAbs(20.0, 1e-12));   // the value of the file: the write is not stored
+        CHECK(lookupWriteWarnings(run.warningItems) ==
+              std::vector<std::string>{"3: " + lookupWriteMessage("lookup(tab$, 1, 1)")});
+    }
+}
+
+TEST_CASE("CS-BUG-LOOKUP-WRITE: what stays as it was", "[library-gaps][lookup-write]") {
+    SECTION("an equation that reads a table on its left-hand side is still an equation") {
+        auto run = runModel("y = 2*lookup('data', 2, 2)\n2*lookup('data', 1, 2) = z\n", {{"data", kWriteData}});
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["y"], WithinAbs(40.0, 1e-12));
+        CHECK_THAT(run["z"], WithinAbs(20.0, 1e-12));
+        CHECK(lookupWriteWarnings(run.warningItems).empty());
+    }
+    SECTION("an implicit statement in a body stays an error (only the cell write is exempt)") {
+        const auto errors = parseErrorsWithLines("PROCEDURE p(a : y)\n  2*lookup('t', 1, 1) = a\n  y = a\nEND\nCALL p(1 : z)\n");
+        REQUIRE(errors.size() == 1);
+        CHECK(errors[0].find("2: implicit equation in PROCEDURE 'p'") == 0);
+        const auto other = parseErrorsWithLines("PROCEDURE p(a : y)\n  nlookuprows('t') = a\n  y = a\nEND\nCALL p(1 : z)\n");
+        REQUIRE(other.size() == 1);
+        CHECK(other[0].find("2: implicit equation in PROCEDURE 'p'") == 0);
+    }
+    SECTION("a model that never writes a table has no P009 warning and no new error") {
+        auto run = runModel("y = lookup('data', 2, 2)\ns$ = lookup$('data', 1, 1)\n", {{"data", kWriteData}});
+        REQUIRE(run.solveOk);
+        CHECK(lookupWriteWarnings(run.warningItems).empty());
     }
 }

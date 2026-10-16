@@ -244,7 +244,8 @@ private:
         procedureNames_.clear();
         userConstants_.clear();
         routineChecked_ = constantAfterRoutine_ = rangeSeen_ = duplicateSeen_ = indexedAggregateSeen_ = unitIndexSeen_ = false;
-        lastIgnoredEndifLine_ = 0;
+        lastIgnoredEndifLine_ = lastLookupWriteLine_ = 0;
+        lookupWrites_.clear();
         ParseResult result;
         result.success = false;
         result.program.sourceFilename = filename;
@@ -422,6 +423,7 @@ private:
         }
         result.totalLines = lineNumber;
         checkRoutineCycles(result, preprocessed);
+        checkLookupWrites(result, preprocessed);
         if (result.errors.empty() && (rangeSeen_ || duplicateSeen_ || indexedAggregateSeen_ || unitIndexSeen_ ||
                                       !userConstants_.empty()))
             resolveCompileTimeValues(result, preprocessed);
@@ -471,6 +473,12 @@ private:
     // Text that follows `ENDIF;` on a body line, returned by nextBodyLine before the stream is read.
     std::string pendingBodyText_;
     int lastIgnoredEndifLine_ = 0;  // the line of the last ENDIF ignored in a body (one warning per line)
+    int lastLookupWriteLine_ = 0;   // the line of the last lookup-table cell write reported (one warning per line)
+    struct LookupWrite {
+        int line;
+        std::string table;   // the table named by the write ("" when a string variable names it)
+    };
+    std::vector<LookupWrite> lookupWrites_;   // the cell writes dropped so far, for checkLookupWrites
     // The PROCEDUREs defined so far (EES: a routine is defined before it is called); one of them
     // named like a built-in procedure replaces it (see isBuiltinColebrook).
     std::set<std::string, CaseInsensitiveLess> procedureNames_;
@@ -685,8 +693,8 @@ private:
     }
 
     /// Receives the calls found by forEachCall: the name, whether it is a CALL statement (false: a call in an
-    /// expression, `f(x)`) and the line.
-    using CallVisitor = std::function<void(const std::string& name, bool isCallStatement, int line)>;
+    /// expression, `f(x)`), the line and the call itself (null for a CALL statement).
+    using CallVisitor = std::function<void(const std::string& name, bool isCallStatement, int line, const FunctionCall* call)>;
 
     /// Every call of an expression, the calls in the arguments of a call and in the indices of a variable
     /// included, outermost first.
@@ -695,7 +703,7 @@ private:
         std::visit([&](const auto& node) {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, FunctionCall>) {
-                visit(node.name, false, expr->sourceLineNumber);
+                visit(node.name, false, expr->sourceLineNumber, &node);
                 for (const auto& arg : node.args) forEachCall(arg, visit);
                 for (const auto& [k, v] : node.namedArgs) forEachCall(v, visit);
             } else if constexpr (std::is_same_v<T, UnaryOp>) {
@@ -730,7 +738,7 @@ private:
                 forEachCall(node.condition, visit);
                 for (const auto& s : node.body) forEachCall(s, visit);
             } else if constexpr (std::is_same_v<T, ProcedureCall>) {
-                visit(node.name, true, stmt->sourceLineNumber);
+                visit(node.name, true, stmt->sourceLineNumber, nullptr);
                 for (const auto& arg : node.inputArgs) forEachCall(arg, visit);
                 for (const auto& out : node.outputExprs) forEachCall(out, visit);
                 for (const auto& out : node.outputVars)
@@ -780,7 +788,7 @@ private:
             const auto& body = stmt->is<FunctionDefinition>() ? stmt->as<FunctionDefinition>().body
                                                               : stmt->as<ProcedureDefinition>().body;
             for (const auto& inner : body) {
-                forEachCall(inner, [&](const std::string& name, bool isCallStatement, int line) {
+                forEachCall(inner, [&](const std::string& name, bool isCallStatement, int line, const FunctionCall*) {
                     int callee = -1;
                     auto function = functions.find(name);
                     if (!isCallStatement && function != functions.end()) {
@@ -845,7 +853,7 @@ private:
         struct FuncCallInfo { std::string name; int line; };
         std::vector<FuncCallInfo> callsFound;
         for (const auto& stmt : result.program.statements) {
-            forEachCall(stmt, [&](const std::string& name, bool, int line) { callsFound.push_back({name, line}); });
+            forEachCall(stmt, [&](const std::string& name, bool, int line, const FunctionCall*) { callsFound.push_back({name, line}); });
         }
         
         // Check each function call
@@ -1486,7 +1494,7 @@ private:
     // `errorLine` is the source line reported with parse errors. A statement that
     // cannot be parsed is an error: it is never dropped
     // (CS-BUG-BODY-LINE-DROP); only a segment that holds nothing but comments (or
-    // separators) is skipped.
+    // separators) is skipped, and a lookup-table cell write, which is reported (noteLookupWrite).
     void parseSimpleStatements(const std::string& text, int lineNumber,
                                std::vector<StmtPtr>& body, ParseResult& result,
                                const std::string& errorLine) {
@@ -1495,6 +1503,7 @@ private:
             if (parseGotoSegment(seg, lineNumber, body, result, errorLine)) continue;
             std::string segErr;
             StmtPtr stmt = tryParseEquationOrAssignment(seg, lineNumber, &segErr);
+            if (stmt && noteLookupWrite(stmt, seg, lineNumber, result)) continue;
             if (!stmt) stmt = tryParseProcedureCall(seg, lineNumber, &segErr);
             if (stmt) {
                 body.push_back(stmt);
@@ -1548,8 +1557,8 @@ private:
     // variables other than the inputs are local and not initialised (EES help, Internal Functions).
     // Two errors, reported with their line like the parse errors so that the model is not solved
     // (the evaluator would skip the statement, or read the variable as 1):
-    //  - an implicit statement: the left-hand side is not a variable or an array element. A
-    //    lookup-table cell write `LOOKUP(...) = ...` is left alone (the open item CS-BUG-LOOKUP-WRITE);
+    //  - an implicit statement: the left-hand side is not a variable or an array element (a
+    //    lookup-table cell write `LOOKUP(...) = ...` is no statement of the body, see noteLookupWrite);
     //  - a read of a variable that is no input, no built-in constant (pi, g#...) and that no earlier
     //    statement of the body assigns, in text order. Flow-insensitive: an assignment in either
     //    branch of an IF counts, an array counts as assigned once one of its elements is; inside a
@@ -1682,7 +1691,6 @@ private:
                 const bool isEquation = stmt->is<Equation>();
                 const ExprPtr& lhs = isEquation ? stmt->as<Equation>().lhs : stmt->as<Assignment>().lhs;
                 const ExprPtr& rhs = isEquation ? stmt->as<Equation>().rhs : stmt->as<Assignment>().rhs;
-                if (isLookupCellWrite(lhs)) continue;
                 if (!lhs->is<Variable>()) {
                     bodyError(check, line, "implicit equation in " + check.routine + ": the statements of a FUNCTION "
                               "or PROCEDURE are assignments executed in order, so the left-hand side must be a variable. "
@@ -1720,12 +1728,77 @@ private:
         }
     }
 
+    // ------------------------------------------------------------------------
+    // Lookup-table cell writes (CS-BUG-LOOKUP-WRITE)
+    //
+    // `LOOKUP('table', row, col) = value` and `LOOKUP$('table', row, col) = 'text'` write a cell of a
+    // lookup table in EES (it is how a model exports results). CoolSolve does not store the value: the
+    // results are in the solution, the GUI and the debug folder. The statement is therefore not an
+    // equation and not a statement of a body: it is reported with a warning (P009, one per source line)
+    // and left out of the program, so its value is never evaluated (no side effect, no failure in
+    // diagnostic-only code). A model that also reads the table it writes would depend on a value that is
+    // not stored: that is an error (checkLookupWrites), whatever the order of the lines.
+    // ------------------------------------------------------------------------
     // `LOOKUP('table', row, col) = value` / `LOOKUP$(...) = 'text'`: a lookup-table cell write
     static bool isLookupCellWrite(const ExprPtr& lhs) {
         if (!lhs->is<FunctionCall>()) return false;
         std::string name = lhs->as<FunctionCall>().name;
         std::transform(name.begin(), name.end(), name.begin(), ::tolower);
         return name == "lookup" || name == "lookup$";
+    }
+
+    /// The table a lookup call names: its string literal, the default table `lookup_1` for the nameless
+    /// `LOOKUP(row, col)`; empty when a string variable names it (not known before the solve).
+    static std::string lookupTableName(const FunctionCall& call) {
+        if (!call.args.empty() && call.args[0]->is<StringLiteral>()) return call.args[0]->as<StringLiteral>().value;
+        std::string name = call.name;
+        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+        return name == "lookup" && call.args.size() == 2 && !isStringExpression(call.args[0]) ? "lookup_1" : "";
+    }
+
+    /// Reports `stmt` (parsed from `segment`) when it is a lookup-table cell write and records it; true when
+    /// it is one, and the caller then leaves it out of the program.
+    bool noteLookupWrite(const StmtPtr& stmt, const std::string& segment, int lineNumber, ParseResult& result) {
+        const ExprPtr lhs = stmt->is<Equation>() ? stmt->as<Equation>().lhs
+                          : stmt->is<Assignment>() ? stmt->as<Assignment>().lhs : nullptr;
+        if (!lhs || !isLookupCellWrite(lhs)) return false;
+        lookupWrites_.push_back({lineNumber, lookupTableName(lhs->as<FunctionCall>())});
+        if (lastLookupWriteLine_ != lineNumber) {
+            std::string op;
+            const std::string code = trim(removeInlineComments(segment));
+            result.diagnostics.push(DiagnosticSeverity::Warning, "P009",
+                trim(code.substr(0, findMainOperator(code, op))) + " = ...: writing a lookup-table cell is not "
+                "supported; the value is not stored (the results are in the solution)", "parser", lineNumber, 0);
+        }
+        lastLookupWriteLine_ = lineNumber;
+        return true;
+    }
+
+    /// The error for each table that the model writes and also reads, at its first write and with the line of
+    /// its first read (any lookup function, in the main program or in a routine, the statements left out
+    /// excepted: their value is not evaluated). Called once the program is parsed.
+    void checkLookupWrites(ParseResult& result, const std::string& source) {
+        if (lookupWrites_.empty()) return;
+        std::map<std::string, int, CaseInsensitiveLess> firstRead;   // table -> line of its first read
+        for (const auto& stmt : result.program.statements) {
+            forEachCall(stmt, [&](const std::string& name, bool, int line, const FunctionCall* call) {
+                if (!call || !IR::isLookupFunction(name)) return;
+                const std::string table = lookupTableName(*call);
+                if (table.empty()) return;
+                const auto [it, isNew] = firstRead.emplace(table, line);
+                if (!isNew && line < it->second) it->second = line;
+            });
+        }
+        std::set<std::string, CaseInsensitiveLess> reported;
+        for (const auto& write : lookupWrites_) {
+            const auto read = firstRead.find(write.table);
+            if (write.table.empty() || read == firstRead.end() || !reported.insert(write.table).second) continue;
+            result.errors.push_back({write.line, 0,
+                "lookup table '" + write.table + "' is written at line " + std::to_string(write.line) +
+                " and read at line " + std::to_string(read->second) + ": a lookup-table cell write is not supported "
+                "(the value is not stored), so the read would not see it; remove the write or the read "
+                "(the results are in the solution)", sourceLineText(source, write.line)});
+        }
     }
 
     // The name of an array without the indices that IR::extractVariables flattens into it (x[i] -> x).

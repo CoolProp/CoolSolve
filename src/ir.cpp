@@ -572,6 +572,19 @@ static bool isThermoFunction(const std::string& name) {
     return THERMO_FUNCTIONS.find(lower) != THERMO_FUNCTIONS.end();
 }
 
+bool IR::isLookupFunction(const std::string& name) {
+    static const std::unordered_set<std::string> LOOKUP_FUNCTIONS = {
+        "lookup", "lookup$", "lookup$row", "lookupcol", "lookupcol1", "lookupcellempty",
+        "tablevalue", "tablevalue#", "tablerun#",
+        "interpolate", "interpolate1", "interpolate2", "interpolate2dm",
+        "nlookuprows", "nlookupcolumns",
+        "sumlookup", "avglookup", "maxlookup", "minlookup", "stddevlookup",
+    };
+    std::string lower = name;
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    return LOOKUP_FUNCTIONS.count(lower) > 0;
+}
+
 void IR::extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensitiveLess>& vars,
                           bool stringFluids) {
     if (!expr) return;
@@ -609,16 +622,7 @@ void IR::extractVariables(const ExprPtr& expr, std::set<std::string, CaseInsensi
 
             // For lookup/interpolate functions, all StringLiteral args (table
             // name and column names) must not be treated as solver variables.
-            static const std::unordered_set<std::string> LOOKUP_FUNCTIONS = {
-                "lookup", "lookup$", "lookup$row", "lookupcol", "lookupcol1", "lookupcellempty",
-                "tablevalue", "tablevalue#", "tablerun#",
-                "interpolate", "interpolate1", "interpolate2", "interpolate2dm",
-                "nlookuprows", "nlookupcolumns",
-                "sumlookup", "avglookup", "maxlookup", "minlookup", "stddevlookup",
-            };
-            std::string funcLower = node.name;
-            std::transform(funcLower.begin(), funcLower.end(), funcLower.begin(), ::tolower);
-            bool isLookup = LOOKUP_FUNCTIONS.count(funcLower) > 0;
+            const bool isLookup = isLookupFunction(node.name);
 
             bool firstArg = true;
 
