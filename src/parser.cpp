@@ -4,6 +4,7 @@
 #include "coolsolve/diagnostic.h"
 #include "coolsolve/ees_string.h"
 #include "coolsolve/ir.h"
+#include "coolsolve/libr_ashrae.h"
 #include "coolsolve/units.h"
 #include "coolsolve/user_hints.h"
 #include <peglib.h>
@@ -686,6 +687,10 @@ private:
         };
         std::string lower = name;
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        // the implemented routines of the absorption pairs (libr_ashrae.h) are positional; one that is not implemented
+        // must reach the evaluator, whose message says so
+        const auto* routine = libr_ashrae::findRoutine(lower);
+        if (routine && routine->evaluate) return true;
         return knownBuiltinFunctions().count(lower) > 0 && takingNamedArguments.count(lower) == 0;
     }
 
@@ -875,6 +880,7 @@ private:
             std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
             
             if (builtins.count(lower)) continue;
+            if (libr_ashrae::findRoutine(lower)) continue;   // the routines of the absorption pairs, implemented or not
             if (isEESThermophysicalFunction(call.name)) continue;
             if (userDefined.count(call.name)) continue;
             

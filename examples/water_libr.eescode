@@ -1,6 +1,3 @@
-"UNSUPPORTED FUNCTION: This model uses X_LIBR() and H_LIBR() functions for
-Lithium-Bromide solution properties which are not yet implemented in CoolSolve.
-This model cannot be solved until LiBr property support is added."
 "Water-Lithium Bromide Absorption Cycle
 
 LiBr/Water absorption cycle analysis.

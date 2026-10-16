@@ -42,7 +42,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
   - **Symbolic Block Reduction** (explicit extraction, CoolProp call inversion, equation substitution)
   - **Multi-Start** fallback (CoolProp-consistent starting points for thermo blocks, scale factors for algebraic blocks; parallel execution available; engageable always, never, or only on Deep Search)
 
-- **CoolProp Integration**: Thermodynamic property calculations via the low-level `AbstractState` API (2–5× faster than `PropsSI`), with analytical derivatives and thread-local caching. CoolProp mixtures are accepted as fluids (`'R245fa[0.5]&R134a[0.5]'`, with a warning that mixture properties are predictive).
+- **CoolProp Integration**: Thermodynamic property calculations via the low-level `AbstractState` API (2–5× faster than `PropsSI`), with analytical derivatives and thread-local caching. CoolProp mixtures are accepted as fluids (`'R245fa[0.5]&R134a[0.5]'`, with a warning that mixture properties are predictive). The lithium bromide - water solution of the absorption machines is available through the EES ASHRAE routines `X_LIBR`, `H_LIBR`, `T_LIBR` and `P_LIBR` (`X_LIBR('SI', T, P)`, analytical derivatives; see [Language Reference §5](docs/language_reference.md#libr-h2o-solutions-ees-ashrae-routines)).
 
 - **Lookup Tables**: 1D/2D interpolation, cell access, text cells (`LOOKUP$`, the replacement of string arrays, which are not supported), the row of a key (`LOOKUP$ROW`), and aggregate functions from external CSV files, usable in equations, in `FUNCTION`/`PROCEDURE` bodies and in `INTEGRAL` models. A GUI panel lets you create and edit tables in-browser.
 
@@ -439,6 +439,7 @@ CoolSolve/
 │   ├── symbolic_reduction.h    # Symbolic block reduction analysis
 │   ├── autodiff_node.h         # Forward-mode AD types and operations
 │   ├── evaluator.h             # Block and system evaluators
+│   ├── libr_ashrae.h           # LiBr-H2O solution properties (EES routines X_LIBR, H_LIBR, T_LIBR, P_LIBR)
 │   ├── solution_checker.h      # Post-solve solution verification
 │   ├── usage_log.h             # GUI solve-attempt log (append + aggregated stats)
 │   ├── library_store.h         # Model library index: menu of verified models, model-folder loader
@@ -452,6 +453,7 @@ CoolSolve/
 │   ├── structural_analysis.cpp # Matching and SCC algorithms
 │   ├── autodiff_node.cpp       # AD function implementations
 │   ├── evaluator.cpp           # Evaluator implementations
+│   ├── libr_ashrae.cpp         # ASHRAE LiBr-H2O correlations and their analytical derivatives
 │   ├── integral/               # Equation-based dynamic solver (INTEGRAL / $IntegralTable)
 │   │   ├── integrator_euler_explicit.cpp  # Forward Euler (fixed step)
 │   │   ├── integrator_euler_implicit.cpp  # Backward Euler, A-stable (fixed step)
@@ -530,6 +532,8 @@ For the full language syntax, built-in functions, and CoolProp integration detai
 The [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) is embedded and browsable; next steps are importing its functions into any model (`$INCLUDE library:<name>`), a command-line access (`coolsolve --library`), and improved plotting capabilities — see [Model Library Support](docs/model_library_support.md). 
 
 Planned improvements for the solver include a stiff ODE integrator (BDF), pseudo-arclength continuation, and an improved plotting interface. See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
+
+Planned property models for the absorption machines: a more recent LiBr-H2O correlation (the EES `LiBrH2O` library, Pátek & Klomfar 2006; register item `CS-GAP-LIBR-PK`) next to the ASHRAE routines, and ammonia-water (the EES procedure `NH3H2O`, Ibrahim & Klein 1993; `CS-GAP-NH3H2O`) — see [Model Library Support](docs/model_library_support.md).
 
 ## Acknowledgements & License
 

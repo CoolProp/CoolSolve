@@ -1108,6 +1108,14 @@ std::string IR::expressionToLatex(const ExprPtr& expr) const {
     }, expr->node);
 }
 
+/// `\mathrm{name}` of a function: an underscore of its name (`X_LIBR`, `T_sat`) is written `\_`, as it would
+/// be a subscript in math mode.
+static std::string functionNameToLatex(const std::string& name) {
+    std::string escaped;
+    for (const char c : escapeLatexMath(name)) escaped += c == '_' ? std::string("\\_") : std::string(1, c);
+    return "\\mathrm{" + escaped + "}";
+}
+
 std::string functionCallToLatex(const FunctionCall& func) {
     std::string result;
     
@@ -1116,7 +1124,7 @@ std::string functionCallToLatex(const FunctionCall& func) {
     
     // Use the same THERMO_FUNCTIONS set for consistency
     if (THERMO_FUNCTIONS.find(lowerName) != THERMO_FUNCTIONS.end()) {
-        result = "\\mathrm{" + escapeLatexMath(func.name) + "}";
+        result = functionNameToLatex(func.name);
     } else if (lowerName == "exp") {
         result = "\\exp";
     } else if (lowerName == "ln" || lowerName == "log") {
@@ -1126,7 +1134,7 @@ std::string functionCallToLatex(const FunctionCall& func) {
     } else if (lowerName == "min" || lowerName == "max") {
         result = "\\mathrm{" + lowerName + "}";
     } else {
-        result = "\\mathrm{" + escapeLatexMath(func.name) + "}";
+        result = functionNameToLatex(func.name);
     }
     
     result += " \\left(";

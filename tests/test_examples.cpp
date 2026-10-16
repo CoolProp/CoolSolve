@@ -123,6 +123,9 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     // (CoolSolve 0.015657); the size-1 block phi = V_dot_su/(U*A) is hyperbolic in A (CS-BUG-NEWTON1D-DIVERGE)
     {"simple_centrifugal_compressor.eescode",   {"A", 0.01566}},
     {"zorlu_heat_pump.eescode",                 {"COP_HP", 6.4167}},
+    // EES reference (CSL-0043 / TM-0167, MSTH-SB-R11-EX2.EES, EES 7.458, stored solution): COP = 0.74670 (CoolSolve
+    // 0.74665; the X_LIBR of CoolSolve is the exact ASHRAE root, 6.7e-5 above that of EES) (CS-GAP-FLUIDS-ABS)
+    {"water_libr.eescode",                      {"COP", 0.74670}},
     // Advanced features showcase (exercises all CoolSolve features)
     {"advanced_features.eescode",               {"verification", 2083.5}},
     // Lookup table demo (lookup_demo-data.csv + lookup_demo-watercp.csv loaded as companion tables)

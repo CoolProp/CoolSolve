@@ -1075,6 +1075,59 @@ M = molarmass(fl$)                      "mole-weighted, in kg/kmol: 118.04"
   once per mixture and run.
 - The saturation dome of the GUI diagrams is not drawn for mixtures.
 
+### LiBr-H2O solutions (EES ASHRAE routines)
+
+The lithium bromide - water solution of the absorption machines is not a CoolProp fluid. CoolSolve has the four
+routines of the EES *ASHRAE* library, which take a unit string as first argument (`'SI'`) and two numbers:
+
+| Routine                  | Returns                                                          |
+|:-------------------------|:-----------------------------------------------------------------|
+| `X_LIBR('SI', T, P)`     | mass % of LiBr of the solution at `T` in equilibrium with the vapour at `P` |
+| `H_LIBR('SI', T, X)`     | specific enthalpy of the solution at `T` and `X`                 |
+| `T_LIBR('SI', P, X)`     | temperature of the solution of concentration `X` in equilibrium with the vapour at `P` |
+| `P_LIBR('SI', T, X)`     | vapour pressure over the solution of concentration `X` at `T`    |
+
+```ees
+x_abs = X_LIBR('SI', T_abs, P_ev/1000)      "58.31 mass % at 40 °C and 0.8726 kPa"
+h_abs = H_LIBR('SI', T_abs, x_abs)*1000     "107.2 kJ/kg, in J/kg"
+```
+
+- **Units are fixed by the routines**, not by the unit system of the model: `T` in °C, `P` in **kPa**, `X` in
+  **mass %**, `h` in **kJ/kg** (the models write `X_LIBR('SI', T, P/1000)` and `H_LIBR(...)*1000` for a model in Pa
+  and J/kg). Only the unit string `'SI'` is accepted, in any case and as a constant, a string variable or a string
+  function; `'Eng'` (English units, accepted by EES) and any other string are an error.
+- **Correlations.** The 1989 ASHRAE Handbook of Fundamentals (the enthalpy fit is that of McNeely): the Dühring
+  relation `t = B(X) + t'·A(X)` (A and B cubic polynomials of `X`) between the temperature `t` of the solution and
+  that of the refrigerant `t'`, the vapour-pressure equation `log10(p) = C + D/T' + E/T'^2` of the refrigerant
+  (`T'` in K, `p` in kPa) and the enthalpy polynomial `h = Ah(X) + t·Bh(X) + t^2·Ch(X)`. `T_LIBR` and `P_LIBR`
+  evaluate them directly (the inverse of the vapour-pressure equation is a quadratic in `T'`), `X_LIBR` solves the
+  Dühring relation for `X` on its increasing branch (the interval around 60 % where dt/dX > 0, within 0...100 %).
+  They are implemented in `src/libr_ashrae.cpp` (no CoolProp call).
+- **Validity ranges** quoted by EES: `X` 45...75 % for the Dühring relation, 40...70 % and 15.6...165.6 °C for the
+  enthalpy. They are not enforced: as in EES, the routines evaluate outside them (the stored EES solution of the
+  `water_libr` model uses `H_LIBR` at 74.8 %), the result being an extrapolation of the polynomials.
+- **Agreement with EES.** `H_LIBR` reproduces the EES values to 1e-9. `X_LIBR` is the exact root of the ASHRAE
+  equations: the EES values of the stored solutions (58.30348 and 74.77572 %) are 6.7e-5 and 1.3e-5 below
+  it (58.30739 and 74.77668 %), as if EES used a refrigerant temperature 0.007 K higher (origin not identified).
+  The `water_libr` example gives `COP` = 0.74665 against 0.74670 for EES (the water properties come from CoolProp).
+  The enthalpies of `H_LIBR` are those of the ASHRAE fit; the models add them to those of `ENTHALPY(Water, …)`
+  in the energy balances of the cycle as EES does.
+- **Errors**, naming the routine and its arguments (*X_LIBR('SI', T = 300, P = 0.8726): no concentration of the
+  Duhring relation gives this temperature …*): a pressure that is not positive (or beyond 10^7.05 kPa, where the
+  vapour-pressure equation stops), a refrigerant temperature below absolute zero or `A(X) = 0` in `P_LIBR`, a
+  temperature for which `X_LIBR` finds no concentration on the branch, non-finite arguments, a wrong number of
+  arguments, a number instead of the unit string and named arguments (`T=…`).
+- **Derivatives** are analytical (the implicit function theorem for `X_LIBR`), so `T`, `P` or `X` may be unknowns;
+  an implicit solve that leaves the validity of `X_LIBR` stops with the error above, an initial guess near the
+  solution avoids it.
+- A `FUNCTION` of the model with the name of a routine replaces it.
+- **Not implemented yet** (a call is an error that names the routine and its register item, see
+  [Model library support](model_library_support.md) §4): `V_LIBR`, `Q_LIBR`, `VISC_LIBR` and `COND_LIBR`
+  (`CS-GAP-FLUIDS-ABS`); the `*_LiBrH2O` functions of the Pátek-Klomfar library and `Q_LiBrH2O` (`CS-GAP-LIBR-PK`);
+  the ammonia-water procedure `NH3H2O` (`CS-GAP-NH3H2O`). The `*_LiBrSSC` library of EES (Yuan & Herold 2005) is
+  not implemented either (`CS-GAP-LIBR-PK`; its names are unknown functions). The fluid `LiBrH2O` of the property
+  calls (`ENTHALPY(LiBrH2O, …)`) is an error that points to the routines above.
+
 ### Unsupported EES fluids
 
 Some EES fluids are not modelled by CoolProp. Attempting to use them
@@ -1084,9 +1137,11 @@ suggestion:
 `NH3H2O`, `LiBrH2O`, `Acetylene`, `Chlorine`, `Chloroethene`,
 `EthyleneOxide`, `Helium3`, `Potassium`, `Sodium`.
 
-For the ammonia-water and lithium-bromide-water systems, use external
-correlations written as `FUNCTION`s (the REFPROP library is not available in
-CoolSolve).
+For the ammonia-water system, use an external correlation written as a
+`FUNCTION` (the REFPROP library is not available in CoolSolve; the EES
+procedure `NH3H2O` is register item `CS-GAP-NH3H2O`). The
+lithium-bromide-water solution is available through the routines `X_LIBR`,
+`H_LIBR`, `T_LIBR` and `P_LIBR` above, not as a fluid.
 
 ---
 

@@ -19758,3 +19758,510 @@ mm_C8H18 = molarmass(C8H18)
     // an unquoted name that is neither fluid nor element keeps the unknown-fluid error
     CHECK_FALSE(runModel("m = molarmass(NoSuchFluid)\n").solveOk);
 }
+
+// ============================================================================
+// CS-GAP-FLUIDS-ABS (ASHRAE LiBr-H2O part): the EES routines X_LIBR, H_LIBR, T_LIBR and P_LIBR of the lithium
+// bromide - water solution, a wrapper of the 1989 ASHRAE Handbook of Fundamentals correlations (Dühring
+// relation t = B(X) + t'A(X), the vapour pressure of the refrigerant at t', and the enthalpy polynomial of
+// McNeely). Units fixed by the routines: T in degC, P in kPa, X in mass %, h in kJ/kg; only 'SI' is accepted.
+// EES references: stored solutions of MSTH-SB-R11-EX2.EES and VL051205_11-2.EES (EES 7.458, ULiège MSTh, course 11).
+// The ASHRAE values of T_LIBR, P_LIBR and X_LIBR come from an independent Python implementation of the same
+// correlations. The model is that of the example water_libr.eescode (library model CSL-0043).
+// ============================================================================
+
+namespace {
+
+/// `fn('SI', u, v)` run by the evaluator with u and v the independent variables 0 and 1: the value and the gradient
+/// (d/du, d/dv) of the routine. `unit` is the text of the first argument.
+ADValue librCall(const std::string& fn, double u, double v, const std::string& unit = "'SI'") {
+    EESParser parser;
+    const auto parsed = parser.parse("y = " + fn + "(" + unit + ", u, v)\n");
+    REQUIRE(parsed.errors.empty());
+    REQUIRE(parsed.program.statements.size() == 1);
+    REQUIRE(parsed.program.statements[0]->is<Equation>());
+    ExpressionEvaluator eval(2);
+    eval.setVariable("u", ADValue::independent(u, 0, 2));
+    eval.setVariable("v", ADValue::independent(v, 1, 2));
+    return eval.evaluate(parsed.program.statements[0]->as<Equation>().rhs);
+}
+
+/// The message of the error thrown by librCall; empty when it throws none.
+std::string librCallError(const std::string& fn, double u, double v, const std::string& unit = "'SI'") {
+    try {
+        librCall(fn, u, v, unit);
+    } catch (const std::exception& e) {
+        return e.what();
+    }
+    return "";
+}
+
+double librValue(const std::string& fn, double u, double v) { return librCall(fn, u, v).value; }
+
+/// A number as the messages of the routines write it (6 significant digits).
+std::string showNumber(double x) {
+    std::ostringstream os;
+    os << x;
+    return os.str();
+}
+
+/// The equations of examples/water_libr.eescode (library model CSL-0043), the two comment blocks left out.
+const char* const kLibrAbsorptionCycle = R"(
+T_ev=5
+DELTAT_oh=0
+T_abs=40
+T_cd=45
+DELTAT_sc=0
+T_gen=130
+P_ev=PRESSURE(Water,T=T_ev,x=0.5)
+P_cd=PRESSURE(Water,T=T_cd,x=0.5)
+M_dot_w=1
+Q_dot_ev=M_dot_w*(h_w_ev_ex-h_w_ev_su)
+h_w_ev_su=h_w_cd_ex
+h_w_ev_ex=ENTHALPY(Water,T=T_ev,x=1)
+h_w_cd_ex=ENTHALPY(Water,T=T_cd,x=0)
+Q_dot_cd=M_dot_w*(h_w_cd_su-h_w_cd_ex)
+M_dot_weak=M_dot_w+M_dot_rich
+M_dot_weak*h_weak_gen_su+Q_dot_gen=M_dot_w*h_w_gen_ex+M_dot_rich*h_rich_gen_ex
+h_w_gen_ex=h_w_cd_su
+h_w_gen_ex=ENTHALPY(Water,T=T_gen,P=P_cd)
+M_dot_libr=x_abs*M_dot_weak
+M_dot_libr=x_gen*M_dot_rich
+x_abs=X_LIBR('SI',T_abs,P_ev/1000)
+x_gen=X_LIBR('SI',T_gen,P_cd/1000)
+h_weak_abs_ex=H_LIBR('SI',T_abs,x_abs)*1000
+h_rich_gen_ex=H_LIBR('SI',T_gen,x_gen)*1000
+Q_dot_HEX=epsilon_HEX*M_dot_rich*(h_rich_gen_ex-h_rich_abs_su_min)
+h_rich_abs_su_min=H_LIBR('SI',T_abs,x_gen)*1000
+epsilon_HEX=0.75
+Q_dot_HEX=M_dot_weak*(h_weak_gen_su-h_weak_abs_ex)
+Q_dot_HEX=M_dot_rich*(h_rich_gen_ex-h_rich_abs_su)
+COP=Q_dot_ev/Q_dot_gen
+)";
+
+}  // namespace
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: reproducer of the register, X_LIBR and H_LIBR solve without warning", "[library-gaps][libr]") {
+    auto run = runModel(R"(
+x_abs = X_LIBR('SI', 40, 0.8726041432)
+x_gen = X_LIBR('SI', 130, 9.589779488)
+h_abs = H_LIBR('SI', 40, 58.30348116)
+h_gen = H_LIBR('SI', 130, 74.77571753)
+h_hex = H_LIBR('SI', 40, 74.77571753)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+    // H_LIBR is the polynomial of the correlation: the EES values to 1e-9
+    CHECK_THAT(run["h_abs"], WithinRel(107.1330805, 1e-9));
+    CHECK_THAT(run["h_gen"], WithinRel(352.2108783, 1e-9));
+    CHECK_THAT(run["h_hex"], WithinRel(203.1195893, 1e-9));
+    // X_LIBR: the exact ASHRAE roots, 6.7e-5 and 1.3e-5 above EES (see the next test case)
+    CHECK_THAT(run["x_abs"], WithinRel(58.3073949, 1e-9));
+    CHECK_THAT(run["x_gen"], WithinRel(74.77668196, 1e-9));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: H_LIBR gives the EES values of the stored solutions to 1e-9", "[library-gaps][libr]") {
+    CHECK_THAT(librValue("H_LIBR", 40, 58.30348116), WithinRel(107.1330805, 1e-9));
+    CHECK_THAT(librValue("H_LIBR", 130, 74.77571753), WithinRel(352.2108783, 1e-9));
+    CHECK_THAT(librValue("H_LIBR", 40, 74.77571753), WithinRel(203.1195893, 1e-9));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: X_LIBR is the exact ASHRAE root, within 1e-4 of the EES values", "[library-gaps][libr]") {
+    // the ASHRAE root of t = B(X) + t'A(X) at t' = tsat(P): 58.3073949 and 74.77668196
+    CHECK_THAT(librValue("X_LIBR", 40, 0.8726041432), WithinRel(58.3073949, 1e-9));
+    CHECK_THAT(librValue("X_LIBR", 130, 9.589779488), WithinRel(74.77668196, 1e-9));
+    // EES stores 58.30348116 and 74.77571753 (6.7e-5 and 1.3e-5 lower: its refrigerant temperature is about
+    // 0.007 K higher; origin not identified, the iteration tolerance of EES being the likely cause)
+    CHECK_THAT(librValue("X_LIBR", 40, 0.8726041432), WithinRel(58.30348116, 1e-4));
+    CHECK_THAT(librValue("X_LIBR", 130, 9.589779488), WithinRel(74.77571753, 1e-4));
+    CHECK_THAT(librValue("X_LIBR", 80, 4.0), WithinRel(63.91352891, 1e-9));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: T_LIBR and P_LIBR reference values of the ASHRAE correlations", "[library-gaps][libr]") {
+    CHECK_THAT(librValue("T_LIBR", 0.8726041432, 58.30348116), WithinRel(39.99233666, 1e-9));
+    CHECK_THAT(librValue("T_LIBR", 9.589779488, 74.77571753), WithinRel(129.9969502, 1e-9));
+    CHECK_THAT(librValue("T_LIBR", 1.0, 55), WithinRel(35.93739751, 1e-9));
+    CHECK_THAT(librValue("P_LIBR", 40, 58.30348116), WithinRel(0.8730104656, 1e-9));
+    CHECK_THAT(librValue("P_LIBR", 130, 74.77571753), WithinRel(9.590833414, 1e-9));
+    CHECK_THAT(librValue("P_LIBR", 80, 60), WithinRel(6.125243734, 1e-9));
+    // EES stored values, as a sanity check: the solution of the EES file is within 0.01 K / 0.05 % of the correlation
+    CHECK_THAT(librValue("T_LIBR", 0.8726041432, 58.30348116), WithinAbs(40.0, 0.01));
+    CHECK_THAT(librValue("P_LIBR", 130, 74.77571753), WithinRel(9.589779488, 2e-4));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: X_LIBR, T_LIBR and P_LIBR are the inverse of each other", "[library-gaps][libr]") {
+    // (T, P) pairs inside the temperature range of the increasing branch of the Duhring relation
+    const std::pair<double, double> points[] = {{30, 1.0}, {40, 1.0}, {40, 3.0}, {60, 3.0}, {90, 3.0}, {90, 9.5},
+                                                {130, 3.0}, {130, 9.5}, {60, 9.5}, {80, 4.0}};
+    for (const auto& [t, p] : points) {
+        const double x = librValue("X_LIBR", t, p);
+        INFO("T = " << t << ", P = " << p << ", X = " << x);
+        CHECK_THAT(librValue("T_LIBR", p, x), WithinRel(t, 1e-10));
+        CHECK_THAT(librValue("P_LIBR", t, x), WithinRel(p, 1e-10));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: derivatives of the four routines equal central finite differences (AD)", "[library-gaps][libr]") {
+    struct Point { const char* fn; double u, v; };
+    const Point points[] = {
+        {"H_LIBR", 40, 58.30348116}, {"H_LIBR", 130, 74.77571753}, {"H_LIBR", 90, 62}, {"H_LIBR", 20, 45},
+        {"T_LIBR", 0.8726041432, 58.30348116}, {"T_LIBR", 9.589779488, 74.77571753}, {"T_LIBR", 3, 60}, {"T_LIBR", 1, 55},
+        {"P_LIBR", 40, 58.30348116}, {"P_LIBR", 130, 74.77571753}, {"P_LIBR", 80, 60}, {"P_LIBR", 60, 55},
+        {"X_LIBR", 40, 0.8726041432}, {"X_LIBR", 130, 9.589779488}, {"X_LIBR", 80, 4.0}, {"X_LIBR", 60, 2.0},
+    };
+    for (const auto& p : points) {
+        INFO(p.fn << "('SI', " << p.u << ", " << p.v << ")");
+        const ADValue g = librCall(p.fn, p.u, p.v);
+        REQUIRE(g.gradient.size() == 2);
+        const double hu = 1e-4 * std::abs(p.u), hv = 1e-4 * std::abs(p.v);
+        const double du = (librValue(p.fn, p.u + hu, p.v) - librValue(p.fn, p.u - hu, p.v)) / (2 * hu);
+        const double dv = (librValue(p.fn, p.u, p.v + hv) - librValue(p.fn, p.u, p.v - hv)) / (2 * hv);
+        CHECK_THAT(g.gradient[0], WithinRel(du, 1e-6));
+        CHECK_THAT(g.gradient[1], WithinRel(dv, 1e-6));
+        CHECK(g.gradient[0] != 0.0);
+        CHECK(g.gradient[1] != 0.0);
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: the gradient follows the chain rule through the arguments", "[library-gaps][libr]") {
+    // H_LIBR('SI', 2 u, v/2) with u = 20, v = 116.60696232: the derivative with respect to u is twice dh/dT, that with
+    // respect to v half of dh/dX
+    const ADValue direct = librCall("H_LIBR", 40, 58.30348116);
+    EESParser parser;
+    const auto parsed = parser.parse("y = H_LIBR('SI', 2*u, v/2)\n");
+    REQUIRE(parsed.errors.empty());
+    ExpressionEvaluator eval(2);
+    eval.setVariable("u", ADValue::independent(20.0, 0, 2));
+    eval.setVariable("v", ADValue::independent(116.60696232, 1, 2));
+    const ADValue r = eval.evaluate(parsed.program.statements[0]->as<Equation>().rhs);
+    CHECK_THAT(r.value, WithinRel(direct.value, 1e-12));
+    CHECK_THAT(r.gradient[0], WithinRel(2 * direct.gradient[0], 1e-12));
+    CHECK_THAT(r.gradient[1], WithinRel(0.5 * direct.gradient[1], 1e-12));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: the solver goes through the routines (Jacobian by AD)", "[library-gaps][libr]") {
+    SECTION("the temperature is the unknown of X_LIBR") {
+        auto run = runModel("X_LIBR('SI', T, 0.8726041432) = 58.3073949\n", {}, "T = 30\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["T"], WithinRel(40.0, 1e-7));
+    }
+    SECTION("the pressure is the unknown of X_LIBR") {
+        auto run = runModel("X_LIBR('SI', 130, P) = 74.77668196\n", {}, "P = 8\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["P"], WithinRel(9.589779488, 1e-7));
+    }
+    SECTION("the concentration is the unknown of H_LIBR") {
+        auto run = runModel("H_LIBR('SI', 40, X) = 107.1330805\n", {}, "X = 50\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["X"], WithinRel(58.30348116, 1e-7));
+    }
+    SECTION("the concentration is the unknown of P_LIBR") {
+        auto run = runModel("P_LIBR('SI', 40, X) = 0.8726041432\n", {}, "X = 55\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["X"], WithinRel(58.3073949, 1e-7));
+    }
+    SECTION("the temperature is the unknown of T_LIBR, coupled with another equation") {
+        auto run = runModel("T_LIBR('SI', 0.8726041432, X) = T\nX = 55 + 3.3073949\nH_LIBR('SI', T, X) = h\n", {}, "T = 30\n");
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["T"], WithinRel(librValue("T_LIBR", 0.8726041432, 58.3073949), 1e-9));
+        CHECK_THAT(run["h"], WithinRel(librValue("H_LIBR", run["T"], 58.3073949), 1e-9));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: the unit string may be a string variable and is not case-sensitive", "[library-gaps][libr]") {
+    auto run = runModel(R"(
+U$ = 'SI'
+h1 = H_LIBR(U$, 40, 58.30348116)
+h2 = H_LIBR('si', 40, 58.30348116)
+h3 = h_libr('Si', 40, 58.30348116)
+x1 = x_libr(U$, 80, 4.0)
+t1 = T_Libr(LOWERCASE$(U$), 1.0, 55)
+p1 = P_LIBR(UPPERCASE$('si'), 80, 60)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+    for (const char* name : {"h1", "h2", "h3"}) CHECK_THAT(run[name], WithinRel(107.1330805, 1e-9));
+    CHECK_THAT(run["x1"], WithinRel(63.91352891, 1e-9));
+    CHECK_THAT(run["t1"], WithinRel(35.93739751, 1e-9));
+    CHECK_THAT(run["p1"], WithinRel(6.125243734, 1e-9));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: usable in a FUNCTION body", "[library-gaps][libr]") {
+    auto run = runModel(R"(
+FUNCTION hsol(T, X)
+  hsol = H_LIBR('SI', T, X) * 1000
+END
+FUNCTION conc(u$, T, P)
+  conc = X_LIBR(u$, T, P)
+END
+FUNCTION chain(T, P)
+  X = X_LIBR('SI', T, P)
+  chain = H_LIBR('SI', T, X) * 1000
+END
+a = hsol(40, 58.30348116)
+b = conc('SI', 80, 4.0)
+c = chain(80, 4.0)
+)");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinRel(107133.0805, 1e-9));
+    CHECK_THAT(run["b"], WithinRel(63.91352891, 1e-9));
+    CHECK_THAT(run["c"], WithinRel(1000 * librValue("H_LIBR", 80, 63.91352891), 1e-9));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: in the same equation as the properties of CoolProp", "[library-gaps][libr]") {
+    auto run = runModel("h = ENTHALPY(Water, T=40, x=0) + H_LIBR('SI', 40, X_LIBR('SI', 40, 0.8726041432)) * 1000\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const double water = CoolProp::PropsSI("H", "T", 313.15, "Q", 0, "Water");
+    CHECK_THAT(run["h"], WithinRel(water + 1000 * librValue("H_LIBR", 40, 58.3073949), 1e-9));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: a FUNCTION of the model with the name of a routine replaces it", "[library-gaps][libr]") {
+    auto run = runModel("FUNCTION H_LIBR(u$, T, X)\n  H_LIBR = 2 * T + X\nEND\nh = H_LIBR('SI', 40, 10)\n");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["h"], WithinAbs(90.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: only 'SI' is accepted, 'Eng' and any other unit string are an error", "[library-gaps][libr]") {
+    for (const char* fn : {"X_LIBR", "H_LIBR", "T_LIBR", "P_LIBR"}) {
+        INFO(fn);
+        const std::string eng = librCallError(fn, 40, 58.3, "'Eng'");
+        CHECK(eng.find(fn) != std::string::npos);
+        CHECK(eng.find("'Eng' (English units) is not supported by CoolSolve: use 'SI'") != std::string::npos);
+        CHECK(librCallError(fn, 40, 58.3, "'ENG'").find("English units") != std::string::npos);
+        const std::string other = librCallError(fn, 40, 58.3, "'XYZ'");
+        CHECK(other.find(fn) != std::string::npos);
+        CHECK(other.find("'XYZ'") != std::string::npos);
+        CHECK(other.find("'SI'") != std::string::npos);
+        CHECK(other.find("'Eng'") != std::string::npos);
+        CHECK(librCallError(fn, 40, 58.3, "''").find("''") != std::string::npos);
+    }
+    // in a model, the string being a variable
+    auto run = runModel("U$ = 'Eng'\nh = H_LIBR(U$, 40, 58.3)\n");
+    CHECK(run.parseOk);
+    REQUIRE_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "English units"));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: the number of arguments and their kind are checked", "[library-gaps][libr]") {
+    for (const char* fn : {"X_LIBR", "H_LIBR", "T_LIBR", "P_LIBR"}) {
+        INFO(fn);
+        for (const std::string args : {"'SI', 40", "'SI'", "'SI', 40, 58.3, 1", "40, 58.3"}) {
+            INFO(args);
+            auto run = runModel(std::string("y = ") + fn + "(" + args + ")\n");
+            REQUIRE_FALSE(run.solveOk);
+            CHECK(anyContains({run.message}, std::string(fn) + " takes 3 arguments"));
+        }
+        // a number where the unit string is expected
+        auto numeric = runModel(std::string("y = ") + fn + "(1, 40, 58.3)\n");
+        REQUIRE_FALSE(numeric.solveOk);
+        CHECK(anyContains({numeric.message}, std::string(fn) + ": the first argument must be the unit string 'SI'"));
+        auto numericVar = runModel(std::string("u = 1\ny = ") + fn + "(u, 40, 58.3)\n");
+        REQUIRE_FALSE(numericVar.solveOk);
+        CHECK(anyContains({numericVar.message}, std::string(fn) + ": the first argument must be the unit string 'SI'"));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: named arguments are refused at parse time", "[library-gaps][libr]") {
+    for (const char* fn : {"X_LIBR", "H_LIBR", "T_LIBR", "P_LIBR"}) {
+        INFO(fn);
+        const auto errors = parseErrors(std::string("y = ") + fn + "('SI', T=40, X=58.3)\n");
+        REQUIRE_FALSE(errors.empty());
+        CHECK(errors[0].find(std::string(fn) + " does not take named arguments") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: where the math is undefined the routines say so (P <= 0, T' <= 0, no root, non-finite)",
+          "[library-gaps][libr]") {
+    SECTION("pressure that is not positive") {
+        for (const auto& [p, text] : std::vector<std::pair<double, std::string>>{{0.0, "0"}, {-1.0, "-1"}, {-1e-9, "-1e-09"}}) {
+            INFO("P = " << p);
+            const std::string x = librCallError("X_LIBR", 40, p);
+            CHECK(x.find("X_LIBR('SI', T = 40, P = " + text + ")") != std::string::npos);
+            CHECK(x.find("pressure must be positive") != std::string::npos);
+            const std::string t = librCallError("T_LIBR", p, 58.3);
+            CHECK(t.find("T_LIBR('SI', P = ") != std::string::npos);
+            CHECK(t.find("pressure must be positive") != std::string::npos);
+        }
+        auto run = runModel("x = X_LIBR('SI', 40, 0)\n");
+        REQUIRE_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "X_LIBR('SI', T = 40, P = 0)"));
+        auto runT = runModel("t = T_LIBR('SI', -0.5, 58.3)\n");
+        REQUIRE_FALSE(runT.solveOk);
+        CHECK(anyContains({runT.message}, "T_LIBR('SI', P = -0.5, X = 58.3)"));
+    }
+    SECTION("a pressure beyond the vapour-pressure equation (log10 p above C)") {
+        const std::string message = librCallError("T_LIBR", 1e8, 58.3);
+        CHECK(message.find("T_LIBR('SI', P = 1e+08, X = 58.3)") != std::string::npos);
+        CHECK(message.find("no refrigerant temperature") != std::string::npos);
+    }
+    SECTION("refrigerant temperature below absolute zero in P_LIBR") {
+        const std::string message = librCallError("P_LIBR", -300, 60);
+        CHECK(message.find("P_LIBR('SI', T = -300, X = 60)") != std::string::npos);
+        CHECK(message.find("refrigerant temperature") != std::string::npos);
+        CHECK(message.find("absolute zero") != std::string::npos);
+    }
+    SECTION("no concentration reaches the solution temperature (X_LIBR)") {
+        // at P = 0.8726 kPa (t' = 4.21 degC by the vapour-pressure equation of ASHRAE, which is not a steam table) the
+        // solution temperature of the increasing branch lies between 11.2368 degC (X = 34.1 %) and 96.3892 degC
+        for (double t : {300.0, -50.0, 5.0}) {
+            INFO("T = " << t);
+            const std::string message = librCallError("X_LIBR", t, 0.8726);
+            CHECK(message.find("X_LIBR('SI', T = " + showNumber(t) + ", P = 0.8726)") != std::string::npos);
+            CHECK(message.find("no concentration") != std::string::npos);
+            CHECK(message.find("is between 11.2368 degC (X = 34.0916 %) and 96.3892 degC (X = 96.1698 %)") != std::string::npos);
+        }
+        auto run = runModel("x = X_LIBR('SI', 300, 0.8726)\n");
+        REQUIRE_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "X_LIBR('SI', T = 300, P = 0.8726)"));
+    }
+    SECTION("non-finite inputs") {
+        const double nan = std::nan(""), inf = HUGE_VAL;
+        for (const char* fn : {"X_LIBR", "H_LIBR", "T_LIBR", "P_LIBR"}) {
+            INFO(fn);
+            CHECK(librCallError(fn, nan, 58.3).find("not finite") != std::string::npos);
+            CHECK(librCallError(fn, 40, nan).find("not finite") != std::string::npos);
+            CHECK(librCallError(fn, inf, 58.3).find("not finite") != std::string::npos);
+            CHECK(librCallError(fn, 40, -inf).find("not finite") != std::string::npos);
+            CHECK(librCallError(fn, nan, 58.3).find(fn) != std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: the validity ranges are documented, not enforced (as in EES)", "[library-gaps][libr]") {
+    // the stored solution of the EES source file uses H_LIBR at X = 74.78 %, above the 70 % limit of the McNeely fit,
+    // and X_LIBR at 74.78 %, above the 45...75 % range quoted for the Duhring relation, without any message
+    CHECK(librCallError("H_LIBR", 130, 74.77571753).empty());
+    CHECK(librCallError("H_LIBR", 200, 80).empty());
+    CHECK(librCallError("H_LIBR", 10, 30).empty());
+    CHECK(librCallError("T_LIBR", 0.2, 40).empty());
+    CHECK(librCallError("P_LIBR", 150, 76).empty());
+    CHECK(librCallError("X_LIBR", 160, 15).empty());
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: the absorption cycle of the example water_libr (library model CSL-0043)", "[library-gaps][libr]") {
+    auto run = runModel(kLibrAbsorptionCycle);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+    // the concentrations are the ASHRAE roots at the saturation pressures of CoolProp
+    CHECK_THAT(run["x_abs"], WithinRel(librValue("X_LIBR", 40, run["P_ev"] / 1000), 1e-9));
+    CHECK_THAT(run["x_gen"], WithinRel(librValue("X_LIBR", 130, run["P_cd"] / 1000), 1e-9));
+    CHECK_THAT(run["h_weak_abs_ex"], WithinRel(1000 * librValue("H_LIBR", 40, run["x_abs"]), 1e-9));
+    CHECK_THAT(run["h_rich_abs_su_min"], WithinRel(1000 * librValue("H_LIBR", 40, run["x_gen"]), 1e-9));
+    // EES stored solution (VL051205_11-2.EES / MSTH-SB-R11-EX2.EES, EES 7.458) and the observed deviations of CoolSolve:
+    // the stored solution of EES has P_ev = 872.604 Pa and P_cd = 9589.78 Pa, CoolProp gives 872.575 and 9595.00 Pa, and the
+    // ASHRAE root of X_LIBR is 6.7e-5 above that of EES (see above): x_abs 7.2e-5, x_gen 5.1e-5, M_dot_weak 4.3e-4, M_dot_rich 5.5e-4,
+    // h_weak_abs_ex 1.9e-4, h_rich_gen_ex 4.7e-5, Q_dot_gen 2.1e-4, Q_dot_HEX 5.5e-4, COP 6.8e-5 (relative)
+    CHECK_THAT(run["x_abs"], WithinRel(58.30348116, 1e-4));
+    CHECK_THAT(run["x_gen"], WithinRel(74.77571753, 1e-4));
+    CHECK_THAT(run["M_dot_weak"], WithinRel(4.539500032, 1e-3));
+    CHECK_THAT(run["M_dot_rich"], WithinRel(3.539500032, 1e-3));
+    CHECK_THAT(run["h_weak_abs_ex"], WithinRel(107133.0805, 5e-4));
+    CHECK_THAT(run["h_rich_gen_ex"], WithinRel(352210.8783, 5e-4));
+    CHECK_THAT(run["Q_dot_gen"], WithinRel(3108753.564, 5e-4));
+    CHECK_THAT(run["Q_dot_HEX"], WithinRel(395781.4666, 1e-3));
+    CHECK_THAT(run["COP"], WithinRel(0.7466966108, 2e-4));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: the unsupported fluids LiBrH2O and NH3H2O cite their register items; LiBrH2O points to the routines",
+          "[library-gaps][libr]") {
+    auto run = runModel("h = ENTHALPY(LiBrH2O, T=40, P=1E5)\n");
+    REQUIRE_FALSE(run.solveOk);
+    CHECK(anyContains({run.message}, "LiBrH2O"));
+    CHECK(anyContains({run.message}, "X_LIBR, H_LIBR, T_LIBR and P_LIBR"));
+    CHECK(anyContains({run.message}, "CS-GAP-LIBR-PK"));
+    CHECK_FALSE(anyContains({run.message}, "incompressible"));
+    auto ammonia = runModel("h = ENTHALPY(NH3H2O, T=40, P=1E5)\n");
+    REQUIRE_FALSE(ammonia.solveOk);
+    CHECK(anyContains({ammonia.message}, "NH3H2O"));
+    CHECK(anyContains({ammonia.message}, "CS-GAP-NH3H2O"));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: the other EES routines of the LiBr-H2O libraries are known and say that they are not implemented yet",
+          "[library-gaps][libr]") {
+    struct Missing { const char* name; const char* registerId; };
+    const Missing missing[] = {
+        {"V_LIBR", "CS-GAP-FLUIDS-ABS"}, {"VISC_LIBR", "CS-GAP-FLUIDS-ABS"}, {"COND_LIBR", "CS-GAP-FLUIDS-ABS"},
+        {"T_LiBrH2O", "CS-GAP-LIBR-PK"}, {"P_LiBrH2O", "CS-GAP-LIBR-PK"}, {"x_LiBrH2O", "CS-GAP-LIBR-PK"},
+        {"h_LiBrH2O", "CS-GAP-LIBR-PK"}, {"s_LiBrH2O", "CS-GAP-LIBR-PK"}, {"cp_LiBrH2O", "CS-GAP-LIBR-PK"},
+        {"rho_LiBrH2O", "CS-GAP-LIBR-PK"}, {"Visc_LiBrH2O", "CS-GAP-LIBR-PK"}, {"Cond_LiBrH2O", "CS-GAP-LIBR-PK"},
+        {"MassFraction_LiBrH2O", "CS-GAP-LIBR-PK"}, {"MoleFraction_LiBrH2O", "CS-GAP-LIBR-PK"},
+    };
+    for (const auto& m : missing) {
+        INFO(m.name);
+        for (const std::string args : {"40, 58.3", "'SI', 40, 58.3"}) {   // whatever the arguments
+            auto run = runModel(std::string("y = ") + m.name + "(" + args + ")\n");
+            REQUIRE(run.parseOk);
+            CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+            REQUIRE_FALSE(run.solveOk);
+            CHECK(anyContains({run.message}, std::string(m.name) + ": EES LiBr-H2O routine not implemented in CoolSolve yet (register " +
+                                                 m.registerId + "); the ASHRAE routines X_LIBR, H_LIBR, T_LIBR, P_LIBR are available"));
+        }
+        // the name is case-insensitive and named arguments reach the same message (no "does not take named arguments")
+        std::string lower = m.name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        auto named = runModel("y = " + lower + "(T=40, x=0.5)\n");
+        REQUIRE(named.parseOk);
+        REQUIRE_FALSE(named.solveOk);
+        CHECK(anyContains({named.message}, std::string(m.name) + ": EES LiBr-H2O routine not implemented"));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: CALL Q_LIBR, Q_LiBrH2O and NH3H2O say that they are not implemented yet", "[library-gaps][libr]") {
+    struct Missing { const char* call; const char* message; };
+    const Missing missing[] = {
+        {"CALL Q_LIBR('SI', 40, 58.3 : q)", "Q_LIBR: EES LiBr-H2O routine not implemented in CoolSolve yet (register CS-GAP-FLUIDS-ABS)"},
+        {"CALL Q_LiBrH2O(40, 0.5 : q)", "Q_LiBrH2O: EES LiBr-H2O routine not implemented in CoolSolve yet (register CS-GAP-LIBR-PK)"},
+        {"CALL NH3H2O(123, 300, 1E5, 0.5 : T, P, x, h, s, u, v, Qu)",
+         "NH3H2O: EES ammonia-water routine not implemented in CoolSolve yet (register CS-GAP-NH3H2O)"},
+        {"CALL nh3h2o(123, 300, 1E5, 0.5 : T, P, x, h, s, u, v, Qu)", "NH3H2O: EES ammonia-water routine not implemented"},
+    };
+    for (const auto& m : missing) {
+        INFO(m.call);
+        auto run = runModel(std::string(m.call) + "\n");
+        REQUIRE(run.parseOk);
+        CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+        REQUIRE_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, m.message));
+        CHECK_FALSE(anyContains({run.message}, "Unknown procedure"));
+    }
+    // a procedure that is not one of them is still an unknown procedure
+    auto unknown = runModel("CALL nosuchproc(1 : y)\n");
+    REQUIRE_FALSE(unknown.solveOk);
+    CHECK(anyContains({unknown.message}, "Unknown procedure"));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: a PROCEDURE or FUNCTION of the model with the name of a missing routine replaces it",
+          "[library-gaps][libr]") {
+    auto run = runModel("FUNCTION V_LIBR(u$, T, X)\n  V_LIBR = T + X\nEND\nPROCEDURE NH3H2O(a : b)\n  b = 2 * a\nEND\n"
+                        "v = V_LIBR('SI', 40, 10)\nCALL NH3H2O(4 : w)\n");
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["v"], WithinAbs(50.0, 1e-12));
+    CHECK_THAT(run["w"], WithinAbs(8.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: LaTeX rendering writes the underscore of the routine names and the unit string", "[library-gaps][libr]") {
+    EESParser parser;
+    auto parsed = parser.parse("x = X_LIBR('SI', T, P/1000)\nh = H_LIBR('SI', T, x)*1000\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    const std::string x = coolsolve::expressionToLatex(ir.getEquations()[0].rhs);
+    const std::string h = coolsolve::expressionToLatex(ir.getEquations()[1].rhs);
+    // an underscore in math mode is a subscript: \_ keeps the name in one piece
+    CHECK(x.find("\\mathrm{X\\_LIBR} \\left(\\mathrm{SI}, T, ") == 0);
+    CHECK(h.find("\\mathrm{H\\_LIBR} \\left(\\mathrm{SI}, T, x") == 0);
+}

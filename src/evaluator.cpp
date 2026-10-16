@@ -1,6 +1,7 @@
 #include "coolsolve/evaluator.h"
 #include "coolsolve/constants.h"
 #include "coolsolve/ees_string.h"
+#include "coolsolve/libr_ashrae.h"
 #include "coolsolve/lookup_table.h"
 #include "coolsolve/units.h"
 #include "coolsolve/fluids.h"
@@ -723,6 +724,8 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
                         colebrookFrictionFactor(evaluate(call.inputArgs[0]), evaluate(call.inputArgs[1])));
             return;
         }
+        // CALL Q_LIBR, Q_LiBrH2O, NH3H2O: EES procedures of the absorption pairs that are not implemented yet
+        if (const auto* routine = libr_ashrae::findRoutine(lowerName)) libr_ashrae::requireImplemented(*routine);
         throw std::runtime_error("Unknown procedure: " + call.name);
     }
     
@@ -1028,6 +1031,30 @@ static bool isLookupFunction(const std::string& lowerName) {
     return names.count(lowerName) > 0;
 }
 
+/// The one entry point of the property routines of the absorption pairs (libr_ashrae.h; the modules to come, see that
+/// header, are reached from here): `X_LIBR('SI', T, P)`, `H_LIBR('SI', T, X)`, `T_LIBR('SI', P, X)`, `P_LIBR('SI', T, X)`.
+/// The unit string is read as a string (a constant, a string variable or a string function), the two other arguments as
+/// numbers; the routine gives the value and its partial derivatives, combined here with the gradients of the
+/// arguments. A known EES routine that is not implemented (`V_LIBR`, `h_LiBrH2O`, ...) is an error that says so.
+static ADValue evaluateAbsorptionFunction(ExpressionEvaluator& evaluator, const libr_ashrae::Routine& routine,
+                                          const FunctionCall& func) {
+    libr_ashrae::requireImplemented(routine);
+    if (func.args.size() != 3 || !func.namedArgs.empty())
+        throw std::runtime_error(std::string(routine.name) + " takes 3 arguments ('SI', " + routine.first + ", " + routine.second +
+                                 "), got " + std::to_string(func.args.size() + func.namedArgs.size()));
+    if (!isStringExpression(func.args[0]))
+        throw std::runtime_error(std::string(routine.name) + ": the first argument must be the unit string 'SI' (a string constant "
+                                 "or a string variable), not a number");
+    libr_ashrae::checkUnitSystem(routine, evaluator.evaluateString(func.args[0]));
+    const ADValue first = evaluator.evaluate(func.args[1]);
+    const ADValue second = evaluator.evaluate(func.args[2]);
+    const libr_ashrae::Result result = routine.evaluate(first.value, second.value);
+    ADValue out(result.value, first.gradient.size());
+    for (size_t i = 0; i < out.gradient.size(); ++i)
+        out.gradient[i] = result.d1 * first.gradient[i] + result.d2 * second.gradient[i];
+    return out;
+}
+
     ADValue ExpressionEvaluator::evaluateFunctionCall(const FunctionCall& func) {
     std::string name = func.name;
     std::transform(name.begin(), name.end(), name.begin(), ::tolower);
@@ -1074,6 +1101,11 @@ static bool isLookupFunction(const std::string& lowerName) {
         auto fluid = resolveFluid(fluidNameOf(func.args[0]), diagnostics_);
         return ADValue::constant(fluid->getType() == FluidType::IdealGas ? 1.0 : 0.0, numVariables_);
     }
+
+    // X_LIBR, H_LIBR, T_LIBR and P_LIBR('SI', ...): lithium bromide - water solution (ASHRAE correlations), and the EES
+    // routines of the absorption pairs not implemented yet. Before the property calls (a call with named arguments
+    // would be taken for one) and before the evaluation of all the arguments as numbers (the first is a string).
+    if (const auto* routine = libr_ashrae::findRoutine(name)) return evaluateAbsorptionFunction(*this, *routine, func);
 
     // Check if it's a thermodynamic function handled by CoolProp
     bool isThermo = false;
