@@ -1190,10 +1190,76 @@ h_abs = H_LIBR('SI', T_abs, x_abs)*1000     "107.2 kJ/kg, in J/kg"
   (warning `C004`): keep `H_LIBR` for the energy balances.
 - **Not implemented yet** (a call is an error that names the routine and its register item, see
   [Model library support](model_library_support.md) §4): `V_LIBR`, `Q_LIBR`, `VISC_LIBR` and `COND_LIBR`
-  (`CS-GAP-FLUIDS-ABS`); the `*_LiBrH2O` functions of the Pátek-Klomfar library and `Q_LiBrH2O` (`CS-GAP-LIBR-PK`);
-  the ammonia-water procedure `NH3H2O` (`CS-GAP-NH3H2O`). The `*_LiBrSSC` library of EES (Yuan & Herold 2005) is
+  (`CS-GAP-FLUIDS-ABS`); the `*_LiBrH2O` functions of the Pátek-Klomfar library and `Q_LiBrH2O` (`CS-GAP-LIBR-PK`).
+  The ammonia-water procedure and fluid `NH3H2O` are implemented (next section). The `*_LiBrSSC` library of EES (Yuan & Herold 2005) is
   not implemented either (`CS-GAP-LIBR-PK`; its names are unknown functions). The fluid `LiBrH2O` of the property
   calls (`ENTHALPY(LiBrH2O, …)`) is an error that points to the routines above.
+
+### Ammonia-water (`NH3H2O`)
+
+`NH3H2O` is the EES fluid of the ammonia-water mixture, with its property functions and the procedure
+`CALL NH3H2O(Code, In1, In2, In3 : T, P, x, h, s, u, v, q)`. CoolSolve evaluates it with the formulation of
+Tillner-Roth & Friend (1998), adopted by IAPWS as Guideline G4-01 (2001), written in `src/nh3h2o.cpp` and
+`src/nh3h2o_flash.cpp` (no CoolProp call: CoolProp has no ammonia-water pair). **EES uses another model** (Ibrahim &
+Klein 1993, a Gibbs-energy formulation whose coefficients are not published), so the results agree within the
+difference between two models (see *Agreement with EES*), not to the digit.
+
+**Fluid form.** The state is fixed by **three** properties among `T`, `P`, `X` (the **mass fraction of ammonia**: `X` is not
+the quality here), `Q` (the vapour **mass** fraction), `H`, `S`, `U`, `V` (specific volume):
+
+```ees
+h = Enthalpy(NH3H2O, T=T1, P=P1, X=x1)          "sub-cooled, saturated or superheated: Q tells which"
+x = MassFraction(NH3H2O, T=50, P=1e6, Q=0)      "ammonia mass fraction of the saturated liquid"
+T = Temperature(NH3H2O, P=P2, X=x2, H=h2)
+```
+
+Functions: `Enthalpy`, `Entropy`, `IntEnergy`, `Volume`, `Density`, `Temperature`, `Pressure`, `Quality`, `MassFraction`,
+`SpecHeat` (or `Cp`) and `VolExpCoef`. Inputs and outputs are in the units of the model (as for any fluid); `V` follows
+the density unit. The fifteen combinations of the EES procedure are accepted, written here as the inputs in the order
+of the table: `T P X`, `T P Q`, `T X V`, `T X Q`, `T H Q`, `T S Q`, `T U Q`, `T V Q`, `P X H`, `P X S`, `P X Q`, `P H Q`,
+`P S Q`, `P U Q`, `P V Q` (the order of the arguments in the call is free). Any other combination, or a number of inputs
+other than three, is an error that lists them. `Quality` is **-0.001** for a sub-cooled liquid, **1.001** for a
+superheated vapour (EES convention) and between 0 and 1 inside the dome; a `Q=` input must be in [0, 1].
+
+**`CALL NH3H2O`.** `Code` is the three-digit code of the inputs, the numbers of their properties (T = 1, P = 2, x = 3,
+h = 4, s = 5, u = 6, v = 7, q = 8) in ascending order: `123`, `128`, `137`, `138`, `148`, `158`, `168`, `178`, `234`, `235`,
+`238`, `248`, `258`, `268`, `278`. `In1`, `In2`, `In3` are the three properties of the code, in this order. The units of the
+procedure are fixed whatever the unit system of the model: **T in K, P in bar, x mass fraction, h and u in kJ/kg, s in
+kJ/(kg K), v in m3/kg, q** as above. All eight outputs are returned (fewer may be asked, in the order given).
+
+**Formulation and reference state.** The ideal-gas parts of the pure fluids are fitted so that the internal energy and
+the entropy of each pure saturated liquid vanish at its triple point (water 273.16 K, ammonia 195.495 K); EES uses
+other reference states. `h`, `s` and `u` therefore differ from EES by a quantity that depends on the composition only:
+**compare differences at a given composition** (or between states of the same composition), not absolute values.
+
+**Agreement with EES** (the two formulations are independent, so this is the order of magnitude of their
+difference): the EES help example `T = 450 K, P = 10 bar, x = 0.5` gives `v` = 0.2037 m3/kg (EES 0.2036) and quality
+1.001; the enthalpy difference between that state and `T = 10 °C, P = 1000 kPa, x = 0.5` is 2432 kJ/kg (EES 2419, 0.6 %); the
+saturated liquid at 50 °C and 1000 kPa has the mass fraction 0.5895 (EES 0.5953, 1 %; the guideline states an
+uncertainty of 0.01 in the compositions). The implementation reproduces the verification tables of the guideline: the
+single-phase values (Table 6) to 3e-9 for the Helmholtz energy and 6e-8 for p, c_v and the speed of sound, the bubble and
+dew points (Tables 7 and 8) to the digits of the tables, and pure water to the 1 part in 60 000 the guideline quotes.
+
+**Numerics.** The derivatives are exact (the Helmholtz energy is evaluated with truncated Taylor arithmetic in `T`, `rho` and
+`x`; the flashes use the implicit function theorem on the converged equations, no finite difference), so any of the inputs
+may be an unknown of the model. The equations of every flash are solved to a scaled residual below 1e-12, followed by a
+full Newton polish; an iteration that cannot go lower is accepted only when it is within two units of the noise floor
+measured at that point (mainly a composition within 1e-5 of pure: `1 - x` of a double is known to 1e-16 / (1 - x) only).
+A call costs about 0.1 to 2 ms once warm (the previous solution is the start of the next call; a first call, or a jump,
+costs up to some tens of ms).
+
+**Limits.** The formulation covers the range from the triple-point line to the critical locus and pressures up to 40 MPa
+(EES: 230 to 600 K, 0.2 to 110 bar). There is no two-phase state above the critical locus (an ammonia-rich mixture above
+about 405 to 440 K): `Q` inputs there, and `P`/`T`/`X` inputs that need a saturation, are errors that name the state; a
+single-phase state is still given. `T`, `P`, `X` and `Q` of a trial point of the solver are limited (T below 150 K, P below
+1000 Pa, X and Q outside [0, 1]) as for CoolProp inputs, and a limit still active at the solution is refused.
+`SpecHeat` and `VolExpCoef` are defined for single-phase states only. For the combinations `T H Q`, `T S Q`, `T U Q`, `P H Q`,
+`P S Q`, `P U Q` the property along the saturation curve is not monotone in the composition (heat of mixing), so two
+solutions can exist; the one of **lowest ammonia content** is returned.
+
+**Not implemented.** The transport properties of EES (`Conductivity`, `Viscosity`, `SurfaceTension`: Cuenca 2013, Conde 2004)
+are errors that say so (register `CS-GAP-NH3H2O`, remainder); the properties are those of the list above.
+A `PROCEDURE NH3H2O` of the model replaces the built-in.
 
 ### Unsupported EES fluids
 
@@ -1201,16 +1267,14 @@ Some EES fluids are not modelled by CoolProp. Attempting to use them
 triggers a clear runtime error with the fluid name and a remediation
 suggestion:
 
-`NH3H2O`, `LiBrH2O`, `Acetylene`, `Chlorine`, `Chloroethene`,
+`LiBrH2O`, `Acetylene`, `Chlorine`, `Chloroethene`,
 `EthyleneOxide`, `Helium3`, `Potassium`, `Sodium`, `Aluminum`, `Copper`.
 
 `Aluminum` and `Copper` are EES solids of its property library; CoolProp has no solid properties, so their
 properties are not available (the call is an error naming the fluid, never a NaN): give them as constants or as a
 correlation in the model (`CS-BUG-INCOMP-SOLIDS`).
 
-For the ammonia-water system, use an external correlation written as a
-`FUNCTION` (the REFPROP library is not available in CoolSolve; the EES
-procedure `NH3H2O` is register item `CS-GAP-NH3H2O`). The
+The ammonia-water mixture `NH3H2O` is supported (previous section). The
 lithium-bromide-water solution is available through the routines `X_LIBR`,
 `H_LIBR`, `T_LIBR` and `P_LIBR` above, not as a fluid.
 

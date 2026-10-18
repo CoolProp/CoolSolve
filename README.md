@@ -42,7 +42,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
   - **Symbolic Block Reduction** (explicit extraction, CoolProp call inversion, equation substitution)
   - **Multi-Start** fallback (CoolProp-consistent starting points for thermo blocks, scale factors for algebraic blocks; parallel execution available; engageable always, never, or only on Deep Search)
 
-- **CoolProp Integration**: Thermodynamic property calculations via the low-level `AbstractState` API (2–5× faster than `PropsSI`), with analytical derivatives and thread-local caching. CoolProp mixtures are accepted as fluids (`'R245fa[0.5]&R134a[0.5]'`, with a warning that mixture properties are predictive). The lithium bromide - water solution of the absorption machines is available through the EES ASHRAE routines `X_LIBR`, `H_LIBR`, `T_LIBR` and `P_LIBR` (`X_LIBR('SI', T, P)`, analytical derivatives; see [Language Reference §5](docs/language_reference.md#libr-h2o-solutions-ees-ashrae-routines)).
+- **CoolProp Integration**: Thermodynamic property calculations via the low-level `AbstractState` API (2–5× faster than `PropsSI`), with analytical derivatives and thread-local caching. CoolProp mixtures are accepted as fluids (`'R245fa[0.5]&R134a[0.5]'`, with a warning that mixture properties are predictive). The lithium bromide - water solution of the absorption machines is available through the EES ASHRAE routines `X_LIBR`, `H_LIBR`, `T_LIBR` and `P_LIBR` (`X_LIBR('SI', T, P)`, analytical derivatives; see [Language Reference §5](docs/language_reference.md#libr-h2o-solutions-ees-ashrae-routines)). The ammonia-water mixture is the EES fluid `NH3H2O` (any three of T, P, X, Q, H, S, U, V) and the procedure `CALL NH3H2O(Code, In1, In2, In3 : T, P, x, h, s, u, v, q)`, on the IAPWS G4-01 formulation with exact derivatives (EES uses another model, so results agree within about 1 %; see [Language Reference §5](docs/language_reference.md#ammonia-water-nh3h2o)).
 
 - **Lookup Tables**: 1D/2D interpolation, cell access, text cells (`LOOKUP$`, the replacement of string arrays, which are not supported), the row of a key (`LOOKUP$ROW`), and aggregate functions from external CSV files, usable in equations, in `FUNCTION`/`PROCEDURE` bodies and in `INTEGRAL` models. A GUI panel lets you create and edit tables in-browser.
 
@@ -440,6 +440,8 @@ CoolSolve/
 │   ├── autodiff_node.h         # Forward-mode AD types and operations
 │   ├── evaluator.h             # Block and system evaluators
 │   ├── libr_ashrae.h           # LiBr-H2O solution properties (EES routines X_LIBR, H_LIBR, T_LIBR, P_LIBR)
+│   ├── nh3h2o.h                # Ammonia-water: IAPWS G4-01 formulation, saturation, 15 flashes (fluid and CALL NH3H2O)
+│   ├── taylor_jet.h            # Truncated Taylor arithmetic in 3 variables (exact derivatives of the Helmholtz energy)
 │   ├── solution_checker.h      # Post-solve solution verification
 │   ├── usage_log.h             # GUI solve-attempt log (append + aggregated stats)
 │   ├── library_store.h         # Model library index: menu of verified models, model-folder loader
@@ -454,6 +456,9 @@ CoolSolve/
 │   ├── autodiff_node.cpp       # AD function implementations
 │   ├── evaluator.cpp           # Evaluator implementations
 │   ├── libr_ashrae.cpp         # ASHRAE LiBr-H2O correlations and their analytical derivatives
+│   ├── nh3h2o.cpp              # Ammonia-water Helmholtz formulation (IAPWS G4-01)
+│   ├── nh3h2o_flash.cpp        # Ammonia-water saturation solver and the three-property flashes
+│   ├── evaluator_nh3h2o.cpp    # NH3H2O in the evaluator: fluid functions, CALL NH3H2O, units, derivatives
 │   ├── integral/               # Equation-based dynamic solver (INTEGRAL / $IntegralTable)
 │   │   ├── integrator_euler_explicit.cpp  # Forward Euler (fixed step)
 │   │   ├── integrator_euler_implicit.cpp  # Backward Euler, A-stable (fixed step)
@@ -533,7 +538,7 @@ The [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library
 
 Planned improvements for the solver include a stiff ODE integrator (BDF), pseudo-arclength continuation, and an improved plotting interface. See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
 
-Planned property models for the absorption machines: a more recent LiBr-H2O correlation (the EES `LiBrH2O` library, Pátek & Klomfar 2006; register item `CS-GAP-LIBR-PK`) next to the ASHRAE routines, and ammonia-water (the EES procedure `NH3H2O`, Ibrahim & Klein 1993; `CS-GAP-NH3H2O`) — see [Model Library Support](docs/model_library_support.md).
+Planned property models for the absorption machines: a more recent LiBr-H2O correlation (the EES `LiBrH2O` library, Pátek & Klomfar 2006; register item `CS-GAP-LIBR-PK`) next to the ASHRAE routines, and the transport properties of ammonia-water (conductivity, viscosity, surface tension; `CS-GAP-NH3H2O` remainder) — see [Model Library Support](docs/model_library_support.md).
 
 ## Acknowledgements & License
 
