@@ -131,11 +131,57 @@ struct NewtonSetup {
     bool logVar[8] = {false, false, false, false, false, false, false, false};
     double maxStep[8];   ///< largest step: fraction of colScale, or |d ln v| for a logarithmic variable
     double lower[8], upper[8];
+    /// The change of each Newton variable that moves the evaluated quantity by one representable step (default:
+    /// one ulp of the variable). For a composition iterated as logit(x) it is that of x itself, ulp(x) / (x (1 - x)).
+    std::function<void(const double*, double*)> resolution;
+    /// Variables that are compositions: their quantisation is in `resolution`; the evaluation jitter is measured with
+    /// the other variables only.
+    bool composition[8] = {false, false, false, false, false, false, false, false};
 };
 
 using Evaluator = std::function<bool(const double*, double*, double (*)[8])>;
 
-/// Damped Newton iteration on F(v) = 0 with the Jacobian supplied by `eval` (false from `eval` = step refused).
+/// The smallest residual that can be told from noise, per row and scaled by the row scale, the sum of
+///  - the resolution of the representation of the variables: the change of F produced by moving any variable by one
+///    representable step, sum |J_ij| u_j. A mole fraction of 1 - 1e-6 is a double of 1.1e-16 spacing, so 1 - x is
+///    known to 1e-10 only and mu_1 (which contains ln(1 - x)) moves in steps of that size; and
+///  - the round-off jitter of the evaluation of F, measured at the point: the deviation of F at a few perturbations of
+///    the non-composition variables by 1 to 3 ulp from its linearisation.
+bool noiseFloor(const NewtonSetup& ns, const double* v, const double* F, double (*J)[8], const Evaluator& eval,
+                double* floorOut) {
+    const int n = ns.n;
+    double u[8];
+    for (int j = 0; j < n; ++j) u[j] = std::abs(v[j]) * 2.220446049250313e-16;
+    if (ns.resolution) ns.resolution(v, u);
+    for (int i = 0; i < n; ++i) {
+        double f = 0.0;
+        for (int j = 0; j < n; ++j) f += std::abs(J[i][j]) * u[j];
+        floorOut[i] = f / ns.rowScale[i];
+    }
+    const double kUlp = 2.220446049250313e-16;
+    const double pattern[6][8] = {{1, -1, 2, -2, 3, -3, 1, -1}, {-1, 2, -3, 1, -2, 3, -1, 2}, {2, 3, 1, -1, -3, -2, 3, 1},
+                                  {-3, 1, -2, 2, 1, -1, -2, 3}, {1, 1, -1, -1, 2, 2, -3, -3}, {3, -2, 1, -3, 2, -1, 1, -2}};
+    for (const auto& c : pattern) {
+        double vp[8], Fp[8], Jp[8][8];
+        for (int j = 0; j < n; ++j) vp[j] = ns.composition[j] ? v[j] : v[j] * (1.0 + c[j] * kUlp);
+        if (!eval(vp, Fp, Jp)) return false;
+        for (int i = 0; i < n; ++i) {
+            double lin = F[i];
+            for (int j = 0; j < n; ++j) lin += J[i][j] * (vp[j] - v[j]);
+            floorOut[i] += std::abs(Fp[i] - lin) / ns.rowScale[i];
+        }
+    }
+    return true;
+}
+
+/**
+ * Damped Newton iteration on F(v) = 0 with the Jacobian supplied by `eval` (false from `eval` = step refused).
+ *
+ * Convergence is a scaled residual below `tol`. The one other exit is for an iteration that has stopped lowering the
+ * residual: it is accepted only if every row is within `tol` plus two units of the noise floor measured at the point
+ * (`noiseFloor`: the resolution of the representation of the variables and the round-off jitter of the evaluation),
+ * i.e. when no representable point can do better.
+ */
 bool newtonSolve(const NewtonSetup& ns, double* v, const Evaluator& eval, double tol, int maxIter) {
     const int n = ns.n;
     double F[8], J[8][8];
@@ -145,23 +191,32 @@ bool newtonSolve(const NewtonSetup& ns, double* v, const Evaluator& eval, double
         for (int i = 0; i < n; ++i) m = std::max(m, std::abs(r[i]) / ns.rowScale[i]);
         return m;
     };
+    auto atResolutionFloor = [&]() {
+        double floorOut[8];
+        if (!noiseFloor(ns, v, F, J, eval, floorOut)) return false;
+        for (int i = 0; i < n; ++i)
+            if (std::abs(F[i]) / ns.rowScale[i] > tol + 2.0 * floorOut[i]) return false;
+        return true;
+    };
     double m0 = merit(F);
+    int stalled = 0;
     for (int it = 0; it < maxIter; ++it) {
-        if (!(m0 >= tol)) return std::isfinite(m0);
+        if (!(m0 >= tol)) {
+            return std::isfinite(m0);
+        }
+        if (stalled >= 1 && atResolutionFloor()) return true;
         double A[8][8], B[8][8];
         for (int i = 0; i < n; ++i) {
             for (int j = 0; j < n; ++j) A[i][j] = J[i][j] / ns.rowScale[i];
             B[i][0] = -F[i] / ns.rowScale[i];
         }
         if (!solveLinear(n, A, 1, B)) return false;
-        double d[8], lam = 1.0, smallest = 0.0;
+        double d[8], lam = 1.0;
         for (int j = 0; j < n; ++j) {
             d[j] = B[j][0];
             const double rel = ns.logVar[j] ? std::abs(d[j]) / std::max(std::abs(v[j]), 1e-300) : std::abs(d[j]) / ns.colScale[j];
-            smallest = std::max(smallest, rel);
             if (rel > ns.maxStep[j]) lam = std::min(lam, ns.maxStep[j] / rel);
         }
-        if (smallest < 1e-9 && m0 < 1e-7) return true;   // the step is below the noise of the residuals: converged
         double vn[8], Fn[8], Jn[8][8], mn = 0.0;
         bool accepted = false;
         for (int ls = 0; ls < 12 && !accepted; ++ls, lam *= 0.5) {
@@ -174,6 +229,10 @@ bool newtonSolve(const NewtonSetup& ns, double* v, const Evaluator& eval, double
             if (std::isfinite(mn) && (mn < m0 || ls == 11)) accepted = true;
         }
         if (!accepted) return false;
+        stalled = mn < 0.5 * m0 ? 0 : stalled + 1;   // the iteration no longer lowers the residual
+        if (mn >= m0) {   // keep the better point; it is the answer if nothing representable does better
+            return atResolutionFloor();
+        }
         for (int j = 0; j < n; ++j) v[j] = vn[j];
         for (int i = 0; i < n; ++i) {
             F[i] = Fn[i];
@@ -326,6 +385,13 @@ double logitOf(double x) {
 }
 double sigmoid(double z) { return 1.0 / (1.0 + std::exp(-z)); }
 
+/// The change of logit(x) that moves the double x by one representable step: the resolution of a composition that is
+/// iterated as its logit.
+double logitResolution(double z) {
+    const double x = sigmoid(z);
+    return (std::nextafter(x, 2.0) - x) / (x * (1.0 - x));
+}
+
 /// Newton on the saturation system for the free variables of `kind` (the other two keep their values in `s`). The
 /// compositions are iterated as logit(x), which keeps the iteration well scaled up to the pure-component ends.
 bool satNewton(Sat& s, SatKind kind, int maxIter = 60) {
@@ -346,10 +412,15 @@ bool satNewton(Sat& s, SatKind kind, int maxIter = 60) {
         ns.rowScale[i] = rowScale[i];
         ns.colScale[i] = colScale[free[i]];
         ns.logVar[i] = free[i] == 1 || free[i] == 4 || free[i] == 5;
+        ns.composition[i] = isComposition(free[i]);
         ns.maxStep[i] = maxStep[free[i]];
         ns.lower[i] = lower[free[i]];
         ns.upper[i] = upper[free[i]];
     }
+    ns.resolution = [&](const double* uv, double* out) {
+        for (int i = 0; i < 4; ++i)
+            out[i] = isComposition(free[i]) ? logitResolution(uv[i]) : std::abs(uv[i]) * 2.220446049250313e-16;
+    };
     double u[4];
     for (int i = 0; i < 4; ++i) u[i] = isComposition(free[i]) ? logitOf(s.v[free[i]]) : s.v[free[i]];
     double full[6];
@@ -377,7 +448,7 @@ bool satNewton(Sat& s, SatKind kind, int maxIter = 60) {
         }
         return true;
     };
-    if (!newtonSolve(ns, u, eval, 1e-11, maxIter)) return false;
+    if (!newtonSolve(ns, u, eval, 1e-12, maxIter)) return false;
     for (int i = 0; i < 4; ++i) s.v[free[i]] = isComposition(free[i]) ? sigmoid(u[i]) : u[i];
     // the trivial solution (one phase) satisfies every equation
     if (std::abs(s.v[2] - s.v[3]) < 1e-9 && std::abs(std::log(s.v[4] / s.v[5])) < 1e-6) return false;
@@ -436,6 +507,28 @@ double vaporDensityGuess(double T, double p, double y) {
     return p / (kR * T);
 }
 
+/// Root of g(z) in the logit of the liquid composition, z in [-16, 16] (g is NaN where there is no liquid, e.g. pure
+/// ammonia above its critical temperature). The ends are tried first; if one of them has no liquid the range is
+/// scanned for the first sign change between two valid points.
+bool solveLogitRoot(const std::function<double(double)>& g, double& z) {
+    const double lo = -16.0, hi = 16.0, glo = g(lo), ghi = g(hi);
+    if (std::isfinite(glo) && std::isfinite(ghi)) return brent(g, lo, hi, glo, ghi, 5e-3, z, 40);
+    double zPrev = 0.0, gPrev = 0.0;
+    bool havePrev = false;
+    for (double zz = lo; zz <= hi + 1e-9; zz += 2.0) {
+        const double gz = g(zz);
+        if (!std::isfinite(gz)) {
+            havePrev = false;
+            continue;
+        }
+        if (havePrev && (gPrev == 0.0 || gPrev * gz < 0.0)) return brent(g, zPrev, zz, gPrev, gz, 5e-3, z, 40);
+        zPrev = zz;
+        gPrev = gz;
+        havePrev = true;
+    }
+    return false;
+}
+
 bool guessBubbleT(double T, double xL, Sat& s) {
     const Fug f = liquidFugacities(T, xL);
     if (!f.ok) return false;
@@ -450,11 +543,8 @@ bool guessDewT(double T, double yV, Sat& s) {
         const Fug f = liquidFugacities(T, sigmoid(z));
         return f.ok ? std::log(f.f2 / f.f1) - target : std::numeric_limits<double>::quiet_NaN();
     };
-    const double lo = -16.0, hi = 16.0;
-    const double glo = g(lo), ghi = g(hi);
-    if (!std::isfinite(glo) || !std::isfinite(ghi)) return false;
     double z;
-    if (!brent(g, lo, hi, glo, ghi, 5e-3, z, 40)) return false;
+    if (!solveLogitRoot(g, z)) return false;
     const double xL = sigmoid(z);
     const Fug f = liquidFugacities(T, xL);
     if (!f.ok) return false;
@@ -468,11 +558,8 @@ bool guessTP(double T, double p, Sat& s) {
         const Fug f = liquidFugacities(T, sigmoid(z), p);
         return f.ok ? std::log((f.f1 + f.f2) / p) : std::numeric_limits<double>::quiet_NaN();
     };
-    const double lo = -16.0, hi = 16.0;
-    const double glo = g(lo), ghi = g(hi);
-    if (!std::isfinite(glo) || !std::isfinite(ghi)) return false;
     double z;
-    if (!brent(g, lo, hi, glo, ghi, 5e-3, z, 40)) return false;
+    if (!solveLogitRoot(g, z)) return false;
     const double xL = sigmoid(z);
     const Fug f = liquidFugacities(T, xL, p);
     if (!f.ok) return false;
@@ -737,6 +824,12 @@ FlashResult finishTwoPhase(Solution& sol, const Spec spec[3], const std::string&
     ns.lower[4] = ns.lower[5] = 1.0; ns.upper[4] = ns.upper[5] = 2e5;
     ns.lower[6] = 0.0; ns.upper[6] = 1.0; ns.lower[7] = -0.5; ns.upper[7] = 1.5;
 
+    ns.composition[2] = ns.composition[3] = true;
+    ns.resolution = [](const double* u, double* out) {
+        for (int k = 0; k < 8; ++k) out[k] = std::abs(u[k]) * 2.220446049250313e-16;
+        out[2] = logitResolution(u[2]);
+        out[3] = logitResolution(u[3]);
+    };
     // w holds the compositions as mole fractions; the iteration vector u holds their logits
     auto toW = [](const double* u, double* v) {
         for (int k = 0; k < 8; ++k) v[k] = u[k];
@@ -816,6 +909,8 @@ FlashResult finishSingle(Solution& sol, const Spec spec[3], const std::string& l
     ns.n = 3;
     for (int j = 0; j < 3; ++j) {
         ns.rowScale[j] = scaleOf(spec[j].prop, spec[j].value);
+        // the pressure of a liquid is a sum of terms of the size rho R T: its round-off is relative to that, not to p
+        if (spec[j].prop == Prop::P) ns.rowScale[j] = std::max(spec[j].value, s[1] * kR * s[0]);
         ns.maxStep[j] = 0.1;
         ns.colScale[j] = 1.0;
     }

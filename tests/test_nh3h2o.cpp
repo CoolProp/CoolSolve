@@ -577,3 +577,49 @@ TEST_CASE("NH3H2O flash: errors name the state", "[nh3h2o][flash]") {
     // an enthalpy below the sub-cooled range
     REQUIRE_THROWS_AS(flash(Prop::P, Prop::X, Prop::H, 1e6, 0.4, -1e8), std::runtime_error);
 }
+
+// ---------------------------------------------------------------------------
+// The solver is strict: the equilibrium equations hold at what it returns
+// ---------------------------------------------------------------------------
+
+namespace {
+/// p, mu_1 and mu_2 of a phase at (T, rho, x), recomputed here from the Helmholtz energy by second-order jets, with no
+/// code of the solver: p = rho^2 f_rho, mu_i = f + p/rho + (delta_i2 - x) f_x.
+struct IndependentPhase {
+    double p, mu1, mu2;
+};
+
+IndependentPhase independentPhase(double T, double rho, double x) {
+    const Jet<2> jT = Jet<2>::variable(T, 0), jR = Jet<2>::variable(rho, 1), jX = Jet<2>::variable(x, 2);
+    const Jet<2> f = coolsolve::nh3h2o::kR * jT * coolsolve::nh3h2o::reducedHelmholtz(jT, jR, jX);
+    const double fValue = f.value(), fRho = f.gradient(1), fX = f.gradient(2);
+    const double p = rho * rho * fRho, g = fValue + p / rho;
+    return {p, g - x * fX, g + (1.0 - x) * fX};
+}
+}  // namespace
+
+TEST_CASE("Saturation: the equilibrium equations hold to 1e-11 of their natural scales", "[nh3h2o][equilibrium]") {
+    // pressures are compared on the scale rho R T of a liquid (its pressure is a sum of terms of that size: round-off
+    // 3e-13 of it, measured), the chemical potentials on R * 300 K
+    using coolsolve::nh3h2o::kR;
+    int checked = 0;
+    for (double T : {280.0, 320.0, 360.0, 400.0})
+        for (double x : {0.05, 0.2, 0.5, 0.8, 0.95}) {
+            for (SatSpec spec : {SatSpec::BubbleT, SatSpec::DewT}) {
+                Saturation s;
+                try {
+                    s = saturation(spec, T, x);
+                } catch (const std::runtime_error&) {
+                    continue;   // above the critical locus: no two-phase state
+                }
+                const IndependentPhase L = independentPhase(s.T, s.rhoL, s.xL), V = independentPhase(s.T, s.rhoV, s.xV);
+                CAPTURE(T, x, static_cast<int>(spec), s.p, s.xL, s.xV);
+                CHECK(std::abs(L.p - s.p) <= 1e-11 * s.rhoL * kR * s.T);
+                CHECK(std::abs(V.p - s.p) <= 1e-11 * std::max(s.p, s.rhoV * kR * s.T));
+                CHECK(std::abs(L.mu1 - V.mu1) <= 1e-11 * kR * 300.0);
+                CHECK(std::abs(L.mu2 - V.mu2) <= 1e-11 * kR * 300.0);
+                ++checked;
+            }
+        }
+    CHECK(checked >= 30);
+}
