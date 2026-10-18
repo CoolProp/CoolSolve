@@ -746,3 +746,61 @@ TEST_CASE("NH3H2O fluid functions: exact derivatives through the evaluator (fini
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Near-pure ammonia: the refrigerant of an absorption chiller (0.9995 mass fraction)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Near-pure refrigerant: evaporation of 0.9995 ammonia has a large temperature glide and every state solves", "[nh3h2o][flash][near-pure]") {
+    // bubble point at -10 C, then the states of increasing quality at that pressure: the temperature rises by ~19 K
+    // between the start of the evaporation and the dew point, because the water accumulates in the liquid
+    const double x = 0.9995;
+    const FlashResult bubble = flash(Prop::T, Prop::X, Prop::Q, 263.15, x, 0.0);
+    const double p = bubble.pressure();
+    CHECK(p == Approx(2.9057e5).epsilon(2e-3));
+    double previousT = bubble.temperature(), previousH = bubble.enthalpy();
+    for (double q : {0.1, 0.5, 0.9, 0.95, 0.98, 0.99, 0.999, 1.0}) {
+        const FlashResult r = flash(Prop::P, Prop::X, Prop::Q, p, x, q);
+        CAPTURE(q);
+        REQUIRE(r.twoPhase);
+        CHECK(r.temperature() > previousT);
+        CHECK(r.enthalpy() > previousH);
+        previousT = r.temperature();
+        previousH = r.enthalpy();
+        // the quality given back by the state: (P, X, H) -> Q
+        if (q < 1.0)   // exactly saturated vapour is on the boundary: it is labelled single-phase (1.001), as documented
+            CHECK(flash(Prop::P, Prop::X, Prop::H, p, x, r.enthalpy()).quality() == Approx(q).margin(1e-8));
+    }
+    CHECK(previousT - 273.15 == Approx(8.9).margin(0.3));   // the dew point: +8.9 C
+    CHECK(flash(Prop::P, Prop::X, Prop::Q, p, x, 0.99).temperature() - 273.15 == Approx(-8.8).margin(0.1));
+}
+
+TEST_CASE("Near-pure compositions: bubble and dew points from the pure-ammonia side", "[nh3h2o][equilibrium][near-pure]") {
+    // mole fractions within 1e-2 of pure: the vapour water fraction is below 2e-4 and `1 - x` of a double is known to 1e-10 only
+    // there, so the equilibrium residual is checked against that resolution, not against 1e-11
+    using coolsolve::nh3h2o::kR;
+    for (double T : {263.15, 300.0, 340.0})
+        for (double xi : {0.99, 0.998, 0.9995}) {
+            const double x = coolsolve::nh3h2o::moleFractionOf(xi);
+            Saturation s;
+            try {
+                s = saturation(SatSpec::BubbleT, T, x);
+            } catch (const std::runtime_error& e) {
+                FAIL("bubble point failed at T = " << T << ", x = " << xi << ": " << e.what());
+            }
+            const IndependentPhase L = independentPhase(s.T, s.rhoL, s.xL), V = independentPhase(s.T, s.rhoV, s.xV);
+            const double wV = 1.0 - s.xV;   // water mole fraction of the vapour
+            CAPTURE(T, xi, s.p, s.xV);
+            CHECK(wV < 2e-4);
+            CHECK(std::abs(L.p - s.p) <= 1e-9 * s.rhoL * kR * s.T);
+            CHECK(std::abs(V.p - s.p) <= 1e-9 * s.p);
+            // mu_1 contains ln(1 - x): its resolution is kR T ulp / (1 - x) of the vapour
+            const double resolution = kR * s.T * 1.2e-16 / wV;
+            CHECK(std::abs(L.mu1 - V.mu1) <= 1e-9 * kR * 300.0 + 4.0 * resolution);
+            CHECK(std::abs(L.mu2 - V.mu2) <= 1e-9 * kR * 300.0);
+            // the dew point of the vapour of that bubble point gives back its pressure
+            const Saturation d = saturation(SatSpec::DewT, T, s.xV);
+            CHECK(d.p == Approx(s.p).epsilon(1e-6));
+            CHECK(d.xL == Approx(s.xL).epsilon(1e-6));
+        }
+}

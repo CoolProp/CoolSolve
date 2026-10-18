@@ -198,13 +198,97 @@ bool newtonSolve(const NewtonSetup& ns, double* v, const Evaluator& eval, double
             if (std::abs(F[i]) / ns.rowScale[i] > tol + 2.0 * floorOut[i]) return false;
         return true;
     };
+    // When one variable is quantised coarsely (a mole fraction near 1), the full Newton step asks it for a change that a double
+    // cannot represent and the other variables overshoot in response. Freeze that variable and the one row it dominates, solve
+    // the other rows strictly for the other variables, and move the frozen variable by Newton on the dropped row, whose
+    // sensitivity is then the Schur complement S = J[rq][jq] - J[rq][cols] M^-1 J[rows][jq]. The dropped row is accepted
+    // within two units of its quantisation floor |S| ulp (plus the measured noise); all the other rows satisfy `tol`.
+    auto frozenPolish = [&]() {
+        double u[8];
+        for (int j = 0; j < n; ++j) u[j] = std::abs(v[j]) * 2.220446049250313e-16;
+        if (ns.resolution) ns.resolution(v, u);
+        int jq = -1, rq = -1;
+        double best = 0.0;
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) {
+                const double c = std::abs(J[i][j]) * u[j] / ns.rowScale[i];
+                if (c > best) {
+                    best = c;
+                    jq = j;
+                    rq = i;
+                }
+            }
+        if (jq < 0 || best < 10.0 * tol || n < 2) return false;   // not a quantisation problem
+        double w[8], Fw[8], Jw[8][8];
+        for (int j = 0; j < n; ++j) w[j] = v[j];
+        for (int i = 0; i < n; ++i) {
+            Fw[i] = F[i];
+            for (int j = 0; j < n; ++j) Jw[i][j] = J[i][j];
+        }
+        int rows[8], cols[8], m = 0;
+        for (int i = 0; i < n; ++i)
+            if (i != rq) rows[m++] = i;
+        m = 0;
+        for (int j = 0; j < n; ++j)
+            if (j != jq) cols[m++] = j;
+        auto reducedMerit = [&]() {
+            double r = 0.0;
+            for (int i = 0; i < n; ++i)
+                if (i != rq) r = std::max(r, std::abs(Fw[i]) / ns.rowScale[i]);
+            return r;
+        };
+        auto step = [&](int j, double d) {
+            w[j] = ns.logVar[j] ? w[j] * std::exp(d / w[j]) : w[j] + d;
+            w[j] = std::min(std::max(w[j], ns.lower[j]), ns.upper[j]);
+        };
+        double quantisation = 0.0;
+        for (int outer = 0; outer < 6; ++outer) {
+            // the other variables for the other rows (Newton on the reduced system)
+            for (int it = 0; it < 6 && reducedMerit() >= tol; ++it) {
+                double A[8][8], B[8][8];
+                for (int a = 0; a < n - 1; ++a) {
+                    for (int b = 0; b < n - 1; ++b) A[a][b] = Jw[rows[a]][cols[b]] / ns.rowScale[rows[a]];
+                    B[a][0] = -Fw[rows[a]] / ns.rowScale[rows[a]];
+                }
+                if (!solveLinear(n - 1, A, 1, B)) return false;
+                for (int b = 0; b < n - 1; ++b) step(cols[b], B[b][0]);
+                if (!eval(w, Fw, Jw)) return false;
+            }
+            if (!(reducedMerit() < tol)) return false;
+            // the dropped row: its Schur complement and quantisation floor
+            double Mx[8][8], c[8][8];
+            for (int a = 0; a < n - 1; ++a) {
+                for (int b = 0; b < n - 1; ++b) Mx[a][b] = Jw[rows[a]][cols[b]];
+                c[a][0] = Jw[rows[a]][jq];
+            }
+            if (!solveLinear(n - 1, Mx, 1, c)) return false;
+            double S = Jw[rq][jq];
+            for (int b = 0; b < n - 1; ++b) S -= Jw[rq][cols[b]] * c[b][0];
+            double uq[8];
+            for (int j = 0; j < n; ++j) uq[j] = std::abs(w[j]) * 2.220446049250313e-16;
+            if (ns.resolution) ns.resolution(w, uq);
+            quantisation = std::abs(S) * uq[jq] / ns.rowScale[rq];
+            double floorOut[8];
+            if (!noiseFloor(ns, w, Fw, Jw, eval, floorOut)) return false;
+            const double allowed = tol + 2.0 * std::max(floorOut[rq], quantisation);
+            if (std::abs(Fw[rq]) / ns.rowScale[rq] <= allowed) {
+                for (int j = 0; j < n; ++j) v[j] = w[j];
+                for (int i = 0; i < n; ++i) F[i] = Fw[i];
+                return true;
+            }
+            if (!(std::abs(S) > 0.0)) return false;
+            step(jq, -Fw[rq] / S);   // Newton on the frozen variable, the others eliminated
+            if (!eval(w, Fw, Jw)) return false;
+        }
+        return false;
+    };
     double m0 = merit(F);
     int stalled = 0;
     for (int it = 0; it < maxIter; ++it) {
         if (!(m0 >= tol)) {
             return std::isfinite(m0);
         }
-        if (stalled >= 1 && atResolutionFloor()) return true;
+        if (stalled >= 1 && (atResolutionFloor() || frozenPolish())) return true;
         double A[8][8], B[8][8];
         for (int i = 0; i < n; ++i) {
             for (int j = 0; j < n; ++j) A[i][j] = J[i][j] / ns.rowScale[i];
@@ -231,7 +315,7 @@ bool newtonSolve(const NewtonSetup& ns, double* v, const Evaluator& eval, double
         if (!accepted) return false;
         stalled = mn < 0.5 * m0 ? 0 : stalled + 1;   // the iteration no longer lowers the residual
         if (mn >= m0) {   // keep the better point; it is the answer if nothing representable does better
-            return atResolutionFloor();
+            return atResolutionFloor() || frozenPolish();
         }
         for (int j = 0; j < n; ++j) v[j] = vn[j];
         for (int i = 0; i < n; ++i) {
@@ -507,6 +591,33 @@ double vaporDensityGuess(double T, double p, double y) {
     return p / (kR * T);
 }
 
+/// Fugacity coefficients of the vapour (T, p, y) against the ideal gas of the same composition,
+/// phi_i = f_i / (y_i p) with f_i the partial pressure the formulation gives (the same quantity as `Fug` for a liquid).
+/// They correct the ideal-vapour assumption of the guesses (about 2 % of the pressure of ammonia at 3 bar).
+struct VaporPhi {
+    bool ok = false;
+    double phi1 = 1.0, phi2 = 1.0;
+};
+
+VaporPhi vaporPhi(double T, double p, double y) {
+    VaporPhi out;
+    double rho;
+    if (!densityRoot(T, p, y, false, rho)) return out;
+    Phase ph;
+    try {
+        ph = evaluatePhase(T, rho, y);
+    } catch (const std::runtime_error&) {
+        return out;
+    }
+    double C1, C2;
+    idealGasConstants(T, C1, C2);
+    const double RT = kR * T, yc = clampX(y);
+    out.phi1 = std::exp((ph.mu1.value() - C1) / RT) / ((1.0 - yc) * p);
+    out.phi2 = std::exp((ph.mu2.value() - C2) / RT) / (yc * p);
+    out.ok = std::isfinite(out.phi1) && std::isfinite(out.phi2) && out.phi1 > 0.0 && out.phi2 > 0.0;
+    return out;
+}
+
 /// Root of g(z) in the logit of the liquid composition, z in [-16, 16] (g is NaN where there is no liquid, e.g. pure
 /// ammonia above its critical temperature). The ends are tried first; if one of them has no liquid the range is
 /// scanned for the first sign change between two valid points.
@@ -529,41 +640,76 @@ bool solveLogitRoot(const std::function<double(double)>& g, double& z) {
     return false;
 }
 
-bool guessBubbleT(double T, double xL, Sat& s) {
+bool guessBubbleT(double T, double xL, Sat& s, bool realVapour = true) {
     const Fug f = liquidFugacities(T, xL);
     if (!f.ok) return false;
-    const double p = f.f1 + f.f2, y = clampX(f.f2 / p);
+    double p = f.f1 + f.f2, y = clampX(f.f2 / p);
+    for (int pass = 0; pass < (realVapour ? 3 : 0); ++pass) {   // the vapour is not an ideal gas
+        const VaporPhi phi = vaporPhi(T, p, y);
+        if (!phi.ok) break;
+        p = f.f1 / phi.phi1 + f.f2 / phi.phi2;
+        y = clampX((f.f2 / phi.phi2) / p);
+    }
     s.v[0] = T; s.v[1] = p; s.v[2] = clampX(xL); s.v[3] = y; s.v[4] = f.rhoL; s.v[5] = vaporDensityGuess(T, p, y);
     return true;
 }
 
-bool guessDewT(double T, double yV, Sat& s) {
-    const double target = std::log(clampX(yV) / (1.0 - clampX(yV)));
-    auto g = [&](double z) {
-        const Fug f = liquidFugacities(T, sigmoid(z));
-        return f.ok ? std::log(f.f2 / f.f1) - target : std::numeric_limits<double>::quiet_NaN();
-    };
-    double z;
-    if (!solveLogitRoot(g, z)) return false;
-    const double xL = sigmoid(z);
-    const Fug f = liquidFugacities(T, xL);
-    if (!f.ok) return false;
-    const double y = clampX(yV), p = f.f1 / (1.0 - y);
+bool guessDewT(double T, double yV, Sat& s, bool realVapour = true) {
+    const double y = clampX(yV), target = std::log(y / (1.0 - y));
+    double phi1 = 1.0, phi2 = 1.0, p = 0.0, xL = 0.0;
+    Fug f;
+    for (int pass = 0; pass < (realVapour ? 3 : 1); ++pass) {   // the vapour is not an ideal gas: its fugacity coefficients follow p
+        auto g = [&](double z) {
+            const Fug fl = liquidFugacities(T, sigmoid(z));
+            return fl.ok ? std::log((fl.f2 / phi2) / (fl.f1 / phi1)) - target : std::numeric_limits<double>::quiet_NaN();
+        };
+        double z;
+        if (!solveLogitRoot(g, z)) return false;
+        xL = sigmoid(z);
+        f = liquidFugacities(T, xL);
+        if (!f.ok) return false;
+        p = (f.f1 / phi1) / (1.0 - y);
+        const VaporPhi phi = vaporPhi(T, p, y);
+        if (!phi.ok) break;
+        phi1 = phi.phi1;
+        phi2 = phi.phi2;
+    }
     s.v[0] = T; s.v[1] = p; s.v[2] = clampX(xL); s.v[3] = y; s.v[4] = f.rhoL; s.v[5] = vaporDensityGuess(T, p, y);
     return true;
 }
 
-bool guessTP(double T, double p, Sat& s) {
-    auto g = [&](double z) {
-        const Fug f = liquidFugacities(T, sigmoid(z), p);
-        return f.ok ? std::log((f.f1 + f.f2) / p) : std::numeric_limits<double>::quiet_NaN();
-    };
-    double z;
-    if (!solveLogitRoot(g, z)) return false;
-    const double xL = sigmoid(z);
-    const Fug f = liquidFugacities(T, xL, p);
-    if (!f.ok) return false;
-    const double y = clampX(f.f2 / (f.f1 + f.f2));
+bool guessTP(double T, double p, Sat& s, bool realVapour = true) {
+    double phi1 = 1.0, phi2 = 1.0, xL = 0.0, y = 0.0;
+    Fug f;
+    for (int pass = 0; pass < (realVapour ? 3 : 1); ++pass) {   // the vapour is not an ideal gas: its fugacity coefficients follow the composition
+        auto g = [&](double z) {
+            const Fug fl = liquidFugacities(T, sigmoid(z), p);
+            return fl.ok ? std::log((fl.f1 / phi1 + fl.f2 / phi2) / p) : std::numeric_limits<double>::quiet_NaN();
+        };
+        double z;
+        if (!solveLogitRoot(g, z)) {
+            // within a few percent of the pressure of the pure ammonia the ideal vapour has no root: start from the
+            // fugacity coefficients of an ammonia-rich vapour, as pure as the margin to the pure-ammonia pressure needs
+            if (pass > 0 || !realVapour) return false;
+            bool found = false;
+            for (const double yRich : {0.999999, 0.9999, 0.99}) {
+                const VaporPhi rich = vaporPhi(T, p, yRich);
+                if (!rich.ok) continue;
+                phi1 = rich.phi1;
+                phi2 = rich.phi2;
+                if ((found = solveLogitRoot(g, z))) break;
+            }
+            if (!found) return false;
+        }
+        xL = sigmoid(z);
+        f = liquidFugacities(T, xL, p);
+        if (!f.ok) return false;
+        y = clampX((f.f2 / phi2) / (f.f1 / phi1 + f.f2 / phi2));
+        const VaporPhi phi = vaporPhi(T, p, y);
+        if (!phi.ok) break;
+        phi1 = phi.phi1;
+        phi2 = phi.phi2;
+    }
     s.v[0] = T; s.v[1] = p; s.v[2] = clampX(xL); s.v[3] = y; s.v[4] = f.rhoL; s.v[5] = vaporDensityGuess(T, p, y);
     return true;
 }
@@ -592,12 +738,12 @@ double raoultTemperature(bool bubble, double p, double x) {
 
 /// A guess for a saturation solved at the pressure p: the temperature is searched so that the guess at T has this
 /// pressure (kind = bubble or dew at fixed composition), starting from Raoult's law.
-bool guessAtPressure(SatKind kind, double p, double x, Sat& s) {
+bool guessAtPressure(SatKind kind, double p, double x, Sat& s, bool realVapour = true) {
     const double target = std::log(p);
     constexpr double kFailed = 10.0;
     auto g = [&](double T) {
         Sat trial;
-        const bool ok = kind == kBubbleP ? guessBubbleT(T, x, trial) : guessDewT(T, x, trial);
+        const bool ok = kind == kBubbleP ? guessBubbleT(T, x, trial, realVapour) : guessDewT(T, x, trial, realVapour);
         return ok ? std::log(trial.v[1]) - target : kFailed;   // beyond the critical temperature: "too hot"
     };
     const double T0 = raoultTemperature(kind == kBubbleP, p, clampX(x));
@@ -616,7 +762,7 @@ bool guessAtPressure(SatKind kind, double p, double x, Sat& s) {
     if (!(glo < 0.0) || !(ghi > 0.0)) return false;
     double T;
     if (!brent(g, lo, hi, glo, ghi, 0.5, T, 60)) return false;
-    return kind == kBubbleP ? guessBubbleT(T, x, s) : guessDewT(T, x, s);
+    return kind == kBubbleP ? guessBubbleT(T, x, s, realVapour) : guessDewT(T, x, s, realVapour);
 }
 
 struct SatCache {
@@ -647,15 +793,18 @@ Sat satSolve(SatKind kind, double a, double b) {
             return s;
         }
     }
-    bool ok = false;
-    switch (kind) {
-        case kBubbleT: ok = guessBubbleT(a, b, s); break;
-        case kDewT: ok = guessDewT(a, b, s); break;
-        case kBubbleP: ok = guessAtPressure(kBubbleP, a, b, s); break;
-        case kDewP: ok = guessAtPressure(kDewP, a, b, s); break;
-        case kTP: ok = guessTP(a, b, s); break;
-    }
-    if (ok) {
+    // the guess with the vapour as a real gas first; the ideal-vapour guess (cruder, but it never over-corrects at high
+    // pressure) when Newton does not converge from it
+    for (const bool realVapour : {true, false}) {
+        bool ok = false;
+        switch (kind) {
+            case kBubbleT: ok = guessBubbleT(a, b, s, realVapour); break;
+            case kDewT: ok = guessDewT(a, b, s, realVapour); break;
+            case kBubbleP: ok = guessAtPressure(kBubbleP, a, b, s, realVapour); break;
+            case kDewP: ok = guessAtPressure(kDewP, a, b, s, realVapour); break;
+            case kTP: ok = guessTP(a, b, s, realVapour); break;
+        }
+        if (!ok) continue;
         s.v[kFixed[kind][0]] = a;
         s.v[kFixed[kind][1]] = pairTP ? b : clampX(b);
         if (satNewton(s, kind)) {
