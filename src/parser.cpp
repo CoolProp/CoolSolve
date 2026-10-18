@@ -666,6 +666,7 @@ private:
             "lookupcol", "lookupcol1", "lookupcellempty",
             "unitsystem", "error", "warning",  // UNITSYSTEM('K') and the built-in procedures CALL error('msg'), CALL warning('msg')
             "colebrook",  // the built-in procedure CALL Colebrook(Re, RR : f)
+            "nh3h2o",  // the built-in procedure CALL NH3H2O(Code, In1, In2, In3 : T, P, x, h, s, u, v, q)
             "ntumethod", "effectivenessntu",
             "lmtd",
             "integral", "integralvalue",  // equation-based dynamic solver

@@ -328,6 +328,12 @@ private:
     // CoolProp function evaluation
     ADValue evaluateCoolPropFunction(const FunctionCall& func);
 
+    // The EES ammonia-water mixture NH3H2O (src/evaluator_nh3h2o.cpp): its property functions, called from
+    // evaluateCoolPropFunction with the named inputs already evaluated, and the procedure CALL NH3H2O.
+    ADValue evaluateAmmoniaWaterFunction(const FunctionCall& func, const std::string& funcName,
+                                         std::map<std::string, ADValue>& inputs);
+    void evaluateAmmoniaWaterCall(const ProcedureCall& call);
+
     // Lookup table function evaluation (INTERPOLATE, LOOKUP, LOOKUP$ROW, etc.)
     ADValue evaluateLookupFunction(const FunctionCall& func);
 

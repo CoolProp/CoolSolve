@@ -16,7 +16,7 @@
  *     - PHASE$
  *   Fluids:
  *     - Incompressible solutions (MEG, MPG, CaCl2, ...)
- *     - Unsupported-fluid error messages (NH3H2O, LiBrH2O)
+ *     - Unsupported-fluid error messages (LiBrH2O; NH3H2O needs three properties)
  */
 
 #include <catch2/catch_test_macros.hpp>
@@ -333,7 +333,7 @@ TEST_CASE("Incompressible concentration via named arg C", "[priority2][incomp]")
 // Unsupported-fluid error messages
 // ============================================================================
 
-TEST_CASE("NH3H2O is marked unsupported with a clear error", "[priority2][fluids]") {
+TEST_CASE("NH3H2O with two state properties is refused with a clear error", "[priority2][fluids]") {
     coolsolve::EESParser parser;
     auto parseResult = parser.parse("y = DENSITY('NH3H2O', T=300, P=101325)");
     REQUIRE(parseResult.success);
@@ -420,5 +420,5 @@ TEST_CASE("FluidRegistry exposes new priority-2 fluids", "[priority2][fluids]") 
     
     auto f = FluidRegistry::getFluid("NH3H2O");
     REQUIRE(f != nullptr);
-    REQUIRE(f->getType() == FluidType::Unknown);
+    REQUIRE(f->getType() == FluidType::AmmoniaWater);
 }

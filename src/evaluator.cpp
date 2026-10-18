@@ -775,7 +775,12 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
                         colebrookFrictionFactor(evaluate(call.inputArgs[0]), evaluate(call.inputArgs[1])));
             return;
         }
-        // CALL Q_LIBR, Q_LiBrH2O, NH3H2O: EES procedures of the absorption pairs that are not implemented yet
+        // Built-in CALL NH3H2O(Code, In1, In2, In3 : T, P, x, h, s, u, v, q): the EES ammonia-water procedure
+        if (lowerName == "nh3h2o") {
+            evaluateAmmoniaWaterCall(call);
+            return;
+        }
+        // CALL Q_LIBR, Q_LiBrH2O: EES procedures of the absorption pairs that are not implemented yet
         if (const auto* routine = libr_ashrae::findRoutine(lowerName)) libr_ashrae::requireImplemented(*routine);
         throw std::runtime_error("Unknown procedure: " + call.name);
     }
@@ -1368,6 +1373,9 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         inputs[lowerArgName] = evaluate(argExpr);
     }
     
+    // The ammonia-water mixture NH3H2O has its own property model (src/evaluator_nh3h2o.cpp)
+    if (fluid->getType() == FluidType::AmmoniaWater) return evaluateAmmoniaWaterFunction(func, funcName, inputs);
+
     // Special case for molar mass (constant for pure fluids)
     if (funcName == "molarmass" || funcName == "mm") {
         if (fluid->getType() == FluidType::HumidAir) {

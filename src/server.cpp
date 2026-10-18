@@ -2493,6 +2493,7 @@ int startServer(const ServerOptions& options) {
                 case FluidType::HumidAir: typeStr = "HumidAir"; break;
                 case FluidType::Incompressible: typeStr = "Incompressible"; break;
                 case FluidType::Mixture: typeStr = "Mixture"; break;
+                case FluidType::AmmoniaWater: typeStr = "Mixture"; break;
                 default: typeStr = "Unknown"; break;
             }
             fluidsArr.push_back({
@@ -2541,6 +2542,7 @@ int startServer(const ServerOptions& options) {
                     case FluidType::HumidAir: typeStr = "humid air"; break;
                     case FluidType::Incompressible: typeStr = "incompressible fluid"; break;
                     case FluidType::Mixture: typeStr = "mixture"; break;
+                    case FluidType::AmmoniaWater: typeStr = "mixture (ammonia-water)"; break;
                     default: typeStr = "unsupported fluid type"; break;
                 }
                 json j = {{"error", "No saturation curve for " + typeStr + ": " + fluidName}};

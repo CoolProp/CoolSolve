@@ -20176,7 +20176,7 @@ TEST_CASE("CS-GAP-FLUIDS-ABS: the absorption cycle of the example water_libr (li
     CHECK_THAT(run["COP"], WithinRel(0.7466966108, 2e-4));
 }
 
-TEST_CASE("CS-GAP-FLUIDS-ABS: the unsupported fluids LiBrH2O and NH3H2O cite their register items; LiBrH2O points to the routines",
+TEST_CASE("CS-GAP-FLUIDS-ABS: the unsupported fluid LiBrH2O cites its register item and points to the routines; NH3H2O is a fluid of its own",
           "[library-gaps][libr]") {
     auto run = runModel("h = ENTHALPY(LiBrH2O, T=40, P=1E5)\n");
     REQUIRE_FALSE(run.solveOk);
@@ -20184,10 +20184,11 @@ TEST_CASE("CS-GAP-FLUIDS-ABS: the unsupported fluids LiBrH2O and NH3H2O cite the
     CHECK(anyContains({run.message}, "X_LIBR, H_LIBR, T_LIBR and P_LIBR"));
     CHECK(anyContains({run.message}, "CS-GAP-LIBR-PK"));
     CHECK_FALSE(anyContains({run.message}, "incompressible"));
+    // NH3H2O is no longer unsupported (CS-GAP-NH3H2O): two properties do not fix its state
     auto ammonia = runModel("h = ENTHALPY(NH3H2O, T=40, P=1E5)\n");
     REQUIRE_FALSE(ammonia.solveOk);
-    CHECK(anyContains({ammonia.message}, "NH3H2O"));
-    CHECK(anyContains({ammonia.message}, "CS-GAP-NH3H2O"));
+    CHECK(anyContains({ammonia.message}, "NH3H2O needs exactly three state properties"));
+    CHECK_FALSE(anyContains({ammonia.message}, "not supported"));
 }
 
 TEST_CASE("CS-GAP-FLUIDS-ABS: the other EES routines of the LiBr-H2O libraries are known and say that they are not implemented yet",
@@ -20220,14 +20221,11 @@ TEST_CASE("CS-GAP-FLUIDS-ABS: the other EES routines of the LiBr-H2O libraries a
     }
 }
 
-TEST_CASE("CS-GAP-FLUIDS-ABS: CALL Q_LIBR, Q_LiBrH2O and NH3H2O say that they are not implemented yet", "[library-gaps][libr]") {
+TEST_CASE("CS-GAP-FLUIDS-ABS: CALL Q_LIBR and Q_LiBrH2O say that they are not implemented yet", "[library-gaps][libr]") {
     struct Missing { const char* call; const char* message; };
     const Missing missing[] = {
         {"CALL Q_LIBR('SI', 40, 58.3 : q)", "Q_LIBR: EES LiBr-H2O routine not implemented in CoolSolve yet (register CS-GAP-FLUIDS-ABS)"},
         {"CALL Q_LiBrH2O(40, 0.5 : q)", "Q_LiBrH2O: EES LiBr-H2O routine not implemented in CoolSolve yet (register CS-GAP-LIBR-PK)"},
-        {"CALL NH3H2O(123, 300, 1E5, 0.5 : T, P, x, h, s, u, v, Qu)",
-         "NH3H2O: EES ammonia-water routine not implemented in CoolSolve yet (register CS-GAP-NH3H2O)"},
-        {"CALL nh3h2o(123, 300, 1E5, 0.5 : T, P, x, h, s, u, v, Qu)", "NH3H2O: EES ammonia-water routine not implemented"},
     };
     for (const auto& m : missing) {
         INFO(m.call);
@@ -21457,10 +21455,10 @@ TEST_CASE("CS-BUG-INCOMP-SOLIDS: the unsupported solids are not ideal gases and 
     REQUIRE(run.solveOk);
     CHECK_THAT(run["g1"], WithinAbs(0.0, 1e-12));
     CHECK_THAT(run["g2"], WithinAbs(0.0, 1e-12));
-    // the other unsupported fluids: their own reason, unchanged
+    // NH3H2O is a fluid of its own (CS-GAP-NH3H2O): two properties do not fix its state
     auto nh3 = runModel("y = density('NH3H2O', T=300, P=101325)\n");
     REQUIRE_FALSE(nh3.solveOk);
-    CHECK(anyContains({nh3.message}, "CS-GAP-NH3H2O"));
+    CHECK(anyContains({nh3.message}, "NH3H2O needs exactly three state properties"));
     CHECK_FALSE(anyContains({nh3.message}, "CS-BUG-INCOMP-SOLIDS"));
     auto libr = runModel("y = enthalpy(LiBrH2O, T=40, P=1e5)\n");
     REQUIRE_FALSE(libr.solveOk);
@@ -22012,4 +22010,82 @@ TEST_CASE("CS-BUG-FLUID-HINT-CO2: a registered fluid is never a misspelling", "[
         CHECK(anyContains(parseWarnings("w = humrat(Air, T=25, P=101325, R=0.5)\n"), "For moist air properties use AirH2O"));
         CHECK(anyContains(parseWarnings("w = wetbulb('Air', T=25, P=101325, R=0.5)\n"), "For moist air properties use AirH2O"));
     }
+}
+
+
+// ============================================================================
+// CS-GAP-NH3H2O: the EES ammonia-water mixture (fluid NH3H2O and CALL NH3H2O), IAPWS G4-01 in src/nh3h2o*.cpp
+// ============================================================================
+
+#include "coolsolve/nh3h2o.h"
+
+TEST_CASE("CS-GAP-NH3H2O: CALL NH3H2O returns the eight outputs in its own units (K, bar, kJ/kg)", "[library-gaps][nh3h2o]") {
+    using namespace coolsolve::nh3h2o;
+    const FlashResult ref = flash(Prop::T, Prop::P, Prop::X, 450.0, 1.0e6, 0.5);   // EES help example: v 0.2036, q 1.001
+    auto run = runModel("CALL NH3H2O(123, 450, 10, 0.5 : T, P, x, h, s, u, v, q)\n");
+    REQUIRE(run.parseOk);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+    CHECK_THAT(run["T"], WithinRel(450.0, 1e-12));
+    CHECK_THAT(run["P"], WithinRel(10.0, 1e-12));
+    CHECK_THAT(run["x"], WithinRel(0.5, 1e-12));
+    CHECK_THAT(run["h"], WithinRel(ref.enthalpy() / 1e3, 1e-9));
+    CHECK_THAT(run["s"], WithinRel(ref.entropy() / 1e3, 1e-9));
+    CHECK_THAT(run["u"], WithinRel(ref.internalEnergy() / 1e3, 1e-9));
+    CHECK_THAT(run["v"], WithinRel(ref.volume(), 1e-9));
+    CHECK_THAT(run["v"], WithinRel(0.2036, 2e-3));   // EES (Ibrahim & Klein)
+    CHECK(run["q"] == 1.001);
+    // a code with a quality: T, P, q (128) and P, x, q (238); fewer outputs are accepted
+    auto bubble = runModel("CALL NH3H2O(128, 323.15, 10, 0 : T, P, x)\n");
+    REQUIRE(bubble.solveOk);
+    CHECK_THAT(bubble["x"], WithinAbs(0.5953, 0.012));   // EES 0.5953 (a different formulation)
+    auto dew = runModel("CALL NH3H2O(238, 10, 0.98, 1 : T, P, x, h, s, u, v, q)\n");
+    REQUIRE(dew.solveOk);
+    CHECK_THAT(dew["q"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-NH3H2O: the model unknowns solve through the flash (derivatives of the fluid functions)", "[library-gaps][nh3h2o]") {
+    // the temperature of a given enthalpy, the pressure of a bubble point and the composition of a two-phase state
+    auto run = runModel(
+        "P1 = 1e6\nx1 = 0.5\nh1 = 100000\nh1 = Enthalpy(NH3H2O, T=T1, P=P1, X=x1)\n"
+        "T2 = 50\nx2 = 0.6\nP2 = Pressure(NH3H2O, T=T2, X=x2, Q=0)\n"
+        "Q3 = 0.4\nTb = 60\nPb = 8e5\nx3 = MassFraction(NH3H2O, T=Tb, P=Pb, Q=Q3)\n");
+    REQUIRE(run.parseOk);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    using namespace coolsolve::nh3h2o;
+    CHECK_THAT(run["T1"], WithinAbs(flash(Prop::P, Prop::X, Prop::H, 1e6, 0.5, 1e5).temperature() - 273.15, 1e-8));
+    CHECK_THAT(run["P2"], WithinRel(flash(Prop::T, Prop::X, Prop::Q, 323.15, 0.6, 0.0).pressure(), 1e-9));
+    CHECK_THAT(run["x3"], WithinRel(flash(Prop::T, Prop::P, Prop::Q, 333.15, 8e5, 0.4).massFraction(), 1e-9));
+    // a model with an unknown inside the call (a state that fixes T from the mass fraction of the bubble point)
+    auto implicit = runModel("x = 0.6\nP = 1e6\nx = MassFraction(NH3H2O, T=T, P=P, Q=0)\n");
+    REQUIRE(implicit.solveOk);
+    CHECK(implicit.verified);
+    CHECK_THAT(implicit["T"], WithinAbs(flash(Prop::P, Prop::X, Prop::Q, 1e6, 0.6, 0.0).temperature() - 273.15, 1e-7));
+}
+
+TEST_CASE("CS-GAP-NH3H2O: the errors name the state, the combination and the register item of the remainder", "[library-gaps][nh3h2o]") {
+    auto error = [](const std::string& line) {
+        auto run = runModel(line + "\n");
+        REQUIRE(run.parseOk);
+        REQUIRE_FALSE(run.solveOk);
+        return run.message;
+    };
+    CHECK(anyContains({error("y = Enthalpy(NH3H2O, T=300, P=1e5)")}, "NH3H2O needs exactly three state properties"));
+    CHECK(anyContains({error("y = Enthalpy(NH3H2O, T=300, P=1e5, X=0.5, Q=0)")}, "NH3H2O needs exactly three state properties"));
+    CHECK(anyContains({error("y = Enthalpy(NH3H2O, T=300, P=1e5, H=5e5)")}, "is not one of the combinations that fix an NH3H2O state"));
+    CHECK(anyContains({error("y = Enthalpy(NH3H2O, T=300, T=310, X=0.5)")}, "needs exactly three state properties"));   // a repeated designator is one input
+    CHECK(anyContains({error("y = Enthalpy(NH3H2O, T=300, P=1e5, W=0.5)")}, "not a property designator of NH3H2O"));
+    CHECK(anyContains({error("y = Viscosity(NH3H2O, T=300, P=1e5, X=0.5)")}, "transport properties of NH3H2O"));
+    CHECK(anyContains({error("y = Conductivity(NH3H2O, T=300, P=1e5, X=0.5)")}, "CS-GAP-NH3H2O"));
+    CHECK(anyContains({error("y = P_crit(NH3H2O)")}, "is not available for NH3H2O"));
+    CHECK(anyContains({error("y = SpecHeat(NH3H2O, T=80, X=0.5, Q=0.3)")}, "single-phase states only"));
+    CHECK(anyContains({error("CALL NH3H2O(129, 300, 1, 0.5 : T, P, x)")}, "is not one of 123"));
+    CHECK(anyContains({error("CALL NH3H2O(123, 300, 1 : T, P, x)")}, "takes 4 inputs"));
+    CHECK(anyContains({error("CALL NH3H2O(138, 300, 0.5, 1.5 : T, P, x)")}, "quality must be in [0, 1]"));
+    CHECK(anyContains({error("CALL NH3H2O(123, 300, 1, 1.5 : T, P, x)")}, "mass fraction must be in [0, 1]"));
+    CHECK(anyContains({error("y = Pressure(NH3H2O, T=427, X=0.5, Q=0.5)")}, "state: NH3H2O(T = 700"));   // 700 K: above the critical locus
 }

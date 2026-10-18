@@ -26,13 +26,12 @@ namespace coolsolve::libr_ashrae {
  * arguments. The derivatives are analytical (the implicit function theorem for `X_LIBR`).
  *
  * Future work. The property models of the absorption pairs are meant to be one module per correlation, side
- * by side, each giving values and analytical partial derivatives and all reached from the one evaluator entry
- * point (`evaluateAbsorptionFunction`, `src/evaluator.cpp`): `libr_ashrae` now; planned `libr_patek_klomfar`
- * for the functions `*_LiBrH2O` of the EES `LiBrH2O` library (Patek & Klomfar 2006; register item
- * `CS-GAP-LIBR-PK`) and `nh3h2o` for the EES procedure `NH3H2O` (Ibrahim & Klein 1993; register item
- * `CS-GAP-NH3H2O`). Until then the table of this module lists those EES routines, and the remaining ASHRAE
- * ones (`V_LIBR`, `Q_LIBR`, `VISC_LIBR`, `COND_LIBR`; `CS-GAP-FLUIDS-ABS`), as known but not implemented: a
- * call fails with a message naming the routine and the register item.
+ * by side: `libr_ashrae` now; planned `libr_patek_klomfar` for the functions `*_LiBrH2O` of the EES `LiBrH2O`
+ * library (Patek & Klomfar 2006; register item `CS-GAP-LIBR-PK`). The ammonia-water mixture has its own module,
+ * `nh3h2o` (IAPWS G4-01), reached through the fluid `NH3H2O` and `CALL NH3H2O` (`src/evaluator_nh3h2o.cpp`). Until
+ * then the table of this module lists the EES LiBr routines that are not implemented (`V_LIBR`, `Q_LIBR`, `VISC_LIBR`,
+ * `COND_LIBR`; `CS-GAP-FLUIDS-ABS`; the `*_LiBrH2O` ones) as known: a call fails with a message naming the routine and
+ * the register item.
  */
 
 /// Value of a routine and its partial derivatives with respect to its two numeric arguments, in argument order.

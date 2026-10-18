@@ -20,6 +20,7 @@ enum class FluidType {
     Incompressible,
     HumidAir,
     Mixture,
+    AmmoniaWater,   ///< the EES fluid NH3H2O: the IAPWS G4-01 formulation (nh3h2o.h), not CoolProp
     Unknown
 };
 
@@ -219,6 +220,18 @@ private:
     std::string name_;
     std::vector<std::string> components_;
     std::vector<double> moleFractions_;
+};
+
+/**
+ * @brief The ammonia-water mixture of EES (`NH3H2O`), evaluated by the module `nh3h2o` (IAPWS Guideline G4-01), not by
+ * CoolProp. The state is fixed by three of T, P, X (mass fraction of ammonia), Q (vapour mass fraction), H, S, U, V.
+ */
+class AmmoniaWaterFluid : public Fluid {
+public:
+    std::string getName() const override { return "NH3H2O"; }
+    std::string getCoolPropName() const override { return ""; }
+    FluidType getType() const override { return FluidType::AmmoniaWater; }
+    int getMinInputs() const override { return 3; }
 };
 
 class UnsupportedFluid : public Fluid {

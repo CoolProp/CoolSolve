@@ -273,10 +273,13 @@ void FluidRegistry::initialize() {
             "give the properties as constants or a correlation in the model (register CS-BUG-INCOMP-SOLIDS).");
     
     // --- Mixtures (unsupported in CoolProp with EES parameterization) ---
-    addUnsupported("NH3H2O",
-        "Ammonia-water mixture with EES correlation is not available in CoolProp. "
-        "Use REFPROP via \"REFPROP::Ammonia&Water\" backend or provide an external correlation "
-        "(the EES procedure NH3H2O is not implemented yet: register CS-GAP-NH3H2O).");
+    // Ammonia-water: EES procedure and fluid NH3H2O (Ibrahim & Klein 1993); here the IAPWS G4-01 formulation of
+    // Tillner-Roth & Friend 1998 (src/nh3h2o*.cpp), CS-GAP-NH3H2O
+    {
+        auto ammoniaWater = std::make_shared<AmmoniaWaterFluid>();
+        registry_["NH3H2O"] = ammoniaWater;
+        registry_["nh3h2o"] = ammoniaWater;
+    }
     addUnsupported("LiBrH2O",
         "Lithium-bromide-water solution with EES correlation is not available in CoolProp. "
         "Use the EES ASHRAE routines X_LIBR, H_LIBR, T_LIBR and P_LIBR "

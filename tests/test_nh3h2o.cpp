@@ -2,7 +2,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include "coolsolve/evaluator.h"
+#include "coolsolve/ir.h"
 #include "coolsolve/nh3h2o.h"
+#include "coolsolve/parser.h"
 #include "coolsolve/taylor_jet.h"
 #include "AbstractState.h"
 
@@ -622,4 +625,124 @@ TEST_CASE("Saturation: the equilibrium equations hold to 1e-11 of their natural 
             }
         }
     CHECK(checked >= 30);
+}
+
+// ---------------------------------------------------------------------------
+// The language: the fluid NH3H2O and CALL NH3H2O in the evaluator
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct AwCall {
+    double value;
+    std::vector<double> gradient;
+};
+
+/// Value and gradient of the property call `call` written with the variables `names` at `values`, straight from the
+/// automatic differentiation of the evaluator.
+AwCall evalAw(const std::string& call, const std::vector<std::string>& names, const std::vector<double>& values,
+              const coolsolve::CoolPropConfig& cfg = coolsolve::CoolPropConfig()) {
+    coolsolve::EESParser parser;
+    auto parsed = parser.parse("y = " + call + "\n");
+    REQUIRE(parsed.success);
+    auto ir = coolsolve::IR::fromAST(parsed.program);
+    coolsolve::ExpressionEvaluator ev(names.size(), cfg);
+    for (size_t i = 0; i < names.size(); ++i)
+        ev.setVariable(names[i], coolsolve::ADValue::independent(values[i], i, names.size()));
+    const coolsolve::ADValue r = ev.evaluate(ir.getEquations()[0].rhs);
+    return {r.value, r.gradient};
+}
+
+std::string awError(const std::string& call) {
+    try {
+        evalAw(call, {}, {});
+    } catch (const std::exception& e) {
+        return e.what();
+    }
+    return "";
+}
+
+}  // namespace
+
+TEST_CASE("NH3H2O fluid functions: the values of the module in the default units (C, Pa, J/kg)", "[nh3h2o][evaluator]") {
+    const FlashResult ref = flash(Prop::T, Prop::P, Prop::X, 283.15, 1.0e6, 0.5);
+    const std::vector<std::string> names = {"Tv", "Pv", "xv"};
+    const std::vector<double> values = {10.0, 1.0e6, 0.5};
+    CHECK(evalAw("Enthalpy(NH3H2O, T=Tv, P=Pv, X=xv)", names, values).value == Approx(ref.enthalpy()).epsilon(1e-12));
+    CHECK(evalAw("Entropy(NH3H2O, T=Tv, P=Pv, X=xv)", names, values).value == Approx(ref.entropy()).epsilon(1e-12));
+    CHECK(evalAw("IntEnergy(NH3H2O, T=Tv, P=Pv, X=xv)", names, values).value == Approx(ref.internalEnergy()).epsilon(1e-12));
+    CHECK(evalAw("Volume(NH3H2O, T=Tv, P=Pv, X=xv)", names, values).value == Approx(ref.volume()).epsilon(1e-12));
+    CHECK(evalAw("Density(NH3H2O, T=Tv, P=Pv, X=xv)", names, values).value == Approx(1.0 / ref.volume()).epsilon(1e-12));
+    CHECK(evalAw("Quality(NH3H2O, T=Tv, P=Pv, X=xv)", names, values).value == -0.001);
+    CHECK(evalAw("Temperature(NH3H2O, P=Pv, X=xv, H=hv)", {"Pv", "xv", "hv"}, {1.0e6, 0.5, ref.enthalpy()}).value ==
+          Approx(10.0).margin(1e-9));
+    const auto extras = singlePhaseExtras(Prop::T, Prop::P, Prop::X, 283.15, 1.0e6, 0.5);
+    CHECK(evalAw("SpecHeat(NH3H2O, T=Tv, P=Pv, X=xv)", names, values).value == Approx(extras.cp).epsilon(1e-12));
+    CHECK(evalAw("Cp(NH3H2O, T=Tv, P=Pv, X=xv)", names, values).value == Approx(extras.cp).epsilon(1e-12));
+    CHECK(evalAw("VolExpCoef(NH3H2O, T=Tv, P=Pv, X=xv)", names, values).value == Approx(extras.expansion).epsilon(1e-12));
+    // the fluid name is read in any case and as a string
+    CHECK(evalAw("Enthalpy('nh3h2o', T=Tv, P=Pv, X=xv)", names, values).value == Approx(ref.enthalpy()).epsilon(1e-12));
+    // a two-phase state: the mass fraction of the bubble point at 50 C and 10 bar
+    const FlashResult bubble = flash(Prop::T, Prop::P, Prop::Q, 323.15, 1.0e6, 0.0);
+    CHECK(evalAw("MassFraction(NH3H2O, T=Tv, P=Pv, Q=qv)", {"Tv", "Pv", "qv"}, {50.0, 1.0e6, 0.0}).value ==
+          Approx(bubble.massFraction()).epsilon(1e-12));
+}
+
+TEST_CASE("NH3H2O fluid functions: another unit system (K, bar, kJ/kg)", "[nh3h2o][evaluator]") {
+    coolsolve::CoolPropConfig cfg;
+    cfg.units.temperature = "K";
+    cfg.units.pressure = "bar";
+    cfg.units.specific_energy = "kJ/kg";
+    cfg.units.specific_entropy = "kJ/kg-K";
+    cfg.units.specific_heat = "kJ/kg-K";
+    const FlashResult ref = flash(Prop::T, Prop::P, Prop::X, 450.0, 1.0e6, 0.5);
+    const std::vector<std::string> names = {"Tv", "Pv", "xv"};
+    const std::vector<double> values = {450.0, 10.0, 0.5};
+    CHECK(evalAw("Enthalpy(NH3H2O, T=Tv, P=Pv, X=xv)", names, values, cfg).value == Approx(ref.enthalpy() / 1e3).epsilon(1e-12));
+    CHECK(evalAw("Entropy(NH3H2O, T=Tv, P=Pv, X=xv)", names, values, cfg).value == Approx(ref.entropy() / 1e3).epsilon(1e-12));
+    CHECK(evalAw("Pressure(NH3H2O, T=Tv, X=xv, V=vv)", {"Tv", "xv", "vv"}, {450.0, 0.5, ref.volume()}, cfg).value ==
+          Approx(10.0).margin(1e-8));
+    // the gradient follows the units: d h[kJ/kg] / d P[bar] = dh/dP * 1e5 / 1e3
+    const FlashResult plus = flash(Prop::T, Prop::P, Prop::X, 450.0, 1.0e6 + 100.0, 0.5);
+    const FlashResult minus = flash(Prop::T, Prop::P, Prop::X, 450.0, 1.0e6 - 100.0, 0.5);
+    const double dhdp = (plus.enthalpy() - minus.enthalpy()) / 200.0;
+    const AwCall h = evalAw("Enthalpy(NH3H2O, T=Tv, P=Pv, X=xv)", names, values, cfg);
+    CHECK(h.gradient[1] == Approx(dhdp * 1e5 / 1e3).epsilon(1e-6));
+    // specific heat in kJ/kg-K
+    const auto extras = singlePhaseExtras(Prop::T, Prop::P, Prop::X, 450.0, 1.0e6, 0.5);
+    CHECK(evalAw("SpecHeat(NH3H2O, T=Tv, P=Pv, X=xv)", names, values, cfg).value == Approx(extras.cp / 1e3).epsilon(1e-12));
+}
+
+TEST_CASE("NH3H2O fluid functions: exact derivatives through the evaluator (finite differences of the call)", "[nh3h2o][evaluator]") {
+    struct Case {
+        std::string call;
+        std::vector<std::string> names;
+        std::vector<double> values;
+    };
+    const std::vector<Case> cases = {
+        {"Enthalpy(NH3H2O, T=Tv, P=Pv, X=xv)", {"Tv", "Pv", "xv"}, {30.0, 5e5, 0.4}},                 // liquid
+        {"Entropy(NH3H2O, T=Tv, P=Pv, X=xv)", {"Tv", "Pv", "xv"}, {150.0, 5e5, 0.9}},                 // vapour
+        {"Volume(NH3H2O, T=Tv, P=Pv, X=xv)", {"Tv", "Pv", "xv"}, {77.0, 8e5, 0.5533}},                // two-phase
+        {"Density(NH3H2O, T=Tv, P=Pv, X=xv)", {"Tv", "Pv", "xv"}, {30.0, 5e5, 0.4}},
+        {"Temperature(NH3H2O, P=Pv, X=xv, Q=qv)", {"Pv", "xv", "qv"}, {8e5, 0.5533, 0.3}},
+        {"Pressure(NH3H2O, T=Tv, X=xv, Q=qv)", {"Tv", "xv", "qv"}, {60.0, 0.5, 0.2}},
+        {"MassFraction(NH3H2O, T=Tv, P=Pv, Q=qv)", {"Tv", "Pv", "qv"}, {60.0, 8e5, 0.4}},
+        {"Temperature(NH3H2O, P=Pv, X=xv, H=hv)", {"Pv", "xv", "hv"}, {1e6, 0.4, 1.5e5}},
+        {"SpecHeat(NH3H2O, T=Tv, P=Pv, X=xv)", {"Tv", "Pv", "xv"}, {30.0, 5e5, 0.4}},
+        {"VolExpCoef(NH3H2O, T=Tv, P=Pv, X=xv)", {"Tv", "Pv", "xv"}, {30.0, 5e5, 0.4}},
+    };
+    for (const Case& c : cases) {
+        const AwCall base = evalAw(c.call, c.names, c.values);
+        for (size_t j = 0; j < c.values.size(); ++j) {
+            const double h = 1e-4 * std::max(std::abs(c.values[j]), 1e-2);
+            auto at = [&](double k) {
+                std::vector<double> v = c.values;
+                v[j] += k * h;
+                return evalAw(c.call, c.names, v).value;
+            };
+            const double fd = (-at(2.0) + 8.0 * at(1.0) - 8.0 * at(-1.0) + at(-2.0)) / (12.0 * h);
+            INFO(c.call << " d/d" << c.names[j] << ": exact " << base.gradient[j] << ", finite difference " << fd);
+            CHECK(std::abs(base.gradient[j] - fd) <= 1e-4 * std::max({std::abs(fd), std::abs(base.gradient[j]), 1e-9}));
+        }
+    }
 }

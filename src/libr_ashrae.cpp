@@ -33,11 +33,10 @@ constexpr const char* kAshraeMissing =
 constexpr const char* kPatekKlomfarMissing =
     "EES LiBr-H2O routine not implemented in CoolSolve yet (register CS-GAP-LIBR-PK); the ASHRAE routines X_LIBR, "
     "H_LIBR, T_LIBR, P_LIBR are available";
-constexpr const char* kAmmoniaWaterMissing = "EES ammonia-water routine not implemented in CoolSolve yet (register CS-GAP-NH3H2O)";
 
 /// The routines: the four implemented ones (the descriptors of the messages below), then the known EES routines of
 /// the absorption pairs that are not implemented: the rest of the ASHRAE library, the Patek-Klomfar library
-/// (functions `*_LiBrH2O`, procedure `Q_LiBrH2O`) and the ammonia-water procedure.
+/// (functions `*_LiBrH2O`, procedure `Q_LiBrH2O`).
 const Routine kRoutines[] = {
     {"X_LIBR", "T", "P", &concentration, nullptr},
     {"H_LIBR", "T", "X", &enthalpy, nullptr},
@@ -59,7 +58,6 @@ const Routine kRoutines[] = {
     {"MassFraction_LiBrH2O", nullptr, nullptr, nullptr, kPatekKlomfarMissing},
     {"MoleFraction_LiBrH2O", nullptr, nullptr, nullptr, kPatekKlomfarMissing},
     {"Q_LiBrH2O", nullptr, nullptr, nullptr, kPatekKlomfarMissing},
-    {"NH3H2O", nullptr, nullptr, nullptr, kAmmoniaWaterMissing},
 };
 const Routine& kConcentrationRoutine = kRoutines[0];
 const Routine& kEnthalpyRoutine = kRoutines[1];
@@ -161,8 +159,8 @@ Roots stationaryPoints(double tPrime) {
 }  // namespace
 
 const Routine* findRoutine(const std::string& lowerName) {
-    // the names end with _libr or _librh2o, except NH3H2O: the table is searched only for those
-    if (!(endsWith(lowerName, "_libr") || endsWith(lowerName, "_librh2o") || lowerName == "nh3h2o")) return nullptr;
+    // the names end with _libr or _librh2o: the table is searched only for those
+    if (!(endsWith(lowerName, "_libr") || endsWith(lowerName, "_librh2o"))) return nullptr;
     for (const Routine& routine : kRoutines)
         if (eesStringEqual(routine.name, lowerName)) return &routine;
     return nullptr;
