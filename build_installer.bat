@@ -6,11 +6,18 @@ setlocal
 ::
 :: Requirements:
 ::   - Visual Studio 2022 with C++ Desktop Development workload
+::   - Git (on PATH): CMake clones CoolProp and the model library
 ::   - Node.js (https://nodejs.org) for the React GUI frontend
 ::   - Python 3 (e.g. Anaconda) — needed by CoolProp's CMake scripts
 ::   - NSIS (https://nsis.sourceforge.net) for the installer
 ::
 :: Update the paths in Section 1 if your installation differs.
+::
+:: Release build: the model library embedded in coolsolve.exe is the tag
+:: (or branch) named by the LIBRARY_TAG environment variable, "main" by
+:: default. A release embeds the tagged library, e.g.:
+::   set "LIBRARY_TAG=v0.4"
+::   build_installer.bat
 :: ============================================================
 
 :: --- Section 1: Configuration ---
@@ -19,8 +26,15 @@ setlocal
 set "ANACONDA_DIR=E:\Anaconda"
 set "CONDA_ENV=fast_numpy_env"
 
-:: CMake shipped with Visual Studio 2022 (Build Tools or Community).
+:: CMake shipped with Visual Studio 2022 (Build Tools or Community). When it
+:: is not there, the cmake found on PATH is used (checked in Section 2).
 set "CMAKE_EXE=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+if not exist "%CMAKE_EXE%" set "CMAKE_EXE=cmake"
+
+:: Tag or branch of the model library to embed (see the header). It is always
+:: passed to CMake: a build directory keeps the tag it cached, so a release
+:: tag would otherwise stay in the cache of later development builds.
+if not defined LIBRARY_TAG set "LIBRARY_TAG=main"
 
 :: NSIS installer compiler.
 set "MAKENSIS_EXE=C:\Program Files (x86)\NSIS\makensis.exe"
@@ -46,6 +60,32 @@ if exist "%ANACONDA_DIR%\Scripts\activate.bat" (
     call "%ANACONDA_DIR%\Scripts\activate.bat" %CONDA_ENV%
 ) else (
     echo WARNING: Anaconda not found at "%ANACONDA_DIR%" — relying on Python auto-discovery.
+)
+
+:: Git: FetchContent clones CoolProp and the model library at configure time.
+where git >nul 2>&1
+if errorlevel 1 (
+    echo.
+    echo ERROR: git was not found on PATH. CMake needs it to fetch CoolProp
+    echo        and the model library. Install Git for Windows
+    echo        ^(https://git-scm.com/download/win^) and re-run this script.
+    echo.
+    pause
+    exit /b 1
+)
+
+:: CMake: the one of Visual Studio 2022 (Section 1) or, failing that, the one on PATH.
+if /i "%CMAKE_EXE%"=="cmake" (
+    where cmake >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo ERROR: cmake was not found: neither the Visual Studio 2022 one ^(see CMAKE_EXE
+        echo        in Section 1^) nor one on PATH. Install CMake or the Visual Studio 2022
+        echo        C++ Desktop Development workload, then re-run this script.
+        echo.
+        pause
+        exit /b 1
+    )
 )
 
 :: CoolProp's CMake calls find_package(Python) at configure time and
@@ -110,7 +150,13 @@ if %ERRORLEVEL% neq 0 (
 echo [3/5] Configuring CMake...
 if not exist "%PROJECT_DIR%\build" mkdir "%PROJECT_DIR%\build"
 cd "%PROJECT_DIR%\build"
-"%CMAKE_EXE%" "%PROJECT_DIR%" -G "Visual Studio 17 2022" -A x64 -DCOOLSOLVE_BUILD_GUI=ON -DCOOLSOLVE_BUILD_TESTS=OFF -DPython_EXECUTABLE="%PYTHON_EXE%"
+echo        Model library: %LIBRARY_TAG%
+:: The embedded library is about 50 MB of C++ arrays: the 32-bit MSVC host
+:: compiler can run out of heap on it (C1060). Ask MSBuild for the 64-bit host
+:: tools; unlike -T host=x64 this does not change the generator settings cached
+:: in an existing build directory.
+set "PreferredToolArchitecture=x64"
+"%CMAKE_EXE%" "%PROJECT_DIR%" -G "Visual Studio 17 2022" -A x64 -DCOOLSOLVE_BUILD_GUI=ON -DCOOLSOLVE_BUILD_TESTS=OFF -DCOOLSOLVE_LIBRARY_TAG="%LIBRARY_TAG%" -DPython_EXECUTABLE="%PYTHON_EXE%"
 if %ERRORLEVEL% neq 0 (
     echo Error during CMake configuration.
     pause
@@ -129,23 +175,28 @@ if %ERRORLEVEL% neq 0 (
 :: --- Section 6: Generate installer ---
 echo [5/5] Generating Windows Installer...
 cd "%PROJECT_DIR%"
-if exist "%MAKENSIS_EXE%" (
-    "%MAKENSIS_EXE%" "%PROJECT_DIR%\coolsolve.nsi"
-    if %ERRORLEVEL% neq 0 (
-        echo Error during installer generation.
-        pause
-        exit /b %ERRORLEVEL%
-    )
-    echo.
-    echo SUCCESS! CoolSolve_Installer.exe has been created in:
-    echo   %PROJECT_DIR%
-) else (
-    echo.
-    echo WARNING: makensis.exe not found at "%MAKENSIS_EXE%"
-    echo Install NSIS from https://nsis.sourceforge.net and rerun,
-    echo or run manually:  makensis "%PROJECT_DIR%\coolsolve.nsi"
+if not exist "%MAKENSIS_EXE%" goto :no_nsis
+"%MAKENSIS_EXE%" "%PROJECT_DIR%\coolsolve.nsi"
+if errorlevel 1 (
+    echo Error during installer generation.
+    pause
+    exit /b 1
 )
+:: The installer is named after the version in coolsolve.nsi (CoolSolve_v<VERSION>_Installer.exe).
+set "INSTALLER_NAME="
+for /f "delims=" %%F in ('dir /b /o-d "%PROJECT_DIR%\CoolSolve_v*_Installer.exe" 2^>nul') do if not defined INSTALLER_NAME set "INSTALLER_NAME=%%F"
+echo.
+echo SUCCESS! %INSTALLER_NAME% has been created in:
+echo   %PROJECT_DIR%
+goto :done
 
+:no_nsis
+echo.
+echo WARNING: makensis.exe not found at "%MAKENSIS_EXE%"
+echo Install NSIS from https://nsis.sourceforge.net and rerun,
+echo or run manually:  makensis "%PROJECT_DIR%\coolsolve.nsi"
+
+:done
 pause
 endlocal
 exit /b 0

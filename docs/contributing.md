@@ -619,8 +619,9 @@ same for the model library: `./coolsolve --version` prints its commit and
 snapshot hash. A release should embed a **tagged** library, so that the release
 can be rebuilt identically: ask the library maintainer to tag it
 (`git tag vX.Y` in `CoolSolve_Library`) and build with
-`cmake -DCOOLSOLVE_LIBRARY_TAG=vX.Y ..` (add it to `build_installer.bat` for the
-release build, then restore the default `main`).
+`cmake -DCOOLSOLVE_LIBRARY_TAG=vX.Y ..`. The Windows script takes the tag from the
+`LIBRARY_TAG` environment variable (`set "LIBRARY_TAG=vX.Y"` before running
+`build_installer.bat`, §9.6) and passes `main` when it is not set.
 
 ### 9.4 Run the full test suite
 
@@ -667,10 +668,11 @@ docs — that is expected and harmless.
 On a Windows machine with Visual Studio 2022, Python 3, Node.js, and NSIS:
 
 ```bat
+set "LIBRARY_TAG=vX.Y"
 build_installer.bat
 ```
 
-This produces `CoolSolve_vX.Y_Installer.exe` in the project root. Do **not**
+`LIBRARY_TAG` is the tag of the model library to embed (§9.3). This produces `CoolSolve_vX.Y_Installer.exe` in the project root. Do **not**
 commit the `.exe` to git; it is attached to the GitHub Release in §9.7.
 
 ### 9.7 Publish the GitHub Release
