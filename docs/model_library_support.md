@@ -457,17 +457,20 @@ incompressible items: `CS-GAP-FLUIDS-ABS` (ASHRAE LiBr part: `X_LIBR`, `H_LIBR`,
 module `src/libr_ashrae.cpp`; solved in CoolSolve, not CoolProp: EES's ASHRAE correlation and API are needed, and
 CoolProp's `INCOMP::LiBr` has no enthalpy of mixing), `CS-BUG-INCOMP-LIBR`, `CS-GAP-INCOMPRESSIBLE` (EES form
 `cp('EG',T=T,C=30)`), `CS-BUG-INCOMP-SEAWATER`, `CS-BUG-INCOMP-SOLIDS` and `CS-BUG-INCOMP-CONC-AD` (incompressibles now
-go through CoolProp's AbstractState). Placeholders for future work: `CS-GAP-LIBR-PK` (a more recent LiBr-H2O
-correlation, the EES `LiBrH2O` library of Pátek & Klomfar) and `CS-GAP-NH3H2O` (ammonia-water) are register rows,
-and their EES routines are known names that fail with a message naming the register item (one dispatch point,
-`evaluateAbsorptionFunction`, `src/evaluator.cpp`; module layout in `include/coolsolve/libr_ashrae.h`). Registered
+go through CoolProp's AbstractState). Placeholder for future work: `CS-GAP-LIBR-PK` (a more recent LiBr-H2O
+correlation, the EES `LiBrH2O` library of Pátek & Klomfar) is a register row, and its EES routines are known
+names that fail with a message naming the register item (one dispatch point, `evaluateAbsorptionFunction`,
+`src/evaluator.cpp`; module layout in `include/coolsolve/libr_ashrae.h`); `CS-GAP-NH3H2O` (ammonia-water) was
+a placeholder too and is implemented since (round 4, below). Registered
 along the way (P3, open): `CS-BUG-INTERNALENERGY-UNQUOTED`, `CS-BUG-HINT-ARG-DEFAULT`. Nothing is pushed.
 
 **Round 4 (2026-10-18, v0.4 preparation).** `fix/library-gaps-4` is merged into `main` (fast-forward, not pushed
 yet); the unit hints are fixed (`CS-BUG-HINT-FAHRENHEIT`, `CS-BUG-HINT-ARG-DEFAULT`, `CS-BUG-FLUID-HINT-CO2`, §7).
-Unit suite 1182 test cases, examples 43/46. The release plan and the next steps (NH3H2O with the IAPWS 2001
-formulation, library re-checks, Windows scripts) are in the temporary handover `HANDOVER_v0.4.md` at the root of
-the repository (not committed).
+`CS-GAP-NH3H2O` is implemented on the branch `feat/nh3h2o` (IAPWS G4-01; **not merged into `main`**: it adds a solver
+core of its own and small hooks in the shared evaluator, to be reviewed — [nh3h2o_review.md](nh3h2o_review.md));
+the Windows installer script is fixed on the same branch (`3d2ca05`). Unit suite 1209 test cases, examples 43/46
+(see the baselines below); the library re-checks are done (above). The release plan is in the temporary handover
+`HANDOVER_v0.4.md` at the root of the repository (not committed).
 
 **Open points of round 3** (choices of the implementers, to confirm in EES or by the maintainer):
 an `ENDIF` that closes no `IF` in a body is ignored with warning `P008` (evidence: `Brineprop.lib`);
@@ -481,82 +484,34 @@ down); the indexed `PRODUCT` form is assumed to exist in EES. A terminating recu
 call cycle, as the EES help says; the evaluator nests at most 200 routine calls. A local assigned only on a path that an IF or a GOTO skips reads as a default value at run
 time (the body check is flow-insensitive, text order).
 
-**Library follow-ups of round 3** (re-checks, to do in the library working tree when the parallel
-work there allows it; library workflow §6):
-- `CSL-0079` *brineprop_secondary_refrigerants* and `CSL-0072` *centrifugal_brine_pump_refsim*: the native
-  files solve unchanged since `CS-GAP-ELSEIF-CHAIN` + `CS-GAP-UPPERCASE` (warnings `P008` for the
-  surplus `ENDIF`s of `Brineprop.lib`), 4.8e-10 and 2.1e-10 from their `_coolsolve` variants: status
-  `verified` on the native file, native `.sol`, variant deleted, README/header without history.
-- `CSL-0078` *brine_to_water_heat_pump_refsim*: remove the two IDs from `missing_features`; the native
-  `BRINEPROP` now runs (a hybrid of the variant with the native procedure agrees to 1.1e-10), but the
-  native file stays over-determined (164 equations, 161 unknowns: `P_ev`, `P_cd`, `M_dot_r` fixed at the
-  stored EES values) and, without them, its 76-variable block does not converge.
-- `CSL-0035` *centrifugal_compressor_lookup_map*: the native file solves since `CS-GAP-INTERP-EES` +
-  `CS-GAP-INTERP-EXTRAP` and reproduces its EES stored point at r_p = 6 (`epsilon_s` 1.093333, `M_r` 29.9,
-  `M_dot` 1e-11; `W_dot` 9.6e-4, the documented EES-vs-CoolProp `w_s` deviation): status `verified` on the
-  native file, variant deleted, README/header without history.
-- `CSL-0157` *reciprocating_catalogue_r717*: the native file solves unchanged since `CS-GAP-LOOKUP-NONAME`
-  (and `CS-BUG-DUPLICATE-VAR-BOUND`) and equals its runnable variant (399 variables): status `verified` on the
-  native file, variant deleted, README/header without history.
-- `CSL-0122`, `CSL-0129`: write the faithful indexed `SUM` (they expand it by hand); `CSL-0127`, `CSL-0144`: their
-  `DUPLICATE` workarounds of `CS-BUG-DUPLICATE-INDEX-EXPR` may be simplified; `CSL-0154`: the native file solves.
-- `CSL-0152`: remove `CS-GAP-SUM-INDEXED` (still blocked by `CS-GAP-INCOMPRESSIBLE`, `CS-GAP-MOLARMASS-ELEMENT`);
-  `CSL-0150`: remove `CS-GAP-SUM-INDEXED` (square now, still blocked by `CS-GAP-CHEM-EQUIL`).
-- `CSL-0123` *ari compressor correlation*: the original `convert('lbm/hr','kg/s')` can be restored (it gives the EES
-  factor since `CS-BUG-CONVERT-UNIT`); its stored `M_dot` (437.70 lbm/hr) is not reproduced because the table of the
-  model holds another catalogue vintage (4.283 lbm/hr, noted in its README). `docs/ees_import.md` §6.2 (prefer
-  converted numbers over `CONVERT`) can be relaxed.
-- `CSL-0159` *orc_void_fraction_charge*: the native file solves since `CS-BUG-HUMIDAIR-PROPS` (`rho_sf_cd` 1.19067 vs
-  EES 1.19030); its variant's `(1+w)/volume` is +0.76 % (the README attributes it to CoolProp vs EES: it is the (1+w) factor).
-- `CSL-0075` *iso5167_orifice_plate_flow_rate*: the native file solves unchanged (the `isidealgas` call is in a branch not
-  taken: a warning); `Di_dph` 0.0170225 vs the EES stored 0.0170282 (−3.3e-4); the variant's `Gamma` formula gives 1.386
-  where CoolProp's real-mixture `cv` gives 1.4095 at 8 bar: re-check, then status and variant.
-- `CSL-0081` *vertical_ghes_refsim*: remove `CS-GAP-GOTO` (its ladders run); still blocked by `CS-GAP-INTEGRALVALUE`.
-- `CSL-0069` *centrifugal_compressor_design_similarity*: solves from default guesses since `CS-BUG-NEWTON1D-DIVERGE`
-  (its `.initials` is no longer needed).
-- **Re-baseline** `CSL-0160:coolsolve` (its `.sol` holds `I_o_ref` = 2.300137857958e-10, inexact by 1.7e-7 before
-  `CS-BUG-TINY-VALUE`; the table value is 2.3001374549e-10), `CSL-0008` (3 variants: `specheat(cf$, T=…, P=1)` in `two_phase_CD`, P = 1 Pa, probably a unit slip in
-  the model; 5e-5) and `CSL-0146` *cgam_cogeneration* (CO2 partial pressures 30–300 Pa; h2 +8e-4, T2 611.48 → 611.60 K vs the
-  Ebsilon 611.00 K): their constants below 1000 Pa were clamped silently before `CS-BUG-INPUT-CLAMP`.
-- `CSL-0153` *orc_whr_refprop_cost*: the native file solves since `CS-GAP-END-PROCEDURE` and equals its `_coolsolve`
-  variant (362 variables, 1e-6): status `verified` on the native file, variant deleted.
-- `CSL-0012` *thermal_comfort_pmv_ppd* and `CSL-0160` *pv_module_single_diode*: the native files solve since
-  `CS-GAP-LOOKUPROW` (+ `CS-GAP-END-PROCEDURE`, `CS-GAP-CONVERT-UNQUOTED` for CSL-0160) and equal their variants:
-  status `verified` on the native files, variants deleted (they also carried the numeric-key companion tables).
-- `CSL-0115` *hx_fem_evaporator_discretised*: the native file solves since `CS-GAP-REPEAT-UNTIL-BARE` (21 shared
-  variables agree with the variant to 1e-6), but its 7 `Lookup('tprofile', i, k) = …` cell writes are dropped
-  (`CS-BUG-LOOKUP-WRITE`, diagnostic output only; warning `P009` since round 3): `missing_features` empty, status `verified`.
-- `CSL-0116`: remove `CS-GAP-GE-ARROW`, `CS-GAP-REPEAT-UNTIL-BARE`, `CS-GAP-CONVERT-UNQUOTED`; next blocker `BRINEPROP2`
-  (`CS-GAP-INCLUDE`), then `CS-GAP-LKT`, `CS-GAP-INCOMPRESSIBLE` (closed, see the line below).
-- `CSL-0116` *heat_pump_vitocal_300g*: remove `CS-GAP-INCOMPRESSIBLE` (its `cp(fluid$,t=t_bis,C=30)`, `density`, `viscosity` and
-  `conductivity` calls, with a string variable, lower-case `t=` and `C=30`, evaluate since `CS-GAP-INCOMPRESSIBLE`: T and C alone, internal
-  pressure 101325 Pa); the native file stays blocked by `CS-GAP-INCLUDE` (`BRINEPROP2`).
-- `CSL-0075`: remove `CS-GAP-ISIDEALGAS` from `missing_features` (the native file solves; see also `CS-BUG-HUMIDAIR-PROPS`).
-- `CSL-0046` *octane_combustion_400pct_air*: the native file solves since `CS-GAP-FLUIDS-C8H18` (identical to its variant up to
-  `MM_f`): status `verified` on the native file, variant deleted. `CSL-0080`: the `molarmass(C4H10)`/`enthalpy(C4H10,…)` constants
-  of the variant can be replaced by the native calls (C4H10 h differs from EES 7.888 by 2.8e-3, the older formation enthalpy).
-- `CSL-0152`: remove `CS-GAP-MOLARMASS-ELEMENT` (its native `MolarMass(C)`/`MolarMass(H)` give the EES values); still blocked by
-  `CS-GAP-INCOMPRESSIBLE` only (closed, see the line below).
-- `CSL-0152` *turbocharger_combustion_products*: the three IDs of its `missing_features` (`CS-GAP-SUM-INDEXED`, `CS-GAP-MOLARMASS-ELEMENT`,
-  `CS-GAP-INCOMPRESSIBLE`) are closed: the native file (`c_w = Cp(EG,T=T_bar_w_hex,C=Conc)`) solves in a scratch copy, 219 equations, largest
-  block 10, 63 iterations, and equals its `_coolsolve` variant `.sol` in all the 219 common variables (0 difference in the 13 digits written;
-  `C%` and `Q_dot_2_%` are the variant's `C_pc`, `Q_dot_2_pc`); `c_w` 3615.3674 J/kg-K against the EES 3615.0746 (8.1e-5: its
-  `T_bar_w_hex` differs slightly). It needs the guess file of the variant (copy `turbocharger_combustion_products_coolsolve.initials` to
-  `turbocharger_combustion_products.initials`): from the default guesses block 41 (10 variables) ends in a line-search failure. Re-check:
-  status `verified` on the native file, native `.sol`, variant deleted, README and header without any history of the problem (the
-  `P=p_atm`, the explicit sums and the element values are no longer workarounds), `tools/build_index.py`, `tools/test_models.py`, one line in
-  the library roadmap §8.
-- `CSL-0188` *fuel_co2_per_km*, `CSL-0223` *turbocharged_engine_expander*: re-check the native files (blocked by
-  `CS-GAP-MOLARMASS-ELEMENT`, closed in round 3).
-- `CSL-0043` *libr_water_absorption_chiller*: remove `CS-GAP-FLUIDS-ABS`; the native file solves (46 equations, largest
-  block 3; `x_abs` 58.308, `x_gen` 74.772 mass %, `Q_dot_gen` 3.1094 MW, `Q_dot_HEX` 0.39600 MW, `COP` 0.74665 against the EES
-  58.303, 74.776, 3.1088, 0.39578 and 0.7467: CoolProp gives `P_ev` 872.575 Pa and `P_cd` 9595.00 Pa, the EES file 872.604 and
-  9589.78, and the ASHRAE root of `X_LIBR` is 6.7e-5 above that of EES). Re-check: status `verified`, native `.sol`, README and
-  header without any history of the problem (the README says that "no correlation constants were at hand" and has a *Blocked*
-  paragraph: both go; the `V_LIBR` of the VL variants stays a limitation, `CS-GAP-FLUIDS-ABS` P3), `tools/build_index.py`,
-  `tools/test_models.py`, one line in the library roadmap §8.
-- `CSL-0011` and `CSL-0149`: remove `CS-GAP-INTERP-EES`; they stay blocked by `CS-GAP-INCLUDE` (`CSL-0149`: see §8,
-  the five-output `PROCEDURE cpbar` called in function position).
+**Library re-checks of 2026-10-18 (done; the library working tree is not committed).** Every follow-up listed after
+round 3 was run on scratch copies with CoolSolve `4798e2b` (`feat/nh3h2o`) and applied to the library
+(`tools/build_index.py`, `tools/test_models.py`: 251 targets, 0 failure; library roadmap §8):
+- *verified on the native file, variant deleted, native `.sol`, README and header without history*: `CSL-0079`,
+  `CSL-0072`, `CSL-0035`, `CSL-0157`, `CSL-0154`, `CSL-0153`, `CSL-0012`, `CSL-0160`, `CSL-0188`, `CSL-0223`, `CSL-0115`
+  (its 7 `Lookup('tprofile',i,k) = …` writes are reported with `P009`), `CSL-0046`, `CSL-0152` (needs its guess file),
+  `CSL-0075`, `CSL-0159`, `CSL-0080`, `CSL-0164`, and `CSL-0043` (new: 30/30 variables of the EES stored solution within
+  5.6e-4). `CSL-0078` stays `failing` (over-determined as the original stands).
+- *faithful forms restored*: `CSL-0122`, `CSL-0129` (indexed `SUM`, `DUPLICATE h[i+1] = …`), `CSL-0123` (`until i>9`,
+  `convert(lbm/hr,kg/s)`), the `_coolsolve` variants of `CSL-0011` and `CSL-0149` (native `INTERPOLATE` call form, valid
+  EES now), `CSL-0069` (both files converge from the default guesses; the guess files stay).
+- *still blocked, `missing_features` cut to the open IDs*: `CSL-0116` (`CS-GAP-INCLUDE`, BRINEPROP2; the compressor
+  catalogue table is missing from the collection), `CSL-0011` and `CSL-0149` (`CS-GAP-INCLUDE`), `CSL-0081`
+  (`CS-GAP-INTEGRALVALUE`: its GOTO ladders parse, then the check of variables read before assignment stops on the
+  `INTEGRALVALUE` history variables), `CSL-0150` (`CS-GAP-CHEM-EQUIL`, `CS-GAP-FLUIDS-NASA-SPECIES`; the
+  no-dissociation case runs unchanged with `DISSOCIATION$ = 'NO'`).
+- *re-baselines* (`CS-BUG-INPUT-CLAMP`): `CSL-0008` (3 files, ≤ 5e-5: `specheat(cf$,T=..,P=1)` at the 1 Pa of the source)
+  and `CSL-0146` (the CO2 partial pressures of the air, 30–300 Pa: `T2` 611.48 → 611.60 K; the maximum deviation from the
+  Ebsilon table moves from 4.7e-3 to 5.7e-3, above the 5e-3 bound of the source test; the TESPy comparison was not
+  repeated, TESPy not being installed). `CSL-0160` had its `.sol` rewritten with the native file.
+- *decisions left to the maintainer*: `CSL-0075` (`Gamma` 1.4095 from CoolProp's real-mixture `cv` at 8 bar, the variant's
+  `cp/(cp − R_mix)` gave 1.3863 and the EES mixture rules ≈ 1.398; `Di_dph` 3.3e-4 from the EES stored value); `CSL-0146`
+  (above); `CSL-0069` (score 1 now that it converges from the default guesses, level 2 kept); `CSL-0080` (the native
+  file runs the operating point of the stored EES solution: the control-panel full-load values do not converge in the
+  cooling-coil block); `CSL-0044` (`coolsolve_version` without commit); `CSL-0202` is `failing` (not re-checked).
+- *not re-checked (no closed ID applies)*: `CSL-0162`, `CSL-0163`, `CSL-0074` (`CS-GAP-INCLUDE`, BRINEPROP),
+  `CSL-0028` (`CS-GAP-PSYCHRO-SAT`), `CSL-0058` (`CS-GAP-FLUIDS-ALIAS`), `CSL-0166`, `CSL-0040`
+  (`CS-GAP-IF-NO-CONSTANT`), `CSL-0041`, `CSL-0059`, `CSL-0131`, `CSL-0158` (round-2 rewrites, queue 1c/1d).
 
 **Maintainer decisions of 2026-10-12** (also in the register rows):
 - `CS-GAP-INTEGRAL-MULTIVAR`: not implemented. `INTEGRAL` keeps a single integration
@@ -621,6 +576,10 @@ work there allows it; library workflow §6):
   caches another tag (`cmake -DCOOLSOLVE_COOLPROP_TAG=75af7816 ..` aligns it) and
   `coolsolve --version` prints the CoolProp revision linked. A bump is deliberate
   ([contributing.md](contributing.md#pinned-coolprop-version)). New `.cpp` files need `cmake .`.
+- *Baselines* of round 4 (pin `75af7816`, `feat/nh3h2o` @ `4798e2b`, 2026-10-18): unit suite 1209 test cases; examples 43/46
+  solve (not solving `cooling_tower2`, `orc_complex`, `turbocompressor_interpolate`); library regression
+  (`tools/test_models.py --exclude CSL-0009:coolsolve`, library working tree of 2026-10-18) 251 targets, 0 failure
+  (the re-baselines of `CSL-0008`, `CSL-0146` and `CSL-0160` are in the working tree).
 - *Baselines* at the pause of round 3 (pin `75af7816`, `609238c`): unit suite 1176 test cases (2 skipped
   without `pdflatex`); examples 43/46 solve, not solving `cooling_tower2`, `orc_complex`,
   `turbocompressor_interpolate`; library regression (`tools/test_models.py --exclude CSL-0009:coolsolve`, library
@@ -648,14 +607,12 @@ work there allows it; library workflow §6):
    route: a CoolSolve module `libr_patek_klomfar` next to `libr_ashrae`, or a generic CoolProp contribution (a
    Gibbs-energy solution class that would also give `INCOMP::LiBr` its enthalpy of mixing; CoolProp
    `dev/incompressible_liquids/NOTES_mixing_models.md`), then check the EES `*_LiBrH2O` signatures in the EES help
-   (online: `https://fchartsoftware.com/ees/libr_help/`) and take reference values from an EES run; `CS-GAP-NH3H2O`
-   (verify the `NH3H2O` procedure signature; reference implementation: teqp `AmmoniaWaterTillnerRoth`); the
+   (online: `https://fchartsoftware.com/ees/libr_help/`) and take reference values from an EES run; the
    remainders `CS-GAP-FLUIDS-ABS` (`V_LIBR`: coefficients unpublished; `Q_LIBR`, `VISC_LIBR`, `COND_LIBR`) and
    `CS-GAP-INCOMPRESSIBLE` (thermal oils); small: CoolProp's `MITSW` has a saturation pressure that CoolSolve's
    `p_sat` of an incompressible does not expose yet (not registered).
-   Library re-checks of this block (library tasks, in the follow-ups of round 3 above): `CSL-0043` (native file
-   solves, COP 0.74665 vs EES 0.74670), `CSL-0152` (native file equals its variant; needs the variant's
-   `.initials`), `CSL-0116` (now stops at `CS-GAP-INCLUDE`), and the 5 re-baselines of the regression above.
+   The library re-checks of this block (`CSL-0043`, `CSL-0152`, `CSL-0116`) and the re-baselines are done (2026-10-18, see
+   the library re-checks above).
 1. Library follow-ups of round 2 (library tasks, no CoolSolve change expected):
    (a) re-baseline `CSL-0124`, `CSL-0113` and `CSL-0153:coolsolve` (the old values had `g#` = 1
    in the Kuo procedure: `alpha_tp_cd` 211.1 → 170.8 in `CSL-0124`, `a_cd` 5.59 → 5.85 in
