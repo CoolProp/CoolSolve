@@ -20942,23 +20942,20 @@ TEST_CASE("CS-GAP-INCOMPRESSIBLE: the concentration is never read as a temperatu
 
 TEST_CASE("CS-GAP-INCOMPRESSIBLE: the temperature hints of a genuine T= stay, with or without a concentration",
           "[library-gaps][incompressible]") {
-    // T=32 is water freezing in Fahrenheit, T=300 is a Kelvin value in Celsius: the hints of the existing tests
-    auto f = parseWarnings("y = cp('EG', T=32, C=30)\n");
-    REQUIRE(f.size() == 1);
-    CHECK(f[0].find("T=32 looks like Fahrenheit") != std::string::npos);
-    CHECK(f[0].find("C=30") == std::string::npos);
-    auto lower = parseWarnings("y = cp('EG', t=77, C=30)\n");
-    REQUIRE(lower.size() == 1);
-    CHECK(lower[0].find("t=77 looks like Fahrenheit") != std::string::npos);
-    auto kelvin = parseWarnings("y = cp('EG', T=300, C=30)\n");
+    // T=298.15 is a Kelvin value (25 °C); T=32 and T=77 are ordinary Celsius values (CS-BUG-HINT-FAHRENHEIT)
+    auto kelvin = parseWarnings("y = cp('EG', T=298.15, C=30)\n");
     REQUIRE(kelvin.size() == 1);
-    CHECK(kelvin[0].find("T=300") != std::string::npos);
-    CHECK(kelvin[0].find("K") != std::string::npos);
+    CHECK(kelvin[0].find("T=298.15 looks like a temperature in K") != std::string::npos);
+    CHECK(kelvin[0].find("C=30") == std::string::npos);
+    auto lower = parseWarnings("y = cp('EG', t=298.15, C=30)\n");
+    REQUIRE(lower.size() == 1);
+    CHECK(lower[0].find("t=298.15 looks like a temperature in K") != std::string::npos);
+    CHECK(parseWarnings("y = cp('EG', T=32, C=30)\n").empty());
     // the same without the concentration (a real fluid) and in the run
-    CHECK(parseWarnings("h = enthalpy(Water, T=77, P=101325)\n").size() == 1);
-    auto run = runModel("y = cp('EG', T=32, C=30)\n");
+    CHECK(parseWarnings("h = enthalpy(Water, T=298.15, P=101325)\n").size() == 1);
+    auto run = runModel("y = cp('EG', T=298.15, C=30)\n");
     REQUIRE(run.solveOk);
-    CHECK(anyContains(run.warnings, "T=32 looks like Fahrenheit"));
+    CHECK(anyContains(run.warnings, "T=298.15 looks like a temperature in K"));
     CHECK_FALSE(anyContains(run.warnings, "C=30"));
 }
 
@@ -21887,5 +21884,132 @@ TEST_CASE("CS-BUG-INCOMP-CONC-AD: a concentration outside the range keeps the ex
         auto meg = runModel("y = density(MEG, T=20, P=1e5)\n");
         REQUIRE_FALSE(meg.solveOk);
         CHECK(anyContains({meg.message}, "Incompressible solution 'MEG' requires a concentration (mass %, 0..100)"));
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// CS-BUG-HINT-FAHRENHEIT, CS-BUG-HINT-ARG-DEFAULT, CS-BUG-FLUID-HINT-CO2: the unit and fluid-name hints only report
+// values of the model (never the Newton iterates) and only when the evidence is strong.
+// ---------------------------------------------------------------------------------------------------------------
+
+namespace {
+/// The warnings of `runs` whose message contains one of the hint phrases of src/user_hints.cpp.
+std::vector<std::string> hintWarnings(const ModelRun& run) {
+    std::vector<std::string> out;
+    for (const auto& w : run.warnings)
+        for (const char* key : {"looks like", "is interpreted as", "may be bar or MPa", "not kPa", "very small for enthalpy",
+                                "small for entropy", "low for density", "unusually large", "percent", "outside the",
+                                "high for humidity ratio", "Did you mean", "For moist air"})
+            if (w.find(key) != std::string::npos) { out.push_back(w); break; }
+    return out;
+}
+}  // namespace
+
+TEST_CASE("CS-BUG-HINT-FAHRENHEIT: ordinary Celsius temperatures give no hint", "[library-gaps][hints]") {
+    // register reproducer: was "T=34 looks like Fahrenheit (water freezing (0 °C))"
+    auto run = runModel("h = enthalpy(WATER, T=34, x=1)\n");
+    REQUIRE(run.solveOk);
+    CHECK(hintWarnings(run).empty());
+    // the old ranges 29..35, 74..80 and 209..215 °C, and the Kelvin range 200..600 °C of the old hint
+    for (const char* t : {"29", "30.1232", "32", "35", "74", "77", "80", "209", "212", "215", "300", "550"}) {
+        INFO(t);
+        CHECK(parseWarnings(std::string("h = enthalpy(Water, T=") + t + ", P=1e7)\n").empty());
+        auto r = runModel(std::string("T_x = ") + t + "\nh = enthalpy(Water, T=T_x, P=1e7)\n");
+        REQUIRE(r.solveOk);
+        CHECK(hintWarnings(r).empty());
+    }
+}
+
+TEST_CASE("CS-BUG-HINT-FAHRENHEIT: a temperature of the form 273.15 + n is reported as Kelvin, once", "[library-gaps][hints]") {
+    auto parsed = parseWarnings("h = enthalpy(Water, T=298.15, P=1e5)\n");
+    REQUIRE(parsed.size() == 1);
+    CHECK(parsed[0].find("T=298.15 looks like a temperature in K (25 °C). CoolSolve uses °C: T=25.") != std::string::npos);
+    // a variable of the model is checked at the solution: one hint, the same value is not repeated
+    auto run = runModel("T_a = 293.15\nh1 = enthalpy(Water, T=T_a, P=1e5)\ns1 = entropy(Water, T=T_a, P=1e5)\n");
+    REQUIRE(run.solveOk);
+    const auto hints = hintWarnings(run);
+    REQUIRE(hints.size() == 1);
+    CHECK(hints[0].find("looks like a temperature in K (20 °C)") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-HINT-FAHRENHEIT: the Newton iterates never raise a hint, the solution does", "[library-gaps][hints]") {
+    // P_x starts at 1 Pa (a hint value: "may be bar or MPa") and converges to the saturation pressure at 99 °C
+    const std::string code = "T_s = temperature(Water, P=P_x, x=0)\nT_s = 99\n";
+    auto run = runModel(code, {}, "P_x=1\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["P_x"], WithinRel(97757.0, 1e-3));
+    CHECK(hintWarnings(run).empty());
+    // the same call inside a PROCEDURE (the bodies forward their diagnostics)
+    auto proc = runModel("PROCEDURE sat(P : T)\n  T := temperature(Water, P=P, x=0)\nEND\nCALL sat(P_x : T_s)\nT_s = 99\n",
+                         {}, "P_x=1\n");
+    INFO(proc.message);
+    REQUIRE(proc.solveOk);
+    CHECK(hintWarnings(proc).empty());
+    // a value of the model in the hint range is reported, without a line (it is not a literal of the call)
+    auto slip = runModel("P_in = 1\nh = enthalpy(Water, T=25, P=P_in)\n");
+    REQUIRE(slip.solveOk);
+    const auto hints = hintWarnings(slip);
+    REQUIRE(hints.size() == 1);
+    CHECK(hints[0].find("p=1 may be bar or MPa") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-HINT-FAHRENHEIT: ordinary values of the other inputs give no hint", "[library-gaps][hints]") {
+    SECTION("a vacuum condenser pressure") {
+        for (const char* p : {"872.6", "5000", "9969.66"}) {
+            INFO(p);
+            CHECK(parseWarnings(std::string("h = enthalpy(Water, T=60, P=") + p + ")\n").empty());
+        }
+        // below 500 Pa the hint stays
+        CHECK(anyContains(parseWarnings("h = enthalpy(Water, T=60, P=300)\n"), "is interpreted as 300 Pa"));
+    }
+    SECTION("a specific volume of a vapour; a density written as a volume is reported") {
+        CHECK(parseWarnings("P_1 = pressure(R134a, T=10, v=0.0163)\n").empty());
+        auto run = runModel("v_1 = 0.0241\nh = enthalpy(R134a, T=10, v=v_1)\n");
+        REQUIRE(run.solveOk);
+        CHECK(hintWarnings(run).empty());
+        const auto big = parseWarnings("T = temperature(Water, P=1e5, v=1000)\n");
+        REQUIRE(big.size() == 1);
+        CHECK(big[0].find("use D=1000 instead of V/VOLUME") != std::string::npos);
+    }
+    SECTION("the humidity ratio of a flue gas; a value in g/kg is reported") {
+        CHECK(parseWarnings("r = relhum(AirH2O, T=80, P=101325, W=0.149)\n").empty());
+        CHECK(anyContains(parseWarnings("r = relhum(AirH2O, T=25, P=101325, W=15)\n"), "g/kg"));
+    }
+    SECTION("the dew point and the enthalpy of humid air are not a density and an enthalpy of a fluid") {
+        CHECK(parseWarnings("w = humrat(AirH2O, T=25, P=101325, D=5)\n").empty());
+        CHECK(parseWarnings("T = temperature(AirH2O, h=3000, P=101325, W=0.002)\n").empty());
+        auto run = runModel("w = humrat(AirH2O, T=25, P=101325, D=D_p)\nD_p = 5\n");
+        REQUIRE(run.solveOk);
+        CHECK(hintWarnings(run).empty());
+    }
+}
+
+TEST_CASE("CS-BUG-HINT-ARG-DEFAULT: arguments that are no known state input are never checked", "[library-gaps][hints]") {
+    // register reproducer: was "u=212 looks like Fahrenheit"
+    for (const char* call : {"enthalpy(Water, u=212, P=1E5)", "enthalpy(Water, u=32, P=1E5)", "density(Water, u=77, P=1E5)",
+                             "enthalpy(Water, B=212, P=1E5)", "enthalpy(Water, mu=298.15, P=1E5)"}) {
+        INFO(call);
+        CHECK(parseWarnings(std::string("h = ") + call + "\n").empty());
+    }
+}
+
+TEST_CASE("CS-BUG-FLUID-HINT-CO2: a registered fluid is never a misspelling", "[library-gaps][hints]") {
+    // register reproducers: were "Did you mean 'CO2'?" and "Did you mean 'R22'?"; Steam is the EES name of water
+    for (const char* code : {"M = molarmass(CO2)\n", "v = VOLUME('R22', T=8, P=5E5)\n", "h = enthalpy(Steam, T=200, P=1e5)\n",
+                             "h = enthalpy(R410A, T=10, P=5e5)\n", "h = enthalpy(Air, T=25)\n", "h = enthalpy('air', T=25)\n"}) {
+        INFO(code);
+        CHECK(parseWarnings(code).empty());
+        auto run = runModel(code);
+        REQUIRE(run.solveOk);
+        CHECK(hintWarnings(run).empty());
+    }
+    SECTION("misspellings and EES names CoolSolve does not register keep their hint") {
+        CHECK(anyContains(parseWarnings("h = enthalpy(Watter, T=25, P=1e5)\n"), "Did you mean 'Water'?"));
+        CHECK(anyContains(parseWarnings("M = molarmass(NH3)\n"), "Did you mean 'Ammonia'?"));
+    }
+    SECTION("the psychrometric functions still point from Air to AirH2O") {
+        CHECK(anyContains(parseWarnings("w = humrat(Air, T=25, P=101325, R=0.5)\n"), "For moist air properties use AirH2O"));
+        CHECK(anyContains(parseWarnings("w = wetbulb('Air', T=25, P=101325, R=0.5)\n"), "For moist air properties use AirH2O"));
     }
 }

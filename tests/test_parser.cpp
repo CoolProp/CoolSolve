@@ -824,10 +824,16 @@ TEST_CASE("Parser thermo user-pattern warnings", "[parser][user-hints]") {
         REQUIRE(hasDiag(result, "P004", "enthalpy"));
     }
 
-    SECTION("Steam fluid name suggests Water") {
+    SECTION("Steam is a registered fluid: no hint") {
         auto result = parser.parse("h = enthalpy(Steam, T=25, P=101325)");
         REQUIRE(result.success);
-        REQUIRE(hasDiag(result, "P005", "Water"));
+        REQUIRE_FALSE(hasDiag(result, "P005", "Did you mean"));
+    }
+
+    SECTION("Misspelled fluid Watter suggests Water") {
+        auto result = parser.parse("h = enthalpy(Watter, T=25, P=101325)");
+        REQUIRE(result.success);
+        REQUIRE(hasDiag(result, "P005", "Did you mean 'Water'"));
     }
 
     SECTION("Literal P=1 at parse time includes line number") {

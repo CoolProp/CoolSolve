@@ -252,6 +252,15 @@ public:
      */
     void setCallWarningSink(std::vector<Diagnostic>* sink) { callWarningSink_ = sink; }
 
+    /**
+     * @brief When true, the property calls check their inputs for common unit mistakes (warning `C002`,
+     *        `checkThermoInputValueHint`); false (the default) checks nothing.
+     *
+     * Like `CALL WARNING`, a unit hint describes a value of the model, not a Newton iterate: only the
+     * evaluation of a block at its solution turns it on (`SystemEvaluator::reportCallWarnings`), once per run.
+     */
+    void setUnitHints(bool on) { unitHints_ = on; }
+
     /** @brief Provide access to lookup tables for INTERPOLATE / LOOKUP calls. */
     void setLookupTableStore(const LookupTableStore* store) { lookupTableStore_ = store; }
     const LookupTableStore* getLookupTableStore() const { return lookupTableStore_; }
@@ -270,6 +279,7 @@ private:
     bool disableClamping_ = false;
     DiagnosticCollector* diagnostics_ = nullptr;
     std::vector<Diagnostic>* callWarningSink_ = nullptr;   ///< see setCallWarningSink
+    bool unitHints_ = false;                               ///< see setUnitHints
     InputClampLog* clampLog_ = nullptr;                    ///< see setInputClampLog
     const LookupTableStore* lookupTableStore_ = nullptr;
     /// "FUNCTION 'name'" / "PROCEDURE 'name'" when this evaluator runs the body of a user routine
@@ -471,10 +481,25 @@ public:
      *        PROCEDUREs whose body can reach a `CALL WARNING` (directly or through other routines).
      */
     void markCallWarnings(const std::set<std::string, CaseInsensitiveLess>& routines);
+
+    /**
+     * @brief Record whether the equations of this block call one of `names`, the property functions and
+     *        the routines that reach one: only such a block has unit hints to check (`unitHintsPending`).
+     */
+    void markPropertyCalls(const std::set<std::string, CaseInsensitiveLess>& names);
+
+    /// True for a block with property calls until its unit hints have been checked at a solution (once per
+    /// run: the INTEGRAL march, which solves the block at every step, checks them at its first point only).
+    bool unitHintsPending() const { return unitHintsPending_; }
+    void markUnitHintsChecked() { unitHintsPending_ = false; }
     
 private:
+    /// True if an equation of the block calls one of `names` (a CALL included).
+    bool callsAnyOf(const std::set<std::string, CaseInsensitiveLess>& names) const;
+
     bool hasStringCallOutputs_ = false;
     bool mayCallWarning_ = false;
+    bool unitHintsPending_ = false;
     /// Set by `evaluate` when it limited a property-call input; an atomic because the multi-start
     /// candidates evaluate the same block from several threads. Shared so that the evaluator stays copyable.
     std::shared_ptr<std::atomic<bool>> inputClamped_ = std::make_shared<std::atomic<bool>>(false);
@@ -580,14 +605,17 @@ public:
     }
     
     /**
-     * @brief Report the `CALL WARNING` that holds at the solution of a block (code `W001`).
+     * @brief Report the `CALL WARNING` (code `W001`) and the unit hints of the property calls (`C002`)
+     *        that hold at the solution of a block.
      *
      * A user warning describes the solution (an input outside the validity range of a correlation), not
      * the Newton iterates that may cross the range on the way: it is raised by one more evaluation of
      * the block at its solution, made after the block converged, and not by the evaluations of the
      * iterations. A warning identical to one already reported (same line, same text) is not repeated.
-     * Does nothing, and costs nothing, for a block that cannot reach a `CALL WARNING`
-     * (`BlockEvaluator::mayCallWarning`), that is for every block of a model without that call.
+     * The unit hints (a pressure that looks like bar, ...) are checked in the same evaluation, the first
+     * time the block is solved in a run (`BlockEvaluator::unitHintsPending`); they go to the diagnostics
+     * of the block. Afterwards a block that cannot reach a `CALL WARNING` (`BlockEvaluator::mayCallWarning`)
+     * costs nothing.
      * @param blockIndex The block, solved
      * @param out Receives the warnings
      */

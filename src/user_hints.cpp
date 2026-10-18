@@ -1,4 +1,5 @@
 #include "coolsolve/user_hints.h"
+#include "coolsolve/fluids.h"
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -102,14 +103,16 @@ static void hintPressure(DiagnosticCollector* diag,
     if (v > 0.05 && v < 20.0) {
         std::ostringstream oss;
         oss << loc << ": " << paramName << "=" << v
-            << " may be MPa (CoolSolve default is Pa). "
-            << "If you meant " << v << " MPa, use P="
-            << std::scientific << std::setprecision(4) << (v * 1.0e6) << std::fixed << ".";
+            << " may be bar or MPa (CoolSolve uses Pa). "
+            << "If you meant " << v << " bar, use P=" << std::scientific << std::setprecision(4) << (v * 1.0e5)
+            << "; if you meant " << std::defaultfloat << v << " MPa, use P=" << std::scientific << (v * 1.0e6)
+            << std::fixed << ".";
         emitHint(diag, keyBase + ":mpa", oss.str(), line);
         return;
     }
 
-    if (v > 0.0 && v < 10000.0) {
+    // Below 500 Pa: a vacuum condenser (900-10 000 Pa) or a partial pressure is an ordinary value.
+    if (v > 0.0 && v < 500.0) {
         std::ostringstream oss;
         oss << loc << ": " << paramName << "=" << v << " is interpreted as " << v << " Pa. ";
         if (nearValue(v, 1.0, 0.2)) {
@@ -127,35 +130,17 @@ static void hintTemperature(DiagnosticCollector* diag,
                             const std::string& paramName,
                             double v,
                             int line) {
-    const std::string loc = formatContext(ctx, line);
-    const std::string keyBase = "T:" + paramKeyForDedup(paramName) + ":" + std::to_string(v);
-
-    if (v >= 200.0 && v <= 600.0) {
-        std::ostringstream oss;
-        oss << loc << ": " << paramName << "=" << v
-            << " is interpreted as " << v
-            << " °C. If you meant " << v << " K, use T="
-            << std::fixed << std::setprecision(2) << (v - 273.15) << ".";
-        emitHint(diag, keyBase + ":kelvin", oss.str(), line);
-    }
-
-    const struct { double f; const char* meaning; } fRefs[] = {
-        {32.0, "water freezing (0 °C)"},
-        {77.0, "room temperature (~25 °C)"},
-        {212.0, "water boiling at 1 atm (100 °C)"},
-    };
-    for (const auto& ref : fRefs) {
-        if (nearValue(v, ref.f, 3.0)) {
-            const double c = (v - 32.0) * 5.0 / 9.0;
-            std::ostringstream oss;
-            oss << loc << ": " << paramName << "=" << v
-                << " looks like Fahrenheit (" << ref.meaning
-                << "). CoolSolve uses Celsius: T="
-                << std::fixed << std::setprecision(2) << c << ".";
-            emitHint(diag, keyBase + ":f:" + std::to_string(ref.f), oss.str(), line);
-            break;
-        }
-    }
+    // A Celsius value cannot be told from a Fahrenheit or a Kelvin one by its size alone (32, 77, 300 °C
+    // are all ordinary): only a value of the form 273.15 + n (293.15, 298.15, 373.15) is a Kelvin
+    // temperature with near certainty. A model written in °F declares it with $UnitSystem, reported by
+    // the parser.
+    const double celsius = v - 273.15;
+    if (v < 200.0 || v > 600.0 || std::abs(celsius - std::round(celsius)) > 1e-6) return;
+    std::ostringstream oss;
+    oss << formatContext(ctx, line) << ": " << paramName << "=" << v
+        << " looks like a temperature in K (" << std::fixed << std::setprecision(0) << celsius
+        << " °C). CoolSolve uses °C: T=" << celsius << ".";
+    emitHint(diag, "T:" + paramKeyForDedup(paramName) + ":" + std::to_string(v) + ":kelvin", oss.str(), line);
 }
 
 static void hintEnthalpy(DiagnosticCollector* diag,
@@ -207,12 +192,13 @@ static void hintSpecificVolume(DiagnosticCollector* diag,
                                const std::string& paramName,
                                double v,
                                int line) {
-    if (v <= 0.0 || v >= 100.0) return;
+    // Vapours at low pressure reach a few hundred m³/kg; a liquid density written as a volume is larger.
+    if (v < 500.0) return;
     const std::string loc = formatContext(ctx, line);
     std::ostringstream oss;
     oss << loc << ": " << paramName << "=" << v
-        << " m³/kg is unusually large. If this is density in kg/m³, use D="
-        << std::fixed << std::setprecision(4) << (1.0 / v) << " instead of V/VOLUME.";
+        << " m³/kg is unusually large. If this is a density in kg/m³, use D=" << v
+        << " instead of V/VOLUME.";
     emitHint(diag, "V:" + paramName + ":" + std::to_string(v), oss.str(), line);
 }
 
@@ -242,7 +228,8 @@ static void hintHumidityRatio(DiagnosticCollector* diag,
                               const std::string& paramName,
                               double v,
                               int line) {
-    if (v <= 0.05) return;
+    // Hot humid air and flue gases reach a few tenths of kg/kg: only a value above 1 looks like g/kg.
+    if (v <= 1.0) return;
     const std::string loc = formatContext(ctx, line);
     std::ostringstream oss;
     oss << loc << ": " << paramName << "=" << v
@@ -295,11 +282,10 @@ static const std::unordered_map<std::string, std::string>& thermoFunctionTypos()
 
 static const std::unordered_map<std::string, std::string>& fluidNameHints() {
     static const std::unordered_map<std::string, std::string> m = {
-        {"watter", "Water"}, {"wate", "Water"}, {"h20", "Water"},
-        {"steam", "Water"}, {"vapor", "Water"},
-        {"r134", "R134a"}, {"r22", "R22"}, {"r410a", "R410A"},
+        {"watter", "Water"}, {"wate", "Water"}, {"h20", "Water"}, {"vapor", "Water"},
+        {"r134", "R134a"},
         {"airh20", "AirH2O"}, {"air-h2o", "AirH2O"},
-        {"nh3", "Ammonia"}, {"co2", "CO2"},
+        {"nh3", "Ammonia"},
     };
     return m;
 }
@@ -403,14 +389,13 @@ std::string suggestThermoFunctionTypo(const std::string& name) {
 }
 
 std::string suggestFluidNameHint(const std::string& name) {
+    // A registered fluid (CO2, R22, Steam, ...) is never a misspelling.
+    if (FluidRegistry::getFluid(name)) return {};
     const std::string lower = lowerCopy(name);
     const auto& m = fluidNameHints();
     const auto it = m.find(lower);
     if (it != m.end()) {
         return "Did you mean '" + it->second + "'?";
-    }
-    if (lower == "air") {
-        return "For moist air properties use AirH2O (humrat, wetbulb, …), not 'air'.";
     }
     if (lower == "fluid" || lower == "refrigerant" || lower == "workingfluid" ||
         lower == "coolant" || lower == "working_fluid") {

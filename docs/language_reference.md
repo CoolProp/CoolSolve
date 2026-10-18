@@ -1070,8 +1070,8 @@ depend on it, so the value is the EES one whatever the pressure; `enthalpy`, `en
 fix the state and stays the error naming the call (*cp requires exactly 2 input properties … got 1*); `pressure` and the
 saturation functions of an incompressible are not evaluated at the internal pressure (no pressure is ever returned as a
 result); without a concentration the call is the usual error of the solutions. A real fluid still needs two state
-inputs. The named `C=`, `conc=` and `concentration=` are never read as a temperature by the unit hints, so `C=30` gives
-no *"looks like Fahrenheit"* warning (a genuine `T=32` still does).
+inputs. The named `C=`, `conc=` and `concentration=` are never read as a state input by the unit hints (no warning
+for `C=30`).
 
 **`LiBr` is the aqueous solution, not a pure fluid**: it needs its concentration like the other solutions
 (`density(LiBr, 50, T=40, P=1E5)` or `C=50`; without it the call is the usual error asking for one). CoolProp has the

@@ -7,6 +7,7 @@
 #include "coolsolve/fluids.h"
 #include "coolsolve/user_hints.h"
 #include <algorithm>
+#include <optional>
 #include <cmath>
 #include <chrono>
 #include <iomanip>
@@ -161,8 +162,10 @@ static double getOutputValue(CoolProp::AbstractState& state,
     return state.keyed_output(param);
 }
 
-static ThermoInputKind thermoKindFromCoolProp(CoolProp::parameters param,
-                                              const std::string& inputName) {
+/// The unit-hint category of a CoolProp input, or none for an input the hints do not check
+/// (internal energy, ...).
+static std::optional<ThermoInputKind> thermoKindFromCoolProp(CoolProp::parameters param,
+                                                             const std::string& inputName) {
     std::string n = inputName;
     std::transform(n.begin(), n.end(), n.begin(), ::tolower);
     if (param == CoolProp::iP) return ThermoInputKind::Pressure;
@@ -174,19 +177,19 @@ static ThermoInputKind thermoKindFromCoolProp(CoolProp::parameters param,
         if (n == "v" || n == "volume") return ThermoInputKind::SpecificVolume;
         return ThermoInputKind::Density;
     }
-    return ThermoInputKind::Pressure;
+    return std::nullopt;
 }
 
-static ThermoInputKind thermoKindFromHAName(const std::string& name) {
+/// The unit-hint category of a humid-air input: B (wet bulb) and D (dew point) are temperatures;
+/// none for the enthalpy (per kg of dry air, small or negative near 0 °C) and the other inputs.
+static std::optional<ThermoInputKind> thermoKindFromHAName(const std::string& name) {
     std::string n = name;
     std::transform(n.begin(), n.end(), n.begin(), ::tolower);
-    if (n == "t") return ThermoInputKind::Temperature;
+    if (n == "t" || n == "b" || n == "d") return ThermoInputKind::Temperature;
     if (n == "p") return ThermoInputKind::Pressure;
     if (n == "w") return ThermoInputKind::HumidityRatio;
     if (n == "r") return ThermoInputKind::RelativeHumidity;
-    if (n == "d") return ThermoInputKind::Density;
-    if (n == "h") return ThermoInputKind::Enthalpy;
-    return ThermoInputKind::Temperature;
+    return std::nullopt;
 }
 
 void resetCoolPropUnitHints() {
@@ -1269,6 +1272,7 @@ ExpressionEvaluator ExpressionEvaluator::makeBodyEvaluator(const char* kind, con
     body.lookupTableStore_ = lookupTableStore_;
     body.diagnostics_ = diagnostics_;   // warnings raised in a body (mixtures, CoolProp errors) are reported too
     body.callWarningSink_ = callWarningSink_;   // and so are the CALL WARNING of the bodies
+    body.unitHints_ = unitHints_;               // and the unit hints of their property calls
     body.clampLog_ = clampLog_;                 // and the inputs they limit
     body.routine_ = std::string(kind) + " '" + name + "'";
     body.routineName_ = name;
@@ -1514,9 +1518,9 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         std::vector<double> vals;
         for (size_t i = 0; i < 3; ++i) {
             double v = inputValues[i].value;
-            checkThermoInputValueHint(diagnostics_, func.name + "()", units,
-                                      thermoKindFromHAName(inputNamesList[i]),
-                                      inputNamesList[i], v);
+            if (unitHints_)
+                if (const auto kind = thermoKindFromHAName(inputNamesList[i]))
+                    checkThermoInputValueHint(diagnostics_, func.name + "()", units, *kind, inputNamesList[i], v);
             UnitType type = haParamToUnitType(inParams[i]);
             
             if (type != UnitType::Dimensionless) {
@@ -1886,15 +1890,16 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     double val1 = inputValues[0].value;
     double val2 = inputValues[1].value;
 
-    // The injected ideal-gas pressure is not a user input: no unit hint for it.
-    if (!(pressureInjected && input1Param == CoolProp::iP))
-        checkThermoInputValueHint(diagnostics_, func.name + "()", units,
-                                  thermoKindFromCoolProp(input1Param, inputNamesList[0]),
-                                  inputNamesList[0], val1);
-    if (!(pressureInjected && input2Param == CoolProp::iP))
-        checkThermoInputValueHint(diagnostics_, func.name + "()", units,
-                                  thermoKindFromCoolProp(input2Param, inputNamesList[1]),
-                                  inputNamesList[1], val2);
+    // Unit hints only at the solution of the block (never the Newton iterates); the injected ideal-gas
+    // pressure is not a user input: no unit hint for it.
+    if (unitHints_) {
+        const auto kind1 = thermoKindFromCoolProp(input1Param, inputNamesList[0]);
+        if (kind1 && !(pressureInjected && input1Param == CoolProp::iP))
+            checkThermoInputValueHint(diagnostics_, func.name + "()", units, *kind1, inputNamesList[0], val1);
+        const auto kind2 = thermoKindFromCoolProp(input2Param, inputNamesList[1]);
+        if (kind2 && !(pressureInjected && input2Param == CoolProp::iP))
+            checkThermoInputValueHint(diagnostics_, func.name + "()", units, *kind2, inputNamesList[1], val2);
+    }
     
     // Clamp quality inputs to [0, 1]: CoolProp returns -1 for subcooled and values >1 for
     // superheated states, but when quality is used as *input* to another CoolProp call
@@ -2481,11 +2486,9 @@ bool callsAnyOf(const std::vector<StmtPtr>& body, const RoutineNames& names) {
     return false;
 }
 
-/// The user FUNCTIONs and PROCEDUREs whose body can execute `CALL WARNING`, directly or through
-/// the routines it calls (the fixed point of "calls WARNING or a routine that does"). Empty for a
-/// model without that call.
-RoutineNames routinesThatWarn(const IR& ir) {
-    RoutineNames names{"warning"};
+/// `names` and the user FUNCTIONs and PROCEDUREs whose body can call one of them, directly or through
+/// the routines it calls (the fixed point of "calls one of `names` or a routine that does").
+RoutineNames withCallingRoutines(const IR& ir, RoutineNames names) {
     for (bool grown = true; grown;) {
         grown = false;
         for (const auto& func : ir.getFunctions())
@@ -2493,6 +2496,13 @@ RoutineNames routinesThatWarn(const IR& ir) {
         for (const auto& proc : ir.getProcedures())
             if (!names.count(proc.name) && callsAnyOf(proc.body, names)) { names.insert(proc.name); grown = true; }
     }
+    return names;
+}
+
+/// The user FUNCTIONs and PROCEDUREs whose body can execute `CALL WARNING`, directly or through
+/// the routines it calls. Empty for a model without that call.
+RoutineNames routinesThatWarn(const IR& ir) {
+    RoutineNames names = withCallingRoutines(ir, {"warning"});
     names.erase("warning");   // the main program cannot call it
     return names;
 }
@@ -2503,15 +2513,20 @@ bool assignsString(const EquationInfo& eq) { return isStringAssignment(eq) && !e
 
 }  // namespace
 
+bool BlockEvaluator::callsAnyOf(const std::set<std::string, CaseInsensitiveLess>& names) const {
+    for (const EquationInfo* eq : equations_)
+        if (coolsolve::callsAnyOf(eq->lhs, names) || coolsolve::callsAnyOf(eq->rhs, names) ||
+            (eq->procedureCall && coolsolve::callsAnyOf(*eq->procedureCall, names)))
+            return true;
+    return false;
+}
+
 void BlockEvaluator::markCallWarnings(const std::set<std::string, CaseInsensitiveLess>& routines) {
-    mayCallWarning_ = false;
-    for (const EquationInfo* eq : equations_) {
-        if (callsAnyOf(eq->lhs, routines) || callsAnyOf(eq->rhs, routines) ||
-            (eq->procedureCall && callsAnyOf(*eq->procedureCall, routines))) {
-            mayCallWarning_ = true;
-            return;
-        }
-    }
+    mayCallWarning_ = callsAnyOf(routines);
+}
+
+void BlockEvaluator::markPropertyCalls(const std::set<std::string, CaseInsensitiveLess>& names) {
+    unitHintsPending_ = callsAnyOf(names);
 }
 
 BlockEvaluator::BlockEvaluator(const Block& block, const IR& ir, const CoolPropConfig& config)
@@ -2591,7 +2606,10 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     ExpressionEvaluator exprEval(variables_.size(), config_);
     exprEval.setResidualOnly(!computeJacobian);
     if (diagnostics_) exprEval.setDiagnostics(diagnostics_);
-    if (callWarnings) exprEval.setCallWarningSink(callWarnings);
+    if (callWarnings) {   // the evaluation at the solution (SystemEvaluator::reportCallWarnings)
+        exprEval.setCallWarningSink(callWarnings);
+        exprEval.setUnitHints(unitHintsPending_);
+    }
     InputClampLog clampLog;
     clampLog.report = clampReport;
     exprEval.setInputClampLog(&clampLog);
@@ -2798,6 +2816,11 @@ SystemEvaluator::SystemEvaluator(const IR& ir, const StructuralAnalysisResult& a
     const RoutineNames warningRoutines = routinesThatWarn(ir);
     if (!warningRoutines.empty())
         for (auto& blockEval : blockEvaluators_) blockEval.markCallWarnings(warningRoutines);
+
+    // The blocks whose property calls (direct or in a routine) get their unit hints checked at the solution
+    const auto& thermo = IR::thermoFunctionNames();
+    const RoutineNames propertyCalls = withCallingRoutines(ir, RoutineNames(thermo.begin(), thermo.end()));
+    for (auto& blockEval : blockEvaluators_) blockEval.markPropertyCalls(propertyCalls);
 }
 
 void SystemEvaluator::setVariableValue(const std::string& name, double value) {
@@ -2853,9 +2876,12 @@ void SystemEvaluator::publishStringOutputs(size_t blockIndex) {
 }
 
 void SystemEvaluator::reportCallWarnings(size_t blockIndex, DiagnosticCollector& out) {
-    if (blockIndex >= blockEvaluators_.size() || !blockEvaluators_[blockIndex].mayCallWarning()) return;
+    if (blockIndex >= blockEvaluators_.size()) return;
+    BlockEvaluator& blockEval = blockEvaluators_[blockIndex];
+    if (!blockEval.mayCallWarning() && !blockEval.unitHintsPending()) return;
     std::vector<Diagnostic> raised;
     evaluateBlock(blockIndex, false, &raised);
+    blockEval.markUnitHintsChecked();
     for (auto& warning : raised)
         if (reportedCallWarnings_.insert({warning.line, warning.message}).second) out.push(std::move(warning));
 }

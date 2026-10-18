@@ -187,6 +187,9 @@ public:
     /// `INTERPOLATE`, `NLOOKUPROWS`, `SUMLOOKUP`, ...), in any case.
     static bool isLookupFunction(const std::string& name);
 
+    /// The EES thermophysical property functions (enthalpy, humrat, ...), lower case.
+    static const std::set<std::string>& thermoFunctionNames();
+
 private:
     std::map<std::string, VariableInfo, CaseInsensitiveLess> variables_;
     std::vector<EquationInfo> equations_;

@@ -1685,14 +1685,23 @@ TEST_CASE("CoolProp unit hints for suspicious inputs", "[evaluator][unit-hints]"
         REQUIRE(hasC002Containing(diag, "MPa"));
     }
 
-    SECTION("T=300 emits hint about Celsius vs Kelvin") {
-        auto diag = getHints("h = enthalpy(Water, T=300, P=101325)");
-        REQUIRE(hasC002Containing(diag, "°C"));
+    SECTION("T=298.15 is a Kelvin temperature") {
+        auto diag = getHints("h = enthalpy(Water, T=298.15, P=101325)");
+        REQUIRE(hasC002Containing(diag, "looks like a temperature in K (25 °C)"));
     }
 
-    SECTION("T=77 suggests Fahrenheit") {
-        auto diag = getHints("h = enthalpy(Water, T=77, P=101325)");
-        REQUIRE(hasC002Containing(diag, "Fahrenheit"));
+    SECTION("T=300 and T=77 are ordinary Celsius values: no hint") {
+        for (const char* t : {"300", "77", "32", "212", "500"}) {
+            INFO(t);
+            auto diag = getHints(std::string("h = enthalpy(Water, T=") + t + ", P=101325)");
+            for (const auto& d : diag.items()) REQUIRE(d.code != "C002");
+        }
+    }
+
+    SECTION("P=1 offers bar and MPa") {
+        auto diag = getHints("h = enthalpy(Water, T=25, P=1)");
+        REQUIRE(hasC002Containing(diag, "use P=1.0000e+05"));
+        REQUIRE(hasC002Containing(diag, "use P=1.0000e+06"));
     }
 
     SECTION("H=400 suggests kJ/kg vs J/kg") {

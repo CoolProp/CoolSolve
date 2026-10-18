@@ -12,6 +12,7 @@
 #include <functional>
 #include <sstream>
 #include <algorithm>
+#include <optional>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -916,19 +917,37 @@ private:
         return false;
     }
 
-    static ThermoInputKind thermoKindFromArgName(const std::string& argName) {
+    /// The unit-hint category of a named argument, or none for an argument the hints do not check
+    /// (`u=`, `mu=`, ...). For humid air, D and B are the dew-point and wet-bulb temperatures and the
+    /// enthalpy (per kg of dry air, small or negative near 0 °C) is not checked.
+    static std::optional<ThermoInputKind> thermoKindFromArgName(const std::string& argName, bool humidAir) {
         std::string n = argName;
         std::transform(n.begin(), n.end(), n.begin(), ::tolower);
         if (n == "p" || n == "pressure") return ThermoInputKind::Pressure;
         if (n == "t" || n == "temperature") return ThermoInputKind::Temperature;
+        if (humidAir) {
+            if (n == "b" || n == "d") return ThermoInputKind::Temperature;
+            if (n == "w") return ThermoInputKind::HumidityRatio;
+            if (n == "r") return ThermoInputKind::RelativeHumidity;
+            return std::nullopt;
+        }
         if (n == "h" || n == "enthalpy") return ThermoInputKind::Enthalpy;
         if (n == "s" || n == "entropy") return ThermoInputKind::Entropy;
         if (n == "d" || n == "rho" || n == "density") return ThermoInputKind::Density;
         if (n == "v" || n == "volume") return ThermoInputKind::SpecificVolume;
         if (n == "q" || n == "x" || n == "quality") return ThermoInputKind::Quality;
-        if (n == "w") return ThermoInputKind::HumidityRatio;
-        if (n == "r") return ThermoInputKind::RelativeHumidity;
-        return ThermoInputKind::Temperature;
+        return std::nullopt;
+    }
+
+    /// The fluid of a property call written as a literal or an unquoted name ('' for a string variable).
+    static std::string literalFluidName(const FunctionCall& call) {
+        if (call.args.empty()) return {};
+        if (call.args[0]->is<StringLiteral>()) return call.args[0]->as<StringLiteral>().value;
+        if (call.args[0]->is<Variable>()) {
+            const auto& name = call.args[0]->as<Variable>().name;
+            if (!name.empty() && name.back() != '$') return name;
+        }
+        return {};
     }
 
     void validateThermoUserPatterns(ParseResult& result) {
@@ -970,16 +989,30 @@ private:
                 }
             }
 
+            // The psychrometric functions need the humid air AirH2O, not the ideal gas Air
+            std::string fluidLc = literalFluidName(call);
+            std::transform(fluidLc.begin(), fluidLc.end(), fluidLc.begin(), ::tolower);
+            std::string funcLc = call.name;
+            std::transform(funcLc.begin(), funcLc.end(), funcLc.begin(), ::tolower);
+            if (fluidLc == "air" && (funcLc == "humrat" || funcLc == "relhum" || funcLc == "wetbulb" ||
+                                     funcLc == "dewpoint") && !fluidWarningsDone.count("psychro:air")) {
+                result.diagnostics.push(DiagnosticSeverity::Warning, "P005",
+                    call.name + "(): fluid '" + literalFluidName(call) +
+                        "'. For moist air properties use AirH2O (humrat, wetbulb, …), not 'air'.",
+                    "parser", line, 0);
+                fluidWarningsDone.insert("psychro:air");
+            }
+
             // Literal named arguments: static unit hints with line numbers
+            const bool humidAir = fluidLc == "airh2o";
             for (const auto& [argName, argExpr] : call.namedArgs) {
                 // C=30 of an incompressible solution is a concentration (mass %), not a state input: the fluid is
                 // unknown here (a string variable), and no other call takes a `C` argument
                 if (isConcentrationArgName(argName)) continue;
                 double lit = 0.0;
                 if (!tryGetNumericLiteral(argExpr, lit)) continue;
-                checkThermoInputValueHint(&result.diagnostics, call.name,
-                                          units, thermoKindFromArgName(argName),
-                                          argName, lit, line);
+                if (const auto kind = thermoKindFromArgName(argName, humidAir))
+                    checkThermoInputValueHint(&result.diagnostics, call.name, units, *kind, argName, lit, line);
             }
         };
 

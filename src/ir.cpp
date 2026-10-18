@@ -566,6 +566,8 @@ static const std::set<std::string> THERMO_FUNCTIONS = {
     "isidealgas"
 };
 
+const std::set<std::string>& IR::thermoFunctionNames() { return THERMO_FUNCTIONS; }
+
 // Check if a function name is a thermodynamic function
 static bool isThermoFunction(const std::string& name) {
     std::string lower = name;
