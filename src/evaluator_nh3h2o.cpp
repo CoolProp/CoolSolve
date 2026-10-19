@@ -70,7 +70,7 @@ struct ModelUnits {
     void toSI(Prop p, double v, double& si, double& factor) const {
         auto affine = [&](UnitType type, const std::string& unit) {
             si = UnitConverter::toSI(v, type, unit);
-            factor = UnitConverter::toSI(1.0, type, unit) - UnitConverter::toSI(0.0, type, unit);
+            factor = UnitConverter::scaleToSI(type, unit);
         };
         switch (p) {
             case Prop::T: affine(UnitType::Temperature, units.temperature); break;
@@ -86,7 +86,7 @@ struct ModelUnits {
     void fromSI(Prop p, double si, double& v, double& factor) const {
         auto affine = [&](UnitType type, const std::string& unit) {
             v = UnitConverter::fromSI(si, type, unit);
-            factor = UnitConverter::fromSI(1.0, type, unit) - UnitConverter::fromSI(0.0, type, unit);
+            factor = UnitConverter::scaleFromSI(type, unit);
         };
         switch (p) {
             case Prop::T: affine(UnitType::Temperature, units.temperature); break;
@@ -121,7 +121,7 @@ double clampTrialPoint(Prop prop, double si, bool& limited) {
 /// The flash of the three inputs (sorted by property number), with the clamping of the trial points; the inputs carry
 /// their gradients.
 static nh3h2o::FlashResult solveState(StateInput in[3], const std::string& label, const bool clampingEnabled,
-                                      InputClampLog* clampLog, size_t numVariables) {
+                                      InputClampLog* clampLog) {
     std::sort(in, in + 3, [](const StateInput& a, const StateInput& b) { return static_cast<int>(a.prop) < static_cast<int>(b.prop); });
     if (clampingEnabled) {
         for (int j = 0; j < 3; ++j) {
@@ -143,7 +143,6 @@ static nh3h2o::FlashResult solveState(StateInput in[3], const std::string& label
             in[j].si = bound;
         }
     }
-    (void)numVariables;
     try {
         return nh3h2o::flash(in[0].prop, in[1].prop, in[2].prop, in[0].si, in[1].si, in[2].si);
     } catch (const std::runtime_error& e) {
@@ -221,7 +220,7 @@ ADValue ExpressionEvaluator::evaluateAmmoniaWaterFunction(const FunctionCall& fu
                                      "state: " + codeList());
     }
     const size_t numVars = numVariables_;
-    const nh3h2o::FlashResult state = solveState(in, label, !disableClamping_, clampLog_, numVars);
+    const nh3h2o::FlashResult state = solveState(in, label, !disableClamping_, clampLog_);
 
     auto derivativeRow = [&](int k, double d[3]) { for (int j = 0; j < 3; ++j) d[j] = state.derivative[k][j]; };
     double d[3];
@@ -239,7 +238,7 @@ ADValue ExpressionEvaluator::evaluateAmmoniaWaterFunction(const FunctionCall& fu
         double rho, outPerSI;
         const double rhoSI = 1.0 / v;
         rho = UnitConverter::fromSI(rhoSI, UnitType::Density, units.density);
-        outPerSI = UnitConverter::fromSI(1.0, UnitType::Density, units.density) - UnitConverter::fromSI(0.0, UnitType::Density, units.density);
+        outPerSI = UnitConverter::scaleFromSI(UnitType::Density, units.density);
         return assemble(rho, d, in, outPerSI, numVars);
     }
     // specific heat and expansion coefficient: single-phase states only
@@ -251,13 +250,11 @@ ADValue ExpressionEvaluator::evaluateAmmoniaWaterFunction(const FunctionCall& fu
     }
     if (output == Output::SpecificHeat) {
         const double value = UnitConverter::fromSI(extras.cp, UnitType::SpecificHeat, units.specific_heat);
-        const double outPerSI = UnitConverter::fromSI(1.0, UnitType::SpecificHeat, units.specific_heat) -
-                                UnitConverter::fromSI(0.0, UnitType::SpecificHeat, units.specific_heat);
+        const double outPerSI = UnitConverter::scaleFromSI(UnitType::SpecificHeat, units.specific_heat);
         return assemble(value, extras.dcp, in, outPerSI, numVars);
     }
     // (1/v)(dv/dT)_p per unit of the temperature unit of the model
-    const double perUnit = 1.0 / (UnitConverter::fromSI(1.0, UnitType::Temperature, units.temperature) -
-                                  UnitConverter::fromSI(0.0, UnitType::Temperature, units.temperature));
+    const double perUnit = 1.0 / UnitConverter::scaleFromSI(UnitType::Temperature, units.temperature);
     return assemble(extras.expansion * perUnit, extras.dexpansion, in, perUnit, numVars);
 }
 
@@ -293,7 +290,7 @@ void ExpressionEvaluator::evaluateAmmoniaWaterCall(const ProcedureCall& call) {
     }
     const std::string label = "CALL NH3H2O(" + std::to_string(code) + ")";
     const size_t numVars = numVariables_;
-    const nh3h2o::FlashResult state = solveState(in, label, !disableClamping_, clampLog_, numVars);
+    const nh3h2o::FlashResult state = solveState(in, label, !disableClamping_, clampLog_);
     for (size_t k = 0; k < call.outputVars.size(); ++k) {
         double d[3];
         for (int j = 0; j < 3; ++j) d[j] = state.derivative[k][j];

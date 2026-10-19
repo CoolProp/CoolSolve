@@ -567,4 +567,12 @@ double UnitConverter::fromSI(double value, UnitType type, const std::string& uni
     return value;
 }
 
+double UnitConverter::scaleToSI(UnitType type, const std::string& unit) {
+    return toSI(1.0, type, unit) - toSI(0.0, type, unit);
+}
+
+double UnitConverter::scaleFromSI(UnitType type, const std::string& unit) {
+    return fromSI(1.0, type, unit) - fromSI(0.0, type, unit);
+}
+
 } // namespace coolsolve

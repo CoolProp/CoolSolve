@@ -24,7 +24,10 @@ namespace coolsolve::nh3h2o {
  * The formulation is written once, as a template over the scalar type S (plain `double` or a
  * `taylor::Jet<N>` seeded in (T, rho, x)), so that every derivative is exact (analytical, by
  * truncated Taylor arithmetic); nothing here uses finite differences or a reference library.
- * Later tasks build the phase equilibrium and the EES `CALL NH3H2O` interface on this core.
+ * The phase equilibrium (the saturation solver) and the 15 three-property flashes are built on
+ * this core in `nh3h2o_flash.cpp` (declared at the end of this header); the EES fluid functions
+ * and the procedure `CALL NH3H2O` (units, derivatives, limits of the trial points) are in
+ * `evaluator_nh3h2o.cpp`.
  */
 
 //@{
@@ -115,8 +118,9 @@ struct State {
 State state(double T, double rho, double x);
 
 /// The quantities p, u, h, s as second-order jets in (T, rho, x) (value, gradient and Hessian
-/// of each), for the phase equilibrium and the CoolSolve interface of the later tasks: they are
-/// the `derivative(...)` of the third-order Phi jet, so their own derivatives are exact.
+/// of each): they are the `derivative(...)` of the third-order Phi jet, so their own derivatives
+/// are exact. Only the tests call it: the saturation solver and the flashes of `nh3h2o_flash.cpp`
+/// build their own first-order jets of the phase quantities from the second-order jet of Phi.
 struct StateJets {
     taylor::Jet<2> p;
     taylor::Jet<2> u;
@@ -133,7 +137,6 @@ double massFractionOf(double x);
 double dMassFractionDx(double x);
 /// Mole fraction of ammonia for the mass fraction `xi`, and its derivative.
 double moleFractionOf(double xi);
-double dMoleFractionDxi(double xi);
 
 //@{
 /**

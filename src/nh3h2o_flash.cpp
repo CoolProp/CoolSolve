@@ -27,10 +27,6 @@ double dMassFractionDx(double x) {
     return kM1 * kM2 / (m * m);
 }
 double moleFractionOf(double xi) { return xi * kM1 / ((1.0 - xi) * kM2 + xi * kM1); }
-double dMoleFractionDxi(double xi) {
-    const double d = (1.0 - xi) * kM2 + xi * kM1;
-    return kM1 * kM2 / (d * d);
-}
 
 namespace {
 
@@ -1134,13 +1130,9 @@ Solution singleSupercritical(double T, double p, double x, const std::string& la
     return singleSolution(T, rho, x, rho < reducingDensity(x));
 }
 
-}  // namespace
-
 // ---------------------------------------------------------------------------------------------------------------
 // flash
 // ---------------------------------------------------------------------------------------------------------------
-
-namespace {
 
 std::string propName(Prop p) {
     static const char* const names[8] = {"T", "P", "x", "h", "s", "u", "v", "q"};
@@ -1235,10 +1227,6 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
     const int code = 100 * static_cast<int>(spec[0].prop) + 10 * static_cast<int>(spec[1].prop) + static_cast<int>(spec[2].prop);
     const double a = spec[0].value, b = spec[1].value, c = spec[2].value;
     auto inRange = [&](double q) { return q >= 0.0 && q <= 1.0; };
-
-    // mixture property of the saturation pair at the quality that the mass balance (xi) or the input gives
-    auto xiOf = [&](double xi) { return moleFractionOf(xi); };
-    (void)xiOf;
 
     switch (code) {
         case 123: {   // T, p, x

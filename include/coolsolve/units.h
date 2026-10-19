@@ -120,6 +120,23 @@ public:
     
     // Convert value from SI (CoolProp standard) to the specified unit
     static double fromSI(double value, UnitType type, const std::string& unit);
+
+    /**
+     * @brief d(SI value) / d(value in `unit`): the factor of the derivatives of a quantity converted to SI by toSI.
+     *
+     * The conversions are affine (a temperature in C or F has an offset), so the factor is the slope
+     * `toSI(1) - toSI(0)` (1000 for kJ, 1 for C and K, 5/9 for F). It is 1 for `UnitType::Dimensionless` and for a
+     * unit that toSI does not recognise (toSI passes such a value through unchanged).
+     */
+    static double scaleToSI(UnitType type, const std::string& unit);
+
+    /**
+     * @brief d(value in `unit`) / d(SI value): the factor of the derivatives of a quantity converted from SI by fromSI.
+     *
+     * The slope `fromSI(1) - fromSI(0)` of the affine conversion (0.001 for kJ, 1 for C and K, 9/5 for F); the inverse
+     * of scaleToSI. It is 1 for `UnitType::Dimensionless` and for a unit that fromSI does not recognise.
+     */
+    static double scaleFromSI(UnitType type, const std::string& unit);
 };
 
 } // namespace coolsolve

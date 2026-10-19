@@ -1631,9 +1631,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             
             // Scaling factors for derivatives
             auto getScale = [&](UnitType t, const std::string& u, bool toSI) {
-                if (t == UnitType::Dimensionless) return 1.0;
-                if (toSI) return UnitConverter::toSI(1.0, t, u) - UnitConverter::toSI(0.0, t, u);
-                return UnitConverter::fromSI(1.0, t, u) - UnitConverter::fromSI(0.0, t, u);
+                return toSI ? UnitConverter::scaleToSI(t, u) : UnitConverter::scaleFromSI(t, u);
             };
             
             double outScale = getScale(outType, 
@@ -2099,9 +2097,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     
     // Helper for unit scale factors (reused by both paths)
     auto getScale = [&](UnitType t, const std::string& u, bool toSI) {
-        if (t == UnitType::Dimensionless) return 1.0;
-        if (toSI) return UnitConverter::toSI(1.0, t, u) - UnitConverter::toSI(0.0, t, u);
-        return UnitConverter::fromSI(1.0, t, u) - UnitConverter::fromSI(0.0, t, u);
+        return toSI ? UnitConverter::scaleToSI(t, u) : UnitConverter::scaleFromSI(t, u);
     };
     auto unitStringFor = [&](UnitType t) -> std::string {
         if (t == UnitType::Temperature) return units.temperature;
