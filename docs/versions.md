@@ -8,7 +8,47 @@ changes introduced.
 
 ---
 
-## v0.3 — July 2026 (current)
+## v0.4 — October 2026 (current)
+
+| Item | Detail |
+|------|--------|
+| **Windows installer** | **[CoolSolve v0.4 for Windows](https://github.com/CoolProp/CoolSolve/releases/download/v0.4/CoolSolve_v0.4_Installer.exe)** ([release notes](https://github.com/CoolProp/CoolSolve/releases/tag/v0.4)) |
+| **CoolProp** | master branch, commit `75af7816` (8.1.0dev, October 2026) |
+| **Model library** | [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) tag `v0.4` (248 models), embedded in the GUI binary |
+| **Online demo** | [https://coolsolve.squoilin.eu/](https://coolsolve.squoilin.eu/) |
+
+### What's new in v0.4
+
+- **Model library in the GUI**: the CoolSolve Library — documented, verified EES models — is embedded in the binary.
+  The toolbar **Library** button opens a whole model folder (code, initial values, lookup tables, configuration) in
+  one click; the dashboard at `/library/` lists every model with its status, reference and figure.
+- **EES compatibility, driven by the library** (about 80 register items closed, see
+  [model_library_support.md](model_library_support.md) §7): `IF` ladders and `GOTO` in routine bodies, the EES
+  forms of `INTERPOLATE`, `LOOKUP`, `LOOKUP$` and `LOOKUP$ROW`, indexed `SUM`/`PRODUCT`, `END PROCEDURE`, `=>` and
+  `=<`, `UNTIL` without parentheses, `Uppercase$`/`Lowercase$`, `ISIDEALGAS`, `MOLARMASS` of an element,
+  `CALL Colebrook`, the time functions of `SETP.LIB`, `CALL WARNING`, `$IF` directives, identifier characters
+  (`%`, `|`, `#`, accents), `CONVERT` with compound units, array ranges `X[a..b]`, `DUPLICATE` with variable bounds
+  and index arithmetic.
+- **No silently wrong answers**: unparsable arguments, trailing text, dropped body lines, lookup-table cell writes,
+  never-ending `REPEAT` loops, call cycles, unit hints on constants and clamped trial points are now reported with
+  an error or a warning instead of being ignored or clamped silently; explicit equations store the exact
+  right-hand side; `--no-sol` no longer deletes an existing `.sol`.
+- **More fluids**: the normal alkanes `C4H10` … `C8H18` as ideal-gas substances; ideal gases with absolute
+  third-law entropies and NASA-Glenn formation enthalpies; the ASHRAE lithium bromide-water routines `X_LIBR`,
+  `H_LIBR`, `T_LIBR`, `P_LIBR`; the incompressible solutions in the EES form `cp('EG', T=T, C=30)`; humid-air `cv`
+  and density as EES; CoolProp mixtures as fluids (with a warning).
+- **Ammonia-water (`NH3H2O`)** *(if included in the release)*: the IAPWS Guideline G4-01 Helmholtz formulation, with
+  15 flash input combinations, `CALL NH3H2O` and the usual property functions; see
+  [language_reference.md](language_reference.md) and [nh3h2o_review.md](nh3h2o_review.md).
+- **Solver**: step control in the one-dimensional Newton solver (no more silent divergence); the input clamp only
+  acts on Newton trial points and a clamp at the solution is an error.
+- **Build and release**: CoolProp pinned to a tested commit (`coolsolve --version` prints it and the library
+  commit); the Windows installer script checks `git` and `cmake`, names the installer after the version and takes the
+  library tag from `LIBRARY_TAG`.
+
+---
+
+## v0.3 — July 2026
 
 | Item | Detail |
 |------|--------|
