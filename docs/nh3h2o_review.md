@@ -29,7 +29,7 @@ solver, the line searches, the block decomposition and the automatic differentia
 |---|---:|---|
 | `include/coolsolve/taylor_jet.h` | 331 | truncated Taylor polynomial in 3 variables (order 1 to 3), value and derivatives |
 | `include/coolsolve/nh3h2o.h`, `src/nh3h2o.cpp` | 235, 401 | the Helmholtz formulation (Eqs. 1 to 8 and Tables 1 to 3, A1 of the guideline; IAPWS-95 for water) written once over a scalar type; the properties of a state |
-| `src/nh3h2o_flash.cpp` | 1694 | the saturation solver, the 15 flashes, derivatives by the implicit function theorem. **Contains its own small Newton (`newtonSolve`), Brent and linear solver**, private to the file (anonymous namespace) |
+| `src/nh3h2o_flash.cpp` | 1582 | the saturation solver, the 15 flashes, derivatives by the implicit function theorem. **Contains its own small Newton (`newtonSolve`), Brent and linear solver**, private to the file (anonymous namespace) |
 | `src/evaluator_nh3h2o.cpp` | 303 | the glue: units of the model, designators, the trial-point limits, assembly of the `ADValue` gradient, the two entry points |
 | `tests/test_nh3h2o.cpp` | 1139 | 29 test cases (tags `[nh3h2o]`, `[formulation]`, `[equilibrium]`, `[flash]`, `[evaluator]`) and two hidden scans (`[.nh3h2o-scan]`, about 35 s) |
 
@@ -81,7 +81,7 @@ of it; chemical potentials on `R * 300 K`). An earlier version had a loose fallb
 **removed** (`db0246a`) after it was found to accept under-converged states in a third of the iterations. The one remaining exit
 for an iteration that has stopped lowering the residual requires every residual to be within two units of a **measured** noise floor
 (`noiseFloor`: the resolution of the representation of the variables, `sum |J_ij| ulp(v_j)`, plus the jitter of the evaluation: the largest
-deviation of F from its linearisation over six perturbations of the non-composition variables by 1 to 3 ulp, taken once, not the sum of the six samples
+deviation of F from its linearisation over six perturbations of the variables by 1 to 3 ulp, taken once, not the sum of the six samples
 (review item 4; the measured exits did not change)). The test `Saturation: the equilibrium equations hold to 1e-11 of their natural scales`
 recomputes the equilibrium residuals from the Helmholtz energy with none of the solver's code, from 230 K and up to mole fractions of
 0.999999 (a hidden scan, `[.nh3h2o-scan]`, covers 230 to 560 K and the pressure-specified points).
@@ -96,29 +96,25 @@ composition as its logit `z` and evaluate `x = 1 / (1 + exp(-z))` with `xc = 1 /
 warm-start cache and the two-phase `Solution` carry the complements, a given mass fraction `xi` gives its complement from `1 - xi`, and the
 public `Saturation` returns them (`wL`, `wV`). Measured with the review's `exit_stats` (scans of the handover, §7.3):
 
-| Section | Solved / threw | Non-strict exits before (HEAD `7d96d6d`) | After items 4 and 5 |
-|---|---|---|---|
-| Regular saturations (230 to 560 K, x 0.001 to 0.98) | 549 / 95 | 19 noise floor (worst 95 × tol) | 1 noise floor (1.8 × tol) |
-| Near-pure saturations (x 0.99 to 0.999999) | 168 / 154 | 58 noise floor (3.9e5 × tol), 24 frozen (5.4e5 × tol) | 12 frozen, every row below tol |
-| Pressure-specified saturations | 196 / 0 | 17 noise floor (2.8e3 × tol) | none |
-| Round trips of the 15 flashes from two-phase states | 1523 / 7 | 5 183 noise floor (6.2e5 × tol), 935 frozen (3.4e5 × tol) | 121 frozen (15 above tol, worst 31 × tol) |
-| (T, P, X) inside the dome | 935: all two-phase | 201 noise floor (1.1e3 × tol), 5 frozen (118 × tol) | 2 frozen (3.3 × tol) |
+| Section | Solved / threw | Non-strict exits before (HEAD `7d96d6d`) | Exact complement, polish kept | Polish deleted (now) |
+|---|---|---|---|---|
+| Regular saturations (230 to 560 K, x 0.001 to 0.98) | 549 / 95 | 19 noise floor (worst 95 × tol) | 1 noise floor (1.8 × tol) | 1 noise floor (1.8 × tol) |
+| Near-pure saturations (x 0.99 to 0.999999) | 168 / 154 | 58 noise floor (3.9e5 × tol), 24 frozen (5.4e5 × tol) | 12 frozen, every row below tol | none |
+| Pressure-specified saturations | 196 / 0 | 17 noise floor (2.8e3 × tol) | none | none |
+| Round trips of the 15 flashes from two-phase states | 1523 / 7 | 5 183 noise floor (6.2e5 × tol), 935 frozen (3.4e5 × tol) | 121 frozen (15 above tol, worst 31 × tol) | none |
+| (T, P, X) inside the dome | 935: all two-phase | 201 noise floor (1.1e3 × tol), 5 frozen (118 × tol) | 2 frozen (3.3 × tol) | none |
 
 The chemical potentials recomputed independently with the complement (`exit_stats`, every saturation of the grids): `mu1` at most 1.0e-12 of
 `R * 300 K` (was 5.4e-7), `mu2` 1.8e-12, p 1.3e-12. Recomputed with `1 - x` of the returned double instead, `mu1` still shows 5.4e-7: that
 is the error of the subtraction, not of the state.
 
-- **Frozen-variable polish** (`frozenPolish`, inside `newtonSolve`, with the composition-quantisation machinery `NewtonSetup::resolution` /
-  `composition` and `logitResolution`): **still in the code**, because the measured exits above do not meet the condition the review set for
-  its removal (no frozen-polish exit). It was written for the quantised composition: at a stall the most quantised variable and the row it
-  dominates are frozen, the other rows are solved strictly, the frozen variable is moved by Newton on the dropped row (the Schur complement of
-  the Jacobian), and the dropped row is accepted within two units of its quantisation floor `|S| u`. With the exact complement the logit is
-  no longer quantised as `ulp(x) / (x (1 - x))` (`logitResolution`, up to 1e5 times the true resolution `ulp(z)`), so the polish now runs
-  only as a rescue: it is called whenever one Newton step does not halve the residual, also far from the solution (seen at 1e9 × tol on T-p
-  pairs of X = 0.99 at 270 K and on bubble points at p below 200 K), and its dropped-row criterion still uses that model. Measured without the
-  polish and the machinery (the default resolution `ulp(z)`, `atResolutionFloor` as the only non-strict exit): the same solves succeed in
-  every section of the table, every exit strict except the one noise-floor exit at 1.8 × tol, independent `mu1` at most 1.0e-12, the review
-  cases A to E OK; the change is prepared, not applied.
+- **Frozen-variable polish: deleted** (`frozenPolish`, with the composition-quantisation machinery `NewtonSetup::resolution` / `composition`
+  and `logitResolution`). It was written for the quantised composition: at a stall the most quantised variable and the row it dominates were
+  frozen, the other rows solved strictly, and the dropped row accepted within two units of its quantisation floor `ulp(x) / (x (1 - x))` of
+  the logit. With the exact complement that model overestimated the resolution of the logit by up to 1e5, and the polish ran only as a rescue
+  of a Newton step that did not halve the residual, also far from the solution (1e9 × tol on T-p pairs of X = 0.99 at 270 K), accepting
+  `mu1` up to 31 × tol (fourth column). Without it every variable has the resolution of one ulp, the noise floor (`atResolutionFloor`, with
+  item 4) is the only non-strict exit, the same solves succeed in every section, and the review cases A to E are OK.
 - **Initial guesses** (`guessBubbleT`, `guessDewT`, `guessTP`, `guessAtPressure`): the liquid is evaluated from its fugacities against a vapour
   that is first an ideal gas, then corrected by the fugacity coefficients of the real vapour (they matter within a few percent of the pressure of
   pure ammonia, where the ideal-vapour guess has no root). `satSolve` tries the real-vapour guess first and the ideal-vapour one if Newton
@@ -160,7 +156,7 @@ is the error of the subtraction, not of the state.
   locus (380 to 450 K, X 0.7 to 0.999; the previous code: 58 differences, 31 single-phase answers inside the dome from a cold cache). The
   acceptance of the warm-start cache (`close()`, within 25 % of both specifications) is unchanged.
 
-Reviewing `newtonSolve` (with `noiseFloor` and `frozenPolish`), `satNewton`, `satAttempt`, the phase decisions of `solveFlash`, `finishTwoPhase`
+Reviewing `newtonSolve` (with `noiseFloor`), `satNewton`, `satAttempt`, the phase decisions of `solveFlash`, `finishTwoPhase`
 and `finishSingle` covers the numerics.
 
 Comparison tolerances of the tests (against the guideline tables, EES, CoolProp) are separate from the solver tolerance and are stated in the tests:
@@ -186,8 +182,7 @@ exactness of the derivatives against finite differences of the flash and of the 
 
 Transport properties (`Conductivity`, `Viscosity`, `SurfaceTension`) are not implemented (errors that say so). No two-phase state above the critical
 locus (error naming the state). Saturation solves meet the strict criterion up to near-pure compositions, the water mole fraction being
-evaluated without the rounding of `1 - x` (§4; a T-p pair near pure ammonia can still leave the frozen polish with the chemical potentials of water of
-its two phases equal to a few 1e-11 of `R * 300 K` only). Within about 1e-8 of pure ammonia (wider at low temperature) the bubble point cannot be represented (its vapour would be purer than the
+evaluated without the rounding of `1 - x` (§4). Within about 1e-8 of pure ammonia (wider at low temperature) the bubble point cannot be represented (its vapour would be purer than the
 composition floor): liquid states there are an error, not a guess. A pure component (X = 0 or 1) given by `(T, x, v)` or `(P, x, h|s)` inside
 its saturation dome comes out single-phase, and `(P, X = 0, H|S)` (pure water) fails (no density at the 200 K start of its search), both as
 before. Near the critical locus a first call can still fail where a later one succeeds (T-p pairs within about 1e-5 in ln p of the pure-ammonia

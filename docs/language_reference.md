@@ -1246,8 +1246,7 @@ may be an unknown of the model. The equations of every flash are solved to a sca
 full Newton polish; an iteration that cannot go lower is accepted only when it is within two units of the noise floor
 measured at that point. The mole fraction of water is evaluated as the complement of the composition, not as `1 - x` of a
 rounded double (known to 1e-16 / (1 - x) only near pure ammonia), so the phase equilibrium meets that criterion up to
-near-pure compositions (an equilibrium at given T and p near pure ammonia can be accepted with the chemical potentials of
-water of its two phases equal to a few 1e-11 of R * 300 K only).
+near-pure compositions.
 A call costs about 0.1 to 2 ms once warm (the previous solution is the start of the next call; a first call, or a jump,
 costs up to some tens of ms).
 

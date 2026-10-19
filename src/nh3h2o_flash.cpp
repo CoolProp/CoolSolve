@@ -152,31 +152,22 @@ struct NewtonSetup {
     bool logVar[8] = {false, false, false, false, false, false, false, false};
     double maxStep[8];   ///< largest step: fraction of colScale, or |d ln v| for a logarithmic variable
     double lower[8], upper[8];
-    /// The change of each Newton variable that moves the evaluated quantity by one representable step (default:
-    /// one ulp of the variable). For a composition iterated as logit(x) it is set to that of x itself,
-    /// ulp(x) / (x (1 - x)): the quantisation of a mole fraction held as a double, which `frozenPolish` was written for.
-    /// Since the solvers evaluate x and 1 - x from the logit (`satNewton`), it overestimates the resolution of a
-    /// composition near pure ammonia (up to 1e5 times ulp(z)); it is kept with `frozenPolish` (docs/nh3h2o_review.md §4).
-    std::function<void(const double*, double*)> resolution;
-    /// Variables that are compositions: their quantisation is in `resolution`; the evaluation jitter is measured with
-    /// the other variables only.
-    bool composition[8] = {false, false, false, false, false, false, false, false};
 };
 
 using Evaluator = std::function<bool(const double*, double*, double (*)[8])>;
 
 /// The smallest residual that can be told from noise, per row and scaled by the row scale, the sum of
 ///  - the resolution of the representation of the variables: the change of F produced by moving any variable by one
-///    representable step, sum |J_ij| u_j (u from `NewtonSetup::resolution`); and
+///    ulp, sum |J_ij| ulp(v_j) (a composition is iterated as its logit and evaluated with its exact complement, see
+///    `satNewton`, so one ulp of the logit is its resolution as well); and
 ///  - the round-off jitter of the evaluation of F, measured at the point: the largest deviation, over a few
-///    perturbations of the non-composition variables by 1 to 3 ulp, of F from its linearisation (the largest sample
-///    once, not their sum: each sample is one draw of the same jitter).
+///    perturbations of the variables by 1 to 3 ulp, of F from its linearisation (the largest sample once, not their
+///    sum: each sample is one draw of the same jitter).
 bool noiseFloor(const NewtonSetup& ns, const double* v, const double* F, double (*J)[8], const Evaluator& eval,
                 double* floorOut) {
     const int n = ns.n;
     double u[8];
     for (int j = 0; j < n; ++j) u[j] = std::abs(v[j]) * 2.220446049250313e-16;
-    if (ns.resolution) ns.resolution(v, u);
     for (int i = 0; i < n; ++i) {
         double f = 0.0;
         for (int j = 0; j < n; ++j) f += std::abs(J[i][j]) * u[j];
@@ -188,7 +179,7 @@ bool noiseFloor(const NewtonSetup& ns, const double* v, const double* F, double 
     double jitter[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     for (const auto& c : pattern) {
         double vp[8], Fp[8], Jp[8][8];
-        for (int j = 0; j < n; ++j) vp[j] = ns.composition[j] ? v[j] : v[j] * (1.0 + c[j] * kUlp);
+        for (int j = 0; j < n; ++j) vp[j] = v[j] * (1.0 + c[j] * kUlp);
         if (!eval(vp, Fp, Jp)) return false;
         for (int i = 0; i < n; ++i) {
             double lin = F[i];
@@ -203,10 +194,12 @@ bool noiseFloor(const NewtonSetup& ns, const double* v, const double* F, double 
 /**
  * Damped Newton iteration on F(v) = 0 with the Jacobian supplied by `eval` (false from `eval` = step refused).
  *
- * Convergence is a scaled residual below `tol`. The other exits are for an iteration that has stopped lowering the
- * residual (a step that does not halve it): the point is accepted if every row is within `tol` plus two units of the
- * noise floor measured there (`noiseFloor`: the resolution of the representation of the variables and the round-off
- * jitter of the evaluation), i.e. when no representable point can do better; otherwise `frozenPolish` is tried.
+ * Convergence is a scaled residual below `tol`. The one other exit is for an iteration that has stopped lowering the
+ * residual (a step that does not halve it, or none that lowers it): the point is accepted only if every row is within
+ * `tol` plus two units of the noise floor measured there (`noiseFloor`: the resolution of the representation of the
+ * variables and the round-off jitter of the evaluation), i.e. when no representable point can do better; otherwise the
+ * iteration goes on (or fails). The compositions need no special treatment: they are iterated as logits and evaluated
+ * with their exact complements (`satNewton`), so one ulp of each variable is its resolution.
  */
 bool newtonSolve(const NewtonSetup& ns, double* v, const Evaluator& eval, double tol, int maxIter) {
     const int n = ns.n;
@@ -224,100 +217,13 @@ bool newtonSolve(const NewtonSetup& ns, double* v, const Evaluator& eval, double
             if (std::abs(F[i]) / ns.rowScale[i] > tol + 2.0 * floorOut[i]) return false;
         return true;
     };
-    // Written for a variable quantised coarsely (a mole fraction near 1 held as a double, before the solvers evaluated 1 - x
-    // from the logit): the full Newton step asks it for a change that a double cannot represent and the other variables
-    // overshoot in response. Freeze that variable and the one row it dominates, solve the other rows strictly for the other
-    // variables, and move the frozen variable by Newton on the dropped row, whose sensitivity is then the Schur complement
-    // S = J[rq][jq] - J[rq][cols] M^-1 J[rows][jq]. The dropped row is accepted within two units of its quantisation floor
-    // |S| u (`NewtonSetup::resolution`, plus the measured noise); all the other rows satisfy `tol`. It is tried at every
-    // stall, also far from the solution (a second iteration there), and its quantisation floor is now an overestimate: kept
-    // until the maintainer decides on its removal (docs/nh3h2o_review.md §4).
-    auto frozenPolish = [&]() {
-        double u[8];
-        for (int j = 0; j < n; ++j) u[j] = std::abs(v[j]) * 2.220446049250313e-16;
-        if (ns.resolution) ns.resolution(v, u);
-        int jq = -1, rq = -1;
-        double best = 0.0;
-        for (int i = 0; i < n; ++i)
-            for (int j = 0; j < n; ++j) {
-                const double c = std::abs(J[i][j]) * u[j] / ns.rowScale[i];
-                if (c > best) {
-                    best = c;
-                    jq = j;
-                    rq = i;
-                }
-            }
-        if (jq < 0 || best < 10.0 * tol || n < 2) return false;   // not a quantisation problem
-        double w[8], Fw[8], Jw[8][8];
-        for (int j = 0; j < n; ++j) w[j] = v[j];
-        for (int i = 0; i < n; ++i) {
-            Fw[i] = F[i];
-            for (int j = 0; j < n; ++j) Jw[i][j] = J[i][j];
-        }
-        int rows[8], cols[8], m = 0;
-        for (int i = 0; i < n; ++i)
-            if (i != rq) rows[m++] = i;
-        m = 0;
-        for (int j = 0; j < n; ++j)
-            if (j != jq) cols[m++] = j;
-        auto reducedMerit = [&]() {
-            double r = 0.0;
-            for (int i = 0; i < n; ++i)
-                if (i != rq) r = std::max(r, std::abs(Fw[i]) / ns.rowScale[i]);
-            return r;
-        };
-        auto step = [&](int j, double d) {
-            w[j] = ns.logVar[j] ? w[j] * std::exp(d / w[j]) : w[j] + d;
-            w[j] = std::min(std::max(w[j], ns.lower[j]), ns.upper[j]);
-        };
-        double quantisation = 0.0;
-        for (int outer = 0; outer < 6; ++outer) {
-            // the other variables for the other rows (Newton on the reduced system)
-            for (int it = 0; it < 6 && reducedMerit() >= tol; ++it) {
-                double A[8][8], B[8][8];
-                for (int a = 0; a < n - 1; ++a) {
-                    for (int b = 0; b < n - 1; ++b) A[a][b] = Jw[rows[a]][cols[b]] / ns.rowScale[rows[a]];
-                    B[a][0] = -Fw[rows[a]] / ns.rowScale[rows[a]];
-                }
-                if (!solveLinear(n - 1, A, 1, B)) return false;
-                for (int b = 0; b < n - 1; ++b) step(cols[b], B[b][0]);
-                if (!eval(w, Fw, Jw)) return false;
-            }
-            if (!(reducedMerit() < tol)) return false;
-            // the dropped row: its Schur complement and quantisation floor
-            double Mx[8][8], c[8][8];
-            for (int a = 0; a < n - 1; ++a) {
-                for (int b = 0; b < n - 1; ++b) Mx[a][b] = Jw[rows[a]][cols[b]];
-                c[a][0] = Jw[rows[a]][jq];
-            }
-            if (!solveLinear(n - 1, Mx, 1, c)) return false;
-            double S = Jw[rq][jq];
-            for (int b = 0; b < n - 1; ++b) S -= Jw[rq][cols[b]] * c[b][0];
-            double uq[8];
-            for (int j = 0; j < n; ++j) uq[j] = std::abs(w[j]) * 2.220446049250313e-16;
-            if (ns.resolution) ns.resolution(w, uq);
-            quantisation = std::abs(S) * uq[jq] / ns.rowScale[rq];
-            double floorOut[8];
-            if (!noiseFloor(ns, w, Fw, Jw, eval, floorOut)) return false;
-            const double allowed = tol + 2.0 * std::max(floorOut[rq], quantisation);
-            if (std::abs(Fw[rq]) / ns.rowScale[rq] <= allowed) {
-                for (int j = 0; j < n; ++j) v[j] = w[j];
-                for (int i = 0; i < n; ++i) F[i] = Fw[i];
-                return true;
-            }
-            if (!(std::abs(S) > 0.0)) return false;
-            step(jq, -Fw[rq] / S);   // Newton on the frozen variable, the others eliminated
-            if (!eval(w, Fw, Jw)) return false;
-        }
-        return false;
-    };
     double m0 = merit(F);
     int stalled = 0;
     for (int it = 0; it < maxIter; ++it) {
         if (!(m0 >= tol)) {
             return std::isfinite(m0);
         }
-        if (stalled >= 1 && (atResolutionFloor() || frozenPolish())) return true;
+        if (stalled >= 1 && atResolutionFloor()) return true;
         double A[8][8], B[8][8];
         for (int i = 0; i < n; ++i) {
             for (int j = 0; j < n; ++j) A[i][j] = J[i][j] / ns.rowScale[i];
@@ -344,7 +250,7 @@ bool newtonSolve(const NewtonSetup& ns, double* v, const Evaluator& eval, double
         if (!accepted) return false;
         stalled = mn < 0.5 * m0 ? 0 : stalled + 1;   // the iteration no longer lowers the residual
         if (mn >= m0) {   // keep the better point; it is the answer if nothing representable does better
-            return atResolutionFloor() || frozenPolish();
+            return atResolutionFloor();
         }
         for (int j = 0; j < n; ++j) v[j] = vn[j];
         for (int i = 0; i < n; ++i) {
@@ -513,13 +419,6 @@ double logitOf(double x, double xc) {
 /// The mole fraction of the logit z, 1 / (1 + exp(-z)); its complement is sigmoid(-z), to its own round-off.
 double sigmoid(double z) { return 1.0 / (1.0 + std::exp(-z)); }
 
-/// The change of logit(x) that moves the double x by one representable step: the resolution of a composition that is
-/// iterated as its logit.
-double logitResolution(double z) {
-    const double x = sigmoid(z);
-    return (std::nextafter(x, 2.0) - x) / (x * (1.0 - x));
-}
-
 /// True if both phases are mechanically stable, dp/drho > 0 at fixed T and x. The equilibrium equations also have
 /// roots with a phase between its spinodals (dp/drho < 0); such a root is not a physical state.
 bool mechanicallyStable(const Phase& L, const Phase& V) { return L.p.gradient(1) > 0.0 && V.p.gradient(1) > 0.0; }
@@ -547,15 +446,10 @@ bool satNewton(Sat& s, SatKind kind, int maxIter = 60) {
         ns.rowScale[i] = rowScale[i];
         ns.colScale[i] = colScale[free[i]];
         ns.logVar[i] = free[i] == 1 || free[i] == 4 || free[i] == 5;
-        ns.composition[i] = isComposition(free[i]);
         ns.maxStep[i] = maxStep[free[i]];
         ns.lower[i] = lower[free[i]];
         ns.upper[i] = upper[free[i]];
     }
-    ns.resolution = [&](const double* uv, double* out) {
-        for (int i = 0; i < 4; ++i)
-            out[i] = isComposition(free[i]) ? logitResolution(uv[i]) : std::abs(uv[i]) * 2.220446049250313e-16;
-    };
     double u[4];
     for (int i = 0; i < 4; ++i)
         u[i] = isComposition(free[i]) ? logitOf(s.v[free[i]], s.w[free[i] - 2]) : s.v[free[i]];
@@ -1155,12 +1049,6 @@ FlashResult finishTwoPhase(Solution& sol, const Spec spec[3], const std::string&
     ns.lower[4] = 1.0; ns.lower[5] = 1e-6; ns.upper[4] = ns.upper[5] = 2e5;   // the bounds of satNewton
     ns.lower[6] = 0.0; ns.upper[6] = 1.0; ns.lower[7] = -0.5; ns.upper[7] = 1.5;
 
-    ns.composition[2] = ns.composition[3] = true;
-    ns.resolution = [](const double* u, double* out) {
-        for (int k = 0; k < 8; ++k) out[k] = std::abs(u[k]) * 2.220446049250313e-16;
-        out[2] = logitResolution(u[2]);
-        out[3] = logitResolution(u[3]);
-    };
     // w holds the compositions as mole fractions (with their complements in sol.wc); the iteration vector u holds their
     // logits z, evaluated as x = sigmoid(z) and 1 - x = sigmoid(-z)
     auto toW = [](const double* u, double* v, double* c) {
