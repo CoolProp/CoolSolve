@@ -726,33 +726,106 @@ double raoultTemperature(bool bubble, double p, double x) {
     return 0.5 * (lo + hi);
 }
 
-/// A guess for a saturation solved at the pressure p: the temperature is searched so that the guess at T has this
-/// pressure (kind = bubble or dew at fixed composition), starting from Raoult's law.
-bool guessAtPressure(SatKind kind, double p, double x, Sat& s, bool realVapour = true) {
-    const double target = std::log(p);
+/// The outcome of `guessAtPressure`: a guess; none (no temperature at which the guess has the pressure: above the
+/// critical locus, or no temperature at which a guess exists); or `BelowEdge`, the guess pressure is above the target
+/// down to the lowest temperature at which a guess exists, so the saturation lies below it (the guess at that edge is
+/// returned, a start for Newton in case the saturation lies within the resolution of the edge).
+enum class PressureGuess { Found, None, BelowEdge };
+
+constexpr double kTMinSearch = 130.0;   ///< lowest temperature of the searches of the pressure-specified guesses [K]
+
+/// A guess for a saturation solved at the pressure p (kind = bubble or dew at the fixed composition x): the temperature
+/// at which the guess at T has this pressure, searched from Raoult's law (with `edge`, for `BelowEdge`, the lowest
+/// temperature at which a guess exists).
+///
+/// The guess pressure rises with T where the guess exists. It ceases to exist on two sides: above the critical temperature
+/// ("hot"), and far below the line of triple points ("cold"), where the liquid of the formulation (IAPWS-95 for water
+/// extrapolated) has no density root at the low pressure of the saturation: its liquid branch has a positive minimum
+/// pressure (8 MPa for x = 0.053 at 230 K; it reaches zero near 232 K for that composition, near 167 K for x = 0.31). There
+/// `liquidFugacities` falls back to a compressed liquid, whose fugacities are not those of a liquid at the saturation
+/// pressure, so on the cold side a guess counts only if its liquid has a root at the guess pressure. Further below, the
+/// extrapolated liquid can have a root again but a saturation pressure that falls with T (x = 0.61: 55 Pa at 160 K, 83 Pa at
+/// 157.5 K, 2e5 Pa at 155 K): a guess whose pressure is not below that of a guess at a higher temperature is on the cold
+/// side as well. Measured on the review grids, the liquid fails or falls back below 0.40 Tn(x) (cold) or above 0.85 Tn(x)
+/// (hot) only, Tn the reducing temperature: a failure below 0.6 Tn(x) is on the cold side. A cold failure is "too cold"
+/// and a hot one "too hot" in the bracket search (the previous search took every failure as too hot and widened downwards
+/// into the cold failures until it gave up: the bubble point of x = 0.31 at 708 Pa, 216 K, had no guess).
+PressureGuess guessAtPressure(SatKind kind, double p, double x, Sat& s, bool realVapour, double& edge) {
+    const double target = std::log(p), tCold = 0.6 * reducingTemperature(clampX(x));
     constexpr double kFailed = 10.0;
-    auto g = [&](double T) {
+    enum class Side { Valid, Cold, Hot };
+    struct Point {
+        double T = 0.0, g = 0.0;
+        Side side = Side::Valid;
+    };
+    auto guess = [&](double T, Sat& out) {
+        if (!(kind == kBubbleP ? guessBubbleT(T, x, out, realVapour) : guessDewT(T, x, out, realVapour))) return false;
+        double rho;
+        return T >= tCold || densityRoot(T, out.p(), out.xL(), true, rho);
+    };
+    auto at = [&](double T) {
+        Point pt;
+        pt.T = T;
         Sat trial;
-        const bool ok = kind == kBubbleP ? guessBubbleT(T, x, trial, realVapour) : guessDewT(T, x, trial, realVapour);
-        return ok ? std::log(trial.v[1]) - target : kFailed;   // beyond the critical temperature: "too hot"
+        if (guess(T, trial)) {
+            pt.g = std::log(trial.p()) - target;
+        } else {
+            pt.side = T < tCold ? Side::Cold : Side::Hot;
+            pt.g = pt.side == Side::Cold ? -kFailed : kFailed;
+        }
+        return pt;
+    };
+    auto aboveRoot = [](const Point& pt) { return pt.side == Side::Valid ? pt.g >= 0.0 : pt.side == Side::Hot; };
+    auto belowRoot = [](const Point& pt) { return pt.side == Side::Valid ? pt.g <= 0.0 : pt.side == Side::Cold; };
+    auto order = [&](Point& lower, const Point& upper) {   // below 0.6 Tn, a pressure that does not rise with T: cold
+        if (lower.T < tCold && lower.side == Side::Valid && upper.side == Side::Valid && lower.g >= upper.g) {
+            lower.side = Side::Cold;
+            lower.g = -kFailed;
+        }
     };
     const double T0 = raoultTemperature(kind == kBubbleP, p, clampX(x));
-    double lo = 0.9 * T0, hi = 1.15 * T0, glo = g(lo), ghi = g(hi);
-    for (int it = 0; it < 12 && !(glo < 0.0); ++it) {   // widen downwards until the guess pressure is below the target
-        hi = lo; ghi = glo;
-        lo *= 0.9;
-        if (lo < 130.0) return false;
-        glo = g(lo);
+    Point lo = at(0.9 * T0), hi = at(1.15 * T0);
+    order(lo, hi);
+    for (int it = 0; it < 24; ++it) {   // move the bracket until lo is below the root and hi above it
+        if (aboveRoot(lo)) {
+            hi = lo;
+            if (lo.T <= kTMinSearch) {   // the guess pressure is above p down to the end of the search
+                edge = lo.T;
+                return guess(lo.T, s) ? PressureGuess::BelowEdge : PressureGuess::None;
+            }
+            lo = at(std::max(lo.T * 0.9, kTMinSearch));
+        } else if (belowRoot(hi)) {
+            lo = hi;
+            if (hi.T >= 1100.0) return PressureGuess::None;
+            hi = at(std::min(hi.T * 1.15, 1100.0));
+        } else {
+            break;
+        }
+        order(lo, hi);
     }
-    for (int it = 0; it < 12 && !(ghi > 0.0); ++it) {   // and upwards until it is above (or the guess ceases to exist)
-        lo = hi; glo = ghi;
-        hi = std::min(hi * 1.15, 1100.0);
-        ghi = g(hi);
+    if (!belowRoot(lo) || !aboveRoot(hi)) return PressureGuess::None;
+    if (lo.side == Side::Cold) {   // the cold edge between lo and hi: a valid point below the target, or the edge itself
+        while (hi.T - lo.T > 0.05) {
+            Point mid = at(0.5 * (lo.T + hi.T));
+            order(mid, hi);
+            if (mid.side == Side::Cold) {
+                lo = mid;
+            } else if (aboveRoot(mid)) {
+                hi = mid;
+            } else {
+                lo = mid;
+                break;
+            }
+        }
+        if (lo.side == Side::Cold) {
+            if (hi.side != Side::Valid) return PressureGuess::None;   // no temperature at which a guess exists
+            edge = hi.T;
+            return guess(hi.T, s) ? PressureGuess::BelowEdge : PressureGuess::None;
+        }
     }
-    if (!(glo < 0.0) || !(ghi > 0.0)) return false;
     double T;
-    if (!brent(g, lo, hi, glo, ghi, 0.5, T, 60)) return false;
-    return kind == kBubbleP ? guessBubbleT(T, x, s, realVapour) : guessDewT(T, x, s, realVapour);
+    if (!brent([&](double t) { return at(t).g; }, lo.T, hi.T, lo.g, hi.g, 0.5, T, 60)) return PressureGuess::None;
+    return guess(T, s) ? PressureGuess::Found : PressureGuess::None;
 }
 
 struct SatCache {
@@ -764,14 +837,18 @@ thread_local SatCache g_satCache[5];
 /// The outcome of a saturation solve. `NoGuess`: every guess function failed (no liquid at this T, no bracket at this
 /// p), the evidence that the state is outside the two-phase region or above the critical locus. `NotConverged`: a guess
 /// existed but Newton failed from every start or its root was rejected; it says nothing about the phase of the state.
-enum class SatStatus { Found, NoGuess, NotConverged };
+/// `BelowRange` (pressure-specified points only): the point lies below the lowest temperature at which the formulation
+/// has the liquid of the equilibrium at this pressure (see `guessAtPressure`); not evidence of a single phase either.
+enum class SatStatus { Found, NoGuess, NotConverged, BelowRange };
 
 /// The saturation state of `kind` for the specified values a, b (T and x, or p and x, or T and p) in `s`, with its
-/// status (`s` is meaningful for `Found` only). For a composition b, `bc` is its complement 1 - b evaluated without the
-/// rounding of b (unused for kTP). Never throws for a missing or failed saturation. The starts, in this order: the
-/// warm-start cache, `hint` (a start supplied by the caller), the guesses. The stable root does not depend on the
-/// start; the order only affects the cost.
-SatStatus satAttempt(SatKind kind, double a, double b, double bc, Sat& s, const Sat* hint = nullptr) {
+/// status (`s` is meaningful for `Found` only; `limit`, if given, receives the lowest temperature of the guesses for
+/// `BelowRange`). For a composition b, `bc` is its complement 1 - b evaluated without the rounding of b (unused for
+/// kTP). Never throws for a missing or failed saturation. The starts, in this order: the warm-start cache, `hint` (a
+/// start supplied by the caller), the guesses. The stable root does not depend on the start; the order only affects the
+/// cost.
+SatStatus satAttempt(SatKind kind, double a, double b, double bc, Sat& s, const Sat* hint = nullptr,
+                     double* limit = nullptr) {
     SatCache& cache = g_satCache[kind];
     const bool pressureSpec = kind == kBubbleP || kind == kDewP;
     const bool pairTP = kind == kTP;
@@ -811,13 +888,33 @@ SatStatus satAttempt(SatKind kind, double a, double b, double bc, Sat& s, const 
     // the guess with the vapour as a real gas first; the ideal-vapour guess (cruder, but it never over-corrects at high
     // pressure) when Newton does not converge from it
     double guessT = 0.0, guessP = 0.0;   // T and p of the first guess, with the specified one of them
+    bool belowEdge = false;              // a pressure-specified guess found its point below its lowest temperature
+    double edge = 0.0;
     for (const bool realVapour : {true, false}) {
+        if (belowEdge) break;   // a point below the edge is at a low pressure, where the two vapours are the same
         bool ok = false;
         switch (kind) {
             case kBubbleT: ok = guessBubbleT(a, b, s, realVapour); break;
             case kDewT: ok = guessDewT(a, b, s, realVapour); break;
-            case kBubbleP: ok = guessAtPressure(kBubbleP, a, b, s, realVapour); break;
-            case kDewP: ok = guessAtPressure(kDewP, a, b, s, realVapour); break;
+            case kBubbleP:
+            case kDewP: {
+                double e = 0.0;
+                const PressureGuess r = guessAtPressure(kind, a, b, s, realVapour, e);
+                if (r == PressureGuess::BelowEdge) {
+                    // the guess at the edge is a start in case the point lies within the resolution of the edge; its
+                    // failure is the expected outcome, not a failure of the solver
+                    if (!belowEdge) edge = e;
+                    belowEdge = true;
+                    specify(s);
+                    if (satNewton(s, kind)) {
+                        cache.valid = true;
+                        cache.s = s;
+                        return SatStatus::Found;
+                    }
+                }
+                ok = r == PressureGuess::Found;
+                break;
+            }
             case kTP: ok = guessTP(a, b, s, realVapour); break;
         }
         if (!ok) continue;
@@ -847,31 +944,54 @@ SatStatus satAttempt(SatKind kind, double a, double b, double bc, Sat& s, const 
             }
         }
     }
-    return anyGuess ? SatStatus::NotConverged : SatStatus::NoGuess;
+    if (anyGuess) return SatStatus::NotConverged;
+    if (belowEdge) {
+        if (limit) *limit = edge;
+        return SatStatus::BelowRange;
+    }
+    return SatStatus::NoGuess;
+}
+
+/// The saturation point of `kind` at (a, b), named for a message: "the bubble point at p and x (p = ..., x(mole) = ...)".
+std::string satName(SatKind kind, double a, double b) {
+    const bool pressureSpec = kind == kBubbleP || kind == kDewP;
+    const std::string first = pressureSpec ? "p = " + fmt(a) + " Pa" : "T = " + fmt(a) + " K";
+    const std::string second = kind == kTP ? "p = " + fmt(b) + " Pa" : "x(mole) = " + fmt(b);
+    return std::string(kKindName[kind]) + " (" + first + ", " + second + ")";
+}
+
+/// Why the saturation point of `kind` was not obtained, for a status other than `Found` (`limit` for `BelowRange`).
+std::string satReason(SatStatus status, double limit) {
+    switch (status) {
+        case SatStatus::NoGuess: return "was not found (no guess)";
+        case SatStatus::BelowRange:
+            return "lies below about " + fmt(std::round(limit * 10.0) / 10.0) + " K, the lowest temperature at which the "
+                   "formulation has a liquid for this equilibrium at this pressure (below it, far below the line of triple "
+                   "points where the formulation ends, the extrapolated liquid has no density root or a saturation pressure "
+                   "that falls with T)";
+        default: return "did not converge to a pair of stable phases";
+    }
 }
 
 /// The error of a saturation solve that did not give a state. Only `NoGuess` outside a known two-phase region may say
 /// that the state is outside it; `insideDome` (the state is between a bubble and a dew point that were found) says
-/// that any failure is one of the solver.
-[[noreturn]] void satFailure(SatKind kind, double a, double b, SatStatus status, bool insideDome = false) {
-    const bool pressureSpec = kind == kBubbleP || kind == kDewP;
-    const std::string first = pressureSpec ? "p = " + fmt(a) + " Pa" : "T = " + fmt(a) + " K";
-    const std::string second = kind == kTP ? "p = " + fmt(b) + " Pa" : "x(mole) = " + fmt(b);
-    const std::string where = " (" + first + ", " + second + ")";
+/// that any failure is one of the solver. `limit` is the temperature limit of `BelowRange`.
+[[noreturn]] void satFailure(SatKind kind, double a, double b, SatStatus status, bool insideDome = false,
+                             double limit = 0.0) {
+    const std::string name = satName(kind, a, b);
     if (insideDome)
-        fail(std::string("the ") + kKindName[kind] + where + " did not converge, although the state is between its bubble "
-             "and dew points");
+        fail("the " + name + " did not converge, although the state is between its bubble and dew points");
     if (status == SatStatus::NoGuess)
-        fail(std::string("no ") + kKindName[kind] + " found" + where +
-             ": the state is probably outside the two-phase region or above the critical locus");
-    fail(std::string("the ") + kKindName[kind] + where + " did not converge to a pair of stable phases");
+        fail("no " + name + " found: the state is probably outside the two-phase region or above the critical locus");
+    fail("the " + name + " " + satReason(status, limit));
 }
 
 /// The saturation state of `kind` (an error naming the specification if there is none); `bc` as for `satAttempt`.
 Sat satSolve(SatKind kind, double a, double b, double bc) {
     Sat s;
-    const SatStatus status = satAttempt(kind, a, b, bc, s);
-    if (status != SatStatus::Found) satFailure(kind, a, b, status);
+    double limit = 0.0;
+    const SatStatus status = satAttempt(kind, a, b, bc, s, nullptr, &limit);
+    if (status != SatStatus::Found) satFailure(kind, a, b, status, false, limit);
     return s;
 }
 
@@ -1316,7 +1436,14 @@ struct Boundaries {
     Sat bubble, dew;
     SatKind bubbleKind = kBubbleT, dewKind = kDewT;
     SatStatus bubbleStatus = SatStatus::NoGuess, dewStatus = SatStatus::NoGuess;
-    bool notConverged() const { return bubbleStatus == SatStatus::NotConverged || dewStatus == SatStatus::NotConverged; }
+    double bubbleLimit = 0.0, dewLimit = 0.0;   ///< the temperature limits of `BelowRange`
+    bool hasBubble() const { return bubbleStatus == SatStatus::Found; }
+    bool hasDew() const { return dewStatus == SatStatus::Found; }
+    /// A point is missing for a reason that says nothing about the phase of the state (unlike `NoGuess`).
+    bool undecided() const {
+        auto open = [](SatStatus st) { return st == SatStatus::NotConverged || st == SatStatus::BelowRange; };
+        return open(bubbleStatus) || open(dewStatus);
+    }
 };
 
 Boundaries boundariesOf(bool temperatureGiven, double a, double x, double xc) {
@@ -1324,15 +1451,147 @@ Boundaries boundariesOf(bool temperatureGiven, double a, double x, double xc) {
     bd.bubbleKind = temperatureGiven ? kBubbleT : kBubbleP;
     bd.dewKind = temperatureGiven ? kDewT : kDewP;
     if (x <= kXMin || xc <= kXMin) return bd;   // a pure component
-    bd.bubbleStatus = satAttempt(bd.bubbleKind, a, x, xc, bd.bubble);
-    bd.dewStatus = satAttempt(bd.dewKind, a, x, xc, bd.dew);
+    bd.bubbleStatus = satAttempt(bd.bubbleKind, a, x, xc, bd.bubble, nullptr, &bd.bubbleLimit);
+    bd.dewStatus = satAttempt(bd.dewKind, a, x, xc, bd.dew, nullptr, &bd.dewLimit);
     return bd;
 }
 
-/// The error of a state whose phase is unknown because a saturation it needs did not converge.
+/// The error of a state whose phase is unknown because a saturation it needs did not converge or lies below the range.
 [[noreturn]] void failUndecided(const Boundaries& bd, double a, double x) {
-    if (bd.bubbleStatus == SatStatus::NotConverged) satFailure(bd.bubbleKind, a, x, bd.bubbleStatus);
-    satFailure(bd.dewKind, a, x, bd.dewStatus);
+    if (bd.bubbleStatus == SatStatus::NotConverged || bd.bubbleStatus == SatStatus::BelowRange)
+        satFailure(bd.bubbleKind, a, x, bd.bubbleStatus, false, bd.bubbleLimit);
+    satFailure(bd.dewKind, a, x, bd.dewStatus, false, bd.dewLimit);
+}
+
+/// The error of a state on the two-phase side of the one saturation point that was found, when no probe decided its
+/// phase: the missing point is not evidence of a single phase (a found point proves that the composition has a
+/// two-phase region here).
+[[noreturn]] void failOneBoundary(const Boundaries& bd, double a, double x, const std::string& probe = "") {
+    const bool b = bd.hasBubble();
+    const Sat& known = b ? bd.bubble : bd.dew;
+    const SatKind knownKind = b ? bd.bubbleKind : bd.dewKind, missingKind = b ? bd.dewKind : bd.bubbleKind;
+    const std::string at =
+        knownKind == kBubbleP || knownKind == kDewP ? "T = " + fmt(known.T()) + " K" : "p = " + fmt(known.p()) + " Pa";
+    fail("the phase of the state is undecided: the " + satName(knownKind, a, x) + " was found (" + at +
+         ") and the state is on its two-phase side, but the " + satName(missingKind, a, x) +
+         " " + satReason(b ? bd.dewStatus : bd.bubbleStatus, b ? bd.dewLimit : bd.bubbleLimit) +
+         (probe.empty() ? "" : "; " + probe));
+}
+
+/// The tangent-plane test (Michelsen 1982) of the single phase (T, rho, x) (complement xc) at its pressure p: the phase is
+/// stable if no trial phase has a negative tangent-plane distance TPD(x') = (1 - x') (mu1(x') - mu1) + x' (mu2(x') - mu2),
+/// mu1, mu2 the chemical potentials of the phase and mu1(x'), mu2(x') those of either density root at (T, p, x'). Trial
+/// compositions on a logit grid of step 0.5 over [-16, 16] (mole fractions 1e-7 to 1 - 1e-7), each local minimum below
+/// 0.01 refined by golden-section search; unstable below -1e-10 R T (the round-off of TPD / (R T) is about 1e-14; a phase
+/// inside the dome has a minimum of 1e-4 or more but near its boundary). The other density root at x itself is a trial
+/// phase, so a metastable root is unstable. `why` receives the trial phase of the most negative distance. Cost: about
+/// 70 ms (a vapour root that does not exist takes the 100 iterations of `densityRoot`); used only for a state on the
+/// two-phase side of its one saturation point whose T-p pair was not found.
+bool tangentPlaneStable(double T, double p, double rho, double x, double xc, std::string& why) {
+    const double RT = kR * T;
+    Phase ref;
+    try {
+        ref = evaluatePhase(T, rho, x, xc);
+    } catch (const std::runtime_error&) {
+        why = "the phase could not be evaluated";
+        return false;
+    }
+    const double mu1 = ref.mu1.value(), mu2 = ref.mu2.value();
+    auto tpd = [&](double z, bool liquid) {
+        const double xt = sigmoid(z), xtc = sigmoid(-z);
+        double r;
+        if (!densityRoot(T, p, xt, liquid, r)) return std::numeric_limits<double>::infinity();
+        try {
+            const Phase ph = evaluatePhase(T, r, xt, xtc);
+            const double d = (xtc * (ph.mu1.value() - mu1) + xt * (ph.mu2.value() - mu2)) / RT;
+            return std::isfinite(d) ? d : std::numeric_limits<double>::infinity();
+        } catch (const std::runtime_error&) {
+            return std::numeric_limits<double>::infinity();
+        }
+    };
+    constexpr int kGrid = 65;
+    constexpr double kStep = 0.5;
+    double worst = std::numeric_limits<double>::infinity(), worstZ = 0.0;
+    bool worstLiquid = false;
+    for (const bool liquid : {true, false}) {
+        double d[kGrid];
+        for (int i = 0; i < kGrid; ++i) d[i] = tpd(-16.0 + kStep * i, liquid);
+        for (int i = 0; i < kGrid; ++i) {
+            if (!std::isfinite(d[i]) || d[i] > 1e-2) continue;   // a well that reaches below 0 is deeper at the grid
+            if ((i > 0 && d[i - 1] < d[i]) || (i + 1 < kGrid && d[i + 1] < d[i])) continue;   // not a local minimum
+            double lo = -16.0 + kStep * (i - 1), hi = -16.0 + kStep * (i + 1), zMin = -16.0 + kStep * i, dMin = d[i];
+            const double gr = 0.3819660112501051;
+            double c1 = lo + gr * (hi - lo), c2 = hi - gr * (hi - lo), d1 = tpd(c1, liquid), d2 = tpd(c2, liquid);
+            for (int it = 0; it < 30; ++it) {
+                if (d1 < d2) {
+                    hi = c2; c2 = c1; d2 = d1; c1 = lo + gr * (hi - lo); d1 = tpd(c1, liquid);
+                } else {
+                    lo = c1; c1 = c2; d1 = d2; c2 = hi - gr * (hi - lo); d2 = tpd(c2, liquid);
+                }
+            }
+            if (d1 < dMin) dMin = d1, zMin = c1;
+            if (d2 < dMin) dMin = d2, zMin = c2;
+            if (dMin < worst) worst = dMin, worstZ = zMin, worstLiquid = liquid;
+        }
+    }
+    if (worst >= -1e-10) return true;
+    why = "the single phase is not stable (tangent-plane test: a " + std::string(worstLiquid ? "liquid" : "vapour") +
+          "-like phase of mole fraction " + fmt(sigmoid(worstZ)) + " at T and p = " + fmt(p) + " Pa lowers the Gibbs energy, "
+          "TPD = " + fmt(worst) + " R T)";
+    return false;
+}
+
+/// The evidence of the equilibrium pair at (T, p) about the phase of the composition x (complement xc) at (T, p), for a
+/// state with one saturation point found at its temperature (`bd`, T-specified): the pair at given T and p is unique for a
+/// binary mixture, so a pair whose compositions bracket x makes the state two-phase and one that does not, single-phase.
+/// `pair` receives the pair and `status` its status; `Unknown` if no pair was found.
+enum class PhaseEvidence { SinglePhase, TwoPhase, Unknown };
+
+PhaseEvidence probePair(double T, double p, double x, double xc, const Boundaries& bd, Sat& pair, SatStatus& status) {
+    const Sat& known = bd.hasBubble() ? bd.bubble : bd.dew;
+    status = satAttempt(kTP, T, p, 0.0, pair, &known);
+    if (status != SatStatus::Found) return PhaseEvidence::Unknown;
+    return lessX(pair.xL(), pair.wL(), x, xc) && lessX(x, xc, pair.xV(), pair.wV()) ? PhaseEvidence::TwoPhase
+                                                                                     : PhaseEvidence::SinglePhase;
+}
+
+/// The bubble and dew points of a state given with its quality strictly inside (0, 1) (codes 138 and 238): the errors of
+/// `satSolve`, except that a point without a guess while the other one was found is reported as such (the composition then
+/// has a two-phase region here: the state is not "outside" it).
+void boundariesOfTwoPhase(bool temperatureGiven, double a, double x, double xc, Sat& sb, Sat& sd) {
+    const SatKind kb = temperatureGiven ? kBubbleT : kBubbleP, kd = temperatureGiven ? kDewT : kDewP;
+    double lb = 0.0, ld = 0.0;
+    const SatStatus stB = satAttempt(kb, a, x, xc, sb, nullptr, &lb);
+    if (stB != SatStatus::Found && stB != SatStatus::NoGuess) satFailure(kb, a, x, stB, false, lb);
+    const SatStatus stD = satAttempt(kd, a, x, xc, sd, nullptr, &ld);
+    if (stB == SatStatus::Found && stD == SatStatus::Found) return;
+    const std::string where = temperatureGiven ? "temperature" : "pressure";
+    if (stB == SatStatus::NoGuess && stD == SatStatus::Found)
+        fail("no " + satName(kb, a, x) + " found, although the dew point at this " + where + " was (" +
+             (temperatureGiven ? "p = " + fmt(sd.p()) + " Pa" : "T = " + fmt(sd.T()) + " K") +
+             "): the composition has a two-phase region here, without a bubble point "
+             "(retrograde region near the critical locus) or with one the solver does not find");
+    if (stB == SatStatus::NoGuess) satFailure(kb, a, x, stB);
+    if (stD == SatStatus::NoGuess)
+        fail("no " + satName(kd, a, x) + " found, although the bubble point at this " + where + " was (" +
+             (temperatureGiven ? "p = " + fmt(sb.p()) + " Pa" : "T = " + fmt(sb.T()) + " K") +
+             "): the composition has a two-phase region here, without a dew point or with one "
+             "the solver does not find");
+    satFailure(kd, a, x, stD, false, ld);
+}
+
+/// True if the single phase (T, rho, x) is the equilibrium state, for a state of code 137 on the two-phase side of the one
+/// saturation point found at T: its pressure p is positive, it is mechanically stable (dp/drho > 0) and it passes the
+/// tangent-plane test at (T, p) (`tangentPlaneStable`). A phase stable at its (T, p) is also the equilibrium state at its
+/// (T, v). Otherwise `why` says what failed (the state is then two-phase).
+bool singlePhaseAt(double T, double rho, double x, double xc, std::string& why) {
+    const PressureSlope ps = pressureSlope(T, rho, x);
+    if (!(ps.p > 0.0 && ps.dpdrho > 0.0)) {
+        why = "the single phase at this density is not mechanically stable (p = " + fmt(ps.p) + " Pa, dp/drho = " +
+              fmt(ps.dpdrho) + " Pa m3/mol)";
+        return false;
+    }
+    return tangentPlaneStable(T, ps.p, rho, x, xc, why);
 }
 
 Solution solveFlash(const Spec spec[3], const std::string& label) {
@@ -1345,17 +1604,21 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
             const double T = a, p = b, x = moleFractionOf(c), xc = moleFractionComplementOf(c);
             const Boundaries bd = boundariesOf(true, T, x, xc);
             const Sat &sb = bd.bubble, &sd = bd.dew;
-            const bool hasB = bd.bubbleStatus == SatStatus::Found, hasD = bd.dewStatus == SatStatus::Found;
+            const bool hasB = bd.hasBubble(), hasD = bd.hasDew();
+            PhaseEvidence probe = PhaseEvidence::Unknown;
+            SatStatus pairStatus = SatStatus::NoGuess;
             if (hasB != hasD) {
                 // one saturation point only: above the critical temperature of x (two dew points, the retrograde
                 // region), near the critical locus where a guess finds no liquid or Newton does not converge, or near a
-                // pure component. The equilibrium pair at (T, p), started from the point that was found, decides:
-                // two-phase if its compositions bracket x (not within the boundary margin of that point)
+                // pure component. The equilibrium pair at (T, p), started from the point that was found, decides: two-phase
+                // if its compositions bracket x (not within the boundary margin of that point; first, since with two dew
+                // points the side of the one found is not the single-phase side)
                 const Sat& known = hasB ? sb : sd;
                 Sat s;
-                if (std::abs(p / known.p() - 1.0) > kBoundaryTol && satAttempt(kTP, T, p, 0.0, s, &known) == SatStatus::Found &&
-                    lessX(s.xL(), s.wL(), x, xc) && lessX(x, xc, s.xV(), s.wV()))
-                    return twoPhaseSolution(s, qualityOf(c, s));
+                if (std::abs(p / known.p() - 1.0) > kBoundaryTol) {
+                    probe = probePair(T, p, x, xc, bd, s, pairStatus);
+                    if (probe == PhaseEvidence::TwoPhase) return twoPhaseSolution(s, qualityOf(c, s));
+                }
             }
             if (hasB && p >= sb.p() * (1.0 - kBoundaryTol)) return singleAtTP(T, p, x, true, label);
             if (hasD && p <= sd.p() * (1.0 + kBoundaryTol)) return singleAtTP(T, p, x, false, label);
@@ -1363,9 +1626,20 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
                 const Sat s = satInside(T, p, between(sd, sb, 1, p));
                 return twoPhaseSolution(s, qualityOf(c, s));
             }
-            // a single phase only on the evidence of the saturations: found, or no guess at all (above the critical
-            // locus); a saturation that did not converge leaves the phase unknown
-            if (bd.notConverged()) failUndecided(bd, T, x);
+            // on the two-phase side of the one point found: a single phase only on the evidence of the pair at (T, p),
+            // or, without a pair, of the tangent-plane test of the single phase of lowest Gibbs energy
+            if (hasB || hasD) {
+                if (probe == PhaseEvidence::SinglePhase) return singleSupercritical(T, p, x, label);
+                const Solution single = singleSupercritical(T, p, x, label);
+                std::string why;
+                if (tangentPlaneStable(T, p, single.s[1], x, xc, why)) return single;
+                failOneBoundary(bd, T, x,
+                                "the equilibrium pair at T and p (p = " + fmt(p) + " Pa) " + satReason(pairStatus, 0.0) +
+                                    "; " + why);
+            }
+            // no point found: a single phase only if there was no guess at all (above the critical locus); a point that
+            // did not converge leaves the phase unknown
+            if (bd.undecided()) failUndecided(bd, T, x);
             return singleSupercritical(T, p, x, label);
         }
         case 128: {   // T, p, q
@@ -1377,7 +1651,8 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
             const double x = moleFractionOf(b), xc = moleFractionComplementOf(b);
             if (c == 0.0) return twoPhaseSolution(satSolve(kBubbleT, a, x, xc), 0.0);
             if (c == 1.0) return twoPhaseSolution(satSolve(kDewT, a, x, xc), 1.0);
-            const Sat sb = satSolve(kBubbleT, a, x, xc), sd = satSolve(kDewT, a, x, xc);
+            Sat sb, sd;
+            boundariesOfTwoPhase(true, a, x, xc, sb, sd);
             double p;
             auto f = [&](double pp) { return qualityOf(b, satInside(a, pp, between(sd, sb, 1, pp))) - c; };
             if (!brent(f, sd.p(), sb.p(), 1.0 - c, -c, 1e-12 * sb.p(), p)) fail("no state for " + label);
@@ -1387,14 +1662,21 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
             const double T = a, x = moleFractionOf(b), xc = moleFractionComplementOf(b), rho = 1.0 / (c * molarMass(x));
             const Boundaries bd = boundariesOf(true, T, x, xc);
             const Sat &sb = bd.bubble, &sd = bd.dew;
-            const bool hasB = bd.bubbleStatus == SatStatus::Found, hasD = bd.dewStatus == SatStatus::Found;
+            const bool hasB = bd.hasBubble(), hasD = bd.hasDew();
             if (!hasB || !hasD) {
-                if (!bd.notConverged())   // above the critical locus
-                    return singleSolution(T, rho, x, rho < reducingDensity(x));
-                // a saturation did not converge: a single phase only on the evidence of the one that was found
-                if (hasB && rho >= sb.rhoL() * (1.0 - kBoundaryTol)) return singleSolution(T, rho, x, false);
-                if (hasD && rho <= sd.rhoV() * (1.0 + kBoundaryTol)) return singleSolution(T, rho, x, true);
-                failUndecided(bd, T, x);
+                // a single phase on the side of the point that was found (labelled as above the critical locus, by the
+                // reducing density, when the other point had no guess)
+                const bool liquidSide = hasB && rho >= sb.rhoL() * (1.0 - kBoundaryTol);
+                const bool vapourSide = hasD && rho <= sd.rhoV() * (1.0 + kBoundaryTol);
+                if (liquidSide || vapourSide)
+                    return singleSolution(T, rho, x, bd.undecided() ? vapourSide : rho < reducingDensity(x));
+                if (hasB || hasD) {   // on the two-phase side of the one point found
+                    std::string why;
+                    if (singlePhaseAt(T, rho, x, xc, why)) return singleSolution(T, rho, x, rho < reducingDensity(x));
+                    failOneBoundary(bd, T, x, why);
+                }
+                if (bd.undecided()) failUndecided(bd, T, x);
+                return singleSolution(T, rho, x, rho < reducingDensity(x));   // no guess at all: above the critical locus
             }
             if (rho >= sb.rhoL() * (1.0 - kBoundaryTol)) return singleSolution(T, rho, x, false);
             if (rho <= sd.rhoV() * (1.0 + kBoundaryTol)) return singleSolution(T, rho, x, true);
@@ -1417,7 +1699,7 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
             const double p = a, x = moleFractionOf(b), xc = moleFractionComplementOf(b);
             const Boundaries bd = boundariesOf(false, p, x, xc);
             const Sat &sb = bd.bubble, &sd = bd.dew;
-            const bool hasB = bd.bubbleStatus == SatStatus::Found, hasD = bd.dewStatus == SatStatus::Found;
+            const bool hasB = bd.hasBubble(), hasD = bd.hasDew();
             auto subcooled = [&]() {   // the liquid below the bubble temperature
                 auto f = [&](double T) {
                     double rho;
@@ -1458,9 +1740,13 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
                     return c >= hb - kBoundaryTol * std::abs(hb) ? singleAtTP(sb.T(), p, x, true, label) : subcooled();
                 if (hasD && c >= hd - kBoundaryTol * std::abs(hd))
                     return c <= hd + kBoundaryTol * std::abs(hd) ? singleAtTP(sd.T(), p, x, false, label) : superheated();
-                // otherwise a single phase only if no saturation failed: no guess at all is the evidence of a state
-                // above the critical locus (single phase at any T; search T on the root of lowest Gibbs energy)
-                if (bd.notConverged()) failUndecided(bd, p, x);
+                // on the two-phase side of the one point found: two-phase, or single-phase beyond the missing point; no
+                // probe decides it without that point (at low pressure the missing one is a point below the range, on
+                // the cold side, or the dew point of an ammonia-rich vapour)
+                if (hasB || hasD) failOneBoundary(bd, p, x);
+                // no point found: a single phase only if there was no guess at all, the evidence of a state above the
+                // critical locus (single phase at any T; search T on the root of lowest Gibbs energy)
+                if (bd.undecided()) failUndecided(bd, p, x);
                 auto f = [&](double T) {
                     Solution s = singleSupercritical(T, p, x, label);
                     return mixProp(prop, evaluatePhase(T, s.s[1], x), evaluatePhase(T, s.s[1], x), 0.0) - c;
@@ -1489,7 +1775,8 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
             const double p = a, x = moleFractionOf(b), xc = moleFractionComplementOf(b);
             if (c == 0.0) return twoPhaseSolution(satSolve(kBubbleP, p, x, xc), 0.0);
             if (c == 1.0) return twoPhaseSolution(satSolve(kDewP, p, x, xc), 1.0);
-            const Sat sb = satSolve(kBubbleP, p, x, xc), sd = satSolve(kDewP, p, x, xc);
+            Sat sb, sd;
+            boundariesOfTwoPhase(false, p, x, xc, sb, sd);
             auto f = [&](double T) { return qualityOf(b, satInside(T, p, between(sb, sd, 0, T))) - c; };
             double T;
             if (!brent(f, sb.T(), sd.T(), -c, 1.0 - c, 1e-12 * sd.T(), T)) fail("no state for " + label);

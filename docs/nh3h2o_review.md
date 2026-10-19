@@ -29,9 +29,9 @@ solver, the line searches, the block decomposition and the automatic differentia
 |---|---:|---|
 | `include/coolsolve/taylor_jet.h` | 331 | truncated Taylor polynomial in 3 variables (order 1 to 3), value and derivatives |
 | `include/coolsolve/nh3h2o.h`, `src/nh3h2o.cpp` | 235, 401 | the Helmholtz formulation (Eqs. 1 to 8 and Tables 1 to 3, A1 of the guideline; IAPWS-95 for water) written once over a scalar type; the properties of a state |
-| `src/nh3h2o_flash.cpp` | 1582 | the saturation solver, the 15 flashes, derivatives by the implicit function theorem. **Contains its own small Newton (`newtonSolve`), Brent and linear solver**, private to the file (anonymous namespace) |
+| `src/nh3h2o_flash.cpp` | 1869 | the saturation solver, the 15 flashes, derivatives by the implicit function theorem. **Contains its own small Newton (`newtonSolve`), Brent, linear solver and tangent-plane test**, private to the file (anonymous namespace) |
 | `src/evaluator_nh3h2o.cpp` | 303 | the glue: units of the model, designators, the trial-point limits, assembly of the `ADValue` gradient, the two entry points |
-| `tests/test_nh3h2o.cpp` | 1139 | 29 test cases (tags `[nh3h2o]`, `[formulation]`, `[equilibrium]`, `[flash]`, `[evaluator]`) and two hidden scans (`[.nh3h2o-scan]`, about 35 s) |
+| `tests/test_nh3h2o.cpp` | 1251 | 31 test cases (tags `[nh3h2o]`, `[formulation]`, `[equilibrium]`, `[flash]`, `[evaluator]`) and three hidden scans (`[.nh3h2o-scan]`, about 2 min) |
 
 ### B. Shared files modified (the part to review): 11 files, about 100 lines (75 added, 24 removed)
 
@@ -138,10 +138,55 @@ is the error of the subtraction, not of the state.
 - **Saturations inside a known bracket** (the T-p pairs of 123, 137, 138, 234/235, 238 and of the refinement of the unknown-composition flashes)
   are started from the bracket (the bubble and dew pairs interpolated in T or p) and a failure is an error that says the state is between its
   bubble and dew points (case D: 400 K, X = 0.999 inside the dome failed from the guesses).
-- **(T, P, x) with one saturation point only** (above the critical temperature of x, near the critical locus, near a pure end): the T-p pair
-  started from the point that was found decides two-phase if its compositions bracket x. The boundary margin `kBoundaryTol` (1e-7) now applies to
-  123 as to 137 and 234/235, so that a state saturated to round-off has the same label whatever the history. 234/235 decide on the side of a
-  found point whatever the status of the other one.
+- **One saturation point found, the state on its two-phase side** (follow-up of 2026-10-19). A missing point is not evidence of a single
+  phase there: a point found at this T or p proves that the composition has a two-phase region here. Above the critical temperature of x
+  (the retrograde band, about 30 K wide at fixed T for X = 0.8 to 0.95: dew points, no bubble point) this is the common case, and before the
+  fix 137 returned a single phase there without evidence, 123 when its probe failed, and 234/235 whenever the other point had no guess (the
+  defect below). The rule now, per code:
+  - 123 (T, P, x): the T-p pair at (T, p), started from the point found, decides: two-phase if its compositions bracket x, single-phase if
+    not (the pair at given T and p is unique for a binary mixture; first, since with two dew points the side of the one found is not the
+    single-phase side). Without a pair (far above the dew point the pair does not converge: 3 times the dew pressure at 420 to 520 K), the
+    single phase of lowest Gibbs energy is returned only if it passes a **tangent-plane test** (`tangentPlaneStable`, Michelsen: no trial
+    phase of any composition, either density root at (T, p), has a negative tangent-plane distance; trial logits on a grid of step 0.5 over
+    [-16, 16], local minima refined by golden section, unstable below -1e-10 R T); otherwise an error naming the state, the point found, the
+    reason the other one is missing and the outcome of the probe.
+  - 137 (T, x, v): the single phase at (T, rho, x) is returned only if its pressure p is positive, it is mechanically stable and it passes
+    the tangent-plane test at (T, p) (a phase stable at its (T, p) is also the equilibrium state at its (T, v); the other density root at x
+    is one of the trial phases, so a metastable root fails). Otherwise an error ("the single phase is not stable (tangent-plane test: a
+    liquid-like phase of mole fraction 0.459 at T and p = 6154386.915 Pa lowers the Gibbs energy, TPD = -0.0117 R T)"). Before, 137 returned
+    that single phase: at 440 K, X = 0.9, the vapour at 6.154 MPa for the two-phase state at 6.14 MPa, q = 0.995 (14 such states at 420 to
+    520 K in the comparison grid below). The test costs about 70 ms, on this path only.
+  - 234/235 (P, x, h|s): an error. Without the other point no probe decides between two-phase and the single phase beyond the missing point;
+    at fixed p the case occurs at low pressure (a point below the range, below) and in no configuration of the fixed-p map near the critical
+    locus (there both points are `NotConverged`, an error already).
+  - 138, 238 (q inside (0, 1)): an error as before (`satSolve`), but a point without a guess while the other one was found says so ("although
+    the dew point at this pressure was (T = ...)") instead of "probably outside the two-phase region".
+  On the single-phase side of the point found, and with no point found at all, the decisions are those of the previous version: a single phase
+  on the side of a found point (137 keeps its label by the reducing density when the other point had no guess), the supercritical rules when
+  neither point has a guess, an error when one did not converge or lies below the range. The boundary margin `kBoundaryTol` (1e-7) applies to
+  123, 137 and 234/235, so that a state saturated to round-off has the same label whatever the history.
+- **Pressure-specified points at low pressure** (follow-up of 2026-10-19). `flash(P, X, H)` at 708 Pa, X = 0.3 with the enthalpy of the
+  state at 270 K, q = 0.95 returned a **vapour at 220.5 K (q = 1.001)**, and 238 failed at 100 to 365 Pa with "probably outside the two-phase
+  region". Cause: `guessAtPressure` searches T from Raoult's law, 186 K for that bubble point (the true one: 215.9 K; the mixture deviates
+  strongly from Raoult's law), and started its bracket at 0.9 of it, 167 K, where the guess fails because the liquid of the formulation does
+  not exist there. Every failure was taken as "too hot", so the bracket widened downwards, deeper into the failures, until 130 K: no guess
+  (`NoGuess`), and 234 then took the branch "no saturation point: above the critical locus" although the dew point (270.3 K) was found. The
+  liquid of the formulation (IAPWS-95 for water extrapolated far below the line of triple points) has a liquid branch whose minimum pressure
+  becomes positive at low temperature (8 MPa for x = 0.053 at 230 K; it reaches zero near 232 K for that composition, near 167 K for
+  x = 0.31): there `liquidFugacities` falls back to a compressed liquid and returns fugacities that are not those of a liquid at the
+  saturation pressure; further below the extrapolated liquid has a root again with a saturation pressure that falls with T (x = 0.61:
+  55 Pa at 160 K, 2e5 Pa at 155 K). The search now classifies each guess: valid; failed on the cold side (below 0.6 Tn(x), where on the
+  review grids the liquid fails or falls back only below 0.40 Tn and, near the critical temperature, only above 0.85 Tn), where a guess
+  also counts as failed if its liquid has no root at the guess pressure or its pressure is not below that of a guess at a higher
+  temperature; or failed on the hot side (as before). A cold failure is "too cold" in the bracket search, and a bracket whose lower end
+  is cold is narrowed onto the cold edge by bisection (to 0.05 K): either a valid point below the target appears, or the guess pressure
+  is above the target down to the edge, and the point lies below the range: new status `BelowRange`, an error that names the limit ("the
+  bubble point at p and x (p = 50 Pa, x(mole) = 0.0527) lies below about 232.5 K, the lowest temperature at which the formulation has a
+  liquid for this equilibrium at this pressure ..."), never "outside the two-phase region" and never a single phase (Newton is still tried
+  from the guess at the edge, for a point within the resolution of the edge). The search is unchanged where both ends of the initial bracket
+  have a valid guess, and on the hot side. Measured: every bubble and dew point that the T-specified solver finds between 150 and 300 K
+  (291 on a grid of 15 compositions, down to 1.5 Pa) is found back from its pressure to 1e-9 in T (hidden scan; before: 27 had no guess),
+  and the 708 Pa state and the 238 states at 100 to 365 Pa round-trip.
 - **Pure components** (mole fraction at the floor 1e-10, X = 0 or 1): the mixture cannot represent their saturation pair from both sides (the
   bubble point of pure ammonia needs a vapour purer than the floor), so no saturation is solved and the rules of a state without a two-phase
   region apply, as before (lowest Gibbs energy for 123).
@@ -167,7 +212,7 @@ the EES points to 0.2 % (volume) to 2 % (composition).
 
 | Check | Before (`main` @ `a77efaa`) | Branch |
 |---|---|---|
-| Unit suite (`cd build && ./coolsolve_tests`) | 1182 test cases | 1214 test cases (+32), all pass, 21 041 assertions |
+| Unit suite (`cd build && ./coolsolve_tests`) | 1182 test cases | 1216 test cases (+34), all pass, 21 095 assertions |
 | Examples (`[examples-comprehensive]`) | 43/46 solve (`cooling_tower2`, `orc_complex`, `turbocompressor_interpolate` do not) | 43/46, the same three |
 | Library regression (`tools/test_models.py`, scratch copies) | 249 targets, 5 expected deviations (`CSL-0008` ×3, `CSL-0146`, `CSL-0160:coolsolve`) | 249 targets, **the same 5** deviations, none new (run with the binary of `6ecd20b`, the evaluator integration; the later commits change only files of the module that no other model reaches) |
 
@@ -187,3 +232,23 @@ composition floor): liquid states there are an error, not a guess. A pure compon
 its saturation dome comes out single-phase, and `(P, X = 0, H|S)` (pure water) fails (no density at the 200 K start of its search), both as
 before. Near the critical locus a first call can still fail where a later one succeeds (T-p pairs within about 1e-5 in ln p of the pure-ammonia
 pressure at 400 to 405 K). A first call costs up to some tens of ms (guesses), a warm call 0.1 to 2 ms.
+
+**Low temperature (follow-up of 2026-10-19).** The formulation is valid above the line of triple points (Eq. 9 of the guideline: 273.16 K for water,
+195.5 K for ammonia, eutectics at 166.8 K (x = 0.334), 186.7 K (x = 0.584) and 180.1 K (x = 0.815)); the module does not enforce it, and it solves supercooled states
+down to where the extrapolated liquid ceases to exist at low pressure: a liquid of mole fraction 0.05 has a density root at 100 Pa down to
+233 K, 0.1 to 225 K, 0.2 to 208 K, 0.3 to 165 K, 0.6 and above to below 140 K (and below about 160 K the extrapolated bubble pressure of
+x = 0.61 falls with T). The limits that remain:
+- A pressure-specified bubble or dew point below that edge is an error that names the limit ("lies below about 232.5 K, the lowest
+  temperature at which the formulation has a liquid for this equilibrium at this pressure"); the flashes that need it (234/235 on the
+  two-phase side of the other point, 238) report it. The edge is that of the guess (to 0.05 K); Newton is tried from the guess at the edge.
+- The temperature-specified solver is unchanged: below about 240 K the dew points of water-rich vapours (whose equilibrium liquid is nearly
+  pure water) and below about 230 K the bubble points of liquids with X <= 0.1 do not converge (an error, as before); its guesses there use
+  the compressed-liquid fallback of `liquidFugacities`. It also still returns points of the non-monotone part (x = 0.61 at 155 K: 2e5 Pa),
+  which the pressure-specified search no longer reaches.
+- T-p pairs at low pressure have no guess of their own and converge only from a nearby start: inside the dome of X = 0.45 at 71 Pa, between
+  199 and 236 K (liquids of 0.24 to 0.05, at their edge), no pair converges, and (P, x, h|s) there is an error "did not converge, although
+  the state is between its bubble and dew points" (it returned a vapour at 184 K before).
+- (P, x, h|s) on the two-phase side of its one found point is an error (no probe), and so is a two-phase (T, x, v) state in the retrograde
+  band above the critical temperature of x (its bubble point does not exist; solving it would need the second dew point).
+- The tangent-plane test samples the trial compositions on a grid (step 0.5 in the logit, local minima refined): an instability narrower
+  than the grid could be missed. It is used only where the T-p pair was not found.

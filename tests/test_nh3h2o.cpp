@@ -1096,6 +1096,118 @@ TEST_CASE("NH3H2O flash: two-phase and vapour states below 2 kPa", "[nh3h2o][fla
     CHECK(std::abs(again.volume() / vapour.volume() - 1.0) <= 1e-9);
 }
 
+TEST_CASE("NH3H2O flash: pressure-specified states below 1 kPa, and a bubble point below the range", "[nh3h2o][flash]") {
+    // The bubble point at a given pressure is searched in T from Raoult's law, which is 30 K too cold for a water-rich
+    // liquid; the search took the failure of the guess there (no liquid of the extrapolated formulation) for "too hot" and
+    // gave up, and (P, x, h) then returned a vapour at 220.5 K (q = 1.001) for a state at 270 K, q = 0.95
+    const FlashResult state = flash(Prop::T, Prop::X, Prop::Q, 270.0, 0.3, 0.95);
+    REQUIRE(state.pressure() == Approx(707.85).epsilon(1e-4));
+    auto sameState = [](const FlashResult& r, double T, double q) {
+        CAPTURE(r.temperature(), r.quality());
+        CHECK(r.twoPhase);
+        CHECK(std::abs(r.temperature() / T - 1.0) <= 1e-9);
+        CHECK(std::abs(r.quality() - q) <= 1e-9);
+    };
+    FlashResult cold;
+    inFreshThread([&] { cold = flash(Prop::P, Prop::X, Prop::H, state.pressure(), 0.3, state.enthalpy()); });
+    sameState(cold, 270.0, 0.95);
+    sameState(flash(Prop::P, Prop::X, Prop::H, state.pressure(), 0.3, state.enthalpy()), 270.0, 0.95);
+    sameState(flash(Prop::P, Prop::X, Prop::S, state.pressure(), 0.3, state.entropy()), 270.0, 0.95);
+    // (P, x, q) at 100 to 365 Pa: the bubble points are at 234.6 to 250 K (X = 0.05), 202.6 K (X = 0.3), 176.3 K (X = 0.6)
+    for (const auto& [xi, q] : {std::pair{0.05, 0.0}, {0.05, 0.05}, {0.05, 0.5}, {0.05, 0.95}, {0.3, 0.5}, {0.6, 0.95}}) {
+        const FlashResult s = flash(Prop::T, Prop::X, Prop::Q, 250.0, xi, q);
+        CAPTURE(xi, q, s.pressure());
+        CHECK(s.pressure() > 100.0);
+        CHECK(s.pressure() < 365.0);
+        FlashResult r;
+        inFreshThread([&] { r = flash(Prop::P, Prop::X, Prop::Q, s.pressure(), xi, q); });
+        sameState(r, 250.0, q);
+    }
+    // At 50 Pa the bubble point of X = 0.05 lies below 232.5 K, where the formulation (far below the freezing line of
+    // the liquid, 267 K) has no liquid at that pressure: an error that names the limit, not "outside the two-phase
+    // region", and never a single phase for a state on the two-phase side of the dew point (242.4 K) that was found
+    const double x = coolsolve::nh3h2o::moleFractionOf(0.05);
+    const auto dew = saturation(SatSpec::DewP, 50.0, x);
+    CHECK(dew.T == Approx(242.42).epsilon(1e-4));
+    const FlashResult saturatedVapour = flash(Prop::P, Prop::X, Prop::Q, 50.0, 0.05, 1.0);
+    for (const auto& [prop, value] : {std::pair{Prop::Q, 0.5}, {Prop::H, saturatedVapour.enthalpy() - 2e5}}) {
+        std::string error;
+        try {
+            if (prop == Prop::Q)
+                flash(Prop::P, Prop::X, Prop::Q, 50.0, 0.05, value);
+            else
+                flash(Prop::P, Prop::X, Prop::H, 50.0, 0.05, value);
+        } catch (const std::runtime_error& e) {
+            error = e.what();
+        }
+        CAPTURE(error);
+        CHECK_THAT(error, ContainsSubstring("bubble point at p and x"));
+        CHECK_THAT(error, ContainsSubstring("lies below about 232."));
+        CHECK_THAT(error, !ContainsSubstring("outside"));
+    }
+    // the superheated vapour on the single-phase side of that dew point
+    const FlashResult vapour = flash(Prop::P, Prop::X, Prop::H, 50.0, 0.05, saturatedVapour.enthalpy() + 1e4);
+    CHECK_FALSE(vapour.twoPhase);
+    CHECK(vapour.temperature() > dew.T);
+}
+
+TEST_CASE("NH3H2O flash: one saturation point found, the retrograde band above the critical temperature of x", "[nh3h2o][flash]") {
+    // At 440 K, X = 0.9 has dew points and no bubble point. (T, P, x) decides with the T-p pair; (T, x, v) on the two-phase
+    // side of the dew point returned the single phase at that density (a vapour at 6.154 MPa for the two-phase state at
+    // 6.14 MPa, q = 0.995): now the tangent-plane test of that phase decides, and a two-phase state without its bubble
+    // point is an error that says so
+    const double T = 440.0, xi = 0.9;
+    const double pd = saturation(SatSpec::DewT, T, coolsolve::nh3h2o::moleFractionOf(xi)).p;
+    const FlashResult inside = flash(Prop::T, Prop::P, Prop::X, T, 1.3 * pd, xi);
+    REQUIRE(inside.twoPhase);
+    std::string error;
+    try {
+        flash(Prop::T, Prop::X, Prop::V, T, xi, inside.volume());
+    } catch (const std::runtime_error& e) {
+        error = e.what();
+    }
+    CAPTURE(error);
+    CHECK_THAT(error, ContainsSubstring("the phase of the state is undecided"));
+    CHECK_THAT(error, ContainsSubstring("tangent-plane test"));
+    CHECK_THAT(error, !ContainsSubstring("outside"));
+    // far above the dew point (3 times its pressure) the T-p pair does not converge; the tangent-plane test finds the
+    // single phase stable, the answer of the previous version
+    const FlashResult above = flash(Prop::T, Prop::P, Prop::X, T, 3.0 * pd, xi);
+    CHECK_FALSE(above.twoPhase);
+    const FlashResult byVolume = flash(Prop::T, Prop::X, Prop::V, T, xi, above.volume());
+    CHECK_FALSE(byVolume.twoPhase);
+    CHECK(std::abs(byVolume.pressure() / above.pressure() - 1.0) <= 1e-9);
+}
+
+TEST_CASE("Saturation: the T-specified bubble and dew points of 150 to 300 K are found back from their pressure", "[.nh3h2o-scan]") {
+    // the pressure-specified search reaches every point the temperature-specified solver finds (on 2026-10-19 27 of
+    // 291 had no guess at their own pressure, down to 1.5 Pa); about 1.5 minutes
+    int points = 0;
+    for (double T = 150.0; T <= 300.0 + 1e-9; T += 10.0)
+        for (double xi : {0.001, 0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999})
+            for (const bool dew : {false, true}) {
+                const double x = coolsolve::nh3h2o::moleFractionOf(xi);
+                coolsolve::nh3h2o::Saturation s{};
+                try {
+                    s = saturation(dew ? SatSpec::DewT : SatSpec::BubbleT, T, x);
+                } catch (const std::runtime_error&) {
+                    continue;   // no point at this temperature (the formulation has no liquid for it, or it did not converge)
+                }
+                CAPTURE(T, xi, dew, s.p);
+                std::string error;
+                double back = 0.0;
+                try {
+                    back = saturation(dew ? SatSpec::DewP : SatSpec::BubbleP, s.p, x).T;
+                } catch (const std::runtime_error& e) {
+                    error = e.what();
+                }
+                INFO(error);
+                CHECK(std::abs(back / T - 1.0) <= 1e-9);
+                ++points;
+            }
+    CHECK(points > 280);
+}
+
 TEST_CASE("NH3H2O flash: scan of (T, P, x) inside the dome, cold against warm", "[.nh3h2o-scan]") {
     // the larger version of the grid above, up to the critical locus (about half a minute): every state inside the dome
     // is two-phase or an error that does not say it is outside the two-phase region (on 2026-10-19: 2 errors, 240 K
