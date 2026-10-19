@@ -11,9 +11,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
+#include <functional>
 #include <iomanip>
 #include <memory>
 #include <string>
+#include <thread>
+#include <vector>
 
 using Catch::Approx;
 using Catch::Matchers::ContainsSubstring;
@@ -803,4 +807,285 @@ TEST_CASE("Near-pure compositions: bubble and dew points from the pure-ammonia s
             CHECK(d.p == Approx(s.p).epsilon(1e-6));
             CHECK(d.xL == Approx(s.xL).epsilon(1e-6));
         }
+}
+
+// ---------------------------------------------------------------------------
+// Correctness of the saturation and of the flashes: stable roots only, no single phase from a failed saturation, the
+// same state whatever the earlier calls of the thread (the warm-start cache of the saturation solver is thread_local)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// Runs f in a new thread, whose warm-start cache of the saturation solver is empty (a cold call); an exception of f is
+/// rethrown here. The Catch2 assertions stay in the calling thread.
+void inFreshThread(const std::function<void()>& f) {
+    std::exception_ptr error;
+    std::thread worker([&] {
+        try {
+            f();
+        } catch (...) {
+            error = std::current_exception();
+        }
+    });
+    worker.join();
+    if (error) std::rethrow_exception(error);
+}
+
+/// dp/drho at fixed T and x: positive for a mechanically stable phase.
+double pressureSlope(double T, double rho, double x) { return stateJets(T, rho, x).p.gradient(1); }
+
+/// The result of a flash, or its error message.
+struct FlashOutcome {
+    bool ok = false;
+    FlashResult result;
+    std::string error;
+};
+
+FlashOutcome tryFlash(const int combination[3], const double in[3]) {
+    FlashOutcome out;
+    try {
+        out.result = flash(static_cast<Prop>(combination[0]), static_cast<Prop>(combination[1]),
+                           static_cast<Prop>(combination[2]), in[0], in[1], in[2]);
+        out.ok = true;
+    } catch (const std::runtime_error& e) {
+        out.error = e.what();
+    }
+    return out;
+}
+
+/// The largest difference of the eight values of two states, relative to the value (q and values below 1e-3 absolute).
+double largestDifference(const FlashResult& a, const FlashResult& b) {
+    double d = 0.0;
+    for (int k = 0; k < 8; ++k)
+        d = std::max(d, std::abs(a.value[k] - b.value[k]) / std::max(std::abs(b.value[k]), k == 7 ? 1.0 : 1e-3));
+    return d;
+}
+
+}  // namespace
+
+TEST_CASE("Saturation: only mechanically stable pairs, from a cold or a warm start", "[nh3h2o][equilibrium]") {
+    // The T-p equilibrium at the bubble pressure of X = 0.9 at 400 K has an unstable root besides the bubble pair (a
+    // "liquid" of 21109 mol/m3 with dp/drho < 0); from a cold cache it used to be returned.
+    const double x = coolsolve::nh3h2o::moleFractionOf(0.9);
+    Saturation bubble{}, pair{};
+    inFreshThread([&] { bubble = saturation(SatSpec::BubbleT, 400.0, x); });
+    inFreshThread([&] { pair = saturation(SatSpec::TP, 400.0, bubble.p); });
+    CAPTURE(bubble.p, bubble.rhoL, pair.rhoL);
+    CHECK(std::abs(pair.rhoL / bubble.rhoL - 1.0) <= 1e-8);
+    CHECK(std::abs(pair.xV - bubble.xV) <= 1e-8);
+    CHECK(pressureSlope(pair.T, pair.rhoL, pair.xL) > 0.0);
+    CHECK(pressureSlope(pair.T, pair.rhoV, pair.xV) > 0.0);
+
+    // a sweep below the bubble pressures, in one thread (each pair starts from the previous one)
+    std::vector<Saturation> pairs;
+    std::vector<std::string> errors;
+    inFreshThread([&] {
+        for (double T : {300.0, 350.0, 400.0})
+            for (double xi : {0.5, 0.9, 0.99}) {
+                const double pb = saturation(SatSpec::BubbleT, T, coolsolve::nh3h2o::moleFractionOf(xi)).p;
+                for (double f : {0.9, 0.925, 0.95, 0.975, 1.0}) {
+                    try {
+                        pairs.push_back(saturation(SatSpec::TP, T, f * pb));
+                    } catch (const std::runtime_error& e) {
+                        errors.push_back(e.what());
+                    }
+                }
+            }
+    });
+    std::string messages;
+    for (const std::string& e : errors) messages += e + "\n";
+    INFO(messages);
+    CHECK(errors.empty());
+    CHECK(pairs.size() == 45);
+    for (const Saturation& s : pairs) {
+        CAPTURE(s.T, s.p, s.xL, s.rhoL, s.rhoV);
+        CHECK(pressureSlope(s.T, s.rhoL, s.xL) > 0.0);
+        CHECK(pressureSlope(s.T, s.rhoV, s.xV) > 0.0);
+    }
+}
+
+TEST_CASE("NH3H2O flash: (T, x, v) near the critical locus is two-phase, cold and after a warm-up", "[nh3h2o][flash]") {
+    // From a cold cache the bracket used the unstable root above and threw "no two-phase state"; after the warm-up below
+    // the bubble point came out unstable and the call returned a single-phase liquid at 4.675 MPa without an error.
+    FlashResult reference;
+    inFreshThread([&] { reference = flash(Prop::T, Prop::X, Prop::Q, 400.0, 0.9, 0.05); });
+    REQUIRE(reference.twoPhase);
+    FlashResult cold, warm;
+    inFreshThread([&] { cold = flash(Prop::T, Prop::X, Prop::V, 400.0, 0.9, reference.volume()); });
+    inFreshThread([&] {
+        flash(Prop::T, Prop::X, Prop::Q, 400.0, 0.99, 0.0);   // the warm-up: a bubble point of 0.99 at 400 K
+        warm = flash(Prop::T, Prop::X, Prop::V, 400.0, 0.9, reference.volume());
+    });
+    for (const FlashResult* r : {&cold, &warm}) {
+        CAPTURE(r == &cold ? "cold" : "warm", r->pressure(), r->quality());
+        CHECK(r->twoPhase);
+        CHECK(std::abs(r->pressure() / reference.pressure() - 1.0) <= 1e-8);
+        CHECK(std::abs(r->quality() - 0.05) <= 1e-8);
+    }
+}
+
+TEST_CASE("NH3H2O flash: the same state in a fresh thread and after any warm-up", "[nh3h2o][flash]") {
+    double volumeB = 0.0, pressureD = 0.0, lowP = 0.0, lowS = 0.0;
+    inFreshThread([&] {
+        volumeB = flash(Prop::T, Prop::X, Prop::Q, 400.0, 0.9, 0.05).volume();
+        const double xD = coolsolve::nh3h2o::moleFractionOf(0.999);
+        pressureD = std::sqrt(saturation(SatSpec::BubbleT, 400.0, xD).p * saturation(SatSpec::DewT, 400.0, xD).p);
+        const FlashResult low = flash(Prop::T, Prop::X, Prop::Q, 270.0, 0.1, 0.05);
+        lowP = low.pressure();
+        lowS = low.entropy();
+    });
+    struct Case {
+        int combination[3];
+        double inputs[3];
+    };
+    const std::vector<Case> cases = {
+        {{1, 3, 7}, {400.0, 0.9, volumeB}},      // two-phase near the critical locus (the unstable root)
+        {{1, 2, 3}, {400.0, pressureD, 0.999}},  // inside the narrow dome of 0.999 at 400 K
+        {{2, 3, 5}, {lowP, 0.1, lowS}},          // two-phase below 2 kPa
+        {{1, 2, 3}, {330.0, 1e6, 0.5}},
+        {{2, 3, 4}, {8e5, 0.5533, 7e5}},
+        {{1, 3, 8}, {350.0, 0.3, 0.5}},
+        {{2, 3, 8}, {1e6, 0.5, 0.3}},
+        {{2, 4, 8}, {8e5, 707713.7, 0.3}},
+        {{1, 5, 8}, {300.0, 4969.5, 0.7}},
+        {{1, 2, 3}, {300.0, 5e5, 0.4}},          // sub-cooled liquid
+        {{2, 3, 4}, {1e6, 0.4, 1.5e5}},          // sub-cooled liquid
+        {{1, 2, 3}, {263.15, 2.9e5, 0.9995}},    // near-pure refrigerant
+    };
+    std::vector<FlashOutcome> cold(cases.size());
+    for (size_t i = 0; i < cases.size(); ++i)
+        inFreshThread([&] { cold[i] = tryFlash(cases[i].combination, cases[i].inputs); });
+    const std::vector<std::function<void()>> warmUps = {
+        [] { flash(Prop::T, Prop::X, Prop::Q, 400.0, 0.99, 0.0); },
+        [] {
+            for (double T : {250.0, 300.0, 350.0, 400.0})
+                for (double xi : {0.1, 0.5, 0.9, 0.999})
+                    for (double q : {0.0, 0.5, 1.0}) try {
+                            flash(Prop::T, Prop::X, Prop::Q, T, xi, q);
+                        } catch (const std::runtime_error&) {
+                        }
+        },
+        [] {   // around the bubble pressures near the critical locus
+            for (double T : {400.0, 380.0, 360.0})
+                for (double xi : {0.99, 0.95, 0.9})
+                    for (double f : {0.95, 1.0, 1.05}) try {
+                            const double pb = saturation(SatSpec::BubbleT, T, coolsolve::nh3h2o::moleFractionOf(xi)).p;
+                            flash(Prop::T, Prop::P, Prop::X, T, f * pb, xi);
+                        } catch (const std::runtime_error&) {
+                        }
+        },
+    };
+    for (size_t w = 0; w < warmUps.size(); ++w) {
+        std::vector<FlashOutcome> warm(cases.size());
+        inFreshThread([&] {
+            warmUps[w]();
+            for (size_t i = 0; i < cases.size(); ++i) warm[i] = tryFlash(cases[i].combination, cases[i].inputs);
+        });
+        for (size_t i = 0; i < cases.size(); ++i) {
+            const Case& c = cases[i];
+            CAPTURE(w, c.combination[0], c.combination[1], c.combination[2], c.inputs[0], c.inputs[1], c.inputs[2]);
+            INFO("cold: " << (cold[i].ok ? "a state" : cold[i].error) << "; warm: " << (warm[i].ok ? "a state" : warm[i].error));
+            REQUIRE(warm[i].ok == cold[i].ok);
+            if (!cold[i].ok) {
+                CHECK(warm[i].error == cold[i].error);
+                continue;
+            }
+            CHECK(warm[i].result.twoPhase == cold[i].result.twoPhase);
+            CHECK(largestDifference(warm[i].result, cold[i].result) <= 1e-9);
+        }
+    }
+    for (size_t i = 0; i < cases.size(); ++i) {   // these states all exist
+        INFO(cold[i].error);
+        CHECK(cold[i].ok);
+    }
+}
+
+TEST_CASE("NH3H2O flash: (T, P, x) strictly inside the dome is two-phase", "[nh3h2o][flash]") {
+    // a saturation that does not converge must not be taken for the absence of a two-phase region
+    int checked = 0;
+    for (double T = 250.0; T <= 400.0 + 1e-9; T += 25.0)
+        for (double xi : {0.1, 0.5, 0.9, 0.999}) {
+            const double x = coolsolve::nh3h2o::moleFractionOf(xi);
+            const double pb = saturation(SatSpec::BubbleT, T, x).p, pd = saturation(SatSpec::DewT, T, x).p;
+            for (double f : {0.1, 0.5, 0.9}) {
+                const double p = pd * std::pow(pb / pd, f);
+                const int combination[3] = {1, 2, 3};
+                const double in[3] = {T, p, xi};
+                const FlashOutcome r = tryFlash(combination, in);
+                CAPTURE(T, xi, pd, pb, p);
+                INFO(r.error);
+                REQUIRE(r.ok);
+                CHECK(r.result.twoPhase);
+                CHECK(r.result.quality() > 0.0);
+                CHECK(r.result.quality() < 1.0);
+                ++checked;
+            }
+        }
+    CHECK(checked == 84);
+}
+
+TEST_CASE("NH3H2O flash: two-phase and vapour states below 2 kPa", "[nh3h2o][flash]") {
+    // the vapour density is below 1 mol/m3 there, the former lower bound of the polish
+    const FlashResult state = flash(Prop::T, Prop::X, Prop::Q, 270.0, 0.1, 0.05);
+    REQUIRE(state.twoPhase);
+    CHECK(state.pressure() == Approx(1985.24).epsilon(1e-5));
+    const FlashResult byVolume = flash(Prop::T, Prop::X, Prop::V, 270.0, 0.1, state.volume());
+    const FlashResult byEntropy = flash(Prop::P, Prop::X, Prop::S, state.pressure(), 0.1, state.entropy());
+    for (const FlashResult* r : {&byVolume, &byEntropy}) {
+        CAPTURE(r->pressure(), r->quality());
+        CHECK(r->twoPhase);
+        CHECK(std::abs(r->pressure() / state.pressure() - 1.0) <= 1e-8);
+        CHECK(std::abs(r->quality() - 0.05) <= 1e-8);
+    }
+    // a vapour of 0.3 mol/m3: the density root is not converged to the polish's criterion, so the polish takes Newton
+    // steps from it (they were clamped to 1 mol/m3)
+    const FlashResult vapour = flash(Prop::T, Prop::P, Prop::X, 400.0, 1000.0, 0.05);
+    CHECK_FALSE(vapour.twoPhase);
+    CHECK(vapour.quality() == 1.001);
+    CHECK(1.0 / (vapour.volume() * coolsolve::nh3h2o::molarMass(coolsolve::nh3h2o::moleFractionOf(0.05))) < 0.31);
+    const FlashResult again = flash(Prop::P, Prop::X, Prop::H, 1000.0, 0.05, vapour.enthalpy());
+    CHECK(std::abs(again.temperature() / 400.0 - 1.0) <= 1e-9);
+    CHECK(std::abs(again.volume() / vapour.volume() - 1.0) <= 1e-9);
+}
+
+TEST_CASE("NH3H2O flash: scan of (T, P, x) inside the dome, cold against warm", "[.nh3h2o-scan]") {
+    // the larger version of the grid above, up to the critical locus (about half a minute): every state inside the dome
+    // is two-phase or an error that does not say it is outside the two-phase region (on 2026-10-19: 2 errors, 240 K
+    // and X <= 0.1 at 44 to 56 Pa, below the freezing line of the water-rich liquid), the same in a fresh thread as in
+    // the warm sequence
+    int twoPhase = 0, errors = 0, points = 0;
+    for (double T = 230.0; T <= 420.0 + 1e-9; T += 10.0)
+        for (double xi : {0.05, 0.1, 0.3, 0.5, 0.7, 0.9, 0.95, 0.99, 0.995, 0.999}) {
+            const double x = coolsolve::nh3h2o::moleFractionOf(xi);
+            double pb = 0.0, pd = 0.0;
+            try {
+                pb = saturation(SatSpec::BubbleT, T, x).p;
+                pd = saturation(SatSpec::DewT, T, x).p;
+            } catch (const std::runtime_error&) {
+                continue;   // no dome at this temperature (above the critical locus), or no saturation found
+            }
+            for (double f : {0.02, 0.25, 0.5, 0.75, 0.98}) {
+                const double p = pd * std::pow(pb / pd, f);
+                const int combination[3] = {1, 2, 3};
+                const double in[3] = {T, p, xi};
+                const FlashOutcome warm = tryFlash(combination, in);
+                FlashOutcome cold;
+                inFreshThread([&] { cold = tryFlash(combination, in); });
+                CAPTURE(T, xi, pd, pb, p);
+                INFO("warm: " << (warm.ok ? "a state" : warm.error) << "; cold: " << (cold.ok ? "a state" : cold.error));
+                ++points;
+                if (warm.ok) {
+                    CHECK(warm.result.twoPhase);
+                    ++twoPhase;
+                } else {
+                    CHECK_THAT(warm.error, !ContainsSubstring("outside"));
+                    ++errors;
+                }
+                REQUIRE(cold.ok == warm.ok);
+                if (warm.ok) CHECK(largestDifference(warm.result, cold.result) <= 1e-9);
+            }
+        }
+    INFO(points << " points: " << twoPhase << " two-phase, " << errors << " errors");
+    CHECK(points > 900);
+    CHECK(errors <= 2);
 }

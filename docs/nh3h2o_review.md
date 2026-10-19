@@ -29,9 +29,9 @@ solver, the line searches, the block decomposition and the automatic differentia
 |---|---:|---|
 | `include/coolsolve/taylor_jet.h` | 331 | truncated Taylor polynomial in 3 variables (order 1 to 3), value and derivatives |
 | `include/coolsolve/nh3h2o.h`, `src/nh3h2o.cpp` | 209, 363 | the Helmholtz formulation (Eqs. 1 to 8 and Tables 1 to 3, A1 of the guideline; IAPWS-95 for water) written once over a scalar type; the properties of a state |
-| `src/nh3h2o_flash.cpp` | 1427 | the saturation solver, the 15 flashes, derivatives by the implicit function theorem. **Contains its own small Newton (`newtonSolve`), Brent and linear solver**, private to the file (anonymous namespace) |
+| `src/nh3h2o_flash.cpp` | 1613 | the saturation solver, the 15 flashes, derivatives by the implicit function theorem. **Contains its own small Newton (`newtonSolve`), Brent and linear solver**, private to the file (anonymous namespace) |
 | `src/evaluator_nh3h2o.cpp` | 303 | the glue: units of the model, designators, the trial-point limits, assembly of the `ADValue` gradient, the two entry points |
-| `tests/test_nh3h2o.cpp` | 806 | 24 test cases (tags `[nh3h2o]`, `[formulation]`, `[equilibrium]`, `[flash]`, `[evaluator]`) |
+| `tests/test_nh3h2o.cpp` | 1091 | 29 test cases (tags `[nh3h2o]`, `[formulation]`, `[equilibrium]`, `[flash]`, `[evaluator]`) and a hidden scan (`[.nh3h2o-scan]`, about 25 s) |
 
 ### B. Shared files modified (the part to review): 11 files, about 100 lines (75 added, 24 removed)
 
@@ -68,7 +68,8 @@ Hooks to read first: `git diff main -- src/evaluator.cpp src/fluids.cpp src/pars
    guess from the module itself could be added.
 4. The **two-root ambiguity** of the flashes `T H Q`, `T S Q`, `T U Q`, `P H Q`, `P S Q`, `P U Q` (the property along the saturation curve is
    not monotone in the composition): the root of lowest ammonia content is returned and documented. EES behaviour unknown.
-5. **Thread safety**: the saturation solver keeps one warm-start state per kind in `thread_local` storage (`g_satCache`); no locking.
+5. **Thread safety**: the saturation solver keeps one warm-start state per kind in `thread_local` storage (`g_satCache`); no locking. The
+   result does not depend on it: a call gives the same state (or the same error) in a fresh thread and after other calls (§4).
 6. **Reference state**: IAPWS (u = s = 0 for the pure saturated liquids at their triple points), not EES's: documented as a difference,
    not corrected (differences at fixed composition agree).
 
@@ -96,7 +97,44 @@ Two further pieces matter for compositions near pure ammonia (the refrigerant of
   pure ammonia, where the ideal-vapour guess has no root). `satSolve` tries the real-vapour guess first and the ideal-vapour one if Newton
   does not converge from it (at 16 MPa the correction over-corrects). Guesses never affect the accuracy: Newton polishes every result.
 
-Reviewing `newtonSolve` (with `noiseFloor` and `frozenPolish`), `satNewton`, `finishTwoPhase` and `finishSingle` covers the numerics.
+**Correctness of the saturation and of the flashes** (review of 2026-10-19, item 3; tests in the last section of `tests/test_nh3h2o.cpp`):
+
+- **Stable roots only.** The equilibrium equations also have roots with a phase between its spinodals: the T-p equilibrium at the bubble pressure
+  of X = 0.9 at 400 K gave a "liquid" of 21 109 mol/m3 with dp/drho = -8364 (the bubble pair: 27 144 mol/m3, +3205), and the bubble points at
+  400 K of X = 0.55 to 0.9 came out unstable from a warm cache. `satNewton` now returns false unless dp/drho > 0 in both phases (the phases of
+  the last Newton evaluation when it is the root, so no extra cost), and `satAttempt` tries its next start; after the polish of `finishTwoPhase`
+  the same check is an error naming the state. No tangent-plane test. The trivial solution is rejected when |xL - xV| < 1e-4 and
+  |ln(rhoL/rhoV)| < 1e-3 (was 1e-9 and 1e-6): near a critical point Newton stopped on two copies of one phase (2.8e-5 and 3.7e-8, a dew point at
+  395 K and X = 0.999 placed 4 % above the true one); a real pair is that close only within about 1e-9 of the critical point.
+- **A failed saturation is never a single phase.** `satAttempt` returns a status: `Found`, `NoGuess` (every guess function failed: the evidence
+  of a state outside the two-phase region or above the critical locus) or `NotConverged` (a start existed, Newton failed from all of them or
+  its root was rejected). The codes 123, 137 and 234/235 decide a single phase only on the side of a saturation point that was found, or from
+  `NoGuess`; a `NotConverged` saturation that the decision needs is an error naming the state ("the dew point at p and x (...) did not
+  converge to a pair of stable phases [state: NH3H2O(...)]"). Only the `NoGuess` message says "probably outside the two-phase region". The
+  scans of the unknown-composition flashes keep the boolean `trySat` (a failed node is skipped).
+- **Saturations inside a known bracket** (the T-p pairs of 123, 137, 138, 234/235, 238 and of the refinement of the unknown-composition flashes)
+  are started from the bracket (the bubble and dew pairs interpolated in T or p) and a failure is an error that says the state is between its
+  bubble and dew points (case D: 400 K, X = 0.999 inside the dome failed from the guesses).
+- **(T, P, x) with one saturation point only** (above the critical temperature of x, near the critical locus, near a pure end): the T-p pair
+  started from the point that was found decides two-phase if its compositions bracket x. The boundary margin `kBoundaryTol` (1e-7) now applies to
+  123 as to 137 and 234/235, so that a state saturated to round-off has the same label whatever the history. 234/235 decide on the side of a
+  found point whatever the status of the other one.
+- **Pure components** (mole fraction at the floor 1e-10, X = 0 or 1): the mixture cannot represent their saturation pair from both sides (the
+  bubble point of pure ammonia needs a vapour purer than the floor), so no saturation is solved and the rules of a state without a two-phase
+  region apply, as before (lowest Gibbs energy for 123).
+- **Starts.** In its near-pure-ammonia fallback, `guessTP` evaluates the liquid at p rather than at its ideal-vapour bubble pressure (the
+  difference is of the size of the margin to the pure-ammonia pressure; cold failures of the T-p pair in a scan 230 to 405 K: 6 of 385, were
+  102). When every guess of a bubble or dew point fails, the T-p pair at the T and p of the guess is the last start.
+- **Bounds.** `finishTwoPhase` bounds rhoV below by 1e-6 mol/m3 like `satNewton` (was 1), `finishSingle` rho by 1e-6 (was 1): two-phase states
+  below about 2 kPa (270 K, X = 0.1: rhoV = 0.88) and vapours below about 1 kPa whose start needs Newton steps now solve.
+- **History independence**, measured: 2 311 flashes (the 15 codes from 212 reference states: two-phase 250 to 400 K, single-phase 280 to
+  500 K) give the same result in a fresh thread and in one warm sequence (largest difference 2.2e-10 relative, identical errors; the previous
+  code threw in 164 of them warm and 181 cold, now 47); so do 945 (T, P, x) states inside the dome (hidden scan) and 345 near the critical
+  locus (380 to 450 K, X 0.7 to 0.999; the previous code: 58 differences, 31 single-phase answers inside the dome from a cold cache). The
+  acceptance of the warm-start cache (`close()`, within 25 % of both specifications) is unchanged.
+
+Reviewing `newtonSolve` (with `noiseFloor` and `frozenPolish`), `satNewton`, `satAttempt`, the phase decisions of `solveFlash`, `finishTwoPhase`
+and `finishSingle` covers the numerics.
 
 Comparison tolerances of the tests (against the guideline tables, EES, CoolProp) are separate from the solver tolerance and are stated in the tests:
 Table 6 to 1e-7 relative (the table has 9 to 10 digits and the coefficients of the guideline 7 to 8), pure water to 1/60 000 as the guideline says,
@@ -106,7 +144,7 @@ the EES points to 0.2 % (volume) to 2 % (composition).
 
 | Check | Before (`main` @ `a77efaa`) | Branch |
 |---|---|---|
-| Unit suite (`cd build && ./coolsolve_tests`) | 1182 test cases | 1209 test cases (+27), all pass, 19 843 assertions |
+| Unit suite (`cd build && ./coolsolve_tests`) | 1182 test cases | 1214 test cases (+32), all pass, 20 418 assertions |
 | Examples (`[examples-comprehensive]`) | 43/46 solve (`cooling_tower2`, `orc_complex`, `turbocompressor_interpolate` do not) | 43/46, the same three |
 | Library regression (`tools/test_models.py`, scratch copies) | 249 targets, 5 expected deviations (`CSL-0008` ×3, `CSL-0146`, `CSL-0160:coolsolve`) | 249 targets, **the same 5** deviations, none new (run with the binary of `6ecd20b`, the evaluator integration; the later commits change only files of the module that no other model reaches) |
 
@@ -121,4 +159,8 @@ exactness of the derivatives against finite differences of the flash and of the 
 
 Transport properties (`Conductivity`, `Viscosity`, `SurfaceTension`) are not implemented (errors that say so). No two-phase state above the critical
 locus (error naming the state). Saturation solves with a composition within about 1e-5 of pure are accurate to the resolution of a double
-(see §4). A first call costs up to some tens of ms (guesses), a warm call 0.1 to 2 ms.
+(see §4). Within about 1e-8 of pure ammonia (wider at low temperature) the bubble point cannot be represented (its vapour would be purer than the
+composition floor): liquid states there are an error, not a guess. A pure component (X = 0 or 1) given by `(T, x, v)` or `(P, x, h|s)` inside
+its saturation dome comes out single-phase, and `(P, X = 0, H|S)` (pure water) fails (no density at the 200 K start of its search), both as
+before. Near the critical locus a first call can still fail where a later one succeeds (T-p pairs within about 1e-5 in ln p of the pure-ammonia
+pressure at 400 to 405 K). A first call costs up to some tens of ms (guesses), a warm call 0.1 to 2 ms.

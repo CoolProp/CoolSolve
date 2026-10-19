@@ -472,8 +472,14 @@ double logitResolution(double z) {
     return (std::nextafter(x, 2.0) - x) / (x * (1.0 - x));
 }
 
+/// True if both phases are mechanically stable, dp/drho > 0 at fixed T and x. The equilibrium equations also have
+/// roots with a phase between its spinodals (dp/drho < 0); such a root is not a physical state.
+bool mechanicallyStable(const Phase& L, const Phase& V) { return L.p.gradient(1) > 0.0 && V.p.gradient(1) > 0.0; }
+
 /// Newton on the saturation system for the free variables of `kind` (the other two keep their values in `s`). The
-/// compositions are iterated as logit(x), which keeps the iteration well scaled up to the pure-component ends.
+/// compositions are iterated as logit(x), which keeps the iteration well scaled up to the pure-component ends. False
+/// if the iteration does not converge or converges to the trivial solution, to swapped phases or to a mechanically
+/// unstable phase.
 bool satNewton(Sat& s, SatKind kind, int maxIter = 60) {
     const int fixedA = kFixed[kind][0], fixedB = kFixed[kind][1];
     int free[4], nf = 0;
@@ -505,6 +511,10 @@ bool satNewton(Sat& s, SatKind kind, int maxIter = 60) {
     for (int i = 0; i < 4; ++i) u[i] = isComposition(free[i]) ? logitOf(s.v[free[i]]) : s.v[free[i]];
     double full[6];
     for (int k = 0; k < 6; ++k) full[k] = s.v[k];
+    // the phases of the last evaluation, for the stability check of the root (most often the root itself)
+    double lastU[4] = {0, 0, 0, 0};
+    Phase lastL, lastV;
+    bool haveLast = false;
     const Evaluator eval = [&](const double* uv, double* F, double (*J)[8]) {
         double dxdu[4];
         for (int i = 0; i < 4; ++i) {
@@ -517,11 +527,14 @@ bool satNewton(Sat& s, SatKind kind, int maxIter = 60) {
             }
         }
         double Jf[4][6], Ff[4];
+        haveLast = false;
         try {
-            satResiduals(full, Ff, Jf);
+            satResiduals(full, Ff, Jf, &lastL, &lastV);
         } catch (const std::runtime_error&) {
             return false;
         }
+        for (int i = 0; i < 4; ++i) lastU[i] = uv[i];
+        haveLast = true;
         for (int i = 0; i < 4; ++i) {
             F[i] = Ff[i];
             for (int j = 0; j < 4; ++j) J[i][j] = Jf[i][free[j]] * dxdu[j];
@@ -530,9 +543,22 @@ bool satNewton(Sat& s, SatKind kind, int maxIter = 60) {
     };
     if (!newtonSolve(ns, u, eval, 1e-12, maxIter)) return false;
     for (int i = 0; i < 4; ++i) s.v[free[i]] = isComposition(free[i]) ? sigmoid(u[i]) : u[i];
-    // the trivial solution (one phase) satisfies every equation
-    if (std::abs(s.v[2] - s.v[3]) < 1e-9 && std::abs(std::log(s.v[4] / s.v[5])) < 1e-6) return false;
-    return s.v[4] > s.v[5];
+    // the trivial solution (one phase) satisfies every equation. Near a critical point the residuals are flat along the
+    // trivial manifold, and Newton can stop on two copies of one phase (seen: ln(rhoL/rhoV) = 2.8e-5 and |xL - xV| =
+    // 3.7e-8 for a dew point at 395 K and X = 0.999, 4 % above the true dew pressure; 4.2e-5 and 4.4e-6 for a bubble
+    // point at 435 K and X = 0.9). A real pair is that close only within about 1e-9 of the critical point (0.2 and 2e-3
+    // at 1e-4 of it, 410 K).
+    if (std::abs(s.v[2] - s.v[3]) < 1e-4 && std::abs(std::log(s.v[4] / s.v[5])) < 1e-3) return false;
+    if (!(s.v[4] > s.v[5])) return false;
+    if (haveLast && std::equal(u, u + 4, lastU)) return mechanicallyStable(lastL, lastV);
+    double F[4], J[4][6];
+    Phase L, V;
+    try {
+        satResiduals(s.v, F, J, &L, &V);
+    } catch (const std::runtime_error&) {
+        return false;
+    }
+    return mechanicallyStable(L, V);
 }
 
 /// R T times the constants of the ideal-gas chemical potentials at the reference pressure: for the pure ideal gas i,
@@ -544,22 +570,24 @@ void idealGasConstants(double T, double& C1, double& C2) {
 }
 
 /// The partial pressures f_i that the liquid of composition xL at T would have in an ideal vapour, and its density.
+/// The liquid is evaluated at its own bubble pressure against an ideal vapour (iterated from pStart), or at pStart
+/// itself (`atStart`, the liquid of an equilibrium at a given pressure).
 struct Fug {
     bool ok = false;
     double f1 = 0, f2 = 0, rhoL = 0;
 };
 
-Fug liquidFugacities(double T, double xL, double pStart = 1.0e5) {
+Fug liquidFugacities(double T, double xL, double pStart = 1.0e5, bool atStart = false) {
     double C1, C2;
     idealGasConstants(T, C1, C2);
     const double RT = kR * T;
     Fug fug;
     double p = pStart;
-    for (int it = 0, escalations = 0; it < 6; ++it) {
+    for (int it = 0, escalations = 0; it < (atStart ? 1 : 6); ++it) {
         double rho;
         // a liquid root can be missing at a low pressure near the critical temperature (beyond its spinodal)
         while (!densityRoot(T, p, xL, true, rho)) {
-            if (++escalations > 8) return fug;
+            if (atStart || ++escalations > 8) return fug;
             p *= 4.0;
         }
         if (rho < reducingDensity(xL)) return fug;   // above the critical temperature there is no liquid
@@ -676,18 +704,22 @@ bool guessDewT(double T, double yV, Sat& s, bool realVapour = true) {
 
 bool guessTP(double T, double p, Sat& s, bool realVapour = true) {
     double phi1 = 1.0, phi2 = 1.0, xL = 0.0, y = 0.0;
+    bool atP = false;   // the liquid at its own ideal-vapour bubble pressure, or at p
     Fug f;
     for (int pass = 0; pass < (realVapour ? 3 : 1); ++pass) {   // the vapour is not an ideal gas: its fugacity coefficients follow the composition
         auto g = [&](double z) {
-            const Fug fl = liquidFugacities(T, sigmoid(z), p);
+            const Fug fl = liquidFugacities(T, sigmoid(z), p, atP);
             return fl.ok ? std::log((fl.f1 / phi1 + fl.f2 / phi2) / p) : std::numeric_limits<double>::quiet_NaN();
         };
         double z;
         if (!solveLogitRoot(g, z)) {
             // within a few percent of the pressure of the pure ammonia the ideal vapour has no root: start from the
-            // fugacity coefficients of an ammonia-rich vapour, as pure as the margin to the pure-ammonia pressure needs
+            // fugacity coefficients of an ammonia-rich vapour, as pure as the margin to the pure-ammonia pressure needs,
+            // and from the liquid at p (its compression from its ideal-vapour bubble pressure to p, a fraction of a
+            // percent of its fugacities, is of the size of that margin)
             if (pass > 0 || !realVapour) return false;
             bool found = false;
+            atP = true;
             for (const double yRich : {0.999999, 0.9999, 0.99}) {
                 const VaporPhi rich = vaporPhi(T, p, yRich);
                 if (!rich.ok) continue;
@@ -698,7 +730,7 @@ bool guessTP(double T, double p, Sat& s, bool realVapour = true) {
             if (!found) return false;
         }
         xL = sigmoid(z);
-        f = liquidFugacities(T, xL, p);
+        f = liquidFugacities(T, xL, p, atP);
         if (!f.ok) return false;
         y = clampX((f.f2 / phi2) / (f.f1 / phi1 + f.f2 / phi2));
         const VaporPhi phi = vaporPhi(T, p, y);
@@ -767,8 +799,16 @@ struct SatCache {
 };
 thread_local SatCache g_satCache[5];
 
-/// The saturation state of `kind` for the specified values a, b (T and x, or p and x, or T and p).
-Sat satSolve(SatKind kind, double a, double b) {
+/// The outcome of a saturation solve. `NoGuess`: every guess function failed (no liquid at this T, no bracket at this
+/// p), the evidence that the state is outside the two-phase region or above the critical locus. `NotConverged`: a guess
+/// existed but Newton failed from every start or its root was rejected; it says nothing about the phase of the state.
+enum class SatStatus { Found, NoGuess, NotConverged };
+
+/// The saturation state of `kind` for the specified values a, b (T and x, or p and x, or T and p) in `s`, with its
+/// status (`s` is meaningful for `Found` only). Never throws for a missing or failed saturation. The starts, in this
+/// order: the warm-start cache, `hint` (a start supplied by the caller), the guesses. The stable root does not depend
+/// on the start; the order only affects the cost.
+SatStatus satAttempt(SatKind kind, double a, double b, Sat& s, const Sat* hint = nullptr) {
     SatCache& cache = g_satCache[kind];
     const bool pressureSpec = kind == kBubbleP || kind == kDewP;
     const bool pairTP = kind == kTP;
@@ -779,18 +819,30 @@ Sat satSolve(SatKind kind, double a, double b) {
         const double cx = kind == kBubbleT || kind == kBubbleP ? c.xL() : c.xV();
         return std::abs(b - cx) < 0.25;
     };
-    Sat s;
     if (cache.valid && close(cache.s)) {
         s = cache.s;
         s.v[kFixed[kind][0]] = a;
         s.v[kFixed[kind][1]] = pairTP ? b : clampX(b);
         if (satNewton(s, kind)) {
             cache.s = s;
-            return s;
+            return SatStatus::Found;
+        }
+    }
+    bool anyGuess = false;
+    if (hint) {
+        anyGuess = true;
+        s = *hint;
+        s.v[kFixed[kind][0]] = a;
+        s.v[kFixed[kind][1]] = pairTP ? b : clampX(b);
+        if (satNewton(s, kind)) {
+            cache.valid = true;
+            cache.s = s;
+            return SatStatus::Found;
         }
     }
     // the guess with the vapour as a real gas first; the ideal-vapour guess (cruder, but it never over-corrects at high
     // pressure) when Newton does not converge from it
+    double guessT = 0.0, guessP = 0.0;   // T and p of the first guess, with the specified one of them
     for (const bool realVapour : {true, false}) {
         bool ok = false;
         switch (kind) {
@@ -801,27 +853,85 @@ Sat satSolve(SatKind kind, double a, double b) {
             case kTP: ok = guessTP(a, b, s, realVapour); break;
         }
         if (!ok) continue;
+        anyGuess = true;
         s.v[kFixed[kind][0]] = a;
         s.v[kFixed[kind][1]] = pairTP ? b : clampX(b);
+        if (guessT == 0.0) {
+            guessT = s.T();
+            guessP = s.p();
+        }
         if (satNewton(s, kind)) {
             cache.valid = true;
             cache.s = s;
-            return s;
+            return SatStatus::Found;
         }
     }
-    const std::string first = pressureSpec ? "p = " + fmt(a) + " Pa" : "T = " + fmt(a) + " K";
-    const std::string second = pairTP ? "p = " + fmt(b) + " Pa" : "x(mole) = " + fmt(b);
-    fail(std::string("no ") + kKindName[kind] + " found (" + first + ", " + second +
-         "): the state is probably outside the two-phase region or above the critical locus");
+    // near the critical locus Newton can slide from a guess to the trivial solution (rejected in satNewton): the last
+    // start is the equilibrium pair at the T and p of the guess, a real pair near the one sought
+    if (!pairTP && guessT > 0.0) {
+        Sat pair;
+        if (satAttempt(kTP, guessT, guessP, pair) == SatStatus::Found) {
+            s = pair;
+            s.v[kFixed[kind][0]] = a;
+            s.v[kFixed[kind][1]] = clampX(b);
+            if (satNewton(s, kind)) {
+                cache.valid = true;
+                cache.s = s;
+                return SatStatus::Found;
+            }
+        }
+    }
+    return anyGuess ? SatStatus::NotConverged : SatStatus::NoGuess;
 }
 
-bool trySat(SatKind kind, double a, double b, Sat& out) {
-    try {
-        out = satSolve(kind, a, b);
-        return true;
-    } catch (const std::runtime_error&) {
-        return false;
-    }
+/// The error of a saturation solve that did not give a state. Only `NoGuess` outside a known two-phase region may say
+/// that the state is outside it; `insideDome` (the state is between a bubble and a dew point that were found) says
+/// that any failure is one of the solver.
+[[noreturn]] void satFailure(SatKind kind, double a, double b, SatStatus status, bool insideDome = false) {
+    const bool pressureSpec = kind == kBubbleP || kind == kDewP;
+    const std::string first = pressureSpec ? "p = " + fmt(a) + " Pa" : "T = " + fmt(a) + " K";
+    const std::string second = kind == kTP ? "p = " + fmt(b) + " Pa" : "x(mole) = " + fmt(b);
+    const std::string where = " (" + first + ", " + second + ")";
+    if (insideDome)
+        fail(std::string("the ") + kKindName[kind] + where + " did not converge, although the state is between its bubble "
+             "and dew points");
+    if (status == SatStatus::NoGuess)
+        fail(std::string("no ") + kKindName[kind] + " found" + where +
+             ": the state is probably outside the two-phase region or above the critical locus");
+    fail(std::string("the ") + kKindName[kind] + where + " did not converge to a pair of stable phases");
+}
+
+/// The saturation state of `kind` (an error naming the specification if there is none).
+Sat satSolve(SatKind kind, double a, double b) {
+    Sat s;
+    const SatStatus status = satAttempt(kind, a, b, s);
+    if (status != SatStatus::Found) satFailure(kind, a, b, status);
+    return s;
+}
+
+/// A start for the equilibrium pair inside a bracket of two saturated states `lo` and `hi` (the dew and bubble points of
+/// a composition, or two points of the saturation curve): the six variables interpolated linearly at the position of
+/// `value` between lo.v[k] and hi.v[k] (k = 0 for T, 1 for p).
+Sat between(const Sat& lo, const Sat& hi, int k, double value) {
+    const double span = hi.v[k] - lo.v[k];
+    const double t = span != 0.0 ? std::min(std::max((value - lo.v[k]) / span, 0.0), 1.0) : 0.5;
+    Sat s;
+    for (int j = 0; j < 6; ++j) s.v[j] = lo.v[j] + t * (hi.v[j] - lo.v[j]);
+    return s;
+}
+
+/// The saturation state of `kind` at a state known to be inside the two-phase region, with a start `hint` from the
+/// bracket: any failure is an error of the solver, never a claim that the state is outside the region.
+Sat satInside(SatKind kind, double a, double b, const Sat& hint) {
+    Sat s;
+    const SatStatus status = satAttempt(kind, a, b, s, &hint);
+    if (status != SatStatus::Found) satFailure(kind, a, b, status, true);
+    return s;
+}
+
+/// True if the saturation of `kind` was found (the scans, where a failed node is skipped).
+bool trySat(SatKind kind, double a, double b, Sat& out, const Sat* hint = nullptr) {
+    return satAttempt(kind, a, b, out, hint) == SatStatus::Found;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -966,7 +1076,7 @@ FlashResult finishTwoPhase(Solution& sol, const Spec spec[3], const std::string&
     ns.maxStep[7] = 0.3; ns.maxStep[6] = 0.1; ns.maxStep[2] = ns.maxStep[3] = 1.0; ns.maxStep[0] = 0.02;
     ns.lower[0] = 120.0; ns.upper[0] = 1000.0; ns.lower[1] = 1e-3; ns.upper[1] = 2e9;
     ns.lower[2] = ns.lower[3] = -23.0; ns.upper[2] = ns.upper[3] = 23.0;
-    ns.lower[4] = ns.lower[5] = 1.0; ns.upper[4] = ns.upper[5] = 2e5;
+    ns.lower[4] = 1.0; ns.lower[5] = 1e-6; ns.upper[4] = ns.upper[5] = 2e5;   // the bounds of satNewton
     ns.lower[6] = 0.0; ns.upper[6] = 1.0; ns.lower[7] = -0.5; ns.upper[7] = 1.5;
 
     ns.composition[2] = ns.composition[3] = true;
@@ -1030,6 +1140,9 @@ FlashResult finishTwoPhase(Solution& sol, const Spec spec[3], const std::string&
     double F[8], J[8][8];
     Phase L, V;
     assemble(w, F, J, &L, &V);
+    if (!mechanicallyStable(L, V))
+        fail("the two-phase state of " + label + " has a mechanically unstable phase (dp/drho <= 0; liquid " +
+             fmt(L.p.gradient(1)) + ", vapour " + fmt(V.p.gradient(1)) + " Pa m3/mol)");
     double B[8][8];
     for (int i = 0; i < 8; ++i)
         for (int j = 0; j < 8; ++j) B[i][j] = (i == 5 + j && j < 3) ? 1.0 : 0.0;
@@ -1062,7 +1175,7 @@ FlashResult finishSingle(Solution& sol, const Spec spec[3], const std::string& l
     ns.colScale[0] = 100.0;
     ns.logVar[1] = true;
     ns.maxStep[1] = 0.2; ns.maxStep[2] = 0.05;
-    ns.lower[0] = 120.0; ns.upper[0] = 2000.0; ns.lower[1] = 1.0; ns.upper[1] = 2e5; ns.lower[2] = 0.0; ns.upper[2] = 1.0;
+    ns.lower[0] = 120.0; ns.upper[0] = 2000.0; ns.lower[1] = 1e-6; ns.upper[1] = 2e5; ns.lower[2] = 0.0; ns.upper[2] = 1.0;
     const Evaluator eval = [&](const double* v, double* F, double (*J)[8]) {
         Phase ph;
         try {
@@ -1174,15 +1287,18 @@ Solution solveUnknownComposition(bool temperatureGiven, double fixedValue, Prop 
         // the pressure rises with x at fixed T, the temperature falls at fixed p
         const double lo = temperatureGiven ? A.sat.p() : B.sat.T(), hi = temperatureGiven ? B.sat.p() : A.sat.T();
         const double flo = temperatureGiven ? A.f : B.f, fhi = temperatureGiven ? B.f : A.f;
+        const int k = temperatureGiven ? 1 : 0;   // the coordinate that varies between the two nodes
         auto f = [&](double v) {
             Sat pair;
-            if (!trySat(kTP, temperatureGiven ? fixedValue : v, temperatureGiven ? v : fixedValue, pair))
+            const Sat hint = between(A.sat, B.sat, k, v);
+            if (!trySat(kTP, temperatureGiven ? fixedValue : v, temperatureGiven ? v : fixedValue, pair, &hint))
                 return std::numeric_limits<double>::quiet_NaN();
             return at(pair);
         };
         double root;
         if (!brent(f, lo, hi, flo, fhi, 1e-13 * hi, root)) return false;
-        const Sat pair = satSolve(kTP, temperatureGiven ? fixedValue : root, temperatureGiven ? root : fixedValue);
+        const Sat pair = satInside(kTP, temperatureGiven ? fixedValue : root, temperatureGiven ? root : fixedValue,
+                                   between(A.sat, B.sat, k, root));
         out = twoPhaseSolution(pair, q);
         return true;
     };
@@ -1223,6 +1339,34 @@ Solution solveUnknownComposition(bool temperatureGiven, double fixedValue, Prop 
          (temperatureGiven ? "temperature" : "pressure") + " and quality");
 }
 
+/// The bubble and the dew point of the mole fraction x at the temperature (`temperatureGiven`) or the pressure `a`, with
+/// their status. A pure component (x at the composition floor kXMin) has no two-phase region of non-zero width, and the
+/// mixture cannot represent its saturation pair from both sides (one phase would have to be purer than the floor):
+/// nothing is solved and both statuses are `NoGuess`, so that the flashes use the single-phase rules of a state without
+/// a two-phase region (the density root of lowest Gibbs energy for T, p, x).
+struct Boundaries {
+    Sat bubble, dew;
+    SatKind bubbleKind = kBubbleT, dewKind = kDewT;
+    SatStatus bubbleStatus = SatStatus::NoGuess, dewStatus = SatStatus::NoGuess;
+    bool notConverged() const { return bubbleStatus == SatStatus::NotConverged || dewStatus == SatStatus::NotConverged; }
+};
+
+Boundaries boundariesOf(bool temperatureGiven, double a, double x) {
+    Boundaries bd;
+    bd.bubbleKind = temperatureGiven ? kBubbleT : kBubbleP;
+    bd.dewKind = temperatureGiven ? kDewT : kDewP;
+    if (x <= kXMin || x >= 1.0 - kXMin) return bd;   // a pure component
+    bd.bubbleStatus = satAttempt(bd.bubbleKind, a, x, bd.bubble);
+    bd.dewStatus = satAttempt(bd.dewKind, a, x, bd.dew);
+    return bd;
+}
+
+/// The error of a state whose phase is unknown because a saturation it needs did not converge.
+[[noreturn]] void failUndecided(const Boundaries& bd, double a, double x) {
+    if (bd.bubbleStatus == SatStatus::NotConverged) satFailure(bd.bubbleKind, a, x, bd.bubbleStatus);
+    satFailure(bd.dewKind, a, x, bd.dewStatus);
+}
+
 Solution solveFlash(const Spec spec[3], const std::string& label) {
     const int code = 100 * static_cast<int>(spec[0].prop) + 10 * static_cast<int>(spec[1].prop) + static_cast<int>(spec[2].prop);
     const double a = spec[0].value, b = spec[1].value, c = spec[2].value;
@@ -1231,14 +1375,29 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
     switch (code) {
         case 123: {   // T, p, x
             const double T = a, p = b, x = moleFractionOf(c);
-            Sat sb, sd;
-            const bool hasB = trySat(kBubbleT, T, x, sb), hasD = trySat(kDewT, T, x, sd);
-            if (hasB && p >= sb.p()) return singleAtTP(T, p, x, true, label);
-            if (hasD && p <= sd.p()) return singleAtTP(T, p, x, false, label);
+            const Boundaries bd = boundariesOf(true, T, x);
+            const Sat &sb = bd.bubble, &sd = bd.dew;
+            const bool hasB = bd.bubbleStatus == SatStatus::Found, hasD = bd.dewStatus == SatStatus::Found;
+            if (hasB != hasD) {
+                // one saturation point only: above the critical temperature of x (two dew points, the retrograde
+                // region), near the critical locus where a guess finds no liquid or Newton does not converge, or near a
+                // pure component. The equilibrium pair at (T, p), started from the point that was found, decides:
+                // two-phase if its compositions bracket x (not within the boundary margin of that point)
+                const Sat& known = hasB ? sb : sd;
+                Sat s;
+                if (std::abs(p / known.p() - 1.0) > kBoundaryTol && satAttempt(kTP, T, p, s, &known) == SatStatus::Found &&
+                    s.xL() < x && x < s.xV())
+                    return twoPhaseSolution(s, qualityOf(c, s));
+            }
+            if (hasB && p >= sb.p() * (1.0 - kBoundaryTol)) return singleAtTP(T, p, x, true, label);
+            if (hasD && p <= sd.p() * (1.0 + kBoundaryTol)) return singleAtTP(T, p, x, false, label);
             if (hasB && hasD) {
-                const Sat s = satSolve(kTP, T, p);
+                const Sat s = satInside(kTP, T, p, between(sd, sb, 1, p));
                 return twoPhaseSolution(s, qualityOf(c, s));
             }
+            // a single phase only on the evidence of the saturations: found, or no guess at all (above the critical
+            // locus); a saturation that did not converge leaves the phase unknown
+            if (bd.notConverged()) failUndecided(bd, T, x);
             return singleSupercritical(T, p, x, label);
         }
         case 128: {   // T, p, q
@@ -1252,26 +1411,34 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
             if (c == 1.0) return twoPhaseSolution(satSolve(kDewT, a, x), 1.0);
             const Sat sb = satSolve(kBubbleT, a, x), sd = satSolve(kDewT, a, x);
             double p;
-            auto f = [&](double pp) { return qualityOf(b, satSolve(kTP, a, pp)) - c; };
+            auto f = [&](double pp) { return qualityOf(b, satInside(kTP, a, pp, between(sd, sb, 1, pp))) - c; };
             if (!brent(f, sd.p(), sb.p(), 1.0 - c, -c, 1e-12 * sb.p(), p)) fail("no state for " + label);
-            return twoPhaseSolution(satSolve(kTP, a, p), c);
+            return twoPhaseSolution(satInside(kTP, a, p, between(sd, sb, 1, p)), c);
         }
         case 137: {   // T, x, v
             const double T = a, x = moleFractionOf(b), rho = 1.0 / (c * molarMass(x));
-            Sat sb, sd;
-            if (!trySat(kBubbleT, T, x, sb) || !trySat(kDewT, T, x, sd))
-                return singleSolution(T, rho, x, rho < reducingDensity(x));
+            const Boundaries bd = boundariesOf(true, T, x);
+            const Sat &sb = bd.bubble, &sd = bd.dew;
+            const bool hasB = bd.bubbleStatus == SatStatus::Found, hasD = bd.dewStatus == SatStatus::Found;
+            if (!hasB || !hasD) {
+                if (!bd.notConverged())   // above the critical locus
+                    return singleSolution(T, rho, x, rho < reducingDensity(x));
+                // a saturation did not converge: a single phase only on the evidence of the one that was found
+                if (hasB && rho >= sb.rhoL() * (1.0 - kBoundaryTol)) return singleSolution(T, rho, x, false);
+                if (hasD && rho <= sd.rhoV() * (1.0 + kBoundaryTol)) return singleSolution(T, rho, x, true);
+                failUndecided(bd, T, x);
+            }
             if (rho >= sb.rhoL() * (1.0 - kBoundaryTol)) return singleSolution(T, rho, x, false);
             if (rho <= sd.rhoV() * (1.0 + kBoundaryTol)) return singleSolution(T, rho, x, true);
             auto vmix = [&](double pp) {
-                const Sat s = satSolve(kTP, T, pp);
+                const Sat s = satInside(kTP, T, pp, between(sd, sb, 1, pp));
                 const double q = qualityOf(b, s);
                 return (1.0 - q) / (s.rhoL() * molarMass(s.xL())) + q / (s.rhoV() * molarMass(s.xV())) - c;
             };
             const double flo = vmix(sd.p()), fhi = vmix(sb.p());
             double p;
             if (!brent(vmix, sd.p(), sb.p(), flo, fhi, 1e-12 * sb.p(), p)) fail("no two-phase state for " + label);
-            const Sat s = satSolve(kTP, T, p);
+            const Sat s = satInside(kTP, T, p, between(sd, sb, 1, p));
             return twoPhaseSolution(s, qualityOf(b, s));
         }
         case 148: case 158: case 168: case 178:   // T, h|s|u|v, q: the pressure is unknown
@@ -1280,23 +1447,10 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
         case 234: case 235: {   // P, x, h|s
             const Prop prop = spec[2].prop;
             const double p = a, x = moleFractionOf(b);
-            Sat sb, sd;
-            if (!trySat(kBubbleP, p, x, sb) || !trySat(kDewP, p, x, sd)) {
-                // above the critical locus: single phase at any T; search T on the vapour root
-                auto f = [&](double T) {
-                    Solution s = singleSupercritical(T, p, x, label);
-                    return mixProp(prop, evaluatePhase(T, s.s[1], x), evaluatePhase(T, s.s[1], x), 0.0) - c;
-                };
-                double T;
-                if (!brent(f, 200.0, 1500.0, f(200.0), f(1500.0), 1e-10, T)) fail("no state for " + label);
-                return singleSupercritical(T, p, x, label);
-            }
-            const Phase Lb = evaluatePhase(sb.T(), sb.rhoL(), sb.xL()), Vd = evaluatePhase(sd.T(), sd.rhoV(), sd.xV());
-            const double hb = mixProp(prop, Lb, Lb, 0.0), hd = mixProp(prop, Vd, Vd, 0.0);
-            const double hTol = kBoundaryTol * std::max(std::abs(hb), std::abs(hd));
-            if (std::abs(c - hb) <= hTol) return singleAtTP(sb.T(), p, x, true, label);   // saturated liquid
-            if (std::abs(c - hd) <= hTol) return singleAtTP(sd.T(), p, x, false, label);   // saturated vapour
-            if (c <= hb) {   // sub-cooled liquid
+            const Boundaries bd = boundariesOf(false, p, x);
+            const Sat &sb = bd.bubble, &sd = bd.dew;
+            const bool hasB = bd.bubbleStatus == SatStatus::Found, hasD = bd.dewStatus == SatStatus::Found;
+            auto subcooled = [&]() {   // the liquid below the bubble temperature
                 auto f = [&](double T) {
                     double rho;
                     if (!densityRoot(T, p, x, true, rho)) return std::numeric_limits<double>::quiet_NaN();
@@ -1307,8 +1461,8 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
                 for (; Tlo < sb.T() && !(flo < 0.0); Tlo += 10.0) flo = f(Tlo);   // the liquid root needs a meaningful state
                 if (!brent(f, Tlo - 10.0, sb.T(), flo, f(sb.T()), 1e-10, T)) fail("no liquid state for " + label + ": the value is below the range");
                 return singleAtTP(T, p, x, true, label);
-            }
-            if (c >= hd) {   // superheated vapour
+            };
+            auto superheated = [&]() {   // the vapour above the dew temperature
                 auto f = [&](double T) {
                     double rho;
                     if (!densityRoot(T, p, x, false, rho)) return std::numeric_limits<double>::quiet_NaN();
@@ -1319,15 +1473,47 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
                 const double Thi = 1500.0;
                 if (!brent(f, sd.T(), Thi, f(sd.T()), f(Thi), 1e-10, T)) fail("no vapour state for " + label + ": the value is above the range");
                 return singleAtTP(T, p, x, false, label);
+            };
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            double hb = nan, hd = nan;
+            if (hasB) {
+                const Phase Lb = evaluatePhase(sb.T(), sb.rhoL(), sb.xL());
+                hb = mixProp(prop, Lb, Lb, 0.0);
             }
+            if (hasD) {
+                const Phase Vd = evaluatePhase(sd.T(), sd.rhoV(), sd.xV());
+                hd = mixProp(prop, Vd, Vd, 0.0);
+            }
+            if (!hasB || !hasD) {
+                // one saturation point at most: a single phase on its side of the one that was found
+                if (hasB && c <= hb + kBoundaryTol * std::abs(hb))
+                    return c >= hb - kBoundaryTol * std::abs(hb) ? singleAtTP(sb.T(), p, x, true, label) : subcooled();
+                if (hasD && c >= hd - kBoundaryTol * std::abs(hd))
+                    return c <= hd + kBoundaryTol * std::abs(hd) ? singleAtTP(sd.T(), p, x, false, label) : superheated();
+                // otherwise a single phase only if no saturation failed: no guess at all is the evidence of a state
+                // above the critical locus (single phase at any T; search T on the root of lowest Gibbs energy)
+                if (bd.notConverged()) failUndecided(bd, p, x);
+                auto f = [&](double T) {
+                    Solution s = singleSupercritical(T, p, x, label);
+                    return mixProp(prop, evaluatePhase(T, s.s[1], x), evaluatePhase(T, s.s[1], x), 0.0) - c;
+                };
+                double T;
+                if (!brent(f, 200.0, 1500.0, f(200.0), f(1500.0), 1e-10, T)) fail("no state for " + label);
+                return singleSupercritical(T, p, x, label);
+            }
+            const double hTol = kBoundaryTol * std::max(std::abs(hb), std::abs(hd));
+            if (std::abs(c - hb) <= hTol) return singleAtTP(sb.T(), p, x, true, label);   // saturated liquid
+            if (std::abs(c - hd) <= hTol) return singleAtTP(sd.T(), p, x, false, label);   // saturated vapour
+            if (c <= hb) return subcooled();
+            if (c >= hd) return superheated();
             auto f = [&](double T) {
-                const Sat s = satSolve(kTP, T, p);
+                const Sat s = satInside(kTP, T, p, between(sb, sd, 0, T));
                 const Phase L = evaluatePhase(T, s.rhoL(), s.xL()), V = evaluatePhase(T, s.rhoV(), s.xV());
                 return mixProp(prop, L, V, qualityOf(b, s)) - c;
             };
             double T;
             if (!brent(f, sb.T(), sd.T(), hb - c, hd - c, 1e-12 * sd.T(), T)) fail("no two-phase state for " + label);
-            const Sat s = satSolve(kTP, T, p);
+            const Sat s = satInside(kTP, T, p, between(sb, sd, 0, T));
             return twoPhaseSolution(s, qualityOf(b, s));
         }
         case 238: {   // P, x, q
@@ -1336,10 +1522,10 @@ Solution solveFlash(const Spec spec[3], const std::string& label) {
             if (c == 0.0) return twoPhaseSolution(satSolve(kBubbleP, p, x), 0.0);
             if (c == 1.0) return twoPhaseSolution(satSolve(kDewP, p, x), 1.0);
             const Sat sb = satSolve(kBubbleP, p, x), sd = satSolve(kDewP, p, x);
-            auto f = [&](double T) { return qualityOf(b, satSolve(kTP, T, p)) - c; };
+            auto f = [&](double T) { return qualityOf(b, satInside(kTP, T, p, between(sb, sd, 0, T))) - c; };
             double T;
             if (!brent(f, sb.T(), sd.T(), -c, 1.0 - c, 1e-12 * sd.T(), T)) fail("no state for " + label);
-            return twoPhaseSolution(satSolve(kTP, T, p), c);
+            return twoPhaseSolution(satInside(kTP, T, p, between(sb, sd, 0, T)), c);
         }
         case 248: case 258: case 268: case 278:   // P, h|s|u|v, q: the temperature is unknown
             if (!inRange(c)) fail("the quality must be in [0, 1] (" + label + ")");
