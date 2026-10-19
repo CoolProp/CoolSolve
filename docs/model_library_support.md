@@ -502,8 +502,9 @@ round 3 was run on scratch copies with CoolSolve `4798e2b` (`feat/nh3h2o`) and a
   no-dissociation case runs unchanged with `DISSOCIATION$ = 'NO'`).
 - *re-baselines* (`CS-BUG-INPUT-CLAMP`): `CSL-0008` (3 files, ≤ 5e-5: `specheat(cf$,T=..,P=1)` at the 1 Pa of the source)
   and `CSL-0146` (the CO2 partial pressures of the air, 30–300 Pa: `T2` 611.48 → 611.60 K; the maximum deviation from the
-  Ebsilon table moves from 4.7e-3 to 5.7e-3, above the 5e-3 bound of the source test; the TESPy comparison was not
-  repeated, TESPy not being installed). `CSL-0160` had its `.sol` rewritten with the native file.
+  Ebsilon table moves from 4.7e-3 to 5.7e-3, above the 5e-3 bound of the source test; against a TESPy re-run
+  (`~/svn/tespy`, 2026-10-19) the maximum is 2.9e-3, 2.0e-3 before: the clamp had suppressed the CO2 pressure term of
+  the air entropy across the compressor) `CSL-0160` had its `.sol` rewritten with the native file.
 - *decisions left to the maintainer*: `CSL-0075` (`Gamma` 1.4095 from CoolProp's real-mixture `cv` at 8 bar, the variant's
   `cp/(cp − R_mix)` gave 1.3863 and the EES mixture rules ≈ 1.398; `Di_dph` 3.3e-4 from the EES stored value); `CSL-0146`
   (above); `CSL-0069` (score 1 now that it converges from the default guesses, level 2 kept); `CSL-0080` (the native
