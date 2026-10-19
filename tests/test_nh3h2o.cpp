@@ -591,44 +591,97 @@ TEST_CASE("NH3H2O flash: errors name the state", "[nh3h2o][flash]") {
 
 namespace {
 /// p, mu_1 and mu_2 of a phase at (T, rho, x), recomputed here from the Helmholtz energy by second-order jets, with no
-/// code of the solver: p = rho^2 f_rho, mu_i = f + p/rho + (delta_i2 - x) f_x.
+/// code of the solver: p = rho^2 f_rho, mu_i = f + p/rho + (delta_i2 - x) f_x. `xc` is the mole fraction of water 1 - x
+/// as the solver returns it (`Saturation::wL`, `wV`), not 1 - x of the rounded x: near pure ammonia, 1 - x of a double
+/// is known to 1.1e-16 / (1 - x) only, and mu_1 contains ln(1 - x).
 struct IndependentPhase {
     double p, mu1, mu2;
 };
 
-IndependentPhase independentPhase(double T, double rho, double x) {
+IndependentPhase independentPhase(double T, double rho, double x, double xc) {
     const Jet<2> jT = Jet<2>::variable(T, 0), jR = Jet<2>::variable(rho, 1), jX = Jet<2>::variable(x, 2);
-    const Jet<2> f = coolsolve::nh3h2o::kR * jT * coolsolve::nh3h2o::reducedHelmholtz(jT, jR, jX);
+    const Jet<2> jXc = coolsolve::nh3h2o::complementJet(jX, xc);
+    const Jet<2> f = coolsolve::nh3h2o::kR * jT * coolsolve::nh3h2o::reducedHelmholtz(jT, jR, jX, jXc);
     const double fValue = f.value(), fRho = f.gradient(1), fX = f.gradient(2);
     const double p = rho * rho * fRho, g = fValue + p / rho;
-    return {p, g - x * fX, g + (1.0 - x) * fX};
+    return {p, g - x * fX, g + xc * fX};
+}
+
+/// The four equilibrium equations at the saturation `s`, recomputed by `independentPhase`, to 1e-11 of their natural
+/// scales: the pressures on the scale rho R T of a liquid (its pressure is a sum of terms of that size: round-off 3e-13
+/// of it, measured), the chemical potentials on R * 300 K.
+void checkEquilibrium(const Saturation& s) {
+    using coolsolve::nh3h2o::kR;
+    const IndependentPhase L = independentPhase(s.T, s.rhoL, s.xL, s.wL), V = independentPhase(s.T, s.rhoV, s.xV, s.wV);
+    CAPTURE(s.T, s.p, s.xL, s.xV, s.wL, s.wV);
+    CHECK(std::abs(L.p - s.p) <= 1e-11 * s.rhoL * kR * s.T);
+    CHECK(std::abs(V.p - s.p) <= 1e-11 * std::max(s.p, s.rhoV * kR * s.T));
+    CHECK(std::abs(L.mu1 - V.mu1) <= 1e-11 * kR * 300.0);
+    CHECK(std::abs(L.mu2 - V.mu2) <= 1e-11 * kR * 300.0);
+    // the complements are those of the compositions (each evaluated to its own round-off, a few units of 1.1e-16)
+    CHECK(std::abs(s.xL + s.wL - 1.0) <= 1e-15);
+    CHECK(std::abs(s.xV + s.wV - 1.0) <= 1e-15);
 }
 }  // namespace
 
 TEST_CASE("Saturation: the equilibrium equations hold to 1e-11 of their natural scales", "[nh3h2o][equilibrium]") {
-    // pressures are compared on the scale rho R T of a liquid (its pressure is a sum of terms of that size: round-off
-    // 3e-13 of it, measured), the chemical potentials on R * 300 K
-    using coolsolve::nh3h2o::kR;
+    // from 230 K, liquid and vapour mole fractions up to 0.98 and near pure ammonia (0.99 to 0.999999, where the vapour
+    // of a bubble point is purer still: 1 - xV = 1.4e-6 for x = 0.99 at 263 K). Measured: at most 1.8e-12
     int checked = 0;
-    for (double T : {280.0, 320.0, 360.0, 400.0})
-        for (double x : {0.05, 0.2, 0.5, 0.8, 0.95}) {
+    for (double T : {230.0, 260.0, 300.0, 340.0, 380.0, 400.0})
+        for (double x : {0.05, 0.2, 0.5, 0.8, 0.95, 0.98, 0.99, 0.999, 0.9999, 0.99999, 0.999999}) {
+            for (SatSpec spec : {SatSpec::BubbleT, SatSpec::DewT}) {
+                // at 230 K the dew points of x <= 0.8 and the bubble point of 0.05 have no stable pair (their liquid would
+                // be water-rich below its freezing line; each fails after every start, about 0.6 s): the hidden scan has them
+                if (T == 230.0 && (x < 0.1 || (spec == SatSpec::DewT && x < 0.9))) continue;
+                Saturation s;
+                try {
+                    s = saturation(spec, T, x);
+                } catch (const std::runtime_error&) {
+                    // none: above the critical locus, or a bubble point whose vapour would be purer than the composition
+                    // floor 1e-10 (x = 0.999999 at 230 K)
+                    continue;
+                }
+                CAPTURE(T, x, static_cast<int>(spec));
+                checkEquilibrium(s);
+                ++checked;
+            }
+        }
+    CHECK(checked >= 120);
+}
+
+TEST_CASE("Saturation: the equilibrium equations hold to 1e-11, scan up to the critical locus", "[.nh3h2o-scan]") {
+    // the grid of the review tools (230 to 560 K, every 15 K) on the bubble and dew points at T and at p
+    int checked = 0;
+    const double xs[] = {0.001, 0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.98,
+                         0.99, 0.995, 0.999, 0.9995, 0.9999, 0.99999, 0.999999};
+    for (double T = 230.0; T <= 560.0 + 1e-9; T += 15.0)
+        for (double x : xs)
             for (SatSpec spec : {SatSpec::BubbleT, SatSpec::DewT}) {
                 Saturation s;
                 try {
                     s = saturation(spec, T, x);
                 } catch (const std::runtime_error&) {
-                    continue;   // above the critical locus: no two-phase state
+                    continue;   // above the critical locus, or no stable pair (see the test above)
                 }
-                const IndependentPhase L = independentPhase(s.T, s.rhoL, s.xL), V = independentPhase(s.T, s.rhoV, s.xV);
-                CAPTURE(T, x, static_cast<int>(spec), s.p, s.xL, s.xV);
-                CHECK(std::abs(L.p - s.p) <= 1e-11 * s.rhoL * kR * s.T);
-                CHECK(std::abs(V.p - s.p) <= 1e-11 * std::max(s.p, s.rhoV * kR * s.T));
-                CHECK(std::abs(L.mu1 - V.mu1) <= 1e-11 * kR * 300.0);
-                CHECK(std::abs(L.mu2 - V.mu2) <= 1e-11 * kR * 300.0);
+                CAPTURE(T, x, static_cast<int>(spec));
+                checkEquilibrium(s);
                 ++checked;
             }
-        }
-    CHECK(checked >= 30);
+    for (double p : {1e4, 5e4, 1e5, 3e5, 1e6, 3e6, 1e7})
+        for (double x : xs)
+            for (SatSpec spec : {SatSpec::BubbleP, SatSpec::DewP}) {
+                Saturation s;
+                try {
+                    s = saturation(spec, p, x);
+                } catch (const std::runtime_error&) {
+                    continue;
+                }
+                CAPTURE(p, x, static_cast<int>(spec));
+                checkEquilibrium(s);
+                ++checked;
+            }
+    CHECK(checked >= 900);
 }
 
 // ---------------------------------------------------------------------------
@@ -780,9 +833,8 @@ TEST_CASE("Near-pure refrigerant: evaporation of 0.9995 ammonia has a large temp
 }
 
 TEST_CASE("Near-pure compositions: bubble and dew points from the pure-ammonia side", "[nh3h2o][equilibrium][near-pure]") {
-    // mole fractions within 1e-2 of pure: the vapour water fraction is below 2e-4 and `1 - x` of a double is known to 1e-10 only
-    // there, so the equilibrium residual is checked against that resolution, not against 1e-11
-    using coolsolve::nh3h2o::kR;
+    // mole fractions within 1e-2 of pure: the vapour water fraction is below 2e-4; the solver evaluates it as the
+    // complement of the composition (not 1 - x of a double, known to 1e-10 only there), so the equilibrium holds to 1e-11
     for (double T : {263.15, 300.0, 340.0})
         for (double xi : {0.99, 0.998, 0.9995}) {
             const double x = coolsolve::nh3h2o::moleFractionOf(xi);
@@ -792,20 +844,16 @@ TEST_CASE("Near-pure compositions: bubble and dew points from the pure-ammonia s
             } catch (const std::runtime_error& e) {
                 FAIL("bubble point failed at T = " << T << ", x = " << xi << ": " << e.what());
             }
-            const IndependentPhase L = independentPhase(s.T, s.rhoL, s.xL), V = independentPhase(s.T, s.rhoV, s.xV);
-            const double wV = 1.0 - s.xV;   // water mole fraction of the vapour
-            CAPTURE(T, xi, s.p, s.xV);
-            CHECK(wV < 2e-4);
-            CHECK(std::abs(L.p - s.p) <= 1e-9 * s.rhoL * kR * s.T);
-            CHECK(std::abs(V.p - s.p) <= 1e-9 * s.p);
-            // mu_1 contains ln(1 - x): its resolution is kR T ulp / (1 - x) of the vapour
-            const double resolution = kR * s.T * 1.2e-16 / wV;
-            CHECK(std::abs(L.mu1 - V.mu1) <= 1e-9 * kR * 300.0 + 4.0 * resolution);
-            CHECK(std::abs(L.mu2 - V.mu2) <= 1e-9 * kR * 300.0);
-            // the dew point of the vapour of that bubble point gives back its pressure
+            CAPTURE(T, xi, s.p, s.xV, s.wV);
+            CHECK(s.wV < 2e-4);
+            checkEquilibrium(s);
+            // the dew point of the vapour of that bubble point gives back its pressure and its liquid (measured 9e-13). It is
+            // given the mole fraction xV, whose complement 1 - xV differs from wV by up to 1.1e-16 / wV (5e-10 at 263 K and
+            // 0.9995): the water fraction of the liquid follows that input
             const Saturation d = saturation(SatSpec::DewT, T, s.xV);
-            CHECK(d.p == Approx(s.p).epsilon(1e-6));
-            CHECK(d.xL == Approx(s.xL).epsilon(1e-6));
+            CHECK(std::abs(d.p / s.p - 1.0) <= 1e-11);
+            CHECK(std::abs(d.xL / s.xL - 1.0) <= 1e-11);
+            CHECK(std::abs((d.wL / s.wL) / ((1.0 - s.xV) / s.wV) - 1.0) <= 1e-11);
         }
 }
 

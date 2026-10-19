@@ -28,6 +28,12 @@ namespace coolsolve::nh3h2o {
  * this core in `nh3h2o_flash.cpp` (declared at the end of this header); the EES fluid functions
  * and the procedure `CALL NH3H2O` (units, derivatives, limits of the trial points) are in
  * `evaluator_nh3h2o.cpp`.
+ *
+ * The pieces that contain the water mole fraction 1 - x take it as a separate argument `xc` as
+ * well (the overloads without it pass 1 - x). A mole fraction near 1 is a double of spacing
+ * 1.1e-16, so 1 - x computed from it is known to 1.1e-16 / (1 - x) only, and the ideal mixing
+ * term (1 - x) ln(1 - x) inherits that error; the solvers iterate a composition as its logit z
+ * and pass x = 1 / (1 + exp(-z)) with xc = 1 / (1 + exp(z)), each to its own round-off.
  */
 
 //@{
@@ -55,7 +61,9 @@ inline double molarMass(double x) { return (1.0 - x) * kM1 + x * kM2; }
 /// The ideal part Phi^o(tau0, delta0, x) of Eq. (2). At x = 0 and x = 1 exactly, the x ln x and
 /// (1-x) ln(1-x) terms take their limit 0 as the zero of S (their x derivative is -infinity at
 /// the endpoints; every quantity that Table 4 of the guideline derives from Phi needs no x
-/// derivative there).
+/// derivative there). `xc` is the water mole fraction 1 - x (see the file comment).
+template <class S>
+S idealHelmholtz(const S& tau0, const S& delta0, const S& x, const S& xc);
 template <class S>
 S idealHelmholtz(const S& tau0, const S& delta0, const S& x);
 
@@ -73,11 +81,15 @@ S residualWater(const S& tau, const S& delta);
 template <class S>
 S residualAmmonia(const S& tau, const S& delta);
 
-/// The reducing temperature Tn(x) of Eq. (4) [K].
+/// The reducing temperature Tn(x) of Eq. (4) [K], `xc` = 1 - x.
+template <class S>
+S reducingTemperature(const S& x, const S& xc);
 template <class S>
 S reducingTemperature(const S& x);
 
-/// The reducing density rhon(x) of Eq. (5) [mol/m3].
+/// The reducing density rhon(x) of Eq. (5) [mol/m3], `xc` = 1 - x.
+template <class S>
+S reducingDensity(const S& x, const S& xc);
 template <class S>
 S reducingDensity(const S& x);
 
@@ -93,10 +105,22 @@ S departureFunction(const S& tau, const S& delta, const S& x);
  * @param T    temperature [K], positive
  * @param rho  molar density [mol/m3], positive
  * @param x    mole fraction of ammonia, in [0, 1]
- * @throws std::runtime_error for a non-finite argument, T <= 0, rho <= 0 or x outside [0, 1].
+ * @param xc   mole fraction of water 1 - x, in [0, 1], evaluated without the rounding of x (for a jet, the
+ *             derivatives of 1 - x: see `complementJet`); the overload without it passes 1 - x
+ * @throws std::runtime_error for a non-finite argument, T <= 0, rho <= 0 or x, xc outside [0, 1].
  */
 template <class S>
+S reducedHelmholtz(const S& T, const S& rho, const S& x, const S& xc);
+template <class S>
 S reducedHelmholtz(const S& T, const S& rho, const S& x);
+
+/// The jet of 1 - x for the jet `x`, with the value `xc` exactly (the complement evaluated without the rounding of
+/// x.value(), e.g. 1 / (1 + exp(z)) for x = 1 / (1 + exp(-z))) and the derivatives of 1 - x: `x - x.value()` has
+/// the value 0 exactly and the derivatives of x.
+template <int Order>
+taylor::Jet<Order> complementJet(const taylor::Jet<Order>& x, double xc) {
+    return taylor::Jet<Order>::constant(xc) - (x - taylor::Jet<Order>::constant(x.value()));
+}
 
 /// The thermodynamic properties at (T, rho, x), molar SI units (J, Pa, K, mol, m3), from the
 /// exact derivatives of f = R T Phi (the relations of Table 4 of the guideline, evaluated as
@@ -167,10 +191,12 @@ struct FlashResult {
     double quality() const { return value[7]; }
 };
 
-/// A vapour-liquid equilibrium: temperature [K], pressure [Pa], mole fractions of ammonia of the liquid and the vapour
-/// and their molar densities [mol/m3].
+/// A vapour-liquid equilibrium: temperature [K], pressure [Pa], mole fractions of ammonia of the liquid and the vapour,
+/// their molar densities [mol/m3], and the mole fractions of water of the liquid and the vapour, wL = 1 - xL and
+/// wV = 1 - xV evaluated without the rounding of xL and xV (they resolve a phase near pure ammonia; the equilibrium
+/// holds for the pairs (xL, wL) and (xV, wV), see `reducedHelmholtz`).
 struct Saturation {
-    double T, p, xL, xV, rhoL, rhoV;
+    double T, p, xL, xV, rhoL, rhoV, wL, wV;
 };
 
 /// What is given to `saturation`: the bubble point (`a` = T or p, `b` = mole fraction of the liquid), the dew

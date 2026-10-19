@@ -162,22 +162,32 @@ S vLogV(const S& v) {
 }  // namespace
 
 template <class S>
-S reducingTemperature(const S& x) {
+S reducingTemperature(const S& x, const S& xc) {
     using std::pow;
     const S cross = x - pow(x, 1.0 + kAlpha);  // x (1 - x^alpha)
-    return (1.0 - x) * (1.0 - x) * kTc1 + x * x * kTc2 + 2.0 * cross * kTc12;
+    return xc * xc * kTc1 + x * x * kTc2 + 2.0 * cross * kTc12;
 }
 
 template <class S>
-S reducingDensity(const S& x) {
+S reducingTemperature(const S& x) {
+    return reducingTemperature(x, S(1.0 - x));
+}
+
+template <class S>
+S reducingDensity(const S& x, const S& xc) {
     using std::pow;
     const S cross = x - pow(x, 1.0 + kBeta);  // x (1 - x^beta)
-    const S inverse = (1.0 - x) * (1.0 - x) / kRhoc1 + x * x / kRhoc2 + 2.0 * cross * kInvRhoc12;
+    const S inverse = xc * xc / kRhoc1 + x * x / kRhoc2 + 2.0 * cross * kInvRhoc12;
     return 1.0 / inverse;
 }
 
 template <class S>
-S idealHelmholtz(const S& tau0, const S& delta0, const S& x) {
+S reducingDensity(const S& x) {
+    return reducingDensity(x, S(1.0 - x));
+}
+
+template <class S>
+S idealHelmholtz(const S& tau0, const S& delta0, const S& x, const S& xc) {
     using std::exp;
     using std::log;
     using std::pow;
@@ -185,7 +195,12 @@ S idealHelmholtz(const S& tau0, const S& delta0, const S& x) {
     for (int i = 4; i <= 8; ++i) water = water + kIdealA[i] * log(1.0 - exp(-kIdealTheta[i] * tau0));
     S ammonia = kIdealA[9] + kIdealA[10] * tau0 + kIdealA[11] * log(tau0);
     for (int i = 12; i <= 14; ++i) ammonia = ammonia + kIdealA[i] * pow(tau0, kIdealT[i]);
-    return log(delta0) + (1.0 - x) * water + vLogV(1.0 - x) + x * ammonia + vLogV(x);
+    return log(delta0) + xc * water + vLogV(xc) + x * ammonia + vLogV(x);
+}
+
+template <class S>
+S idealHelmholtz(const S& tau0, const S& delta0, const S& x) {
+    return idealHelmholtz(tau0, delta0, x, S(1.0 - x));
 }
 
 namespace {
@@ -260,11 +275,13 @@ namespace {
     throw std::runtime_error(os.str());
 }
 
-void checkDomain(double T, double rho, double x) {
-    if (!std::isfinite(T) || !std::isfinite(rho) || !std::isfinite(x)) domainError(T, rho, x, "an argument is not finite");
+void checkDomain(double T, double rho, double x, double xc) {
+    if (!std::isfinite(T) || !std::isfinite(rho) || !std::isfinite(x) || !std::isfinite(xc))
+        domainError(T, rho, x, "an argument is not finite");
     if (!(T > 0.0)) domainError(T, rho, x, "the temperature must be positive [K]");
     if (!(rho > 0.0)) domainError(T, rho, x, "the molar density must be positive [mol/m3]");
     if (!(x >= 0.0 && x <= 1.0)) domainError(T, rho, x, "the mole fraction of ammonia must be in [0, 1]");
+    if (!(xc >= 0.0 && xc <= 1.0)) domainError(T, rho, x, "the mole fraction of water must be in [0, 1]");
 }
 
 /// Everything `state` and `stateJets` compute, as exact jets in (T, rho, x) from the order-3 jet
@@ -309,14 +326,19 @@ Core computeCore(double T, double rho, double x) {
 }  // namespace
 
 template <class S>
-S reducedHelmholtz(const S& T, const S& rho, const S& x) {
-    checkDomain(scalarOf(T), scalarOf(rho), scalarOf(x));
+S reducedHelmholtz(const S& T, const S& rho, const S& x, const S& xc) {
+    checkDomain(scalarOf(T), scalarOf(rho), scalarOf(x), scalarOf(xc));
     const S tau0 = kT0 / T;
     const S delta0 = rho / kRho0;
-    const S tau = reducingTemperature(x) / T;
-    const S delta = rho / reducingDensity(x);
-    return idealHelmholtz(tau0, delta0, x) + (1.0 - x) * residualWater(tau, delta) +
-           x * residualAmmonia(tau, delta) + departureFunction(tau, delta, x);
+    const S tau = reducingTemperature(x, xc) / T;
+    const S delta = rho / reducingDensity(x, xc);
+    return idealHelmholtz(tau0, delta0, x, xc) + xc * residualWater(tau, delta) + x * residualAmmonia(tau, delta) +
+           departureFunction(tau, delta, x);
+}
+
+template <class S>
+S reducedHelmholtz(const S& T, const S& rho, const S& x) {
+    return reducedHelmholtz(T, rho, x, S(1.0 - x));
 }
 
 State state(double T, double rho, double x) {
@@ -332,32 +354,48 @@ StateJets stateJets(double T, double rho, double x) {
 // The formulation is written once as a template; the instantiations the library and the tests
 // use are made here so that the coefficients stay in this translation unit.
 template double idealHelmholtz(const double&, const double&, const double&);
+template double idealHelmholtz(const double&, const double&, const double&, const double&);
 template double residualWater(const double&, const double&);
 template double residualAmmonia(const double&, const double&);
 template double reducingTemperature(const double&);
+template double reducingTemperature(const double&, const double&);
 template double reducingDensity(const double&);
+template double reducingDensity(const double&, const double&);
 template double departureFunction(const double&, const double&, const double&);
 template double reducedHelmholtz(const double&, const double&, const double&);
+template double reducedHelmholtz(const double&, const double&, const double&, const double&);
 template Jet<1> idealHelmholtz(const Jet<1>&, const Jet<1>&, const Jet<1>&);
+template Jet<1> idealHelmholtz(const Jet<1>&, const Jet<1>&, const Jet<1>&, const Jet<1>&);
 template Jet<1> residualWater(const Jet<1>&, const Jet<1>&);
 template Jet<1> residualAmmonia(const Jet<1>&, const Jet<1>&);
 template Jet<1> reducingTemperature(const Jet<1>&);
+template Jet<1> reducingTemperature(const Jet<1>&, const Jet<1>&);
 template Jet<1> reducingDensity(const Jet<1>&);
+template Jet<1> reducingDensity(const Jet<1>&, const Jet<1>&);
 template Jet<1> departureFunction(const Jet<1>&, const Jet<1>&, const Jet<1>&);
 template Jet<1> reducedHelmholtz(const Jet<1>&, const Jet<1>&, const Jet<1>&);
+template Jet<1> reducedHelmholtz(const Jet<1>&, const Jet<1>&, const Jet<1>&, const Jet<1>&);
 template Jet<2> idealHelmholtz(const Jet<2>&, const Jet<2>&, const Jet<2>&);
+template Jet<2> idealHelmholtz(const Jet<2>&, const Jet<2>&, const Jet<2>&, const Jet<2>&);
 template Jet<2> residualWater(const Jet<2>&, const Jet<2>&);
 template Jet<2> residualAmmonia(const Jet<2>&, const Jet<2>&);
 template Jet<2> reducingTemperature(const Jet<2>&);
+template Jet<2> reducingTemperature(const Jet<2>&, const Jet<2>&);
 template Jet<2> reducingDensity(const Jet<2>&);
+template Jet<2> reducingDensity(const Jet<2>&, const Jet<2>&);
 template Jet<2> departureFunction(const Jet<2>&, const Jet<2>&, const Jet<2>&);
 template Jet<2> reducedHelmholtz(const Jet<2>&, const Jet<2>&, const Jet<2>&);
+template Jet<2> reducedHelmholtz(const Jet<2>&, const Jet<2>&, const Jet<2>&, const Jet<2>&);
 template Jet<3> idealHelmholtz(const Jet<3>&, const Jet<3>&, const Jet<3>&);
+template Jet<3> idealHelmholtz(const Jet<3>&, const Jet<3>&, const Jet<3>&, const Jet<3>&);
 template Jet<3> residualWater(const Jet<3>&, const Jet<3>&);
 template Jet<3> residualAmmonia(const Jet<3>&, const Jet<3>&);
 template Jet<3> reducingTemperature(const Jet<3>&);
+template Jet<3> reducingTemperature(const Jet<3>&, const Jet<3>&);
 template Jet<3> reducingDensity(const Jet<3>&);
+template Jet<3> reducingDensity(const Jet<3>&, const Jet<3>&);
 template Jet<3> departureFunction(const Jet<3>&, const Jet<3>&, const Jet<3>&);
 template Jet<3> reducedHelmholtz(const Jet<3>&, const Jet<3>&, const Jet<3>&);
+template Jet<3> reducedHelmholtz(const Jet<3>&, const Jet<3>&, const Jet<3>&, const Jet<3>&);
 
 }  // namespace coolsolve::nh3h2o
