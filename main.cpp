@@ -34,7 +34,7 @@ void printUsage(const char* programName) {
     std::cerr << "                          If dir not specified, creates <input_dir>/<input_name>_coolsolve/\n";
     std::cerr << "  --no-sol                Do not write the .sol file (an existing one is left untouched)\n";
     std::cerr << "  -g, --guess             Update .initials file with solution on success\n";
-    std::cerr << "  --no-superancillary     Disable CoolProp superancillary functions (faster VLE solving)\n";
+    std::cerr << "  --no-superancillary     Disable CoolProp superancillary functions\n";
 #ifdef COOLSOLVE_GUI
     std::cerr << "  --gui [port]            Start the GUI web server (default port: 8550)\n";
     std::cerr << "  --no-browser            Don't open browser automatically (with --gui)\n";

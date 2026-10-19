@@ -317,7 +317,7 @@ The debug folder contains:
 | `-d, --debug [dir]` | Create debug output folder |
 | `-g, --guess` | Update .initials file with solution on success |
 | `--no-sol` | Do not write the .sol file (an existing one is left untouched) |
-| `--no-superancillary` | Disable CoolProp superancillary functions (faster VLE solving) |
+| `--no-superancillary` | Disable CoolProp superancillary functions |
 | `--version` | Print the CoolSolve version, the CoolProp version and git revision, and (GUI builds) the embedded model library commit |
 | `-h, --help` | Show help message |
 
@@ -325,7 +325,7 @@ The debug folder contains:
 
 #### Superancillary Functions
 
-CoolProp's superancillary functions provide high-accuracy VLE (vapor-liquid equilibrium) calculations, especially near the critical point. However, they add computational overhead during solving.
+CoolProp's superancillary functions are used for the vapor-liquid equilibrium (VLE) of pure fluids (default: enabled). They can be switched off, for example to compare results.
 
 ```bash
 # Default: superancillaries enabled 

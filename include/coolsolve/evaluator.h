@@ -80,7 +80,7 @@ struct CoolPropConfig {
     std::string backend = "HEOS";  // Default to full Helmholtz EOS
     bool cacheEnabled = true;       // Cache AbstractState instances
     double cacheTolerance = 1e-10;  // Re-use cached state if inputs change less than this
-    bool enableSuperancillaries = true;  // Enable CoolProp superancillary functions (faster VLE but more init time)
+    bool enableSuperancillaries = true;  // Enable CoolProp superancillary functions for the VLE of pure fluids
     
     // Low-level API: use AbstractState instead of PropsSI
     // When true, property evaluations go through cached AbstractState objects,

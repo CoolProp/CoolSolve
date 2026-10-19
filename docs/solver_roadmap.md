@@ -54,7 +54,7 @@ into independent sub-blocks before entering the solver pipeline. See
 | Backend | Low-level `AbstractState` API (2–5× faster than `PropsSI`); `PropsSI` only as a fallback |
 | Caching | `thread_local AbstractStateCache` keyed by `(backend, fluid)`. Each parallel-solver thread gets its own cache automatically. Toggle via `coolpropCacheEnabled` (default `true`). |
 | Derivatives | `first_partial_deriv()` provides exact analytical derivatives. A forward-FD consistency check (5 % tolerance, 2 extra `update()` calls) catches bad analytical derivatives near phase boundaries for pseudo-pure fluids and falls back to finite differences. Toggle via `coolpropEnableAnalyticalDerivatives` (default `true`). |
-| Superancillaries | Enabled by default (`coolpropEnableSuperancillaries`); disable with `--no-superancillary` for faster VLE solving when critical-point accuracy is not needed. |
+| Superancillaries | Enabled by default (`coolpropEnableSuperancillaries`); disable with `--no-superancillary`. |
 
 **Supported CoolProp input pairs** (used by symbolic CoolProp call
 inversion):
@@ -100,7 +100,7 @@ the user must add it to `solverPipeline` explicitly.
 | `PipelineTiming` | Per-solve timing breakdown, displayed in GUI |
 | CoolProp call profiling | Per-call timing for `PropsSI`, `AbstractState`, `HAPropsSI`; warmup tracked separately |
 | Variable scaling | Shared `computeScalingFactors()` in `solver_common.h`, used by Newton/TR/LM/BisectionND |
-| `--no-superancillary` flag | Avoids loading the cached superancillary data |
+| `--no-superancillary` flag | Disables the CoolProp superancillary functions |
 
 ---
 

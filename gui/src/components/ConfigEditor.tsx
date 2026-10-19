@@ -501,8 +501,7 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
           + 'Avoids re-creating the state object for every CoolProp call.' },
       { key: 'coolpropEnableSuperancillaries', label: 'Superancillaries', type: 'boolean', defaultVal: 'true',
         description:
-          'Enable CoolProp superancillary functions for faster VLE initialisation. '
-          + 'Adds a small startup cost but accelerates two-phase lookups.' },
+          'Use the CoolProp superancillary functions for the VLE of pure fluids.' },
     ],
   },
   {
