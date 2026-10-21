@@ -365,8 +365,9 @@ struct SolverOptions {
     // Configurable via coolsolve.conf: enableLatexReport = true/false
     bool enableLatexReport = true;
 
-    // LaTeX compiler command (default: pdflatex).  Used by the GUI to compile
-    // the generated .tex file into a PDF report.
+    // LaTeX compiler (default: pdflatex).  Used by the GUI to compile the
+    // generated .tex file into a PDF report.  The server runs only pdflatex,
+    // xelatex or lualatex and refuses any other value (src/server.cpp).
     std::string latexCompiler = "pdflatex";
 
     // --- Debug output ---

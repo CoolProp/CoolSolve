@@ -409,6 +409,117 @@ static std::string getClientIP(const httplib::Request& req) {
 }
 
 // ============================================================================
+// Cross-site request guard
+// ============================================================================
+
+// Lower-case copy, for comparing host names (they are case-insensitive).
+static std::string toLowerAscii(std::string s) {
+    for (char& c : s) {
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    }
+    return s;
+}
+
+/// True when the request was not sent by a page of another web site.
+///
+/// Browsers add an Origin header ("https://host[:port]") to every POST, PUT and DELETE.
+/// It must name the host the request was sent to: the Host header, or X-Forwarded-Host
+/// when a proxy rewrote Host (the Vite dev server, gui/vite.config.ts; Apache sets it
+/// too). A page of another site cannot set X-Forwarded-Host on a cross-site request
+/// without a CORS preflight, which this server never grants. Clients that are not
+/// browsers (curl, Python scripts, the API tests) send no Origin and are not affected.
+static bool isSameOriginRequest(const httplib::Request& req) {
+    const std::string origin = req.get_header_value("Origin");
+    if (origin.empty()) return true;
+    const auto schemeEnd = origin.find("://");
+    if (schemeEnd == std::string::npos) return false;   // "null" (sandboxed page, file://)
+    std::string originHost = origin.substr(schemeEnd + 3);
+    const auto slash = originHost.find('/');
+    if (slash != std::string::npos) originHost.erase(slash);
+    originHost = toLowerAscii(originHost);
+    if (originHost.empty()) return false;
+
+    if (toLowerAscii(req.get_header_value("Host")) == originHost) return true;
+    // X-Forwarded-Host may list several proxies: the first one is the host the browser used
+    std::string forwarded = req.get_header_value("X-Forwarded-Host");
+    const auto comma = forwarded.find(',');
+    if (comma != std::string::npos) forwarded.erase(comma);
+    const auto b = forwarded.find_first_not_of(" \t");
+    const auto e = forwarded.find_last_not_of(" \t");
+    if (b == std::string::npos) return false;
+    return toLowerAscii(forwarded.substr(b, e - b + 1)) == originHost;
+}
+
+/// Host name of a Host header value, lower case: "Example.com:8550" -> "example.com",
+/// "[::1]:8550" -> "[::1]", "localhost." -> "localhost".
+static std::string hostNameOf(const std::string& hostHeader) {
+    std::string name = hostHeader;
+    if (!name.empty() && name[0] == '[') {
+        const auto close = name.find(']');
+        if (close != std::string::npos) name.erase(close + 1);   // keep the brackets
+    } else {
+        const auto colon = name.find(':');
+        if (colon != std::string::npos) name.erase(colon);
+    }
+    if (!name.empty() && name.back() == '.') name.pop_back();
+    return toLowerAscii(name);
+}
+
+/// True for a dotted IPv4 address ("192.168.1.5"): four groups of 1 to 3 digits, each 255 or less.
+static bool isIPv4Literal(const std::string& name) {
+    int groups = 0;
+    std::size_t pos = 0;
+    while (groups < 4) {
+        std::size_t digits = 0;
+        int value = 0;
+        while (pos < name.size() && name[pos] >= '0' && name[pos] <= '9' && digits < 3) {
+            value = value * 10 + (name[pos] - '0');
+            ++pos;
+            ++digits;
+        }
+        if (digits == 0 || value > 255) return false;
+        ++groups;
+        if (groups < 4) {
+            if (pos >= name.size() || name[pos] != '.') return false;
+            ++pos;
+        }
+    }
+    return pos == name.size();
+}
+
+/// True for a bracketed IPv6 address as it appears in a Host header ("[::1]", "[fe80::1%25eth0]").
+static bool isIPv6Literal(const std::string& name) {
+    if (name.size() < 4 || name.front() != '[' || name.back() != ']') return false;
+    return std::all_of(name.begin() + 1, name.end() - 1, [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || c == ':' || c == '.' || c == '%';
+    });
+}
+
+/// True for a host name the server always answers to: "localhost" or an IP address.
+static bool isLocalhostOrIPLiteral(const std::string& name) {
+    return name == "localhost" || isIPv4Literal(name) || isIPv6Literal(name);
+}
+
+/// True when the Host header names this server: "localhost", an IP address, or a name
+/// given with --allowed-host.
+///
+/// This stops DNS rebinding: a page of attacker.example whose DNS record is switched to
+/// 127.0.0.1 can reach this server from the user's browser, and to the browser that is
+/// the same origin, so the cross-site guard below cannot tell. Its requests still carry
+/// "Host: attacker.example", a name this server does not answer to. A rebinding attack
+/// always needs a name, never an IP address, so IP addresses are always accepted.
+static bool isAllowedHostHeader(const httplib::Request& req, const std::vector<std::string>& allowedHosts) {
+    const std::string header = req.get_header_value("Host");
+    if (header.empty()) return true;   // HTTP/1.0 clients; browsers always send Host
+    const std::string name = hostNameOf(header);
+    if (isLocalhostOrIPLiteral(name)) return true;
+    for (const auto& allowed : allowedHosts) {
+        if (hostNameOf(allowed) == name) return true;
+    }
+    return false;
+}
+
+// ============================================================================
 // ZIP helpers (minimal uncompressed archive implementation)
 // ============================================================================
 
@@ -712,6 +823,38 @@ static json integralResultToJSON(const CoolSolveRunner& runner, const std::strin
 }
 
 // ============================================================================
+// LaTeX compilation helpers
+// ============================================================================
+
+// The compile endpoint runs the LaTeX compiler through the shell (popen). The
+// program name comes from the request or from latexCompiler in the session's
+// coolsolve.conf, both written by the client, so only these names are accepted:
+// anything else would let a client run a command of its choice on the server.
+static bool isAllowedLatexCompiler(const std::string& name) {
+    return name == "pdflatex" || name == "xelatex" || name == "lualatex";
+}
+
+// A plot image uploaded for the report is written into the LaTeX build folder
+// under its own name. Only plain PNG names are accepted ("thermo_diagrams.png",
+// "parametric_1.png"), so that an upload can never replace report.tex or any
+// other file the compiler reads.
+static bool isValidPlotFileName(const std::string& name) {
+    const std::string ext = ".png";
+    if (name.size() <= ext.size() || name.size() > 64 || !endsWith(name, ext)) return false;
+    const std::string stem = name.substr(0, name.size() - ext.size());
+    return std::all_of(stem.begin(), stem.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    });
+}
+
+// The build folder path is quoted on the compiler command line. It comes from the
+// system temp folder and a server-generated session id, but a character that the
+// shell would still interpret inside double quotes must never reach it.
+static bool isShellSafePath(const std::string& path) {
+    return path.find_first_of("\"$`%!\n\r") == std::string::npos;
+}
+
+// ============================================================================
 // Open browser helper (cross-platform)
 // ============================================================================
 static void openBrowser(const std::string& url) {
@@ -774,14 +917,40 @@ int startServer(const ServerOptions& options) {
     // CoolProp warmup state
     std::atomic<bool> coolpropReady{false};
     
-    // --- CORS middleware (for dev mode with Vite on different port) ---
-    svr.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
-        res.set_header("Access-Control-Allow-Origin", "*");
-        res.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CoolSolve-Session");
-        
-        if (req.method == "OPTIONS") {
-            res.status = 204;
+    // --- Host and cross-site guards ---
+    // First, every request must name this server in its Host header (DNS rebinding, see
+    // isAllowedHostHeader).
+    // Then, the API serves the GUI of this same server only. In dev mode the Vite server
+    // proxies /api (gui/vite.config.ts), so the browser never calls this server from another
+    // origin and no CORS header is sent: a page of another web site cannot read any answer,
+    // and its preflight requests (OPTIONS) are refused. A browser can still send a "simple"
+    // cross-site POST without preflight (form or text/plain body), which would change the
+    // model or start a solve, so every request that is not a read must be same-origin.
+    // GET and HEAD pass this second guard, so a handler that changes state must never be a GET.
+    // The name given with --host is the one the browser opens (see the URL printed at start-up)
+    std::vector<std::string> allowedHosts = options.allowedHosts;
+    {
+        // An IPv6 address (it contains ':') and an IPv4 or wildcard address need no entry
+        const std::string hostName = toLowerAscii(options.host);
+        if (hostName.find(':') == std::string::npos && !isLocalhostOrIPLiteral(hostName)) {
+            allowedHosts.push_back(hostName);
+        }
+    }
+    svr.set_pre_routing_handler([allowedHosts](const httplib::Request& req, httplib::Response& res) {
+        if (!isAllowedHostHeader(req, allowedHosts)) {
+            res.status = 403;
+            json j = {{"error", "Host '" + req.get_header_value("Host") + "' is not served here; "
+                                "start CoolSolve with --allowed-host <name> to allow a host name"}};
+            res.set_content(j.dump(), "application/json");
+            return httplib::Server::HandlerResponse::Handled;
+        }
+        if (req.method == "GET" || req.method == "HEAD") {
+            return httplib::Server::HandlerResponse::Unhandled;
+        }
+        if (!isSameOriginRequest(req)) {
+            res.status = 403;
+            json j = {{"error", "Cross-site request refused"}};
+            res.set_content(j.dump(), "application/json");
             return httplib::Server::HandlerResponse::Handled;
         }
         return httplib::Server::HandlerResponse::Unhandled;
@@ -1763,8 +1932,9 @@ int startServer(const ServerOptions& options) {
 
         json topModels = json::array();
         for (const auto& m : stats.topModels) topModels.push_back({{"name", m.name}, {"count", m.count}});
-        json topIps = json::array();
-        for (const auto& ip : stats.topIps) topIps.push_back({{"name", ip.name}, {"count", ip.count}});
+        // Client networks, never full addresses: the dashboard is open to every GUI user
+        json topNetworks = json::array();
+        for (const auto& n : stats.topNetworks) topNetworks.push_back({{"name", n.name}, {"count", n.count}});
 
         json j = {
             {"valid", stats.valid},
@@ -1783,7 +1953,7 @@ int startServer(const ServerOptions& options) {
              {{"success", stats.successes}, {"failed", stats.failures}, {"parse_error", stats.parseErrors}}},
             {"durationHistogram", {{"edges", edges}, {"counts", counts}}},
             {"topModels", topModels},
-            {"topIps", topIps},
+            {"topNetworks", topNetworks},
         };
         res.set_content(j.dump(), "application/json");
     });
@@ -3124,9 +3294,11 @@ int startServer(const ServerOptions& options) {
     
     // POST /api/v1/latex/compile – compile the report to PDF and return it.
     // Body JSON: { compiler?: string, plots?: [{name: string, data: string}] }
-    //   compiler  – LaTeX command (default: pdflatex, or from coolsolve.conf)
+    //   compiler  - pdflatex, xelatex or lualatex (default: pdflatex, or latexCompiler
+    //              from coolsolve.conf); any other value is refused (400)
     //   plots     – array of {name, data} where data is base64-encoded PNG
-    //              (the data URI prefix "data:image/png;base64," is stripped automatically)
+    //              (the data URI prefix "data:image/png;base64," is stripped automatically);
+    //              name must be letters, digits or underscores followed by ".png" (else 400)
     svr.Post("/api/v1/latex/compile", [&](const httplib::Request& req, httplib::Response& res) {
         auto& session = *getSession(req, res);
         std::cerr << "[latex/compile] Request received, latexReportAvailable=" 
@@ -3142,6 +3314,8 @@ int startServer(const ServerOptions& options) {
         
         // Parse request body
         std::string compiler = "pdflatex";
+        bool compilerFromRequest = false;
+        std::string invalidPlotName;
         std::vector<std::pair<std::string, std::string>> plots; // name → decoded PNG bytes
         
         if (!req.body.empty()) {
@@ -3149,12 +3323,19 @@ int startServer(const ServerOptions& options) {
                 auto body = json::parse(req.body);
                 if (body.contains("compiler") && body["compiler"].is_string()) {
                     std::string c = body["compiler"].get<std::string>();
-                    if (!c.empty()) compiler = c;
+                    if (!c.empty()) {
+                        compiler = c;
+                        compilerFromRequest = true;
+                    }
                 }
                 if (body.contains("plots") && body["plots"].is_array()) {
                     for (const auto& p : body["plots"]) {
                         if (!p.contains("name") || !p.contains("data")) continue;
                         std::string name = p["name"].get<std::string>();
+                        if (!isValidPlotFileName(name)) {
+                            invalidPlotName = name;
+                            break;
+                        }
                         std::string data = p["data"].get<std::string>();
                         // Strip data URI prefix if present
                         const std::string prefix = "data:image/png;base64,";
@@ -3173,8 +3354,17 @@ int startServer(const ServerOptions& options) {
             }
         }
         
-        // Also try to read latexCompiler from the session's conf
-        if (!session.confContent.empty() && compiler == "pdflatex") {
+        if (!invalidPlotName.empty()) {
+            res.status = 400;
+            json j = {{"error", "Invalid plot name '" + invalidPlotName
+                                + "': use letters, digits and underscores followed by .png"}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+
+        // Without a compiler in the request, use latexCompiler from the session's conf
+        bool compilerFromConf = false;
+        if (!session.confContent.empty() && !compilerFromRequest) {
             // Quick grep for latexCompiler in the conf text
             std::istringstream confStream(session.confContent);
             std::string line;
@@ -3190,10 +3380,23 @@ int startServer(const ServerOptions& options) {
                 // Trim
                 while (!key.empty() && key.back() == ' ') key.pop_back();
                 while (!val.empty() && val.front() == ' ') val.erase(val.begin());
+                // Trailing blanks (and the CR of a CRLF file) are not part of the name
+                while (!val.empty() && (val.back() == ' ' || val.back() == '\t' || val.back() == '\r'))
+                    val.pop_back();
                 if (key == "latexCompiler" && !val.empty()) {
                     compiler = val;
+                    compilerFromConf = true;
                 }
             }
+        }
+
+        if (!isAllowedLatexCompiler(compiler)) {
+            res.status = 400;
+            std::string where = compilerFromConf ? " (latexCompiler in coolsolve.conf)" : "";
+            json j = {{"error", "LaTeX compiler '" + compiler + "' is not allowed" + where
+                                + ": use pdflatex, xelatex or lualatex"}};
+            res.set_content(j.dump(), "application/json");
+            return;
         }
         
         // Create temporary build directory
@@ -3216,20 +3419,28 @@ int startServer(const ServerOptions& options) {
         
         // Write plot images
         for (const auto& [name, data] : plots) {
-            // Sanitise filename: only allow alphanumeric, underscore, dot
-            std::string safeName;
-            for (char c : name) {
-                if (std::isalnum(c) || c == '_' || c == '.') safeName += c;
-            }
-            if (safeName.empty()) continue;
-            std::ofstream f(buildDir / safeName, std::ios::binary);
+            // name passed isValidPlotFileName above
+            std::ofstream f(buildDir / name, std::ios::binary);
             if (f.is_open()) {
                 f.write(data.data(), static_cast<std::streamsize>(data.size()));
             }
         }
         
-        // Run LaTeX compiler (two passes for TOC / cross-references)
+        if (!isShellSafePath(buildDir.string())) {
+            res.status = 500;
+            json j = {{"error", "The temp folder path contains characters that cannot be passed to the "
+                                "LaTeX compiler safely: " + buildDir.string()}};
+            res.set_content(j.dump(), "application/json");
+            return;
+        }
+
+        // Run LaTeX compiler (two passes for TOC / cross-references).
+        // -no-shell-escape turns \write18 off completely, whatever the TeX installation allows
+        // by default. It is a TeX Live option; MiKTeX on Windows is left at its own default.
         std::string cmd = compiler + " -interaction=nonstopmode -halt-on-error"
+#ifndef _WIN32
+            " -no-shell-escape"
+#endif
             " -output-directory=\"" + buildDir.string() + "\""
             " \"" + (buildDir / texName).string() + "\""
             " 2>&1";
@@ -3509,15 +3720,29 @@ int startServer(const ServerOptions& options) {
     int port = options.port;
     
     // Try to find an available port
+    bool bound = false;
     for (int attempt = 0; attempt < 10; ++attempt) {
-        if (svr.bind_to_port("0.0.0.0", port)) {
+        if (svr.bind_to_port(options.host, port)) {
+            bound = true;
             break;
         }
         std::cerr << "Port " << port << " is in use, trying " << (port + 1) << "\n";
         port++;
     }
-    
-    std::string url = "http://localhost:" + std::to_string(port);
+    if (!bound) {
+        std::cerr << "Error: cannot listen on " << options.host << " (ports " << options.port
+                  << " to " << (port - 1) << ")\n";
+        return 1;
+    }
+
+    // The browser opens the server on this computer: "localhost" unless the server listens
+    // on one specific address that is not a loopback or wildcard address.
+    const bool loopbackHost = options.host == "127.0.0.1" || options.host == "localhost" ||
+                              options.host == "::1";
+    const bool wildcardHost = options.host == "0.0.0.0" || options.host == "::";
+    std::string urlHost = (loopbackHost || wildcardHost) ? std::string("localhost") : options.host;
+    if (urlHost.find(':') != std::string::npos) urlHost = "[" + urlHost + "]";  // IPv6 literal
+    std::string url = "http://" + urlHost + ":" + std::to_string(port);
     std::cout << "\n";
     std::cout << "╔══════════════════════════════════════════╗\n";
     std::cout << "║         CoolSolve GUI Server             ║\n";
@@ -3526,6 +3751,11 @@ int startServer(const ServerOptions& options) {
     std::cout << "║  Press Ctrl+C to stop                    ║\n";
     std::cout << "╚══════════════════════════════════════════╝\n";
     std::cout << "\n";
+    if (!loopbackHost) {
+        std::cerr << "[Warning] Listening on " << options.host << ", reachable from other computers. "
+                     "The GUI has no authentication: put it behind a reverse proxy that has "
+                     "(docs/deployment_ubuntu_apache.md)." << std::endl;
+    }
     
     // Warmup CoolProp in background thread
     std::thread warmupThread([&]() {

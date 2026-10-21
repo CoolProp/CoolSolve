@@ -8,6 +8,33 @@ changes introduced.
 
 ---
 
+## Unreleased
+
+### Security
+
+- **LaTeX compilation**: `POST /api/v1/latex/compile` ran the compiler named in the request body, or in
+  `latexCompiler` of the session's `coolsolve.conf`, through the shell, so a client could run any command on the
+  server. Only `pdflatex`, `xelatex` and `lualatex` are accepted now (anything else: `400`), plot image names must
+  be plain `.png` names, and on Linux and macOS the compiler runs with `-no-shell-escape`. A `latexCompiler`
+  set to a full path or with extra arguments is now refused: use the bare name and put the TeX binaries on `PATH`.
+- **Listening address**: the GUI server listens on `127.0.0.1` instead of every network interface. The new option
+  `--host <address>` restores network access (`--host 0.0.0.0`) and prints a warning, since the GUI has no
+  authentication. A reverse proxy that connects to `127.0.0.1` still reaches the server (but see DNS rebinding
+  below for its host name).
+- **Cross-site requests**: the `Access-Control-Allow-Origin: *` header is gone, and a `POST`, `PUT` or `DELETE`
+  whose `Origin` names another site is refused (`403`). Scripts that send no `Origin` are not affected.
+- **DNS rebinding**: the server answers only to requests addressed to `localhost`, an IP address, or a name given
+  with the new option `--allowed-host <name>` (others: `403`). **Action for server deployments**: a reverse proxy
+  that forwards the browser's host name (Apache `ProxyPreserveHost On`, as in the
+  [Deployment Guide](deployment_ubuntu_apache.md)) needs `--allowed-host <your domain>` added to the service
+  command line, or every page returns `403`.
+- **LaTeX report**: the index of an array variable (`X[...]`) is now escaped in the generated `.tex` like the rest
+  of the name.
+- **Usage statistics**: `GET /api/v1/stats/log` and the `/stats` dashboard show client networks (`topNetworks`,
+  IPv4 /24 and IPv6 /48) instead of full client addresses (`topIps` is removed). The log file is unchanged.
+
+---
+
 ## v0.4 — October 2026 (current)
 
 | Item | Detail |

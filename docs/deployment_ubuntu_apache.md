@@ -88,7 +88,7 @@ Type=simple
 User=coolsolve
 Group=coolsolve
 WorkingDirectory=/home/coolsolve/CoolSolve/build
-ExecStart=/home/coolsolve/CoolSolve/build/coolsolve --gui 8550 --no-browser
+ExecStart=/home/coolsolve/CoolSolve/build/coolsolve --gui 8550 --no-browser --allowed-host coolsolve.example.com
 Restart=on-failure
 RestartSec=5
 
@@ -121,6 +121,12 @@ SyslogIdentifier=coolsolve
 WantedBy=multi-user.target
 EOF
 ```
+
+`--allowed-host` names the domain of the site (the `ServerName` of section 5). Apache
+forwards the browser's `Host` header (`ProxyPreserveHost On`), and CoolSolve answers only
+to `localhost`, IP addresses and the names given with `--allowed-host` (protection against
+DNS rebinding); without it every page and API call returns `403`. Repeat the option for
+each name the site is reached by (for example with and without `www.`).
 
 Enable and start the service:
 
@@ -363,16 +369,17 @@ sudo ufw allow 'Apache Full'
 # Ensure CoolSolve port is NOT exposed externally (it should only be on 127.0.0.1)
 # Verify:
 sudo ss -tlnp | grep 8550
-# Should show: 127.0.0.1:8550 or 0.0.0.0:8550
+# Should show: 127.0.0.1:8550
 ```
 
-If CoolSolve binds to `0.0.0.0:8550` (it does by default), block external access to that port:
+CoolSolve listens on `127.0.0.1` by default, which is all Apache needs (it proxies to
+`http://127.0.0.1:8550`). Do not add `--host 0.0.0.0` to the service: the GUI has no
+authentication of its own. Versions before this change listened on `0.0.0.0`; on such a
+version, block external access to the port:
 
 ```bash
 sudo ufw deny 8550
 ```
-
-> **Note:** A future improvement would be to make CoolSolve bind to `127.0.0.1` only (via a `--bind` flag). For now, the firewall rule above prevents external access.
 
 ---
 
@@ -467,6 +474,8 @@ sudo systemctl restart systemd-journald
 | 503 Service Unavailable | Apache is up but CoolSolve is not — see below |
 | 502 Bad Gateway | `sudo systemctl status coolsolve` — is it running? |
 | 403 Forbidden | Check `.htpasswd` file permissions and Apache auth config |
+| 403 `{"error":"Host '...' is not served here; ..."}` | Add `--allowed-host <your domain>` to `ExecStart` (section 4), then `sudo systemctl daemon-reload && sudo systemctl restart coolsolve` |
+| 403 `{"error":"Cross-site request refused"}` on Solve or Save | The proxy passes neither the browser's `Host` nor `X-Forwarded-Host`: keep `ProxyPreserveHost On` (Apache) or set `proxy_set_header Host $host;` (nginx) |
 | SSE/progress not streaming | Verify `proxy-sendchunked` env is set in Apache config |
 | Slow CoolProp startup | First request after restart triggers warmup (~1-2 s); this is normal |
 | Session lost between requests | Ensure Apache forwards cookies (`ProxyPreserveHost On`) |
