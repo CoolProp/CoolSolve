@@ -1,14 +1,17 @@
 # Public REST API: Review and Design Proposal
 
-**Status:** proposal (2026-10-21), not started.
+**Status:** proposal (2026-10-21). Phase 0 (security fixes) is in pull request
+[CoolProp/CoolSolve#6](https://github.com/CoolProp/CoolSolve/pull/6), not merged yet;
+the later phases are not started.
 **Scope:** the HTTP API served by `coolsolve --gui` (`src/server.cpp`, client in
 `gui/src/api/`), and what it takes to offer a stable API that other applications can
-build on.
+build on, as a process or as a container image.
 
 This document reviews the current API (section 2), proposes an architecture with two
-API surfaces on one engine (section 3), designs the public API (section 4), describes
-how the GUI keeps its freedom (section 5), lays out the phases to get there (section 6)
-and lists the decisions still open (section 7).
+API surfaces on one engine (section 3), designs the public API (section 4), including
+its use behind reverse proxies (section 4.10) and as a container image (section 4.11),
+describes how the GUI keeps its freedom (section 5), lays out the phases to get there
+(section 6) and lists the decisions still open (section 7).
 
 ---
 
@@ -26,6 +29,9 @@ Recommendations, in order:
 
 1. **Fix the security findings first** (section 2.3, F1), independently of the API work.
    One of them is a remote command execution through `POST /api/v1/latex/compile`.
+   Done in pull request #6 (Phase 0), together with guards that the public API reuses:
+   loopback by default, a cross-site guard, a host-name allow-list against DNS
+   rebinding.
 2. **Extract a service layer** from `src/server.cpp`: plain C++ functions and structs
    (`parseModel`, `solveModel`, `runStudy`, one JSON serializer) that know nothing about
    HTTP or sessions. Today the logic sits inside the request handlers, so a second API
@@ -39,7 +45,11 @@ Recommendations, in order:
    the model (or a library id), the input values that replace imposed values, and the
    outputs wanted; the response carries values with their units and a clear status.
 5. **Add a headless mode** (`coolsolve --serve`) that serves only the public API, bound
-   to `127.0.0.1` unless told otherwise, with a token when bound to a network address.
+   to `127.0.0.1` unless told otherwise, with a token when bound to a network address,
+   and documented rules for running it behind a reverse proxy (section 4.10).
+6. **Publish the headless mode as a container image** (section 4.11), so that other
+   applications can run the API next to their own services without building CoolSolve
+   or CoolProp.
 
 ---
 
@@ -96,7 +106,14 @@ Each finding says why it matters for an external integration. Findings F1 to F3 
 defects today, for the GUI too; F4 to F10 are reasons why the current API cannot simply
 be declared public.
 
-**F1. Security (fix now, independently of the API work).**
+**F1. Security (fix now, independently of the API work).** *Addressed in pull request
+#6* (Phase 0): only `pdflatex`, `xelatex` and `lualatex` are run, plot names are plain
+`.png` names, the server listens on `127.0.0.1` unless started with `--host`, the CORS
+header is gone and cross-site `POST`/`PUT`/`DELETE` are refused, every request must
+name the server in its `Host` header (`localhost`, an IP address, or a name given with
+`--allowed-host`; an adversarial review of the first fix showed that DNS rebinding
+passed the cross-site guard), and the statistics show client networks instead of
+addresses. The description below is the state before that pull request.
 
 - **Command injection in `POST /api/v1/latex/compile`** (`src/server.cpp`, the
   `compiler` variable around line 3144). The `compiler` field of the JSON body, or the
@@ -186,6 +203,13 @@ integration wants a headless service with only the API.
 **F10. Contract tests are missing for the core path.** The Python tests cover tables,
 library, parametric studies, usage log and integral results, but not
 `/solve` + `/solve/stream` + `/solve/result`, which is the path every integrator uses.
+
+**F11. The client address is taken from any `X-Forwarded-For`.** `getClientIP()`
+(`src/server.cpp`) uses the first entry of `X-Forwarded-For` whenever the header is
+present, whoever sent it. Behind Apache this is the real client; without a proxy, any
+client can write any address into the usage log. Harmless for statistics, but a public
+API that limits or audits per client must believe the header only when the request
+comes from a proxy it trusts (section 4.10).
 
 ---
 
@@ -492,16 +516,170 @@ The `type` values are part of the contract and listed in the OpenAPI file.
 - **Headless mode**: `coolsolve --serve [--host 127.0.0.1] [--port 8551]` serves only
   `/api/v1`, no SPA, no browser, no GUI routes.
 - **Binding**: `127.0.0.1` by default in both modes; a network address only with
-  `--host`.
-- **Authentication**: on a network address, a bearer token is required
-  (`--api-token-file`, compared in constant time). Behind a reverse proxy the operator
-  may switch it off and rely on the proxy, as `docs/deployment_ubuntu_apache.md` does.
-- **CORS**: off by default; an allow-list of origins with `--cors-origin`.
+  `--host` (as introduced in Phase 0).
+- **Host names**: the Phase 0 guard applies unchanged: a request must name the server
+  in its `Host` header (`localhost`, an IP address, the `--host` name, or a name given
+  with `--allowed-host`). This keeps DNS rebinding out of the public API too.
+- **Authentication**: a bearer token (`Authorization: Bearer ...`, read from
+  `--api-token-file`, compared in constant time). `--serve` on a network address
+  refuses to start without a token unless the operator says explicitly that a proxy
+  authenticates (`--auth=proxy`, section 4.10). The GUI mode keeps its Phase 0 warning
+  instead, so that existing deployments do not stop.
+- **Cross-site requests and CORS**: requests without `Origin` (scripts, other
+  services: the usual integration) are not affected. Browser applications on another
+  origin need CORS: `--cors-origin <origin>` (repeatable) answers their preflight and
+  adds them to the origins the Phase 0 cross-site guard accepts; every other origin is
+  still refused. A token in the `Authorization` header cannot be sent cross-site without
+  a preflight, so an allowed origin cannot be abused by a third site.
 - **Limits**: maximum body size, workers, queue length, job timeout, study points and
   job retention, all reported in `GET /api/v1/info`.
 - **No public endpoint runs an external program or reads a path chosen by the client.**
   LaTeX compilation, debug files, bundles and the usage statistics stay GUI or operator
   features.
+
+### 4.10 Behind a reverse proxy
+
+Most deployments put a reverse proxy (Apache, nginx, Caddy, a cloud load balancer) in
+front of CoolSolve for TLS, authentication and rate limits, as
+`docs/deployment_ubuntu_apache.md` does for the GUI. The public API sets these rules:
+
+| Concern | Rule |
+|---|---|
+| Listening address | CoolSolve listens on `127.0.0.1` (same machine) or on the container network (section 4.11); the proxy is the only thing exposed. |
+| Host name | The proxy passes the browser's or client's host name: either in `Host` (Apache `ProxyPreserveHost On`, nginx `proxy_set_header Host $host;`), with that name given to `--allowed-host`, or in `X-Forwarded-Host` (Apache adds it). Otherwise requests get `403` from the Phase 0 host guard, or from the cross-site guard for browser `POST`s. |
+| Client address (F11) | `X-Forwarded-For` is believed only when the connection comes from an address given with `--trusted-proxy <address or CIDR>` (repeatable; for example `127.0.0.1`, or the proxy network of a container setup). Then the right-most entry that is not itself a trusted proxy is the client. Without `--trusted-proxy` the header is ignored and the connection address is used. The usage log and any per-client limit use this address. |
+| Scheme and path prefix | The API never builds absolute URLs: `Location: /api/v1/jobs/{id}` is a path, and the OpenAPI `servers` entry is relative. So `X-Forwarded-Proto` is not needed, and a sub-path deployment (`/coolsolve/api/v1/...`, deployment guide section 10) works when the proxy strips the prefix, as the GUI already does. |
+| Server-sent events | Job events (`/api/v1/jobs/{id}/events`) must not be buffered: CoolSolve sends `X-Accel-Buffering: no` (nginx) as today, Apache needs `SetEnv proxy-sendchunked 1` (as in the deployment guide). The stream sends a comment line (`: keep-alive`) every 15 s, so that proxies with an idle timeout (`ProxyTimeout`, `proxy_read_timeout`, load balancers, often 60 s) do not cut a long solve. Clients reconnect with `Last-Event-ID` and get the events they missed from the job's buffer. |
+| Request size | The proxy limit (`LimitRequestBody`, `client_max_body_size`) is at least `info.limits.maxBodyBytes`, so that a too-large model gets CoolSolve's `413` problem details, not a proxy error page. |
+| Long synchronous calls | `POST /api/v1/jobs?wait=<s>` keeps the connection open for up to `wait` seconds; the proxy timeout must be longer. The server caps `wait` (`info.limits.maxWaitSeconds`, default 60 s) so that it stays under common proxy defaults; longer work is followed as a job. |
+| Authentication | Either CoolSolve's bearer token, or the proxy (basic auth, OAuth proxy, mutual TLS) with `--auth=proxy`. Not both missing: `--serve` on a network address refuses to start otherwise (section 4.9). With proxy authentication, CoolSolve listens only on loopback or on a network that only the proxy can reach. |
+| Rate limits | Per-client limits belong in the proxy (`mod_ratelimit`, `limit_req`); CoolSolve's own limits (workers, queue, `429` with `Retry-After`) protect the solver whatever the proxy does. |
+
+The deployment guide gets a section for the public API with an Apache and an nginx
+example covering these rows, and a troubleshooting table for the `403` and `413`
+answers.
+
+### 4.11 Container image
+
+An integration often wants CoolSolve as a service next to its own: in Docker Compose,
+Kubernetes or a cloud container service, without building CoolSolve and CoolProp.
+The headless mode is published as an image for that purpose.
+
+**Image.** `ghcr.io/coolprop/coolsolve-api`, built from a multi-stage `Dockerfile` at
+the root of the repository:
+
+```dockerfile
+# --- build stage: compilers, CMake, CoolProp sources (not shipped) ---
+FROM ubuntu:24.04 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git python3 ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+ARG COOLSOLVE_LIBRARY_TAG=main
+# No Node.js: the API image does not embed the GUI assets
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCOOLSOLVE_BUILD_TESTS=OFF \
+          -DCOOLSOLVE_LIBRARY_TAG=${COOLSOLVE_LIBRARY_TAG} \
+ && cmake --build build -j"$(nproc)" --target coolsolve
+
+# --- runtime stage: the binary and the C++ runtime only ---
+FROM ubuntu:24.04 AS api
+RUN useradd --system --uid 10001 --home-dir /var/lib/coolsolve coolsolve
+COPY --from=build /src/build/coolsolve /usr/local/bin/coolsolve
+USER 10001
+EXPOSE 8551
+ENV COOLSOLVE_HOST=0.0.0.0 COOLSOLVE_PORT=8551
+ENTRYPOINT ["coolsolve", "--serve"]
+```
+
+A `.dockerignore` keeps `build/`, `.fetchcontent_cache/`, `gui/node_modules/` and
+`gui/dist/` out of the build context: a local `gui/dist/` would otherwise be embedded
+into the API image.
+
+A second target (`FROM api AS gui`, with the SPA embedded and `--gui`) replaces the
+single-stage example of `docs/gui.md` section 12.2, so that the GUI and the API images
+come from one file.
+
+**Configuration through environment variables.** Every `--serve` option has an
+environment variable, read when the option is not given on the command line:
+`COOLSOLVE_HOST`, `COOLSOLVE_PORT`, `COOLSOLVE_ALLOWED_HOSTS` (comma-separated),
+`COOLSOLVE_TRUSTED_PROXIES`, `COOLSOLVE_CORS_ORIGINS`, `COOLSOLVE_API_TOKEN_FILE`,
+`COOLSOLVE_AUTH` (`token` or `proxy`), `COOLSOLVE_WORKERS`, and the limits of section
+4.9. The usage log already follows this pattern (`COOLSOLVE_GUI_LOG`).
+
+**Rules that are specific to containers:**
+
+- **Listening address.** Inside the container the server must listen on `0.0.0.0`:
+  `127.0.0.1` would be the container's own loopback, unreachable from outside. Exposure
+  is decided when the container is started: `docker run -p 127.0.0.1:8551:8551 ...`
+  keeps it on the host's loopback (for a proxy on the host), a Compose network keeps it
+  reachable only by the proxy service.
+- **Host names.** Clients reach the container by a service name (`coolsolve-api`), a
+  host name or an IP address; names must be given in `COOLSOLVE_ALLOWED_HOSTS`, or
+  requests get the Phase 0 `403`.
+- **Secrets.** The token is a file (`/run/secrets/coolsolve_api_token`, a Docker or
+  Kubernetes secret) given with `COOLSOLVE_API_TOKEN_FILE`, never an environment
+  variable value (those end up in `docker inspect` and in logs).
+- **Least privilege.** A non-root user (uid 10001), a read-only root file system and a
+  `tmpfs` for the job folders (`--read-only --tmpfs /tmp`). No shell, compiler or LaTeX
+  in the image: the API runs no external program (section 4.9).
+- **CPU limits.** `std::thread::hardware_concurrency()` (used for the worker count and
+  by the parallel solver pipeline, `src/solver.cpp`) reports the host's cores, not the
+  container's CPU quota. The worker count defaults to the cgroup quota when one is set,
+  and `COOLSOLVE_WORKERS` overrides it.
+- **Health.** `GET /api/v1/health` is the liveness probe and the readiness probe
+  (`coolpropReady`). The image has no `curl`, so Docker's `HEALTHCHECK` calls the
+  binary itself: `coolsolve --health-check` requests `/api/v1/health` on the local port
+  and exits 0 or 1. Kubernetes uses an `httpGet` probe directly.
+- **Logs.** Requests, warnings and the usage log go to stdout/stderr by default in the
+  image (`COOLSOLVE_GUI_LOG=-`), where the container runtime collects them; a file in a
+  mounted volume stays possible.
+- **Shutdown.** `SIGTERM` (sent by `docker stop` and Kubernetes) stops accepting jobs,
+  cancels the running ones through their cancel tokens, and exits within the grace
+  period.
+
+**Example: Compose with a TLS proxy.**
+
+```yaml
+services:
+  proxy:
+    image: caddy:2
+    ports: ["443:443"]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"]   # reverse_proxy coolsolve-api:8551
+  coolsolve-api:
+    image: ghcr.io/coolprop/coolsolve-api:1
+    read_only: true
+    tmpfs: ["/tmp"]
+    environment:
+      COOLSOLVE_ALLOWED_HOSTS: api.example.com,coolsolve-api
+      COOLSOLVE_TRUSTED_PROXIES: 172.16.0.0/12
+      COOLSOLVE_API_TOKEN_FILE: /run/secrets/coolsolve_api_token
+      COOLSOLVE_WORKERS: "4"
+    secrets: [coolsolve_api_token]
+    healthcheck:
+      test: ["CMD", "coolsolve", "--health-check"]
+secrets:
+  coolsolve_api_token:
+    file: ./coolsolve_api_token.txt
+```
+
+**Tags and provenance.** Each release publishes `ghcr.io/coolprop/coolsolve-api` with
+the CoolSolve version (`0.6.0`, `0.6`), the API major version (`1`, which moves only
+within the stability policy of section 4.7) and the commit. OCI labels record the
+CoolSolve version, the API version, the CoolProp revision (pinned, contributing guide
+section 3.13) and the model library tag, the same facts as `coolsolve --version`. Images
+are built for `linux/amd64` and `linux/arm64`.
+
+**CI.** A GitHub Actions workflow builds the image on each pull request (not pushed),
+runs `tests/test_public_api.py` against the running container, and on a release tag
+pushes it to the GitHub Container Registry. The build cache keeps the CoolProp
+compilation (the slow part) between runs.
+
+**Size.** The stripped binary is about 14 MB with CoolProp and without the GUI assets
+(measured on Linux x86-64, Release build), and it links only the C and C++ runtime
+(`libstdc++`, `libgcc_s`, `libm`, `libc`). The runtime stage adds the `ubuntu:24.04`
+base (about 80 MB). A distroless C++ base, which carries exactly these libraries, would
+bring the image under 40 MB, at the cost of the tools for debugging inside it (open
+decision D9).
 
 ---
 
@@ -551,15 +729,21 @@ Mapping of today's routes:
 
 Each phase is a separate branch and pull request, reviewed before the next starts.
 
-### Phase 0: security fixes (now)
+### Phase 0: security fixes (pull request #6, open)
 
 Independent of everything else; worth a patch release.
 
-- `latex/compile`: fixed compiler allow-list, no value from the body, no shell.
-- Bind to `127.0.0.1` by default, `--host` for the server deployment (update
-  `docs/deployment_ubuntu_apache.md`, which proxies to localhost already).
-- CORS only in dev mode, for the dev origin.
-- `stats/log`: loopback only or operator token.
+- `latex/compile`: fixed compiler allow-list (`pdflatex`, `xelatex`, `lualatex`),
+  plain `.png` plot names, `-no-shell-escape` on TeX Live.
+- Listen on `127.0.0.1` by default, `--host` to change it.
+- No CORS header; cross-site `POST`/`PUT`/`DELETE` refused (`Origin` against `Host` or
+  `X-Forwarded-Host`; the Vite dev proxy sends `X-Forwarded-Host`).
+- `Host` allow-list against DNS rebinding, `--allowed-host`. Server deployments behind
+  Apache with `ProxyPreserveHost On` must add `--allowed-host <domain>`.
+- `stats/log`: client networks instead of addresses.
+- Still to do after the merge: the Docker example of `docs/gui.md` section 12.2 needs
+  `--host 0.0.0.0 --no-browser`, since the default address is now unreachable from
+  outside a container (fixed on the pull request branch).
 
 ### Phase 1: service layer (pure refactor)
 
@@ -586,10 +770,23 @@ Independent of everything else; worth a patch release.
 ### Phase 4: public API beta
 
 - Write `api/openapi-v1.yaml` first; review it on its own.
-- Implement `/api/v1` on the service layer, `--serve` headless mode, token, limits.
+- Implement `/api/v1` on the service layer, `--serve` headless mode, token, limits,
+  the reverse-proxy rules of section 4.10 (`--trusted-proxy`, `--auth=proxy`, SSE
+  keep-alive, capped `wait`), environment variables for every option.
 - Contract and golden tests; docs page `docs/public_api.md` with `curl` and Python
   examples; entry in the README documentation table.
 - Mark as beta in `info` and in `docs/versions.md`.
+
+### Phase 4b: container image
+
+- `Dockerfile` (targets `api` and `gui`), `coolsolve --health-check`, cgroup-aware
+  worker count, log to stdout, `SIGTERM` handling (section 4.11).
+- GitHub Actions workflow: build on pull requests, test the container with
+  `tests/test_public_api.py`, push multi-arch images to `ghcr.io` on release tags.
+- Docs: a container section in the deployment guide (`docker run`, Compose with a TLS
+  proxy, Kubernetes probes), `docs/gui.md` section 12.2 pointing to the `gui` target.
+- Can start as soon as Phase 4 has a working `--serve`; the beta label covers the image
+  too.
 
 ### Phase 5: stable
 
@@ -617,3 +814,6 @@ result concepts as the REST API, so a user can move between the two.
 | D5 | Stored models on the server (`POST /api/v1/models`, then jobs by model id) | Not in v1: requests stay self-contained. Library ids cover the "known model" case. Can be added later |
 | D6 | Authentication | Bearer token in headless mode on a network address; reverse proxy otherwise |
 | D7 | Per-request CoolProp settings | Not exposed in v1, until they can be set per job without affecting other jobs (F4) |
+| D8 | `--serve` on a network address without a token | Refuse to start unless `--auth=proxy` is given (section 4.9); the GUI mode keeps its warning |
+| D9 | Base image of the runtime stage | `ubuntu:24.04` first (same as the build, tools for debugging); distroless C++ base once the image is stable |
+| D10 | Where the image is published | GitHub Container Registry of the `CoolProp` organisation, next to the releases; Docker Hub only if users ask |

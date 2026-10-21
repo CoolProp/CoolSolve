@@ -73,7 +73,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 | [Solver Roadmap](docs/solver_roadmap.md) | Performance roadmap, algorithm details, and implementation status |
 | [Symbolic Block Reduction](docs/symbolic_redecomposition.md) | Symbolic block reduction algorithm |
 | [GUI & REST API](docs/gui.md) | Web interface, REST API, and parametric studies |
-| [Public API Design](docs/public_api_design.md) | Review of the GUI REST API and proposal for a stable public API (not implemented yet) |
+| [Public API Design](docs/public_api_design.md) | Review of the GUI REST API and proposal for a stable public API, its use behind reverse proxies and as a container image (not implemented yet) |
 | [Deployment Guide](docs/deployment_ubuntu_apache.md) | Deploying CoolSolve on Ubuntu with Apache |
 | [Contributing Guide](docs/contributing.md) | Workflow and integration checklist for new features and bug fixes |
 | [Version History](docs/versions.md) | Release notes, download links, and CoolProp version per release |
