@@ -1004,8 +1004,16 @@ A Docker image packages the binary with the embedded frontend:
 FROM ubuntu:24.04 AS runtime
 COPY coolsolve /usr/local/bin/coolsolve
 EXPOSE 8550
-ENTRYPOINT ["coolsolve", "--gui", "8550"]
+# Inside a container the server must listen on every interface: 127.0.0.1 would be
+# the container's own loopback, unreachable from outside
+ENTRYPOINT ["coolsolve", "--gui", "8550", "--no-browser", "--host", "0.0.0.0"]
 ```
+
+Publish the port on the host's loopback for a proxy on the same machine
+(`docker run -p 127.0.0.1:8550:8550 ...`). The proxy must pass the browser's host
+name (`proxy_set_header Host $host;` in nginx, `ProxyPreserveHost On` in Apache), and
+that name is added to the command line with `--allowed-host <name>`; otherwise every
+request gets `403` (section 4, access rules).
 
 ### 12.3 Cross-Platform Notes
 
