@@ -450,6 +450,57 @@ static bool isSameOriginRequest(const httplib::Request& req) {
     return toLowerAscii(forwarded.substr(b, e - b + 1)) == originHost;
 }
 
+/// Host name of a Host header value, lower case: "Example.com:8550" -> "example.com",
+/// "[::1]:8550" -> "[::1]", "localhost." -> "localhost".
+static std::string hostNameOf(const std::string& hostHeader) {
+    std::string name = hostHeader;
+    if (!name.empty() && name[0] == '[') {
+        const auto close = name.find(']');
+        if (close != std::string::npos) name.erase(close + 1);   // keep the brackets
+    } else {
+        const auto colon = name.find(':');
+        if (colon != std::string::npos) name.erase(colon);
+    }
+    if (!name.empty() && name.back() == '.') name.pop_back();
+    return toLowerAscii(name);
+}
+
+/// True for a dotted IPv4 address ("192.168.1.5"): four groups of digits.
+static bool isIPv4Literal(const std::string& name) {
+    int dots = 0;
+    bool digitBefore = false;
+    for (char c : name) {
+        if (c >= '0' && c <= '9') {
+            digitBefore = true;
+        } else if (c == '.' && digitBefore) {
+            ++dots;
+            digitBefore = false;
+        } else {
+            return false;
+        }
+    }
+    return dots == 3 && digitBefore;
+}
+
+/// True when the Host header names this server: "localhost", an IP address, or a name
+/// given with --allowed-host.
+///
+/// This stops DNS rebinding: a page of attacker.example whose DNS record is switched to
+/// 127.0.0.1 can reach this server from the user's browser, and to the browser that is
+/// the same origin, so the cross-site guard below cannot tell. Its requests still carry
+/// "Host: attacker.example", a name this server does not answer to. A rebinding attack
+/// always needs a name, never an IP address, so IP addresses are always accepted.
+static bool isAllowedHostHeader(const httplib::Request& req, const std::vector<std::string>& allowedHosts) {
+    const std::string header = req.get_header_value("Host");
+    if (header.empty()) return true;   // HTTP/1.0 clients; browsers always send Host
+    const std::string name = hostNameOf(header);
+    if (name == "localhost" || isIPv4Literal(name) || (!name.empty() && name[0] == '[')) return true;
+    for (const auto& allowed : allowedHosts) {
+        if (hostNameOf(allowed) == name) return true;
+    }
+    return false;
+}
+
 // ============================================================================
 // ZIP helpers (minimal uncompressed archive implementation)
 // ============================================================================
@@ -848,14 +899,24 @@ int startServer(const ServerOptions& options) {
     // CoolProp warmup state
     std::atomic<bool> coolpropReady{false};
     
-    // --- Cross-site guard ---
-    // The API serves the GUI of this same server only. In dev mode the Vite server proxies
-    // /api (gui/vite.config.ts), so the browser never calls this server from another origin
-    // and no CORS header is sent: a page of another web site cannot read any answer, and
-    // its preflight requests (OPTIONS) are refused. A browser can still send a "simple"
+    // --- Host and cross-site guards ---
+    // First, every request must name this server in its Host header (DNS rebinding, see
+    // isAllowedHostHeader).
+    // Then, the API serves the GUI of this same server only. In dev mode the Vite server
+    // proxies /api (gui/vite.config.ts), so the browser never calls this server from another
+    // origin and no CORS header is sent: a page of another web site cannot read any answer,
+    // and its preflight requests (OPTIONS) are refused. A browser can still send a "simple"
     // cross-site POST without preflight (form or text/plain body), which would change the
     // model or start a solve, so every request that is not a read must be same-origin.
-    svr.set_pre_routing_handler([](const httplib::Request& req, httplib::Response& res) {
+    // GET and HEAD pass this second guard, so a handler that changes state must never be a GET.
+    svr.set_pre_routing_handler([&options](const httplib::Request& req, httplib::Response& res) {
+        if (!isAllowedHostHeader(req, options.allowedHosts)) {
+            res.status = 403;
+            json j = {{"error", "Host '" + req.get_header_value("Host") + "' is not served here; "
+                                "start CoolSolve with --allowed-host <name> to allow a host name"}};
+            res.set_content(j.dump(), "application/json");
+            return httplib::Server::HandlerResponse::Handled;
+        }
         if (req.method == "GET" || req.method == "HEAD") {
             return httplib::Server::HandlerResponse::Unhandled;
         }

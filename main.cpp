@@ -40,6 +40,8 @@ void printUsage(const char* programName) {
     std::cerr << "  --no-browser            Don't open browser automatically (with --gui)\n";
     std::cerr << "  --host <address>        Address the GUI server listens on (default: 127.0.0.1, this\n";
     std::cerr << "                          computer only; 0.0.0.0 = every network interface)\n";
+    std::cerr << "  --allowed-host <name>   Host name the GUI server answers to, besides localhost and\n";
+    std::cerr << "                          IP addresses (repeatable; e.g. the name behind a reverse proxy)\n";
 #endif
     std::cerr << "  --version               Print the CoolSolve and CoolProp (version, git revision) versions,\n";
     std::cerr << "                          and the commit of the embedded model library (GUI builds)\n";
@@ -72,6 +74,7 @@ int main(int argc, char* argv[]) {
     bool guiMode = false;
     int guiPort = 8550;
     std::string guiHost = "127.0.0.1";
+    std::vector<std::string> guiAllowedHosts;
     bool guiOpenBrowser = true;
 #endif
     
@@ -113,6 +116,13 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Error: --host requires an argument\n";
                 return 1;
             }
+        } else if (arg == "--allowed-host") {
+            if (i + 1 < argc) {
+                guiAllowedHosts.push_back(argv[++i]);
+            } else {
+                std::cerr << "Error: --allowed-host requires an argument\n";
+                return 1;
+            }
 #endif
         } else if (arg == "-d" || arg == "--debug") {
             debugMode = true;
@@ -152,6 +162,7 @@ int main(int argc, char* argv[]) {
         coolsolve::ServerOptions serverOpts;
         serverOpts.port = guiPort;
         serverOpts.host = guiHost;
+        serverOpts.allowedHosts = guiAllowedHosts;
         serverOpts.openBrowser = guiOpenBrowser;
         return coolsolve::startServer(serverOpts);
 #else
@@ -167,6 +178,7 @@ int main(int argc, char* argv[]) {
         coolsolve::ServerOptions serverOpts;
         serverOpts.port = guiPort;
         serverOpts.host = guiHost;
+        serverOpts.allowedHosts = guiAllowedHosts;
         serverOpts.openBrowser = guiOpenBrowser;
         serverOpts.initialFile = fs::absolute(inputFile).string();
         return coolsolve::startServer(serverOpts);

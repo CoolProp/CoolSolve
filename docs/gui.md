@@ -101,6 +101,10 @@ unless noted otherwise.
 
 - The server listens on `127.0.0.1` (this computer only) unless started with
   `--host` (section 12).
+- Every request (pages included) must name the server in its `Host` header:
+  `localhost`, an IP address, or a name given with `--allowed-host`. Otherwise the
+  answer is `403`. This stops DNS rebinding, where a web page switches its own
+  domain name to `127.0.0.1` to reach the local server as if it were the same site.
 - No CORS header is sent: a page of another web site cannot read any answer, and
   its preflight requests are refused. In dev mode the Vite server proxies `/api`
   (`gui/vite.config.ts`), so the GUI never needs CORS.
@@ -109,7 +113,11 @@ unless noted otherwise.
   entry of `X-Forwarded-Host` (set by Apache and by the Vite proxy). Otherwise the
   answer is `403 {"error":"Cross-site request refused"}`. This stops a web page
   from changing the model or starting a solve with a cross-site form post.
-  Scripts (curl, Python) send no `Origin` and are not affected.
+  Scripts (curl, Python) send no `Origin` and are not affected. Because `GET`
+  requests pass this rule, no handler may change state on a `GET`.
+- Behind a reverse proxy, the proxy must pass the browser's host name, either in
+  `Host` (Apache `ProxyPreserveHost On`, nginx `proxy_set_header Host $host;`) with
+  that name given to `--allowed-host`, or in `X-Forwarded-Host` (Apache adds it).
 
 ### 4.1 Health & Lifecycle
 
@@ -362,7 +370,8 @@ without it, from `latexCompiler` in the session's `coolsolve.conf`. Any other
 value (a path, extra arguments) is refused with `400`. Plot names must be letters,
 digits and underscores followed by `.png` (else `400`), so that an image can never
 replace `report.tex`. On Linux and macOS (TeX Live) the compiler runs with
-`-no-shell-escape`.
+`-no-shell-escape`; on Windows the TeX installation keeps its own default
+(restricted in MiKTeX), because MiKTeX documents `--disable-write18` instead.
 
 ---
 
@@ -962,7 +971,7 @@ All the following tests pass against the current codebase:
 ### 12.1 Local Mode
 
 ```
-coolsolve --gui [port] [--no-browser] [--host <address>]
+coolsolve --gui [port] [--no-browser] [--host <address>] [--allowed-host <name>]...
 ```
 
 Opens the default browser at `http://localhost:<port>` after a short warmup.
@@ -974,6 +983,11 @@ it. `--host 0.0.0.0` (or one address of the machine) makes it reachable from the
 network; the server then prints a warning, because the GUI has no
 authentication. A reverse proxy on the same machine (section 12.2,
 [Deployment Guide](deployment_ubuntu_apache.md)) needs no `--host`.
+
+The server answers only to requests addressed to `localhost` or to an IP address
+(section 4, access rules). To reach it by another name, a LAN name such as
+`mypc.local` or the domain behind a reverse proxy, give that name with
+`--allowed-host <name>` (repeatable).
 
 ### 12.2 Online Mode (Reverse Proxy)
 

@@ -9,6 +9,8 @@ Covers:
   - no CORS header is sent, and a POST, PUT or DELETE whose Origin names another
     site is refused (403), while same-origin, proxied (X-Forwarded-Host) and
     non-browser (no Origin) requests pass;
+  - a request whose Host header is not localhost, an IP address or a name given with
+    --allowed-host is refused (403), whatever its method (DNS rebinding);
   - GET /api/v1/stats/log shows client networks, never full client addresses;
   - the server listens on 127.0.0.1 only by default (auto mode).
 
@@ -36,6 +38,7 @@ import urllib.parse
 import urllib.request
 
 BASE_URL = "http://localhost:8550"
+ALLOWED_HOST = "coolsolve.test"   # passed with --allowed-host in auto mode
 VERBOSE = "--verbose" in sys.argv or "-v" in sys.argv
 
 MODEL = """\
@@ -135,26 +138,32 @@ def test_latex_compiler_allow_list():
     evt = wait_solve_done()
     check("solve finished", evt is not None and evt.get("type") == "done", str(evt)[:200])
     status, _, text = request("GET", "/api/v1/latex/report")
-    check("LaTeX report available", status == 200 and json.loads(text).get("available") is True,
-          text[:200])
+    available = status == 200 and json.loads(text).get("available") is True
+    check("LaTeX report available", available, text[:200])
+    if not available:
+        # Every compile would answer 400 "No LaTeX report available": the checks below
+        # would pass or fail for the wrong reason
+        return
+
+    not_allowed = "is not allowed"
 
     # A command in the request body is refused before anything runs
     injected = f"touch {MARKER} #"
     status, _, text = request("POST", "/api/v1/latex/compile", {"compiler": injected})
-    check("command in body refused (400)", status == 400, f"{status} {text[:200]}")
+    check("command in body refused (400)", status == 400 and not_allowed in text, f"{status} {text[:200]}")
     check("error names the allowed compilers", "pdflatex, xelatex or lualatex" in text, text[:200])
     check("command in body not run", not os.path.exists(MARKER))
 
     for name in ["pdflatex; touch " + MARKER, "/usr/bin/pdflatex", "PDFLATEX", "pdflatex "]:
-        status, _, _ = request("POST", "/api/v1/latex/compile", {"compiler": name})
-        check(f"compiler {name!r} refused", status == 400, str(status))
+        status, _, text = request("POST", "/api/v1/latex/compile", {"compiler": name})
+        check(f"compiler {name!r} refused", status == 400 and not_allowed in text, f"{status} {text[:200]}")
     check("no refused compiler ran", not os.path.exists(MARKER))
 
     # The same command through coolsolve.conf
     status, _, _ = request("PUT", "/api/v1/files/conf", {"content": f"latexCompiler = {injected}\n"})
     check("conf with command stored", status == 200, str(status))
     status, _, text = request("POST", "/api/v1/latex/compile", {})
-    check("command in conf refused (400)", status == 400, f"{status} {text[:200]}")
+    check("command in conf refused (400)", status == 400 and not_allowed in text, f"{status} {text[:200]}")
     check("error names coolsolve.conf", "coolsolve.conf" in text, text[:200])
     check("command in conf not run", not os.path.exists(MARKER))
 
@@ -171,9 +180,10 @@ def test_latex_compiler_allow_list():
     # Plot names that would overwrite the report or leave the build folder
     png = "data:image/png;base64,iVBORw0KGgo="
     for name in ["report.tex", "../x.png", "a.png.tex", "x/y.png", ".png", "plot.PNG", "p q.png"]:
-        status, _, _ = request("POST", "/api/v1/latex/compile",
-                               {"plots": [{"name": name, "data": png}]})
-        check(f"plot name {name!r} refused", status == 400, str(status))
+        status, _, text = request("POST", "/api/v1/latex/compile",
+                                  {"plots": [{"name": name, "data": png}]})
+        check(f"plot name {name!r} refused", status == 400 and "Invalid plot name" in text,
+              f"{status} {text[:200]}")
     status, _, text = request("POST", "/api/v1/latex/compile",
                               {"plots": [{"name": "parametric_1.png", "data": png}]})
     check("plot name 'parametric_1.png' accepted", status != 400, f"{status} {text[:200]}")
@@ -219,6 +229,30 @@ def test_cross_site_guard():
     check("proxied POST accepted (Vite dev, X-Forwarded-Host)", status == 200, str(status))
     status, _, _ = request("POST", "/api/v1/new", {})
     check("POST without Origin accepted (scripts)", status == 200, str(status))
+
+
+def test_host_allow_list():
+    print("\n-- Host header allow-list (DNS rebinding) --")
+    port = urllib.parse.urlparse(BASE_URL).port
+    # A rebound page: Host and Origin both name the attacker's domain
+    rebound = {"Host": f"attacker.example:{port}", "Origin": f"http://attacker.example:{port}"}
+    status, _, text = request("POST", "/api/v1/new", {}, headers=rebound)
+    check("rebound POST refused", status == 403 and "--allowed-host" in text, f"{status} {text[:200]}")
+    status, _, _ = request("GET", "/api/v1/files/eescode", headers=rebound)
+    check("rebound GET refused", status == 403, str(status))
+    status, _, _ = request("GET", "/", headers={"Host": f"attacker.example:{port}"})
+    check("rebound page load refused", status == 403, str(status))
+    status, _, _ = request("GET", "/api/v1/health", headers={"Host": "localhost.attacker.example"})
+    check("look-alike host refused", status == 403, str(status))
+
+    for host in [f"localhost:{port}", f"LOCALHOST:{port}", f"127.0.0.1:{port}", f"[::1]:{port}",
+                 f"192.168.1.5:{port}", "localhost."]:
+        status, _, _ = request("GET", "/api/v1/health", headers={"Host": host})
+        check(f"Host {host!r} accepted", status == 200, str(status))
+    # Given with --allowed-host in auto mode
+    status, _, _ = request("POST", "/api/v1/new", {}, headers={
+        "Host": ALLOWED_HOST, "Origin": f"https://{ALLOWED_HOST}"})
+    check(f"Host {ALLOWED_HOST!r} from --allowed-host accepted", status == 200, str(status))
 
 
 def test_stats_hide_addresses():
@@ -288,7 +322,8 @@ def main():
         env = dict(os.environ)
         env["COOLSOLVE_GUI_LOG"] = os.path.join(tmpdir, "gui_usage.log")
         print(f"Starting CoolSolve from {binary}...")
-        server_proc = subprocess.Popen([binary, "--gui", str(port), "--no-browser"],
+        server_proc = subprocess.Popen([binary, "--gui", str(port), "--no-browser",
+                                        "--allowed-host", ALLOWED_HOST],
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
         BASE_URL = f"http://127.0.0.1:{port}"
         for _ in range(40):
@@ -309,6 +344,7 @@ def main():
         test_cross_site_guard()
         test_stats_hide_addresses()
         if auto_start:
+            test_host_allow_list()
             test_loopback_only(port)
     except Exception as e:
         print(f"\nFATAL ERROR: {e}")

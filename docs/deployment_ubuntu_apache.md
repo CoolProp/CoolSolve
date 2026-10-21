@@ -88,7 +88,7 @@ Type=simple
 User=coolsolve
 Group=coolsolve
 WorkingDirectory=/home/coolsolve/CoolSolve/build
-ExecStart=/home/coolsolve/CoolSolve/build/coolsolve --gui 8550 --no-browser
+ExecStart=/home/coolsolve/CoolSolve/build/coolsolve --gui 8550 --no-browser --allowed-host coolsolve.example.com
 Restart=on-failure
 RestartSec=5
 
@@ -121,6 +121,12 @@ SyslogIdentifier=coolsolve
 WantedBy=multi-user.target
 EOF
 ```
+
+`--allowed-host` names the domain of the site (the `ServerName` of section 5). Apache
+forwards the browser's `Host` header (`ProxyPreserveHost On`), and CoolSolve answers only
+to `localhost`, IP addresses and the names given with `--allowed-host` (protection against
+DNS rebinding); without it every page and API call returns `403`. Repeat the option for
+each name the site is reached by (for example with and without `www.`).
 
 Enable and start the service:
 
@@ -468,6 +474,8 @@ sudo systemctl restart systemd-journald
 | 503 Service Unavailable | Apache is up but CoolSolve is not — see below |
 | 502 Bad Gateway | `sudo systemctl status coolsolve` — is it running? |
 | 403 Forbidden | Check `.htpasswd` file permissions and Apache auth config |
+| 403 `{"error":"Host '...' is not served here; ..."}` | Add `--allowed-host <your domain>` to `ExecStart` (section 4), then `sudo systemctl daemon-reload && sudo systemctl restart coolsolve` |
+| 403 `{"error":"Cross-site request refused"}` on Solve or Save | The proxy passes neither the browser's `Host` nor `X-Forwarded-Host`: keep `ProxyPreserveHost On` (Apache) or set `proxy_set_header Host $host;` (nginx) |
 | SSE/progress not streaming | Verify `proxy-sendchunked` env is set in Apache config |
 | Slow CoolProp startup | First request after restart triggers warmup (~1-2 s); this is normal |
 | Session lost between requests | Ensure Apache forwards cookies (`ProxyPreserveHost On`) |

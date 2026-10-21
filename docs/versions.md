@@ -22,6 +22,13 @@ changes introduced.
   authentication. Reverse-proxy deployments that proxy to `127.0.0.1` need no change.
 - **Cross-site requests**: the `Access-Control-Allow-Origin: *` header is gone, and a `POST`, `PUT` or `DELETE`
   whose `Origin` names another site is refused (`403`). Scripts that send no `Origin` are not affected.
+- **DNS rebinding**: the server answers only to requests addressed to `localhost`, an IP address, or a name given
+  with the new option `--allowed-host <name>` (others: `403`). **Action for server deployments**: a reverse proxy
+  that forwards the browser's host name (Apache `ProxyPreserveHost On`, as in the
+  [Deployment Guide](deployment_ubuntu_apache.md)) needs `--allowed-host <your domain>` added to the service
+  command line, or every page returns `403`.
+- **LaTeX report**: the index of an array variable (`X[...]`) is now escaped in the generated `.tex` like the rest
+  of the name.
 - **Usage statistics**: `GET /api/v1/stats/log` and the `/stats` dashboard show client networks (`topNetworks`,
   IPv4 /24 and IPv6 /48) instead of full client addresses (`topIps` is removed). The log file is unchanged.
 

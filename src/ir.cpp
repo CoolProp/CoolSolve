@@ -1025,9 +1025,11 @@ std::string variableToLatex(const std::string& name) {
             subscripts.push_back(latexSegment(segs[i]));
         }
     }
-    // Append array index as the last subscript element
+    // Append array index as the last subscript element. It is model text like every
+    // other part of the name, so it is escaped too: a backslash is a valid name
+    // character and must never reach the .tex file as a TeX command.
     if (!arrayIndex.empty()) {
-        subscripts.push_back(arrayIndex);
+        subscripts.push_back(escapeLatexMath(arrayIndex));
     }
 
     // 5. Build the core symbol

@@ -180,6 +180,9 @@ TEST_CASE("variableToLatex: EES name translation", "[latex]") {
         CHECK(variableToLatex("P[1]") == "P_{1}");
         CHECK(variableToLatex("T_su[2]") == "T_{su,2}");
         CHECK(variableToLatex("T_hf[3]") == "T_{hf,3}");
+        // The index is escaped like the rest of the name: no TeX command can get through
+        CHECK(variableToLatex("Q[a\\input]") == "Q_{a\\backslash{}input}");
+        CHECK(variableToLatex("X[1,2]") == "X_{1,2}");
         CHECK(variableToLatex("s[10]") == "s_{10}");
     }
     SECTION("Greek letters (whole name)") {
