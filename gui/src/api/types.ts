@@ -391,5 +391,6 @@ export interface UsageStatsResponse {
   outcomes: Record<string, number>;
   durationHistogram: { edges: number[]; counts: number[] };
   topModels: UsageNameCount[];
-  topIps: UsageNameCount[];
+  /** Client networks (IPv4 /24, IPv6 /48), never full addresses */
+  topNetworks: UsageNameCount[];
 }

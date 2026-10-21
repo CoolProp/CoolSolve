@@ -513,9 +513,10 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
           + 'The report contains model equations, variable solutions, and plots. '
           + 'The backend only produces the LaTeX source — no LaTeX installation is required on the solver side.' },
       { key: 'latexCompiler', label: 'LaTeX compiler', type: 'string', defaultVal: 'pdflatex',
+        options: ['pdflatex', 'xelatex', 'lualatex'],
         description:
-          'LaTeX compiler command used for PDF compilation. '
-          + 'Common alternatives: xelatex, lualatex.' },
+          'LaTeX compiler used for PDF compilation: pdflatex, xelatex or lualatex (found on the PATH). '
+          + 'The server refuses any other value.' },
     ],
   },
   {

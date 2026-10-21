@@ -355,6 +355,10 @@ cd build
 ./coolsolve_tests "[library]"
 python3 ../tests/test_library_api.py --auto
 
+# Security guards of the GUI server (LaTeX compiler allow-list, cross-site requests,
+# client networks in the statistics, listening on 127.0.0.1 only)
+python3 ../tests/test_security_api.py --auto
+
 # Run solver robustness tests (stress-tests every example with multiple
 # solver configurations: Newton-only, LM-only, tearing, symbolic reduction, etc.)
 # Requires a Release build — Debug timings are ~10x slower and must not be committed as reports.
@@ -495,6 +499,7 @@ CoolSolve/
 │   ├── test_examples.cpp       # Integration tests with example files
 │   ├── test_library_store.cpp  # Model library index/loader unit tests
 │   ├── test_library_api.py     # Library menu, open, per-tab sessions, /library/ (REST, needs the GUI build)
+│   ├── test_security_api.py    # GUI server guards: LaTeX compiler, cross-site requests, stats (REST)
 │   └── test_kinsol.cpp         # KINSOL solver unit tests (3 modes + config)
 ├── cmake/                      # embed_assets / embed_library: GUI, docs and model library embedded in the binary
 ├── tools/                      # EES import helpers: ees_extract.py, compare_solution.py (see docs/ees_import.md)

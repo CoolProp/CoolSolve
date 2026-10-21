@@ -363,16 +363,17 @@ sudo ufw allow 'Apache Full'
 # Ensure CoolSolve port is NOT exposed externally (it should only be on 127.0.0.1)
 # Verify:
 sudo ss -tlnp | grep 8550
-# Should show: 127.0.0.1:8550 or 0.0.0.0:8550
+# Should show: 127.0.0.1:8550
 ```
 
-If CoolSolve binds to `0.0.0.0:8550` (it does by default), block external access to that port:
+CoolSolve listens on `127.0.0.1` by default, which is all Apache needs (it proxies to
+`http://127.0.0.1:8550`). Do not add `--host 0.0.0.0` to the service: the GUI has no
+authentication of its own. Versions before this change listened on `0.0.0.0`; on such a
+version, block external access to the port:
 
 ```bash
 sudo ufw deny 8550
 ```
-
-> **Note:** A future improvement would be to make CoolSolve bind to `127.0.0.1` only (via a `--bind` flag). For now, the firewall rule above prevents external access.
 
 ---
 

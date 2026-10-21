@@ -8,6 +8,25 @@ changes introduced.
 
 ---
 
+## Unreleased
+
+### Security
+
+- **LaTeX compilation**: `POST /api/v1/latex/compile` ran the compiler named in the request body, or in
+  `latexCompiler` of the session's `coolsolve.conf`, through the shell, so a client could run any command on the
+  server. Only `pdflatex`, `xelatex` and `lualatex` are accepted now (anything else: `400`), plot image names must
+  be plain `.png` names, and on Linux and macOS the compiler runs with `-no-shell-escape`. A `latexCompiler`
+  set to a full path or with extra arguments is now refused: use the bare name and put the TeX binaries on `PATH`.
+- **Listening address**: the GUI server listens on `127.0.0.1` instead of every network interface. The new option
+  `--host <address>` restores network access (`--host 0.0.0.0`) and prints a warning, since the GUI has no
+  authentication. Reverse-proxy deployments that proxy to `127.0.0.1` need no change.
+- **Cross-site requests**: the `Access-Control-Allow-Origin: *` header is gone, and a `POST`, `PUT` or `DELETE`
+  whose `Origin` names another site is refused (`403`). Scripts that send no `Origin` are not affected.
+- **Usage statistics**: `GET /api/v1/stats/log` and the `/stats` dashboard show client networks (`topNetworks`,
+  IPv4 /24 and IPv6 /48) instead of full client addresses (`topIps` is removed). The log file is unchanged.
+
+---
+
 ## v0.4 — October 2026 (current)
 
 | Item | Detail |

@@ -38,6 +38,8 @@ void printUsage(const char* programName) {
 #ifdef COOLSOLVE_GUI
     std::cerr << "  --gui [port]            Start the GUI web server (default port: 8550)\n";
     std::cerr << "  --no-browser            Don't open browser automatically (with --gui)\n";
+    std::cerr << "  --host <address>        Address the GUI server listens on (default: 127.0.0.1, this\n";
+    std::cerr << "                          computer only; 0.0.0.0 = every network interface)\n";
 #endif
     std::cerr << "  --version               Print the CoolSolve and CoolProp (version, git revision) versions,\n";
     std::cerr << "                          and the commit of the embedded model library (GUI builds)\n";
@@ -69,6 +71,7 @@ int main(int argc, char* argv[]) {
 #ifdef COOLSOLVE_GUI
     bool guiMode = false;
     int guiPort = 8550;
+    std::string guiHost = "127.0.0.1";
     bool guiOpenBrowser = true;
 #endif
     
@@ -103,6 +106,13 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--no-browser") {
             guiOpenBrowser = false;
+        } else if (arg == "--host") {
+            if (i + 1 < argc) {
+                guiHost = argv[++i];
+            } else {
+                std::cerr << "Error: --host requires an argument\n";
+                return 1;
+            }
 #endif
         } else if (arg == "-d" || arg == "--debug") {
             debugMode = true;
@@ -141,6 +151,7 @@ int main(int argc, char* argv[]) {
         // No input file: default to GUI mode (e.g. launched from Start Menu with no args)
         coolsolve::ServerOptions serverOpts;
         serverOpts.port = guiPort;
+        serverOpts.host = guiHost;
         serverOpts.openBrowser = guiOpenBrowser;
         return coolsolve::startServer(serverOpts);
 #else
@@ -155,6 +166,7 @@ int main(int argc, char* argv[]) {
     if (guiMode) {
         coolsolve::ServerOptions serverOpts;
         serverOpts.port = guiPort;
+        serverOpts.host = guiHost;
         serverOpts.openBrowser = guiOpenBrowser;
         serverOpts.initialFile = fs::absolute(inputFile).string();
         return coolsolve::startServer(serverOpts);

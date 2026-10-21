@@ -282,9 +282,9 @@ export default function UsageStats() {
             </div>
 
             <div className="stats-chart-card">
-              <h2>Clients by attempts</h2>
-              {stats.topIps.length > 0 ? (
-                <Plot data={rankingData(stats.topIps)} layout={rankingLayout}
+              <h2>Client networks by attempts</h2>
+              {stats.topNetworks.length > 0 ? (
+                <Plot data={rankingData(stats.topNetworks)} layout={rankingLayout}
                   config={{ responsive: true, displaylogo: false }}
                   useResizeHandler style={{ width: '100%', height: 280 }} />
               ) : (
