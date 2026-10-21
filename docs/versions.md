@@ -19,7 +19,8 @@ changes introduced.
   set to a full path or with extra arguments is now refused: use the bare name and put the TeX binaries on `PATH`.
 - **Listening address**: the GUI server listens on `127.0.0.1` instead of every network interface. The new option
   `--host <address>` restores network access (`--host 0.0.0.0`) and prints a warning, since the GUI has no
-  authentication. Reverse-proxy deployments that proxy to `127.0.0.1` need no change.
+  authentication. A reverse proxy that connects to `127.0.0.1` still reaches the server (but see DNS rebinding
+  below for its host name).
 - **Cross-site requests**: the `Access-Control-Allow-Origin: *` header is gone, and a `POST`, `PUT` or `DELETE`
   whose `Origin` names another site is refused (`403`). Scripts that send no `Origin` are not affected.
 - **DNS rebinding**: the server answers only to requests addressed to `localhost`, an IP address, or a name given

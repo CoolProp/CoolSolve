@@ -244,6 +244,9 @@ def test_host_allow_list():
     check("rebound page load refused", status == 403, str(status))
     status, _, _ = request("GET", "/api/v1/health", headers={"Host": "localhost.attacker.example"})
     check("look-alike host refused", status == 403, str(status))
+    for host in ["[attacker.example", "[attacker.example]", "999.999.999.999", "1.2.3.4.attacker.example"]:
+        status, _, _ = request("GET", "/api/v1/health", headers={"Host": host})
+        check(f"Host {host!r} refused", status == 403, str(status))
 
     for host in [f"localhost:{port}", f"LOCALHOST:{port}", f"127.0.0.1:{port}", f"[::1]:{port}",
                  f"192.168.1.5:{port}", "localhost."]:

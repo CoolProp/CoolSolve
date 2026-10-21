@@ -987,7 +987,9 @@ authentication. A reverse proxy on the same machine (section 12.2,
 The server answers only to requests addressed to `localhost` or to an IP address
 (section 4, access rules). To reach it by another name, a LAN name such as
 `mypc.local` or the domain behind a reverse proxy, give that name with
-`--allowed-host <name>` (repeatable).
+`--allowed-host <name>` (repeatable). A name given with `--host` is allowed too. An
+internationalised domain name must be given in its ASCII (punycode, `xn--...`) form,
+which is what browsers send.
 
 ### 12.2 Online Mode (Reverse Proxy)
 

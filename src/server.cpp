@@ -465,21 +465,39 @@ static std::string hostNameOf(const std::string& hostHeader) {
     return toLowerAscii(name);
 }
 
-/// True for a dotted IPv4 address ("192.168.1.5"): four groups of digits.
+/// True for a dotted IPv4 address ("192.168.1.5"): four groups of 1 to 3 digits, each 255 or less.
 static bool isIPv4Literal(const std::string& name) {
-    int dots = 0;
-    bool digitBefore = false;
-    for (char c : name) {
-        if (c >= '0' && c <= '9') {
-            digitBefore = true;
-        } else if (c == '.' && digitBefore) {
-            ++dots;
-            digitBefore = false;
-        } else {
-            return false;
+    int groups = 0;
+    std::size_t pos = 0;
+    while (groups < 4) {
+        std::size_t digits = 0;
+        int value = 0;
+        while (pos < name.size() && name[pos] >= '0' && name[pos] <= '9' && digits < 3) {
+            value = value * 10 + (name[pos] - '0');
+            ++pos;
+            ++digits;
+        }
+        if (digits == 0 || value > 255) return false;
+        ++groups;
+        if (groups < 4) {
+            if (pos >= name.size() || name[pos] != '.') return false;
+            ++pos;
         }
     }
-    return dots == 3 && digitBefore;
+    return pos == name.size();
+}
+
+/// True for a bracketed IPv6 address as it appears in a Host header ("[::1]", "[fe80::1%25eth0]").
+static bool isIPv6Literal(const std::string& name) {
+    if (name.size() < 4 || name.front() != '[' || name.back() != ']') return false;
+    return std::all_of(name.begin() + 1, name.end() - 1, [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || c == ':' || c == '.' || c == '%';
+    });
+}
+
+/// True for a host name the server always answers to: "localhost" or an IP address.
+static bool isLocalhostOrIPLiteral(const std::string& name) {
+    return name == "localhost" || isIPv4Literal(name) || isIPv6Literal(name);
 }
 
 /// True when the Host header names this server: "localhost", an IP address, or a name
@@ -494,7 +512,7 @@ static bool isAllowedHostHeader(const httplib::Request& req, const std::vector<s
     const std::string header = req.get_header_value("Host");
     if (header.empty()) return true;   // HTTP/1.0 clients; browsers always send Host
     const std::string name = hostNameOf(header);
-    if (name == "localhost" || isIPv4Literal(name) || (!name.empty() && name[0] == '[')) return true;
+    if (isLocalhostOrIPLiteral(name)) return true;
     for (const auto& allowed : allowedHosts) {
         if (hostNameOf(allowed) == name) return true;
     }
@@ -909,8 +927,17 @@ int startServer(const ServerOptions& options) {
     // cross-site POST without preflight (form or text/plain body), which would change the
     // model or start a solve, so every request that is not a read must be same-origin.
     // GET and HEAD pass this second guard, so a handler that changes state must never be a GET.
-    svr.set_pre_routing_handler([&options](const httplib::Request& req, httplib::Response& res) {
-        if (!isAllowedHostHeader(req, options.allowedHosts)) {
+    // The name given with --host is the one the browser opens (see the URL printed at start-up)
+    std::vector<std::string> allowedHosts = options.allowedHosts;
+    {
+        // An IPv6 address (it contains ':') and an IPv4 or wildcard address need no entry
+        const std::string hostName = toLowerAscii(options.host);
+        if (hostName.find(':') == std::string::npos && !isLocalhostOrIPLiteral(hostName)) {
+            allowedHosts.push_back(hostName);
+        }
+    }
+    svr.set_pre_routing_handler([allowedHosts](const httplib::Request& req, httplib::Response& res) {
+        if (!isAllowedHostHeader(req, allowedHosts)) {
             res.status = 403;
             json j = {{"error", "Host '" + req.get_header_value("Host") + "' is not served here; "
                                 "start CoolSolve with --allowed-host <name> to allow a host name"}};
