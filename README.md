@@ -74,6 +74,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 | [Symbolic Block Reduction](docs/symbolic_redecomposition.md) | Symbolic block reduction algorithm |
 | [GUI & REST API](docs/gui.md) | Web interface, REST API, and parametric studies |
 | [Deployment Guide](docs/deployment_ubuntu_apache.md) | Deploying CoolSolve on Ubuntu with Apache |
+| [Model Deployment Options](docs/model_deployment_options.md) | Embedding protected, predefined models in an API or a UI on Windows, macOS and Linux (evaluation) |
 | [Contributing Guide](docs/contributing.md) | Workflow and integration checklist for new features and bug fixes |
 | [Version History](docs/versions.md) | Release notes, download links, and CoolProp version per release |
 
