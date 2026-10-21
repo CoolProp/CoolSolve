@@ -54,11 +54,11 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 - **Output Formats**: JSON, LaTeX, `.sol` files, CSV trajectory files, and a comprehensive **Debug Mode** (`-d`) folder.
 
-- **GUI & REST API**: Embedded single-page app (React/TypeScript) with a code editor, variable table, parametric studies, thermodynamic diagrams, and ZIP bundle round-trip. See [GUI & REST API](docs/gui.md).
+- **GUI & REST API**: Embedded single-page app (React/TypeScript) with a code editor, variable table, parametric studies, thermodynamic diagrams, and ZIP bundle round-trip. The server listens on this computer only unless started with `--host`, and refuses cross-site and DNS-rebinding requests. See [GUI & REST API](docs/gui.md).
 
 - **Model Library**: The GUI binary embeds the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) — documented, verified EES models (cycles, components, heat transfer, HVAC, …). The toolbar **Library** button follows the library taxonomy and opens a whole model folder (code, initial values, lookup tables, configuration) in one click; the dashboard at `/library/` lists every model, blocked ones included, with an *Open in CoolSolve* link on each. The library is fetched at build time, always at its latest version. See [Model Library Support](docs/model_library_support.md).
 
-- **Usage Log**: In GUI mode, every solve or *Try Harder* attempt appends one CSV line to a local log file (timestamp, model name and size, outcome, duration, client IP, version). Written after the solve completes — no impact on solving. Aggregated statistics are available on a hidden `/stats` dashboard. See [GUI & REST API](docs/gui.md).
+- **Usage Log**: In GUI mode, every solve or *Try Harder* attempt appends one CSV line to a local log file (timestamp, model name and size, outcome, duration, client IP, version). Written after the solve completes, with no impact on solving. Aggregated statistics are available on a hidden `/stats` dashboard, which shows client networks, never full addresses. See [GUI & REST API](docs/gui.md).
 
 ## Documentation
 
@@ -319,6 +319,10 @@ The debug folder contains:
 | `--no-sol` | Do not write the .sol file (an existing one is left untouched) |
 | `--no-superancillary` | Disable CoolProp superancillary functions |
 | `--version` | Print the CoolSolve version, the CoolProp version and git revision, and (GUI builds) the embedded model library commit |
+| `--gui [port]` | Start the GUI web server (default port: 8550); with an input file, open it in the GUI |
+| `--no-browser` | Do not open the browser automatically (with `--gui`) |
+| `--host <address>` | Address the GUI server listens on (default: `127.0.0.1`, this computer only; `0.0.0.0` = every network interface, with a warning: the GUI has no authentication) |
+| `--allowed-host <name>` | Host name the GUI server answers to, besides `localhost` and IP addresses (repeatable; e.g. the domain behind a reverse proxy). See [GUI section 4](docs/gui.md#4-rest-api-reference) |
 | `-h, --help` | Show help message |
 
 ### Performance Options
@@ -424,6 +428,12 @@ make -j$(nproc) coolsolve
 # 3) Run the GUI
 ./coolsolve --gui     # opens the default browser, serving on http://localhost:8550
 ```
+
+The server listens on `127.0.0.1`, so only this computer can reach it. To use it from
+another computer, start it with `--host 0.0.0.0` (and `--allowed-host <name>` to reach it
+by a name rather than an IP address); the GUI has no authentication, so do this only on a
+trusted network or behind a reverse proxy (see the
+[Deployment Guide](docs/deployment_ubuntu_apache.md)).
 
 For more detailed information on the GUI architecture and advanced workflows (ZIP bundles, online deployment, thermodynamic diagrams, etc.), see `docs/gui.md`.
 

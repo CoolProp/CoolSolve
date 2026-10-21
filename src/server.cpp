@@ -3752,8 +3752,7 @@ int startServer(const ServerOptions& options) {
     std::cout << "╚══════════════════════════════════════════╝\n";
     std::cout << "\n";
     if (!loopbackHost) {
-        // std::endl: see the usage-log line above (piped stdout is block-buffered)
-        std::cout << "Warning: listening on " << options.host << ", reachable from other computers. "
+        std::cerr << "[Warning] Listening on " << options.host << ", reachable from other computers. "
                      "The GUI has no authentication: put it behind a reverse proxy that has "
                      "(docs/deployment_ubuntu_apache.md)." << std::endl;
     }

@@ -929,6 +929,7 @@ All the following tests pass against the current codebase:
 | `POST /api/v1/parse` with source code | ✅ Returns equation/variable counts |
 | `POST /api/v1/files/open` with a `.eescode` file | ✅ Loads file + discovers companion files |
 | Library menu / open / per-tab sessions / bundle round-trip / `/library/` pages / `/files/open` restricted to the command-line file | ✅ `tests/test_library_api.py --auto` (67 checks) |
+| LaTeX compiler allow-list and plot names / no CORS / cross-site and Host guards / client networks in `/stats/log` / listening on `127.0.0.1` | Pass: `tests/test_security_api.py --auto` (64 checks) |
 | `POST /api/v1/solve` with rankine1 example | ✅ Full solve result with block details |
 | `GET /api/v1/variables` | ✅ Returns solved variable values |
 | `GET /api/v1/solve/stream` (SSE, curl) | ✅ 30/30 blocks streamed; final result JSON embedded |
