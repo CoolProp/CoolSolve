@@ -8,12 +8,10 @@
 | [CoolPlot](https://github.com/CoolProp/CoolPlot) | 1.2.0, [PyPI](https://pypi.org/project/coolplot/1.2.0/) (2026-10-22) and git tag `v1.2.0` | `03c71b5` | the Python reference, `coolplot-core` 1.2.0 (C++17, `cpp/`), the JavaScript SVG writer |
 | [CoolProp](https://github.com/CoolProp/CoolProp) | 8.1.0 development, `master` | `2d51b57e` | `CoolProp::Plot`, the C++ port of CoolPlot's numerics (PR #3512) |
 
-The released CoolPlot is the one on PyPI. Its source distribution
-(`coolplot-1.2.0.tar.gz`, SHA-256
-`d7635651828c5051488be242150d6a1d7e8526480f00ac41c4f9a9222334662c`) holds the Python package and the
-JavaScript SVG writer, not `cpp/`, and `coolplot-core` is not published on PyPI; the C++
-library is therefore taken from the git tag of the same release until U11 (section 7)
-puts it in the source distribution.
+One CoolPlot version is used in two forms: the Python package from PyPI
+(`coolplot==1.2.0`) for the test fixtures, and the C++ library `coolplot-core` from the
+git tag of the same version (`v1.2.0`), since the PyPI distribution holds only the Python
+package.
 
 This document plans how the **Diagrams** tab of the GUI adopts CoolPlot, the
 property-diagram package of the CoolProp project, instead of growing its own plotting
@@ -224,11 +222,9 @@ phase envelope), so plots are reused, never built per request.
 - `CoolProp::Plot` is part of the CoolProp library CoolSolve already links; it needs a
   CoolProp pin at or after `2d51b57e` (phase 0).
 - `coolplot-core` is fetched with `FetchContent` (`SOURCE_SUBDIR cpp`), static, with
-  `COOLPLOT_CORE_TESTS=OFF`, pinned by `COOLSOLVE_COOLPLOT_VERSION` (the PyPI version).
-  Until U11 the source is the git tag `v<version>`; after U11 it is the PyPI source
-  distribution, fetched by URL with its SHA-256 (`URL_HASH`), which cannot move as a tag
-  can. zlib is
-  optional (uncompressed PDF streams without it).
+  `COOLPLOT_CORE_TESTS=OFF`, from the git tag `v<version>` of `COOLSOLVE_COOLPLOT_VERSION`
+  (the version also pinned on PyPI for the fixtures). zlib is optional (uncompressed PDF
+  streams without it).
 - `coolplot-core` carries nlohmann/json 3.12 in its public include path; CoolSolve
   fetches 3.11.3. A source file that includes both headers sees one version and the
   library was built with the other: different ABI namespaces, so link errors at best.
@@ -449,7 +445,6 @@ Python reference, as CoolPlot's own rule requires.
 | U8 | CoolPlot | merge `chp/1.2`, tag `v1.2.0` | CoolSolve pins tags where it can | phase 0 | **done** (2026-10-22, `03c71b5`) |
 | U9 | CoolPlot | chart kinds for absorption pairs: h-x (enthalpy over ammonia mass fraction) and Duehring (log p over -1/T with lines of constant concentration), as diagram types with their families, in Python and `coolplot-core` | the vocabulary of charts is CoolPlot's; the curves come from CoolSolve as curve records | phase 4, last | none |
 | U10 | CoolProp | a `PropertyPlot` constructor from an existing `AbstractState` | CoolPlot's `native.py` falls back to Python for states that a fluid string cannot name (changed interaction parameters, mass-fraction bases); CoolSolve could hand over its configured state | later, optional | fluid strings |
-| U11 | CoolPlot | put `cpp/` (sources, CMake, vendored nlohmann/json, licences; not the test data) in the PyPI source distribution | the PyPI release becomes the complete release, with a hash that any C++ consumer can pin | phase 0, optional | fetch the git tag of the same version |
 
 Things CoolSolve does not ask upstream for: the reference-state offsets of ideal gases
 (CoolSolve's EES/JANAF basis), the state grouping, the server, the curve cache of a
