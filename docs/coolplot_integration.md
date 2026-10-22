@@ -5,7 +5,7 @@
 
 | Project | Version | Commit | Holds |
 |---|---|---|---|
-| [CoolPlot](https://github.com/CoolProp/CoolPlot) | 1.2.0 (branch `chp/1.2`, not yet on `master` or tagged) | `5830057` | the Python reference, `coolplot-core` 1.2.0 (C++17, `cpp/`), the JavaScript SVG writer |
+| [CoolPlot](https://github.com/CoolProp/CoolPlot) | 1.2.0 (tag `v1.2.0`, released 2026-10-22) | `03c71b5` | the Python reference, `coolplot-core` 1.2.0 (C++17, `cpp/`), the JavaScript SVG writer |
 | [CoolProp](https://github.com/CoolProp/CoolProp) | 8.1.0 development, `master` | `2d51b57e` | `CoolProp::Plot`, the C++ port of CoolPlot's numerics (PR #3512) |
 
 This document plans how the **Diagrams** tab of the GUI adopts CoolPlot, the
@@ -295,8 +295,7 @@ phase starts is replaced by its interim implementation (section 2.1).
   rework (`a089befb`), an IF97 input fix (`83f3ca35`), PC-SAFT `kij` read as doubles
   (`2eb5c05c`). Every changed test, example and library baseline is explained.
 - [CoolSolve] nlohmann/json 3.11.3 to 3.12.0.
-- [CoolPlot] Merge `chp/1.2` and tag `v1.2.0`; CoolSolve pins the tag (U8). Until then,
-  the commit in the header.
+- [CoolSolve] Pin CoolPlot to the tag `v1.2.0` (`COOLSOLVE_COOLPLOT_PINNED_TAG`).
 - [CoolPlot] `coolplot-core` as a sub-project (U1).
 - [CoolSolve] Fetch `coolplot-core`, print its version, an empty `src/diagram/` that
   composes a fixed scene in a Catch2 test (`[diagram]`) to prove the build on Linux and
@@ -431,7 +430,7 @@ Python reference, as CoolPlot's own rule requires.
 | U5 | CoolProp | humid-air lines and states (`humid_air.py`) as a `CoolProp::Plot` class over `HAPropsSI`, including the Mollier temperature scale | needs `HAPropsSI`; in CoolPlot's C0 plan | phase 4 | `interim/humid_air.cpp` |
 | U6 | CoolPlot | `scene_plotly.js`: a Plotly.js renderer of the scene, port of `render/plotly.py`, next to `scene_svg.js`, with a node test against the Python backend's figures as `tests/js/check_scene_svg.js` does for SVG | the reference and the Python to make expected outputs are there; CoolPlot's browser backend can use it | phase 2 | TypeScript copy in the GUI |
 | U7 | CoolPlot | the badge (`branding.py`, `references.py`) in `coolplot-core`; references from CoolProp's BibTeX keys | presentation; today a branded chart falls back to Python | phase 5, optional | none (no badge) |
-| U8 | CoolPlot | merge `chp/1.2`, tag `v1.2.0` | CoolSolve pins tags where it can | phase 0 | pin the commit |
+| U8 | CoolPlot | merge `chp/1.2`, tag `v1.2.0` | CoolSolve pins tags where it can | phase 0 | **done** (2026-10-22, `03c71b5`) |
 | U9 | CoolPlot | chart kinds for absorption pairs: h-x (enthalpy over ammonia mass fraction) and Duehring (log p over -1/T with lines of constant concentration), as diagram types with their families, in Python and `coolplot-core` | the vocabulary of charts is CoolPlot's; the curves come from CoolSolve as curve records | phase 4, last | none |
 | U10 | CoolProp | a `PropertyPlot` constructor from an existing `AbstractState` | CoolPlot's `native.py` falls back to Python for states that a fluid string cannot name (changed interaction parameters, mass-fraction bases); CoolSolve could hand over its configured state | later, optional | fluid strings |
 
