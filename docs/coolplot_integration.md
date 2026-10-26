@@ -152,7 +152,8 @@ Plotly.js <- scene_plotly.js <- scene JSON <-------------
                                        * = not upstream yet: interim implementation
 ```
 
-- `POST /api/v1/diagram/scene` takes the chart spec, the cycles, the plot size, the
+- `POST /api/v1/diagram/scene` takes the chart spec, the cycles (states named by their
+  variables, converted to SI on the server, section 4.3), the plot size, the
   view and the previous label items (so that labels stay where they were), and returns
   the scene and the curve diagnostics (failed points, fallbacks, the `reason` of lines
   that could not be computed).
@@ -160,8 +161,10 @@ Plotly.js <- scene_plotly.js <- scene JSON <-------------
   (`PropertyPlot::value_at` for each quantity) for hover.
 - `GET /api/v1/diagram/options` lists what the GUI offers: diagram types per fluid kind,
   unit systems, region presets, isoline families per diagram.
-- `GET /api/v1/diagram/svg` and `.../pdf` (phase 5) return the same chart through the
-  writers of `coolplot-core`.
+- `POST /api/v1/diagram/svg` and `POST /api/v1/diagram/pdf` (phase 5) take the same
+  body as `POST /api/v1/diagram/scene` plus the page size, and return the chart through
+  the writers of `coolplot-core`. The GUI sends the body of the chart on screen, so the
+  file is the chart the user sees; the server keeps no chart between requests.
 - `GET /api/v1/coolprop/fluids` and `GET /api/v1/variables/inferred` stay;
   `POST /api/v1/coolprop/saturation` is removed with the old tab.
 
@@ -176,9 +179,25 @@ in CoolPlot's measurement, including its JSON reading and writing).
 | `Real` | `CoolProp::Plot` with the CoolProp name | reference offsets are zero |
 | `Mixture` (`A[x]&B[y]`) | `CoolProp::Plot` (tracer, dome from the phase envelope) | predefined blends as `R407C.mix`, not the pseudo-pure `R407C` |
 | `Incompressible` | `CoolProp::Plot`, absolute limits | no dome |
-| `IdealGas` | `CoolProp::Plot` over the gas region, absolute limits, then the h, u and s axes and isoline values shifted by `IdealGasFluid::getReferenceState` | CoolSolve's EES/JANAF basis; CoolSolve only. To verify: temperature-only calls of CoolSolve use the dummy pressure, the lines use the real equation of state at every pressure, so states and lines agree only if the solve used the same pressure |
+| `IdealGas` | `CoolProp::Plot` over the gas region, absolute limits, then the h, u and s axes and isoline values shifted by `IdealGasFluid::getReferenceState` | CoolSolve's EES/JANAF basis; CoolSolve only. Pressure basis: see below |
 | `HumidAir` (`AirH2O`) | humid-air lines (psychrometric `WT` and Mollier `ThxW`, both composed by `coolplot-core` 1.2) | lines are Python only today (section 7, U5) |
 | `AmmoniaWater` (`NH3H2O`), LiBr ASHRAE | CoolSolve's own curve code (`nh3h2o.h`, `libr_ashrae.h`), curve records in CoolPlot's format | needs chart kinds CoolPlot does not have (section 7, U9) |
+
+**Pressure basis of ideal gases.** CoolSolve evaluates an `IdealGas` species with
+CoolProp's real-gas equation of state plus the reference offsets, so a call with two
+state inputs (`enthalpy(Air, T=T_2, P=P_2)`) carries the real-gas residual at `P_2`, and
+the lines of `CoolProp::Plot` are computed the same way: these states lie on their lines.
+A call with the temperature as its only input (`enthalpy(Air, T=T_2)`, the EES form) is
+evaluated at the fluid's dummy pressure (`IdealGasFluid::getDummyPressureSI`, 101325 Pa,
+100 Pa for H2O; `src/evaluator.cpp`), so its h or u is that of the dummy pressure, not of
+the state's own pressure. Drawn at `(s_2, h_2)` such a state is off the isobar of `P_2`
+by the residual enthalpy between the two pressures (small for a gas far from saturation,
+growing with pressure). The plan keeps the lines on the solver's two-input basis, which is
+the basis of the state's pressure, and does not hide the difference: the test of
+section 6.2 measures it (Air and CO2 at 20 bar and 300 K, states from T-only and from
+two-input calls), and if it is visible at chart scale, the GUI marks the states whose h
+or u came from a T-only call. Changing how CoolSolve evaluates T-only calls of ideal
+gases is a solver question, outside this plan.
 
 A provider interface in `src/diagram/provider.h` hides the difference: domain, lines,
 states along a path, state at a point. The engine never looks inside a provider, as in
@@ -213,8 +232,10 @@ matplotlib backend and the Python facades.
 
 A `PropertyPlot` computes all its lines with one `AbstractState` and holds a lock while
 it does; two threads that need lines of the same fluid at the same time need two plots.
-The engine keeps a small pool of plots per (fluid, chart, region), bounded like the
-curve cache. Building a plot is the expensive step for a mixture (critical point and
+The engine keeps a small pool of plots, bounded like the curve cache and keyed like
+it: fluid, CoolProp fingerprint (version, a digest of the configuration, the reference
+state), chart and region. A plot built under other CoolProp settings is never reused;
+when the fingerprint changes, the plots of the old one are dropped. Building a plot is the expensive step for a mixture (critical point and
 phase envelope), so plots are reused, never built per request.
 
 ### 3.5 Build
@@ -265,18 +286,30 @@ loops, paths) is saved in the ZIP bundle with the chart spec (`diagram.json`), n
 
 Today's name heuristic merges everything that shares a suffix. A rule based on the
 equations: each property call on a fluid involves a set of state variables (inputs and
-output); two calls describe the same state when they share **two variables of
-independent properties** (state postulate for a pure fluid). `h_2 = enthalpy(R134a,
+output); two calls describe the same state when they share **as many variables of
+independent properties as the fluid needs to fix a state** (`Fluid::getMinInputs()`):
+two for a pure fluid, a mixture of fixed composition (`A[x]&B[y]`) and an
+incompressible; three for humid air (T, P and a humidity) and for `NH3H2O` (T, P, X).
+The concentration of an incompressible solution (`C=30`) and the composition of a
+mixture are part of the fluid of the call, so calls at another concentration are never
+grouped together. For a pure fluid, with two: `h_2 = enthalpy(R134a,
 P=P_2, s=s_2)` and `T_2 = temperature(R134a, P=P_2, h=h_2)` share `P_2` and `h_2`: one
 state. `T_sat = temperature(R134a, P=P_cond, x=1)` shares only `P_cond` with the
 condenser states: a separate state. T and P are not independent inside the dome, so a
-pair (T, P) alone does not merge two calls. This needs a test on the library models
-before it replaces the heuristic. It is CoolSolve's own work.
+pair (T, P) alone does not merge two calls. Each fluid kind gets its own tests (a pure
+refrigerant cycle, a blend, an air-handling unit, an absorption cycle) and a run on the
+library models before the rule replaces the heuristic for that kind; until then the kind
+keeps the heuristic. It is CoolSolve's own work.
 
 ### 4.3 Values and units
 
-States go into the spec in SI; the GUI converts the model units on the way. Each state
-is drawn from its solved values, never recomputed. One chart belongs to one fluid; a
+States go into the spec in SI. The conversion is done on the server, with the same
+unit code as the solver (`UnitConverter`, `src/units.cpp`), not in the GUI: the scene
+request names the variables of each state (array elements, inferred or picked
+variables), and the server reads their solved values and their units from the session's
+solution and converts them to SI, temperatures with their offset (deg C, deg F). The GUI
+holds no unit logic of its own. Each state is drawn from its solved values, never
+recomputed. One chart belongs to one fluid; a
 model with several fluids gets one chart per fluid, chosen in the fluid list as today.
 
 The default unit system is CoolPlot's `engineering` (deg C, bar, kJ/kg; the name was
@@ -333,7 +366,9 @@ phase starts is replaced by its interim implementation (section 2.1).
 - [CoolSolve] The chart spec is saved in the ZIP bundle and restored (gui.md section
   14.4 "Diagram state persistence"); `exportPlots.ts` keeps exporting
   `thermo_diagrams.png` (the new tab keeps the `thermo-diagram` class).
-- [CoolSolve] Remove `POST /api/v1/coolprop/saturation` and `ThermoDiagram.tsx`.
+- [CoolSolve] Remove `POST /api/v1/coolprop/saturation`, `ThermoDiagram.tsx`,
+  `getSaturationDome` in `gui/src/api/client.ts`, and the saturation entries of
+  [gui.md](gui.md) (endpoint table, Diagrams tab, test table).
 
 ### Phase 3: cycles from the model
 
@@ -403,13 +438,26 @@ SVG writer). CoolSolve does not repeat those tests. It tests its own parts (Catc
 
 On every fixture fluid:
 
-- the dome closes at the critical point; liquid and vapour lines meet there;
-- an isoline crossing the dome contains the saturation states; inside it, an isobar of a
-  T-s chart and an isotherm of a p-h chart are horizontal;
 - no point is drawn where a property call failed;
 - consistency with the solver: a state solved by CoolSolve lies on the isolines of its
-  own properties (for a `Real` fluid, a mixture and an ideal gas with a JANAF reference
-  state).
+  own properties (for a `Real` fluid, a mixture, an incompressible, humid air, and an ideal
+  gas with a JANAF reference state at a pressure other than its dummy pressure, with the
+  measured offset of T-only states of section 3.2).
+
+On fluids with a dome (`Real` with a critical point, `Mixture`, `NH3H2O`):
+
+- the dome closes at the critical point (for a mixture, at the end of the phase envelope
+  drawn); liquid and vapour lines meet there;
+- an isoline crossing the dome contains the saturation states; inside it, an isobar of a
+  T-s chart and an isotherm of a p-h chart of a pure fluid are horizontal.
+
+On fluids without a dome:
+
+- `Incompressible` and `IdealGas`: no saturation or quality line is drawn, and every
+  line stays inside the absolute limits of the chart;
+- humid air: the line of 100 % relative humidity bounds the lines (no state with a
+  humidity ratio above saturation), and lines of constant relative humidity meet it only
+  at 100 %.
 
 ### 6.3 Performance
 
