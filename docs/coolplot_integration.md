@@ -305,6 +305,17 @@ refrigerant cycle, a blend, an air-handling unit, an absorption cycle) and a run
 library models before the rule replaces the heuristic for that kind; until then the kind
 keeps the heuristic. It is CoolSolve's own work.
 
+**Input of the grouping.** The rule needs the property calls themselves (which variables
+appear together in one call, the fluid and the concentration argument), which the flat
+per-variable records of `inferVariables` (`inferredFluid`, `inferredProperty`) do not
+hold. The server already reads the IR after each solve to fill
+`Session::inferredVariables` (`src/server.cpp`, "Extract inference data from IR"); in the
+same place it extracts one record per property call (fluid name, concentration argument
+as a variable name or a constant, the input variables with their properties, the output
+variable with its property) into the session, next to the inferred variables. The
+grouping (`diagram/cycles_from_model`) reads those records; it never parses the
+`.eescode` again.
+
 ### 4.3 Values and units
 
 States go into the spec in SI. The conversion is done on the server, with the same
