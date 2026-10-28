@@ -290,9 +290,13 @@ output); two calls describe the same state when they share **as many variables o
 independent properties as the fluid needs to fix a state** (`Fluid::getMinInputs()`):
 two for a pure fluid, a mixture of fixed composition (`A[x]&B[y]`) and an
 incompressible; three for humid air (T, P and a humidity) and for `NH3H2O` (T, P, X).
-The concentration of an incompressible solution (`C=30`) and the composition of a
-mixture are part of the fluid of the call, so calls at another concentration are never
-grouped together. For a pure fluid, with two: `h_2 = enthalpy(R134a,
+The composition of a mixture is part of its fluid name (`A[x]&B[y]`). The concentration
+of an incompressible solution is not: the call names the base fluid (`EG`) and passes the
+concentration as an argument (`C=30`, or a variable), and `inferVariables` stores only
+the base name (`VariableInfo::inferredFluid`). The grouping key of a call is therefore
+the fluid name plus, for a solution, its concentration argument (the variable it names,
+or its solved value for a constant), so calls at another concentration are never
+grouped together; a test with `C=30` and `C=40` in one model checks it. For a pure fluid, with two: `h_2 = enthalpy(R134a,
 P=P_2, s=s_2)` and `T_2 = temperature(R134a, P=P_2, h=h_2)` share `P_2` and `h_2`: one
 state. `T_sat = temperature(R134a, P=P_cond, x=1)` shares only `P_cond` with the
 condenser states: a separate state. T and P are not independent inside the dome, so a
