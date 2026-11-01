@@ -143,6 +143,47 @@ bool anyContains(const std::vector<std::string>& messages, const std::string& te
 // CS-BUG-IF-IGNORED: IF conditions inside FUNCTION/PROCEDURE bodies
 // ============================================================================
 
+TEST_CASE("CS-BUG-PROC-NEG-POW: reproducer of the register", "[library-gaps][neg-pow]") {
+    // An integer power of a negative quantity inside a PROCEDURE: the AD
+    // derivative of '^' went through ln(q) and made the whole Jacobian row NaN.
+    auto run = runModel(R"(
+PROCEDURE PP(a : x, y)
+  q = a - 0.75
+  x = q^3
+  y = 1
+END
+CALL PP(0.25 : x, y)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["x"], WithinAbs(-0.125, 1e-12));
+    CHECK_THAT(run["y"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-PROC-NEG-POW: CALL output inside a coupled block", "[library-gaps][neg-pow]") {
+    // Layout of library model CSL-0326 (RadHTC_FG: log10(pL)^2 with pL < 1):
+    // the procedure takes a block unknown as input and its output is used by
+    // another equation of the same block, so the NaN row spread to that
+    // equation too and Newton stopped with SingularJacobian at iteration 0.
+    auto run = runModel(R"(
+PROCEDURE emis(T, pL : e)
+  lp = log10(pL)
+  e = 300*10^(0.2 + 0.1*lp + 0.05*lp^2 + 0.01*lp^3)/T
+END
+pL = 0.05
+CALL emis(T_g, pL : e)
+h = 50*e
+T_g = 300 + h
+)");
+    REQUIRE(run.solveOk);
+    REQUIRE(run.verified);
+    const double lp = std::log10(0.05);
+    const double k = 300.0 * std::pow(10.0, 0.2 + 0.1*lp + 0.05*lp*lp + 0.01*lp*lp*lp);
+    double T = 350.0;
+    for (int it = 0; it < 200; ++it) T = 300.0 + 50.0 * k / T;   // contraction, |dT'/dT| ~ 0.16
+    CHECK_THAT(run["T_g"], WithinRel(T, 1e-5));   // solver tolerance, not the fix
+    CHECK_THAT(run["e"], WithinRel(k / T, 1e-5));
+}
+
 TEST_CASE("CS-BUG-IF-IGNORED: reproducer of the register", "[library-gaps][if-then-else]") {
     SECTION("single-line IF in a FUNCTION with a literal-true condition") {
         auto run = runModel(R"(

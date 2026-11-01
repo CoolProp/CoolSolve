@@ -4,6 +4,7 @@
 #include "coolsolve/evaluator.h" // For getProfilingStatsString
 #include "coolsolve/lookup_table.h"
 #include "coolsolve/integral/integral_problem.h"  // hasIntegral
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -561,7 +562,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         std::ostringstream diag;
         diag << "# Singular Jacobian Diagnostics\n\n";
         diag << "**Block:** " << i << "\n\n";
-        diag << "**Equation:** ";
+        diag << "**First equation of the block:** ";
         const auto& block = analysisResult_.blocks[i];
         for (int eqId : block.equationIds) {
             if (eqId >= 0 && eqId < static_cast<int>(ir_->getEquations().size())) {
@@ -582,6 +583,60 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         for (size_t j = 0; j < tr.singularJacobianF.size(); ++j) {
             diag << "| " << j << " | " << std::scientific << std::setprecision(6)
                  << tr.singularJacobianF[j] << " |\n";
+        }
+
+        // Rows and columns that make the Jacobian singular for structural or
+        // numerical reasons: non-finite entries (NaN/Inf, e.g. a derivative
+        // through ln(x) with x < 0) and rows/columns that are entirely zero.
+        // Rows follow the block's equation order, columns its variable order.
+        diag << "\n## Non-finite entries, zero rows and zero columns\n\n";
+        {
+            const auto& J = tr.singularJacobianJ;
+            auto eqText = [&](size_t r) -> std::string {
+                if (r < block.equationIds.size()) {
+                    const int eqId = block.equationIds[r];
+                    if (eqId >= 0 && eqId < static_cast<int>(ir_->getEquations().size()))
+                        return ir_->getEquations()[eqId].originalText;
+                }
+                return "?";
+            };
+            auto varName = [&](size_t c) -> std::string {
+                return c < block.variables.size() ? block.variables[c] : std::string("?");
+            };
+            bool any = false;
+            for (size_t r = 0; r < J.size(); ++r) {
+                size_t nNonFinite = 0;
+                std::string firstVar;
+                bool allZero = true;
+                for (size_t c = 0; c < J[r].size(); ++c) {
+                    if (!std::isfinite(J[r][c])) {
+                        if (nNonFinite == 0) firstVar = varName(c);
+                        ++nNonFinite;
+                    }
+                    if (J[r][c] != 0.0) allZero = false;
+                }
+                if (nNonFinite > 0) {
+                    diag << "- row " << r << ": " << nNonFinite << " non-finite entr"
+                         << (nNonFinite == 1 ? "y" : "ies") << " (first: column of `" << firstVar
+                         << "`) | equation: `" << eqText(r) << "`\n";
+                    any = true;
+                } else if (allZero) {
+                    diag << "- row " << r << ": all zero | equation: `" << eqText(r) << "`\n";
+                    any = true;
+                }
+            }
+            if (!J.empty()) {
+                for (size_t c = 0; c < J[0].size(); ++c) {
+                    bool allZero = true;
+                    for (size_t r = 0; r < J.size(); ++r)
+                        if (J[r][c] != 0.0) allZero = false;
+                    if (allZero) {
+                        diag << "- column " << c << ": all zero | variable: `" << varName(c) << "`\n";
+                        any = true;
+                    }
+                }
+            }
+            if (!any) diag << "None: the matrix is finite and has no empty row or column (numerical rank deficiency).\n";
         }
 
         diag << "\n## Jacobian matrix J\n\n";
