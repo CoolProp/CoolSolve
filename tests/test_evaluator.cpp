@@ -105,6 +105,31 @@ TEST_CASE("ADValue power operations", "[autodiff]") {
         // dz/dy = x^y * ln(x) = 8 * ln(2)
         REQUIRE_THAT(z.gradient[1], WithinAbs(8.0 * std::log(2.0), 1e-10));
     }
+
+    SECTION("Negative base with a constant exponent (CS-BUG-PROC-NEG-POW)") {
+        // z = x^y at x = -0.5, y = 3 held as an ADValue constant (zero
+        // gradient), as the '^' operator of the evaluator builds it.  The
+        // ln(x) term must not enter: dz/dx = 3*x^2 = 0.75, no NaN.
+        const size_t n = 2;
+        auto x = coolsolve::ADValue::independent(-0.5, 0, n);
+        auto y = coolsolve::ADValue::constant(3.0, n);
+        auto z = coolsolve::pow(x, y);
+
+        REQUIRE_THAT(z.value, WithinAbs(-0.125, 1e-15));
+        REQUIRE_THAT(z.gradient[0], WithinAbs(0.75, 1e-12));
+        REQUIRE(z.gradient[1] == 0.0);
+    }
+
+    SECTION("Negative base, varying exponent: only the exponent column is undefined") {
+        const size_t n = 2;
+        auto x = coolsolve::ADValue::independent(-2.0, 0, n);
+        auto y = coolsolve::ADValue::independent(2.0, 1, n);
+        auto z = coolsolve::pow(x, y);
+
+        REQUIRE_THAT(z.value, WithinAbs(4.0, 1e-15));
+        REQUIRE_THAT(z.gradient[0], WithinAbs(-4.0, 1e-12));   // y*x^(y-1)
+        REQUIRE(std::isnan(z.gradient[1]));                    // x^y*ln(x), x < 0
+    }
 }
 
 TEST_CASE("ADValue transcendental functions", "[autodiff]") {

@@ -230,8 +230,13 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
                 trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
                 trace->singularJacobianF.assign(F.data(), F.data() + F.size());
                 trace->singularJacobianJ.resize(J.rows());
-                for (Eigen::Index r = 0; r < J.rows(); ++r)
-                    trace->singularJacobianJ[r].assign(J.row(r).data(), J.row(r).data() + J.cols());
+                // Element-wise copy: J is column-major, so J.row(r).data() is not
+                // a contiguous row (it read J(r..r+n-1, 0) and beyond).
+                for (Eigen::Index r = 0; r < J.rows(); ++r) {
+                    trace->singularJacobianJ[r].resize(J.cols());
+                    for (Eigen::Index c = 0; c < J.cols(); ++c)
+                        trace->singularJacobianJ[r][c] = J(r, c);
+                }
             }
             x = y.cwiseProduct(scale);
             return SolverStatus::SingularJacobian;

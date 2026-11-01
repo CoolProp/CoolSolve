@@ -111,24 +111,35 @@ inline ADValue pow(const ADValue& x, double y) {
 }
 
 // Power: z = x^y (where both are ADValues)
-// z = exp(y * ln(x))
-// z.gradient = x^y * (y.gradient * ln(x) + y * x.gradient / x)
-// When x=0, ln(x) and 1/x are undefined; use power-rule d(x^y)/dx = y*x^(y-1)*x.gradient
+// dz = y*x^(y-1)*dx + x^y*ln(x)*dy
+// The two terms are taken separately so that the ln(x) term only enters the
+// components where the exponent actually varies: with a constant exponent
+// (dy = 0) a negative base with an integer exponent (q^2, q^3 with q < 0, a
+// well-defined value) keeps a finite derivative.  Writing the derivative as
+// x^y*(dy*ln(x) + y*dx/x) made every component 0*NaN = NaN for x < 0
+// (CS-BUG-PROC-NEG-POW: the whole Jacobian row of a procedure CALL output,
+// and of every equation of the block that uses that output, became NaN).
+// When x=0, ln(x) and 1/x are undefined; the power rule is used for d/dx and
+// the dy term is dropped.
 inline ADValue pow(const ADValue& x, const ADValue& y) {
     double val = std::pow(x.value, y.value);
     ADValue z(val, x.gradient.size());
     constexpr double eps = 1e-14;
+    double dvdx;
+    double dvdy;
     if (std::abs(x.value) < eps) {
         // At x≈0: avoid ln(0) and division by zero; use power-rule for d/dx
-        double dval = (y.value >= 1.0) ? y.value * std::pow(x.value, y.value - 1.0) : 0.0;
-        for (size_t i = 0; i < z.gradient.size(); ++i) {
-            z.gradient[i] = dval * x.gradient[i];
-        }
+        dvdx = (y.value >= 1.0) ? y.value * std::pow(x.value, y.value - 1.0) : 0.0;
+        dvdy = 0.0;
     } else {
-        double lnx = std::log(x.value);
-        for (size_t i = 0; i < z.gradient.size(); ++i) {
-            z.gradient[i] = val * (y.gradient[i] * lnx + y.value * x.gradient[i] / x.value);
-        }
+        dvdx = y.value * std::pow(x.value, y.value - 1.0);
+        // x^y*ln(x): real only for x > 0 (NaN for x < 0, used only where dy != 0)
+        dvdy = val * std::log(x.value);
+    }
+    for (size_t i = 0; i < z.gradient.size(); ++i) {
+        double g = dvdx * x.gradient[i];
+        if (y.gradient[i] != 0.0) g += dvdy * y.gradient[i];
+        z.gradient[i] = g;
     }
     return z;
 }
