@@ -306,6 +306,7 @@ The debug folder contains:
 | `integral.md` | Integral solver report (dynamic/`INTEGRAL` models) |
 | `integral_table.csv` | Full trajectory CSV (dynamic/`INTEGRAL` models) |
 | `solution_check.md` | Post-solve equation verification (LHS vs RHS for every equation) |
+| `solver_singular_diagnostics.md` | Residuals and Jacobian of the first block that failed with a singular Jacobian, with its non-finite entries and zero rows/columns |
 | `original.eescode` | Copy of the original input |
 
 ### Command Line Options

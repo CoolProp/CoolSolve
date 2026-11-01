@@ -76,7 +76,7 @@ Outside the GUI, the equivalent is to send `{"deepSearch": true}` to the
 
 - **Meaning**: Jacobian is rank-deficient; Newton cannot compute a unique step.
 - **Typical causes**: Redundant equations, degenerate system, bad structural analysis.
-- **Check**: `solver_singular_diagnostics.md` – the residual and Jacobian at the failure.
+- **Check**: `solver_singular_diagnostics.md` – the residual and Jacobian at the failure. Its section *Non-finite entries, zero rows and zero columns* names the equations whose Jacobian row holds NaN/Inf (e.g. a derivative through `ln(x)` with `x` < 0) and the empty rows and columns (an equation whose derivatives all vanish at that point, an unknown on which no residual depends there). Rows follow the block's equations and columns its variables; with symbolic reduction the Jacobian is that of the reduced block and is given by index only. When it reports none, the matrix is numerically rank-deficient.
 
 ### Diverged
 

@@ -132,7 +132,8 @@ inline ADValue pow(const ADValue& x, const ADValue& y) {
         dvdx = (y.value >= 1.0) ? y.value * std::pow(x.value, y.value - 1.0) : 0.0;
         dvdy = 0.0;
     } else {
-        dvdx = y.value * std::pow(x.value, y.value - 1.0);
+        // y*x^(y-1) = y*val/x: no second pow, finite for x < 0 with an integer y
+        dvdx = y.value * val / x.value;
         // x^y*ln(x): real only for x > 0 (NaN for x < 0, used only where dy != 0)
         dvdy = val * std::log(x.value);
     }

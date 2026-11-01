@@ -592,8 +592,15 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         diag << "\n## Non-finite entries, zero rows and zero columns\n\n";
         {
             const auto& J = tr.singularJacobianJ;
+            // With symbolic reduction the Jacobian is that of the reduced block:
+            // its rows and columns are then not the block's, so give no names.
+            const bool namesMatch = J.size() == block.equationIds.size() &&
+                                    (J.empty() || J[0].size() == block.variables.size());
+            if (!namesMatch)
+                diag << "The Jacobian belongs to a reduced block (" << J.size() << " rows, block of "
+                     << block.equationIds.size() << " equations): rows and columns are given by index only.\n\n";
             auto eqText = [&](size_t r) -> std::string {
-                if (r < block.equationIds.size()) {
+                if (namesMatch && r < block.equationIds.size()) {
                     const int eqId = block.equationIds[r];
                     if (eqId >= 0 && eqId < static_cast<int>(ir_->getEquations().size()))
                         return ir_->getEquations()[eqId].originalText;
@@ -601,7 +608,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
                 return "?";
             };
             auto varName = [&](size_t c) -> std::string {
-                return c < block.variables.size() ? block.variables[c] : std::string("?");
+                return namesMatch && c < block.variables.size() ? block.variables[c] : std::string("?");
             };
             bool any = false;
             for (size_t r = 0; r < J.size(); ++r) {
