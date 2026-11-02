@@ -10,6 +10,7 @@
 #include <Eigen/Dense>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 
 namespace coolsolve {
 
@@ -112,6 +113,31 @@ private:
     int memory_;
     std::vector<double> values_;
 };
+
+/**
+ * @brief Acceptance test of a backtracking line-search step.
+ *
+ * Non-monotone Armijo condition (Grippo et al. 1986)
+ *   φ(x + λd) ≤ refPhi + α λ ∇φ·d,  with ∇φ·d = -2 φ₀ for a Newton step,
+ * plus two relaxations near a minimum, where φ only changes by rounding
+ * noise and the strict test would reject every step.  Used by the Newton
+ * line search and by the tearing outer iteration.
+ *
+ * @param phiNew  Merit at the trial point (non-finite → rejected)
+ * @param phi0    Merit at the start of the step
+ * @param refPhi  Non-monotone reference (`NonMonotoneHistory::boundedRef`)
+ * @param lambda  Step length of the trial point
+ * @param alpha   Armijo parameter (`SolverOptions::lsAlpha`)
+ */
+inline bool lineSearchAccepts(double phiNew, double phi0, double refPhi,
+                              double lambda, double alpha) {
+    if (!std::isfinite(phiNew)) return false;
+    if (phiNew <= refPhi - alpha * lambda * 2.0 * phi0) return true;
+    // Near-minimum relaxation
+    if (phi0 < 0.05 && phiNew < phi0 * 2.0) return true;
+    if (lambda < 0.01 && phi0 < 0.1 && phiNew <= phi0 * 1.5) return true;
+    return false;
+}
 
 /**
  * @brief Record one iteration in a SolverTrace.

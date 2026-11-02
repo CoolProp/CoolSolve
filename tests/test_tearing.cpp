@@ -8,6 +8,9 @@
 #include "coolsolve/structural_analysis.h"
 #include "coolsolve/evaluator.h"
 #include "coolsolve/solver.h"
+#include "coolsolve/solver_common.h"
+#include <cmath>
+#include <limits>
 
 using namespace coolsolve;
 
@@ -173,4 +176,104 @@ TEST_CASE("Tearing with Schur complement solves strongly-coupled nonlinear syste
     // Check both equations are satisfied
     REQUIRE(std::abs(x + y - 10) < 1e-6);
     REQUIRE(std::abs(y - (x * x - 6)) < 1e-6);
+}
+
+// ============================================================================
+// Backtracking line search on the tearing outer step
+// ============================================================================
+
+TEST_CASE("lineSearchAccepts: Armijo test shared by Newton and tearing", "[tearing][line-search]") {
+    const double alpha = 1e-4;
+    // Sufficient decrease against a monotone reference (refPhi = phi0)
+    REQUIRE(lineSearchAccepts(10.0, 100.0, 100.0, 1.0, alpha));
+    REQUIRE_FALSE(lineSearchAccepts(150.0, 100.0, 100.0, 1.0, alpha));
+    // Non-monotone reference admits a moderate increase
+    REQUIRE(lineSearchAccepts(150.0, 100.0, 200.0, 1.0, alpha));
+    // Non-finite trial merit is always rejected
+    REQUIRE_FALSE(lineSearchAccepts(std::numeric_limits<double>::quiet_NaN(), 100.0, 100.0, 1.0, alpha));
+    REQUIRE_FALSE(lineSearchAccepts(std::numeric_limits<double>::infinity(), 100.0, 100.0, 1.0, alpha));
+    // Near a minimum, rounding-level increases are accepted
+    REQUIRE(lineSearchAccepts(1.5e-14, 1e-14, 1e-14, 1.0, alpha));
+    REQUIRE_FALSE(lineSearchAccepts(3e-14, 1e-14, 1e-14, 1.0, alpha));
+}
+
+namespace {
+// h from an energy balance with a velocity squared and from a second relation:
+// roots C ~ 537.6 (kept) and C ~ -337.6.  Far from the solution the full tearing
+// step overshoots and must be shortened.
+const char* kVelocityBlock = R"(
+    h = 400 + 0.0005*C^2
+    h = 480 + 0.1*C + 0.01*m
+    m = 2*C
+)";
+
+SolveResult solveVelocityBlock(double C0, SolverTrace* traceOut) {
+    EESParser parser;
+    auto parseResult = parser.parse(kVelocityBlock);
+    REQUIRE(parseResult.success);
+    IR ir = IR::fromAST(parseResult.program);
+    StructuralAnalysisResult analysis = StructuralAnalyzer::analyze(ir);
+    REQUIRE(analysis.success);
+    CoolPropConfig config;
+    Solver solver(ir, analysis, config);
+    solver.setGuess("C", C0);
+    solver.setGuess("h", 500.0);
+    solver.setGuess("m", 10.0);
+    SolverOptions options;
+    options.enableTearing = true;
+    options.tearingMinBlockSize = 2;
+    options.solverPipeline = {SolverStrategy::Newton};
+    SolveResult result = solver.solve(options, true);
+    for (const auto& tr : result.blockTraces)
+        if (tr.solverType.find("Tearing") != std::string::npos) *traceOut = tr;
+    return result;
+}
+} // namespace
+
+TEST_CASE("Tearing line search shortens an overshooting outer step", "[tearing][line-search]") {
+    SolverTrace trace;
+    SolveResult result = solveVelocityBlock(1.0, &trace);
+    REQUIRE(result.success);
+    // Solved by tearing itself, on the positive root
+    REQUIRE(trace.solverType == "Tearing");
+    REQUIRE(trace.finalStatus == SolverStatus::Success);
+    const double C = result.variables.at("C");
+    REQUIRE(std::abs(C - 537.6122603564) < 1e-6);
+    bool shortened = false;
+    for (const auto& it : trace.iterations) shortened = shortened || it.lambda < 1.0;
+    REQUIRE(shortened);
+}
+
+TEST_CASE("Tearing line search keeps full steps from a good start", "[tearing][line-search]") {
+    SolverTrace trace;
+    SolveResult result = solveVelocityBlock(600.0, &trace);
+    REQUIRE(result.success);
+    REQUIRE(trace.solverType == "Tearing");
+    for (const auto& it : trace.iterations) REQUIRE(it.lambda == 1.0);
+}
+
+TEST_CASE("Tearing on a block without real solution fails with a message", "[tearing][line-search]") {
+    // x^2 - x + 4 = 0 has no real root: tearing (bounded backtracking) and the
+    // Newton fallback must both stop and report, not loop or crash.
+    std::string code = R"(
+        x + y = 1
+        y = -(x^2) - 3
+    )";
+    EESParser parser;
+    auto parseResult = parser.parse(code);
+    REQUIRE(parseResult.success);
+    IR ir = IR::fromAST(parseResult.program);
+    StructuralAnalysisResult analysis = StructuralAnalyzer::analyze(ir);
+    REQUIRE(analysis.success);
+    CoolPropConfig config;
+    Solver solver(ir, analysis, config);
+    solver.setGuess("x", 1.0);
+    solver.setGuess("y", 1.0);
+    SolverOptions options;
+    options.enableTearing = true;
+    options.tearingMinBlockSize = 2;
+    options.solverPipeline = {SolverStrategy::Newton};
+    SolveResult result = solver.solve(options, false);
+    REQUIRE_FALSE(result.success);
+    REQUIRE_FALSE(result.errorMessage.empty());
 }

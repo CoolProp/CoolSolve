@@ -45,8 +45,6 @@ double NewtonSolver::lineSearch(Problem& problem,
                                 const SolverOptions& options,
                                 double refPhi) {
     double phi0 = 0.5 * F.squaredNorm();
-    // Directional derivative: ∇φ·dx = -||F||² = -2φ₀ for the full Newton step
-    double dphi0 = -2.0 * phi0;
 
     double lambda = 1.0;
     Eigen::VectorXd x_new(x.size());
@@ -64,14 +62,9 @@ double NewtonSolver::lineSearch(Problem& problem,
 
         double phi_new = 0.5 * F_new.squaredNorm();
 
-        // Non-monotone Armijo condition (Grippo et al. 1986):
-        //   φ(x + λd) ≤ refPhi + α λ ∇φ·d
-        // where refPhi = max(φ_{k-M+1}, ..., φ_k) from the outer iteration.
-        // When M=1, refPhi = φ₀ and this reduces to the standard monotone Armijo.
-        if (phi_new <= refPhi + options.lsAlpha * lambda * dphi0) return lambda;
-        // Near-minimum relaxation
-        if (phi0 < 0.05 && phi_new < phi0 * 2.0) return lambda;
-        if (lambda < 0.01 && phi0 < 0.1 && phi_new <= phi0 * 1.5) return lambda;
+        // Non-monotone Armijo condition (Grippo et al. 1986), refPhi =
+        // max(φ_{k-M+1}, ..., φ_k) from the outer iteration (M=1: monotone).
+        if (lineSearchAccepts(phi_new, phi0, refPhi, lambda, options.lsAlpha)) return lambda;
 
         lambda *= options.lsRho;
         if (lambda < options.lsMinStep) return 0.0;

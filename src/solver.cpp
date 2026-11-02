@@ -2053,6 +2053,37 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
         }
     }
 
+    // Backtracking line search on the outer step: the non-monotone Armijo
+    // test of the Newton line search (Grippo, Lampariello & Lucidi 1986;
+    // Dennis & Schnabel 1996, §6.3) on the block merit phi = 0.5*||F||^2.
+    // The step of an outer iteration is everything it changes, the forward
+    // sweep and the tear step: d = x_next - x.  Its trial point x + d is
+    // evaluated by the first evaluation of the next outer iteration, so an
+    // accepted full step costs no extra evaluation; a rejected one retries
+    // from x + lambda*d with lambda *= lsRho (lambda -> 0 gives back x).
+    // Without it, a full step could throw the iterate far away (an acyclic
+    // variable through zero, e.g. a velocity solved from h = h0 + C^2/2) and
+    // onto another root of the block.
+    // The backtracking is bounded (lambda >= kTearMinStep): the sweep makes
+    // the outer step a descent direction only near the solution, and far from
+    // it an unbounded search stalls at lambda ~ 1e-5 where the full steps
+    // still converged.  When the bound is reached the shortest step is taken.
+    NonMonotoneHistory meritHistory(options.lsNonMonotoneMemory);
+    Eigen::VectorXd xBase(static_cast<int>(n));      // start of the outer iteration of the pending step
+    Eigen::VectorXd dPending(static_cast<int>(n));   // pending step (sweep + tear step)
+    double phiBase = 0.0;
+    double refPhi = 0.0;
+    double lambda = 1.0;
+    bool baseFinite = false;
+    bool stepPending = false;
+    constexpr double kTearMinStep = 1.0 / 16.0;   // four halvings with the default lsRho
+    auto backtrack = [&]() -> bool {
+        if (lambda * options.lsRho < kTearMinStep) return false;
+        lambda *= options.lsRho;
+        x = xBase + lambda * dPending;
+        return true;
+    };
+
     for (int outer = 0; outer < maxOuter; ++outer) {
         // Check timeout at each outer iteration
         if (TimeoutGuard::hasTimedOut()) {
@@ -2069,6 +2100,7 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
         try {
             evalResult = blockEval.evaluate(x_std, externalVars, externalStringVars);
         } catch (const std::exception& e) {
+            if (stepPending && backtrack()) continue;   // trial point not evaluable: shorter step
             if (outErrorMessage) *outErrorMessage = std::string("Tearing evaluation failed: ") + e.what();
             if (trace) {
                 trace->finalStatus = SolverStatus::EvaluationError;
@@ -2084,6 +2116,22 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
             for (size_t j = 0; j < evalResult.jacobian[i].size(); ++j) {
                 J(static_cast<int>(i), static_cast<int>(j)) = evalResult.jacobian[i][j];
             }
+        }
+
+        // Accept or reject the pending step (this point is its trial point).
+        const double phi = 0.5 * F.squaredNorm();
+        if (stepPending) {
+            // Rejected and not shortened any further: keep the shortest step.
+            if (!lineSearchAccepts(phi, phiBase, refPhi, lambda, options.lsAlpha) && backtrack()) continue;
+            stepPending = false;
+        }
+        // A non-finite starting residual keeps the former behaviour (no line search).
+        baseFinite = std::isfinite(phi);
+        if (baseFinite) {
+            meritHistory.push(phi);
+            refPhi = meritHistory.boundedRef(phi);
+            phiBase = phi;
+            xBase = x;
         }
 
         // Acyclic forward sweep: use the Jacobian from the initial evaluation
@@ -2140,6 +2188,7 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
         // A = J_tear,tear, B = J_tear,acyclic, C = J_acyclic,tear, D = J_acyclic,acyclic (lower triangular)
         const size_t nAcyclic = nonTearEqLocalIndices.size();
         Eigen::MatrixXd S(static_cast<int>(nTear), static_cast<int>(nTear));
+        Eigen::MatrixXd V;   // D^{-1} C: response of the acyclic variables to the tear variables
         if (nAcyclic == 0) {
             for (size_t i = 0; i < nTear; ++i) {
                 for (size_t j = 0; j < nTear; ++j) {
@@ -2174,7 +2223,7 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
                 }
             }
             // V = D^{-1} C by forward substitution (D is lower triangular)
-            Eigen::MatrixXd V = D.triangularView<Eigen::Lower>().solve(C);
+            V = D.triangularView<Eigen::Lower>().solve(C);
             S = A - B * V;
         }
 
@@ -2185,7 +2234,7 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
             traceIter.iter = outer;
             traceIter.residualNorm = tearNorm;
             traceIter.stepNorm = 0.0;
-            traceIter.lambda = 1.0;
+            traceIter.lambda = lambda;   // step length that led to this iterate
             traceIter.x = std::vector<double>(x.data(), x.data() + x.size());
             traceIter.residuals = std::vector<double>(F_tear.data(), F_tear.data() + F_tear.size());
             // Build detail string with tear variable values and full residual norm
@@ -2246,6 +2295,19 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
         dx_tear = lu.solve(-F_tear);
         for (size_t i = 0; i < nTear; ++i) {
             x[tearVarIndices[i]] += dx_tear(static_cast<int>(i));
+        }
+        // Newton step of the block: the acyclic variables follow the tear step
+        // to first order (dx_acyclic = -V dx_tear), so that the trial point of
+        // the line search has a second-order residual, as for a Newton step.
+        if (nAcyclic > 0) {
+            const Eigen::VectorXd dxAcyclic = -V * dx_tear;
+            for (size_t j = 0; j < nAcyclic; ++j)
+                x[nonTearEqLocalIndices[j]] += dxAcyclic(static_cast<int>(j));
+        }
+        if (baseFinite) {
+            dPending = x - xBase;
+            lambda = 1.0;
+            stepPending = true;
         }
         if (trace && !trace->iterations.empty()) {
             trace->iterations.back().stepNorm = dx_tear.lpNorm<Eigen::Infinity>();
