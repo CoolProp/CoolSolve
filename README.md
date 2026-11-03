@@ -356,6 +356,10 @@ cd build
 ./coolsolve_tests "[library]"
 python3 ../tests/test_library_api.py --auto
 
+# GUI keyboard shortcuts (F2 = Solve) in headless Chromium, against the GUI server
+# (needs Chromium/Chrome and the Python package websockets; skipped without them)
+python3 ../tests/test_gui_shortcuts.py --auto
+
 # Run solver robustness tests (stress-tests every example with multiple
 # solver configurations: Newton-only, LM-only, tearing, symbolic reduction, etc.)
 # Requires a Release build — Debug timings are ~10x slower and must not be committed as reports.
@@ -496,6 +500,7 @@ CoolSolve/
 │   ├── test_examples.cpp       # Integration tests with example files
 │   ├── test_library_store.cpp  # Model library index/loader unit tests
 │   ├── test_library_api.py     # Library menu, open, per-tab sessions, /library/ (REST, needs the GUI build)
+│   ├── test_gui_shortcuts.py   # GUI keyboard shortcuts (F2) in headless Chromium (needs the GUI build)
 │   └── test_kinsol.cpp         # KINSOL solver unit tests (3 modes + config)
 ├── cmake/                      # embed_assets / embed_library: GUI, docs and model library embedded in the binary
 ├── tools/                      # EES import helpers: ees_extract.py, compare_solution.py (see docs/ees_import.md)

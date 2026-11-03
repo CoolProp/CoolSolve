@@ -441,6 +441,25 @@ export default function Toolbar() {
     return () => window.removeEventListener('keydown', handler);
   }, [solving, handleSolve, handleSave, handleOpen, handleNew, handleUpdateGuesses, handleStopSolve, tryHarderAvailable]);
 
+  // EES function keys (https://fchartsoftware.com/ees/eeshelp/windows_keys.htm).
+  // Only F2 is implemented; the others are listed for future work:
+  //   F1 help · F2 solve · F3 solve the parametric table · F4 / F5 min/max (table)
+  //   F6 / F7 uncertainty propagation (table) · F8 unit check · F9 variable info
+  //   F10 formatted equations · F11 residuals · F12 find next
+  // F2 does what the Solve button does (Try Harder after a failed run). It is
+  // caught in the capture phase and stopped there: Monaco binds F2 to "Rename
+  // Symbol" and would otherwise consume it while the editor has the focus.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'F2' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (!solving && eescode.trim()) handleSolve(false, tryHarderAvailable);
+    };
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
+  }, [solving, eescode, handleSolve, tryHarderAvailable]);
+
   return (
     <div className="toolbar">
       {/* File group */}
@@ -476,8 +495,8 @@ export default function Toolbar() {
             solving
               ? (deepSearchRunning ? 'Deep search in progress...' : 'Solving...')
               : tryHarderAvailable
-                ? 'Try Harder: re-run with the Deep Search pipeline (Ctrl+Enter)'
-                : 'Solve (Ctrl+Enter)'
+                ? 'Try Harder: re-run with the Deep Search pipeline (F2 or Ctrl+Enter)'
+                : 'Solve (F2 or Ctrl+Enter)'
           }
         >
           {solving ? <span className="spinner" /> : tryHarderAvailable ? <Zap size={16} /> : <Play size={16} />}

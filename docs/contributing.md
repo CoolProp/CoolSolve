@@ -221,7 +221,9 @@ If the feature has to be reachable from the GUI:
       semantics.
 - [ ] Add at least one targeted test (Python or C++) that hits the new
       route end-to-end. Existing examples: `tests/test_parametric_api.py`,
-      `tests/test_library_api.py` (`--auto` starts the server).
+      `tests/test_library_api.py` (`--auto` starts the server). A GUI
+      behaviour that only a browser shows (keyboard shortcuts) is tested in
+      headless Chromium: `tests/test_gui_shortcuts.py`.
 - [ ] Anything that identifies the caller goes through `getSession()`
       (cookie, `X-CoolSolve-Session` header, `?sid=`); never read the cookie
       directly. A session ID names a temp folder: accept only

@@ -420,8 +420,8 @@ Implemented in `Toolbar.tsx`.  All actions include keyboard shortcuts:
 | Open | `Ctrl+O` | Load a ZIP bundle (`.eescode` + companion files) |
 | Library | — | Drop-down that follows the taxonomy of the model library (category → sub-category → model) with a search box; lists the **verified** models only. Picking one opens the whole model folder (§7.3). The last entry opens the dashboard `/library/` with all the models |
 | Save | `Ctrl+S` | Download ZIP bundle |
-| Solve | `Ctrl+Enter` | Run async solve, stream progress via SSE |
-| Try Harder | `Ctrl+Enter` (after a failure) | Re-run with `deepSearch: true` — substitutes `deepSearchPipeline`, forces tearing + symbolic reduction on, and consults `multiStartMode`.  The Solve button morphs into Try Harder automatically when the previous run failed; editing the model, initials, or config reverts it to Solve. |
+| Solve | `F2` or `Ctrl+Enter` | Run async solve, stream progress via SSE. `F2` is the EES key; it also works while the editor has the focus (Monaco's own `F2`, *Rename Symbol*, is overridden) |
+| Try Harder | `F2` or `Ctrl+Enter` (after a failure) | Re-run with `deepSearch: true` — substitutes `deepSearchPipeline`, forces tearing + symbolic reduction on, and consults `multiStartMode`.  The Solve button morphs into Try Harder automatically when the previous run failed; editing the model, initials, or config reverts it to Solve. |
 | Debug Solve | `Ctrl+Shift+Enter` | Solve with tracing enabled, generate debug output |
 | Stop | `Escape` | Cancel running solve |
 | Update Guesses | `Ctrl+G` | Copy solved values into initial guesses |
@@ -891,6 +891,7 @@ All the following tests pass against the current codebase:
 | `POST /api/v1/parse` with source code | ✅ Returns equation/variable counts |
 | `POST /api/v1/files/open` with a `.eescode` file | ✅ Loads file + discovers companion files |
 | Library menu / open / per-tab sessions / bundle round-trip / `/library/` pages / `/files/open` restricted to the command-line file | ✅ `tests/test_library_api.py --auto` (67 checks) |
+| `F2` in headless Chromium: Solve and Try Harder reach `POST /api/v1/solve`, in and outside the editor; no solve on `Shift`/`Ctrl`/`Alt+F2`, an empty model or a running solve | ✅ `tests/test_gui_shortcuts.py --auto` (16 checks) |
 | `POST /api/v1/solve` with rankine1 example | ✅ Full solve result with block details |
 | `GET /api/v1/variables` | ✅ Returns solved variable values |
 | `GET /api/v1/solve/stream` (SSE, curl) | ✅ 30/30 blocks streamed; final result JSON embedded |
