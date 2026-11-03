@@ -34,7 +34,7 @@ set(COOLSOLVE_LIBRARY_TAG "main" CACHE STRING "CoolSolve Library branch, tag or 
 # correlations, which moves model results). Bump it deliberately -- see
 # docs/contributing.md ("Pinned CoolProp version"). `coolsolve --version`
 # prints the CoolProp version and git revision actually linked.
-set(COOLSOLVE_COOLPROP_PINNED_TAG "75af7816")
+set(COOLSOLVE_COOLPROP_PINNED_TAG "8eb3b778")
 set(COOLSOLVE_COOLPROP_TAG "${COOLSOLVE_COOLPROP_PINNED_TAG}" CACHE STRING "CoolProp git tag/branch/commit to use (default: the pinned commit)")
 
 # --- Fetch Dependencies ---

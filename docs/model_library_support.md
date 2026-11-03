@@ -590,8 +590,9 @@ round 3 was run on scratch copies with CoolSolve `4798e2b` (`feat/nh3h2o`) and a
   (HTML; `nDay_` and `Colebrook` are not in it: they come from EES add-on libraries);
   the EES 9.920 installation in `~/progs/EES32` (its `Userlib`).
 - *Build*: CoolProp is pinned in `CMakeLists.txt` (`COOLSOLVE_COOLPROP_PINNED_TAG` =
-  `75af7816`, master of 2026-10-09, 8.1.0dev); `cmake` warns when a build directory
-  caches another tag (`cmake -DCOOLSOLVE_COOLPROP_TAG=75af7816 ..` aligns it) and
+  `8eb3b778`, master of 2026-10-31, 8.1.0dev; bumped from `75af7816` on 2026-11-03 with
+  identical `.sol` files on all 43 solved examples); `cmake` warns when a build directory
+  caches another tag (`cmake -DCOOLSOLVE_COOLPROP_TAG=8eb3b778 ..` aligns it) and
   `coolsolve --version` prints the CoolProp revision linked. A bump is deliberate
   ([contributing.md](contributing.md#pinned-coolprop-version)). New `.cpp` files need `cmake .`.
 - *Baselines* of round 4 (pin `75af7816`, `feat/nh3h2o` @ `4798e2b`, 2026-10-18): unit suite 1209 test cases; examples 43/46
