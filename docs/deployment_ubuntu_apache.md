@@ -378,6 +378,20 @@ sudo ufw deny 8550
 
 ## 9. Updating CoolSolve
 
+The script `tools/update_coolsolve.sh` does the whole update. **Run it as root** (it restarts
+the services; the pull and the builds run as the `coolsolve` user):
+
+```bash
+sudo /home/coolsolve/CoolSolve/tools/update_coolsolve.sh
+```
+
+It pulls CoolSolve, rebuilds the GUI (`npm ci && npm run build`), reconfigures and compiles the
+`coolsolve` binary, restarts `coolsolve` and reloads Apache, then prints `coolsolve --version`.
+The reconfigure re-fetches the latest CoolSolve Library, and `-U COOLSOLVE_COOLPROP_TAG` makes
+it follow the CoolProp commit pinned in `CMakeLists.txt` (without it, the build directory keeps
+the CoolProp tag of its first configure). Edit the variables at its top if the server layout
+differs. The manual steps follow.
+
 After recompiling CoolSolve (e.g., after a `git pull` or `svn update`):
 
 ```bash

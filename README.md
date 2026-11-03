@@ -503,7 +503,8 @@ CoolSolve/
 │   ├── test_gui_shortcuts.py   # GUI keyboard shortcuts (F2) in headless Chromium (needs the GUI build)
 │   └── test_kinsol.cpp         # KINSOL solver unit tests (3 modes + config)
 ├── cmake/                      # embed_assets / embed_library: GUI, docs and model library embedded in the binary
-├── tools/                      # EES import helpers: ees_extract.py, compare_solution.py (see docs/ees_import.md)
+├── tools/                      # EES import helpers: ees_extract.py, compare_solution.py (see docs/ees_import.md);
+│                               # update_coolsolve.sh: server update, run as root (see docs/deployment_ubuntu_apache.md)
 └── examples/                   # Example .eescode files for the CLI and the regression tests
 ```
 
