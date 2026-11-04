@@ -38,6 +38,20 @@ export function enableTabSession(): string | null {
   return id;
 }
 
+/**
+ * Make `id` this tab's session: a tab opened on a session the server prepared for it (an included
+ * file opened in a new window, `/?session=<id>`). Returns false for an id the server would refuse.
+ */
+export function adoptTabSession(id: string): boolean {
+  if (!/^[0-9a-f]{32}$/.test(id)) return false;
+  try {
+    sessionStorage.setItem(STORAGE_KEY, id);
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 /** Headers identifying this tab's session (empty for the cookie session). */
 export function sessionHeaders(): Record<string, string> {
   const id = getTabSessionId();

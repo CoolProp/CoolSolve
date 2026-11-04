@@ -1,0 +1,21 @@
+"Routines shared through $INCLUDE: include_functions.eescode imports them with"
+"$INCLUDE include_functions_lib, and this demonstration program is then ignored."
+
+FUNCTION epsilon_cf(NTU, C_r)
+"Effectiveness of a counterflow heat exchanger [-], C_r = C_min/C_max"
+  IF (C_r = 1) THEN
+    epsilon_cf := NTU/(1 + NTU)
+  ELSE
+    epsilon_cf := (1 - exp(-NTU*(1 - C_r)))/(1 - C_r*exp(-NTU*(1 - C_r)))
+  ENDIF
+END
+
+PROCEDURE outlets(T_h_in, T_c_in, C_h, C_c, epsilon : T_h_out, T_c_out, Q)
+"Outlet temperatures [C] and heat flow rate [W] of a heat exchanger of effectiveness epsilon"
+  Q := epsilon*MIN(C_h, C_c)*(T_h_in - T_c_in)
+  T_h_out := T_h_in - Q/C_h
+  T_c_out := T_c_in + Q/C_c
+END
+
+"Demonstration program"
+e_demo = epsilon_cf(2, 0.5)

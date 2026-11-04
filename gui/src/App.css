@@ -207,6 +207,38 @@ body {
   flex-direction: column;
 }
 
+/* The Monaco editor fills the pane, below the include bar when the model has one */
+.editor-host { flex: 1; min-height: 0; }
+
+/* Files of the model's $INCLUDE directives (IncludeBar), each opens in a new window */
+.include-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  font-size: 12px;
+}
+.include-bar-label { color: var(--text-secondary); margin-right: 2px; }
+.include-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: monospace;
+  font-size: 12px;
+  text-decoration: none;
+  cursor: pointer;
+}
+.include-chip:hover { border-color: var(--accent-color); color: var(--accent-color); }
+.include-chip-id { color: var(--text-secondary); font-size: 10px; }
+
 .right-panel {
   border-left: 1px solid var(--border-color);
   display: flex;
@@ -491,6 +523,15 @@ body {
 .library-model-open:hover, .library-model:hover { background: var(--bg-secondary); }
 .library-model-info { padding: 0 10px; color: var(--text-secondary); display: flex; }
 .library-model-info:hover { color: var(--accent-color); }
+.library-model-copy {
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  display: flex;
+  cursor: pointer;
+}
+.library-model-copy:hover { color: var(--accent-color); }
 
 .library-level {
   display: inline-block;

@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <set>
+
+#ifdef COOLSOLVE_EMBEDDED_LIBRARY
+#include "embedded_library.h"
+#endif
 
 namespace coolsolve {
 
@@ -30,12 +35,48 @@ std::string stemOf(const std::string& file) {
     return dot == std::string::npos ? base : base.substr(0, dot);
 }
 
-json menuEntry(const json& m) {
+/// A model of the menu; `functions` is the number of its FUNCTIONs and PROCEDUREs (what an
+/// `$INCLUDE` of the model imports).
+json menuEntry(const json& m, int functions) {
     return {{"id", m.value("id", "")},
             {"name", m.value("name", "")},
             {"title", m.value("title", "")},
             {"level", m.value("level", 0)},
-            {"kind", m.value("kind", "")}};
+            {"kind", m.value("kind", "")},
+            {"functions", functions}};
+}
+
+/// Levenshtein distance, case-insensitive.
+size_t editDistance(const std::string& a, const std::string& b) {
+    std::vector<size_t> row(b.size() + 1);
+    for (size_t j = 0; j <= b.size(); ++j) row[j] = j;
+    for (size_t i = 1; i <= a.size(); ++i) {
+        size_t diagonal = row[0];
+        row[0] = i;
+        for (size_t j = 1; j <= b.size(); ++j) {
+            const size_t above = row[j];
+            const bool same = std::tolower(static_cast<unsigned char>(a[i - 1])) ==
+                              std::tolower(static_cast<unsigned char>(b[j - 1]));
+            row[j] = std::min({row[j] + 1, row[j - 1] + 1, diagonal + (same ? 0 : 1)});
+            diagonal = above;
+        }
+    }
+    return row[b.size()];
+}
+
+/// "hx_ees_function" -> {"hx", "ees", "function"}
+std::set<std::string> nameWords(const std::string& name) {
+    std::set<std::string> words;
+    std::string word;
+    for (char c : lower(name) + "_") {
+        if (std::isalnum(static_cast<unsigned char>(c))) {
+            word += c;
+        } else if (!word.empty()) {
+            words.insert(word);
+            word.clear();
+        }
+    }
+    return words;
 }
 
 void sortByTitle(json& models) {
@@ -62,6 +103,25 @@ LibraryFileSource LibraryFileSource::fromMap(std::map<std::string, std::string> 
         return out;
     };
     return src;
+}
+
+LibraryFileSource LibraryFileSource::embedded() {
+    LibraryFileSource src;
+#ifdef COOLSOLVE_EMBEDDED_LIBRARY
+    src.read = [](const std::string& path, std::string& content) {
+        const EmbeddedLibraryFile* f = getEmbeddedLibraryFile(path);
+        if (!f) return false;
+        content.assign(reinterpret_cast<const char*>(f->data), f->size);
+        return true;
+    };
+    src.list = [](const std::string& prefix) { return listEmbeddedLibraryFiles(prefix); };
+#endif
+    return src;
+}
+
+const LibraryStore& embeddedLibrary() {
+    static const LibraryStore store(LibraryFileSource::embedded());
+    return store;
 }
 
 LibraryStore::LibraryStore(LibraryFileSource source) : source_(std::move(source)) {
@@ -105,12 +165,18 @@ json LibraryStore::menu() const {
         return out;
     }
 
+    // FUNCTIONs and PROCEDUREs per model ID
+    std::map<std::string, int> functionCount;
+    if (index_.contains("functions") && index_["functions"].is_array())
+        for (const auto& f : index_["functions"]) ++functionCount[f.value("model_id", "")];
+
     // Verified models by category path ("cycles/organic_rankine" or "buildings")
     std::map<std::string, json> byCategory;
     int total = 0;
     for (const auto& m : index_["models"]) {
         if (m.value("status", "") != "verified") continue;
-        byCategory[m.value("category", "")].push_back(menuEntry(m));
+        const auto count = functionCount.find(m.value("id", ""));
+        byCategory[m.value("category", "")].push_back(menuEntry(m, count == functionCount.end() ? 0 : count->second));
         ++total;
     }
     for (auto& kv : byCategory) sortByTitle(kv.second);
@@ -168,13 +234,7 @@ bool LibraryStore::loadModel(const std::string& idOrName, const std::string& fil
         error = "Model library not available: " + reason_;
         return false;
     }
-    const json* found = nullptr;
-    for (const auto& m : index_["models"]) {
-        if (m.value("id", "") == idOrName || m.value("name", "") == idOrName) {
-            found = &m;
-            break;
-        }
-    }
+    const json* found = findModel(idOrName);
     if (!found) {
         error = "Unknown library model: " + idOrName;
         return false;
@@ -235,6 +295,37 @@ bool LibraryStore::loadModel(const std::string& idOrName, const std::string& fil
 
     out = std::move(model);
     return true;
+}
+
+const json* LibraryStore::findModel(const std::string& idOrName) const {
+    if (!available_ || idOrName.empty()) return nullptr;
+    const std::string wanted = lower(idOrName);   // EES names ignore the case
+    for (const auto& m : index_["models"])
+        if (lower(m.value("id", "")) == wanted || lower(m.value("name", "")) == wanted) return &m;
+    return nullptr;
+}
+
+bool LibraryStore::readFile(const std::string& path, std::string& content) const {
+    return available_ && path.find("..") == std::string::npos && source_.read(path, content);
+}
+
+std::vector<std::string> LibraryStore::closestNames(const std::string& name, size_t count) const {
+    if (!available_) return {};
+    const std::set<std::string> words = nameWords(name);
+    std::vector<std::pair<size_t, std::string>> scored;   // (score, name), lower is closer
+    for (const auto& m : index_["models"]) {
+        const std::string candidate = m.value("name", "");
+        const size_t distance = editDistance(name, candidate);
+        size_t shared = 0;
+        for (const auto& w : nameWords(candidate)) shared += words.count(w);
+        // A few typos, or a word in common: a plausible meant name
+        if (distance > std::max<size_t>(3, name.size() / 3) && shared == 0) continue;
+        scored.emplace_back(distance - std::min(distance, 4 * shared), candidate);
+    }
+    std::sort(scored.begin(), scored.end());
+    std::vector<std::string> out;
+    for (size_t i = 0; i < scored.size() && i < count; ++i) out.push_back(scored[i].second);
+    return out;
 }
 
 }  // namespace coolsolve

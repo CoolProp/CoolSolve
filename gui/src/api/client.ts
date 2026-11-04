@@ -8,6 +8,7 @@ import type {
   FileOpenResponse,
   LibraryMenuResponse,
   LibraryOpenResponse,
+  IncludeOpenResponse,
   UploadResponse,
   SSEEvent,
   InferredVariablesResponse,
@@ -166,6 +167,16 @@ export const api = {
 
   // Model library (the CoolSolve Library embedded in the server)
   getLibraryMenu: () => request<LibraryMenuResponse>('/library/menu'),
+  /**
+   * Open a file the model of session `from` (null: the cookie session) includes (`$INCLUDE name`)
+   * in a new session, for a new window.
+   */
+  openInclude: (name: string, from: string | null) =>
+    request<IncludeOpenResponse>('/includes/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(from ? { 'X-CoolSolve-Session': from } : {}) },
+      body: JSON.stringify({ name }),
+    }),
   openLibraryModel: (id: string, file?: string) =>
     request<LibraryOpenResponse>('/library/open', {
       method: 'POST',

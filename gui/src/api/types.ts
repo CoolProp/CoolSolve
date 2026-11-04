@@ -21,6 +21,18 @@ export interface VariableInfo {
   imposedValue?: number;     // The imposed constant value (if isImposed)
 }
 
+/** One `$INCLUDE` directive of the model, as resolved by the server (POST /api/v1/parse). */
+export interface IncludeInfo {
+  line: number;
+  name: string;                     // as written: "hx_ees_function"
+  file: string;                     // the file read: "hx_ees_function.eescode"
+  origin: 'library' | 'project';    // a library model, or a file of the model folder
+  libraryId: string;                // "CSL-0331" for a library model, else ''
+  description: string;              // "library model hx_ees_function (CSL-0331)" / "my_props.eescode"
+  routines: string[];               // "FUNCTION HX", "PROCEDURE p"
+  nested: string[];                 // the files it includes in turn
+}
+
 export interface ParseResponse {
   success: boolean;
   equationCount: number;
@@ -30,6 +42,7 @@ export interface ParseResponse {
   errors: ParseError[];
   variables?: VariableInfo[];
   diagnostics?: Diagnostic[];
+  includes?: IncludeInfo[];
 }
 
 export interface BlockResult {
@@ -112,6 +125,7 @@ export interface LibraryMenuModel {
   title: string;
   level: number;  // 1 introductory ... 4 research
   kind: string;   // steady | dynamic | optimisation | functions
+  functions: number;  // FUNCTIONs and PROCEDUREs: what `$INCLUDE <name>` imports
 }
 
 /** A node of the library taxonomy holding models (a category or a sub-category). */
@@ -154,6 +168,14 @@ export interface UploadResponse {
   success: boolean;
   files: string[];
   modelName: string;
+  mainFile?: string;  // the model, when the ZIP holds several .eescode files (the others can be included)
+}
+
+/** Response of POST /api/v1/includes/open: a new session holding the included file. */
+export interface IncludeOpenResponse {
+  sessionId: string;
+  modelName: string;
+  description: string;
 }
 
 // Lookup table types

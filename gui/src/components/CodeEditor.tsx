@@ -6,6 +6,7 @@ import { useModelStore } from '../stores/modelStore';
 import { useUIStore } from '../stores/uiStore';
 import { api } from '../api/client';
 import { setEditorInstance, toggleBraceComment, toggleQuoteComment } from './editorUtils';
+import IncludeBar from './IncludeBar';
 
 let languageRegistered = false;
 
@@ -58,6 +59,7 @@ export default function CodeEditor() {
         if (!code.trim()) {
           setParseResult([], 0, 0, true);
           useModelStore.getState().setParsedVariables([]);
+          useModelStore.getState().setIncludes([]);
           return;
         }
         try {
@@ -73,6 +75,7 @@ export default function CodeEditor() {
           if (result.variables) {
             useModelStore.getState().setParsedVariables(result.variables);
           }
+          useModelStore.getState().setIncludes(result.includes ?? []);
 
           // Set Monaco markers for errors and diagnostics
           if (editorRef.current) {
@@ -137,6 +140,8 @@ export default function CodeEditor() {
 
   return (
     <div className="editor-pane">
+      <IncludeBar />
+      <div className="editor-host">
       <Editor
         height="100%"
         defaultLanguage={EES_LANGUAGE_ID}
@@ -156,6 +161,7 @@ export default function CodeEditor() {
           tabSize: 4,
         }}
       />
+      </div>
     </div>
   );
 }

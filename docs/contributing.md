@@ -523,12 +523,13 @@ concern lives.
 | GUI REST client                          | `gui/src/api/client.ts`, `types.ts`                  |
 | GUI Console                              | `gui/src/components/Console.tsx`                     |
 | Model library index / model-folder loader | `src/library_store.cpp`, `include/coolsolve/library_store.h` |
+| `$INCLUDE` resolution (project folder, library) | `include/coolsolve/include_resolver.h`, `src/include_resolver.cpp`; import of the routines: `handleInclude()` in `src/parser.cpp`; the session's project: `includeResolverFor()` in `src/server.cpp` |
 | Model library routes (`/library/`, `/api/v1/library/*`) | `src/server.cpp`                  |
 | Model library embedding (build)          | `cmake/embed_library.cmake`, `CMakeLists.txt`        |
 | GUI *Library* menu / opening a library model | `gui/src/components/LibraryMenu.tsx`, `gui/src/utils/library.ts` |
 | Per-tab session ID                       | `gui/src/api/session.ts`, `getSession()` in `src/server.cpp` |
 | GUI state read back from the session     | `gui/src/utils/sessionModel.ts` (`showSessionModel()`) |
-| Model library tests                      | `tests/test_library_store.cpp`, `tests/test_library_api.py` |
+| Model library tests                      | `tests/test_library_store.cpp`, `tests/test_includes.cpp`, `tests/test_library_api.py` |
 | Comprehensive example tests              | `tests/test_examples.cpp` (`EXPECTED_SOLUTIONS`)     |
 | Solver robustness tests                  | `tests/test_solver_robustness.cpp`                   |
 | Configuration parsing tests              | `tests/test_config.cpp`                              |

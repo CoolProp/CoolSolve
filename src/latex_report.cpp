@@ -159,6 +159,30 @@ std::string generateLatexReport(
     tex << "\\section{Equations}\n\n";
     tex << "The following equations define the model.\n\n";
 
+    // Routines imported by $INCLUDE: named, not reproduced (their code is in the included file)
+    {
+        std::vector<std::pair<std::string, std::vector<std::string>>> byOrigin;   // origin -> routine names
+        auto note = [&](const std::string& origin, const std::string& name) {
+            if (origin.empty()) return;
+            auto it = std::find_if(byOrigin.begin(), byOrigin.end(), [&](const auto& e) { return e.first == origin; });
+            if (it == byOrigin.end()) it = byOrigin.insert(byOrigin.end(), {origin, {}});
+            it->second.push_back(name);
+        };
+        for (const auto& f : ir.getFunctions()) note(f.includedFrom, f.name);
+        for (const auto& p : ir.getProcedures()) note(p.includedFrom, p.name);
+        if (!byOrigin.empty()) {
+            tex << "\\paragraph{Included routines.} The model imports functions and procedures with "
+                   "\\texttt{\\$INCLUDE}; their code is not reproduced here.\n";
+            tex << "\\begin{itemize}\n";
+            for (const auto& [origin, names] : byOrigin) {
+                tex << "\\item " << escLatex(origin) << ": ";
+                for (size_t i = 0; i < names.size(); ++i) tex << (i ? ", " : "") << "\\texttt{" << escLatex(names[i]) << "}";
+                tex << "\n";
+            }
+            tex << "\\end{itemize}\n\n";
+        }
+    }
+
     for (const auto& eq : ir.getEquations()) {
         // Skip string-variable assignments (e.g. fluid$='Water') — not math
         if (eq.lhs && eq.lhs->is<Variable>()) {

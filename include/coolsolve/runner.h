@@ -83,6 +83,16 @@ public:
         lookupTableStorePreloaded_ = true;
     }
 
+    /**
+     * @brief Where `$INCLUDE` finds its files (include_resolver.h).
+     *
+     * Unset (CLI), the folder of the input file and the embedded library. The GUI server sets the
+     * project of its session, because it solves a copy of the model in a temporary folder.
+     */
+    void setIncludeResolver(std::shared_ptr<const IncludeResolver> resolver) {
+        includeResolver_ = std::move(resolver);
+    }
+
 private:
     std::string inputFile_;
     ParseResult parseResult_;
@@ -96,6 +106,7 @@ private:
     DiagnosticCollector diagnostics_;
     LookupTableStore lookupTableStore_;
     bool lookupTableStorePreloaded_ = false;
+    std::shared_ptr<const IncludeResolver> includeResolver_;
 };
 
 } // namespace coolsolve

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { SolveResponse, ParseError, SolvedVariable, VariableInfo, SavedParametricStudy, UserUnitOverride, LookupTableInfo, IntegralTableData } from '../api/types';
+import type { SolveResponse, ParseError, SolvedVariable, VariableInfo, SavedParametricStudy, UserUnitOverride, LookupTableInfo, IntegralTableData, IncludeInfo } from '../api/types';
 
 interface ModelState {
   // File state
@@ -20,6 +20,7 @@ interface ModelState {
   variableCount: number;
   isSquare: boolean;
   parsedVariables: VariableInfo[];  // Variable info from last parse (units, imposed, etc.)
+  includes: IncludeInfo[];          // The `$INCLUDE`s of the model, from the last parse
 
   // Solve state
   solving: boolean;
@@ -58,6 +59,7 @@ interface ModelState {
   setModelName: (name: string) => void;
   setParseResult: (errors: ParseError[], eqCount: number, varCount: number, isSquare: boolean) => void;
   setParsedVariables: (vars: VariableInfo[]) => void;
+  setIncludes: (includes: IncludeInfo[]) => void;
   setSolving: (solving: boolean) => void;
   setTryHarderAvailable: (available: boolean) => void;
   setDeepSearchRunning: (running: boolean) => void;
@@ -97,6 +99,7 @@ export const useModelStore = create<ModelState>((set) => ({
   variableCount: 0,
   isSquare: true,
   parsedVariables: [],
+  includes: [],
 
   solving: false,
   tryHarderAvailable: false,
@@ -121,6 +124,7 @@ export const useModelStore = create<ModelState>((set) => ({
   setParseResult: (errors, eqCount, varCount, isSquare) =>
     set({ parseErrors: errors, equationCount: eqCount, variableCount: varCount, isSquare }),
   setParsedVariables: (vars) => set({ parsedVariables: vars }),
+  setIncludes: (includes) => set({ includes }),
   setSolving: (solving) => set({ solving }),
   setTryHarderAvailable: (available) => set({ tryHarderAvailable: available }),
   setDeepSearchRunning: (running) => set({ deepSearchRunning: running }),
@@ -132,9 +136,9 @@ export const useModelStore = create<ModelState>((set) => ({
     set((state) => ({ consoleLines: [...state.consoleLines, line] })),
   clearConsole: () => set({ consoleLines: [] }),
   loadFile: (path, eescode, initials, sol, conf, modelName, libraryId) =>
-    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', libraryId: libraryId ?? '', parametricStudies: [], parsedVariables: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
+    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', libraryId: libraryId ?? '', parametricStudies: [], parsedVariables: [], includes: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
   clearModel: () =>
-    set({ filePath: '', modelName: '', libraryId: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], userUnitOverrides: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
+    set({ filePath: '', modelName: '', libraryId: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], includes: [], userUnitOverrides: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
   addParametricStudy: (study) =>
     set((state) => ({ parametricStudies: [...state.parametricStudies, study] })),
   removeParametricStudy: (id) =>

@@ -141,8 +141,9 @@ the model library open a model without touching the model of another tab
 | `GET` | `/api/v1/files/conf` | Get solver configuration (as text) |
 | `PUT` | `/api/v1/files/conf` | Set solver configuration |
 | `POST` | `/api/v1/files/open` | Open the `.eescode` file passed on the command line (file association); auto-discovers companion `.initials`, `.sol`, `coolsolve.conf` and lookup tables. Any other path is refused (403): a client never makes the server read a file of its choice |
-| `GET` | `/api/v1/files/bundle` | Download a ZIP bundle (eescode + initials + sol + conf + debug files) |
-| `POST` | `/api/v1/files/upload` | Upload a multipart `.zip` bundle or individual files |
+| `GET` | `/api/v1/files/bundle` | Download a ZIP bundle (eescode + initials + sol + conf + the files of its `$INCLUDE`s + debug files, §7.2) |
+| `POST` | `/api/v1/files/upload` | Upload a multipart `.zip` bundle or individual files; returns `mainFile`, the `.eescode` taken as the model when there are several (§7.2) |
+| `POST` | `/api/v1/includes/open` | Open a file that the model includes in a **new** session, for a new window; body: `{"name":"<as in $INCLUDE>"}`, resolved as for the solve (§7.5). Returns `{sessionId, modelName, description}`; 404 with the resolution error |
 
 The file workflow is **ZIP-centric**:
 - Open loads files from disk (local mode) or from an uploaded ZIP.
@@ -169,7 +170,7 @@ browser's native `EventSource` API to consume these events.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/v1/parse` | Parse source code (no solve); returns equation/variable counts and parse errors |
+| `POST` | `/api/v1/parse` | Parse source code (no solve); returns equation/variable counts, parse errors and `includes`, the `$INCLUDE` directives of the model as resolved (`{line, name, file, origin: "library"\|"project", libraryId, description, routines, nested}`) |
 | `GET` | `/api/v1/variables` | Get solved variable values (name, value, isArray) |
 | `GET` | `/api/v1/variables/inferred` | Get solved variables enriched with inferred property and fluid metadata |
 
@@ -326,7 +327,7 @@ The CoolSolve Library is embedded in the binary (§9.6) and served by these rout
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/library/menu` | The toolbar *Library* menu: the taxonomy (category → sub-category) with the **verified** models only (`{id, name, title, level, kind}`), the number of models and the snapshot information (`commit`, `content_hash`, `models`). `available: false` with a `reason` when the build has no library |
+| `GET` | `/api/v1/library/menu` | The toolbar *Library* menu: the taxonomy (category → sub-category) with the **verified** models only (`{id, name, title, level, kind, functions}`, `functions` being the number of FUNCTIONs and PROCEDUREs that `$INCLUDE <name>` imports), the number of models and the snapshot information (`commit`, `content_hash`, `models`). `available: false` with a `reason` when the build has no library |
 | `POST` | `/api/v1/library/open` | Load a model folder into the session; body: `{"id":"CSL-0012"}` (ID or name; optional `"file":"x_coolsolve.eescode"` for another `.eescode` of the folder). **Any status can be opened**, blocked models included. Returns `{libraryId, title, status, modelName, file, variants, hasInitials, hasSol, hasConf, tables}`; 404 for an unknown model or file |
 | `GET` | `/library/` | The library dashboard (`library.html`): **all** the models, blocked ones included, with their gaps, functions and a link to open each in CoolSolve |
 | `GET` | `/library/<path>` | Any embedded file of the snapshot (README figures, `model.json`, …); only the allow-listed files exist (§9.6): `sources/`, `tools/` and `templates/` are not embedded |
@@ -448,6 +449,13 @@ Monaco Editor with a custom language definition (`languages/ees.ts`):
 Real-time parse feedback: a debounced `POST /api/v1/parse` call on every
 edit returns parse errors, which are shown as red squiggly underlines via
 Monaco `setModelMarkers`.
+
+**Include bar** (`IncludeBar.tsx`): only when the model has an `$INCLUDE`, a
+thin bar above the editor lists the included files (the library model name and
+ID, or the file name of the folder), from the `includes` of the last parse.
+The tooltip gives the routines imported and the nested includes; a click opens
+the file in a **new CoolSolve window** (§7.5). A model without `$INCLUDE` shows
+no bar.
 
 **Comment toggle** (toolbar buttons + keyboard shortcuts):
 - `{ }` invisible comment: wraps selected lines in `{ ... }`.  If already
@@ -671,7 +679,15 @@ writer/reader in `server.cpp` — no external library):
 | `coolsolve.conf` | Solver configuration |
 | `<tablename>.csv` | One entry per lookup table in the session |
 | `<name>-integral.csv` | Integral trajectory (when an `INTEGRAL` model was solved) |
+| `<other>.eescode` | Every file the model includes (`$INCLUDE`, nested includes too; library models as their `.eescode` file) and the other `.eescode` files of an uploaded project |
 | `debug/*` | Debug output files (if present) |
+
+**Included files.** Because a file of the model folder takes precedence over a library model of the same
+name, the bundle runs on its own: unzipped and run with the CLI, or uploaded again, the model includes the
+copies of the bundle, i.e. the library version it was saved with (also in a build without library). On
+upload, the model is the `.eescode` file named like the ZIP, else the one that no other file of the ZIP
+includes (preferring one that has its `.initials` or `.sol`); the other `.eescode` files become the
+session's project files, which the `$INCLUDE`s of the model find.
 
 ### 7.3 Library Models (a Model Is a Folder)
 
@@ -694,6 +710,35 @@ model name that links back to the model page of the dashboard.
 Before each destructive operation (New, Open, Upload), the current session
 state is saved to a `SessionSnapshot`.  The `POST /api/v1/back` endpoint
 restores it.  This provides one-level undo.
+
+### 7.5 Included Files (`$INCLUDE`)
+
+The `$INCLUDE`s of the model ([Language Reference §7](language_reference.md)) are resolved by the server
+exactly as by the CLI (`includeResolverFor()` in `server.cpp`, `include/coolsolve/include_resolver.h`): a file
+`<name>.eescode` of the **project folder** first, then the library model `<name>`. The project folder of a
+session is:
+
+| The model was opened… | Project folder |
+|---|---|
+| from disk (command line, file association) | the folder of that file, on disk: only `<name>.eescode` files of that folder are read |
+| from the library | the folder of the library model in the snapshot |
+| from a ZIP, or *New* | the other `.eescode` files of the ZIP (none for a new model) |
+
+The parse, the solve and the parametric study use the same resolution, so the editor markers and the
+solve agree.
+
+**Including a library model.** In the *Library* menu, the models that define functions or procedures have a
+copy button next to their title: it copies `$INCLUDE <name>` to the clipboard, to paste in the editor. The model
+page of the dashboard (`/library/#CSL-…`) shows the same line with a *Copy* button.
+
+**Opening an included file.** Each file of the include bar is a plain link to `/?include=<name>` with
+`target="_blank"` (no script pop-up for a blocker to stop). The click notes the session of the window in
+`localStorage` (`coolsolve_include_opener`, valid one minute); the new window calls `POST /api/v1/includes/open`
+**as that session** (its `X-CoolSolve-Session`, or the cookie), which creates a new session holding the file (a
+library model with its folder, a file of the project with its companion files and the same project folder);
+the window adopts it (`adoptTabSession`, §5), shows its model and removes the parameter from the address. Both
+windows are independent: edits of the included file in its window do not change the other window (a file on
+disk is read again at each solve; files of a ZIP project are copies).
 
 ---
 

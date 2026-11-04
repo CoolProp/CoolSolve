@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { BookOpen, ChevronDown, ChevronRight, ExternalLink, Search } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, Copy, ExternalLink, Search } from 'lucide-react';
 import { api } from '../api/client';
+import { useModelStore } from '../stores/modelStore';
+import { copyToClipboard, includeDirective } from '../utils/includes';
 import type { LibraryMenuCategory, LibraryMenuGroup, LibraryMenuModel, LibraryMenuResponse } from '../api/types';
 import { LIBRARY_DASHBOARD_URL, libraryModelPageUrl } from '../utils/library';
 
@@ -26,6 +28,7 @@ export default function LibraryMenu({ onOpen }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [copiedId, setCopiedId] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -81,6 +84,17 @@ export default function LibraryMenu({ onOpen }: Props) {
     return out;
   }, [menu, q, matches]);
 
+  // The include line of a model with functions, to paste in the editor (the menu stays open)
+  const copyInclude = async (m: LibraryMenuModel) => {
+    const line = includeDirective(m.name);
+    const ok = await copyToClipboard(line);
+    useModelStore.getState().addConsoleLine(ok ? `>>> Copied: ${line}` : `>>> Could not copy; type: ${line}`);
+    if (ok) {
+      setCopiedId(m.id);
+      window.setTimeout(() => setCopiedId((id) => (id === m.id ? '' : id)), 1500);
+    }
+  };
+
   const renderModel = (m: LibraryMenuModel) => (
     <div key={m.id} className="library-model">
       <button
@@ -94,6 +108,15 @@ export default function LibraryMenu({ onOpen }: Props) {
         <span className={`library-level level-${m.level}`}>{m.level}</span>
         {m.title}
       </button>
+      {m.functions > 0 && (
+        <button
+          className="library-model-copy"
+          title={`Copy "${includeDirective(m.name)}": imports its ${m.functions} function(s) and procedure(s) into your model`}
+          onClick={() => copyInclude(m)}
+        >
+          {copiedId === m.id ? <Check size={12} /> : <Copy size={12} />}
+        </button>
+      )}
       <a
         className="library-model-info"
         href={libraryModelPageUrl(m.id)}

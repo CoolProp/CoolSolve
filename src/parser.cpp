@@ -4,10 +4,12 @@
 #include "coolsolve/diagnostic.h"
 #include "coolsolve/ees_string.h"
 #include "coolsolve/ir.h"
+#include "coolsolve/library_store.h"
 #include "coolsolve/libr_ashrae.h"
 #include "coolsolve/units.h"
 #include "coolsolve/user_hints.h"
 #include <peglib.h>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <sstream>
@@ -232,6 +234,7 @@ public:
     
     ParseResult parse(const std::string& source, const std::string& filename) {
         presetConstants_.clear();
+        includeCache_.clear();
         ParseResult result = parsePass(source, filename, false);
         // `$IF INTEGRALTABLE` is true when an $IntegralTable directive is in the file, above or
         // below the test: EES compiles in two passes for it, so do we. A $CONSTANT is global: the
@@ -245,7 +248,198 @@ public:
 
     std::string getLastError() const { return lastError_; }
 
+    // ------------------------------------------------------------------------
+    // $INCLUDE (CS-FEAT-IMPORT; include_resolver.h)
+    //
+    // Each target is parsed as a model of its own by a parser of the same kind (its $CONSTANTs, $IFs,
+    // array ranges and nested $INCLUDEs resolved there); only its FUNCTIONs and PROCEDUREs are kept. They
+    // are inserted after the directive once the model is parsed, its own checks done (so that they see
+    // the model's code only), and before the name checks, which then know the imported routines.
+    // ------------------------------------------------------------------------
+    std::shared_ptr<const IncludeResolver> includeResolver_;   // null: the embedded library only
+    const IncludedSource* includingSource_ = nullptr;           // the file parsed, when it is itself included
+    std::vector<std::pair<std::string, std::string>> includeChain_;   // (key, describe) of the includers, outermost first
+
 private:
+    struct IncludedParse {
+        IncludedSource source;
+        ParseResult result;
+    };
+    std::map<std::string, std::shared_ptr<IncludedParse>> includeCache_;   // key -> parse, shared by the two passes
+    struct ImportedRoutine {
+        StmtPtr definition;
+        size_t directiveIndex;    // the $INCLUDE statement of the model it comes through
+        int directiveLine;
+        bool fromLibrary;         // of the file that defines it (nested includes: the innermost file)
+        std::string origin;       // that file (IncludedSource::describe())
+    };
+    std::vector<ImportedRoutine> imported_;
+    std::set<std::string> directIncludeKeys_;   // the files included by this file (a second $INCLUDE is ignored)
+
+    static bool isIncludeDirective(const Directive& directive) {
+        std::string lower = directive.name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        return lower == "include";
+    }
+
+    static std::string routineLabel(const StmtPtr& stmt) {
+        if (stmt->is<FunctionDefinition>()) return "FUNCTION " + stmt->as<FunctionDefinition>().name;
+        if (stmt->is<ProcedureDefinition>()) return "PROCEDURE " + stmt->as<ProcedureDefinition>().name;
+        return "";
+    }
+
+    static std::string& includedFromOf(const StmtPtr& stmt) {
+        return stmt->is<FunctionDefinition>() ? stmt->as<FunctionDefinition>().includedFrom
+                                              : stmt->as<ProcedureDefinition>().includedFrom;
+    }
+
+    static bool isIncludedRoutine(const StmtPtr& stmt) {
+        return (stmt->is<FunctionDefinition>() || stmt->is<ProcedureDefinition>()) && !includedFromOf(stmt).empty();
+    }
+
+    /// The `$INCLUDE` of the main program at `lineNumber` (statement `directiveIndex`): resolve, parse, and
+    /// queue the routines of the target; an error of the target is reported at the line of the directive.
+    void handleInclude(const Directive& directive, int lineNumber, const std::string& line, ParseResult& result,
+                       size_t directiveIndex) {
+        std::string name, error;
+        if (!parseIncludeName(directive.content, name, error)) {
+            result.errors.push_back({lineNumber, 0, error, line});
+            return;
+        }
+        const auto resolver = includeResolver_ ? includeResolver_ : IncludeResolver::libraryOnly(&embeddedLibrary());
+        IncludedSource source;
+        if (!resolver->resolve(name, includingSource_, source, error)) {
+            result.errors.push_back({lineNumber, 0, error, line});
+            return;
+        }
+        const std::string key = source.key();
+        const std::string self = includingSource_ ? includingSource_->describe() : "the model";
+        for (size_t i = 0; i < includeChain_.size(); ++i) {
+            if (includeChain_[i].first != key) continue;
+            std::string chain;
+            for (size_t j = i; j < includeChain_.size(); ++j) chain += includeChain_[j].second + " → ";
+            result.errors.push_back({lineNumber, 0, "Circular $INCLUDE: " + chain + source.describe(), line});
+            return;
+        }
+        if (!directIncludeKeys_.insert(key).second) {
+            result.diagnostics.push(DiagnosticSeverity::Warning, "P011",
+                                    "$INCLUDE " + name + ": " + source.describe() + " is already included above",
+                                    "parser", lineNumber, 1);
+            return;
+        }
+
+        auto& cached = includeCache_[key];
+        if (!cached) {
+            cached = std::make_shared<IncludedParse>();
+            cached->source = source;
+            Impl child;
+            child.includeResolver_ = resolver;
+            child.includingSource_ = &cached->source;
+            child.includeChain_ = includeChain_;
+            child.includeChain_.emplace_back(key, source.describe());
+            cached->result = child.parse(source.content, source.describe());
+        }
+        const IncludedSource& included = cached->source;
+        const ParseResult& sub = cached->result;
+        const std::string where = "In " + included.describe() + ", line ";
+
+        for (const auto& e : sub.errors)
+            result.errors.push_back({lineNumber, 0, where + std::to_string(e.line) + ": " + e.message, line});
+        for (const auto& d : sub.diagnostics.items()) {
+            if (d.severity == DiagnosticSeverity::Info) continue;
+            result.diagnostics.push(d.severity, d.code, where + std::to_string(d.line) + ": " + d.message,
+                                    "parser", lineNumber, 1);
+        }
+
+        IncludeInfo info;
+        info.line = lineNumber;
+        info.includedBy = includingSource_ ? self : "";
+        info.source = included;
+        for (const auto& stmt : sub.program.statements)
+            if (!isIncludedRoutine(stmt) && !routineLabel(stmt).empty()) info.routines.push_back(routineLabel(stmt));
+        result.includes.push_back(std::move(info));
+        for (const auto& nested : sub.includes) {
+            result.includes.push_back(nested);
+            if (result.includes.back().includedBy.empty()) result.includes.back().includedBy = included.describe();
+        }
+        if (!sub.errors.empty()) return;
+
+        // Library origin of each nested file, by describe(): a routine keeps the file that defines it
+        std::map<std::string, bool> libraryFile = {{included.describe(), included.fromLibrary}};
+        for (const auto& nested : sub.includes) libraryFile[nested.source.describe()] = nested.source.fromLibrary;
+        for (const auto& stmt : sub.program.statements) {
+            if (routineLabel(stmt).empty()) continue;
+            std::string& origin = includedFromOf(stmt);
+            if (origin.empty()) origin = included.describe();
+            if (stmt->is<ProcedureDefinition>()) procedureNames_.insert(stmt->as<ProcedureDefinition>().name);
+            imported_.push_back({stmt, directiveIndex, lineNumber, libraryFile[origin], origin});
+        }
+    }
+
+    /// Insert the imported routines after their `$INCLUDE`. A name defined twice keeps one definition,
+    /// with a warning: that of the model, else that of a file of the project folder rather than of a
+    /// library model, else that of the first $INCLUDE (the same file reached twice is imported once).
+    void spliceIncludedRoutines(ParseResult& result) {
+        if (imported_.empty()) return;
+        auto identity = [](const StmtPtr& stmt) {
+            std::string label = routineLabel(stmt);
+            std::transform(label.begin(), label.end(), label.begin(), ::tolower);
+            return label;
+        };
+        std::set<std::string> ownRoutines;
+        for (const auto& stmt : result.program.statements)
+            if (!routineLabel(stmt).empty()) ownRoutines.insert(identity(stmt));
+
+        std::map<std::string, size_t> chosen;   // identity -> index in imported_
+        std::vector<bool> kept(imported_.size(), false);
+        std::set<std::string> warned;
+        auto warnOnce = [&](const std::string& message, int line) {
+            if (warned.insert(message).second)
+                result.diagnostics.push(DiagnosticSeverity::Warning, "P011", message, "parser", line, 1);
+        };
+        for (size_t i = 0; i < imported_.size(); ++i) {
+            const auto& routine = imported_[i];
+            const std::string id = identity(routine.definition);
+            const std::string label = routineLabel(routine.definition);
+            if (ownRoutines.count(id)) {
+                warnOnce(label + " of the model is used; the one of " + routine.origin + " is ignored",
+                         routine.directiveLine);
+                continue;
+            }
+            auto it = chosen.find(id);
+            if (it == chosen.end()) {
+                chosen.emplace(id, i);
+                kept[i] = true;
+                continue;
+            }
+            const auto& other = imported_[it->second];
+            if (other.origin == routine.origin) continue;   // the same file through two includes
+            if (other.fromLibrary && !routine.fromLibrary) {
+                warnOnce(label + " of " + routine.origin + " is used; the one of " + other.origin +
+                         " is ignored (a file of the model folder takes precedence over the library)",
+                         routine.directiveLine);
+                kept[it->second] = false;
+                kept[i] = true;
+                it->second = i;
+            } else {
+                warnOnce(label + " of " + other.origin + " is used; the one of " + routine.origin +
+                         " is ignored" + (!other.fromLibrary && routine.fromLibrary
+                                              ? " (a file of the model folder takes precedence over the library)"
+                                              : " (the first $INCLUDE that defines a name provides it)"),
+                         routine.directiveLine);
+            }
+        }
+
+        std::vector<StmtPtr> statements;
+        statements.reserve(result.program.statements.size() + imported_.size());
+        for (size_t s = 0; s < result.program.statements.size(); ++s) {
+            statements.push_back(result.program.statements[s]);
+            for (size_t i = 0; i < imported_.size(); ++i)
+                if (kept[i] && imported_[i].directiveIndex == s) statements.push_back(imported_[i].definition);
+        }
+        result.program.statements = std::move(statements);
+    }
+
     ParseResult parsePass(const std::string& source, const std::string& filename, bool integralTableAssumed) {
         conditionalStack_.clear();
         compileState_ = CompileTimeState{};
@@ -254,6 +448,8 @@ private:
         integralTableTested_ = false;
         procedureNames_.clear();
         userConstants_.clear();
+        imported_.clear();
+        directIncludeKeys_.clear();
         routineChecked_ = constantAfterRoutine_ = rangeSeen_ = duplicateSeen_ = indexedAggregateSeen_ = unitIndexSeen_ = false;
         lastIgnoredEndifLine_ = lastLookupWriteLine_ = 0;
         lookupWrites_.clear();
@@ -400,6 +596,8 @@ private:
                 result.directiveCount++;
                 noteConstantDirective(stmt->as<Directive>(), lineNumber, line, result);
                 if (upper.rfind("$INTEGRALTABLE", 0) == 0) integralTableSeen_ = true;
+                if (isIncludeDirective(stmt->as<Directive>()))
+                    handleInclude(stmt->as<Directive>(), lineNumber, line, result, result.program.statements.size() - 1);
                 continue;
             }
             
@@ -438,6 +636,18 @@ private:
         if (result.errors.empty() && (rangeSeen_ || duplicateSeen_ || indexedAggregateSeen_ || unitIndexSeen_ ||
                                       !userConstants_.empty()))
             resolveCompileTimeValues(result, preprocessed);
+        if (!imported_.empty()) {
+            spliceIncludedRoutines(result);
+            // A cycle through an imported routine (one that calls a routine of the model); those of the model's
+            // own routines are already reported
+            const size_t before = result.errors.size();
+            checkRoutineCycles(result, preprocessed);
+            for (size_t i = result.errors.size(); i-- > before;) {
+                const bool known = std::any_of(result.errors.begin(), result.errors.begin() + before,
+                                               [&](const ParseError& e) { return e.message == result.errors[i].message; });
+                if (known) result.errors.erase(result.errors.begin() + i);
+            }
+        }
         // Success if no errors AND we found something valid
         bool somethingParsed = result.equationCount > 0 || result.commentCount > 0 || result.directiveCount > 0 || !result.program.statements.empty();
         result.success = !unsupportedFound && result.errors.empty() && somethingParsed;
@@ -865,10 +1075,11 @@ private:
             }
         }
         
-        // Collect all function call names from the AST
+        // Collect all function call names from the AST (those of an imported routine were checked in its file)
         struct FuncCallInfo { std::string name; int line; };
         std::vector<FuncCallInfo> callsFound;
         for (const auto& stmt : result.program.statements) {
+            if (isIncludedRoutine(stmt)) continue;
             forEachCall(stmt, [&](const std::string& name, bool, int line, const FunctionCall*) { callsFound.push_back({name, line}); });
         }
         
@@ -1068,10 +1279,11 @@ private:
         };
 
         for (const auto& stmt : result.program.statements) {
+            if (isIncludedRoutine(stmt)) continue;   // checked in its own file
             walkStmt(stmt, walkStmt);
         }
     }
-    
+
     void initializeGrammar() {
         // Use a simpler grammar approach - parse expressions directly
         grammarValid_ = true;  // We'll use manual parsing
@@ -1416,6 +1628,9 @@ private:
             } else if (auto stmt = tryParseDirective(bodyLine, lineNumber)) {
                 body.push_back(stmt);
                 noteConstantDirective(stmt->as<Directive>(), lineNumber, bodyLine, result);
+                if (isIncludeDirective(stmt->as<Directive>()))
+                    result.errors.push_back({lineNumber, 0, "$INCLUDE belongs to the main program, outside of FUNCTION, "
+                                                            "PROCEDURE and DUPLICATE blocks", bodyLine});
                 if (procedureBodyDepth_ > 0 && isCommonDirective(stmt->as<Directive>()))
                     result.errors.push_back({lineNumber, 0, commonDirectiveMessage(stmt->as<Directive>().content), bodyLine});
             } else if (isBodyKeyword("IF")) {
@@ -4225,7 +4440,18 @@ ParseResult EESParser::parseFile(const std::string& filepath) {
         result.errors.push_back({0, 0, "Could not read file: " + filepath, ""});
         return result;
     }
-    return parse(*content, filepath);
+    if (pImpl->includeResolver_) return parse(*content, filepath);
+    // The includes of a file are those of its folder (and of the embedded library)
+    const std::filesystem::path path(filepath);
+    pImpl->includeResolver_ = IncludeResolver::forDirectory(path.parent_path().string(), path.filename().string(),
+                                                            &embeddedLibrary());
+    ParseResult result = parse(*content, filepath);
+    pImpl->includeResolver_.reset();
+    return result;
+}
+
+void EESParser::setIncludeResolver(std::shared_ptr<const IncludeResolver> resolver) {
+    pImpl->includeResolver_ = std::move(resolver);
 }
 
 std::string EESParser::getLastError() const {

@@ -15,6 +15,7 @@
 #include "coolsolve/latex_report.h"
 #include "coolsolve/usage_log.h"
 #include "coolsolve/library_store.h"
+#include "coolsolve/include_resolver.h"
 
 #include <httplib.h>
 #include "CoolProp.h"
@@ -151,6 +152,7 @@ struct SessionSnapshot {
     CoolSolveRunner::PipelineTiming lastTiming;
     std::vector<InferredVariable> inferredVariables;
     std::map<std::string, std::string> lookupTableCSVs;  // name → CSV content
+    std::map<std::string, std::string> projectFiles;
     std::vector<std::string> modelFluids;
     std::string latexReportContent;
     bool latexReportAvailable = false;
@@ -167,6 +169,10 @@ struct Session {
 
     // Lookup tables: table name → CSV content (no path, pure data)
     std::map<std::string, std::string> lookupTableCSVs;
+
+    // The other .eescode files of the project when the model is not a file on disk (an uploaded ZIP):
+    // file name → content. The `$INCLUDE`s of the model find them (includeResolverFor).
+    std::map<std::string, std::string> projectFiles;
     
     std::string openFilePath;                   // Path of currently open .eescode file
     std::string modelName;                      // User-facing model name (for ZIP filename and page title)
@@ -232,6 +238,7 @@ struct Session {
         snap->latexReportContent = latexReportContent;
         snap->latexReportAvailable = latexReportAvailable;
         snap->lookupTableCSVs = lookupTableCSVs;
+        snap->projectFiles = projectFiles;
         {
             std::lock_guard<std::mutex> lock(resultMutex);
             snap->hasResult = hasResult;
@@ -259,6 +266,7 @@ struct Session {
         latexReportContent = previousState->latexReportContent;
         latexReportAvailable = previousState->latexReportAvailable;
         lookupTableCSVs = previousState->lookupTableCSVs;
+        projectFiles = previousState->projectFiles;
         {
             std::lock_guard<std::mutex> lock(resultMutex);
             hasResult = previousState->hasResult;
@@ -492,6 +500,41 @@ static std::map<std::string, std::string> extractZipBundle(const std::string& da
 // ============================================================================
 // Helper: Read file to string
 // ============================================================================
+static std::string toLowerCopy(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+    return s;
+}
+
+/// The main .eescode file of an uploaded ZIP (see /api/v1/files/upload); empty when it has none.
+static std::string pickMainEescode(const std::map<std::string, std::string>& files, const std::string& zipStem) {
+    std::vector<std::string> models;
+    for (const auto& [name, _] : files)
+        if (endsWith(name, ".eescode") && !startsWith(name, "debug_output/")) models.push_back(name);
+    if (models.size() <= 1) return models.empty() ? "" : models.front();
+    for (const auto& name : models)
+        if (toLowerCopy(fs::path(name).stem().string()) == toLowerCopy(zipStem)) return name;
+
+    std::set<std::string> included;   // file names (lower case) named by an $INCLUDE line
+    for (const auto& name : models) {
+        std::istringstream lines(files.at(name));
+        std::string line;
+        while (std::getline(lines, line)) {
+            const auto start = line.find_first_not_of(" \t");
+            if (start == std::string::npos || toLowerCopy(line.substr(start, 8)) != "$include") continue;
+            std::string target, error;
+            if (parseIncludeName(line.substr(start + 8), target, error)) included.insert(toLowerCopy(target + ".eescode"));
+        }
+    }
+    std::string firstRoot;
+    for (const auto& name : models) {
+        if (included.count(toLowerCopy(fs::path(name).filename().string()))) continue;
+        const std::string stem = fs::path(name).replace_extension().string();
+        if (files.count(stem + ".initials") || files.count(stem + ".sol")) return name;
+        if (firstRoot.empty()) firstRoot = name;
+    }
+    return firstRoot.empty() ? models.front() : firstRoot;
+}
+
 static std::string readFileToString(const std::string& path) {
     std::ifstream f(path);
     if (!f.is_open()) return "";
@@ -573,6 +616,7 @@ static void beginModel(Session& session) {
     session.debugDir.clear();
     // Lookup tables must not accumulate when the user opens another model.
     session.lookupTableCSVs.clear();
+    session.projectFiles.clear();
     session.libraryId.clear();
     {
         std::lock_guard<std::mutex> lock(session.resultMutex);
@@ -585,6 +629,56 @@ static void beginModel(Session& session) {
         session.lastIntegralCSV.clear();
         session.lastIntegralCsvName.clear();
     }
+}
+
+// ============================================================================
+// Helpers: $INCLUDE (CS-FEAT-IMPORT)
+// ============================================================================
+// Where the `$INCLUDE`s of the session's model find their files (include_resolver.h): the folder of a
+// model opened from the library, the folder of the file given on the command line, or else the other
+// .eescode files of an uploaded ZIP (none for a new model). The resolver holds copies: it can be used by
+// a solve thread while the session changes.
+static std::shared_ptr<const IncludeResolver> includeResolverFor(const Session& session) {
+    if (!session.libraryId.empty())
+        return IncludeResolver::forLibraryModel(session.libraryId, session.modelName + ".eescode", &embeddedLibrary());
+    if (!session.openFilePath.empty()) {
+        const fs::path path(session.openFilePath);
+        return IncludeResolver::forDirectory(path.parent_path().string(), path.filename().string(), &embeddedLibrary());
+    }
+    return IncludeResolver::forFiles(session.projectFiles, "", &embeddedLibrary());
+}
+
+/// The `$INCLUDE` directives of the model itself (not those of the included files), for the GUI.
+static json includesToJSON(const std::vector<IncludeInfo>& includes) {
+    json out = json::array();
+    for (const auto& inc : includes) {
+        if (!inc.includedBy.empty()) continue;
+        json nested = json::array();
+        for (const auto& other : includes)
+            if (other.includedBy == inc.source.describe()) nested.push_back(other.source.describe());
+        out.push_back({{"line", inc.line},
+                       {"name", inc.source.name},
+                       {"file", inc.source.fileName},
+                       {"origin", inc.source.fromLibrary ? "library" : "project"},
+                       {"libraryId", inc.source.libraryId},
+                       {"description", inc.source.describe()},
+                       {"routines", inc.routines},
+                       {"nested", nested}});
+    }
+    return out;
+}
+
+/// Load a library model folder into a session (POST /api/v1/library/open, and an included library model
+/// opened in its own tab).
+static void loadLibraryModelInto(Session& session, const LibraryModel& model) {
+    session.libraryId = model.id;
+    session.modelName = fs::path(model.file).stem().string();
+    session.eescodeContent = model.eescode;
+    session.initialsContent = model.initials;
+    session.solContent = model.sol;
+    session.confContent = model.conf;
+    session.lookupTableCSVs = model.tables;
+    session.openFilePath.clear();  // the model lives in the binary, not on disk
 }
 
 // ============================================================================
@@ -987,6 +1081,7 @@ int startServer(const ServerOptions& options) {
         // into the "new" empty session and reappear in the GUI as soon as
         // the table list is refreshed (e.g. after creating a new table).
         session.lookupTableCSVs.clear();
+        session.projectFiles.clear();
 
         // Clear debug
         if (!session.debugDir.empty()) {
@@ -1070,10 +1165,12 @@ int startServer(const ServerOptions& options) {
             std::string source = body.value("source", session.eescodeContent);
             
             EESParser parser;
+            parser.setIncludeResolver(includeResolverFor(session));
             auto parseResult = parser.parse(source);
             
             json j;
             j["success"] = parseResult.success;
+            j["includes"] = includesToJSON(parseResult.includes);
             j["equationCount"] = parseResult.equationCount;
             j["totalLines"] = parseResult.totalLines;
             
@@ -1300,8 +1397,9 @@ int startServer(const ServerOptions& options) {
             
             std::string confContent = session.confContent;
 
-            // Snapshot the lookup table CSVs for safe use in the background thread
+            // Snapshot the lookup table CSVs and the included files for safe use in the background thread
             auto lookupCSVs = session.lookupTableCSVs;
+            auto includeResolver = includeResolverFor(session);
 
             // Usage-log bookkeeping: client IP, model name and attempt start
             // time are captured here; the entry is appended once, after
@@ -1315,7 +1413,7 @@ int startServer(const ServerOptions& options) {
 
             // Launch solve in background thread
             std::thread([sessionPtr, tmpEes, tmpDir, enableTracing, deepSearch, confContent, eesSource,
-                         lookupCSVs, usageLogPath, usageClientIp, usageModelName, usageStart]() {
+                         lookupCSVs, includeResolver, usageLogPath, usageClientIp, usageModelName, usageStart]() {
                 auto& session = *sessionPtr;
 
                 // Append the single usage-log line for this attempt. Called
@@ -1349,6 +1447,7 @@ int startServer(const ServerOptions& options) {
                     }
                     
                     CoolSolveRunner runner(tmpEes.string());
+                    runner.setIncludeResolver(includeResolver);
 
                     // Pre-populate lookup table store from session CSVs so the
                     // runner does not scan the filesystem for unrelated CSVs.
@@ -1980,13 +2079,14 @@ int startServer(const ServerOptions& options) {
                 session.progressEvents.clear();
             }
             
-            // Snapshot the lookup table CSVs for safe use in the background thread
+            // Snapshot the lookup table CSVs and the included files for safe use in the background thread
             auto parametricLookupCSVs = session.lookupTableCSVs;
+            auto parametricIncludes = includeResolverFor(session);
 
             // Launch parametric study in background thread
             std::thread([sessionPtr, eescode, initials, confContent, 
                          grid, sweeps, tmpDir, tmpEes, tmpConf,
-                         timeoutPerPoint, updateGuesses, parametricLookupCSVs]() {
+                         timeoutPerPoint, updateGuesses, parametricLookupCSVs, parametricIncludes]() {
                 auto& session = *sessionPtr;
                 
                 session.addProgressEvent("{\"type\":\"start\",\"message\":\"Parametric study started\"}");
@@ -2108,6 +2208,7 @@ int startServer(const ServerOptions& options) {
                 {
                     writeStringToFile(tmpEes.string(), eescode);
                     EESParser parser;
+                    parser.setIncludeResolver(parametricIncludes);
                     auto parseResult = parser.parseFile(tmpEes.string());
                     if (parseResult.success) {
                         try {
@@ -2179,6 +2280,7 @@ int startServer(const ServerOptions& options) {
                         try {
                             auto t1 = std::chrono::high_resolution_clock::now();
                             EESParser parser;
+                            parser.setIncludeResolver(parametricIncludes);
                             auto parseResult = parser.parseFile(tmpEes.string());
                             auto t2 = std::chrono::high_resolution_clock::now();
                             parseMs = std::chrono::duration<double, std::milli>(t2 - t1).count();
@@ -2237,6 +2339,7 @@ int startServer(const ServerOptions& options) {
                         writeStringToFile(tmpInit.string(), initOss.str());
                         
                         CoolSolveRunner runner(tmpEes.string());
+                        runner.setIncludeResolver(parametricIncludes);
                         // Pre-populate lookup table store from session CSVs
                         {
                             LookupTableStore store;
@@ -2673,17 +2776,7 @@ int startServer(const ServerOptions& options) {
     //   GET  /library/<path>       any embedded file of the snapshot (README figures, ...)
     // READMEs are rendered by the documentation viewer (/docs/#library/models/.../README.md).
     // ================================================================
-    LibraryFileSource librarySource;
-#ifdef COOLSOLVE_EMBEDDED_LIBRARY
-    librarySource.read = [](const std::string& path, std::string& content) {
-        const EmbeddedLibraryFile* f = getEmbeddedLibraryFile(path);
-        if (!f) return false;
-        content.assign(reinterpret_cast<const char*>(f->data), f->size);
-        return true;
-    };
-    librarySource.list = [](const std::string& prefix) { return listEmbeddedLibraryFiles(prefix); };
-#endif
-    const LibraryStore library(librarySource);
+    const LibraryStore& library = embeddedLibrary();
 
     svr.Get("/api/v1/library/menu", [&](const httplib::Request&, httplib::Response& res) {
         json j = library.menu();
@@ -2707,14 +2800,7 @@ int startServer(const ServerOptions& options) {
                 return;
             }
             beginModel(session);
-            session.libraryId = model.id;
-            session.modelName = fs::path(model.file).stem().string();
-            session.eescodeContent = model.eescode;
-            session.initialsContent = model.initials;
-            session.solContent = model.sol;
-            session.confContent = model.conf;
-            session.lookupTableCSVs = model.tables;
-            session.openFilePath.clear();  // the model lives in the binary, not on disk
+            loadLibraryModelInto(session, model);
 
             json j = {
                 {"success", true},
@@ -2730,6 +2816,56 @@ int startServer(const ServerOptions& options) {
                 {"tables", model.tables.size()}
             };
             res.set_content(j.dump(), "application/json");
+        } catch (const std::exception& e) {
+            res.status = 400;
+            res.set_content(json{{"error", e.what()}}.dump(), "application/json");
+        }
+    });
+
+    // POST /api/v1/includes/open {"name"}: open a file that the session's model includes (`$INCLUDE name`,
+    // resolved as for the solve) in a NEW session, for a new browser tab: {"sessionId", "modelName"}. The tab
+    // adopts the session (/?session=<id>), so the model of this tab is untouched. A library model opens
+    // with its folder; a file of the project with its companion files and the same project folder.
+    svr.Post("/api/v1/includes/open", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        try {
+            auto body = json::parse(req.body);
+            std::string name, error;
+            IncludedSource source;
+            if (!parseIncludeName(body.value("name", ""), name, error) ||
+                !includeResolverFor(session)->resolve(name, nullptr, source, error)) {
+                res.status = 404;
+                res.set_content(json{{"error", error}}.dump(), "application/json");
+                return;
+            }
+            LibraryModel model;
+            if (source.fromLibrary && !library.loadModel(source.libraryId, source.fileName, model, error)) {
+                res.status = 404;
+                res.set_content(json{{"error", error}}.dump(), "application/json");
+                return;
+            }
+            const std::string sessionId = generateSessionId();
+            auto opened = sessionMgr.getOrCreate(sessionId);
+            if (source.fromLibrary) {
+                loadLibraryModelInto(*opened, model);
+            } else {
+                opened->modelName = fs::path(source.fileName).stem().string();
+                opened->eescodeContent = source.content;
+                if (!session.openFilePath.empty()) {
+                    opened->openFilePath = (fs::path(session.openFilePath).parent_path() / source.fileName).string();
+                    discoverCompanionFiles(*opened);
+                } else {
+                    // The same project: the other files, the including model among them
+                    opened->projectFiles = session.projectFiles;
+                    opened->projectFiles.erase(source.fileName);
+                    const std::string stem = session.modelName.empty() ? "model" : session.modelName;
+                    opened->projectFiles[stem + ".eescode"] = session.eescodeContent;
+                }
+            }
+            res.set_content(json{{"sessionId", sessionId},
+                                 {"modelName", opened->modelName},
+                                 {"description", source.describe()}}.dump(),
+                            "application/json");
         } catch (const std::exception& e) {
             res.status = 400;
             res.set_content(json{{"error", e.what()}}.dump(), "application/json");
@@ -2870,6 +3006,21 @@ int startServer(const ServerOptions& options) {
         if (!session.confContent.empty())
             files.push_back({"coolsolve.conf", session.confContent});
 
+        // The .eescode files of the project and every file the model includes ($INCLUDE, nested ones too),
+        // next to the model: the bundle runs on its own, because a file of the model folder takes precedence
+        // over the library model of the same name (it keeps the library version of this build).
+        {
+            std::set<std::string> written = {toLowerCopy(stem + ".eescode")};
+            for (const auto& [file, content] : session.projectFiles)
+                if (written.insert(toLowerCopy(file)).second) files.push_back({file, content});
+            EESParser parser;
+            parser.setIncludeResolver(includeResolverFor(session));
+            const auto parsed = parser.parse(session.eescodeContent);
+            for (const auto& inc : parsed.includes)
+                if (written.insert(toLowerCopy(inc.source.fileName)).second)
+                    files.push_back({inc.source.fileName, inc.source.content});
+        }
+
         // Include lookup table CSVs using the "<modelStem>-<tableName>.csv"
         // naming convention so the bundle round-trips through the on-disk
         // loader (see lookup_table.h).
@@ -2946,14 +3097,11 @@ int startServer(const ServerOptions& options) {
         
         auto extracted = extractZipBundle(zipContent);
         
-        // Verify there is an .eescode file
-        bool hasEescode = false;
-        for (const auto& [zname, _] : extracted) {
-            if (endsWith(zname, ".eescode") && !startsWith(zname, "debug_output/")) {
-                hasEescode = true; break;
-            }
-        }
-        if (!hasEescode) {
+        // The model: the .eescode file named like the ZIP, else the one that no other file includes (a
+        // file with its .initials or .sol first), else the first. The other .eescode files are project files.
+        const std::string zipStem = zipFilename.empty() ? "" : fs::path(zipFilename).stem().string();
+        std::string mainEescode = pickMainEescode(extracted, zipStem);
+        if (mainEescode.empty()) {
             res.status = 400;
             json j = {{"error", "ZIP must contain an .eescode file"}};
             res.set_content(j.dump(), "application/json");
@@ -2972,6 +3120,7 @@ int startServer(const ServerOptions& options) {
         session.libraryId.clear();
         session.modelName.clear();
         session.lookupTableCSVs.clear();
+        session.projectFiles.clear();
         // Set model name from ZIP filename
         if (!zipFilename.empty()) {
             session.modelName = fs::path(zipFilename).stem().string();
@@ -3007,7 +3156,8 @@ int startServer(const ServerOptions& options) {
                 session.debugDir = debugDir.string();
                 hasDebug = true;
             } else if (endsWith(zname, ".eescode")) {
-                session.eescodeContent = zcontent;
+                if (zname == mainEescode) session.eescodeContent = zcontent;
+                else session.projectFiles[fs::path(zname).filename().string()] = zcontent;
                 fileList.push_back(zname);
             } else if (endsWith(zname, ".initials")) {
                 session.initialsContent = zcontent;
@@ -3054,7 +3204,8 @@ int startServer(const ServerOptions& options) {
         }
         if (hasDebug) fileList.push_back("debug_output/");
         
-        json j = {{"success", true}, {"files", fileList}, {"modelName", session.modelName}};
+        json j = {{"success", true}, {"files", fileList}, {"modelName", session.modelName},
+                  {"mainFile", mainEescode}};
         res.set_content(j.dump(), "application/json");
     });
     

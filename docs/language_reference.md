@@ -192,6 +192,8 @@ Parser-level directives begin with `$` and span a single line:
 - `$warnings ON` / `OFF` — recognised and **ignored**; the warnings of `CALL WARNING` are
   always reported, as in EES (see *CALL ERROR and CALL WARNING* in §7).
 - `$CONSTANT Name# = value [units]` — a constant of the model, see below.
+- `$INCLUDE name` — imports the functions and procedures of a library model or of another
+  `.eescode` file of the model folder, see [`$INCLUDE`](#include-functions-and-procedures-of-another-file) in §7.
 
 #### `$UnitSystem`
 
@@ -1803,6 +1805,59 @@ so for the body of a routine it is an explicit statement that assigns its output
   function theorem at the solution (automatic differentiation), so `Re` or `RR` may be unknowns
   (`CALL Colebrook(Re, 1E-4 : f)` with `f = 0.02` solves for `Re`).
 - A `PROCEDURE Colebrook` defined by the model (before its calls, as EES requires) replaces the built-in.
+
+### `$INCLUDE`: functions and procedures of another file
+
+`$INCLUDE name` imports **all the `FUNCTION`s and `PROCEDURE`s** of another `.eescode` file: a model of the
+[CoolSolve Library](model_library_support.md), or a file of the folder of the model. The main program of
+that file (its equations, variables and `$CONSTANT`s, e.g. the demonstration program of a library *function
+model*) is ignored, so any model can serve as a function library:
+
+```ees
+$INCLUDE hx_ees_function         "a library model, by name: the EES HX function"
+$INCLUDE CSL-0332                "the same model, by its permanent ID"
+$INCLUDE my_correlations         "my_correlations.eescode, next to this model"
+
+epsilon = HX('counterflow', NTU, C_dot_1, C_dot_2, 'epsilon')
+```
+
+**Where the name is looked for**, in this order:
+
+1. the file `name.eescode` of the **folder of the model**: a file of the project takes precedence over a
+   library model of the same name;
+2. the **library model** whose name or ID is `name` (its main `.eescode` file), in the library embedded in
+   the CoolSolve binary.
+
+The resolution is the same in the command line and in the GUI. On the command line, the folder is that of
+the model file (`coolsolve path/to/model.eescode` includes `path/to/x.eescode`, whatever the working
+directory). In the GUI it is the folder of the file opened from disk (command line, file association), the
+folder of a library model, or the other `.eescode` files of an uploaded ZIP bundle ([GUI](gui.md)). An
+included **library model resolves its own `$INCLUDE`s in its library folder and in the library only**, never
+in the folder of the model that includes it.
+
+- **The name** is a plain name: no path (`/`, `\`, `..`), the `.eescode` extension optional, quotes and a
+  trailing comment allowed, the case ignored (`$INCLUDE HX_EES_Function`). EES files (`.lib`, `.txt`, `.ees`)
+  are refused: convert them into a `.eescode` file of the folder (library workflow, `T-FUNC`).
+- **Placement**: in the main program, outside `FUNCTION`, `PROCEDURE` and `DUPLICATE` blocks (an error
+  otherwise). An `$INCLUDE` in the removed branch of an `$IF` is not read.
+- **Nested includes** of the included file are followed; a cycle (`a` includes `b`, `b` includes `a`) and
+  the model including itself are errors. A file reached twice (directly, or through two includes) is imported
+  once.
+- **The same routine defined twice** keeps one definition, with a warning `P011`: the model's own routine,
+  else that of a file of the folder rather than of a library model, else that of the first `$INCLUDE` that
+  defines it.
+- **Errors** name what was looked for, with the closest library names (*Cannot $INCLUDE 'hx_ees_fonction':
+  no file hx_ees_fonction.eescode in the folder of the model, and no library model is named
+  'hx_ees_fonction' (did you mean hx_ees_function?)*). An error or a warning of the included file is
+  reported at the line of the directive, with its file and line (*In my_correlations.eescode, line 12: …*).
+- **The included file is parsed on its own**: its `$CONSTANT`s, `$IF`s and array ranges apply to its own
+  routines, and the routines see neither the variables nor the constants of the including model (as for any
+  routine, everything comes through the arguments). The lookup tables of an included library model are not
+  imported: a routine that reads a table needs the table in the including model.
+- **Outputs**: the debug report (`report.md`) lists the included files and their routines; the LaTeX report
+  names the included routines without reproducing their code; the ZIP bundle of the GUI carries the included
+  files (library ones too) next to the model, so that the bundle runs on its own with the library version it
+  was saved with.
 
 ---
 

@@ -258,6 +258,9 @@ export default function Toolbar() {
           await showSessionModel();
           setCanGoBack(true);
           addConsoleLine(`>>> Opened: ${res.files.join(', ')}`);
+          if (res.mainFile && res.files.filter((f) => f.endsWith('.eescode')).length > 1) {
+            addConsoleLine(`>>> Model: ${res.mainFile} (the other .eescode files can be included with $INCLUDE)`);
+          }
         }
       } catch (err: unknown) {
         addConsoleLine(`>>> ERROR: ${toErrMsg(err)}`);

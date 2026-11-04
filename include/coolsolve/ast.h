@@ -130,6 +130,9 @@ struct FunctionDefinition {
     std::string name;
     std::vector<std::string> parameters;
     std::vector<StmtPtr> body;
+    /// Empty for a routine of the model; the file it was imported from by `$INCLUDE` otherwise
+    /// (`IncludedSource::describe()`: "my_props.eescode", "library model hx_ees_function (CSL-0331)").
+    std::string includedFrom;
 };
 
 struct ProcedureDefinition {
@@ -137,6 +140,7 @@ struct ProcedureDefinition {
     std::vector<std::string> inputs;
     std::vector<std::string> outputs;
     std::vector<StmtPtr> body;
+    std::string includedFrom;   ///< As `FunctionDefinition::includedFrom`.
 };
 
 struct Duplicate {

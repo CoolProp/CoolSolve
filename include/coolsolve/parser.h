@@ -2,7 +2,9 @@
 
 #include "ast.h"
 #include "diagnostic.h"
+#include "include_resolver.h"
 #include <functional>
+#include <memory>
 #include <string>
 #include <optional>
 #include <vector>
@@ -38,12 +40,24 @@ struct ConditionalDirectiveInfo {
     int endLine = 0;          ///< Line of the `$ENDIF`.
 };
 
+/**
+ * One file read by an `$INCLUDE` directive (CS-FEAT-IMPORT), the includes of an included file too.
+ * Its FUNCTIONs and PROCEDUREs are in `ParseResult::program` (`includedFrom` set); its main program is not.
+ */
+struct IncludeInfo {
+    int line = 0;              ///< Line of the directive in its file.
+    std::string includedBy;    ///< Empty for a directive of the model; else the includer (`IncludedSource::describe()`).
+    IncludedSource source;
+    std::vector<std::string> routines;   ///< "FUNCTION HX", "PROCEDURE p": the definitions of the file, in file order.
+};
+
 struct ParseResult {
     bool success;
     Program program;
     std::vector<ParseError> errors;
     DiagnosticCollector diagnostics;
     std::vector<ConditionalDirectiveInfo> conditionalDirectives;  ///< Every `$IF`/`$IFNOT`, in file order.
+    std::vector<IncludeInfo> includes;   ///< Every file read by `$INCLUDE`, each before the files it includes.
     
     // Statistics
     int totalLines = 0;
@@ -66,6 +80,12 @@ public:
     
     // Parse from file
     ParseResult parseFile(const std::string& filepath);
+
+    /**
+     * Where `$INCLUDE` finds its files (include_resolver.h). Without it, parseFile() resolves them in the
+     * folder of the file and in the embedded library, and parse() in the embedded library only.
+     */
+    void setIncludeResolver(std::shared_ptr<const IncludeResolver> resolver);
     
     // Get the last error message for debugging
     std::string getLastError() const;

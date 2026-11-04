@@ -68,7 +68,8 @@ The GUI binary carries the library as it was when it was compiled. The details (
   files or embed one packed archive behind the same lookup function.
 
 All accesses go through one C++ `LibraryStore` (`include/coolsolve/library_store.h`: menu, loading of a model
-folder), used by the server and later by the runner (`$INCLUDE`) and the CLI.
+folder, `embeddedLibrary()` for the snapshot of the binary), used by the server and by the `$INCLUDE`
+resolution of the parser (§2.3), in the GUI and in the CLI.
 
 **Not implemented yet**: a run-time override (`--library-dir <path>` / `COOLSOLVE_LIBRARY_DIR`) serving a checkout
 from disk, so that library authors need no rebuild.
@@ -94,62 +95,55 @@ Two complementary surfaces, both served by the binary:
 - **Routes**: `GET /api/v1/library/menu`, `POST /api/v1/library/open`, `GET /library/`, `GET /library/<path>`
   ([GUI §4.12](gui.md#412-model-library)).
 
+**Include functions** is done (§2.3): in the GUI menu, a model that defines functions or procedures has a button
+that copies `$INCLUDE <name>`; the model page of the dashboard shows the line with a *Copy* button.
+
 Still to do from the original design: faceted search by level/kind/status/fluid in the GUI menu (the dashboard has
-it), a thumbnail per model, **Include functions** (needs `$INCLUDE`, §2.3), *Copy code*, `coolsolve --library
-list / show / get` (`CS-FEAT-LIB-CLI`).
+it), a thumbnail per model, *Copy code*, `coolsolve --library list / show / get` (`CS-FEAT-LIB-CLI`).
 
-### 2.3 Importing functions and procedures from `.eescode` files (`CS-FEAT-IMPORT`)
+### 2.3 Importing functions and procedures from `.eescode` files (`CS-FEAT-IMPORT`) — implemented
 
-One directive, on its own line as in EES:
+One directive, on its own line, in the main program ([Language Reference §7](language_reference.md#include-functions-and-procedures-of-another-file)):
 
 ```ees
-"Functions of a library model, by name or by permanent ID"
-$INCLUDE library:cpbar_combustion_products
-$INCLUDE library:CSL-0012
-"Functions of a file of the user, relative to the model folder"
-$INCLUDE my_correlations.eescode
+$INCLUDE hx_ees_function      "a library model, by its name"
+$INCLUDE CSL-0332             "the same model, by its permanent ID"
+$INCLUDE my_correlations      "my_correlations.eescode, in the folder of the model"
 ```
 
-- **What is imported**: from a `.eescode` target, **all its `FUNCTION`s and
-  `PROCEDURE`s** (later `MODULE`s and `SUBPROGRAM`s); its main program — e.g. the
-  demonstration equations of a library *function model* — is ignored. A
-  library model can therefore be run on its own *and* serve as a function
-  library; no `.lib` file is involved.
-- **Resolution**: `library:<name>` and `library:CSL-NNNN` go through the
-  `LibraryStore` (snapshot or `--library-dir`); IDs never change and names are
-  unique, so includes survive any re-organisation of the library folders. Paths
-  are resolved from the folder of the model, then from the `--library-dir`
-  root.
-- **Native EES files**, for compatibility only: `$INCLUDE file.txt` inserts
-  the equations of the text file (EES behaviour) and `$INCLUDE file.lib` imports
-  the functions and procedures of an EES library file; the optional `/R` flag of
-  EES is accepted and ignored.
-- **Nesting**: `$INCLUDE` lines inside an included `.eescode` file are followed
-  (with cycle detection).
-- **Conflicts**: a definition in the model wins over an included one (warning);
-  two includes defining the same name are an error unless the definitions are
-  identical.
-- **Diagnostics**: unknown library name (with the closest names), file not
-  found, errors reported with the included file name and line.
-- **Reproducibility**: the `.sol` file and the debug report list the imported
-  definitions with their origin (library model ID and snapshot hash, or file
-  path).
-- **Discovery in the editor**: auto-completion and hover for library functions
-  (from the `functions` of `library.json`: name, signature, model ID) and a quick-fix on
-  *unknown function `cpbar`*: "Include `library:cpbar_combustion_products`".
-- **Portability** (`CS-FEAT-EXPORT-EES`): *Export for EES* writes a
-  self-contained file in which every `$INCLUDE` is replaced by the imported
-  definitions, so that the model also runs in EES; the ZIP bundle gets the same
-  "flatten includes" option.
-- **Implementation**: `src/parser.cpp` already has a `preprocess()` step and a
-  generic `Directive` rule. Parse the main file, then parse each include target
-  with the same parser, keep only its `FUNCTION`/`PROCEDURE` definitions (AST)
-  and merge them before IR building (`src/ir.cpp`); the `LibraryStore`
-  supplies the text of library targets.
-- **Library conventions** that make this work: function models are plain
-  `.eescode` files (definitions + demonstration program); function names are
-  unique across the library (`tools/build_index.py` warns about duplicates);
-  all library functions use SI-°C-Pa-J.
+- **What is imported**: all the `FUNCTION`s and `PROCEDURE`s of the target; its main program (the
+  demonstration equations of a library *function model*) is ignored. A library model is therefore a model and a
+  function library at the same time; no `.lib` file is involved.
+- **Resolution** (`include/coolsolve/include_resolver.h`): `<name>.eescode` of the **folder of the model**
+  first — a file of the project takes precedence over a library model of the same name — then the library
+  model of that **name or ID** (names are unique and IDs never change, so includes survive any re-organisation
+  of the library folders; no path is accepted). The same rule in the CLI (folder of the model file, not the
+  working directory) and in the GUI (folder of the file given on the command line, of the library model, or
+  the files of an uploaded ZIP): a model includes the same files wherever it runs. An included library model
+  resolves its own `$INCLUDE`s in its library folder and in the library only.
+- **Nesting**: the `$INCLUDE`s of an included file are followed; cycles and the model including itself are
+  errors; a file reached twice is imported once.
+- **Conflicts** (warning `P011`): the model's own routine wins over an included one; a file of the project folder
+  over a library model; otherwise the first `$INCLUDE` that defines the name.
+- **Diagnostics**: an unknown name gives the closest library names; an error or warning of the included file is
+  reported at the line of the directive with the file name and line.
+- **Reproducibility**: the debug report (`report.md`) lists the included files (library ID and folder, or file
+  name) and their routines; the LaTeX report names the included routines without their code; the ZIP bundle
+  carries every included file next to the model, so that it runs on its own with the library version it was
+  saved with (the precedence of the project folder makes the copies win).
+- **GUI**: an include bar above the editor, only for a model that has an `$INCLUDE`, opens each included file in
+  a new window ([GUI §7.5](gui.md#75-included-files-include)); the Library menu and the dashboard copy the
+  `$INCLUDE` line of a model.
+- **Native EES files** (`$INCLUDE file.lib`, `.txt`) are not read: the error asks to convert the file into a
+  `.eescode` file of the folder (library workflow `T-FUNC`).
+- **Implementation**: the parser (`src/parser.cpp`, `handleInclude`) parses each target with a parser of its own
+  (its `$CONSTANT`s, `$IF`s and ranges resolved there), keeps its routines (`FunctionDefinition::includedFrom`)
+  and inserts them after the directive once the model's own checks are done; `LibraryStore` supplies the text
+  of library targets.
+
+Not done (future work): *Export for EES* (`CS-FEAT-EXPORT-EES`, one file with the included routines written in),
+editor auto-completion and quick-fix from the `functions` of `library.json` (*unknown function `cpbar`* →
+"Include `cpbar_combustion_products`"), the lookup tables of an included model, the native `.lib`/`.txt` files.
 
 ---
 
@@ -158,11 +152,11 @@ $INCLUDE my_correlations.eescode
 | ID | Feature | Section | Priority |
 |---|---|---|---|
 | `CS-FEAT-LIB-EMBED` | Library snapshot embedded at build time, with version identity — **done**; run-time override (`--library-dir`) open | §2.1 | P1 |
-| `CS-FEAT-EXPLORER` | HTML model explorer: taxonomy, search, facets, model pages, *Open* — **done** (Library menu + `/library/` dashboard); *Include functions* waits for `CS-FEAT-IMPORT` | §2.2 | P1 |
-| `CS-FEAT-IMPORT` | `$INCLUDE` of library models and `.eescode` files (all their functions and procedures); native `.txt`/`.lib` for compatibility | §2.3 | P1 |
+| `CS-FEAT-EXPLORER` | HTML model explorer: taxonomy, search, facets, model pages, *Open* — **done** (Library menu + `/library/` dashboard), *Include functions* (copy `$INCLUDE <name>`) **done** | §2.2 | P1 |
+| `CS-FEAT-IMPORT` | `$INCLUDE` of library models and `.eescode` files (all their functions and procedures) — **done**; native `.txt`/`.lib` not planned (convert them to `.eescode`) | §2.3 | P1 |
 | `CS-FEAT-LIB-TEST` | Library regression test: solve every library model whose status is *verified* or *runs* and compare with its `.sol` (logic of `test_examples.cpp`, driven by `library.json`), in the CoolSolve CI and in the library CI | – | P1 |
 | `CS-FEAT-LIB-CLI` | `coolsolve --library list / show / get` | §2.2 | P2 |
-| `CS-FEAT-EXPORT-EES` | *Export for EES*: flatten `$INCLUDE`s into a self-contained file; ZIP option | §2.3 | P2 |
+| `CS-FEAT-EXPORT-EES` | *Export for EES*: flatten `$INCLUDE`s into a self-contained file (the ZIP bundle already carries the included files) | §2.3 | P2 |
 | `CS-FEAT-PARAM-FILE` | Parametric-table file in the model folder (e.g. `<model>-parametric.csv`: one column per variable, one row per run), with **string columns** (fluid names) — needed to import EES parametric tables natively (`CS-GAP-PARAMETRIC`) | – | P2 |
 | `CS-FEAT-DIAGRAM-IDEAL` | T-s / P-v / h-s diagrams without dome for ideal gases (`Air`, `N2`, `CO2`…) with the solved states — README figures of air-standard cycles, gas turbines and engines (meanwhile the library uses parametric sweep plots) | – | P2 |
 | `CS-FEAT-PSYCHRO` | Psychrometric chart with the solved states of `AirH2O` models and PNG/SVG export — figures of the HVAC models (meanwhile parametric sweep plots) | – | P2 |
@@ -175,8 +169,8 @@ Suggested order of implementation:
 1. **Snapshot and minimal explorer** (done) — allow-listed embedding,
    `library.json` identity, `/api/v1/library/menu` and `/library/`, explorer menu
    + dashboard + *Open*. The library is visible in every build.
-2. **Imports** — `$INCLUDE` for `.eescode` paths and `library:` targets,
-   `/api/v1/library/functions`, *Include functions* button, editor quick-fix.
+2. **Imports** (done) — `$INCLUDE <name>` for library models and files of the
+   model folder, *Include functions* buttons; the editor quick-fix is open.
    Library models then use `$INCLUDE` instead of copied functions.
 3. **Tooling** — library regression in CI, CLI `--library`, *Export for EES*,
    run-time `--library-dir`, release procedure pinning the library tag.
@@ -196,7 +190,6 @@ convenience. Update the *Blocked models* column when you mark a model blocked.
 | `CS-GAP-PARAMETRIC` | Parametric tables as model input (variables defined only by table columns, string columns, `TABLERUN#`, `TABLEVALUE`) | No parametric-table file; GUI sweeps are numeric only | Default run in the equations, table documented in the README | P2 | – |
 | `CS-GAP-BOUNDS` | Variable lower/upper bounds (Variable Information, `$VarInfo`) | Not supported (`.initials` holds guesses only) | Better guesses, simplified-model bootstrap | P2 | – |
 | `CS-GAP-MODULE` | `MODULE` / `SUBPROGRAM` | Parse error ("not yet handled") | **Not planned in the near term** (maintainer decision 2026-10-05): library models flatten the module/subprogram equations into the main program, renaming the internal variables per call (library workflow §6, decision D10) | – (not planned) | – |
-| `CS-GAP-INCLUDE` | `$Include` / `$Load`, implicit `USERLIB` functions | Not supported | Copy the definitions until `CS-FEAT-IMPORT` (§2.3) is available; then `$INCLUDE library:<name>` | P1 | library model `CSL-0011` *two_shaft_gas_turbine_compressor_map* (`cpbar`, `gamma`) |
 | `CS-GAP-OPTIM` | Min/Max optimisation (single and multi-variable) | Not available | Import at the EES optimum (decision variables fixed) | P2 | – |
 | `CS-GAP-LKT` | External binary lookup files (`.lkt`) and file-based tables in `INTERPOLATE('file.txt',…)` | Not readable | **Maintainer decision 2026-10-12**: not a gap — CoolSolve reads no external table file; every table is internal, stored as a CSV file in the model folder (`<model>-<table>.csv`) and read with the lookup functions. The model is rewritten to use that internal table | not a gap | library model `CSL-0116` *heat_pump_vitocal_300g* (rewrite; still blocked by other items) |
 | `CS-GAP-FLUIDS-ABS` | The remaining routines of the EES **ASHRAE** LiBr-H2O library (the four of §7, `X_LIBR`, `H_LIBR`, `T_LIBR` and `P_LIBR`, are implemented): `V_LIBR` (Herold fit to Uemura & Hasaba 1964, coefficients not published; used only by the variant files `TM-0467`/`TM-0468`, not imported), the procedure `Q_LIBR`, `VISC_LIBR` and `COND_LIBR` (Lee, DiGuilio, Jeter & Teja, *ASHRAE Trans.* 1990, RP-527) | Evaluation error *"<NAME>: EES LiBr-H2O routine not implemented in CoolSolve yet (register CS-GAP-FLUIDS-ABS); the ASHRAE routines X_LIBR, H_LIBR, T_LIBR, P_LIBR are available"* (it was *Unknown or unsupported function*) | Compute the property outside the model | P3 | – |
@@ -231,7 +224,6 @@ convenience. Update the *Blocked models* column when you mark a model blocked.
 | `CS-GAP-IF-NO-CONSTANT` | **`$IF X$='…'` on a string variable with no constant value in the main program.** EES evaluates the directive when it compiles the equations, with the value the string has *then*: (a) a value given in the **Diagram window** (an edit box or a dropdown list), which is not in the extracted `.eescode` (`water_overheater$`, `economiser$`, `overheater$`, `expanderType$`, `pressuredrop$`, `heatTransfer$`, `unadaptedVolumeRatio$`, `mechanicalLosses$`, `regenerator$` of `CSL-0040`); (b) a string produced by a `CALL` — `CSL-0166` tests `regime$`, the output of a procedure, in four `$if regime$='…'` directives and its stored solution shows that EES compiled them with the value of the *previous* calculation (main variables of the last ON/OFF run next to stale module values of an earlier MODULATING run) | Error (since `CS-GAP-IF-DIRECTIVE`), naming the variable and the line: *"$IF: the string variable 'regime$' is set by a CALL or an expression: $IF is evaluated when the equations are compiled, so its value must be a string constant …"* / *"… has no value when the directive is compiled: it must be set to a string constant (X$ = 'text') before the $IF"*. CoolSolve never chooses a branch silently. A string set *after* the directive is the same error (the EES help requires the definition before the `$IF`) | In a `_coolsolve` variant, set each string in the main program before the directive (`regime$ = 'OFF'`, one file or one value per case) and log the choice | P3 | `CSL-0040` *orc_biomass_chp*, `CSL-0166` *boiler_modulating_burner_refsim* (also `CS-BUG-STRING-CALL-OUT`) |
 | `CS-GAP-CALL-OUT-OMITTED` | **Fewer outputs in a `CALL` than the procedure declares**: since EES 9.513 an internal or external procedure may be called with fewer output variables than its `PROCEDURE` statement lists. EES help, *Internal Procedures*: *"Starting with version 9.513, it is possible to call an internal or external Procedure with fewer output variables than indicated in the Procedure statement"*, with the forms `CALL TEST(1,2,3:{X},Y)` and `CALL TEST(1,2,3:,Y)` (*"{X} is commented out and need not be entered, but the list separator must be provided and the order of the outputs remains as indicated"*; local copy `misc/eeshelp/internal_procedures.htm`). A real file uses it: `~/Nextcloud/thermo_models/MCI_REMIDICKES/MCI/Labo 2/rapport/Labo2_MCI-groupe_4/Labo2_MCI-groupe_4.ees` (EES X10.494) calls the five-output `cpbar` as `Call cpbar(m_carb,n_carb,f[j],T_in_turbo_cote_turb[j],T_out_turbo_cote_turb[j]:c_bar_p_g[j],"Q_4","x","e_min","e")` (a quoted name is a commented-out output) and stores `c_bar_p_g[1]` = 1259.08 J/kg-K. Found while fixing `CS-GAP-CALL-EXPR-OUT`; verified against the help at the §8 review of 2026-10-10 | Evaluation error *"Procedure three returns 3 outputs, but N were provided"* for every documented form: the empty and the commented positions are dropped, so the outputs also shift. Reproducer: `PROCEDURE three(a : p, q, r)` ⏎ `p = 10*a` ⏎ `q = 20*a` ⏎ `r = 30*a` ⏎ `END` ⏎ `CALL three(1 : x)` (and `CALL three(1 : {x}, y, z)`, `CALL three(1 :, y, z)`, `CALL three(1 : x, "q", "r")`: all the same error, 2 or 1 outputs provided) | Name every output in the `CALL` (an unused one costs an equation: give it a value or a dummy name), as `CSL-0006` and `CSL-0034` do for the four unused outputs of `cpbar` | P3 | none blocked (workaround in `CSL-0006`, `CSL-0034`); `Labo2_MCI-groupe_4.ees` of the collection (candidate) |
 | `CS-GAP-BODY-LOCALS-SOL` | The **local variables of a `FUNCTION`/`PROCEDURE` body are displayed in EES's Solution window**: *"Variables that are defined in the Function will display in Solution window"* and *"All variables used in the Procedure will display in Solution window"* (EES help, *Internal Functions* rule 10 and *Internal Procedures*; arrays with `$ARRAYS ON`). Found at the C-85 review of `CSL-0080` (a loop inside a body could not be checked) | The locals of a body appear nowhere: not in the `.sol`, not in the JSON result, the GUI or `coolsolve_residuals.md`. Reproducer: `PROCEDURE p(a : y)` ⏎ `b = a + 1` ⏎ `y = 2*b` ⏎ `END` ⏎ `CALL p(5 : yv)` → the `.sol` holds `yv` = 12 only (EES shows `b` = 6) | Return the local as an extra output to inspect it. Fix: record the locals of the last call of each body (a body may be called many times) and write them to `.sol`/JSON in a separate group per procedure, as EES does | P3 | none blocked (inspection of `CSL-0080`'s `SUBPROGRAM` bodies) |
-| `CS-GAP-HX` | The EES built-in **`HX` heat-exchanger function**: `HX(Type$, NTU, C_dot_1, C_dot_2, Param$)` evaluates an effectiveness–NTU relation of the EES heat-exchanger library (`'counterflow'`, `'parallel'`, cross-flow…; `Param$` selects the returned quantity, e.g. `'epsilon'`). Valid EES: the source file of library model `CSL-0286`, `~/Nextcloud/thermo_models/modeles/LABORELEC_2002/2_Evaporative Equipments/2_1_Toolkit Models/2_1_2_Cooling_towers/Indirect_contact_identification.EES` (EES 6.350, TM-0295), writes `epsilon_ct = HX('counterflow',NTU_ct,C_dot_af_ct,C_dot_fl_ct,'epsilon')` and stores `epsilon_ct` = 0.570095 | Warning *"Unknown function 'HX'"*, then the block of the call fails: *"EvaluationError - Unknown or unsupported function: HX with 5 arguments"*. Reproducer (valid EES): `e = HX('counterflow', 1.0, 2.0, 3.0, 'epsilon')` → evaluation error above (build 0.4.0) | In the library model the counterflow effectiveness–NTU relation is written explicitly, `epsilon = (1 - exp(-NTU*(1 - Cr)))/(1 - Cr*exp(-NTU*(1 - Cr)))` with `Cr = C_min/C_max` (as in `CSL-0290`); the native file keeps `HX(...)` | P3 | library model `CSL-0286` *indirect_contact_tower_identification* (native blocked; runnable `_coolsolve` variant) |
 | `CS-GAP-INDEX-VAR` | **An array element indexed by a main-program variable that an equation sets to a constant**: `mean = ceil(imax#/2)` ⏎ `Q_dot_col_bis = M_dot_htf*cp_1ave[mean]*(T_htf_ex_col - T_htf_su_col)` in the EES file `EES_ok/orc_solar_complex.EES` (CoolSolve `misc/EES_ok.zip`, example `orc_solar_complex`). EES resolves `cp_1ave[mean]` as element 10: its stored solution has `mean` = 10, `cp_1ave[10]` = 3012.289955 J/kg-K, `M_dot_htf` = 1.27 kg/s, `T_htf_ex_col` - `T_htf_su_col` = 13.38176 K and `Q_dot_col_bis` = 51193.362 W, which is `1.27*3012.289955*13.38176` = 51193.362 (with `cp_1ave[9]` or `[11]` the product is 51138.4 or 51248.2). | `cp_1ave[mean]` is a variable of its own with no defining equation (`x[n]` and `x[2]` are two unknowns; loud: the system is not square). Reproducer (valid EES, same construct): `$CONSTANT imax#=4` ⏎ `x[1] = 1` ⏎ `x[2] = 5` ⏎ `x[3] = 7` ⏎ `x[4] = 9` ⏎ `m = ceil(imax#/2)` ⏎ `y = x[m]` → *"There are 6 equations and 7 unknowns"* (`x[m]` unmatched; EES: `y` = 5). Same finding as the unverified item of §8 dated 2026-10-15 (`CS-BUG-VAR-ANNOTATION` implementation), now with EES evidence | Replace `[mean]` by the value (`[10]`) in a runnable `_coolsolve` variant (as `CSL-0329`); resolving such an index like the bounds of a DUPLICATE (`CS-BUG-DUPLICATE-VAR-BOUND`) is the fix suggested | P3 | library model `CSL-0329` *orc_solar_complex* (native blocked; runnable `_coolsolve` variant, only this line differs) |
 | `CS-GAP-HEATING-VALUE` | The EES built-in **property function `LowerHeatingValue(Fuel$)`** (lower heating value of a fuel, water vapour as product; same family as `Enthalpy_Fusion`, `CS-GAP-ENTHALPY-FUSION`), called with an unquoted or quoted fluid name. Valid EES: the source file of library model `CSL-0331`, `~/Nextcloud/thermo_models/MCI_REMIDICKES/MCI/TP/MCI_TP2_Ex_1-3/Exercice_3_Param opératoires et combustion.EES` (EES 10.589, TM-0236) writes `LHV_f_EES = LowerHeatingValue(H2)` to check the LHV given in the statement and stores `LHV_f_EES` = 119 946 kJ/kg | Warning *"Unknown function 'LowerHeatingValue'"*, then *"Unknown or unsupported function: LowerHeatingValue with 1 arguments"* (EvaluationError on the size-1 block of `LHV_f_EES`). Reproducer (valid EES): `LHV = LowerHeatingValue(H2)` ⏎ `z = LHV` → error above (EES: `LHV` = 1.19946e8 J/kg). Found while importing `CSL-0331` | In the library model, the runnable `_coolsolve` variant replaces the call by the LHV computed from the species enthalpies of formation, `LHV_f_EES = (enthalpy(H2,T=25)*molarmass(H2) + 0.5*enthalpy(O2,T=25)*molarmass(O2) - enthalpy(H2O,T=25)*molarmass(H2O))/molarmass(H2)` = 1.1996051e8 J/kg (0.012 % above the EES value); alternatively an EES `FUNCTION` returning the constant, as in `CS-GAP-ENTHALPY-FUSION` | P3 | library model `CSL-0331` *engine_cylinder_count* (native blocked; runnable `_coolsolve` variant) |
 
@@ -311,6 +303,8 @@ One line per fixed item. The regression tests are in `tests/test_library_gaps.cp
 
 | ID | Fix | Fixed in |
 |---|---|---|
+| `CS-GAP-INCLUDE` | `$INCLUDE <name>` (`CS-FEAT-IMPORT`, §2.3): the functions and procedures of a library model (by name or ID) or of a `.eescode` file of the model folder, which takes precedence; nested includes, cycle and conflict rules, the same resolution in the CLI and the GUI; include bar and *copy `$INCLUDE`* buttons in the GUI, included files in the ZIP bundle (`tests/test_includes.cpp`, `[include]`). The EES `$Include`/`$Load` of `.lib`/`.txt` files and the implicit `USERLIB` functions are not read: their routines go to a library function model, which the native file includes (one added line). **Library re-checks pending** (their `missing_features` still list this ID): `CSL-0011`, `CSL-0149`, `CSL-0272` (the routines of `cpbar_combustion_products`, `CSL-0005`), `CSL-0074`, `CSL-0162`, `CSL-0163` (BrineProp, `CSL-0079` where it has the routine), `CSL-0116` (BrineProp2, not in the library yet) | post-v0.4.0, `$INCLUDE` |
+| `CS-GAP-HX` | Not a solver built-in: the EES `HX(TypeHX$, NTU, C_dot_1, C_dot_2, Return$)` is the library function model `CSL-0332` *hx_ees_function* (all the EES flow types, `'epsilon'` and `'NTU'`, the 33 worked examples of the EES help reproduced), which an EES model includes with `$INCLUDE hx_ees_function`. Native `CSL-0286` solves and equals its `_coolsolve` variant | post-v0.4.0, library `CSL-0332` |
 | `CS-BUG-IF-IGNORED` | `IF … THEN … ELSE` in FUNCTION/PROCEDURE bodies executes the branch taken (all branches ran) | post-v0.3.0, `fix/library-gaps` `c8ce07c` |
 | `CS-BUG-MOLARMASS` | `MOLARMASS` returns kg/kmol as in EES (was kg/mol) | post-v0.3.0, `fix/library-gaps` `c44888c` |
 | `CS-BUG-SINGLE-INPUT-PAIR` | Single-input ideal-gas calls consistent between solve and verification | post-v0.3.0, `fix/library-gaps` `769944c` |
@@ -621,7 +615,8 @@ round 3 was run on scratch copies with CoolSolve `4798e2b` (`feat/nh3h2o`) and a
    (b) `CS-GAP-INTEGRAL-DECREASING`, `CS-GAP-CALL-OUT-OMITTED`, `CS-BUG-CALL-ERROR-ITERATE`;
    (c) a cosmetic batch: `CS-BUG-INTERNALENERGY-UNQUOTED`, `CS-BUG-HINT-ARG-DEFAULT`, `CS-BUG-FLUID-HINT-CO2`,
    `CS-BUG-STRING-FUNC-WARNING`, `CS-BUG-GUI-WARNING-CASE` (and the rest of item 6);
-   (d) `CS-GAP-INCLUDE` / `CS-FEAT-IMPORT` (item 7): the next blocker of `CSL-0116`, `CSL-0011`, `CSL-0149`;
+   (d) `CS-GAP-INCLUDE` / `CS-FEAT-IMPORT` (item 7): **done** (2026-11-04, §7); the library re-checks of the
+   models it blocked are listed there;
    (e) future work, absorption machines (P3, no library model needs them yet): `CS-GAP-LIBR-PK` — first decide the
    route: a CoolSolve module `libr_patek_klomfar` next to `libr_ashrae`, or a generic CoolProp contribution (a
    Gibbs-energy solution class that would also give `INCOMP::LiBr` its enthalpy of mixing; CoolProp
@@ -674,7 +669,8 @@ round 3 was run on scratch copies with CoolSolve `4798e2b` (`feat/nh3h2o`) and a
    `CS-BUG-INTEGRAL-TABLE-INTERVAL` with `CS-BUG-INTEGRAL-OUTPUT-INTERVAL`, hide internal `__…`
    variables (`__out…` of CALL outputs) from `.sol`/JSON/GUI as the `INTEGRAL`
    auxiliaries already are.
-7. `CS-GAP-INCLUDE` / `CS-FEAT-IMPORT` (§2.3), a feature of its own; serving the
+7. `CS-GAP-INCLUDE` / `CS-FEAT-IMPORT` (§2.3), a feature of its own (**done** 2026-11-04, with `CS-GAP-HX` closed by
+   the library model `CSL-0332`); serving the
    library dashboard `library.html` in the GUI (§2.1–§2.2) belongs to the same
    integration work.
 8. Close-out: merge the branch; decide on `air_screw_compressor` (tolerance-1e-9 failure

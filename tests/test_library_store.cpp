@@ -181,3 +181,24 @@ TEST_CASE("A corrupt library.json is reported, not thrown", "[library]") {
     LibraryStore noModels(LibraryFileSource::fromMap({{"library.json", "{}"}}));
     REQUIRE_FALSE(noModels.available());
 }
+
+TEST_CASE("Library menu counts the functions of each model (what $INCLUDE imports)", "[library][include]") {
+    LibraryStore store(LibraryFileSource::fromMap({
+        {"library.json", R"({"models": [
+            {"id": "CSL-0010", "name": "funcs", "title": "Functions", "category": "c", "status": "verified",
+             "path": "models/c/funcs", "main_file": "funcs.eescode"},
+            {"id": "CSL-0011", "name": "plain", "title": "Plain", "category": "c", "status": "verified",
+             "path": "models/c/plain", "main_file": "plain.eescode"}],
+          "functions": [{"function": "f", "model_id": "CSL-0010"}, {"function": "p", "model_id": "CSL-0010"}]})"},
+    }));
+    auto models = store.menu()["categories"][0]["models"];
+    REQUIRE(models.size() == 2);
+    CHECK(models[0]["name"] == "funcs");
+    CHECK(models[0]["functions"] == 2);
+    CHECK(models[1]["functions"] == 0);
+    // Names and IDs are found in any case; close names are suggested for a typo
+    REQUIRE(store.findModel("FUNCS") != nullptr);
+    REQUIRE(store.findModel("csl-0011") != nullptr);
+    CHECK(store.findModel("nothing") == nullptr);
+    CHECK(store.closestNames("func").front() == "funcs");
+}

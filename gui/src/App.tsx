@@ -18,6 +18,7 @@ import { api } from './api/client';
 import { enableTabSession, getTabSessionId } from './api/session';
 import { openLibraryModel } from './utils/library';
 import { showSessionModel } from './utils/sessionModel';
+import { openIncludeInThisWindow } from './utils/includes';
 import './App.css';
 
 // Hidden utility page (solve usage statistics) — reachable at /stats only,
@@ -53,10 +54,12 @@ function MainApp() {
   const [ready, setReady] = useState(false);
 
   // Initialize: warmup CoolProp, then open what was asked for: a library model
-  // ("Open in CoolSolve" link: /?library=CSL-0012) or the file passed on the command line
+  // ("Open in CoolSolve" link: /?library=CSL-0012), a file the model of another window includes
+  // (include bar: /?include=<name>) or the file passed on the command line
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const libraryParam = params.get('library');
+    const includeParam = params.get('include');
     // A library link opens in its own instance, so it never replaces the model of another tab
     if (libraryParam) enableTabSession();
     api.warmup()
@@ -66,6 +69,10 @@ function MainApp() {
           if (libraryParam) {
             await openLibraryModel(libraryParam, params.get('file') ?? undefined, false);
             // Consumed: a reload shows the tab's session (below) instead of reopening the model
+            window.history.replaceState(null, '', window.location.pathname);
+          } else if (includeParam) {
+            // Its own session, prepared by the server from the session that includes the file
+            await openIncludeInThisWindow(includeParam);
             window.history.replaceState(null, '', window.location.pathname);
           } else if (getTabSessionId()) {
             // Reload of a tab that has its own session: the model it holds, edits included

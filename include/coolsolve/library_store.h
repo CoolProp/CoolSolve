@@ -14,8 +14,8 @@ namespace coolsolve {
  * Read access to the files of a CoolSolve Library snapshot.
  *
  * Paths are relative to the library root ("library.json", "models/cycles/x/README.md").
- * The server feeds the store with the files embedded in the binary; tests feed it an
- * in-memory map, so the store itself knows nothing about embedding or HTTP.
+ * `embedded()` reads the files embedded in the binary; tests feed an in-memory map, so the
+ * store itself knows nothing about embedding or HTTP.
  */
 struct LibraryFileSource {
     /// Content of a file; false if it does not exist.
@@ -25,6 +25,8 @@ struct LibraryFileSource {
 
     /// Source over an in-memory map path -> content.
     static LibraryFileSource fromMap(std::map<std::string, std::string> files);
+    /// The snapshot embedded in this binary; an empty source (no library) in a build without it.
+    static LibraryFileSource embedded();
 };
 
 /** The files of a library model folder, ready to be loaded into a GUI session. */
@@ -82,6 +84,16 @@ public:
     bool loadModel(const std::string& idOrName, const std::string& file, LibraryModel& out,
                    std::string& error) const;
 
+    /// Entry of library.json of the model with this ID ("CSL-0012") or name, in any case; null when unknown.
+    const nlohmann::json* findModel(const std::string& idOrName) const;
+
+    /// Content of a file of the snapshot (path relative to the library root); false if absent.
+    bool readFile(const std::string& path, std::string& content) const;
+
+    /// Up to `count` model names close to `name` (same words, small edit distance), best first:
+    /// the suggestions of an unknown name.
+    std::vector<std::string> closestNames(const std::string& name, size_t count = 3) const;
+
 private:
     LibraryFileSource source_;
     bool available_ = false;
@@ -89,5 +101,9 @@ private:
     nlohmann::json index_;     // library.json
     nlohmann::json taxonomy_;  // taxonomy.json
 };
+
+/// The store over the snapshot embedded in this binary (`available()` is false in a build
+/// without library), shared by the server and the `$INCLUDE` resolution of the CLI.
+const LibraryStore& embeddedLibrary();
 
 }  // namespace coolsolve

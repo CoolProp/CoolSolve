@@ -25,7 +25,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 ## Features
 
-- **Parser**: Parses CoolSolve source code (`.eescode` files) into an AST — variables, equations, procedural blocks (`FUNCTION`, `PROCEDURE`, `CALL`), control flow (`IF-THEN-ELSE`, `DUPLICATE`, `REPEAT-UNTIL`, `GOTO` with numeric statement labels in routine bodies), directives (including the conditional compilation `$IF` / `$IFNOT` / `$ELSE` / `$ENDIF` and `$CONSTANT`), array subscripts and array ranges (`X[1..n]` as arguments, outputs and in routine headers), and named function arguments.
+- **Parser**: Parses CoolSolve source code (`.eescode` files) into an AST — variables, equations, procedural blocks (`FUNCTION`, `PROCEDURE`, `CALL`), control flow (`IF-THEN-ELSE`, `DUPLICATE`, `REPEAT-UNTIL`, `GOTO` with numeric statement labels in routine bodies), directives (including the conditional compilation `$IF` / `$IFNOT` / `$ELSE` / `$ENDIF`, `$CONSTANT` and `$INCLUDE`), array subscripts and array ranges (`X[1..n]` as arguments, outputs and in routine headers), and named function arguments.
 
 - **Structural Analysis**: Decomposes the equation system into solvable blocks using the Hopcroft–Karp matching algorithm and Tarjan's SCC algorithm.
 
@@ -56,7 +56,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 - **GUI & REST API**: Embedded single-page app (React/TypeScript) with a code editor, variable table, parametric studies, thermodynamic diagrams, and ZIP bundle round-trip. See [GUI & REST API](docs/gui.md).
 
-- **Model Library**: The GUI binary embeds the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) — documented, verified EES models (cycles, components, heat transfer, HVAC, …). The toolbar **Library** button follows the library taxonomy and opens a whole model folder (code, initial values, lookup tables, configuration) in one click; the dashboard at `/library/` lists every model, blocked ones included, with an *Open in CoolSolve* link on each. The library is fetched at build time, always at its latest version. See [Model Library Support](docs/model_library_support.md).
+- **Model Library**: The GUI binary embeds the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) — documented, verified EES models (cycles, components, heat transfer, HVAC, …). The toolbar **Library** button follows the library taxonomy and opens a whole model folder (code, initial values, lookup tables, configuration) in one click; the dashboard at `/library/` lists every model, blocked ones included, with an *Open in CoolSolve* link on each. The library is fetched at build time, always at its latest version. Any model imports the functions and procedures of a library model, or of another `.eescode` file of its folder, with **`$INCLUDE <name>`** — in the CLI and the GUI alike (a file of the folder takes precedence over a library model of the same name; the Library menu copies the line, an include bar opens each included file in its own window, the ZIP bundle carries them; e.g. `$INCLUDE hx_ees_function` for the EES `HX` function). See [Model Library Support](docs/model_library_support.md) and [Language Reference §7](docs/language_reference.md#include-functions-and-procedures-of-another-file).
 
 - **Usage Log**: In GUI mode, every solve or *Try Harder* attempt appends one CSV line to a local log file (timestamp, model name and size, outcome, duration, client IP, version). Written after the solve completes — no impact on solving. Aggregated statistics are available on a hidden `/stats` dashboard. See [GUI & REST API](docs/gui.md).
 
@@ -293,7 +293,7 @@ The debug folder contains:
 |------|-------------|
 | `README.md` | Index of all generated files |
 | `coolsolve.conf` | Copy of solver config from source folder (if present) |
-| `report.md` | Model statistics, block summary and the branch kept by each `$IF`/`$IFNOT` directive |
+| `report.md` | Model statistics, block summary, the branch kept by each `$IF`/`$IFNOT` directive and the files read by `$INCLUDE` |
 | `variables.md` | Variable mapping table (Markdown) |
 | `variables.csv` | Variable mapping (CSV for external tools) |
 | `equations.md` | Equations grouped by solution block |
@@ -450,6 +450,7 @@ CoolSolve/
 │   ├── solution_checker.h      # Post-solve solution verification
 │   ├── usage_log.h             # GUI solve-attempt log (append + aggregated stats)
 │   ├── library_store.h         # Model library index: menu of verified models, model-folder loader
+│   ├── include_resolver.h      # `$INCLUDE <name>`: a file of the model folder, else a library model
 │   ├── version.h               # CoolSolve / CoolProp version info (`--version`)
 │   └── solver.h                # Solver pipeline, all SolverOptions declarations
 ├── include/coolsolve/integral/
@@ -482,7 +483,8 @@ CoolSolve/
 │   ├── solver_symbolic.cpp     # Symbolic block reduction preprocessing
 │   ├── solver_trust_region.cpp # Trust-region dogleg solver
 │   ├── usage_log.cpp           # GUI solve-attempt log: CSV append + cached statistics
-│   ├── library_store.cpp       # Model library index and loader (independent of HTTP and embedding)
+│   ├── library_store.cpp       # Model library index and loader (independent of HTTP), embedded snapshot accessor
+│   ├── include_resolver.cpp    # Resolution of `$INCLUDE` names (project folder, library) for the CLI and the GUI
 │   ├── version.cpp             # CoolSolve and CoolProp (version, git revision) at run time
 │   └── solution_checker.cpp    # Post-solve equation-by-equation verification
 ├── tests/
@@ -499,7 +501,8 @@ CoolSolve/
 │   ├── test_fluids.cpp         # CoolProp fluid property tests
 │   ├── test_examples.cpp       # Integration tests with example files
 │   ├── test_library_store.cpp  # Model library index/loader unit tests
-│   ├── test_library_api.py     # Library menu, open, per-tab sessions, /library/ (REST, needs the GUI build)
+│   ├── test_includes.cpp       # `$INCLUDE`: resolution, imported routines, precedence, errors
+│   ├── test_library_api.py     # Library menu, open, per-tab sessions, /library/, `$INCLUDE` (REST, needs the GUI build)
 │   ├── test_gui_shortcuts.py   # GUI keyboard shortcuts (F2) in headless Chromium (needs the GUI build)
 │   └── test_kinsol.cpp         # KINSOL solver unit tests (3 modes + config)
 ├── cmake/                      # embed_assets / embed_library: GUI, docs and model library embedded in the binary
@@ -541,7 +544,7 @@ For the full language syntax, built-in functions, and CoolProp integration detai
 
 ## Future Work
 
-The [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) is embedded and browsable; next steps are importing its functions into any model (`$INCLUDE library:<name>`), a command-line access (`coolsolve --library`), and improved plotting capabilities — see [Model Library Support](docs/model_library_support.md). 
+The [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) is embedded, browsable and importable (`$INCLUDE <name>`); next steps are a command-line access (`coolsolve --library`), an *Export for EES* that writes the included routines into one file, editor completion of library functions, and improved plotting capabilities — see [Model Library Support](docs/model_library_support.md). 
 
 Planned improvements for the solver include a stiff ODE integrator (BDF), pseudo-arclength continuation, and an improved plotting interface. See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
 

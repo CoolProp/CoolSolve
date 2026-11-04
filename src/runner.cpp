@@ -50,6 +50,7 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
     // 1. Parse
     auto t1 = std::chrono::high_resolution_clock::now();
     EESParser parser;
+    if (includeResolver_) parser.setIncludeResolver(includeResolver_);
     parseResult_ = parser.parseFile(inputFile_);
     auto t2 = std::chrono::high_resolution_clock::now();
     timing_.parse_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
@@ -299,6 +300,24 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         }
     }
     
+    // Files read by $INCLUDE (CS-FEAT-IMPORT): their routines are part of the model, their main program is not
+    if (!parseResult_.includes.empty()) {
+        stats << "\n## Included files\n\n";
+        stats << "The functions and procedures of these files are imported by `$INCLUDE` (a file of the model "
+                 "folder takes precedence over a library model of the same name); their main program is ignored.\n\n";
+        stats << "| Line | Included by | `$INCLUDE` | File | Routines |\n";
+        stats << "|------|-------------|------------|------|----------|\n";
+        for (const auto& inc : parseResult_.includes) {
+            stats << "| " << inc.line << " | " << markdownTableCell(inc.includedBy.empty() ? "the model" : inc.includedBy)
+                  << " | `" << markdownTableCell(inc.source.name) << "` | " << markdownTableCell(inc.source.describe());
+            if (inc.source.fromLibrary) stats << " (`" << markdownTableCell(inc.source.libraryFolder + "/" + inc.source.fileName) << "`)";
+            stats << " | ";
+            for (size_t i = 0; i < inc.routines.size(); ++i) stats << (i ? ", " : "") << markdownTableCell(inc.routines[i]);
+            if (inc.routines.empty()) stats << "none";
+            stats << " |\n";
+        }
+    }
+
     // Block summary
     stats << "\n## Block Summary\n\n";
     stats << "| Block | Size | Type | Variables |\n";
@@ -727,7 +746,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     if (fs::exists(debugDir / "coolsolve.conf")) {
         index << "| [coolsolve.conf](coolsolve.conf) | Solver config used for this run |\n";
     }
-    index << "| [report.md](report.md) | Model statistics, block summary and the branch kept by each `$IF` directive |\n";
+    index << "| [report.md](report.md) | Model statistics, block summary, the branch kept by each `$IF` directive and the files read by `$INCLUDE` |\n";
     index << "| [variables.md](variables.md) | Variable mapping table |\n";
     index << "| [coolsolve_residuals.md](coolsolve_residuals.md) | Detailed equation values and residuals |\n";
     index << "| [evaluator.md](evaluator.md) | Evaluator structure and test |\n";

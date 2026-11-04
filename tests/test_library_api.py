@@ -6,6 +6,9 @@ Tests the Library menu (verified models only), opening a model folder into a ses
 the per-tab session id (header, ?sid=, keep-alive), the ZIP bundle round-trip of a library
 model, the /library/ pages and files, and that the server opens no file from disk but the
 one given on the command line (models come from the library, not from server paths).
+Also `$INCLUDE` (CS-FEAT-IMPORT) through the server: library models and project files of a
+ZIP or of the command-line file's folder, the bundle with the included files, the main-file
+choice on upload, and the opening of an included file in a new session.
 
 Usage:
     # Start CoolSolve with --gui, then:
@@ -23,9 +26,11 @@ import http.cookiejar
 import io
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -301,6 +306,126 @@ def test_bundle_round_trip(models):
     check("an opened bundle is not a library model", ees_b["libraryId"] == "")
 
 
+def make_zip(files: dict) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for name, content in files.items():
+            z.writestr(name, content)
+    return buf.getvalue()
+
+
+def wait_result(headers: dict, timeout: float = 60.0):
+    """Poll GET /solve/result until the solve of the session is done; the result JSON, or None."""
+    end = time.time() + timeout
+    while time.time() < end:
+        status, res = api("GET", "/solve/result", None, headers, _plain_opener)
+        if status == 200 and "success" in res:
+            return res
+        time.sleep(0.5)
+    return None
+
+
+def test_includes(models):
+    print("\n── $INCLUDE: library models and project files ──")
+    lib = next((m for m in models if m.get("functions", 0) > 0), None)
+    check("the menu counts the functions of a model", lib is not None)
+    if not lib:
+        return
+    tab = {"X-CoolSolve-Session": "e" * 32}
+    api("POST", "/new", None, tab, _plain_opener)
+
+    # A library model, included in a new model: the parse says where it comes from
+    source = f"$INCLUDE {lib['name']}\nx = 1\n"
+    status, res = api("POST", "/parse", {"source": source}, tab, _plain_opener)
+    inc = (res.get("includes") or [{}])[0]
+    check("parse resolves a library model",
+          status == 200 and res.get("success") and inc.get("origin") == "library" and inc.get("libraryId") == lib["id"]
+          and len(inc.get("routines", [])) > 0, str(res.get("errors") or inc))
+    status, res = api("POST", "/parse", {"source": "$INCLUDE no_such_model_xyz\nx = 1\n"}, tab, _plain_opener)
+    check("an unknown include is a parse error at its line",
+          not res.get("success") and res["errors"][0]["line"] == 1 and "Cannot $INCLUDE" in res["errors"][0]["message"])
+    check("a model without $INCLUDE has no includes",
+          api("POST", "/parse", {"source": "x = 1\n"}, tab, _plain_opener)[1].get("includes") == [])
+
+    # The bundle carries the included library file next to the model
+    api("PUT", "/files/eescode", {"content": source}, tab, _plain_opener)
+    api("PUT", "/model-name", {"modelName": "uses_lib"}, tab, _plain_opener)
+    status, _, bundle = raw("GET", "/api/v1/files/bundle?sid=" + "e" * 32, None, None, _plain_opener)
+    names = zipfile.ZipFile(io.BytesIO(bundle)).namelist() if bundle[:2] == b"PK" else []
+    check("the bundle holds the included library model", f"{lib['name']}.eescode" in names and "uses_lib.eescode" in names,
+          str(names))
+
+    # A ZIP project: the model is the file no other includes (the ZIP name differs), the other one is included
+    project = {"main.eescode": "$INCLUDE helper\ny = triple(2)\n",
+               "helper.eescode": "FUNCTION triple(x)\n  triple := 3*x\nEND\nunused = 1\n"}
+    tab_b = {"X-CoolSolve-Session": "f" * 32}
+    status, up = upload_bundle(make_zip(project), "project (1).zip", tab_b)
+    check("upload picks the model among several .eescode files", status == 200 and up.get("mainFile") == "main.eescode",
+          str(up))
+    _, ees = api("GET", "/files/eescode", None, tab_b, _plain_opener)
+    status, res = api("POST", "/parse", {"source": ees["content"]}, tab_b, _plain_opener)
+    inc = (res.get("includes") or [{}])[0]
+    check("a file of the uploaded project is included", res.get("success") and inc.get("origin") == "project"
+          and inc.get("routines") == ["FUNCTION triple"], str(res.get("errors") or inc))
+    api("POST", "/solve", {}, tab_b, _plain_opener)
+    result = wait_result(tab_b)
+    y = (result or {}).get("variables", {}).get("y")
+    check("the project model solves with the included function", result is not None and result.get("success") and y == 6,
+          str(result and result.get("errorMessage")))
+    status, _, bundle = raw("GET", "/api/v1/files/bundle?sid=" + "f" * 32, None, None, _plain_opener)
+    names = zipfile.ZipFile(io.BytesIO(bundle)).namelist() if bundle[:2] == b"PK" else []
+    check("the bundle keeps the project files", "helper.eescode" in names, str(names))
+
+    # Open an included file in a new session (a new window of the GUI)
+    status, opened = api("POST", "/includes/open", {"name": "helper"}, tab_b, _plain_opener)
+    check("an included file opens in a new session", status == 200 and len(opened.get("sessionId", "")) == 32, str(opened))
+    if status == 200:
+        new_tab = {"X-CoolSolve-Session": opened["sessionId"]}
+        _, ees_new = api("GET", "/files/eescode", None, new_tab, _plain_opener)
+        check("the new session holds the included file", "FUNCTION triple" in ees_new.get("content", "")
+              and ees_new.get("modelName") == "helper")
+        _, ees_b = api("GET", "/files/eescode", None, tab_b, _plain_opener)
+        check("the including session is unchanged", ees_b.get("content") == ees["content"])
+    status, opened = api("POST", "/includes/open", {"name": lib["name"]}, tab_b, _plain_opener)
+    if status == 200:
+        _, ees_lib = api("GET", "/files/eescode", None, {"X-CoolSolve-Session": opened["sessionId"]}, _plain_opener)
+    check("an included library model opens with its library ID", status == 200 and ees_lib.get("libraryId") == lib["id"],
+          str(opened))
+    status, res = api("POST", "/includes/open", {"name": "../etc/passwd"}, tab_b, _plain_opener)
+    check("includes/open refuses a path → 404", status == 404, str(res))
+
+
+def test_include_command_line_folder(binary: str):
+    """`coolsolve --gui <file>`: the $INCLUDEs of the file find the .eescode files of its folder on disk."""
+    global BASE_URL
+    print("\n── $INCLUDE: the folder of the command-line file ──")
+    folder = tempfile.mkdtemp(prefix="coolsolve_include_")
+    main_file = os.path.join(folder, "main.eescode")
+    with open(main_file, "w") as f:
+        f.write("$INCLUDE helper\ny = triple(2)\n")
+    with open(os.path.join(folder, "helper.eescode"), "w") as f:
+        f.write("FUNCTION triple(x)\n  triple := 3*x\nEND\n")
+    main_url, BASE_URL = BASE_URL, "http://localhost:18602"
+    proc = start_server(binary, 18602, [main_file])
+    try:
+        api("POST", "/files/open", {"path": main_file})
+        _, ees = api("GET", "/files/eescode")
+        _, res = api("POST", "/parse", {"source": ees["content"]})
+        inc = (res.get("includes") or [{}])[0]
+        check("a file next to the command-line file is included", res.get("success") and inc.get("origin") == "project",
+              str(res.get("errors")))
+        status, opened = api("POST", "/includes/open", {"name": "helper"})
+        ees_new = {}
+        if status == 200:
+            _, ees_new = api("GET", "/files/eescode", None, {"X-CoolSolve-Session": opened["sessionId"]}, _plain_opener)
+        check("it opens in a new session, as a file of that folder",
+              status == 200 and ees_new.get("filePath") == os.path.join(folder, "helper.eescode"), str(ees_new))
+    finally:
+        stop_server(proc)
+        BASE_URL = main_url
+        shutil.rmtree(folder, ignore_errors=True)
+
+
 def test_open_from_disk_refused():
     print("\n── Open from disk: no path chosen by the client ──")
     for path in ("/etc/passwd", EXAMPLE_FILE):
@@ -418,9 +543,11 @@ def main():
             test_tab_sessions(models)
             test_bundle_round_trip(models)
             test_pages(index)
+            test_includes(models)
         test_open_from_disk_refused()
         if binary:
             test_open_command_line_file(binary)
+            test_include_command_line_folder(binary)
     except Exception as e:
         print(f"\nFATAL ERROR: {e}")
         check("no fatal error", False, str(e))

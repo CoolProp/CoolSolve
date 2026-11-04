@@ -1,0 +1,13 @@
+"Rating of a counterflow heat exchanger with the routines of another file of this folder"
+"($INCLUDE, docs/language_reference.md §7: a file of the folder, else a library model by name)"
+$INCLUDE include_functions_lib
+
+T_h_in = 90 [C]
+T_c_in = 15 [C]
+C_h = 0.5*4195 [W/K]          "hot water, 0.5 kg/s"
+C_c = 0.8*4186 [W/K]          "cold water, 0.8 kg/s"
+UA = 2500 [W/K]
+NTU = UA/MIN(C_h, C_c)
+C_r = MIN(C_h, C_c)/MAX(C_h, C_c)
+epsilon = epsilon_cf(NTU, C_r)
+CALL outlets(T_h_in, T_c_in, C_h, C_c, epsilon : T_h_out, T_c_out, Q_dot)

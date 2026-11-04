@@ -71,6 +71,8 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     {"exchangers3.eescode",       {"DELTAT_w", 15.94}},
     {"expander_module.eescode",   {"W_dot_sh_exp", 2202}},
     {"humidair1.eescode",         {"DELTAw", 0.002933}},
+    {"include_functions.eescode", {"Q_dot", 94425.6}},     // routines of include_functions_lib.eescode ($INCLUDE)
+    {"include_functions_lib.eescode", {"e_demo", 0.7746}}, // the included file is a model of its own too
     {"humidair2.eescode",         {"M_dot_w_cond", 0.0001046}},
     {"orc_co2.eescode",           {"W_dot_t", 117440}},
     {"orc_complex.eescode",       {"eta_I", 0.108}},
