@@ -322,7 +322,7 @@ HIGHERHEATINGVALUE,Thermophysical,Higher heating value [J/kg],Partial,3,Recogniz
 LOWERHEATINGVALUE,Thermophysical,Lower heating value [J/kg],Partial,3,Recognized in parser,
 # --- Thermophysical Functions: Other ---,,,,,,
 NORMALBOILINGPT,Thermophysical,Normal boiling point [K],Partial,3,Recognized in parser,
-FREEZINGPT,Thermophysical,Freezing point [K],Partial,3,Recognized in parser,
+FREEZINGPT,Thermophysical,Freezing point of a solution or incompressible substance,No,3,"Recognized in parser, not evaluated (CS-GAP-FREEZINGPT); CoolProp has T_freeze for its incompressible solutions",
 GIBBSFREEENERGY,Thermophysical,Gibbs free energy [J/kg],Partial,3,Recognized in parser,
 HELMHOLTZFREEENERGY,Thermophysical,Helmholtz free energy [J/kg],Partial,3,Recognized in parser, EES uses HelmholtzFreeEnergy
 MASSFRACTION,Thermophysical,Mass fraction in mixture,Partial,3,Recognized in parser,
