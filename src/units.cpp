@@ -80,7 +80,8 @@ const std::unordered_map<std::string, UnitValue>& simpleUnits() {
         add(kTime, {{"ms", 1e-3}, {"us", 1e-6}, {"ns", 1e-9}, {"day", 86400.0}, {"week", 604800.0}});
         add(kForce, {{"N", 1.0}, {"kN", 1e3}, {"lbf", 4.4482216152605}, {"kgf", 9.80665}, {"dyne", 1e-5}});
         const double mmHg = 133.322387415;
-        add(kPressure, {{"mPa", 1e-3}, {"hPa", 1e2}, {"GPa", 1e9}, {"mbar", 1e2}, {"torr", 101325.0 / 760.0},
+        // milliPa: the EES spelling of mPa (convert(milliPa-s,Pa-s) of the BrineProp2 library, CSL-0079)
+        add(kPressure, {{"mPa", 1e-3}, {"milliPa", 1e-3}, {"hPa", 1e2}, {"GPa", 1e9}, {"mbar", 1e2}, {"torr", 101325.0 / 760.0},
                         {"mmHg", mmHg}, {"inHg", 25.4 * mmHg},
                         {"ksi", 1e3 * UnitConverter::toSI(1.0, UnitType::Pressure, "psi")}});
         add(kEnergy, {{"GJ", 1e9}, {"Wh", 3600.0}, {"kWh", 3.6e6}});

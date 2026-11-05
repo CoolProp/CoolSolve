@@ -12401,7 +12401,7 @@ TEST_CASE("CS-BUG-CONVERT-UNIT: every unit name of the table has its factor", "[
         {"poise", "cP", 100.0}, {"centipoise", "Pa-s", 1e-3}, {"celsius", "kelvin", 1.0}, {"fahrenheit", "rankine", 1.0},
         {"kelvin", "rankine", 1.8},
         {"hPa", "Pa", 100.0}, {"GPa", "MPa", 1000.0}, {"torr", "Pa", 101325.0 / 760.0}, {"ksi", "psi", 1000.0},
-        {"oz", "g", 28.349523125}, {"slug", "kg", 14.5939029372064}, {"tonne", "kg", 1000.0}, {"mg", "g", 1e-3},
+        {"milliPa-s", "Pa-s", 1e-3}, {"milliPa", "mPa", 1.0}, {"oz", "g", 28.349523125}, {"slug", "kg", 14.5939029372064}, {"tonne", "kg", 1000.0}, {"mg", "g", 1e-3},
         {"km", "m", 1000.0}, {"dm", "cm", 10.0}, {"um", "mm", 1e-3}, {"nm", "um", 1e-3}, {"yd", "ft", 3.0},
         {"ms", "s", 1e-3}, {"us", "ms", 1e-3}, {"ns", "us", 1e-3}, {"week", "day", 7.0},
         {"kgf", "N", 9.80665}, {"dyne", "N", 1e-5}, {"kN", "N", 1000.0}, {"GJ", "MJ", 1000.0}, {"Wh", "J", 3600.0},

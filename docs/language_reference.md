@@ -584,7 +584,7 @@ cp = 4.18*CONVERT('kJ/kg-K', 'Btu/lbm-R')
   `slug`, `ft`, `in`, `yd`, `mi`, `psi`, `psia`, `atm`, `torr`, `mmHg`, `inHg`, `Btu`, `cal`, `kcal`,
   `kWh`, `hp`, `gal`, `qt`, `acre`, `lbmol`, `mph`, `knot`, `min`, `hr`, `day`, `rpm`, `rev`, `rad`,
   `deg`, `cP`, `poise`, ...) and the long names `meter`, `inch`, `second`, `hour`, `joule`, `watt`, `pascal`,
-  `kilogram`, `gram`, `liter`. A name is read with its exact capitalization first (`mPa` and `MPa` differ,
+  `kilogram`, `gram`, `liter` (and `milliPa`, the EES spelling of `mPa`: `convert(milliPa-s, Pa-s)`). A name is read with its exact capitalization first (`mPa` and `MPa` differ,
   `mW` and `MW`); else without regard to case when only one unit fits (`KPA`, `BTU`, `Lbm/Hr`); `mpa` is
   ambiguous and is an error.
 - **Temperatures** inside a unit are temperature *differences* (K = C, R = F = 5/9 K), so `kJ/kg-K` and
@@ -1855,7 +1855,7 @@ in the folder of the model that includes it.
   routine, everything comes through the arguments).
 - **Its lookup tables come with it**: the tables `<stem>-<table>.csv` of the folder of the included file (of a
   library model: those of its folder) are loaded with its routines, which read them by name
-  (`LOOKUP$('Units', …)` in a BrineProp procedure). A table of the model, or of an earlier `$INCLUDE`, keeps its
+  (`LOOKUP$ROW('BrineSolutions', 'Code', Fl$)` in the BrineProp library `CSL-0079`). A table of the model, or of an earlier `$INCLUDE`, keeps its
   name; the table left out is named in a warning `L002`.
 - **Outputs**: the debug report (`report.md`) lists the included files and their routines; the LaTeX report
   names the included routines without reproducing their code; the ZIP bundle of the GUI carries the included
