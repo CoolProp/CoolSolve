@@ -34,6 +34,33 @@ IntegratorOptions makeIntegratorOptions(const SolverOptions& options) {
 }
 }  // namespace
 
+void addIncludedLookupTables(LookupTableStore& store, const ParseResult& parse, DiagnosticCollector* diags) {
+    if (parse.includes.empty()) return;
+    std::map<std::string, std::string, CaseInsensitiveLess> origin;   // table name -> who provides it
+    for (const auto& name : store.names()) origin.emplace(name, "the model");
+    for (const auto& inc : parse.includes) {
+        const std::string from = inc.source.describe();
+        for (const auto& [name, csv] : inc.source.tables) {
+            const auto [it, isNew] = origin.emplace(name, from);
+            if (!isNew) {
+                if (diags && it->second != from)
+                    diags->push(DiagnosticSeverity::Warning, "L002",
+                                "Lookup table '" + name + "' of " + from + " is not loaded: " + it->second +
+                                " has a table of that name", "lookup_table", inc.line, 0);
+                continue;
+            }
+            try {
+                store.add(LookupTable::fromCSV(name, csv));
+            } catch (const std::exception& e) {
+                if (diags)
+                    diags->push(DiagnosticSeverity::Warning, "L001",
+                                "Failed to parse lookup table '" + name + "' of " + from + ": " + e.what(),
+                                "lookup_table", inc.line, 0);
+            }
+        }
+    }
+}
+
 CoolSolveRunner::CoolSolveRunner(const std::string& inputFile)
     : inputFile_(inputFile) {}
 
@@ -130,6 +157,7 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
         if (!lookupTableStorePreloaded_) {
             lookupTableStore_ = loadLookupTableForModel(inputFile_, &diagnostics_);
         }
+        addIncludedLookupTables(lookupTableStore_, parseResult_, &diagnostics_);
 
         t1 = std::chrono::high_resolution_clock::now();
 

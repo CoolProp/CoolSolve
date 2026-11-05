@@ -18,6 +18,10 @@ struct IncludedSource {
     std::string libraryName;     ///< The library model's name when `fromLibrary`.
     std::string libraryFolder;   ///< "models/heat_exchangers/methods/hx_ees_function" when `fromLibrary`.
     std::string content;         ///< The source text.
+    /// Its lookup tables, table name -> CSV text: the `<stem>-<table>.csv` files of its folder (for a
+    /// library model, those `LibraryStore::loadModel` loads). Its routines read them as the model's own
+    /// tables, which take precedence (addIncludedLookupTables, runner.h).
+    std::map<std::string, std::string> tables;
 
     /// Identity of the file, the same for two includes of it: "library:<folder>/<file>" or "project:<file>".
     std::string key() const;
@@ -42,15 +46,19 @@ struct IncludedSource {
  */
 class IncludeResolver {
 public:
-    /// Reads `fileName` ("x.eescode") from the project folder; false when the folder has no such file.
-    using ProjectReader = std::function<bool(const std::string& fileName, std::string& content)>;
+    /// Reads `fileName` ("x.eescode") and its tables from the project folder into `out.content` and
+    /// `out.tables`; false when the folder has no such file.
+    using ProjectReader = std::function<bool(const std::string& fileName, IncludedSource& out)>;
 
     /// Files of a folder on disk (the CLI: the folder of the model file). `mainFile` is the model's own file
     /// name, which cannot be included.
     static std::shared_ptr<const IncludeResolver> forDirectory(const std::string& dir, const std::string& mainFile,
                                                                const LibraryStore* library);
     /// Files held in memory, file name -> content (the GUI session of an uploaded ZIP or of a new model).
+    /// The tables of file `<stem>.eescode` are the entries `<stem>-<table>` of `tables` (table name -> CSV),
+    /// the names a ZIP upload gives to the files `<stem>-<table>.csv` of another model.
     static std::shared_ptr<const IncludeResolver> forFiles(std::map<std::string, std::string> files,
+                                                           std::map<std::string, std::string> tables,
                                                            const std::string& mainFile, const LibraryStore* library);
     /// The folder of a library model (the GUI session of a model opened from the library).
     static std::shared_ptr<const IncludeResolver> forLibraryModel(const std::string& libraryId,
@@ -69,7 +77,7 @@ public:
 private:
     IncludeResolver() = default;
 
-    /// A file of the folder of library model `libraryId` (empty `fileName`: its main file), as a source.
+    /// A file of the folder of library model `libraryId` (empty `fileName`: its main file) with its tables.
     bool readLibraryModelFile(const std::string& libraryId, const std::string& fileName, IncludedSource& out) const;
 
     ProjectReader project_;            ///< Empty: no project folder.

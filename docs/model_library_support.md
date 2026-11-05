@@ -141,9 +141,13 @@ $INCLUDE my_correlations      "my_correlations.eescode, in the folder of the mod
   and inserts them after the directive once the model's own checks are done; `LibraryStore` supplies the text
   of library targets.
 
+- **Lookup tables**: the tables `<stem>-<table>.csv` of the included file's folder come with its routines (a
+  table of the model keeps its name, warning `L002`), so that a property library such as BrineProp
+  (`CSL-0079`, `LOOKUP$('Units', …)`) works when included.
+
 Not done (future work): *Export for EES* (`CS-FEAT-EXPORT-EES`, one file with the included routines written in),
 editor auto-completion and quick-fix from the `functions` of `library.json` (*unknown function `cpbar`* →
-"Include `cpbar_combustion_products`"), the lookup tables of an included model, the native `.lib`/`.txt` files.
+"Include `cpbar_combustion_products`"), the native `.lib`/`.txt` files.
 
 ---
 

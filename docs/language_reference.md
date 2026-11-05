@@ -1852,8 +1852,11 @@ in the folder of the model that includes it.
   reported at the line of the directive, with its file and line (*In my_correlations.eescode, line 12: …*).
 - **The included file is parsed on its own**: its `$CONSTANT`s, `$IF`s and array ranges apply to its own
   routines, and the routines see neither the variables nor the constants of the including model (as for any
-  routine, everything comes through the arguments). The lookup tables of an included library model are not
-  imported: a routine that reads a table needs the table in the including model.
+  routine, everything comes through the arguments).
+- **Its lookup tables come with it**: the tables `<stem>-<table>.csv` of the folder of the included file (of a
+  library model: those of its folder) are loaded with its routines, which read them by name
+  (`LOOKUP$('Units', …)` in a BrineProp procedure). A table of the model, or of an earlier `$INCLUDE`, keeps its
+  name; the table left out is named in a warning `L002`.
 - **Outputs**: the debug report (`report.md`) lists the included files and their routines; the LaTeX report
   names the included routines without reproducing their code; the ZIP bundle of the GUI carries the included
   files (library ones too) next to the model, so that the bundle runs on its own with the library version it

@@ -39,7 +39,10 @@ const char* kIndex = R"({
      "main_file": "lib_nested.eescode"},
     {"id": "CSL-9003", "name": "lib_other_twice", "title": "Another twice", "category": "fundamentals",
      "status": "verified", "level": 1, "kind": "function", "path": "models/fundamentals/lib_other_twice",
-     "main_file": "lib_other_twice.eescode"}
+     "main_file": "lib_other_twice.eescode"},
+    {"id": "CSL-9004", "name": "lib_table", "title": "A function reading its table", "category": "fundamentals",
+     "status": "verified", "level": 1, "kind": "function", "path": "models/fundamentals/lib_table",
+     "main_file": "lib_table.eescode"}
   ],
   "functions": [
     {"function": "twice", "type": "FUNCTION", "model_id": "CSL-9001"},
@@ -74,20 +77,30 @@ const char* kLibOtherTwice = R"(FUNCTION twice(x)
 END
 )";
 
+// A function model whose routine reads a lookup table of its folder (lib_table-Coef.csv)
+const char* kLibTable = R"(FUNCTION coef_k(i)
+  coef_k := lookup('Coef', i, 'k')
+END
+k_demo = coef_k(1)
+)";
+
 const LibraryStore& testLibrary() {
     static const LibraryStore store(LibraryFileSource::fromMap({
         {"library.json", kIndex},
         {"models/fundamentals/lib_funcs/lib_funcs.eescode", kLibFuncs},
         {"models/fundamentals/lib_nested/lib_nested.eescode", kLibNested},
         {"models/fundamentals/lib_other_twice/lib_other_twice.eescode", kLibOtherTwice},
+        {"models/fundamentals/lib_table/lib_table.eescode", kLibTable},
+        {"models/fundamentals/lib_table/lib_table-Coef.csv", "k\n2.5\n3.5\n"},
     }));
     return store;
 }
 
 ParseResult parseWith(const std::string& source, std::map<std::string, std::string> projectFiles = {},
-                      const LibraryStore* library = &testLibrary()) {
+                      const LibraryStore* library = &testLibrary(), std::map<std::string, std::string> tables = {}) {
     EESParser parser;
-    parser.setIncludeResolver(IncludeResolver::forFiles(std::move(projectFiles), "main.eescode", library));
+    parser.setIncludeResolver(
+        IncludeResolver::forFiles(std::move(projectFiles), std::move(tables), "main.eescode", library));
     return parser.parse(source);
 }
 
@@ -131,13 +144,15 @@ struct TempProject {
     }
 };
 
-double solveValue(const fs::path& model, const std::string& variable, const LibraryStore* library = &testLibrary()) {
+double solveValue(const fs::path& model, const std::string& variable, const LibraryStore* library = &testLibrary(),
+                  DiagnosticCollector* diagnostics = nullptr) {
     CoolSolveRunner runner(model.string());
     runner.setIncludeResolver(IncludeResolver::forDirectory(model.parent_path().string(), model.filename().string(),
                                                            library));
     SolverOptions options;
     options.verbose = false;
     REQUIRE(runner.run(options));
+    if (diagnostics) diagnostics->merge(runner.getDiagnostics());
     return runner.getSolveResult().variables.at(variable);
 }
 
@@ -357,4 +372,40 @@ TEST_CASE("Include: a model without $INCLUDE is parsed as before", "[include]") 
     REQUIRE(r.success);
     CHECK(r.includes.empty());
     CHECK(findFunction(r, "f")->includedFrom.empty());
+}
+
+TEST_CASE("Include: the lookup tables of the included file come with its routines", "[include]") {
+    // A library model: the tables of its folder
+    auto library = parseWith("$INCLUDE lib_table\ny = coef_k(2)\n");
+    REQUIRE(library.success);
+    REQUIRE(library.includes.size() == 1);
+    CHECK(library.includes[0].source.tables.count("Coef") == 1);
+
+    // A file of an uploaded project: the session tables named "<stem>-<table>"
+    auto zip = parseWith("$INCLUDE helper\ny = 1\n", {{"helper.eescode", "FUNCTION f(x)\n  f := x\nEND\n"}},
+                         &testLibrary(), {{"helper-K", "a\n1\n"}, {"K", "own table of the model"}});
+    REQUIRE(zip.success);
+    CHECK(zip.includes[0].source.tables == std::map<std::string, std::string>{{"K", "a\n1\n"}});
+
+    TempProject project({
+        {"main.eescode", "$INCLUDE lib_table\n$INCLUDE helper\ny = coef_k(2)\nz = scaled(2)\n"},
+        {"helper.eescode", "FUNCTION scaled(x)\n  scaled := x*lookup('Factor', 1, 'f')\nEND\n"},
+        {"helper-Factor.csv", "f\n10\n"},
+    });
+    const fs::path model = project.dir / "main.eescode";
+    CHECK_THAT(solveValue(model, "y"), WithinRel(3.5, 1e-12));    // lib_table-Coef.csv of the library folder
+    CHECK_THAT(solveValue(model, "z"), WithinRel(20.0, 1e-12));   // helper-Factor.csv next to helper.eescode
+}
+
+TEST_CASE("Include: a table of the model keeps its name over a table of an included file", "[include]") {
+    TempProject project({
+        {"main.eescode", "$INCLUDE lib_table\ny = coef_k(1)\n"},
+        {"main-Coef.csv", "k\n100\n"},
+    });
+    DiagnosticCollector diagnostics;
+    CHECK_THAT(solveValue(project.dir / "main.eescode", "y", &testLibrary(), &diagnostics), WithinRel(100.0, 1e-12));
+    bool warned = false;
+    for (const auto& d : diagnostics.items())
+        warned = warned || (d.code == "L002" && d.message.find("'Coef' of library model lib_table") != std::string::npos);
+    CHECK(warned);
 }

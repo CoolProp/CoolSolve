@@ -356,8 +356,10 @@ def test_includes(models):
           str(names))
 
     # A ZIP project: the model is the file no other includes (the ZIP name differs), the other one is included
+    # the included file reads its own table, helper-T.csv
     project = {"main.eescode": "$INCLUDE helper\ny = triple(2)\n",
-               "helper.eescode": "FUNCTION triple(x)\n  triple := 3*x\nEND\nunused = 1\n"}
+               "helper.eescode": "FUNCTION triple(x)\n  triple := lookup('T', 1, 'c')*x\nEND\nunused = 1\n",
+               "helper-T.csv": "c\n3\n"}
     tab_b = {"X-CoolSolve-Session": "f" * 32}
     status, up = upload_bundle(make_zip(project), "project (1).zip", tab_b)
     check("upload picks the model among several .eescode files", status == 200 and up.get("mainFile") == "main.eescode",
@@ -374,7 +376,9 @@ def test_includes(models):
           str(result and result.get("errorMessage")))
     status, _, bundle = raw("GET", "/api/v1/files/bundle?sid=" + "f" * 32, None, None, _plain_opener)
     names = zipfile.ZipFile(io.BytesIO(bundle)).namelist() if bundle[:2] == b"PK" else []
-    check("the bundle keeps the project files", "helper.eescode" in names, str(names))
+    check("the bundle keeps the project files and their tables, under their own names",
+          "helper.eescode" in names and "helper-T.csv" in names and not any(n.endswith("-helper-T.csv") for n in names),
+          str(names))
 
     # Open an included file in a new session (a new window of the GUI)
     status, opened = api("POST", "/includes/open", {"name": "helper"}, tab_b, _plain_opener)

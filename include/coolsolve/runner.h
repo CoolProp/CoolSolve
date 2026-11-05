@@ -12,6 +12,13 @@
 
 namespace coolsolve {
 
+/**
+ * Add to @p store the lookup tables of the files the model includes (`IncludeInfo::source.tables`), so
+ * that their routines find them: a table of the model, or of an earlier `$INCLUDE`, keeps its name (a
+ * warning L002 to @p diags names the one left out). Without `$INCLUDE`, nothing is done.
+ */
+void addIncludedLookupTables(LookupTableStore& store, const ParseResult& parse, DiagnosticCollector* diags);
+
 class CoolSolveRunner {
 public:
     CoolSolveRunner(const std::string& inputFile);

@@ -286,4 +286,13 @@ LookupTableStore loadLookupTablesFromDirectory(const std::string& dir,
 LookupTableStore loadLookupTableForModel(const std::string& modelFilePath,
                                           DiagnosticCollector* diags = nullptr);
 
+/**
+ * @brief The companion table files of a model, unparsed: the files
+ * `<stem>-<tableName>.csv` of @p dir as table name → CSV text (the files
+ * loadLookupTableForModel() reads). A file that cannot be opened emits a
+ * warning to @p diags (if provided).
+ */
+std::map<std::string, std::string> readCompanionTableFiles(const std::string& dir, const std::string& stem,
+                                                           DiagnosticCollector* diags = nullptr);
+
 } // namespace coolsolve

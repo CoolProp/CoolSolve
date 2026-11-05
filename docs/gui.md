@@ -679,7 +679,7 @@ writer/reader in `server.cpp` — no external library):
 | `coolsolve.conf` | Solver configuration |
 | `<tablename>.csv` | One entry per lookup table in the session |
 | `<name>-integral.csv` | Integral trajectory (when an `INTEGRAL` model was solved) |
-| `<other>.eescode` | Every file the model includes (`$INCLUDE`, nested includes too; library models as their `.eescode` file) and the other `.eescode` files of an uploaded project |
+| `<other>.eescode`, `<other>-<table>.csv` | Every file the model includes (`$INCLUDE`, nested includes too; library models as their `.eescode` file) with its lookup tables, and the other `.eescode` files of an uploaded project |
 | `debug/*` | Debug output files (if present) |
 
 **Included files.** Because a file of the model folder takes precedence over a library model of the same

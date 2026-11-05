@@ -636,8 +636,9 @@ static void beginModel(Session& session) {
 // ============================================================================
 // Where the `$INCLUDE`s of the session's model find their files (include_resolver.h): the folder of a
 // model opened from the library, the folder of the file given on the command line, or else the other
-// .eescode files of an uploaded ZIP (none for a new model). The resolver holds copies: it can be used by
-// a solve thread while the session changes.
+// .eescode files of an uploaded ZIP (none for a new model), whose tables are the session's tables
+// `<stem>-<table>` (the names a ZIP upload gives them). The resolver holds copies: it can be used by a
+// solve thread while the session changes.
 static std::shared_ptr<const IncludeResolver> includeResolverFor(const Session& session) {
     if (!session.libraryId.empty())
         return IncludeResolver::forLibraryModel(session.libraryId, session.modelName + ".eescode", &embeddedLibrary());
@@ -645,7 +646,7 @@ static std::shared_ptr<const IncludeResolver> includeResolverFor(const Session& 
         const fs::path path(session.openFilePath);
         return IncludeResolver::forDirectory(path.parent_path().string(), path.filename().string(), &embeddedLibrary());
     }
-    return IncludeResolver::forFiles(session.projectFiles, "", &embeddedLibrary());
+    return IncludeResolver::forFiles(session.projectFiles, session.lookupTableCSVs, "", &embeddedLibrary());
 }
 
 /// The `$INCLUDE` directives of the model itself (not those of the included files), for the GUI.
@@ -2315,6 +2316,7 @@ int startServer(const ServerOptions& options) {
                                 try { parametricStore.add(LookupTable::fromCSV(name, csv)); }
                                 catch (...) {}
                             }
+                            addIncludedLookupTables(parametricStore, parseResult, nullptr);
                             Solver solver(ir, cachedAnalysis, solverOpts.coolpropConfig);
                             solver.setLookupTableStore(&parametricStore);
                             pointSolveResult = solver.solve(solverOpts, false);
@@ -2855,11 +2857,17 @@ int startServer(const ServerOptions& options) {
                     opened->openFilePath = (fs::path(session.openFilePath).parent_path() / source.fileName).string();
                     discoverCompanionFiles(*opened);
                 } else {
-                    // The same project: the other files, the including model among them
+                    // The same project: the other files, the including model among them, and their tables
                     opened->projectFiles = session.projectFiles;
                     opened->projectFiles.erase(source.fileName);
                     const std::string stem = session.modelName.empty() ? "model" : session.modelName;
                     opened->projectFiles[stem + ".eescode"] = session.eescodeContent;
+                    opened->lookupTableCSVs = source.tables;
+                    for (const auto& [file, _] : opened->projectFiles) {
+                        const std::string prefix = fs::path(file).stem().string() + "-";
+                        for (const auto& [table, csv] : session.lookupTableCSVs)
+                            if (table.rfind(prefix, 0) == 0) opened->lookupTableCSVs[table] = csv;
+                    }
                 }
             }
             res.set_content(json{{"sessionId", sessionId},
@@ -3006,26 +3014,44 @@ int startServer(const ServerOptions& options) {
         if (!session.confContent.empty())
             files.push_back({"coolsolve.conf", session.confContent});
 
+        // The file of a lookup table: "<modelStem>-<tableName>.csv" (the convention of the on-disk loader,
+        // lookup_table.h), except a table "<stem>-<table>" of another .eescode file of the project, which
+        // keeps that name ("<stem>-<table>.csv", next to its file)
+        auto tableFile = [&](const std::string& table) {
+            for (const auto& [file, _] : session.projectFiles) {
+                const std::string prefix = toLowerCopy(fs::path(file).stem().string() + "-");
+                if (table.size() > prefix.size() && toLowerCopy(table.substr(0, prefix.size())) == prefix)
+                    return table + ".csv";
+            }
+            return stem + "-" + table + ".csv";
+        };
+
         // The .eescode files of the project and every file the model includes ($INCLUDE, nested ones too),
         // next to the model: the bundle runs on its own, because a file of the model folder takes precedence
         // over the library model of the same name (it keeps the library version of this build).
         {
             std::set<std::string> written = {toLowerCopy(stem + ".eescode")};
+            for (const auto& [table, _] : session.lookupTableCSVs) written.insert(toLowerCopy(tableFile(table)));
             for (const auto& [file, content] : session.projectFiles)
                 if (written.insert(toLowerCopy(file)).second) files.push_back({file, content});
             EESParser parser;
             parser.setIncludeResolver(includeResolverFor(session));
             const auto parsed = parser.parse(session.eescodeContent);
-            for (const auto& inc : parsed.includes)
-                if (written.insert(toLowerCopy(inc.source.fileName)).second)
-                    files.push_back({inc.source.fileName, inc.source.content});
+            for (const auto& inc : parsed.includes) {
+                if (!written.insert(toLowerCopy(inc.source.fileName)).second) continue;
+                files.push_back({inc.source.fileName, inc.source.content});
+                // Its tables, named for that file ("<stem>-<table>.csv"): its routines find them again
+                const std::string incStem = fs::path(inc.source.fileName).stem().string();
+                for (const auto& [table, csv] : inc.source.tables)
+                    if (written.insert(toLowerCopy(incStem + "-" + table + ".csv")).second)
+                        files.push_back({incStem + "-" + table + ".csv", csv});
+            }
         }
 
-        // Include lookup table CSVs using the "<modelStem>-<tableName>.csv"
-        // naming convention so the bundle round-trips through the on-disk
-        // loader (see lookup_table.h).
+        // Include lookup table CSVs (tableFile above) so the bundle round-trips
+        // through the on-disk loader (see lookup_table.h).
         for (const auto& [tblName, csvContent] : session.lookupTableCSVs) {
-            files.push_back({stem + "-" + tblName + ".csv", csvContent});
+            files.push_back({tableFile(tblName), csvContent});
         }
         
         // Include LaTeX report if generated

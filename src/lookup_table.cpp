@@ -667,24 +667,22 @@ LookupTableStore loadLookupTablesFromDirectory(const std::string& dir,
 // loadLookupTableForModel
 // ============================================================================
 
-LookupTableStore loadLookupTableForModel(const std::string& modelFilePath,
-                                          DiagnosticCollector* diags) {
-    LookupTableStore store;
-    fs::path model(modelFilePath);
-    fs::path dir = model.parent_path();
-    if (dir.empty()) dir = ".";   // bare file name: the model is in the current directory
-    std::string stem = model.stem().string();
+std::map<std::string, std::string> readCompanionTableFiles(const std::string& dirPath, const std::string& stem,
+                                                           DiagnosticCollector* diags) {
+    std::map<std::string, std::string> tables;
+    const fs::path dir = dirPath.empty() ? fs::path(".") : fs::path(dirPath);
 
     // Scan the model's directory for every *.csv file whose stem starts with
     // "<stem>-".  The part after the hyphen is the table name, so that
     // "mymodel-watercp.csv" → table "watercp" and is callable as
     // LOOKUP('watercp', ...).  Files that do not match this pattern are
     // ignored, including a bare "<stem>.csv" (the table name would be empty).
-    if (!fs::exists(dir) || !fs::is_directory(dir)) return store;
+    std::error_code ec;
+    if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) return tables;
 
     const std::string prefix = stem + "-";
 
-    for (const auto& entry : fs::directory_iterator(dir)) {
+    for (const auto& entry : fs::directory_iterator(dir, ec)) {
         if (!entry.is_regular_file()) continue;
         auto p = entry.path();
         if (p.extension() != ".csv") continue;
@@ -694,19 +692,28 @@ LookupTableStore loadLookupTableForModel(const std::string& modelFilePath,
             fileStem.compare(0, prefix.size(), prefix) != 0) {
             continue;
         }
-        std::string tableName = fileStem.substr(prefix.size());
-        try {
-            std::ifstream file(p);
-            if (!file.is_open()) {
-                if (diags) {
-                    diags->push(DiagnosticSeverity::Warning, "L001",
-                        "Could not open lookup table file: " + p.string(),
-                        "lookup_table");
-                }
-                continue;
+        std::ifstream file(p);
+        if (!file.is_open()) {
+            if (diags) {
+                diags->push(DiagnosticSeverity::Warning, "L001",
+                    "Could not open lookup table file: " + p.string(),
+                    "lookup_table");
             }
-            std::string content((std::istreambuf_iterator<char>(file)),
-                                 std::istreambuf_iterator<char>());
+            continue;
+        }
+        tables[fileStem.substr(prefix.size())].assign(std::istreambuf_iterator<char>(file),
+                                                      std::istreambuf_iterator<char>());
+    }
+    return tables;
+}
+
+LookupTableStore loadLookupTableForModel(const std::string& modelFilePath,
+                                          DiagnosticCollector* diags) {
+    LookupTableStore store;
+    const fs::path model(modelFilePath);
+    for (const auto& [tableName, content] :
+         readCompanionTableFiles(model.parent_path().string(), model.stem().string(), diags)) {
+        try {
             store.add(LookupTable::fromCSV(tableName, content));
         } catch (const std::exception& e) {
             if (diags) {

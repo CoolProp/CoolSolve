@@ -1,6 +1,7 @@
 #include "coolsolve/include_resolver.h"
 
 #include "coolsolve/library_store.h"
+#include "coolsolve/lookup_table.h"
 
 #include <algorithm>
 #include <cctype>
@@ -64,6 +65,13 @@ bool readTextFile(const fs::path& path, std::string& content) {
     return true;
 }
 
+/// A file of a folder on disk with its tables `<stem>-<table>.csv`.
+bool readFolderFile(const fs::path& path, IncludedSource& out) {
+    if (!readTextFile(path, out.content)) return false;
+    out.tables = readCompanionTableFiles(path.parent_path().string(), path.stem().string());
+    return true;
+}
+
 }  // namespace
 
 std::string IncludedSource::key() const {
@@ -111,13 +119,13 @@ std::shared_ptr<const IncludeResolver> IncludeResolver::forDirectory(const std::
                                                                      const LibraryStore* library) {
     auto resolver = std::shared_ptr<IncludeResolver>(new IncludeResolver());
     const fs::path folder = dir.empty() ? fs::path(".") : fs::path(dir);
-    resolver->project_ = [folder](const std::string& fileName, std::string& content) {
+    resolver->project_ = [folder](const std::string& fileName, IncludedSource& out) {
         std::error_code ec;
-        if (fs::is_regular_file(folder / fileName, ec)) return readTextFile(folder / fileName, content);
+        if (fs::is_regular_file(folder / fileName, ec)) return readFolderFile(folder / fileName, out);
         // The case of a name may differ from the file's (models written on Windows)
         for (const auto& entry : fs::directory_iterator(folder, ec)) {
             if (entry.is_regular_file(ec) && iequals(entry.path().filename().string(), fileName))
-                return readTextFile(entry.path(), content);
+                return readFolderFile(entry.path(), out);
         }
         return false;
     };
@@ -127,16 +135,21 @@ std::shared_ptr<const IncludeResolver> IncludeResolver::forDirectory(const std::
 }
 
 std::shared_ptr<const IncludeResolver> IncludeResolver::forFiles(std::map<std::string, std::string> files,
+                                                                 std::map<std::string, std::string> tables,
                                                                  const std::string& mainFile,
                                                                  const LibraryStore* library) {
     auto resolver = std::shared_ptr<IncludeResolver>(new IncludeResolver());
-    auto shared = std::make_shared<const std::map<std::string, std::string>>(std::move(files));
-    resolver->project_ = [shared](const std::string& fileName, std::string& content) {
-        for (const auto& [file, text] : *shared) {
-            if (iequals(file, fileName)) {
-                content = text;
-                return true;
-            }
+    auto sharedFiles = std::make_shared<const std::map<std::string, std::string>>(std::move(files));
+    auto sharedTables = std::make_shared<const std::map<std::string, std::string>>(std::move(tables));
+    resolver->project_ = [sharedFiles, sharedTables](const std::string& fileName, IncludedSource& out) {
+        for (const auto& [file, text] : *sharedFiles) {
+            if (!iequals(file, fileName)) continue;
+            out.content = text;
+            const std::string prefix = lower(fs::path(file).stem().string()) + "-";
+            for (const auto& [name, csv] : *sharedTables)
+                if (name.size() > prefix.size() && lower(name.substr(0, prefix.size())) == prefix)
+                    out.tables[name.substr(prefix.size())] = csv;
+            return true;
         }
         return false;
     };
@@ -164,16 +177,17 @@ std::shared_ptr<const IncludeResolver> IncludeResolver::libraryOnly(const Librar
 bool IncludeResolver::readLibraryModelFile(const std::string& libraryId, const std::string& fileName,
                                            IncludedSource& out) const {
     if (!library_) return false;
-    const auto* model = library_->findModel(libraryId);
-    if (!model) return false;
+    LibraryModel model;
+    std::string error;
+    if (!library_->loadModel(libraryId, fileName, model, error)) return false;
     IncludedSource source;
     source.fromLibrary = true;
-    source.libraryId = model->value("id", "");
-    source.libraryName = model->value("name", "");
-    source.libraryFolder = model->value("path", "");
-    source.fileName = fileName.empty() ? model->value("main_file", "") : fileName;
-    if (source.libraryFolder.empty() || source.fileName.empty()) return false;
-    if (!library_->readFile(source.libraryFolder + "/" + source.fileName, source.content)) return false;
+    source.libraryId = model.id;
+    source.libraryName = model.name;
+    source.libraryFolder = model.folder;
+    source.fileName = model.file;
+    source.content = std::move(model.eescode);
+    source.tables = std::move(model.tables);
     out = std::move(source);
     return true;
 }
@@ -196,12 +210,11 @@ bool IncludeResolver::resolve(const std::string& name, const IncludedSource* fro
             return true;
         }
     } else if (project_) {
-        std::string content;
-        if (project_(fileName, content)) {
-            out = IncludedSource{};
-            out.name = name;
-            out.fileName = fileName;
-            out.content = std::move(content);
+        IncludedSource source;
+        if (project_(fileName, source)) {
+            source.name = name;
+            source.fileName = fileName;
+            out = std::move(source);
             return true;
         }
     }
