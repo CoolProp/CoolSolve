@@ -72,6 +72,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 | [Model Library Support](docs/model_library_support.md) | How CoolSolve embeds and serves the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library), the features it needs, and the register of EES gaps found while importing models |
 | [Solver Roadmap](docs/solver_roadmap.md) | Performance roadmap, algorithm details, and implementation status |
 | [Symbolic Block Reduction](docs/symbolic_redecomposition.md) | Symbolic block reduction algorithm |
+| [Solid Phases (design study)](docs/solid_phase_properties.md) | Proposal for ice, dry ice, PCM and brine freezing properties coherent with CoolProp (not implemented) |
 | [GUI & REST API](docs/gui.md) | Web interface, REST API, and parametric studies |
 | [Deployment Guide](docs/deployment_ubuntu_apache.md) | Deploying CoolSolve on Ubuntu with Apache |
 | [Contributing Guide](docs/contributing.md) | Workflow and integration checklist for new features and bug fixes |
