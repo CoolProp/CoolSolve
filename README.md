@@ -351,6 +351,14 @@ cd build
 # checks expected values, and runs solution verification on each)
 ./coolsolve_tests "[examples-comprehensive]"
 
+# Library regression (slow, about five minutes): solves every runnable model of the
+# CoolSolve Library (the checkout embedded in the build, or COOLSOLVE_LIBRARY_DIR=<checkout>)
+# and compares it with its stored .sol baseline; report in library_regression.md.
+# The library's own `python3 tools/test_models.py --coolsolve <abs path>/coolsolve` gives the same verdicts.
+# COOLSOLVE_LIBRARY_TEST_FILTER=CSL-0001,CSL-0009:coolsolve selects targets,
+# COOLSOLVE_LIBRARY_TEST_EXCLUDE=CSL-0009:coolsolve leaves some out.
+./coolsolve_tests "[library-regression]"
+
 # Library tests: the model index/loader (unit tests) and, against the running GUI
 # server, the Library menu, opening a model folder, per-tab sessions and /library/ pages
 ./coolsolve_tests "[library]"
@@ -375,6 +383,8 @@ ctest --output-on-failure
 The `examples/` folder is used by the CLI and the regression tests only — the GUI offers the model library instead.
 
 The comprehensive test runs all `.eescode` files in the `examples/` folder, validates solutions against known expected values (with 1% tolerance), and performs **solution verification** — independently re-evaluating every equation to confirm LHS ≈ RHS. A detailed report is written to `examples/test_examples.md`.
+
+The library regression solves every runnable model of the CoolSolve Library (the main file of each *verified* or *modified* model, and every variant with a `.sol` baseline: about 320 targets) with the CLI's pipeline and requires each variable of its `.sol` baseline to be met within `1e-9 + 1e-6·max(|new|, |baseline|)`. It writes `library_regression.md` (in the working directory, the build folder) with the verdict of every target (PASS, DEVIATION with the worst variable, FAIL with the solver message) and the time it took; it is skipped when no library is available. It is a hidden test (`[.]`): `./coolsolve_tests` and `ctest` do not run it unless it is asked for by its tag; its self-tests (a small library written to a temporary folder: locating the library, reading a baseline, the comparison rule, every verdict) are ordinary unit tests.
 
 The robustness test runs every solvable example under multiple solver configurations and reports a summary table of successes, failures, and iteration counts per configuration. A detailed report is written to `examples/solver_robustness_report.md`.
 
@@ -501,6 +511,7 @@ CoolSolve/
 │   ├── test_fluids.cpp         # CoolProp fluid property tests
 │   ├── test_examples.cpp       # Integration tests with example files
 │   ├── test_library_store.cpp  # Model library index/loader unit tests
+│   ├── test_library_regression.cpp # Library regression: every runnable library model vs its .sol (slow, hidden) + self-tests
 │   ├── test_includes.cpp       # `$INCLUDE`: resolution, imported routines, precedence, errors
 │   ├── test_library_api.py     # Library menu, open, per-tab sessions, /library/, `$INCLUDE` (REST, needs the GUI build)
 │   ├── test_gui_shortcuts.py   # GUI keyboard shortcuts (F2) in headless Chromium (needs the GUI build)

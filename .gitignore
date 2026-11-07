@@ -10,3 +10,6 @@ coolsolve_gui.log
 
 # Python bytecode caches
 __pycache__/
+
+# Library regression report ([library-regression] test; written to the working directory, the build folder)
+library_regression.md

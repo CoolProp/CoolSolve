@@ -91,12 +91,23 @@ Once the targeted tests pass, run the full suite to catch regressions:
 
 # Solver robustness suite (every example × every pipeline configuration)
 ./coolsolve_tests "[solver-robustness]"
+
+# Library regression (slow, ~5 min): solves every runnable model of the
+# CoolSolve Library and compares it with its .sol baseline → library_regression.md
+./coolsolve_tests "[library-regression]"
 ```
 
-A contribution is **not ready for review** until all three of these pass on
-your machine. Pay special attention to `examples/test_examples.md` and
+A contribution is **not ready for review** until all three of the first
+suites pass on your machine. Pay special attention to `examples/test_examples.md` and
 `examples/solver_robustness_report.md` — large changes in iteration count or
 runtime are red flags worth investigating before merging.
+
+A change to the solver, the evaluator, the parser, the units or a built-in
+function must also pass the **library regression**, which gives the same
+verdicts as `tools/test_models.py` of the CoolSolve Library for the same build
+(the library checkout embedded in the build, or `COOLSOLVE_LIBRARY_DIR`); a
+target that stops solving or moves beyond its tolerance is a regression, or a
+baseline to re-explain in the library (`docs/model_workflow.md` there).
 
 ### 2.5 Update documentation
 
@@ -530,6 +541,7 @@ concern lives.
 | Per-tab session ID                       | `gui/src/api/session.ts`, `getSession()` in `src/server.cpp` |
 | GUI state read back from the session     | `gui/src/utils/sessionModel.ts` (`showSessionModel()`) |
 | Model library tests                      | `tests/test_library_store.cpp`, `tests/test_includes.cpp`, `tests/test_library_api.py` |
+| Library regression (every library model vs its `.sol`) | `tests/test_library_regression.cpp`            |
 | Comprehensive example tests              | `tests/test_examples.cpp` (`EXPECTED_SOLUTIONS`)     |
 | Solver robustness tests                  | `tests/test_solver_robustness.cpp`                   |
 | Configuration parsing tests              | `tests/test_config.cpp`                              |

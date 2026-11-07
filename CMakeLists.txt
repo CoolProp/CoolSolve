@@ -370,7 +370,14 @@ if(COOLSOLVE_BUILD_TESTS)
     if(TEST_SOURCES)
         add_executable(coolsolve_tests ${TEST_SOURCES})
         target_link_libraries(coolsolve_tests PRIVATE coolsolve_lib Catch2::Catch2)
-        
+
+        # The library checkout this build embeds (the FetchContent copy, or FETCHCONTENT_SOURCE_DIR_COOLSOLVELIBRARY):
+        # the default library of the [library-regression] test, which COOLSOLVE_LIBRARY_DIR overrides.
+        if(coolsolvelibrary_SOURCE_DIR)
+            set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/tests/test_library_regression.cpp" PROPERTIES
+                COMPILE_DEFINITIONS "COOLSOLVE_LIBRARY_SOURCE_DIR=\"${coolsolvelibrary_SOURCE_DIR}\"")
+        endif()
+
         include(CTest)
         include(Catch)
         catch_discover_tests(coolsolve_tests)
