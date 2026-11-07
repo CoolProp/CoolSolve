@@ -1404,12 +1404,17 @@ ENDIF;ENDIF                             "one ENDIF per IF ending with ELSE"
 
 - Only the branch selected by the condition is executed; the other one is
   never evaluated (a division by zero in an untaken branch is harmless).
-- The condition compares numbers or strings with `=`, `<>`, `<`, `>`, `<=`,
+- The condition compares numbers with `=`, `<>`, `<`, `>`, `<=`,
   `>=` (EES also writes the last two `=>` and `=<`, which are the same operators:
-  `IF (Z => 0.001) AND (W > 0) THEN`; strings are compared without regard to case, as in EES:
-  `fluid$ = 'R134a'` also matches `'r134A'`), and combines
-  relations with `AND`, `OR` and parentheses. The parentheses around the whole
-  condition are optional.
+  `IF (Z => 0.001) AND (W > 0) THEN`) and strings with `=` and `<>`, without regard to
+  case, as in EES (`fluid$ = 'R134a'` also matches `'r134A'`; `<`, `>`, `<=`, `>=` between
+  strings are not supported and are currently read as false: register item
+  `CS-BUG-STRING-ORDER`). It combines relations with `AND`, `OR` and parentheses. The
+  parentheses around the whole condition are optional. **Parenthesise conditions that mix
+  `AND` and `OR`**: CoolSolve gives `AND` priority over `OR`, whereas EES evaluates them
+  from left to right (`(a) OR (b) AND (c)` is `((a) OR (b)) AND (c)` in EES; register item
+  `CS-BUG-IF-ANDOR-ORDER`). `IFNOT` is not supported yet (`CS-GAP-IFNOT`): write the `IF`
+  with the negated relation.
 - A branch holds any statements of a body, including other `IF` statements and
   `DUPLICATE` / `REPEAT` loops; `ELSE IF (c) THEN ...` is an `IF` statement
   inside the `ELSE` branch (a block-form `IF` always has its own `ENDIF`).

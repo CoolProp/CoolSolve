@@ -34,8 +34,8 @@ AND,Operators,Logical AND,Yes,1,Used in IF conditions,
 OR,Operators,Logical OR,Yes,1,Used in IF conditions,
 NOT,Operators,Logical NOT,Yes,1,Used in IF conditions,
 # --- Control Flow ---,,,,,,
-IF-THEN-ELSE,Control Flow,Conditional execution in procedural blocks,Yes,1,"FUNCTION/PROCEDURE bodies only (as in EES): single-line and block (ENDIF) forms, ENDIFs joined by `;` (`ENDIF;ENDIF`), single-line IF ending with ELSE continued on the following lines up to its ENDIF (IF ladders of EES libraries); conditions = <> < > <= >= (numbers and strings; strings compared without regard to case, as in EES) with AND/OR; src/parser.cpp + IfThenElse AST node",
-IFNOT-THEN-ELSE,Control Flow,Negated conditional execution,Yes,1,Variation of IF-THEN-ELSE,
+IF-THEN-ELSE,Control Flow,Conditional execution in procedural blocks,Yes,1,"FUNCTION/PROCEDURE bodies only (as in EES): single-line and block (ENDIF) forms, ENDIFs joined by `;` (`ENDIF;ENDIF`), single-line IF ending with ELSE continued on the following lines up to its ENDIF (IF ladders of EES libraries); conditions = <> < > <= >= on numbers, = <> on strings (without regard to case, as in EES; string ordering is CS-BUG-STRING-ORDER) with AND/OR (AND before OR, EES left to right: CS-BUG-IF-ANDOR-ORDER); src/parser.cpp + IfThenElse AST node",
+IFNOT-THEN-ELSE,Control Flow,Negated conditional execution,No,1,"Parse error; write the IF with the negated relation (register CS-GAP-IFNOT)",
 "IF(cond, true_val, false_val)",Control Flow,Inline conditional function (expression-level),Yes,1,"src/autodiff_node.cpp — 3-arg IF function, cond>0 returns true_val; a comparison inside the call (IF(a=5,1,2)) is a parse error (named-argument misparse): use the 5-argument form"
 "IF(A, B, X, Y, Z)",Control Flow,"Inline 3-way conditional (X if A<B, Y if A=B, Z if A>B)",Yes,1,src/autodiff_node.cpp — 5-arg form of the IF function; exact equality for A=B; derivative of the selected branch only (A and B are selectors); other arities are an error
 "IF$(cond, true$, false$)",Control Flow,Inline conditional for string variables,No,3,String version of inline IF,
@@ -335,7 +335,7 @@ HUMRAT,Thermophysical,"Humidity ratio [kg_w/kg_da], requires 3 inputs",Yes,1,"sr
 RELHUM,Thermophysical,"Relative humidity [0-1], requires 3 inputs",Yes,1,"src/evaluator.cpp, aliases: r",
 WETBULB,Thermophysical,"Wet bulb temperature, requires 3 inputs",Yes,1,"src/evaluator.cpp, aliases: b",
 DEWPOINT,Thermophysical,"Dew point temperature, requires 3 inputs",Yes,1,"src/evaluator.cpp, aliases: d",
-PSYCHPROPS,Thermophysical,General psychrometric property function,Yes,2,"src/evaluator.cpp — built-in procedure (T,P,R inputs → 9 outputs); inputs outside CoolProp's humid-air range are an error that names the input and the limit"
+PSYCHPROPS,Thermophysical,General psychrometric property function,Partial,2,"src/evaluator.cpp — built-in procedure (positional T,P,R inputs → 9 outputs; v, h, s, u per kg of humid air instead of dry air: CS-BUG-PSYCHPROPS-BASIS; named inputs: CS-GAP-PSYCHPROPS-NAMED); inputs outside CoolProp's humid-air range are an error that names the input and the limit"
 # --- Thermophysical Functions: Lennard-Jones ---,,,,,,
 EK_LJ,Thermophysical,Lennard-Jones energy parameter ε/k [K],No,4,,
 SIGMA_LJ,Thermophysical,Lennard-Jones size parameter σ [nm],No,4,,
