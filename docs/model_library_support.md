@@ -512,6 +512,13 @@ online help: convention read from the 5 files that use it) and `CS-GAP-QUALITY-D
 EES `Brineprop.LIB` has no string output) and the humid-air `density` inversion by the symbolic reduction (only
 two-input calls are inverted, and an inverted humid-air call is a loud error).
 
+**State at the pause (2026-11-07, maintainer stop).** Done on `fix/library-gaps-5` (not pushed): the register review
+above, `CS-FEAT-LIB-TEST` (library regression, 320/320 PASS), the solid-phase design study, the eight `tools/`
+items (`CS-BUG-EXTRACT-*`, `CS-BUG-COMPARE-UNIT-CASE`) and `CS-BUG-IF-ANDOR-ORDER` (§7). Unfinished:
+`CS-BUG-PSYCHPROPS-BASIS` + `CS-GAP-PSYCHPROPS-NAMED`, parked unverified on branch `wip/psychprops-basis`. The queue
+(waves 1–5 with the recommended option of each item), the maintainer rules (one agent at a time, contributing.md for
+every item) and the agent brief are in the temporary `HANDOVER_round5.md` at the root of the branch.
+
 **Open points of round 3** (choices of the implementers, to confirm in EES or by the maintainer):
 an `ENDIF` that closes no `IF` in a body is ignored with warning `P008` (evidence: `Brineprop.lib`);
 `Uppercase$`/`Lowercase$` convert ASCII and Latin-1 letters only; in `INTERPOLATE('t','A','B',A=3)` the named
