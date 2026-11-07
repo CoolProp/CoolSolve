@@ -886,15 +886,33 @@ TEST_CASE("Parser builds IF-THEN-ELSE statements in function bodies", "[parser][
         REQUIRE(bodyOf(result)[1]->is<Equation>());
     }
 
-    SECTION("conditions: logical operators bind AND tighter than OR, = and <> are relations") {
-        auto result = parser.parse(
-            "FUNCTION f(a, t$)\n IF (a = 1) OR (a <> 2) AND (t$ = 'N') THEN f = 1\nEND\n");
-        REQUIRE(result.success);
-        const auto& cond = bodyOf(result)[0]->as<IfThenElse>().condition->as<BinaryOp>();
-        REQUIRE(cond.op == "or");
-        REQUIRE(cond.left->as<BinaryOp>().op == "=");
-        REQUIRE(cond.right->as<BinaryOp>().op == "and");
-        REQUIRE(cond.right->as<BinaryOp>().left->as<BinaryOp>().op == "<>");
+    SECTION("conditions: AND and OR are read from left to right (CS-BUG-IF-ANDOR-ORDER), = and <> are relations") {
+        auto condOf = [&](const std::string& text) {
+            auto result = parser.parse("FUNCTION f(a, t$)\n IF " + text + " THEN f = 1\nEND\n");
+            REQUIRE(result.success);
+            return bodyOf(result)[0]->as<IfThenElse>().condition;
+        };
+        // (a = 1) OR (a <> 2) AND (t$ = 'N') is ((a = 1) OR (a <> 2)) AND (t$ = 'N')
+        const auto cond = condOf("(a = 1) OR (a <> 2) AND (t$ = 'N')")->as<BinaryOp>();
+        REQUIRE(cond.op == "and");
+        REQUIRE(cond.left->as<BinaryOp>().op == "or");
+        REQUIRE(cond.left->as<BinaryOp>().left->as<BinaryOp>().op == "=");
+        REQUIRE(cond.left->as<BinaryOp>().right->as<BinaryOp>().op == "<>");
+        REQUIRE(cond.right->as<BinaryOp>().op == "=");
+        // AND first: ((a = 1) AND (a <> 2)) OR (t$ = 'N')
+        const auto andFirst = condOf("(a = 1) AND (a <> 2) OR (t$ = 'N')")->as<BinaryOp>();
+        REQUIRE(andFirst.op == "or");
+        REQUIRE(andFirst.left->as<BinaryOp>().op == "and");
+        // a parenthesised group keeps its priority: (a = 1) OR ((a <> 2) AND (t$ = 'N'))
+        const auto grouped = condOf("(a = 1) OR ((a <> 2) AND (t$ = 'N'))")->as<BinaryOp>();
+        REQUIRE(grouped.op == "or");
+        REQUIRE(grouped.left->as<BinaryOp>().op == "=");
+        REQUIRE(grouped.right->as<BinaryOp>().op == "and");
+        // a chain is left-associative: ((a = 1) OR (a = 2)) OR (a = 3)
+        const auto chain = condOf("(a = 1) OR (a = 2) OR (a = 3)")->as<BinaryOp>();
+        REQUIRE(chain.op == "or");
+        REQUIRE(chain.left->as<BinaryOp>().op == "or");
+        REQUIRE(chain.right->as<BinaryOp>().op == "=");
     }
 
     SECTION("multi-line brace comment containing IF lines yields no statement") {

@@ -17064,8 +17064,8 @@ TEST_CASE("CS-GAP-REPEAT-UNTIL-BARE: AND and OR in the UNTIL condition", "[libra
     CHECK_THAT(untilValue("(a > 1) OR (b < 2)", step), WithinAbs(3.0, 1e-12));
     CHECK_THAT(untilValue("a>1 OR b<2", step), WithinAbs(3.0, 1e-12));
     CHECK_THAT(untilValue("b < 2 OR a > 1", step), WithinAbs(3.0, 1e-12));
-    // AND binds stronger than OR, as in an IF: (a > 100 AND b > 0) OR (a > 2) is true at a = 3 (read the other way,
-    // a > 100 AND (b > 0 OR a > 2), the loop would never end)
+    // AND and OR are read from left to right, as in an IF (CS-BUG-IF-ANDOR-ORDER): (a > 100 AND b > 0) OR (a > 2)
+    // is true at a = 3 (read the other way, a > 100 AND (b > 0 OR a > 2), the loop would never end)
     CHECK_THAT(untilValue("a > 100 AND b > 0 OR a > 2", step), WithinAbs(4.0, 1e-12));
 }
 
@@ -22129,4 +22129,279 @@ TEST_CASE("CS-GAP-NH3H2O: the errors name the state, the combination and the reg
     CHECK(anyContains({error("CALL NH3H2O(138, 300, 0.5, 1.5 : T, P, x)")}, "quality must be in [0, 1]"));
     CHECK(anyContains({error("CALL NH3H2O(123, 300, 1, 1.5 : T, P, x)")}, "mass fraction must be in [0, 1]"));
     CHECK(anyContains({error("y = Pressure(NH3H2O, T=427, X=0.5, Q=0.5)")}, "state: NH3H2O(T = 700"));   // 700 K: above the critical locus
+}
+
+// ============================================================================
+// CS-BUG-IF-ANDOR-ORDER: AND and OR are evaluated strictly from left to right (EES help, logical operators), in
+// IF and UNTIL conditions. Guard tests of the single-line IF forms (CS-BUG-IF-SINGLELINE, closed as not a bug).
+// ============================================================================
+
+TEST_CASE("CS-BUG-IF-ANDOR-ORDER: reproducer of the register", "[library-gaps][if-andor]") {
+    auto run = runModel(R"(
+FUNCTION g8(x,y)
+IF (x>0) OR (y>0) AND (y<0) THEN g8=1 ELSE g8=2
+END
+r = g8(1,1)
+)");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["r"], WithinAbs(2.0, 1e-12));   // ((x>0) OR (y>0)) AND (y<0) is false; AND before OR gave 1
+}
+
+TEST_CASE("CS-BUG-IF-ANDOR-ORDER: truth tables of chains of AND and OR, left to right, groups keep their priority",
+          "[library-gaps][if-andor]") {
+    using B = bool;
+    struct Row {
+        std::string condition;                                         // over a, b, c, d (true when > 0)
+        std::function<B(B, B, B, B)> expected;                         // the left-to-right value
+    };
+    const std::vector<Row> rows = {
+        {"(a>0) OR (b>0) AND (c>0)",                    [](B a, B b, B c, B) { return (a || b) && c; }},
+        {"(a>0) AND (b>0) OR (c>0)",                    [](B a, B b, B c, B) { return (a && b) || c; }},
+        {"(a>0) OR (b>0) AND (c>0) OR (d>0)",           [](B a, B b, B c, B d) { return ((a || b) && c) || d; }},
+        {"(a>0) AND (b>0) OR (c>0) AND (d>0)",          [](B a, B b, B c, B d) { return ((a && b) || c) && d; }},
+        {"(a>0) OR (b>0) OR (c>0) AND (d>0)",           [](B a, B b, B c, B d) { return (a || b || c) && d; }},
+        {"(a>0) AND (b>0) AND (c>0) OR (d>0)",          [](B a, B b, B c, B d) { return (a && b && c) || d; }},
+        {"(a>0) OR ((b>0) AND (c>0))",                  [](B a, B b, B c, B) { return a || (b && c); }},
+        {"(a>0) AND ((b>0) OR (c>0)) AND (d>0)",        [](B a, B b, B c, B d) { return a && (b || c) && d; }},
+        {"((a>0) OR (b>0)) AND ((c>0) OR (d>0))",       [](B a, B b, B c, B d) { return (a || b) && (c || d); }},
+        {"((a>0) OR (b>0) AND (c>0))",                  [](B a, B b, B c, B) { return (a || b) && c; }},
+        {"a>0 OR b>0 AND c>0",                          [](B a, B b, B c, B) { return (a || b) && c; }},
+        {"(a>0) or (b>0) and (c>0)",                    [](B a, B b, B c, B) { return (a || b) && c; }},
+        {"(MAX(a,b)>0) OR (c>0) AND (d>0)",             [](B a, B b, B c, B d) { return (a || b || c) && d; }},
+        {"(a>0) OR (b>0) AND (c>0) OR (d>0) AND (a>0)", [](B a, B b, B c, B d) { return (((a || b) && c) || d) && a; }},
+    };
+    std::string code;
+    for (size_t k = 0; k < rows.size(); ++k) {
+        const std::string f = "f" + std::to_string(k);
+        code += "FUNCTION " + f + "(a,b,c,d)\n  IF " + rows[k].condition + " THEN " + f + " = 1 ELSE " + f + " = 0\nEND\n";
+        for (int m = 0; m < 16; ++m)
+            code += "x" + std::to_string(k) + "_" + std::to_string(m) + " = " + f + "(" + (m & 1 ? "1" : "-1") + "," +
+                    (m & 2 ? "1" : "-1") + "," + (m & 4 ? "1" : "-1") + "," + (m & 8 ? "1" : "-1") + ")\n";
+    }
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    for (size_t k = 0; k < rows.size(); ++k)
+        for (int m = 0; m < 16; ++m) {
+            INFO(rows[k].condition << "   a, b, c, d = " << (m & 1) << (m & 2 ? 1 : 0) << (m & 4 ? 1 : 0) << (m & 8 ? 1 : 0));
+            const double expected = rows[k].expected(m & 1, m & 2, m & 4, m & 8) ? 1.0 : 0.0;
+            CHECK_THAT(run["x" + std::to_string(k) + "_" + std::to_string(m)], WithinAbs(expected, 1e-12));
+        }
+}
+
+TEST_CASE("CS-BUG-IF-ANDOR-ORDER: AND and OR of string and numeric relations, block form and ELSE IF ladders",
+          "[library-gaps][if-andor]") {
+    auto run = runModel(R"(
+FUNCTION mixed(v, t$)
+  res = 0
+  IF (t$ = 'abc') OR (t$ = 'xyz') AND (v > 0) THEN res = res + 1
+  IF (v > 0) AND (t$ = 'abc') OR (v < -5) THEN res = res + 10
+  IF (v > 0) OR (v < -5) AND (t$ = 'abc') THEN
+    res = res + 100
+  ELSE
+    res = res + 1000
+  ENDIF
+  IF (v > 5) THEN res = res + 10000 ELSE IF (v > 0) OR (t$ = 'abc') AND (v < 0) THEN res = res + 20000 ELSE res = res + 40000
+  mixed = res
+END
+a = mixed(1, 'abc')
+b = mixed(-1, 'abc')
+c = mixed(-1, 'xyz')
+d = mixed(-9, 'abc')
+e = mixed(-9, 'xyz')
+)");
+    REQUIRE(run.solveOk);
+    // line 1: ((t$='abc') OR (t$='xyz')) AND (v>0) adds 1; line 2: ((v>0) AND (t$='abc')) OR (v<-5) adds 10;
+    // line 3 (block): ((v>0) OR (v<-5)) AND (t$='abc') adds 100, else 1000;
+    // line 4 (ladder): v>5 adds 10000, else ((v>0) OR (t$='abc')) AND (v<0) adds 20000, else 40000
+    CHECK_THAT(run["a"], WithinAbs(1 + 10 + 100 + 40000, 1e-12));
+    CHECK_THAT(run["b"], WithinAbs(1000 + 20000, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(1000 + 40000, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(10 + 100 + 20000, 1e-12));
+    CHECK_THAT(run["e"], WithinAbs(10 + 1000 + 40000, 1e-12));
+}
+
+TEST_CASE("CS-BUG-IF-ANDOR-ORDER: the UNTIL condition of a REPEAT is read from left to right too",
+          "[library-gaps][if-andor]") {
+    const std::string step = "a = i\n    i = i + 1";   // a = 0, 1, 2 ...; the loop ends with i one more than the last a
+    // ((a > 0) OR (a > 2)) AND (a > 4): a = 5 ends the loop, i = 6 (AND before OR: (a > 0) OR ((a > 2) AND (a > 4)), i = 2)
+    CHECK_THAT(untilValue("(a > 0) OR (a > 2) AND (a > 4)", step), WithinAbs(6.0, 1e-12));
+    CHECK_THAT(untilValue("a > 0 OR a > 2 AND a > 4", step), WithinAbs(6.0, 1e-12));
+    // ((a > 4) AND (a > 2)) OR (a > 0): a = 1, i = 2 (the same in both readings)
+    CHECK_THAT(untilValue("(a > 4) AND (a > 2) OR (a > 0)", step), WithinAbs(2.0, 1e-12));
+    // a group keeps its priority: (a > 0) OR ((a > 2) AND (a > 4))
+    CHECK_THAT(untilValue("(a > 0) OR ((a > 2) AND (a > 4))", step), WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-IF-ANDOR-ORDER: a dangling AND or OR is still a parse error with the condition", "[library-gaps][if-andor]") {
+    const std::string tail = "\n  f = 1\nEND\nr = f(1)\n";
+    for (const std::string& condition : {"(v>0) AND", "(v>0) OR", "AND (v>0)", "OR (v>0)", "(v>0) AND OR (v<0)",
+                                         "(v>0) OR (v<0) AND"}) {
+        INFO(condition);
+        auto errs = parseErrors("FUNCTION f(v)\n  IF " + condition + " THEN f = 2" + tail);
+        CHECK(anyContains(errs, "Could not parse IF condition '" + condition + "'"));
+    }
+    // the UNTIL condition: nothing is parsed, so the REPEAT is reported without its condition
+    auto errs = parseErrors("FUNCTION f(v)\n  k = 0\n  REPEAT\n    k = k + 1\n  UNTIL (k > 2) AND\n  f = k\nEND\nr = f(1)\n");
+    CHECK(anyContains(errs, "REPEAT missing UNTIL(condition)"));
+}
+
+namespace {
+
+/// One single-line IF form of a FUNCTION body: `body` holds the statements between `res = 0` and `f = res`, with
+/// %C standing for the condition; `whenTrue` / `whenFalse` is the value of `res` after it.
+struct IfForm {
+    const char* name;
+    const char* body;
+    double whenTrue, whenFalse;
+};
+
+/// One condition of a function f(v, w, s$): the arguments that make it true and false.
+struct IfCondition {
+    const char* text;
+    const char* trueArgs;
+    const char* falseArgs;
+};
+
+std::string replaceAll(std::string s, const std::string& from, const std::string& to) {
+    for (size_t pos = 0; (pos = s.find(from, pos)) != std::string::npos; pos += to.size()) s.replace(pos, from.size(), to);
+    return s;
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-IF-SINGLELINE: every single-line IF form takes the branch of its condition and only that one",
+          "[library-gaps][if-andor]") {
+    // Guard of the closure of CS-BUG-IF-SINGLELINE: each form is run with a true and a false condition; the
+    // statements accumulate (res = res + n), so a branch executed whatever the condition gives another value.
+    const std::vector<IfForm> forms = {
+        {"THEN only, =", "IF %C THEN res = res + 1", 1, 0},
+        {"THEN and ELSE, =", "IF %C THEN res = 1 ELSE res = 2", 1, 2},
+        {"THEN and ELSE, :=", "IF %C THEN res := res + 1 ELSE res := res + 2", 1, 2},
+        {"THEN only, :=", "IF %C THEN res := res + 1", 1, 0},
+        {"lower case", "if %C then res = res + 1 else res = res + 2", 1, 2},
+        {"trailing \"comment\"", "IF %C THEN res = res + 1 ELSE res = res + 2  \"a comment, with IF c THEN ELSE\"", 1, 2},
+        {"trailing {comment}", "IF %C THEN res = res + 1 ELSE res = res + 2  {a comment}", 1, 2},
+        {"trailing // comment", "IF %C THEN res = res + 1 ELSE res = res + 2  // a comment", 1, 2},
+        {"THEN CALL", "IF %C THEN CALL setres(res + 1 : res)", 1, 0},
+        {"THEN CALL ELSE CALL", "IF %C THEN CALL setres(res + 1 : res) ELSE CALL setres(res + 2 : res)", 1, 2},
+        {"THEN GOTO ELSE GOTO",
+         "IF %C THEN GOTO 10 ELSE GOTO 20\n10: res = res + 1\nGOTO 30\n20: res = res + 2\n30:", 1, 2},
+        {"THEN GOTO, fall through", "IF %C THEN GOTO 10\nres = res + 2\nGOTO 20\n10: res = res + 1\n20:", 1, 2},
+        {"ELSE IF ladder", "IF %C THEN res = res + 1 ELSE IF (w > 100) THEN res = res + 2 ELSE res = res + 4", 1, 4},
+    };
+    const std::vector<IfCondition> conditions = {
+        {"(v>0)", "1,0,'abc'", "-1,0,'abc'"},
+        {"v>0", "1,0,'abc'", "-1,0,'abc'"},
+        {"(v = 2)", "2,0,'abc'", "3,0,'abc'"},
+        {"(v <> 2)", "3,0,'abc'", "2,0,'abc'"},
+        {"(v => 1)", "1,0,'abc'", "0.5,0,'abc'"},
+        {"(v =< -1)", "-1,0,'abc'", "0,0,'abc'"},
+        {"(v >= 1) AND (w > 0)", "1,1,'abc'", "1,-1,'abc'"},
+        {"(v > 0) OR (w > 0)", "-1,1,'abc'", "-1,-1,'abc'"},
+        {"((v > 0) AND (w > 0))", "1,1,'abc'", "-1,1,'abc'"},
+        {"(v > 0) AND ((w > 0) OR (w < -5))", "1,-9,'abc'", "1,-1,'abc'"},
+        {"(s$ = 'abc')", "0,0,'abc'", "0,0,'xyz'"},
+        {"s$ = 'abc'", "0,0,'abc'", "0,0,'xyz'"},
+        {"(s$ <> 'abc')", "0,0,'xyz'", "0,0,'abc'"},
+        {"(s$ = 'ABC')", "0,0,'abc'", "0,0,'xyz'"},
+        {"(s$ = 'abc') AND (v > 0)", "1,0,'abc'", "-1,0,'abc'"},
+    };
+    for (const auto& form : forms) {
+        DYNAMIC_SECTION(form.name) {
+            std::string code = "PROCEDURE setres(x : y)\n  y = x\nEND\n";
+            for (size_t k = 0; k < conditions.size(); ++k) {
+                const std::string f = "f" + std::to_string(k);
+                code += "FUNCTION " + f + "(v, w, s$)\n  res = 0\n" + replaceAll(form.body, "%C", conditions[k].text) +
+                        "\n  " + f + " = res\nEND\n";
+                code += "t" + std::to_string(k) + " = " + f + "(" + conditions[k].trueArgs + ")\n";
+                code += "n" + std::to_string(k) + " = " + f + "(" + conditions[k].falseArgs + ")\n";
+            }
+            auto run = runModel(code);
+            INFO(run.message);
+            REQUIRE(run.parseOk);
+            REQUIRE(run.solveOk);
+            for (size_t k = 0; k < conditions.size(); ++k) {
+                INFO("condition " << conditions[k].text);
+                CHECK_THAT(run["t" + std::to_string(k)], WithinAbs(form.whenTrue, 1e-12));
+                CHECK_THAT(run["n" + std::to_string(k)], WithinAbs(form.whenFalse, 1e-12));
+            }
+        }
+    }
+}
+
+TEST_CASE("CS-BUG-IF-SINGLELINE: ELSE IF ladders of single-line and block forms pick one rung", "[library-gaps][if-andor]") {
+    auto run = runModel(R"(
+FUNCTION single(v, w)
+  res = 0
+  IF (v > 0) THEN res = res + 1 ELSE IF (w > 0) THEN res = res + 10 ELSE IF (w > -5) THEN res = res + 100 ELSE res = res + 1000
+  single = res
+END
+FUNCTION block(v, w)
+  res = 0
+  IF (v > 0) AND (w > 0) THEN
+    res = res + 1
+  ELSE IF (v > 0) OR (w > 0) THEN
+    res = res + 10
+  ELSE IF (w > -5) THEN res = res + 100 ELSE res = res + 1000
+  ENDIF;ENDIF
+  block = res
+END
+s1 = single(1, 1)
+s2 = single(-1, 1)
+s3 = single(-1, -1)
+s4 = single(-1, -9)
+b1 = block(1, 1)
+b2 = block(1, -1)
+b3 = block(-1, 1)
+b4 = block(-1, -1)
+b5 = block(-1, -9)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["s1"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["s2"], WithinAbs(10.0, 1e-12));
+    CHECK_THAT(run["s3"], WithinAbs(100.0, 1e-12));
+    CHECK_THAT(run["s4"], WithinAbs(1000.0, 1e-12));
+    CHECK_THAT(run["b1"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["b2"], WithinAbs(10.0, 1e-12));
+    CHECK_THAT(run["b3"], WithinAbs(10.0, 1e-12));
+    CHECK_THAT(run["b4"], WithinAbs(100.0, 1e-12));
+    CHECK_THAT(run["b5"], WithinAbs(1000.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-IF-SINGLELINE: single-line IF forms inside DUPLICATE and REPEAT loops", "[library-gaps][if-andor]") {
+    auto run = runModel(R"(
+FUNCTION dup(n)
+  res = 0
+  DUPLICATE i = 1, n
+    IF (i > 2) THEN res = res + 10 ELSE res = res + 1
+    IF i > 3 THEN res = res + 100
+    IF (i = 1) OR (i = 4) THEN res := res + 1000 ELSE res := res + 10000
+  END
+  dup = res
+END
+FUNCTION rep(n)
+  res = 0
+  k = 0
+  REPEAT
+    k = k + 1
+    IF (k < 3) THEN res = res + 1 ELSE res = res + 10
+    IF k >= 4 THEN res = res + 100
+    IF (k = 2) AND (n > 0) THEN res = res + 1000
+  UNTIL (k >= 5)
+  rep = res
+END
+a = dup(4)
+b = rep(1)
+c = rep(0)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    // i = 1..4: 1 + 1 + 10 + 10 = 22; i > 3 once: 100; (i = 1) OR (i = 4) twice, the other two 10000 each: 22000
+    CHECK_THAT(run["a"], WithinAbs(22.0 + 100.0 + 22000.0, 1e-12));
+    // k = 1..5: 1 + 1 + 10 + 10 + 10 = 32; k >= 4 twice: 200; k = 2 with n > 0: 1000
+    CHECK_THAT(run["b"], WithinAbs(32.0 + 200.0 + 1000.0, 1e-12));
+    CHECK_THAT(run["c"], WithinAbs(32.0 + 200.0, 1e-12));
 }

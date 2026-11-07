@@ -1410,11 +1410,12 @@ ENDIF;ENDIF                             "one ENDIF per IF ending with ELSE"
   case, as in EES (`fluid$ = 'R134a'` also matches `'r134A'`; `<`, `>`, `<=`, `>=` between
   strings are not supported and are currently read as false: register item
   `CS-BUG-STRING-ORDER`). It combines relations with `AND`, `OR` and parentheses. The
-  parentheses around the whole condition are optional. **Parenthesise conditions that mix
-  `AND` and `OR`**: CoolSolve gives `AND` priority over `OR`, whereas EES evaluates them
-  from left to right (`(a) OR (b) AND (c)` is `((a) OR (b)) AND (c)` in EES; register item
-  `CS-BUG-IF-ANDOR-ORDER`). `IFNOT` is not supported yet (`CS-GAP-IFNOT`): write the `IF`
-  with the negated relation.
+  parentheses around the whole condition are optional. As in EES, a chain of `AND` and `OR`
+  is evaluated strictly **from left to right**, with no priority of `AND` over `OR`:
+  `(a) OR (b) AND (c)` is `((a) OR (b)) AND (c)` and `(a) AND (b) OR (c) AND (d)` is
+  `(((a) AND (b)) OR (c)) AND (d)`; a parenthesised group is evaluated first
+  (`(a) OR ((b) AND (c))`). The same holds for the `UNTIL` condition of a `REPEAT`. `IFNOT`
+  is not supported yet (`CS-GAP-IFNOT`): write the `IF` with the negated relation.
 - A branch holds any statements of a body, including other `IF` statements and
   `DUPLICATE` / `REPEAT` loops; `ELSE IF (c) THEN ...` is an `IF` statement
   inside the `ELSE` branch (a block-form `IF` always has its own `ENDIF`).

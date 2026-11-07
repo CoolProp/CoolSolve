@@ -2815,18 +2815,24 @@ private:
 
     // Parse the condition of an IF statement. Relations produce BinaryOp nodes
     // with op "=", "<>", "<", ">", "<=" or ">=" (`=>` and `=<` are read as `>=` and `<=`); "and"/"or" combine them
-    // (OR binds weaker than AND). Evaluates to +1 (true) / -1 (false).
+    // strictly from left to right, with no priority of AND over OR (EES help, logical operators): the chain is split
+    // at its LAST AND/OR, so `a OR b AND c` is `(a OR b) AND c` (CS-BUG-IF-ANDOR-ORDER). A parenthesised group is
+    // one operand. Evaluates to +1 (true) / -1 (false).
     ExprPtr parseCondition(const std::string& text, int lineNum) {
         const std::string s = trim(text);
         if (s.empty()) return nullptr;
 
-        for (const char* kw : {"OR", "AND"}) {
-            const size_t pos = findKeywordAtDepth0(s, kw);
-            if (pos == std::string::npos) continue;
+        size_t pos = std::string::npos;
+        std::string kw;
+        for (const char* candidate : {"AND", "OR"})
+            for (size_t p = findKeywordAtDepth0(s, candidate); p != std::string::npos;
+                 p = findKeywordAtDepth0(s, candidate, p + 1))
+                if (pos == std::string::npos || p > pos) { pos = p; kw = candidate; }
+        if (pos != std::string::npos) {
             auto left = parseCondition(s.substr(0, pos), lineNum);
-            auto right = parseCondition(s.substr(pos + std::string(kw).size()), lineNum);
+            auto right = parseCondition(s.substr(pos + kw.size()), lineNum);
             if (!left || !right) return nullptr;
-            return makeBinaryOp(std::string(kw) == "OR" ? "or" : "and", left, right, lineNum);
+            return makeBinaryOp(kw == "OR" ? "or" : "and", left, right, lineNum);
         }
 
         if (isFullyParenthesized(s))
