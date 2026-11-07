@@ -16,7 +16,8 @@ the 457 EES files (EES 6.x to 10.x) of the ULiège teaching/research collection.
 | [`tools/ees_extract.py`](../tools/ees_extract.py) | Decode a binary `.ees` file into a CoolSolve folder (`.eescode`, `.initials`, lookup `.csv`, reference solution, report) |
 | [`tools/compare_solution.py`](../tools/compare_solution.py) | Compare a CoolSolve `.sol` file with the EES reference solution or with one run of an EES parametric table |
 
-Both scripts are plain Python 3 (no dependency).
+Both scripts are plain Python 3 (no dependency); `tests/test_ees_tools.py`
+tests them on small synthetic files (`python3 tests/test_ees_tools.py`).
 
 ---
 
@@ -100,7 +101,7 @@ my_model/
 ├── my_model-<table>.csv          one file per embedded Lookup table (CoolSolve naming)
 └── reference/
     ├── ees_extract_report.md     provenance, unit system, features, functions called, warnings
-    ├── ees_variables.csv         name, value, guess, lower, upper, units  (EES stored solution)
+    ├── ees_variables.csv         name, value, guess, lower, upper, units  (EES stored solution, may be stale: §5)
     └── ees_parametric-<t>.csv    parametric tables (reference results or inputs)
 ```
 
@@ -114,6 +115,11 @@ my_model/
 - About 5 % of the files store **RTF** (`{\rtf1\ansi…`): the tool converts it to
   plain text (`\par` → newline, `\'e9` → `é`, colour/font groups dropped).
   Formatting (bold, colours) is lost, the text is not.
+- EES pads its text with **NUL bytes** (and other control characters can
+  occur): the tool removes every control character except tab and newline,
+  for plain text and RTF alike (CoolSolve refuses a NUL, *"Could not parse
+  line"*). The equations of some EES 10.8 files are stored as **UTF-16** (byte
+  order mark `FF FE`): they are decoded as such.
 - Tags such as `{$ID$ #1206: Jean Lebrun, Laboratoire de Thermodynamique…}`
   (EES licence registration), `{$PX$96}` or `{$ST$OFF}` (display settings)
   are removed; they are listed in the report. The `$ID$` tag identifies the
@@ -126,7 +132,10 @@ my_model/
   and converts the code — not the comments — to the dot convention; the report
   says so. This is a display convention of EES, not a change of the model.
   It concerns 183 of the 457 files of the ULiège collection (40 %); a random
-  sample of 40 converted files all parse in CoolSolve.
+  sample of 40 converted files all parse in CoolSolve. The **range clause** of
+  `SUM(expr, i=1,4)`, `PRODUCT(…)` and `DUPLICATE i=1,4` is never read as a
+  decimal comma (a file with dot decimals is not mistaken for a comma file by
+  such a clause, and in a comma file EES writes the bounds with `;`).
 - Variable names are case-insensitive in both EES and CoolSolve (`t_1` and
   `T_1` are the same variable): no renaming is needed.
 - Comments (`"..."`, `{...}`) in French or Dutch are translated to English in
@@ -139,7 +148,18 @@ my_model/
 
 - `ees_variables.csv` holds, for each variable of the main program, the
   **value stored by EES** (the last solution), the guess value, the bounds and
-  the units entered in the Variable Information dialog.
+  the units entered in the Variable Information dialog. A record is accepted
+  when its structure is valid (a name that occurs in the code, four plausible
+  floats, a display-format code 0 to 5, printable units), whatever the display
+  format of the variable; names with `\`, `%`, `|`, `#`, accents or `°`
+  are read like any other. String variables (`fluid$`) and EES's built-in
+  constants (`g#`, `R#`…) have no number to export and are not listed. The
+  first block of records is used when a name occurs in several blocks.
+- If a variable defined by an equation `name = …` has **no record**, the
+  report warns (*"N variable(s) defined in the equations have no Variable
+  Information record"*): the file was saved before it was solved, or the
+  layout is not understood, and the verification does not cover that
+  variable.
 - `<model>.initials` is written from the stored values (falling back on
   non-default guesses). These are excellent initial guesses for CoolSolve, as
   long as the unit system is unchanged (§6).
@@ -150,6 +170,35 @@ my_model/
   file. When EES relied on them to stay in a physical region (e.g. a quality
   between 0 and 1), note it in the model README; this is gap `CS-GAP-BOUNDS`.
 - Variables of FUNCTIONs and PROCEDUREs are local and have no stored value.
+
+### Stored solution may be stale
+
+**The stored values are not guaranteed to be the solution of the equations in
+the file.** EES does not always rewrite the Variable Information records when
+it saves: a value can be one of an older run, a mix of several runs, `inf`
+where a value was never rewritten, or the last run of a Parametric table
+(whose inputs replace the constants of the equations). The tool therefore
+prints the limitation in the header of `ees_variables.csv` (lines starting with
+`#`, skipped by `compare_solution.py`), in the *Stored solution* section of the
+report and, when it finds a problem, as a warning **"Stored solution may be
+STALE"**. It checks only two things:
+
+1. a stored value that is `inf` or NaN;
+2. a variable defined by an *explicit* equation of numbers, `+ - * / ^`,
+   parentheses and other stored variables (`x = 5 [kPa]`, `r = p1/p2`) whose
+   stored value differs from the value of that equation by more than 0.01 %.
+   Equations with function calls, variables defined twice (`$IF` branches),
+   in a `FUNCTION`/`PROCEDURE` and array equations in a loop are not checked.
+
+The names found are listed in the warning, the report and a `# suspect:` line
+of the CSV; `compare_solution.py` marks them (`**DIFF** (suspect stored
+value)`). **A file without warning is not thereby correct**: before using
+`ees_variables.csv` or `.initials` as the reference, cross-check a few results
+by hand (explicit equations, a second source such as the solution report
+`.tex` or `.residuals` that some files ship, or solving the file again in EES),
+and give the verification of a suspect variable no weight. A difference with
+CoolSolve on a variable that the equations define explicitly is more likely a
+stale record than a CoolSolve error.
 
 ---
 
@@ -259,8 +308,11 @@ python3 tools/compare_solution.py model.sol reference/ees_variables.csv --ees-un
 ```
 
 `--ees-units` converts kPa/bar/MPa → Pa, kJ → J, kW → W and K → °C (for
-variables whose name starts with `T`). Every variable must agree within the
-tolerances of §11. A remaining deviation by a factor 1 000 (or 100 000), or by
+variables whose name starts with `T`). The unit names are matched ignoring
+the case, because EES stores the units a variable was declared with in lower
+case (`kj/(kg-C)`, `k`); the milli spellings `mW`, `mJ`, `mPa` are not
+converted, and the all-lower-case `mw`, `mj`, `mpa` are read as mega units.
+Every variable must agree within the tolerances of §11. A remaining deviation by a factor 1 000 (or 100 000), or by
 273.15, points to a missed conversion; a deviation on a variable EES stored
 without units must be checked by hand.
 
@@ -284,6 +336,16 @@ Worked example: §12, Example 3.
   accordingly (logged in the report). The nameless `LOOKUP(row, col)` of EES
   (read on *Lookup 1*) needs no rewriting: CoolSolve reads it on the table
   `lookup_1`.
+- **String columns** (the key column of `LOOKUP$ROW('activite','activite',a$)`,
+  the fluid names of a table) are decoded and written as text cells, which is
+  what `LOOKUP$` reads. The grid of a table is validated: the row count must
+  agree with the layout of its columns (cells, one state byte per row, string
+  cells), every cell must be a plausible number or string, and the scan starts
+  after the block of variable records, where the grid of a record can look
+  like a table. A structure that fails is **not extracted** and the report
+  warns *"A table-like structure at byte N … failed validation"*; check such a
+  file in EES. Several tables with the same name are written to
+  `<name>_2.csv`… with a warning (the equations can refer to only one).
 - **External tables**: EES functions can name a file instead of a table
   (`INTERPOLATE('Pipedata.lkt', …)`). Convert `.txt`/`.csv` files directly; the
   binary `.lkt` format is not decoded yet (open it in EES and *Save As* `.csv`,
@@ -503,11 +565,13 @@ strings*).
 | 20 … 20+n | equations, Windows-1252 text or RTF |
 | 20+n, 6 bytes | unit settings `[system, basis, T, P, trig, energy]`: basis 0 mass / 1 molar; T 0 °C / 1 K; P 0 kPa / 1 bar / 2 Pa (3 MPa assumed); trig 0 deg / 1 rad; energy 0 J / 1 kJ. Files older than EES 7 have no energy byte (kJ). |
 | next 10 bytes | trigonometric factor (`0.017453293` for degrees, `1.0` for radians) — used to detect the 5/6-byte layout |
-| variable record | short string *name*; relative to its length byte: value @+31, guess @+41, lower @+51, upper @+61 (Extended); format bytes @+71–76 (byte @+74 = 3); units short string @+77. Records are 122 bytes (EES 7) or 338 bytes (EES 9–10, with an upper-case copy of the name @+122). ±∞ bounds are stored as ±1E+3999; −9999 marks a cleared value. |
-| table column | short string `name\nunits` in a 31-byte field, then *nrows* Extended values, then 6 trailing bytes (Lookup) or 3 (Parametric); string columns are followed by *nrows* × (uint32 len+1, short string). Columns of one table follow each other; the table name (`Lookup 1`, `Table 1`, or a user name) precedes the grid. |
+| variable record | short string *name* (Windows-1252) in a 31-byte field; relative to its length byte: value @+31, guess @+41, lower @+51, upper @+61 (Extended); format bytes @+71–76 (byte @+74 is the display format: 3 for most variables, 1 for fixed-format ones, 0 or 5 in EES 8–10 files; the record is recognised by the whole structure, not by this byte); units short string @+77. Records are 122 bytes (EES 7) or 338 bytes (EES 9–10, with an upper-case copy of the name @+122). ±∞ bounds are stored as ±1E+3999; −9999 marks a cleared value. A block of zero bytes that starts with a word of the text (a fluid or table name) has bounds [0, 0], which no variable has. The file can hold several blocks of records; the first one is read. |
+| table column | short string `name\nunits` in a 31-byte field (a junk byte may precede the `\n`), then *nrows* Extended values, then, after the cells, one state byte (0/1) per row and 3 format bytes (`03 03 00`) in the Lookup tables of EES 7.9, one of the two or none in other files; a string column is then followed by *nrows* × (uint32 len+1, short string). Columns of one table follow each other, so the row count is solved from the distance between two headers and checked on the cells; the table name (`Lookup 1`, `Table 1`, or a user name) precedes the grid, and the settings of the next table may repeat it. |
 
-Known limitations of `ees_extract.py`: `.lkt` files (EES 6 layout) not
-decoded; EES 6 variable records decoded on a best-effort basis; the meaning of
+Known limitations of `ees_extract.py`: the stored solution can be stale (§5);
+`.lkt` files (EES 6 layout) not decoded; EES 6 variable records decoded on a
+best-effort basis; the table name found for a file with several tables is
+a heuristic (check it against the `LOOKUP`/`INTERPOLATE` calls); the meaning of
 some unit-setting codes is assumed (English units, MPa); Diagram windows,
 plots, Min/Max and uncertainty settings are ignored; string-variable values are
 not exported to `.initials`.
@@ -517,6 +581,7 @@ not exported to `.initials`.
 ## 14. Checklist
 
 - [ ] `ees_extract.py` run; report read (version, unit system, tables, functions called, warnings)
+- [ ] Stored solution cross-checked (stale-value and missing-record warnings, a few explicit equations, §5)
 - [ ] Missing inputs restored (parametric-table variables, external lookup files, library functions)
 - [ ] Unit system converted **by hand** to `SI MASS DEG PA C J` (§6), conversion logged
 - [ ] Comments in English, standard header added, EES syntax otherwise unchanged

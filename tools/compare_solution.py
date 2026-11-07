@@ -15,7 +15,14 @@ matched case-insensitively, as in EES.
 using the units stored by EES for each variable (column `units` of
 ees_variables.csv): kPa/bar/MPa -> Pa, kJ -> J, kW -> W, and K -> degC for
 variables whose name starts with T (not DELTAT/DT: temperature differences are
-unchanged).  Use it after converting a kPa/kJ/K model (docs/ees_import.md §6).
+unchanged).  The unit names are matched ignoring the case (EES stores declared
+units in lower case).  Use it after converting a kPa/kJ/K model
+(docs/ees_import.md §6).
+
+The stored solution of an EES file can be stale (docs/ees_import.md, "Stored
+solution may be stale"): a difference on a variable listed in the `# suspect:`
+line of ees_variables.csv is marked, but a reference without that mark is not
+thereby correct.
 
 Exit status: 0 if every common variable agrees within tolerance, 1 otherwise.
 Absolute enthalpies/entropies may legitimately differ between EES and CoolProp
@@ -45,7 +52,7 @@ def read_sol(path):
 
 def read_reference(path, row=None):
     with open(path, encoding="utf-8", newline="") as f:
-        rows = list(csv.reader(f))
+        rows = [r for r in csv.reader(f) if not (r and r[0].startswith("#"))]     # `#` lines are notes
     ref = {}
     if rows and [h.lower() for h in rows[0][:2]] == ["name", "value"]:
         units_col = rows[0].index("units") if "units" in rows[0] else None
@@ -66,17 +73,34 @@ def read_reference(path, row=None):
     return ref
 
 
+def read_suspect(path):
+    """Names listed in the `# suspect:` line of an ees_variables.csv: stored values that look stale."""
+    with open(path, encoding="utf-8", newline="") as f:
+        for line in f:
+            if line.startswith("# suspect:"):
+                return {n.strip().lower() for n in line[len("# suspect:"):].split(",") if n.strip()}
+            if not line.startswith("#"):
+                break
+    return set()
+
+
 _SCALE = [("MPa", 1e6), ("kPa", 1e3), ("bar", 1e5), ("kJ", 1e3), ("kW", 1e3), ("MJ", 1e6), ("MW", 1e6)]
 
 
 def to_coolsolve_units(name, value, units):
-    """Convert one EES reference value to CoolSolve units; return (value, note)."""
+    """Convert one EES reference value to CoolSolve units; return (value, note).
+
+    EES stores the units a variable was declared with in lower case (`kj/(kg-C)`, `k`), so the unit names are
+    matched ignoring the case.  The milli spellings `mW`, `mJ`, `mPa` are not mega units and stay unconverted;
+    the all-lower-case `mw`, `mj`, `mpa` cannot be told apart from them and are read as MW, MJ, MPa.
+    """
     u = (units or "").strip()
-    if u == "K" and name[:1] in "Tt":            # absolute temperature (DELTAT_... starts with D)
+    if u.lower() == "k" and name[:1] in "Tt":    # absolute temperature (DELTAT_... starts with D)
         return value - 273.15, "K->C"
     numerator = u.split("/")[0]   # a prefixed unit in a denominator (eur/kW) is kept as written by the model
     for unit, factor in _SCALE:
-        if re.search(r"(?<![A-Za-z])%s(?![A-Za-z])" % unit, numerator):
+        m = re.search(r"(?<![A-Za-z])%s(?![A-Za-z])" % unit, numerator, flags=re.IGNORECASE)
+        if m and not re.match(r"m[A-Z]", m.group(0)):
             return value * factor, "%s x%g" % (unit, factor)
     return value, ""
 
@@ -94,6 +118,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     sol, ref = read_sol(args.sol), read_reference(args.reference, args.row)
+    suspect = read_suspect(args.reference)
     if args.ees_units:
         converted = []
         for k, (name, val, units) in list(ref.items()):
@@ -116,7 +141,8 @@ def main(argv=None):
         if not ok:
             bad.append(k)
         if args.all or not ok:
-            lines.append("| %s | %.6g | %.6g | %.2e | %s |" % (name, a, b, rel, "ok" if ok else "**DIFF**"))
+            verdict = "ok" if ok else "**DIFF**" + (" (suspect stored value)" if k in suspect else "")
+            lines.append("| %s | %.6g | %.6g | %.2e | %s |" % (name, a, b, rel, verdict))
     print("\n".join(lines))
     print("\n%d common variables, %d differ (rtol=%g); only in EES: %d; only in CoolSolve: %d" % (
         len(common), len(bad), args.rtol, len(set(ref) - set(sol)), len(set(sol) - set(ref))))

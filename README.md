@@ -516,6 +516,7 @@ CoolSolve/
 │   ├── test_includes.cpp       # `$INCLUDE`: resolution, imported routines, precedence, errors
 │   ├── test_library_api.py     # Library menu, open, per-tab sessions, /library/, `$INCLUDE` (REST, needs the GUI build)
 │   ├── test_gui_shortcuts.py   # GUI keyboard shortcuts (F2) in headless Chromium (needs the GUI build)
+│   ├── test_ees_tools.py       # EES import tools (ees_extract.py, compare_solution.py) on synthetic files (plain Python, no build)
 │   └── test_kinsol.cpp         # KINSOL solver unit tests (3 modes + config)
 ├── cmake/                      # embed_assets / embed_library: GUI, docs and model library embedded in the binary
 ├── tools/                      # EES import helpers: ees_extract.py, compare_solution.py (see docs/ees_import.md);

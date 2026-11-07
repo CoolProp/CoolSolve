@@ -28,14 +28,22 @@ Output folder content:
     <name>.initials                   guess values (stored EES solution)
     <name>-<table>.csv                one file per Lookup table (CoolSolve naming)
     reference/ees_variables.csv       EES stored solution: name,value,guess,lower,upper,units
+                                      (`#` header lines: the stored values can be stale, see below)
     reference/ees_parametric-<t>.csv  Parametric tables
     reference/ees_extract_report.md   provenance, unit system, warnings
+
+The stored solution is NOT guaranteed to be the solution of the equations: EES does not always
+rewrite its Variable Info records when it saves.  The tool warns about the cases it can detect (inf/NaN
+values, values that contradict an explicit equation, variables without record); cross-check the
+reference before relying on it (docs/ees_import.md, "Stored solution may be stale").
 
 Companion script: tools/compare_solution.py compares a CoolSolve .sol file with
 reference/ees_variables.csv.
 """
 
 import argparse
+import ast
+import collections
 import csv
 import datetime
 import math
@@ -188,14 +196,25 @@ def parse_header(b):
     return version, 20, n
 
 
+_CONTROL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f]")      # every control character except tab and newline
+
+
+def strip_control_chars(text):
+    """EES pads its text fields with NUL bytes (and the RTF converter keeps them): CoolSolve cannot read them."""
+    return _CONTROL_RE.sub("", text)
+
+
 def decode_equations(raw):
     """Return (text, is_rtf) from the raw equation bytes."""
-    text = raw.decode("cp1252", errors="replace")
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):                 # EES 10.8 can store Unicode text (UTF-16 with BOM)
+        text = raw.decode("utf-16", errors="replace")
+    else:
+        text = raw.decode("cp1252", errors="replace")
     is_rtf = text.lstrip().startswith("{\\rtf")
     if is_rtf:
         text = rtf_to_text(text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return text, is_rtf
+    return strip_control_chars(text), is_rtf
 
 
 # EES-only tags embedded in the text that have no meaning for CoolSolve.
@@ -233,6 +252,20 @@ def _split_code(text):
         yield True, text[start:]
 
 
+# The comma of a range clause separates its bounds: `SUM(expr, i=1,4)`, `PRODUCT(expr, i=1,4)`, `DUPLICATE i=1,4`.
+# With the decimal comma EES writes these bounds with `;`, so a comma between two digits there is never a number.
+_RANGE_COMMA_RES = [re.compile(r"(,\s*[A-Za-z_]\w*\s*=\s*[^,;()=\n]*?\d),(?=\d)"),
+                    re.compile(r"^(\s*DUPLICATE\s+[A-Za-z_]\w*\s*=\s*[^,;\n]*?\d),(?=\d)", flags=re.I | re.M)]
+_RANGE_MARK = "\ue000"
+
+
+def _protect_range_commas(code):
+    """Replace the comma between the bounds of a range clause by a mark (restored by the caller)."""
+    for rx in _RANGE_COMMA_RES:
+        code = rx.sub(lambda m: m.group(1) + _RANGE_MARK, code)
+    return code
+
+
 def normalize_decimal_comma(text):
     """Convert text typed with the EES 'comma' decimal separator to the dot convention.
 
@@ -242,7 +275,7 @@ def normalize_decimal_comma(text):
     a number with a decimal comma after `=`.  Comments and strings are kept.
     Returns (text, converted).
     """
-    code = "".join(seg for is_code, seg in _split_code(text) if is_code)
+    code = _protect_range_commas("".join(seg for is_code, seg in _split_code(text) if is_code))
     depth, semicolon_in_args = 0, False
     for ch in code:
         if ch in "([":
@@ -260,7 +293,7 @@ def normalize_decimal_comma(text):
         if not is_code:
             out.append(seg)
             continue
-        seg = re.sub(r"(?<=\d),(?=\d)", ".", seg)
+        seg = re.sub(r"(?<=\d),(?=\d)", ".", _protect_range_commas(seg))
         chars = []
         for line in seg.split("\n"):
             dup = re.match(r"\s*DUPLICATE\b", line, flags=re.I) is not None
@@ -271,7 +304,7 @@ def normalize_decimal_comma(text):
                     depth = max(0, depth - 1)
                 chars.append("," if ch == ";" and (depth > 0 or dup) else ch)
             chars.append("\n")
-        out.append("".join(chars)[:-1])
+        out.append("".join(chars)[:-1].replace(_RANGE_MARK, ","))
     return "".join(out), True
 
 
@@ -323,57 +356,140 @@ def unit_directive(u):
                                               u["P"].upper(), u["T"], u["energy"].upper())
 
 
-_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[0-9, ]+\])?")
+# Variable names as CoolSolve reads them (docs/language_reference.md, "Numbers and identifiers"; closed gaps
+# CS-GAP-NAME-SYMBOL, CS-GAP-NAME-PIPE, CS-GAP-ACCENTED-IDENT, CS-BUG-HASH-IDENT): a name starts with a letter
+# or `_`, holds letters, digits, `_` and the symbols `%`, `|`, `#`; a `\` may join two parts of a name
+# (`M\M_ex_duct_n`); the letters are ASCII or the Latin-1 letters (`é`, `ß`, `µ`, but neither `×` nor `÷`) and
+# the signs `°`, `²`, `³`, `¹` may follow them.  EES stores names in Windows-1252, whose bytes 0xA0-0xFF are the
+# Latin-1 characters.  A trailing `$` marks a string variable: its record holds no number and is skipped.
+_NAME_LETTERS = "A-Za-z_\u00c0-\u00d6\u00d8-\u00ff\u00b5"
+_NAME_CHARS = _NAME_LETTERS + "0-9%|#\u00b0\u00b2\u00b3\u00b9"
+_NAME_PART = "[%s][%s]*" % (_NAME_LETTERS, _NAME_CHARS)
+_NAME_BODY = r"%s(?:\\%s)*" % (_NAME_PART, _NAME_PART)
+_NAME_RE = re.compile(_NAME_BODY + r"(\[[0-9, ]+\])?")
+# EES's built-in constants (`g#`, `R#`...): EES keeps a record for them, but it holds a placeholder, not their value.
+_BUILTIN_CONSTANTS = {"g#", "r#", "k#", "sigma#", "po#", "to#", "c#", "h#", "e#", "me#", "mp#", "mn#", "na#",
+                      "avogadro#"}
+_WORD_RE = re.compile(r"(?<![%s.])%s" % (_NAME_CHARS, _NAME_BODY))
 
 
-def extract_variables(b, start, text):
-    """Decode the Variable Information records (EES 7.x-10.x).
+def _code_text(text):
+    """The code of the equations: no comments (`"..."`, `{...}`, `//...`) and no 'strings'."""
+    return "".join(seg if is_code else " " for is_code, seg in _split_code(text))
+
+
+def _words(text, code_only=False):
+    """Lower-case set of the names that occur in `text` (in its code only when `code_only`)."""
+    return {w.lower() for w in _WORD_RE.findall(_code_text(text) if code_only else text)}
+
+
+def _record_at(b, i, words, code_words):
+    """Decode the Variable Information record whose name length byte is at `i`, or return None.
+
+    The record is recognised by its structure, not by one format byte: a Windows-1252 name that CoolSolve
+    accepts and that occurs in the equations, four plausible Extended floats (value, guess, lower, upper)
+    with lower <= upper, a display-format code (@+74: 0 to 5, EES 7.x writes 1 or 3 and EES 10.x also 0 and
+    5) and a printable units string.  Blocks of zero bytes that start with a word of the text (a fluid name,
+    a table name) have all-zero bounds, which no variable has (the default bounds are -inf and +inf).
+    A record whose display format is not 3 (the only one this tool accepted before) must also name a
+    variable of the *code*: EES keeps the records of deleted variables, whose names may survive in a comment
+    (a legend of symbols), and their cleared values must not be taken for a solution.
+    """
+    n = b[i]
+    if not 1 <= n <= 40 or b[i + 74] > 5:
+        return None
+    try:
+        name = b[i + 1:i + 1 + n].decode("cp1252")
+    except UnicodeDecodeError:
+        return None
+    if (not _NAME_RE.fullmatch(name) or name.lower() in _BUILTIN_CONSTANTS
+            or not all(plausible_extended(b, i + k) for k in (31, 41, 51, 61))):
+        return None
+    units, ul = pascal_string(b, i + 77, 40)
+    lower, upper = read_extended(b, i + 51), read_extended(b, i + 61)
+    if units is None or not units.isprintable() or lower > upper or (lower == 0.0 and upper == 0.0):
+        return None
+    base = name.split("[")[0].lower()
+    if base not in words or (b[i + 74] != 3 and base not in code_words):
+        return None
+    value = read_extended(b, i + 31)
+    return {
+        "name": name,
+        "value": None if value == EES_NO_VALUE else value,
+        "guess": read_extended(b, i + 41),
+        "lower": lower,
+        "upper": upper,
+        "units": units.strip(),
+        "offset": i,
+        "end": i + 77 + 1 + ul,
+    }
+
+
+def scan_records(b, start, text):
+    """Every Variable Information record from `start` on, duplicates included (EES 7.x-10.x).
 
     Each record starts with the variable name as a Delphi short string; relative
     to the length byte: value @+31, guess @+41, lower @+51, upper @+61 (Extended),
-    format bytes @+71..76 (byte @+74 is always 3), units short string @+77.
+    format bytes @+71..76 (@+74 is the display format: 3 for most records, 1 for
+    fixed-format variables, 0 or 5 in EES 8-10 files), units short string @+77
+    (see `_record_at`).  The records of one file follow each other on a regular
+    grid (122 bytes in EES 7-9, 338 in EES 9.7+).
     """
-    words = {w.lower() for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", text)}
-    found, seen = [], set()
+    words, code_words = _words(text), _words(text, code_only=True)
+    records = []
     i, end = start, len(b) - 120
     while i < end:
-        n = b[i]
-        if 1 <= n <= 40 and b[i + 74] == 3:
-            try:
-                name = b[i + 1:i + 1 + n].decode("ascii")
-            except UnicodeDecodeError:
-                name = None
-            if name and _NAME_RE.fullmatch(name) and all(plausible_extended(b, i + k) for k in (31, 41, 51, 61)):
-                units, ul = pascal_string(b, i + 77, 40)
-                lower, upper = read_extended(b, i + 51), read_extended(b, i + 61)
-                base = name.split("[")[0].lower()
-                if units is not None and units.isprintable() and lower <= upper and base in words:
-                    if name.lower() not in seen:
-                        seen.add(name.lower())
-                        value = read_extended(b, i + 31)
-                        found.append({
-                            "name": name,
-                            "value": None if value == EES_NO_VALUE else value,
-                            "guess": read_extended(b, i + 41),
-                            "lower": lower,
-                            "upper": upper,
-                            "units": units.strip(),
-                        })
-                    i += 77 + 1 + ul
-                    continue
-        i += 1
+        rec = _record_at(b, i, words, code_words)
+        if rec:
+            records.append(rec)
+            i = rec["end"]
+        else:
+            i += 1
+    return records
+
+
+def records_block_end(records):
+    """End of the first block of records, where the variables of the main program are stored.
+
+    The records follow each other on the grid of the file (122 or 338 bytes); the records of deleted variables
+    that are not decoded leave holes of a few strides.  Tables never lie inside this block, but they can lie
+    between it and later blocks of records (copies for the parametric tables, modules).
+    """
+    steps = collections.Counter(nxt["offset"] - cur["offset"] for cur, nxt in zip(records, records[1:]))
+    stride = steps.most_common(1)[0][0] if steps else 122
+    end = records[0]["end"]
+    for rec in records[1:]:
+        if rec["offset"] - end > 12 * stride:
+            break
+        end = rec["end"]
+    return end
+
+
+def unique_variables(records):
+    """The first record of each name (EES is case-insensitive), in file order."""
+    seen, found = set(), []
+    for rec in records:
+        if rec["name"].lower() not in seen:
+            seen.add(rec["name"].lower())
+            found.append(rec)
     return found
 
 
-_HEADER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_$#]*(\[[0-9, ]*\])?\n")
+def extract_variables(b, start, text):
+    """The stored value, guess, bounds and units of each variable (see `scan_records`)."""
+    return unique_variables(scan_records(b, start, text))
+
+
+_HEADER_RE = re.compile(r"(?P<name>[A-Za-z_][A-Za-z0-9_$#]*(\[[0-9, ]*\])?)[^\n\w]?\n")
 
 
 def _header_at(b, p):
-    """Column header = short string 'name\n<units or junk>' in a 31-byte field."""
+    """Column header = short string 'name\n<units or junk>' in a 31-byte field (one junk byte may precede the \n)."""
     s, n = pascal_string(b, p, 40)
-    if not s or n < 2 or not _HEADER_RE.match(s) or not plausible_extended(b, p + 31):
+    m = _HEADER_RE.match(s) if s and n >= 2 else None
+    if not m or not plausible_extended(b, p + 31):
         return None
-    name, _, units = s.partition("\n")
+    name, units = m.group("name"), s[m.end():]
     units = units.strip().strip("[]").strip()
     if not units.replace(" ", "").replace("/", "").replace("-", "").replace("^", "").isalnum():
         units = ""                     # EES leaves junk after the newline when units are empty
@@ -393,13 +509,56 @@ def _string_cells(b, q, nrows, stop):
     return q
 
 
-def extract_tables(b, start):
+def _cell_strings(b, q, nrows):
+    """The nrows strings that `_string_cells` has validated at q."""
+    out = []
+    for _ in range(nrows):
+        s, n = pascal_string(b, q + 4, 255)
+        out.append(strip_control_chars(s))
+        q += 5 + n
+    return out
+
+
+# After its header (31 bytes) and its nrows Extended cells, a column holds `per_row` state bytes (0 or 1) per row
+# and `fixed` format bytes: (1, 3) in the Lookup tables of EES 7.9, (1, 0) and (0, 3) in other files.  A string
+# column is then followed by its nrows strings.
+_TAILS = ((1, 3), (1, 0), (0, 3))
+_MAX_ROWS = 20000
+
+
+def _numeric_cells_ok(b, q, nrows, per_row):
+    """True if the nrows cells at q are plausible numbers and the state bytes after them are 0 or 1."""
+    return (all(plausible_extended(b, q + 10 * r) for r in range(nrows))
+            and all(x <= 1 for x in b[q + 10 * nrows:q + (10 + per_row) * nrows]))
+
+
+def _link(b, p, p1, nrows):
+    """How the column at p reaches the next header p1: (nrows, per_row, fixed, is_string) or None.
+
+    `nrows` is None for the first column of a table: the row count is then solved from the gap.
+    """
+    gap = p1 - p - 31
+    for per_row, fixed in _TAILS:                                  # string column (stricter test)
+        for n in ([nrows] if nrows else range(1, min(_MAX_ROWS, gap // 10) + 1)):
+            if _string_cells(b, p + 31 + (10 + per_row) * n + fixed, n, p1) == p1:
+                return n, per_row, fixed, True
+    for per_row, fixed in _TAILS:
+        n, rest = divmod(gap - fixed, 10 + per_row)
+        if rest == 0 and 0 < n <= _MAX_ROWS and nrows in (None, n) and _numeric_cells_ok(b, p + 31, n, per_row):
+            return n, per_row, fixed, False
+    return None
+
+
+def extract_tables(b, start, rejected=None):
     """Find embedded Lookup/Parametric table grids (EES 7.x-10.x).
 
     A grid is stored column-wise: header short string 'name\nunits' in a 31-byte
-    field, nrows Extended values, then 6 trailing bytes (Lookup tables) or 3
-    (Parametric tables; string columns are followed by their nrows strings).
-    Consecutive headers are chained by solving for the common row count.
+    field, nrows Extended values, their state bytes (see `_TAILS`) and, for a
+    string column, nrows strings.  Consecutive headers are chained by solving
+    for the common row count.  `start` is the end of the variable records: the
+    bytes before it are records, never a grid.  A chain whose cells are not all
+    plausible numbers or strings is not a table: it is not returned, and is
+    appended to `rejected` (offset, column names) when that list is given.
     """
     heads = [p for p in range(start, len(b) - 41)
              if 2 <= b[p] <= 40 and b"\n" in b[p + 1:p + 1 + b[p]] and _header_at(b, p)]
@@ -407,47 +566,42 @@ def extract_tables(b, start):
     for k, p0 in enumerate(heads):
         if p0 in used:
             continue
-        chain, nrows, p = [p0], None, p0
+        chain, links, nrows, p = [p0], [], None, p0
         for p1 in heads[k + 1:]:
-            link = None
-            if nrows is None:                                  # string column first (stricter test)
-                for n in range(1, min(20000, (p1 - p - 34) // 10) + 1):
-                    if _string_cells(b, p + 31 + 10 * n + 3, n, p1) == p1:
-                        link = (n, "str")
-                        break
-            elif _string_cells(b, p + 31 + 10 * nrows + 3, nrows, p1) == p1:
-                link = (nrows, "str")
-            for trail in (6, 3):
-                if link:
-                    break
-                gap = p1 - p - 31 - trail
-                if nrows is None and gap > 0 and gap % 10 == 0:
-                    link = (gap // 10, None)
-                elif nrows is not None and gap == 10 * nrows:
-                    link = (nrows, None)
-            if not link or link[0] > 20000:
+            link = _link(b, p, p1, nrows)
+            if not link:
                 break
             nrows = link[0]
+            links.append(link)
             chain.append(p1)
             p = p1
         if nrows is None or len(chain) < 2:
             continue                                            # single columns are ambiguous
+        # The last column has no next header to measure it: try the layout of the other columns first.
+        for per_row, fixed in dict.fromkeys([links[-1][1:3]] + list(_TAILS)):
+            end = chain[-1] + 31 + (10 + per_row) * nrows + fixed
+            string_end = _string_cells(b, end, nrows, len(b))
+            if string_end is not None:
+                links.append((nrows, per_row, fixed, True))
+                end = string_end
+                break
+            if _numeric_cells_ok(b, chain[-1] + 31, nrows, per_row):
+                links.append((nrows, per_row, fixed, False))
+                break
+        else:
+            if rejected is not None:
+                rejected.append((p0, [_header_at(b, c)[0] for c in chain]))
+            continue
         cols = []
-        for q in chain:
-            name, units = _header_at(b, q)
-            vals = [read_extended(b, q + 31 + 10 * r) if plausible_extended(b, q + 31 + 10 * r) else None
-                    for r in range(nrows)]
-            strs = None
-            end_str = _string_cells(b, q + 31 + 10 * nrows + 3, nrows, len(b))
-            if end_str is not None:
-                strs, qq = [], q + 31 + 10 * nrows + 3
-                for _ in range(nrows):
-                    s, n = pascal_string(b, qq + 4, 255)
-                    strs.append(s)
-                    qq += 5 + n
-            cols.append({"name": name, "units": units, "values": strs or vals})
+        for c, (_, per_row, fixed, is_string) in zip(chain, links):
+            name, units = _header_at(b, c)
+            if is_string:
+                values = _cell_strings(b, c + 31 + (10 + per_row) * nrows + fixed, nrows)
+            else:
+                values = [read_extended(b, c + 31 + 10 * r) for r in range(nrows)]
+            cols.append({"name": name, "units": units, "values": values})
         used.update(chain)
-        tables.append({"offset": p0, "nrows": nrows, "columns": cols})
+        tables.append({"offset": p0, "end": end, "nrows": nrows, "columns": cols})
     return tables
 
 
@@ -470,9 +624,18 @@ def name_tables(b, tables, start, text):
         for m in re.finditer(re.escape(key), b[start:]):
             candidates.append((start + m.start(), ref))
     candidates.sort()
+    prev_end, taken = start, set()
     for t in tables:
         before = [c for c in candidates if c[0] < t["offset"]]
-        t["name"] = before[-1][1] if before else "table%d" % (tables.index(t) + 1)
+        name = before[-1][1] if before else "table%d" % (tables.index(t) + 1)
+        if name.lower() in taken:
+            # The settings of a table can repeat the name of the previous one (its key column): the right
+            # name is then the first one still free between the two grids.
+            free = [c for c in before if c[0] >= prev_end and c[1].lower() not in taken]
+            name = free[0][1] if free else name
+        t["name"] = name
+        taken.add(name.lower())
+        prev_end = t["end"]
         low = t["name"].lower()
         if low in lookup_refs or low.startswith("lookup"):
             t["kind"] = "lookup"
@@ -533,6 +696,118 @@ def called_functions(text):
 
 
 # ---------------------------------------------------------------------------
+# Checks of the decoded variable records
+# ---------------------------------------------------------------------------
+
+def _equations(text):
+    """Code that defines the stored variables: no comments, no `$` directives, no FUNCTION/PROCEDURE body
+    (their variables are local and have no record); the equations of a MODULE do define records."""
+    lines, in_body = [], False
+    for line in _code_text(text).split("\n"):
+        word = line.strip().lower()
+        if re.match(r"(function|procedure)\b", word):
+            in_body = True
+        if not in_body and not word.startswith("$"):
+            lines.append(line)
+        elif re.fullmatch(r"end\s*", word):
+            in_body = False
+    return "\n".join(lines)
+
+
+_ASSIGNMENT_RE = re.compile(r"^[ \t]*(?P<lhs>%s(?:\[[^\]\n]*\])?)[ \t]*=(?P<rhs>[^\n]*)$" % _NAME_BODY, re.M)
+
+
+def defined_variables(text):
+    """Lower-case names of the variables the main program defines with an equation `name = ...`."""
+    return {m.group("lhs").split("[")[0].lower() for m in _ASSIGNMENT_RE.finditer(_equations(text))}
+
+
+def missing_records(text, variables):
+    """Variables defined in the equations that have no Variable Information record."""
+    have = {v["name"].split("[")[0].lower() for v in variables}
+    return sorted(defined_variables(text) - have)
+
+
+_OPERAND_RE = re.compile(r"(?P<num>(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)|(?P<name>%s(?:\[\d+\])?)|(?P<op>[-+*/^()])|\s+"
+                         % _NAME_BODY)
+
+
+def _evaluate(rhs, values):
+    """Value of a right-hand side made of numbers, `+ - * / ^`, parentheses and variables of `values`.
+
+    Returns (value, largest operand) or None for anything else (function call, unknown or non-finite
+    variable, division by zero).  The expression is evaluated by walking its syntax tree, never with eval().
+    """
+    rhs = re.sub(r"(?<=[\d)\s])\s*\[[^\]\n]*\]\s*$", "", rhs)          # a trailing units annotation [kPa]
+    pieces, pos, scale = [], 0, 0.0
+    while pos < len(rhs):
+        m = _OPERAND_RE.match(rhs, pos)
+        if not m:
+            return None
+        if m.group("name"):
+            x = values.get(m.group("name").lower())
+            if x is None:
+                return None
+            scale = max(scale, abs(x))
+            pieces.append(repr(x))
+        elif m.group("num"):
+            scale = max(scale, float(m.group("num")))
+            pieces.append(m.group("num"))
+        elif m.group("op"):
+            pieces.append("**" if m.group("op") == "^" else m.group("op"))
+        pos = m.end()
+    try:
+        tree = ast.parse("".join(pieces), mode="eval")
+        return _walk(tree.body), scale
+    except (SyntaxError, ValueError, ZeroDivisionError, OverflowError, TypeError):
+        return None
+
+
+_BINARY = {ast.Add: lambda a, b: a + b, ast.Sub: lambda a, b: a - b, ast.Mult: lambda a, b: a * b,
+           ast.Div: lambda a, b: a / b, ast.Pow: lambda a, b: a ** b}
+
+
+def _walk(node):
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return float(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        x = _walk(node.operand)
+        return x if isinstance(node.op, ast.UAdd) else -x
+    if isinstance(node, ast.BinOp) and type(node.op) in _BINARY:
+        x = _BINARY[type(node.op)](_walk(node.left), _walk(node.right))
+        if isinstance(x, float) and math.isfinite(x):
+            return x
+    raise ValueError("not a finite arithmetic expression")
+
+
+def check_stored_solution(variables, text):
+    """Stored values that cannot be the solution of the equations: [(name, reason)].
+
+    EES does not always rewrite the Variable Information records when it saves a file, so a record can hold the
+    value of an older run (docs/ees_import.md, 'Stored solution may be stale').  Only two cases can be
+    detected here: a value that is inf or NaN, and a variable defined by an explicit equation of numbers and
+    other stored variables (`x = 5`, `r = p1/p2`) whose stored value differs from the value of that equation.
+    A stored solution that passes this check is not thereby correct.
+    """
+    suspect = [(v["name"], "stored value is %s" % fmt_num(v["value"])) for v in variables
+               if v["value"] is not None and not math.isfinite(v["value"])]
+    flagged = {name for name, _ in suspect}
+    values = {v["name"].lower(): v["value"] for v in variables
+              if v["value"] is not None and math.isfinite(v["value"])}
+    assignments = [(m.group("lhs").replace(" ", ""), m.group("rhs")) for m in _ASSIGNMENT_RE.finditer(_equations(text))]
+    counts = collections.Counter(lhs.lower() for lhs, _ in assignments)
+    for lhs, rhs in assignments:
+        key = lhs.lower()
+        if counts[key] > 1 or key not in values or lhs in flagged:     # defined twice ($if branches): skip
+            continue
+        result = _evaluate(rhs.strip(), values)
+        if result and abs(values[key] - result[0]) > 1e-4 * max(abs(values[key]), abs(result[0]), 1e-3 * result[1]):
+            suspect.append((lhs, "stored value %s, but the equation `%s = %s` gives %s" % (
+                fmt_num(values[key]), lhs, rhs.strip(), fmt_num(result[0]))))
+    return suspect
+
+
+# ---------------------------------------------------------------------------
 # Main extraction
 # ---------------------------------------------------------------------------
 
@@ -548,17 +823,36 @@ def extract_bytes(b, label="<bytes>"):
     text, decimal_comma = normalize_decimal_comma(text)
     settings_off = off + n
     units = parse_unit_settings(b, settings_off)
-    variables = extract_variables(b, settings_off, text)
-    tables = extract_tables(b, settings_off)
+    records = scan_records(b, settings_off, text)
+    variables = unique_variables(records)
+    rejected_tables = []
+    tables = extract_tables(b, records_block_end(records) if records else settings_off, rejected_tables)
     lookup_refs = name_tables(b, tables, settings_off, text)
     calls, defined = called_functions(text)
     return {
         "path": label, "size": len(b), "version": version, "is_rtf": is_rtf,
         "decimal_comma": decimal_comma,
         "text": text, "removed_tags": removed_tags, "units": units,
-        "variables": variables, "tables": tables, "lookup_refs": lookup_refs,
+        "variables": variables, "tables": tables, "rejected_tables": rejected_tables, "lookup_refs": lookup_refs,
+        "missing_records": missing_records(text, variables) if variables else [],
+        "suspect_values": check_stored_solution(variables, text),
         "features": scan_features(text), "calls": calls, "defined": defined,
     }
+
+
+STORED_SOLUTION_NOTE = ("The stored values are the Variable Information records of the .ees file. EES does not always "
+                        "rewrite them when it saves, so a value can be stale (an older run) even when this tool "
+                        "reports nothing: cross-check a few results by hand before using them as the reference.")
+
+
+def _free_file(path, taken):
+    """`path`, or `path` with a numeric suffix when an earlier table of this run already uses that file name."""
+    free, k = path, 2
+    while free.name in taken:
+        free = path.with_name("%s_%d%s" % (path.stem, k, path.suffix))
+        k += 1
+    taken.add(free.name)
+    return free
 
 
 def write_outputs(res, outdir, name):
@@ -582,7 +876,7 @@ def write_outputs(res, outdir, name):
         warnings.append("Unit-system decoding is not fully verified for this file (raw bytes %s)." % u["raw"])
 
     # Lookup tables -> <name>-<table>.csv (CoolSolve convention), references renamed.
-    lookup_files, param_files = [], []
+    lookup_files, param_files, taken = [], [], set()
     for t in res["tables"]:
         cols = t["columns"]
         if t["kind"] == "lookup":
@@ -592,15 +886,21 @@ def write_outputs(res, outdir, name):
                 warnings.append("Lookup table '%s' renamed '%s' (file name safety); equation "
                                 "references updated." % (t["name"], safe))
             fname = outdir / ("%s-%s.csv" % (name, safe))
-            lookup_files.append((t, fname.name))
         else:
             fname = ref / ("ees_parametric-%s.csv" % safe_table_name(t["name"]))
-            param_files.append((t, fname.name))
+        wanted, fname = fname, _free_file(fname, taken)
+        if fname != wanted:
+            warnings.append("Several tables are named '%s': the next one is written to %s instead of "
+                            "overwriting the first -- check which one the equations use." % (t["name"], fname.name))
+        (lookup_files if t["kind"] == "lookup" else param_files).append((t, fname.name))
         with open(fname, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow([c["name"] for c in cols])
             for r in range(t["nrows"]):
                 w.writerow([fmt_num(c["values"][r]) for c in cols])
+    for offset, columns in res["rejected_tables"]:
+        warnings.append("A table-like structure at byte %d (columns %s) failed validation and was not "
+                        "extracted: check the file in EES if it holds a table." % (offset, ", ".join(columns[:6])))
     for ref_name in res["lookup_refs"].values():
         if not any(t["name"].lower() == ref_name.lower() for t, _ in lookup_files):
             warnings.append("Lookup table '%s' is used but was not found in the file: it was probably "
@@ -618,6 +918,9 @@ def write_outputs(res, outdir, name):
                 if math.isfinite(x) and not (v["value"] is None and x == 1.0):   # skip EES default guess
                     f.write("%s=%s\n" % (v["name"], fmt_num(x)))
         with open(ref / "ees_variables.csv", "w", newline="", encoding="utf-8") as f:
+            f.write("# %s\n" % STORED_SOLUTION_NOTE)
+            if res["suspect_values"]:
+                f.write("# suspect: %s\n" % ", ".join(n for n, _ in res["suspect_values"]))
             w = csv.writer(f)
             w.writerow(["name", "value", "guess", "lower", "upper", "units"])
             for v in variables:
@@ -626,6 +929,16 @@ def write_outputs(res, outdir, name):
     else:
         warnings.append("No variable records decoded (EES %s layout?): no initials / reference "
                         "solution available." % res["version"])
+    if variables and res["missing_records"]:
+        shown = ", ".join(res["missing_records"][:10]) + (", ..." if len(res["missing_records"]) > 10 else "")
+        warnings.append("%d variable(s) defined in the equations have no Variable Information record (%s): "
+                        "reference/ees_variables.csv does not cover them." % (len(res["missing_records"]), shown))
+    if res["suspect_values"]:
+        shown = "; ".join("%s: %s" % sv for sv in res["suspect_values"][:3]) + (
+            "; ..." if len(res["suspect_values"]) > 3 else "")
+        warnings.append("Stored solution may be STALE: %d value(s) are inconsistent with the equations (%s), either "
+                        "stale records or the result of a run of a Parametric table. %s"
+                        % (len(res["suspect_values"]), shown, STORED_SOLUTION_NOTE))
     if variables and sum(v["value"] is None for v in variables) > len(variables) / 2:
         warnings.append("Most stored values are -9999 (cleared): the file was last run from a Parametric "
                         "table or not solved -- use the parametric table(s) as reference instead.")
@@ -676,6 +989,10 @@ def render_report(res, name, directive, lookup_files, param_files, warnings):
         L += ["## Functions called (built-in or external)", "",
               "Check that each one exists in CoolSolve (docs/language_reference.md) or is provided by "
               "a library model:", "", ", ".join("`%s`" % c for c in res["calls"]), ""]
+    L += ["## Stored solution", "", STORED_SOLUTION_NOTE, ""]
+    if res["suspect_values"]:
+        L += ["Values that cannot be the solution of the equations (also listed in the header of "
+              "`ees_variables.csv`):", ""] + ["- `%s`: %s" % sv for sv in res["suspect_values"]] + [""]
     L += ["## Warnings", ""]
     L += ["- %s" % w for w in warnings] if warnings else ["- none"]
     L.append("")
@@ -690,6 +1007,12 @@ def print_info(res):
     if res["decimal_comma"]:
         print("  format     : decimal comma converted to dot")
     print("  variables  : %d decoded" % len(res["variables"]))
+    if res["missing_records"]:
+        print("  no record  : %d defined variable(s): %s" % (
+            len(res["missing_records"]), ", ".join(res["missing_records"][:8])))
+    if res["suspect_values"]:
+        print("  STALE?     : %d stored value(s) inconsistent with the equations: %s" % (
+            len(res["suspect_values"]), ", ".join(n for n, _ in res["suspect_values"][:8])))
     for t in res["tables"]:
         print("  table      : %-12s %-10s %d rows x %d cols: %s" % (
             t["name"], t["kind"], t["nrows"], len(t["columns"]), ", ".join(c["name"] for c in t["columns"])))
