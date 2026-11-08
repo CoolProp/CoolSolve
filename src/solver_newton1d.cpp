@@ -16,7 +16,12 @@
  *             roots over poles.
  *   Phase 3 — Bisection + Newton hybrid: once a bracket is found,
  *             alternates bisection and Newton steps within the bracket
- *             for fast, guaranteed convergence.
+ *             for fast, guaranteed convergence.  A bracket that shrinks
+ *             below `stepTolerance` without a small residual encloses a
+ *             jump of F, not a root (a pole, a CoolProp evaluation error
+ *             that returns the penalty value at the edge of its domain):
+ *             it is dropped, and the next bracket is tried (the bracket of
+ *             Phase 1 first, then those of Phase 2, best first).
  *   Phase 4 — Final Newton polish from the best point found (same step
  *             rejection as Phase 1), with relaxed tolerance acceptance.
  *
@@ -81,6 +86,10 @@ struct StepControl {
 double weightedResidual(double f, double scale, const SolverOptions& options) {
     return std::abs(f) / residualWeight(scale, scale, options.tolerance);
 }
+
+/// A sign change of F found by Phase 1 or 2: F(lo) = flo and F(hi) = fhi have opposite signs;
+/// midF is |F| at the midpoint (Phase 2 ranks its brackets by it: a pole has a large one).
+struct Bracket { double lo, flo, hi, fhi, midF; };
 
 }  // namespace
 
@@ -214,6 +223,90 @@ SolverStatus Newton1DSolver::solve(
     }
 
     // --------------------------------------------------------------------
+    // Phase 3: Bisection + Newton hybrid within a bracket
+    // --------------------------------------------------------------------
+    // Returns true when it finds a point of small residual (stored in xCur).  A bracket that shrinks
+    // below stepTolerance is a root only if that residual is small; otherwise F jumps across it (a pole,
+    // or a CoolProp evaluation error returning the penalty value at the edge of its domain): the
+    // bracket is given up (false) and the reason recorded in collapseNote.
+    std::string collapseNote;
+    auto bisectBracket = [&](const Bracket& bracket) -> bool {
+        double xLo = bracket.lo, fLo = bracket.flo, xHi = bracket.hi, fHi = bracket.fhi;
+        for (int iter = 0; iter < options.maxIterations; ++iter) {
+            double xMid = (xLo + xHi) / 2.0;
+            try {
+                auto [f, j, s] = eval(xMid);
+
+                if (trace) {
+                    SolverTrace::Iteration traceIter;
+                    traceIter.iter = 1000 + iter; // Distinguish bisection iterations
+                    traceIter.residualNorm = std::abs(f);
+                    traceIter.stepNorm = (xHi - xLo) / 2.0;
+                    traceIter.lambda = 1.0;
+                    traceIter.x = {xMid};
+                    traceIter.residuals = {f};
+                    traceIter.detail = "       [bisection] bracket: ["
+                        + std::to_string(xLo) + ", " + std::to_string(xHi) + "]\n";
+                    trace->iterations.push_back(traceIter);
+                }
+
+                if (weightedResidual(f, s, options) < options.tolerance) {
+                    xCur = xMid;
+                    return true;
+                }
+
+                // Try Newton step within bracket
+                if (std::abs(j) > 1e-30) {
+                    double xNewton = xMid - f / j;
+                    if (xNewton > xLo && xNewton < xHi) {
+                        try {
+                            auto [fn, jn, sn] = eval(xNewton);
+                            if (std::abs(fn) < std::abs(f)) {
+                                if (weightedResidual(fn, sn, options) < options.tolerance) {
+                                    xCur = xNewton;
+                                    return true;
+                                }
+                                if (fn * fLo < 0) { xHi = xNewton; fHi = fn; }
+                                else { xLo = xNewton; fLo = fn; }
+                                continue;
+                            }
+                        } catch (...) {}
+                    }
+                }
+
+                // Fall back to bisection
+                if (f * fLo < 0) { xHi = xMid; fHi = f; }
+                else { xLo = xMid; fLo = f; }
+
+                if (xHi - xLo < options.stepTolerance) {
+                    if (weightedResidual(f, s, options) < options.lsRelaxedTolerance) {
+                        xCur = xMid;
+                        return true;
+                    }
+                    std::ostringstream note;
+                    note << "Newton1D: F changes sign across a jump, not through a root: the bracket ["
+                         << xLo << ", " << xHi << "] shrank below stepTolerance (" << options.stepTolerance
+                         << ") with F = " << fLo << " on one side and " << fHi << " on the other. F is"
+                         << " discontinuous there (a pole, or a CoolProp evaluation error at the edge of"
+                         << " the validity domain, which returns a penalty value).";
+                    collapseNote = note.str();
+                    return false;
+                }
+            } catch (...) {
+                // Evaluation failed at midpoint — narrow bracket from the other side
+                xHi = xMid;
+            }
+        }
+        return false;
+    };
+
+    // The bracket of Phase 1 first; if it holds no root, Phase 2 looks for others.
+    if (!converged && hasBracket) {
+        converged = bisectBracket({xLo, fLo, xHi, fHi, 0.0});
+        hasBracket = false;
+    }
+
+    // --------------------------------------------------------------------
     // Phase 2: Multi-probe exploration to find a sign change
     // --------------------------------------------------------------------
     // If Newton didn't converge and no bracket found, scan both positive
@@ -268,13 +361,12 @@ SolverStatus Newton1DSolver::solve(
             }
         }
 
-        // Collect ALL sign changes, pick the best one (smallest midpoint |f|)
+        // Collect ALL sign changes, try the best one first (smallest midpoint |f|)
         // to avoid locking onto poles instead of roots.
         if (!converged) {
             std::sort(results.begin(), results.end(),
                       [](const ProbeResult& a, const ProbeResult& b) { return a.x < b.x; });
 
-            struct Bracket { double lo, flo, hi, fhi, midF; };
             std::vector<Bracket> brackets;
 
             for (size_t i = 0; i + 1 < results.size(); ++i) {
@@ -294,76 +386,17 @@ SolverStatus Newton1DSolver::solve(
                 }
             }
 
-            if (!brackets.empty()) {
-                auto& best = *std::min_element(brackets.begin(), brackets.end(),
-                    [](const Bracket& a, const Bracket& b) { return a.midF < b.midF; });
+            // Best first (smallest midpoint |F|): Phase 3 takes them in turn until one holds a root
+            std::stable_sort(brackets.begin(), brackets.end(),
+                             [](const Bracket& a, const Bracket& b) { return a.midF < b.midF; });
+            for (const Bracket& bracket : brackets) {
                 hasBracket = true;
-                xLo = best.lo; fLo = best.flo;
-                xHi = best.hi; fHi = best.fhi;
-                if (xLo > xHi) { std::swap(xLo, xHi); std::swap(fLo, fHi); }
+                if (bisectBracket(bracket)) { converged = true; break; }
             }
         }
 
         if (!converged && !hasBracket) {
             xCur = bestX;
-        }
-    }
-
-    // --------------------------------------------------------------------
-    // Phase 3: Bisection + Newton hybrid within bracket
-    // --------------------------------------------------------------------
-    if (!converged && hasBracket) {
-        for (int iter = 0; iter < options.maxIterations && !converged; ++iter) {
-            double xMid = (xLo + xHi) / 2.0;
-            try {
-                auto [f, j, s] = eval(xMid);
-
-                if (trace) {
-                    SolverTrace::Iteration traceIter;
-                    traceIter.iter = 1000 + iter; // Distinguish bisection iterations
-                    traceIter.residualNorm = std::abs(f);
-                    traceIter.stepNorm = (xHi - xLo) / 2.0;
-                    traceIter.lambda = 1.0;
-                    traceIter.x = {xMid};
-                    traceIter.residuals = {f};
-                    traceIter.detail = "       [bisection] bracket: ["
-                        + std::to_string(xLo) + ", " + std::to_string(xHi) + "]\n";
-                    trace->iterations.push_back(traceIter);
-                }
-
-                if (weightedResidual(f, s, options) < options.tolerance) {
-                    xCur = xMid;
-                    converged = true;
-                    break;
-                }
-
-                // Try Newton step within bracket
-                if (std::abs(j) > 1e-30) {
-                    double xNewton = xMid - f / j;
-                    if (xNewton > xLo && xNewton < xHi) {
-                        try {
-                            auto [fn, jn, sn] = eval(xNewton);
-                            if (std::abs(fn) < std::abs(f)) {
-                                if (fn * fLo < 0) { xHi = xNewton; fHi = fn; }
-                                else { xLo = xNewton; fLo = fn; }
-                                continue;
-                            }
-                        } catch (...) {}
-                    }
-                }
-
-                // Fall back to bisection
-                if (f * fLo < 0) { xHi = xMid; fHi = f; }
-                else { xLo = xMid; fLo = f; }
-
-                if (xHi - xLo < options.stepTolerance) {
-                    xCur = (xLo + xHi) / 2.0;
-                    converged = true;
-                }
-            } catch (...) {
-                // Evaluation failed at midpoint — narrow bracket from the other side
-                xHi = xMid;
-            }
         }
     }
 
@@ -406,6 +439,7 @@ SolverStatus Newton1DSolver::solve(
         return SolverStatus::Success;
     }
 
+    if (outErrorMessage && !collapseNote.empty()) *outErrorMessage = collapseNote;
     return SolverStatus::MaxIterations;
 }
 

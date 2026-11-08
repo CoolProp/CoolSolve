@@ -84,6 +84,12 @@ Outside the GUI, the equivalent is to send `{"deepSearch": true}` to the
 - **Typical causes**: an equation without a root (e.g. `exp(x) = -1`), or a root in a region the iteration jumps over, such as the pole of an equation hyperbolic in its unknown, with a poor initial guess.
 - **Check**: `solver_trace.md` – the residual does not decrease while `||dx||` explodes. Give an initial value on the side of the root (`.initials`) or check that the equation has a solution.
 
+### F changes sign across a jump, not through a root
+
+- **Meaning**: for a block of one equation, Newton1D found a sign change of the residual but the bracket shrank below `stepTolerance` with a large residual: F *jumps* there, it does not cross zero. The message gives the bracket and the residual on each side. A bracket of this kind is given up (it was once reported as a converged solution): the next sign change is tried, and the block fails only if none holds a root.
+- **Typical causes**: a pole of the equation; a CoolProp call that fails beyond that point (the edge of the validity domain of a fluid, e.g. an enthalpy below the triple point at the pressure) and returns its penalty value of 1E4, which turns the residual into a step. A flat region of the property across the saturation dome (T of a pure fluid is constant for every h inside it) does not cause it: F is continuous there.
+- **Check**: the `[C001]` warnings of the block for the failing CoolProp call, and `solver_trace.md` (iterations numbered 1000 and above are the bisection). Give an initial value on the side of the solution (`.initials`) or check that the equation has a solution.
+
 ## Step 3: Identify the Failing Block
 
 From `report.md` and `solver_errors.md`:

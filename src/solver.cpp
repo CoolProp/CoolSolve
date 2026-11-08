@@ -750,6 +750,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
     //   1. Newton steps with adaptive trust-region limiting
     //   2. Sign-change detection → bisection fallback
     //   3. Multiple starting point exploration if Newton diverges
+    std::string newton1dNote;   // why Newton1D gave up (a jump of F...), reported if the pipeline fails too
     if (n == 1) {
         auto startTime1D = std::chrono::high_resolution_clock::now();
         if (trace) {
@@ -790,6 +791,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         }
         
         // Newton1D failed — reset x and fall through to standard pipeline
+        newton1dNote = errorMsg;
         x[0] = evaluator_.getVariableValue(varNames[0]);
         if (trace) {
             trace->iterations.clear(); // Clear Newton1D iterations for clean pipeline trace
@@ -1273,6 +1275,9 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         status = solveBlockSequential(blockIndex, problem, blockEval, varNames,
                                       externalVars, externalStringVars, x, options,
                                       trace, outErrorMessage);
+    }
+    if (status != SolverStatus::Success && outErrorMessage && !newton1dNote.empty()) {
+        *outErrorMessage = newton1dNote + (outErrorMessage->empty() ? "" : "\n" + *outErrorMessage);
     }
 
     // Update state with solution

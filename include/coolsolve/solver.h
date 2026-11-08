@@ -854,7 +854,9 @@ private:
  *   - Phase 1: Trust-region Newton with bracket detection; a Newton step
  *              that increases |F| is rejected and retried with half the step
  *   - Phase 2: Multi-probe sign-change exploration (~900 probes)
- *   - Phase 3: Bisection + Newton hybrid within bracket
+ *   - Phase 3: Bisection + Newton hybrid within bracket; a bracket that
+ *              collapses without a small residual encloses a jump of F, not a
+ *              root, and is given up (the next bracket is tried)
  *   - Phase 4: Final Newton polish (same step rejection) with relaxed tolerance
  *
  * A simplified solver (solveSimple) is also provided for use in symbolic
@@ -884,7 +886,8 @@ public:
      * @param externalVars    External variable values (used for probe generation)
      * @param options         Solver options (tolerance, maxIterations, etc.)
      * @param trace           Optional trace for iteration recording
-     * @param outErrorMessage Optional detailed error message on failure
+     * @param outErrorMessage Optional detailed error message on failure (the collapse of a bracket onto a
+     *                        jump of F, or a fatal evaluation error)
      * @return SolverStatus::Success if converged, MaxIterations or EvaluationError otherwise
      */
     static SolverStatus solve(

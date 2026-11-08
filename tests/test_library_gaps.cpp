@@ -23949,3 +23949,132 @@ TEST_CASE("CS-BUG-UNIT-VOLUME: negative tests, what is not a volume keeps its la
         CHECK(anyContains(run.warnings, "m³/kg is unusually large"));
     }
 }
+
+// ============================================================================
+// CS-BUG-NEWTON1D-BRACKET-COLLAPSE: a bracket that collapses is a root only with a small residual
+// ============================================================================
+
+namespace {
+
+/// F of a step of height 2 at x = 1 (-1 + eps below, 1 + eps above): changes sign, has no root.
+std::pair<double, double> stepWithoutRoot(double x, double eps) {
+    return {(x > 1.0 ? 1.0 : -1.0) + eps, 0.0};
+}
+
+/// CoolProp failure region beside a root: F is the penalty value 1E4 below x = 0 (as the evaluator returns it
+/// when CoolProp fails), x - 1000 above. The sign change of the penalty edge is not a root.
+std::pair<double, double> penaltyEdge(double x) {
+    return {x < 0.0 ? 1e4 : x - 1000.0, x < 0.0 ? 0.0 : 1.0};
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-NEWTON1D-BRACKET-COLLAPSE: T(h, P) of water at 1 bar from a guess below the CoolProp domain",
+          "[library-gaps][newton1d-bracket]") {
+    // below h = 66.49 J/kg (the triple point, 1 bar) CoolProp fails and the evaluator returns the penalty value 1E4:
+    // F = T - 100 jumps from -100 to +9900 there. The sign change used to be bisected to a width of 1E-12 and
+    // reported as SUCCESS, then "CoolProp evaluation failed in final solution".
+    const double hSolution = CoolProp::PropsSI("H", "T", 373.15, "P", 1e5, "Water");
+    for (const char* guess : {"h = 1\n", "h = 66\n", "h = -1E5\n"}) {
+        INFO("guess: " << guess);
+        auto run = runModel("P = 1E5\nT_t = 100\nT_t = temperature(Water, h=h, P=P)\n", {}, guess);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK(run.checkErrors.empty());
+        CHECK_THAT(run["h"], WithinRel(hSolution, 1e-6));
+        CHECK_THAT(run["h"], WithinRel(2.676e6, 1e-3));
+    }
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-BRACKET-COLLAPSE: Newton1D does not report a jump of F as a root",
+          "[library-gaps][newton1d-bracket]") {
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    SECTION("a step with a sign change and no root fails, with a message") {
+        Newton1DSolver::Eval1D eval = [](double x) { return stepWithoutRoot(x, 1e-3); };
+        double x = 5.0;
+        std::string message;
+        const auto status = Newton1DSolver::solve(eval, x, {}, options, nullptr, &message);
+        CHECK(status != SolverStatus::Success);
+        INFO(message);
+        CHECK(message.find("F changes sign across a jump, not through a root") != std::string::npos);
+        CHECK(message.find("stepTolerance") != std::string::npos);
+        CHECK(message.find("penalty value") != std::string::npos);
+    }
+    SECTION("a pole with a sign change and no root fails (as before the fix)") {
+        // (x^2 + 1)/(x - 1) changes sign at its pole x = 1 and has no root
+        Newton1DSolver::Eval1D eval = [](double x) {
+            const double d = x - 1.0;
+            return std::make_pair((x * x + 1.0) / d, (x * x - 2.0 * x - 1.0) / (d * d));
+        };
+        double x = -3.0;
+        CHECK(Newton1DSolver::solve(eval, x, {}, options) != SolverStatus::Success);
+    }
+    SECTION("a jump below lsRelaxedTolerance is still accepted, as in Phase 4") {
+        Newton1DSolver::Eval1D eval = [](double x) { return stepWithoutRoot(x, 0.0); };
+        auto small = [](double x) { return std::make_pair((x > 1.0 ? 1.0 : -1.0) * 1e-4, 0.0); };
+        Newton1DSolver::Eval1D evalSmall = small;
+        double x = 5.0;
+        CHECK(Newton1DSolver::solve(evalSmall, x, {}, options) == SolverStatus::Success);
+        CHECK_THAT(x, WithinAbs(1.0, 1e-9));
+        double y = 5.0;
+        CHECK(Newton1DSolver::solve(eval, y, {}, options) != SolverStatus::Success);   // |F| = 1 > 1E-2
+    }
+    SECTION("the bracket of Phase 1 is a jump, the root is elsewhere: Phase 2 finds it") {
+        // F = 1E4 for x < 0 (the evaluator's penalty), x - 1000 beyond: from -5 the first sign change is the edge
+        for (const bool withDerivative : {false, true}) {
+            INFO("derivative " << withDerivative);
+            Newton1DSolver::Eval1D eval = [&](double x) {
+                auto [f, j] = penaltyEdge(x);
+                return std::make_pair(f, withDerivative ? j : 0.0);
+            };
+            double x = -5.0;
+            std::string message;
+            const auto status = Newton1DSolver::solve(eval, x, {}, options, nullptr, &message);
+            INFO(message);
+            REQUIRE(status == SolverStatus::Success);
+            CHECK_THAT(x, WithinRel(1000.0, 1e-9));
+        }
+    }
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-BRACKET-COLLAPSE: Newton1D still converges inside a bracket, in the same iterations",
+          "[library-gaps][newton1d-bracket]") {
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    // Iteration counts measured on the Newton1D of HEAD 1ecbd34 (before the fix): Phase 3 is reached and must not take more.
+    SECTION("cbrt(x - 7): a root of infinite slope, bisection-Newton in the bracket of Phase 1") {
+        int evals = 0;
+        Newton1DSolver::Eval1D eval = [&](double x) {
+            ++evals;
+            const double c = std::cbrt(x - 7.0);
+            return std::make_pair(c, c == 0.0 ? 1e300 : 1.0 / (3.0 * c * c));
+        };
+        double x = 100.0;
+        SolverTrace trace;
+        REQUIRE(Newton1DSolver::solve(eval, x, {}, options, &trace) == SolverStatus::Success);
+        CHECK_THAT(x, WithinAbs(7.0, 1e-8));
+        CHECK(evals <= 52);
+        bool bisected = false;
+        for (const auto& it : trace.iterations) bisected = bisected || it.iter >= 1000;
+        CHECK(bisected);   // Phase 3 was used
+    }
+    SECTION("x - 3E5 without derivative: bisection to the root") {
+        int evals = 0;
+        Newton1DSolver::Eval1D eval = [&](double x) { ++evals; return std::make_pair(x - 3e5, 0.0); };
+        double x = 1.0;
+        REQUIRE(Newton1DSolver::solve(eval, x, {}, options) == SolverStatus::Success);
+        CHECK_THAT(x, WithinAbs(3e5, 1e-6));
+        CHECK(evals <= 56);
+    }
+}
+
+TEST_CASE("CS-BUG-NEWTON1D-BRACKET-COLLAPSE: a block that jumps without a root fails, naming the jump",
+          "[library-gaps][newton1d-bracket]") {
+    auto run = runModel("sign(x - 1) + 0.001 = 0\n", {}, "x = 5\n");
+    CHECK_FALSE(run.solveOk);
+    INFO(run.message);
+    CHECK(run.message.find("Block 0 (size 1, vars: x) failed") != std::string::npos);
+    CHECK(run.message.find("F changes sign across a jump, not through a root") != std::string::npos);
+}
