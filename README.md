@@ -110,9 +110,9 @@ CoolSolve uses several file formats for input and verification:
      - `integralRichardson`: Richardson extrapolation on fixed-step methods (default: `false`).
      - `integralOutputInterval`: Default `$IntegralTable` row interval when `:n` is omitted (`0` = every step).
    - **CoolProp Integration options**:
-    - `coolpropBackend`: CoolProp backend string (default: `HEOS`). Options: `HEOS`, `INCOMP`, `TTSE&HEOS`, `BICUBIC&HEOS`.
-    - `coolpropUseAbstractState`: Use the low-level `AbstractState` API instead of `PropsSI` (default: `true`). Provides 2–5× speedup by caching fluid objects and avoiding string parsing.
-    - `coolpropEnableAnalyticalDerivatives`: Use `first_partial_deriv()` for exact gradients with a forward-FD consistency check (default: `true`). Falls back to finite differences near phase boundaries where analytical derivatives are inaccurate.
+    - `coolpropBackend`: CoolProp backend string (default: `HEOS`). Options: `HEOS`, `INCOMP`, `TTSE&HEOS`, `BICUBIC&HEOS`. Not applied to the ideal-gas substances (`N2`, `CO2`, `H2O`, … : always the HEOS ideal-gas part, [Language Reference §5](docs/language_reference.md)).
+    - `coolpropUseAbstractState`: Use the low-level `AbstractState` API instead of `PropsSI` (default: `true`). Provides 2–5× speedup by caching fluid objects and avoiding string parsing. Not applied to ideal gases.
+    - `coolpropEnableAnalyticalDerivatives`: Use `first_partial_deriv()` for exact gradients with a forward-FD consistency check (default: `true`). Falls back to finite differences near phase boundaries where analytical derivatives are inaccurate. Ideal gases always have exact analytical derivatives, whatever this key.
     - `coolpropCacheEnabled`: Enable thread-local `AbstractState` caching (default: `true`).
     - `coolpropEnableSuperancillaries`: Enable CoolProp superancillary equations (default: `true`).
 
@@ -456,6 +456,7 @@ CoolSolve/
 │   ├── autodiff_node.h         # Forward-mode AD types and operations
 │   ├── evaluator.h             # Block and system evaluators
 │   ├── libr_ashrae.h           # LiBr-H2O solution properties (EES routines X_LIBR, H_LIBR, T_LIBR, P_LIBR)
+│   ├── ideal_gas.h             # Ideal gases (N2, CO2, H2O, ...): ideal-gas part of the CoolProp equation of state, exact derivatives
 │   ├── nh3h2o.h                # Ammonia-water: IAPWS G4-01 formulation, saturation, 15 flashes (fluid and CALL NH3H2O)
 │   ├── psychprops.h            # The nine outputs of CALL psychprops (EES PSYCHPROPS), shared by parser and evaluator
 │   ├── taylor_jet.h            # Truncated Taylor arithmetic in 3 variables (exact derivatives of the Helmholtz energy)
@@ -474,6 +475,7 @@ CoolSolve/
 │   ├── autodiff_node.cpp       # AD function implementations
 │   ├── evaluator.cpp           # Evaluator implementations
 │   ├── libr_ashrae.cpp         # ASHRAE LiBr-H2O correlations and their analytical derivatives
+│   ├── ideal_gas.cpp           # Ideal gases from alpha0 of CoolProp: state from any two inputs, implicit-function derivatives
 │   ├── nh3h2o.cpp              # Ammonia-water Helmholtz formulation (IAPWS G4-01)
 │   ├── nh3h2o_flash.cpp        # Ammonia-water saturation solver and the three-property flashes
 │   ├── evaluator_nh3h2o.cpp    # NH3H2O in the evaluator: fluid functions, CALL NH3H2O, units, derivatives

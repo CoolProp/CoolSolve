@@ -2,6 +2,7 @@
 #include "coolsolve/ast.h"
 #include "coolsolve/units.h"
 #include "coolsolve/fluids.h"
+#include "coolsolve/ideal_gas.h"
 #include "CoolProp.h"
 #include "HumidAirProp.h"
 #include <iostream>
@@ -202,10 +203,17 @@ void inferVariables(IR& ir) {
 // Helper to try computing a property value at given conditions
 // Returns true if successful, false otherwise
 static bool tryComputeProperty(const std::string& cpFluid, const std::string& prop,
-                               double T_K, double P_Pa, double& outValue) {
+                               double T_K, double P_Pa, double& outValue, bool idealGas = false) {
     try {
         auto t1 = std::chrono::high_resolution_clock::now();
-        double valSI = CoolProp::PropsSI(prop, "T", T_K, "P", P_Pa, cpFluid);
+        // an ideal gas has the value of its ideal-gas model at (T, P), the same as its property calls (CoolProp basis)
+        const CoolProp::parameters idealParam =
+            prop == "H" ? CoolProp::iHmass : prop == "S" ? CoolProp::iSmass : prop == "U" ? CoolProp::iUmass :
+            prop == "D" ? CoolProp::iDmass : prop == "T" ? CoolProp::iT : prop == "P" ? CoolProp::iP :
+            CoolProp::INVALID_PARAMETER;
+        double valSI = (idealGas && idealParam != CoolProp::INVALID_PARAMETER)
+            ? idealGasProperty(cpFluid, idealParam, CoolProp::iT, T_K, CoolProp::iP, P_Pa, false).value
+            : CoolProp::PropsSI(prop, "T", T_K, "P", P_Pa, cpFluid);
         auto t2 = std::chrono::high_resolution_clock::now();
         double call_time = std::chrono::duration<double, std::milli>(t2 - t1).count();
         g_inference_propsSI_calls++;
@@ -260,7 +268,7 @@ std::optional<double> computeThermoGuessAt(const std::string& inferredFluid,
     // Real / ideal / incompressible fluid via PropsSI.
     std::string cpFluid = fluid->getCoolPropName();
     double valSI = 0.0;
-    if (!tryComputeProperty(cpFluid, propMap->code, T_K, P_Pa, valSI)) {
+    if (!tryComputeProperty(cpFluid, propMap->code, T_K, P_Pa, valSI, fluid->getType() == FluidType::IdealGas)) {
         return std::nullopt;
     }
 
@@ -349,19 +357,19 @@ void initializeVariables(IR& ir) {
                 double valSI = 0.0;
                 
                 // Attempt 1: Standard conditions (T=20°C, P=1 atm)
-                if (tryComputeProperty(cpFluid, info.inferredProperty, 293.15, 101325.0, valSI)) {
+                if (tryComputeProperty(cpFluid, info.inferredProperty, 293.15, 101325.0, valSI, fluid->getType() == FluidType::IdealGas)) {
                     valueFound = true;
                 }
                 // Attempt 2: Lower pressure (useful for gases that might not exist at 1 atm)
-                else if (tryComputeProperty(cpFluid, info.inferredProperty, 293.15, 10000.0, valSI)) {
+                else if (tryComputeProperty(cpFluid, info.inferredProperty, 293.15, 10000.0, valSI, fluid->getType() == FluidType::IdealGas)) {
                     valueFound = true;
                 }
                 // Attempt 3: Higher temperature (useful for fluids that are solid at 20°C)
-                else if (tryComputeProperty(cpFluid, info.inferredProperty, 373.15, 101325.0, valSI)) {
+                else if (tryComputeProperty(cpFluid, info.inferredProperty, 373.15, 101325.0, valSI, fluid->getType() == FluidType::IdealGas)) {
                     valueFound = true;
                 }
                 // Attempt 4: Very low pressure (useful for cryogenic fluids like N2, O2)
-                else if (tryComputeProperty(cpFluid, info.inferredProperty, 293.15, 1000.0, valSI)) {
+                else if (tryComputeProperty(cpFluid, info.inferredProperty, 293.15, 1000.0, valSI, fluid->getType() == FluidType::IdealGas)) {
                     valueFound = true;
                 }
                 

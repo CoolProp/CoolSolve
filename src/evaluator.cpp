@@ -6,6 +6,7 @@
 #include "coolsolve/psychprops.h"
 #include "coolsolve/units.h"
 #include "coolsolve/fluids.h"
+#include "coolsolve/ideal_gas.h"
 #include "coolsolve/user_hints.h"
 #include <algorithm>
 #include <optional>
@@ -843,8 +844,8 @@ std::string ExpressionEvaluator::evaluateString(const ExprPtr& expr) {
         if (lname == "phase$") {
             const std::string eesFluidName = fluidNameOf(call.args.empty() ? nullptr : call.args[0]);
             auto fluid = resolveFluid(eesFluidName, diagnostics_);
-            if (fluid->getType() == FluidType::HumidAir) {
-                return "gas";
+            if (fluid->getType() == FluidType::HumidAir || fluid->getType() == FluidType::IdealGas) {
+                return "gas";   // an ideal gas has no other phase
             }
             if (fluid->getType() == FluidType::Unknown) {
                 auto unsupported = std::dynamic_pointer_cast<UnsupportedFluid>(fluid);
@@ -1264,6 +1265,28 @@ static std::runtime_error idealGasNeedsSecondInput(const std::string& funcName, 
                                                    const std::string& inputName) {
     return std::runtime_error(funcName + "(" + fluidName + ", " + inputName + "=...): an ideal gas needs the "
                               "temperature (or h or u), or two inputs such as T and P / d and P");
+}
+
+/// Error of an ideal-gas call that asks for a phase change (quality, saturation temperature or pressure, surface
+/// tension): an ideal gas has none, and the real fluid of the same equation of state has.
+static std::runtime_error idealGasNoPhaseChange(const FunctionCall& func, const std::string& fluidName,
+                                                const IdealGasFluid& fluid) {
+    const std::string real = fluid.getRealFluidName();
+    return std::runtime_error(func.name + "(" + fluidName + ", ...): an ideal gas has no phase change" +
+                              (real.empty() ? std::string() : "; use the real fluid " + real));
+}
+
+/// Error of an ideal-gas call whose two inputs are not independent: T, h and u each fix the temperature, d and v are
+/// the same property.
+static std::runtime_error idealGasDependentInputs(const std::string& funcName, const std::string& fluidName,
+                                                  const std::string& input1, const std::string& input2,
+                                                  bool bothFixTemperature) {
+    return std::runtime_error(funcName + "(" + fluidName + ", " + input1 + "=..., " + input2 + "=...): " +
+        (bothFixTemperature
+             ? "the temperature, the enthalpy and the internal energy of an ideal gas each fix its temperature: "
+               "give one of them and the pressure, the density (or volume) or the entropy"
+             : "the two inputs are the same property: give two independent state variables of an ideal gas "
+               "(T, h or u, and P, d, v or s; or P, d, s in pairs)"));
 }
 
 /// The state of a humid-air property needs three distinct inputs, and CoolProp takes the water content as R or as W,
@@ -1754,24 +1777,35 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     const bool concentrationVaries = solution && !residualOnly_ &&
         std::any_of(concentration.gradient.begin(), concentration.gradient.end(), [](double g) { return g != 0.0; });
 
-    // True when the pressure was injected below (single-input ideal-gas call): it is
-    // an internal constant of the ideal-gas model, not a user input, so it must be the
-    // same in every pass — never clamped, never checked against the unit hints.
+    // True when the pressure was injected below (single-input call of an ideal gas or of an incompressible): it is
+    // an internal constant, not a user input, so it must be the same in every pass — never clamped, never checked
+    // against the unit hints. (For an ideal gas it is a placeholder that no temperature-only output depends on.)
     bool pressureInjected = false;
+
+    // An ideal gas has no phase change: quality (as an output or an input), the saturation functions and the surface
+    // tension are errors that name the real fluid, before anything else is looked at.
+    if (fluid->getType() == FluidType::IdealGas) {
+        const auto idealGas = std::dynamic_pointer_cast<IdealGasFluid>(fluid);
+        bool phaseChange = funcName == "quality" || funcName == "x" || funcName == "q" || funcName == "t_sat" ||
+                           funcName == "tsat" || funcName == "p_sat" || funcName == "psat" ||
+                           funcName == "surfacetension";
+        for (const auto& [inputName, value] : inputs)
+            phaseChange = phaseChange || inputName == "q" || inputName == "x" || inputName == "quality";
+        if (phaseChange) throw idealGasNoPhaseChange(func, eesFluidName, *idealGas);
+    }
 
     if (fluid->getType() == FluidType::IdealGas && inputs.size() == 1) {
         // The properties of an ideal gas that depend only on temperature {T, h, u,
         // cp, cv} can be computed from any other member of this set without
         // knowing pressure.  When exactly one input is given, it must fix the
         // temperature (T, h or u) and the requested output must belong to this
-        // "thermal-only" set: a dummy pressure is then injected so CoolProp gets
-        // its required 2-input state.  Any other single input (density, specific
+        // "thermal-only" set: a placeholder pressure (that no such output depends on) is then
+        // injected so that the call is a two-input one.  Any other single input (density, specific
         // volume, entropy, quality, pressure) does not fix the state, whatever the
-        // output: a second input is required, the dummy pressure is never a state.
+        // output: a second input is required, the placeholder is never a state.
         // The transport properties of the dilute gas (viscosity, conductivity, Prandtl
-        // number) depend on the temperature only too: they are outputs of this set,
-        // evaluated at the dummy pressure (a few tenths of a percent from the
-        // dilute-gas limit); the density-dependent ones (kinematic viscosity, thermal
+        // number) depend on the temperature only too: they are outputs of this set;
+        // the density-dependent ones (kinematic viscosity, thermal
         // diffusivity) are not, they need the pressure.
         // The outputs are those of the table of the two-input path (getCoolPropOutputParam), so that every
         // spelling that works with T and P works with T alone: h, u (intenergy, internalenergy), cp (specheat,
@@ -1808,12 +1842,9 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         if (!fixesTemperature(inputName)) {
             throw idealGasNeedsSecondInput(func.name, eesFluidName, inputName);
         } else if (isThermalOnly(funcName) || isTransport(funcName)) {
-            // The input fixes T and the output depends on T only → inject dummy pressure
-            // Use fluid-specific dummy pressure (e.g. 100 Pa for H2O to avoid
-            // liquid phase at room temperature).
-            auto idealGas = std::dynamic_pointer_cast<IdealGasFluid>(fluid);
-            double dummyP = idealGas ? idealGas->getDummyPressureSI() : 101325.0;
-            inputs["p"] = ADValue::constant(UnitConverter::fromSI(dummyP, UnitType::Pressure, units.pressure), numVariables_);
+            // The input fixes T and the output depends on T only: the pressure is a placeholder
+            inputs["p"] = ADValue::constant(
+                UnitConverter::fromSI(kIdealGasStandardPressureSI, UnitType::Pressure, units.pressure), numVariables_);
             pressureInjected = true;
         } else {
             throw idealGasNeedsPressure(funcName);
@@ -1878,6 +1909,14 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     CoolPropParamInfo outputInfo = getCoolPropOutputParam(funcName);
     CoolProp::parameters input1Param = getCoolPropInputParam(inputNamesList[0]);
     CoolProp::parameters input2Param = getCoolPropInputParam(inputNamesList[1]);
+
+    // The two inputs of an ideal gas must be independent (T, h and u each fix the temperature)
+    if (fluid->getType() == FluidType::IdealGas) {
+        auto fixesT = [](CoolProp::parameters p) { return p == CoolProp::iT || p == CoolProp::iHmass || p == CoolProp::iUmass; };
+        const bool bothFixTemperature = fixesT(input1Param) && fixesT(input2Param);
+        if (bothFixTemperature || input1Param == input2Param)
+            throw idealGasDependentInputs(func.name, eesFluidName, inputNamesList[0], inputNamesList[1], bothFixTemperature);
+    }
 
     // The caloric properties of the incompressible LiBr solution (as output or as input) have no enthalpy of
     // mixing: warning C004, once per run. Only the incompressibles are looked at.
@@ -2047,8 +2086,8 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     //
     // Only an input that depends on the unknowns of the block is a trial point
     // (its AD gradient is not zero). An input that does not (a constant, a
-    // variable solved by an earlier block, the injected pressure of an
-    // ideal-gas call) is a value of the model: it reaches CoolProp unchanged,
+    // variable solved by an earlier block, the injected pressure of a
+    // single-input call) is a value of the model: it reaches CoolProp unchanged,
     // here and in the final verification, which evaluates the same call.
     // The lower bound of a trial point is the one below, or the minimum of the
     // fluid in CoolProp when that is lower (Hydrogen, Helium: Tmin < 50 K).
@@ -2202,6 +2241,14 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         double dResult_dInput2 = 0.0;
         double dResult_dFraction = 0.0;   // mass fraction of an incompressible solution that depends on the unknowns
         
+        // An ideal gas: the ideal-gas part of its CoolProp equation of state, with exact derivatives
+        // (src/ideal_gas.cpp). Neither the configured backend nor the PropsSI fallback applies.
+        if (fluid->getType() == FluidType::IdealGas) {
+            const IdealGasValue ideal = idealGasProperty(cpFluidName, outputInfo.param, input1Param, val1,
+                                                         input2Param, val2, !residualOnly_);
+            return postProcess(ideal.value, ideal.d1, ideal.d2);
+        }
+
         // ── AbstractState path (low-level API) ──────────────────────
         bool usedAbstractState = false;
         if (coolpropConfig_.useAbstractState) {

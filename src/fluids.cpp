@@ -1,4 +1,5 @@
 #include "coolsolve/fluids.h"
+#include "coolsolve/ideal_gas.h"
 #include "AbstractState.h"
 #include "DataStructures.h"
 #include <algorithm>
@@ -172,11 +173,12 @@ void FluidRegistry::initialize() {
     // -110 530, CH4 -74 850, C2H6 -84 680, C3H8 -103 850, H2O -241 820); NIST-JANAF entropies differ from the
     // NASA ones by at most 120 J/kmol-K (CH4). The lower heating value of CO is 282 974.8 kJ/kmol.
     // `Air` has neither: EES's Air is not a JANAF species, it keeps CoolProp's enthalpy and entropy references.
+    // The properties are those of the ideal-gas part of the CoolProp equation of state of the substance
+    // (src/ideal_gas.cpp), at any temperature and pressure: no phase, so no liquid at 25 °C and 1 bar for C8H18 or H2O.
     auto addIdeal = [](const std::string& name, const std::string& cpName,
                        std::optional<double> formationEnthalpy = std::nullopt,
-                       std::optional<double> standardEntropy = std::nullopt,
-                       double dummyPressure = 101325.0) {
-        auto fluid = std::make_shared<IdealGasFluid>(name, cpName, dummyPressure, formationEnthalpy, standardEntropy);
+                       std::optional<double> standardEntropy = std::nullopt) {
+        auto fluid = std::make_shared<IdealGasFluid>(name, cpName, formationEnthalpy, standardEntropy);
         registry_[name] = fluid;
         std::string lower = name;
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
@@ -197,24 +199,15 @@ void FluidRegistry::initialize() {
 
     // The normal alkanes n-butane to n-octane, from the same NASA-Glenn data (species "C4H10,n-butane" ...
     // "C8H18,n-octane" of thermo.inp: heat of formation of the header, s0 from the polynomial at 298.15 K; their first
-    // interval starts at 300 K, so s0 is extrapolated by 1.85 K as for C2H6 and C3H8). These vapors condense at
-    // room conditions (n-octane: Psat = 1.9 kPa at 25 °C), so the calls with T alone are evaluated at 0.01 Pa, below the
-    // triple-point pressure of each fluid (0.08 to 2.1 Pa): a gas at every temperature CoolProp accepts (from the triple
-    // point up; below it CoolProp fails: an error, never the liquid), with a real-gas residual Z - 1 below 1e-6.
-    constexpr double ALKANE_PRESSURE_PA = 0.01;
-    addIdeal("C4H10", "n-Butane",  -125790e3, 309879.5, ALKANE_PRESSURE_PA);
-    addIdeal("C5H12", "n-Pentane", -146760e3, 349558.0, ALKANE_PRESSURE_PA);
-    addIdeal("C6H14", "n-Hexane",  -166920e3, 388847.8, ALKANE_PRESSURE_PA);
-    addIdeal("C7H16", "n-Heptane", -187780e3, 428087.0, ALKANE_PRESSURE_PA);
-    addIdeal("C8H18", "n-Octane",  -208750e3, 467347.3, ALKANE_PRESSURE_PA);
+    // interval starts at 300 K, so s0 is extrapolated by 1.85 K as for C2H6 and C3H8).
+    addIdeal("C4H10", "n-Butane",  -125790e3, 309879.5);
+    addIdeal("C5H12", "n-Pentane", -146760e3, 349558.0);
+    addIdeal("C6H14", "n-Hexane",  -166920e3, 388847.8);
+    addIdeal("C7H16", "n-Heptane", -187780e3, 428087.0);
+    addIdeal("C8H18", "n-Octane",  -208750e3, 467347.3);
     
     // H2O as ideal gas (water vapor for combustion/chemistry): formation enthalpy and entropy of the vapor.
-    // Use a low dummy pressure (100 Pa) so CoolProp stays in the gas phase
-    // even at low temperatures (saturation T at 100 Pa ≈ −23 °C).
-    {
-        auto fluid = std::make_shared<IdealGasFluid>("H2O", "Water", 100.0, -241826e3, 188828.0);
-        registry_["h2o"] = fluid;
-    }
+    addIdeal("H2O", "Water", -241826e3, 188828.0);
     
     // --- Real Fluid Air_ha (EES real gas) ---
     addReal("Air_ha", "Air");
@@ -503,51 +496,38 @@ std::vector<std::shared_ptr<Fluid>> FluidRegistry::getAllFluids() {
     return fluids;
 }
 
-ReferenceState IdealGasFluid::getReferenceState(const std::string& backend) const {
+ReferenceState IdealGasFluid::getReferenceState(const std::string& /*backend*/) const {
     if (!formationEnthalpy_ && !standardEntropy_) return {0.0, 0.0};
     {
-        std::shared_lock<std::shared_mutex> lock(offsetMutex_);
-        auto it = referenceByBackend_.find(backend);
-        if (it != referenceByBackend_.end()) return it->second;
-    }
-    // The formation enthalpy and the standard entropy apply at 25 °C (1 atm, resp. 1 bar).
-    constexpr double T_REFERENCE_K = 298.15;
-    constexpr double P_STANDARD_PA = 1.0e5;          // standard-state pressure of the entropy tables
-    constexpr double P_IDEAL_LIMIT_PA = 100.0;       // CoolProp's equation of state is an ideal gas here
-    ReferenceState reference;
-    try {
-        std::unique_ptr<CoolProp::AbstractState> state(
-            CoolProp::AbstractState::factory(backend, cpName_));
-        if (formationEnthalpy_) {
-            // temperature-only calls use the dummy pressure
-            state->update(CoolProp::PT_INPUTS, dummyPressure_, T_REFERENCE_K);
-            const double formationPerKg = *formationEnthalpy_ / (1000.0 * state->molar_mass());
-            reference.h_offset = formationPerKg - state->hmass();
-        }
-        if (standardEntropy_) {
-            // Third-law entropy at (T, p) of the ideal gas: s0 - R ln(p/1 bar). Compared with CoolProp at a
-            // pressure low enough for the residual entropy to vanish, so that the offset is a pure reference
-            // constant; at any pressure, CoolProp then adds its real-gas residual to the ideal-gas entropy.
-            // A backend that refuses 100 Pa (tabular tables) is called at the dummy pressure instead.
-            double p = P_IDEAL_LIMIT_PA;
-            try {
-                state->update(CoolProp::PT_INPUTS, p, T_REFERENCE_K);
-            } catch (const std::exception&) {
-                p = dummyPressure_;
-                state->update(CoolProp::PT_INPUTS, p, T_REFERENCE_K);
-            }
-            const double molarMass = state->molar_mass();                              // kg/mol
-            const double s0PerMolK = *standardEntropy_ / 1000.0;                       // J/(mol K)
-            const double idealPerMolK = s0PerMolK - state->gas_constant() * std::log(p / P_STANDARD_PA);
-            reference.s_offset = idealPerMolK / molarMass - state->smass();
-        }
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Cannot compute the reference state (enthalpy of formation, standard entropy) of '" +
-                                 name_ + "' with backend '" + backend + "': " + e.what());
+        std::shared_lock<std::shared_mutex> lock(offsetMutex_);   // every property call reads it: no exclusive lock
+        if (reference_) return *reference_;
     }
     std::unique_lock<std::shared_mutex> lock(offsetMutex_);
-    referenceByBackend_.emplace(backend, reference);
+    if (reference_) return *reference_;
+    // The formation enthalpy and the standard entropy apply at 25 °C (1 atm, resp. 1 bar), and the entropy tables
+    // are those of the ideal gas at 1 bar: the ideal-gas part of the equation of state is compared at that state.
+    constexpr double T_REFERENCE_K = 298.15;
+    ReferenceState reference;
+    try {
+        const IdealGasPoint ideal = idealGasAt(cpName_, T_REFERENCE_K);
+        if (formationEnthalpy_) reference.h_offset = *formationEnthalpy_ / (1000.0 * ideal.M) - ideal.h;
+        if (standardEntropy_) reference.s_offset = *standardEntropy_ / (1000.0 * ideal.M) - ideal.s;
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Cannot compute the reference state (enthalpy of formation, standard entropy) of '" +
+                                 name_ + "': " + e.what());
+    }
+    reference_ = reference;
     return reference;
+}
+
+std::string IdealGasFluid::getRealFluidName() const {
+    // the CoolProp name itself (Nitrogen, Water, n-Octane, ...), or the real-fluid name of the equation of state of
+    // Air; an ideal gas of the registry is not a real fluid
+    for (const std::string& candidate : {cpName_, cpName_ + "_ha"}) {
+        const auto fluid = FluidRegistry::getFluid(candidate);
+        if (fluid && fluid->getType() == FluidType::Real && fluid->getCoolPropName() == cpName_) return fluid->getName();
+    }
+    return {};
 }
 
 } // namespace coolsolve
