@@ -23509,3 +23509,261 @@ TEST_CASE("CS-BUG-TINY-IMPLICIT: an energy balance of terms ~5E7 converges at th
     // 150 (a stall at |F| = 3.7E-9, then bisection and polish) with the absolute test
     CHECK(run.iterations <= 20);
 }
+
+// ============================================================================
+// CS-GAP-QUALITY-DOME: QUALITY outside the saturation dome is -100 (liquid side: compressed liquid) or +100 (vapour
+// side: superheated vapour, supercritical gas), as EES; a state in the dome keeps its quality in [0, 1].
+// ============================================================================
+
+namespace {
+
+/// The model of one single-phase state: the quality of (T [C], P [Pa]) by every input pair.
+std::string qualityPairsModel(const std::string& fluid, double T, double P) {
+    std::ostringstream m;
+    m << std::setprecision(15) << "T_ = " << T << "\nP_ = " << P << "\n"
+      << "h_ = enthalpy(" << fluid << ", T=T_, P=P_)\n"
+      << "s_ = entropy(" << fluid << ", T=T_, P=P_)\n"
+      << "x_tp = quality(" << fluid << ", T=T_, P=P_)\n"
+      << "x_ph = quality(" << fluid << ", P=P_, h=h_)\n"
+      << "x_ps = quality(" << fluid << ", P=P_, s=s_)\n"
+      << "x_hs = quality(" << fluid << ", h=h_, s=s_)\n";
+    return m.str();
+}
+
+void checkQualityPairs(const std::string& fluid, double T, double P, double expected) {
+    INFO(fluid << " T=" << T << " C, P=" << P << " Pa");
+    auto run = runModel(qualityPairsModel(fluid, T, P));
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const char* name : {"x_tp", "x_ph", "x_ps", "x_hs"}) {
+        INFO(name);
+        CHECK(run[name] == expected);
+    }
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-QUALITY-DOME: reproducer of the register, 100 above and -100 below the dome", "[library-gaps][quality-dome]") {
+    auto run = runModel("x_sup = quality(R410A, T=50, P=3000E3)\n"
+                        "x_sub = quality(R410A, T=40, P=3000E3)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run["x_sup"] == 100.0);
+    CHECK(run["x_sub"] == -100.0);
+}
+
+TEST_CASE("CS-GAP-QUALITY-DOME: liquid and vapour states by every input pair", "[library-gaps][quality-dome]") {
+    SECTION("Water at 1 bar (Tsat = 99.6 C)") {
+        checkQualityPairs("Water", 200.0, 1E5, 100.0);
+        checkQualityPairs("Water", 50.0, 1E5, -100.0);
+    }
+    SECTION("R134a at 6 bar (Tsat = 21.6 C)") {
+        checkQualityPairs("R134a", 50.0, 6E5, 100.0);
+        checkQualityPairs("R134a", 0.0, 6E5, -100.0);
+    }
+    SECTION("R410A, a pseudo-pure fluid, at 30 bar") {
+        checkQualityPairs("R410A", 50.0, 3000E3, 100.0);
+        checkQualityPairs("R410A", 40.0, 3000E3, -100.0);
+    }
+    SECTION("a state a hair outside the dome") {
+        checkQualityPairs("Water", 99.7, 1E5, 100.0);
+        checkQualityPairs("Water", 99.5, 1E5, -100.0);
+    }
+}
+
+TEST_CASE("CS-GAP-QUALITY-DOME: supercritical states, 100 above the critical temperature, -100 below it", "[library-gaps][quality-dome]") {
+    // EES stores x = 100 for CO2 at 35 C and 20 bar (CSL-0225, TM-0379): T > Tc (31 C) and p < pc (73.8 bar)
+    SECTION("T > Tc, p < pc: the EES stored value") {
+        checkQualityPairs("CarbonDioxide", 35.0, 2000E3, 100.0);
+    }
+    SECTION("T > Tc, p > pc") {
+        checkQualityPairs("CarbonDioxide", 50.0, 10E6, 100.0);
+        checkQualityPairs("Water", 500.0, 30E6, 100.0);
+    }
+    SECTION("T < Tc, p > pc: the dense fluid is on the liquid side") {
+        checkQualityPairs("CarbonDioxide", 20.0, 10E6, -100.0);
+    }
+    SECTION("T < Tc, p < pc: the fluid is a gas or a liquid") {
+        checkQualityPairs("CarbonDioxide", 15.0, 3E6, 100.0);
+        checkQualityPairs("CarbonDioxide", 15.0, 6E6, -100.0);
+    }
+}
+
+TEST_CASE("CS-GAP-QUALITY-DOME: a mixture follows the same rule, against its bubble and dew points", "[library-gaps][quality-dome]") {
+    const std::string mix = "'R32[0.5]&R125[0.5]'";
+    SECTION("(T, P) and (P, h)") {
+        auto run = runModel("h_v = enthalpy(" + mix + ", T=77, P=2E6)\n"
+                            "h_l = enthalpy(" + mix + ", T=-23, P=2E6)\n"
+                            "x_v = quality(" + mix + ", T=77, P=2E6)\n"
+                            "x_l = quality(" + mix + ", T=-23, P=2E6)\n"
+                            "x_vh = quality(" + mix + ", P=2E6, h=h_v)\n"
+                            "x_lh = quality(" + mix + ", P=2E6, h=h_l)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run["x_v"] == 100.0);
+        CHECK(run["x_vh"] == 100.0);
+        CHECK(run["x_l"] == -100.0);
+        CHECK(run["x_lh"] == -100.0);
+    }
+    SECTION("a state of the glide is two-phase, its quality is unchanged") {
+        auto run = runModel("h_m = enthalpy(" + mix + ", P=1E6, x=0.3)\n"
+                            "x_m = quality(" + mix + ", P=1E6, h=h_m)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x_m"], WithinAbs(0.3, 1e-8));
+    }
+}
+
+TEST_CASE("CS-GAP-QUALITY-DOME: two-phase values are unchanged, boundaries included", "[library-gaps][quality-dome]") {
+    for (const char* fluid : {"Water", "R134a", "R410A", "CarbonDioxide"}) {
+        INFO(fluid);
+        auto run = runModel(std::string("P_ = ") + (std::string(fluid) == "CarbonDioxide" ? "4E6" : "6E5") + "\n"
+                            "hL = enthalpy(" + fluid + ", P=P_, x=0)\n"
+                            "hV = enthalpy(" + fluid + ", P=P_, x=1)\n"
+                            "T_ = temperature(" + fluid + ", P=P_, x=0.5)\n"
+                            "h3 = hL + 0.3*(hV - hL)\n"
+                            "s3 = entropy(" + fluid + ", P=P_, x=0.3)\n"
+                            "x_h = quality(" + fluid + ", P=P_, h=h3)\n"
+                            "x_s = quality(" + fluid + ", P=P_, s=s3)\n"
+                            "x_Tx = quality(" + fluid + ", T=T_, x=0.3)\n"
+                            "x_0 = quality(" + fluid + ", P=P_, h=hL)\n"
+                            "x_1 = quality(" + fluid + ", P=P_, h=hV)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x_h"], WithinAbs(0.3, 1e-9));
+        CHECK_THAT(run["x_s"], WithinAbs(0.3, 1e-8));
+        CHECK_THAT(run["x_Tx"], WithinAbs(0.3, 1e-12));
+        CHECK_THAT(run["x_0"], WithinAbs(0.0, 1e-9));
+        CHECK_THAT(run["x_1"], WithinAbs(1.0, 1e-9));
+    }
+}
+
+TEST_CASE("CS-GAP-QUALITY-DOME: the derivative is exact inside the dome and 0 outside, a constant", "[library-gaps][quality-dome]") {
+    const CoolPropConfig cfg;
+    // the variable Tv of the helper is the enthalpy here, Pv the pressure
+    const double hL = CoolProp::PropsSI("H", "P", 1E5, "Q", 0, "Water");
+    const double hV = CoolProp::PropsSI("H", "P", 1E5, "Q", 1, "Water");
+    const auto inside = evalMixtureCall("quality(Water, P=Pv, h=Tv)", 0.4 * hV + 0.6 * hL, 1E5, cfg);
+    CHECK_THAT(inside.value, WithinAbs(0.4, 1e-9));
+    CHECK_THAT(inside.dT, WithinRel(1.0 / (hV - hL), 1e-6));
+    const auto above = evalMixtureCall("quality(Water, P=Pv, h=Tv)", hV + 1e5, 1E5, cfg);
+    CHECK(above.value == 100.0);
+    CHECK(above.dT == 0.0);
+    CHECK(above.dP == 0.0);
+    const auto below = evalMixtureCall("quality(Water, P=Pv, h=Tv)", hL - 1e5, 1E5, cfg);
+    CHECK(below.value == -100.0);
+    CHECK(below.dT == 0.0);
+    CHECK(below.dP == 0.0);
+    // (T, P): a constant too, and finite
+    const auto tp = evalMixtureCall("quality(R134a, T=Tv, P=Pv)", 50.0, 6E5, cfg);
+    CHECK(tp.value == 100.0);
+    CHECK(tp.dT == 0.0);
+    CHECK(tp.dP == 0.0);
+    // the aliases x and q of the evaluator are the same function
+    CHECK(evalMixtureCall("x(R134a, T=Tv, P=Pv)", 50.0, 6E5, cfg).value == 100.0);
+    CHECK(evalMixtureCall("q(R134a, T=Tv, P=Pv)", 0.0, 6E5, cfg).value == -100.0);
+    CHECK_THAT(evalMixtureCall("x(Water, P=Pv, h=Tv)", 0.4 * hV + 0.6 * hL, 1E5, cfg).value, WithinAbs(0.4, 1e-9));
+}
+
+TEST_CASE("CS-GAP-QUALITY-DOME: the same values without the AbstractState path (PropsSI)", "[library-gaps][quality-dome]") {
+    CoolPropConfig cfg;
+    cfg.useAbstractState = false;
+    const double hL = CoolProp::PropsSI("H", "P", 1E5, "Q", 0, "Water");
+    const double hV = CoolProp::PropsSI("H", "P", 1E5, "Q", 1, "Water");
+    CHECK(evalMixtureCall("quality(R410A, T=Tv, P=Pv)", 50.0, 3000E3, cfg).value == 100.0);
+    CHECK(evalMixtureCall("quality(R410A, T=Tv, P=Pv)", 40.0, 3000E3, cfg).value == -100.0);
+    CHECK(evalMixtureCall("quality(Water, P=Pv, h=Tv)", hV + 1e5, 1E5, cfg).value == 100.0);
+    const auto below = evalMixtureCall("quality(Water, P=Pv, h=Tv)", hL - 1e5, 1E5, cfg);
+    CHECK(below.value == -100.0);
+    CHECK(below.dT == 0.0);
+    const auto inside = evalMixtureCall("quality(Water, P=Pv, h=Tv)", 0.4 * hV + 0.6 * hL, 1E5, cfg);
+    CHECK_THAT(inside.value, WithinAbs(0.4, 1e-9));
+    CHECK_THAT(inside.dT, WithinRel(1.0 / (hV - hL), 1e-5));
+}
+
+TEST_CASE("CS-GAP-QUALITY-DOME: a quality of 100 or -100 fed back as an input is clamped with the warning, as before",
+          "[library-gaps][quality-dome]") {
+    // The input clamp is unchanged: the iterates are limited to [0, 1] and say so. The value 100 is outside [0, 1], so the
+    // final check, which does not clamp, rejects the model like any quality input of 1.5 (it was a silent 0 before).
+    auto sup = runModel("x_sup = quality(R410A, T=50, P=3000E3)\n"
+                        "h_back = enthalpy(R410A, P=1000E3, x=x_sup)\n");
+    INFO(sup.message);
+    REQUIRE(sup.solveOk);
+    CHECK(sup["x_sup"] == 100.0);
+    CHECK_THAT(sup["h_back"], WithinRel(CoolProp::PropsSI("H", "P", 1000E3, "Q", 1, "R410A"), 1e-9));   // clamped to 1
+    CHECK(anyContains(sup.warnings, "Quality input x=100.000000 clamped to 1 (superheated)"));
+    CHECK_FALSE(sup.verified);
+    CHECK(anyContains(sup.checkErrors, "Q=100"));
+
+    auto sub = runModel("x_sub = quality(R410A, T=40, P=3000E3)\n"
+                        "h_back = enthalpy(R410A, P=1000E3, x=x_sub)\n");
+    INFO(sub.message);
+    REQUIRE(sub.solveOk);
+    CHECK(sub["x_sub"] == -100.0);
+    CHECK_THAT(sub["h_back"], WithinRel(CoolProp::PropsSI("H", "P", 1000E3, "Q", 0, "R410A"), 1e-9));   // clamped to 0
+    CHECK(anyContains(sub.warnings, "Quality input x=-100.000000 clamped to 0 (subcooled)"));
+    CHECK_FALSE(sub.verified);
+
+    // a quality of the dome fed back keeps working: no warning, verified
+    auto dome = runModel("x_d = quality(Water, P=1E5, h=1.5E6)\n"
+                         "h_back = enthalpy(Water, P=2E5, x=x_d)\n");
+    INFO(dome.message);
+    REQUIRE(dome.solveOk);
+    CHECK(dome.verified);
+    CHECK_FALSE(anyContains(dome.warnings, "clamped"));
+}
+
+TEST_CASE("CS-GAP-QUALITY-DOME: a state solved through the quality, from either side of the dome", "[library-gaps][quality-dome]") {
+    // The unknown enthalpy is found from quality = 0.5 at 6 bar, from guesses in the compressed liquid, in the dome and
+    // in the superheated vapour. Outside the dome the quality has no slope: the guess must be left by the solver, and
+    // the jump to +-100 at the saturation lines is a residual far from 0, which a step that overshoots has to refuse.
+    const double hL = CoolProp::PropsSI("H", "P", 6E5, "Q", 0, "R134a");
+    const double hV = CoolProp::PropsSI("H", "P", 6E5, "Q", 1, "R134a");
+    const double expected = 0.5 * (hL + hV);
+    for (const double guess : {hL - 1e5, hL - 1.5e4, 0.5 * (hL + hV), hV + 1.5e4, hV + 1e5}) {
+        INFO("guess h = " << guess);
+        auto run = runModel("P = 600E3\nquality(R134a, h=h, P=P) = 0.5\n", {}, "h = " + std::to_string(guess) + "\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["h"], WithinRel(expected, 1e-6));
+        CHECK(run.iterations <= 60);
+    }
+    // the same through the entropy, and in a coupled block with a state defined by the quality
+    auto coupled = runModel("P = 600E3\nx_t = 0.5\n"
+                            "quality(R134a, s=s, P=P) = x_t\n"
+                            "h = enthalpy(R134a, s=s, P=P)\n"
+                            "T = temperature(R134a, s=s, P=P)\n",
+                            {}, "s = 800\n");
+    INFO(coupled.message);
+    REQUIRE(coupled.solveOk);
+    CHECK_THAT(coupled["h"], WithinRel(expected, 1e-6));
+    CHECK_THAT(coupled["T"], WithinAbs(CoolProp::PropsSI("T", "P", 6E5, "Q", 0.5, "R134a") - 273.15, 1e-6));
+}
+
+TEST_CASE("CS-GAP-QUALITY-DOME: negative tests, incompressibles, ideal gases and humid air keep their errors", "[library-gaps][quality-dome]") {
+    SECTION("an incompressible fluid has no quality") {
+        auto run = runModel("x_eg = quality(EthyleneGlycol, T=25, P=1E5, C=30)\n");
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("Incompressible fluid 'EthyleneGlycol' has no vapor quality.") != std::string::npos);
+        CHECK(idealCallError("enthalpy(EthyleneGlycol, x=0.5, P=1E5, C=30)") ==
+              "Incompressible fluid 'EthyleneGlycol' does not support saturation (quality) inputs.");
+    }
+    SECTION("an ideal gas has no phase change") {
+        CHECK(idealCallError("quality(N2, T=25, P=1E5)") ==
+              "quality(N2, ...): an ideal gas has no phase change; use the real fluid Nitrogen");
+        CHECK(idealCallError("x(CO2, h=-3.9E5, P=1E5)") ==
+              "x(CO2, ...): an ideal gas has no phase change; use the real fluid CarbonDioxide");
+        auto run = runModel("x_N2 = quality(N2, T=25, P=1E5)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("an ideal gas has no phase change; use the real fluid Nitrogen") != std::string::npos);
+    }
+    SECTION("humid air has no quality") {
+        auto run = runModel("x_ha = quality(AirH2O, T=25, P=1E5, R=0.5)\n");
+        INFO(run.message);
+        CHECK(anyContains(run.checkErrors, "'quality' is not available for humid air (AirH2O)"));
+    }
+}

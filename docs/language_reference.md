@@ -661,6 +661,45 @@ J/(kg·K). See the warning at the top of this page.
 | `speed_of_sound` / `soundspeed`      | m/s                        |
 | `molarmass` / `MM`                   | kg/kmol, as in EES (no state needed); also the atomic weight of an element symbol (below) |
 
+### Quality outside the saturation dome
+
+`quality` is the vapour mass fraction, between 0 and 1, for a state **inside the dome**. For a single-phase state it
+returns, as EES, **100** on the vapour side (superheated vapour) and **-100** on the liquid side (compressed liquid),
+whatever the two inputs (`T, P`, `P, h`, `P, s`, `h, s`, ...), for the pure fluids, the pseudo-pure ones (`R410A`)
+and the CoolProp mixtures (against their bubble and dew points). It is the phase that CoolProp reports for the state
+that decides the side:
+
+| State                                                              | `quality`                      |
+|:-------------------------------------------------------------------|:-------------------------------|
+| two-phase (including the saturated liquid and vapour, 0 and 1)    | the quality, in [0, 1]         |
+| compressed liquid, `T < Tc` and `P > P_sat(T)`                     | **-100**                       |
+| superheated vapour, `T < Tc` and `P < P_sat(T)`                   | **100**                        |
+| `T > Tc`, whatever the pressure (supercritical gas or fluid)      | **100**                        |
+| `T < Tc` and `P > Pc` (supercritical liquid, dense fluid)         | **-100**                       |
+
+EES documents -100 and 100 for subcooled and superheated states and stores 100 for CO<sub>2</sub> at 35 °C and
+20 bar (`T > Tc`, `P < Pc`); it does not document the other supercritical states. The rule for them is CoolSolve's
+(the critical temperature separates the two sides), not an EES behaviour.
+
+```ees
+x_sup = quality(R410A, T=50, P=3000E3)    "100: superheated vapour"
+x_sub = quality(R410A, T=40, P=3000E3)    "-100: compressed liquid"
+```
+
+- The value is a **constant** outside the dome: its derivative is 0 there, as it was (a flat 0). A model that solves
+  for a state through `quality(...) = 0.5` converges from a guess on either side of the dome (the library gaps tests
+  solve it from the compressed liquid, the dome and the superheated vapour). At a state that is saturated by
+  construction (`h` equal to the enthalpy of the saturated liquid to the last digits) the rounding of the state may
+  put it on either side: 0 inside the dome or -100; write a test on the quality with a margin.
+- **Behaviour change.** Before this change `quality` returned 0 for every single-phase state. A model that compares
+  the quality with 0 or 1 outside the dome (`IF (x > 0.99) THEN`, `x >= 1`) must account for 100 and -100: use
+  `x > 0.99` together with `x < 2` or test `PHASE$` instead.
+- Used as an **input** of another call (`enthalpy(Water, P=P, x=x_1)`), a quality outside [0, 1] is clamped to 0 or 1
+  with the warning *Quality input x=100.000000 clamped to 1 (superheated)*, and the final check of the solution
+  rejects it, as for any quality input outside [0, 1].
+- `quality` of an incompressible fluid or of humid air, and of an ideal gas, are errors (no phase change, see the
+  *Fluids* section), as before.
+
 ### Molar mass of a chemical element
 
 `MOLARMASS` also takes the **symbol of a chemical element**, written like a fluid (`molarmass(C)`, `molarmass('C')`,

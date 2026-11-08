@@ -8,6 +8,21 @@ changes introduced.
 
 ---
 
+## Next release (unreleased)
+
+### Behaviour changes
+
+- **`QUALITY` outside the saturation dome is 100 or -100, as EES.** It returned 0 for every single-phase state:
+  it is now 100 for a superheated vapour and -100 for a compressed liquid, for every input pair (`T, P`, `P, h`,
+  `P, s`, ...), for the pure fluids, the pseudo-pure fluids and the CoolProp mixtures; the supercritical states are
+  100 above the critical temperature and -100 below it (EES documents only the two subcooled and superheated
+  cases). Values inside the dome are unchanged. A model that compared the quality with 0 or 1 outside the dome
+  sees 100 or -100 now; a quality outside [0, 1] fed back as the quality input of another call is still clamped
+  with a warning, and the final check of the solution rejects it. See *Quality outside the saturation dome* in the
+  [Language Reference](language_reference.md).
+
+---
+
 ## v0.4 — October 2026 (current)
 
 | Item | Detail |

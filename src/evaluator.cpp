@@ -164,6 +164,26 @@ static double getOutputValue(CoolProp::AbstractState& state,
     return state.keyed_output(param);
 }
 
+/// EES value of the quality of a single-phase state: -100 on the liquid side of the saturation dome
+/// (compressed liquid, also above the critical pressure), +100 on the vapour side (superheated vapour, also
+/// above the critical temperature). Empty for a two-phase state or a phase CoolProp does not tell: the quality
+/// of CoolProp is then the result. The phase is the one of CoolProp whatever the input pair, whereas its own
+/// quality of a single-phase state depends on the pair (-1, 10000, -1000, ...).
+static std::optional<double> qualityOutsideDome(CoolProp::phases phase) {
+    switch (phase) {
+        case CoolProp::iphase_liquid:
+        case CoolProp::iphase_supercritical_liquid:
+            return -100.0;
+        case CoolProp::iphase_gas:
+        case CoolProp::iphase_supercritical_gas:
+        case CoolProp::iphase_supercritical:
+        case CoolProp::iphase_critical_point:
+            return 100.0;
+        default:
+            return std::nullopt;
+    }
+}
+
 /// The unit-hint category of a CoolProp input, or none for an input the hints do not check
 /// (internal energy, ...).
 static std::optional<ThermoInputKind> thermoKindFromCoolProp(CoolProp::parameters param,
@@ -2191,11 +2211,14 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         }
     };
     
+    // A quality outside the saturation dome (+-100, see qualityOutsideDome): set with the result, it has no derivative
+    bool singlePhaseQuality = false;
+
     // Common post-processing: unit conversion, volume inversion, gradient assembly
     auto postProcess = [&](double result, double dResult_dInput1, double dResult_dInput2,
                            double dResult_dFraction = 0.0) -> ADValue {
-        // Clamp quality output
-        if (outputInfo.param == CoolProp::iQ) {
+        // Clamp the quality of a two-phase state
+        if (outputInfo.param == CoolProp::iQ && !singlePhaseQuality) {
             if (result < 0.0) result = 0.0;
             else if (result > 1.0) result = 1.0;
         }
@@ -2283,7 +2306,13 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                     input1Param, val1, input2Param, val2, iv1, iv2);
                 
                 state->update(ipair, iv1, iv2);
-                result = getOutputValue(*state, outputInfo.param);
+                if (outputInfo.param == CoolProp::iQ) {
+                    if (const auto outside = qualityOutsideDome(state->phase())) {
+                        result = *outside;
+                        singlePhaseQuality = true;
+                    }
+                }
+                if (!singlePhaseQuality) result = getOutputValue(*state, outputInfo.param);
                 
                 auto endAS = std::chrono::high_resolution_clock::now();
                 g_profilingStats.abstractState_calls++;
@@ -2300,8 +2329,8 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                     throw std::runtime_error(oss.str());
                 }
                 
-                // ── Derivatives ──────────────────────────────────────
-                if (!residualOnly_) {
+                // ── Derivatives (none outside the saturation dome: the quality is a constant there) ──
+                if (!residualOnly_ && !singlePhaseQuality) {
                     bool derivOk = false;
                     
                     if (coolpropConfig_.enableAnalyticalDerivatives) {
@@ -2441,7 +2470,17 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         // ── PropsSI fallback path ────────────────────────────────────
         if (!usedAbstractState) {
             const std::string propsName = callFluidName();
+            singlePhaseQuality = false;
             result = timedPropsSI(outputStr, input1Str, val1, input2Str, val2, propsName);
+            if (outputInfo.param == CoolProp::iQ) {
+                const double phase = timedPropsSI("Phase", input1Str, val1, input2Str, val2, propsName);
+                if (std::isfinite(phase)) {
+                    if (const auto outside = qualityOutsideDome(static_cast<CoolProp::phases>(static_cast<int>(phase)))) {
+                        result = *outside;
+                        singlePhaseQuality = true;
+                    }
+                }
+            }
             
             if (!std::isfinite(result)) {
                 std::ostringstream oss;
@@ -2453,7 +2492,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 throw std::runtime_error(oss.str());
             }
             
-            if (!residualOnly_) {
+            if (!residualOnly_ && !singlePhaseQuality) {
                 const double relEps = 1e-6;
                 const double absEps = 1e-8;
                 double step1 = std::max(relEps * std::abs(val1), absEps);

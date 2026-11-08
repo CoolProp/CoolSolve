@@ -162,6 +162,17 @@ Use `equations.md` and `report.md` to see which variables appear in the largest 
 - **CoolProp expects Pa for pressure.** If the model uses bar or kPa, convert (e.g. `P=101325` for 1 atm).
 - Example: `specheat(cf$, T=t_bar_cf, P=1)` may mean 1 bar in some contexts but 1 Pa in CoolProp → use `P=101325`.
 
+### A quality of 100 or -100
+
+`quality(...)` is 100 for a superheated vapour and -100 for a compressed liquid, as in EES: a value outside [0, 1]
+says that the state is **not in the dome** (see *Quality outside the saturation dome* in the
+[Language Reference](language_reference.md)). The warning *Quality input x=100.000000 clamped to 1 (superheated)*
+means that such a value was used as the quality input of another call (`enthalpy(Water, P=P, x=x_1)`); the final
+check of the solution then fails on that equation. Look at the state that gives the 100 or -100: in a cycle it is
+usually a temperature or an enthalpy that is not where the model expects it (a condenser outlet that is
+subcooled, a compressor suction that is superheated), or a quality that should have been an input. Test the phase
+with `PHASE$(...)` or compare the enthalpy with the saturation values instead of comparing the quality with 0 or 1.
+
 ### Procedure Fixes
 
 - Procedures are a common source of issues. Check:
