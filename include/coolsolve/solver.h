@@ -7,6 +7,7 @@
 #include <Eigen/Dense>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 #include <chrono>
@@ -551,6 +552,13 @@ public:
                           Eigen::MatrixXd& J, 
                           bool computeJacobian)> evaluate;
         int size;  // Number of equations/variables
+        /**
+         * Scale S of the residuals (`EvaluationResult::scale`), as of the last evaluation that computed the
+         * Jacobian: `evaluate` keeps it across residual-only evaluations. The convergence decisions of the
+         * solvers weight F with it (`weightedResidualNorm`, solver_common.h). Empty (no Jacobian evaluated yet,
+         * or a problem that does not give a scale): weight 1, the absolute tests.
+         */
+        Eigen::VectorXd residualScale;
     };
 
     virtual ~NonLinearSolver() = default;
@@ -854,8 +862,19 @@ private:
  */
 class Newton1DSolver {
 public:
-    /// 1D evaluation function: given x, returns (residual, derivative).
-    using Eval1D = std::function<std::pair<double, double>(double)>;
+    /// Value of a 1D evaluation: residual, derivative and the residual scale S of `EvaluationResult::scale`
+    /// (1: the absolute tests). Converts from a (residual, derivative) pair.
+    struct Eval1DResult {
+        double f = 0.0;
+        double j = 0.0;
+        double scale = 1.0;
+        Eval1DResult() = default;
+        Eval1DResult(double f_, double j_, double scale_ = 1.0) : f(f_), j(j_), scale(scale_) {}
+        Eval1DResult(const std::pair<double, double>& fj) : f(fj.first), j(fj.second) {}
+    };
+
+    /// 1D evaluation function: given x, returns (residual, df/dx, scale).
+    using Eval1D = std::function<Eval1DResult(double)>;
 
     /**
      * @brief Full multi-phase solve with probing and bracket detection.
@@ -1051,6 +1070,16 @@ private:
     const IR& ir_;
     const StructuralAnalysisResult& analysis_;
     const LookupTableStore* lookupTableStore_ = nullptr;
+    /// Variables for which the warning W002 (value below the tolerance) has been given: once per variable.
+    std::set<std::string, CaseInsensitiveLess> tinyValueWarned_;
+
+    /**
+     * @brief Warning W002 for the unknowns of a block solved implicitly (not an explicit equation `x = expr`,
+     *        whose value is exact) whose value is not 0 and is below `tolerance` in magnitude: the block
+     *        converged to a residual relative to the scale of its equations' terms, and a value that small
+     *        has only the digits that the terms allow. Once per variable.
+     */
+    void warnTinyValues(size_t blockIndex, double tolerance, DiagnosticCollector& out);
     
     /**
      * @brief Solve a single block using the configured solver pipeline.

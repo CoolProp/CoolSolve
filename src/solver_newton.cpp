@@ -101,6 +101,7 @@ SolverStatus NewtonSolver::solve(Problem& problem,
     Eigen::VectorXd F(n), dy(n), x_unscaled(n);
     Eigen::MatrixXd J(n, n), J_unscaled(n, n);
     double initialResidualNorm = 0.0;
+    double initialRho = 0.0;
     const double startMagnitude = std::max(x.lpNorm<Eigen::Infinity>(), 1.0);
 
     // Non-monotone merit history (Grippo et al. 1986)
@@ -171,7 +172,9 @@ SolverStatus NewtonSolver::solve(Problem& problem,
         }
 
         double residualNorm = F.lpNorm<Eigen::Infinity>();
-        if (iter == 0) initialResidualNorm = residualNorm;
+        // The convergence tests use the weighted residual (residualWeight, solver_common.h)
+        const double rhoNorm = weightedResidualNorm(F, problem.residualScale, options.tolerance);
+        if (iter == 0) { initialResidualNorm = residualNorm; initialRho = rhoNorm; }
 
         // Track merit for non-monotone line search
         double phi = 0.5 * F.squaredNorm();
@@ -201,13 +204,13 @@ SolverStatus NewtonSolver::solve(Problem& problem,
         }
 
         // Convergence: absolute
-        if (residualNorm < options.tolerance) {
+        if (rhoNorm < options.tolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             x = y.cwiseProduct(scale);
             return SolverStatus::Success;
         }
         // Convergence: relative
-        if (initialResidualNorm > 0 && residualNorm / initialResidualNorm < options.relativeTolerance) {
+        if (initialRho > 0 && rhoNorm / initialRho < options.relativeTolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             x = y.cwiseProduct(scale);
             return SolverStatus::Success;
@@ -270,7 +273,7 @@ SolverStatus NewtonSolver::solve(Problem& problem,
                 continue;
             }
 
-            if (residualNorm < options.lsRelaxedTolerance) {
+            if (rhoNorm < options.lsRelaxedTolerance) {
                 if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 x = y.cwiseProduct(scale);
                 return SolverStatus::Success;
@@ -306,7 +309,7 @@ SolverStatus NewtonSolver::solve(Problem& problem,
             trace->iterations.back().lambda = lambda;
         }
 
-        if (stepNorm < options.stepTolerance && residualNorm < options.tolerance * 100) {
+        if (stepNorm < options.stepTolerance && rhoNorm < options.tolerance * 100) {
             if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             x = y.cwiseProduct(scale);
             return SolverStatus::Success;

@@ -11,8 +11,61 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace coolsolve {
+
+// ============================================================================
+// Weighted residual (convergence tests)
+// ============================================================================
+
+/// Smallest weight of a residual (`residualWeight`): an equation of terms below it is met at |F| < tolerance * this
+/// (1E-21 at the default tolerance): terms of 1E-23 are rounding noise of the iteration, not values to resolve.
+constexpr double kMinResidualWeight = 1e-12;
+
+/**
+ * @brief Weight w of the residual of an equation of scale S (`EvaluationResult::scale`) in a block whose
+ *        largest scale is \p blockScale (the scale of the equation itself for a block of one equation).
+ *
+ * The convergence tests compare rho = |F| / w with `tolerance`, `100 * tolerance`, `lsRelaxedTolerance`...
+ *   - a block in which every equation has terms below 1 (blockScale < 1): w = max(S, 1E-12), the test is
+ *     relative to the terms. An equation of terms 1E-20 is met at a residual of 1E-21, not at 1E-9, which any
+ *     value below 1E-9 satisfies;
+ *   - a block with an equation of terms of order 1 or more: w = 1, today's absolute test for all its equations.
+ *     The residual of an equation of tiny terms beside enthalpies of 1E6 is rounding noise of the block (a
+ *     pressure drop of 1E-23 Pa, `MIN(a, b)` of two noisy 1E-8: examples `condenser_3zones`, library
+ *     `CSL-0127`), and a relative test on it would never be met;
+ *   - S > 64 eps / tolerance (7E4 at the default tolerance): w = 64 eps S / tolerance, so that the test is
+ *     not below 64 ulp of the terms, a rounding level that the residual cannot reach.
+ */
+inline double residualWeight(double scale, double blockScale, double tolerance) {
+    const double relativeWeight = blockScale < 1.0 ? std::min(1.0, std::max(scale, kMinResidualWeight)) : 1.0;
+    const double roundingWeight = 64.0 * std::numeric_limits<double>::epsilon() * scale / tolerance;
+    return std::max(relativeWeight, roundingWeight);
+}
+
+/**
+ * @brief ||rho||_inf with rho_i = |F_i| / w_i (`residualWeight`); NaN if a residual is NaN.
+ *
+ * An empty or mismatching \p scale (a problem that gives none: no Jacobian has been evaluated yet, or a
+ * hand-built problem) means w = 1: the plain ||F||_inf.
+ */
+template <class Scale>   // Eigen::VectorXd or std::vector<double>
+double weightedResidualNorm(const Eigen::VectorXd& F, const Scale& scale, double tolerance) {
+    const bool weighted = static_cast<Eigen::Index>(scale.size()) == F.size();
+    double blockScale = 0.0;
+    if (weighted)
+        for (Eigen::Index i = 0; i < F.size(); ++i) blockScale = std::max(blockScale, static_cast<double>(scale[i]));
+    double norm = 0.0;
+    for (Eigen::Index i = 0; i < F.size(); ++i) {
+        const double rho = weighted ? std::abs(F[i]) / residualWeight(scale[i], blockScale, tolerance) : std::abs(F[i]);
+        if (!(rho <= norm)) {
+            if (std::isnan(rho)) return rho;
+            norm = rho;
+        }
+    }
+    return norm;
+}
 
 /**
  * @brief Compute automatic variable-scaling factors.

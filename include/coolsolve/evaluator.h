@@ -55,6 +55,11 @@ void applyCoolPropConfig(const struct CoolPropConfig& config);
 struct EvaluationResult {
     std::vector<double> residuals;           // F(x) for each equation
     std::vector<std::vector<double>> jacobian;  // J[eq][var] = dF_eq/dx_var
+    /// Scale S of each residual, filled only when the Jacobian is computed: S = A + B with A the sum of the
+    /// magnitudes of the terms of the equation (the leaves of the +/- chains of both sides) and
+    /// B = sum_j |dF/dx_j * x_j|. A residual much smaller than S is at the rounding level of the equation:
+    /// the solvers weight their convergence tests with it (`weightedResidualNorm`, solver_common.h).
+    std::vector<double> scale;
     std::vector<std::string> warnings;       // Any warnings during evaluation
     /// Values of the string variables that a CALL of the block set or that an equation `X$ = ...` of the
     /// block assigns (name -> value): a string is not an unknown of the numeric system, so this is the
@@ -198,6 +203,13 @@ public:
      * @return ADValue with computed value and gradient
      */
     ADValue evaluate(const ExprPtr& expr);
+
+    /**
+     * @brief Evaluate an expression like `evaluate`, and add to \p termSum the magnitude of each term of the
+     *        sum it is: the leaves of the chain of `+`, `-` and unary minus at its root (a product, a
+     *        function call or a property call is one term). The value is that of `evaluate`, bit for bit.
+     */
+    ADValue evaluateTerms(const ExprPtr& expr, double& termSum);
     
     /**
      * @brief Evaluate a string expression (literal, variable or string function: STRING$, PHASE$, LOOKUP$, UPPERCASE$, LOWERCASE$).

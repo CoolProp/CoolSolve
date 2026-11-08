@@ -20,6 +20,7 @@
 #include "coolsolve/parser.h"
 #include "coolsolve/runner.h"
 #include "coolsolve/solution_checker.h"
+#include "coolsolve/solver_common.h"
 #include "coolsolve/units.h"
 #include "AbstractState.h"
 #include "CoolProp.h"
@@ -32,6 +33,7 @@
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -56,6 +58,7 @@ struct ModelRun {
     std::vector<std::string> warnings;   ///< messages of all warning diagnostics of the run
     std::vector<std::string> checkErrors;   ///< errors of the solution check (C002: a CoolProp call failed in the solution)
     std::vector<Diagnostic> warningItems;   ///< the warning diagnostics themselves (code, line, message)
+    int iterations = 0;      ///< iterations of all the blocks (the trace of each block)
     std::map<std::string, double, CaseInsensitiveLess> vars;
     std::map<std::string, std::string, CaseInsensitiveLess> strings;   ///< string variables of the solution
 
@@ -107,6 +110,7 @@ ModelRun runModel(const std::string& code,
         const auto& res = runner.getSolveResult();
         run.vars = res.variables;
         run.strings = res.stringVariables;
+        for (const auto& br : res.blockResults) run.iterations += br.iterations;
         const auto check = checkSolution(runner.getIR(), res.variables, res.stringVariables,
                                          options.coolpropConfig, 1e-3, &runner.getLookupTableStore());
         run.verified = check.allSatisfied;
@@ -23285,4 +23289,223 @@ TEST_CASE("CS-GAP-IDEAL-GAS-MODEL: the CoolProp backend and the AbstractState op
             CHECK(got.second == expected.second);
         }
     }
+}
+
+// ============================================================================
+// CS-BUG-TINY-IMPLICIT: the convergence tests of the solvers weight the residual of each equation with the
+// scale of its terms (residualWeight, solver_common.h): w = 1 for terms of order 1 to 7E4 (today's absolute test),
+// w = S for terms below 1, w = 64 eps S / tolerance for terms beyond 7E4 (the rounding level of the terms)
+// ============================================================================
+
+namespace {
+
+/// Number of the warnings W002 of `run` that name the variable `name`
+int tinyValueWarnings(const ModelRun& run, const std::string& name) {
+    int count = 0;
+    for (const auto& d : run.warningItems)
+        if (d.code == "W002" && d.message.rfind(name + " = ", 0) == 0) ++count;
+    return count;
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-TINY-IMPLICIT: the weight of a residual (relative in a block of tiny terms, else 1 or a rounding level)",
+          "[library-gaps][tiny-implicit]") {
+    const double eps = std::numeric_limits<double>::epsilon();
+    // a block of one equation (blockScale = scale)
+    CHECK(residualWeight(1.0, 1.0, 1e-9) == 1.0);
+    CHECK(residualWeight(5.0, 5.0, 1e-9) == 1.0);
+    CHECK(residualWeight(7e4, 7e4, 1e-9) == 1.0);                             // up to 64 eps / tolerance
+    CHECK(residualWeight(1e-3, 1e-3, 1e-9) == 1e-3);                          // below 1: the scale itself
+    CHECK(residualWeight(5e-11, 5e-11, 1e-9) == 5e-11);
+    CHECK(residualWeight(5e-20, 5e-20, 1e-9) == kMinResidualWeight);          // ... down to 1E-12 (|F| < 1E-21)
+    CHECK(residualWeight(0.0, 0.0, 1e-9) == kMinResidualWeight);              // no zero weight
+    CHECK_THAT(residualWeight(1e8, 1e8, 1e-9), WithinRel(64.0 * eps * 1e8 / 1e-9, 1e-12));   // ~1.4E3
+    CHECK(residualWeight(1e8, 1e8, 1e-9) * 1e-9 < 2e-6);                      // x = Q1 - Q2, Q ~ 1E8: |F| <= ~1.4E-6, not 0.1
+    // in a block with an equation of terms of order 1 or more, an equation of tiny terms keeps today's absolute test
+    CHECK(residualWeight(1e-23, 1.5e6, 1e-9) == 1.0);
+    CHECK(residualWeight(1e-23, 0.5, 1e-9) == kMinResidualWeight);
+    // weightedResidualNorm: no scale (or one of another size) is the plain norm; NaN stays NaN
+    Eigen::VectorXd F(2);
+    F << 3e-14, -2e-9;
+    CHECK(weightedResidualNorm(F, Eigen::VectorXd(), 1e-9) == 2e-9);
+    Eigen::VectorXd S(2);
+    S << 5e-14, 4.0;                       // a block with an equation of terms 4: both residuals are absolute
+    CHECK_THAT(weightedResidualNorm(F, S, 1e-9), WithinRel(2e-9, 1e-12));
+    S << 5e-14, 4e-13;                     // a block of tiny terms: 3E-14/5E-14 and 2E-9/1E-12
+    CHECK_THAT(weightedResidualNorm(F, S, 1e-9), WithinRel(2e-9 / 1e-12, 1e-12));
+    F[1] = std::numeric_limits<double>::quiet_NaN();
+    CHECK(std::isnan(weightedResidualNorm(F, S, 1e-9)));
+}
+
+TEST_CASE("CS-BUG-TINY-IMPLICIT: an implicit block recovers a tiny value (register reproducers)",
+          "[library-gaps][tiny-implicit]") {
+    SECTION("2.33E-20 = c") {
+        auto run = runModel("2.33E-20 = c\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["c"], WithinRel(2.33e-20, 1e-12));          // it was 0
+        CHECK(tinyValueWarnings(run, "c") == 1);
+    }
+    SECTION("a + b = 5E-20, a - b = 1E-20") {
+        auto run = runModel("a + b = 5E-20\na - b = 1E-20\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinRel(3e-20, 1e-9));
+        CHECK_THAT(run["b"], WithinRel(2e-20, 1e-9));              // it was 4.4E-16
+        CHECK(tinyValueWarnings(run, "a") == 1);
+        CHECK(tinyValueWarnings(run, "b") == 1);
+    }
+    SECTION("the same system scaled by 1E20, from the default guess") {
+        auto run = runModel("a*1E20 + b*1E20 = 5\na*1E20 - b*1E20 = 1\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);                                       // it failed the solution check
+        CHECK_THAT(run["a"], WithinRel(3e-20, 1e-9));
+        CHECK_THAT(run["b"], WithinRel(2e-20, 1e-9));
+    }
+}
+
+TEST_CASE("CS-BUG-TINY-IMPLICIT: the relative tolerance is applied to the weighted residual",
+          "[library-gaps][tiny-implicit]") {
+    // a*1E20 + b*1E20 = 5, a*1E20 - b*1E20 = 1 from (1, 1), written as the solvers get it. The first Newton step
+    // lands on (0, ~1E-16) where |F| = 1E4: |F|/|F0| = 5E-17 is below relativeTolerance (1E-9) although the values are
+    // wrong by 16 digits; |F|/w / (|F0|/w0) is not.
+    NonLinearSolver::Problem problem;
+    problem.size = 2;
+    problem.evaluate = [&problem](const Eigen::VectorXd& x, Eigen::VectorXd& F, Eigen::MatrixXd& J, bool jacobian) {
+        F.resize(2);
+        F[0] = x[0] * 1e20 + x[1] * 1e20 - 5.0;
+        F[1] = x[0] * 1e20 - x[1] * 1e20 - 1.0;
+        if (jacobian) {
+            J.resize(2, 2);
+            J << 1e20, 1e20, 1e20, -1e20;
+            problem.residualScale.resize(2);   // S = sum of the terms + sum |dF/dx x|
+            problem.residualScale[0] = std::abs(x[0] * 1e20) + std::abs(x[1] * 1e20) + 5.0 + 1e20 * (std::abs(x[0]) + std::abs(x[1]));
+            problem.residualScale[1] = std::abs(x[0] * 1e20) + std::abs(x[1] * 1e20) + 1.0 + 1e20 * (std::abs(x[0]) + std::abs(x[1]));
+        }
+    };
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    options.relativeTolerance = 1e-9;
+    for (SolverStrategy strategy : {SolverStrategy::Newton, SolverStrategy::TrustRegion, SolverStrategy::LevenbergMarquardt}) {
+        INFO(strategyToString(strategy));
+        auto solver = createSolver(strategy);
+        Eigen::VectorXd x(2);
+        x << 1.0, 1.0;
+        const auto status = solver->solve(problem, x, options);
+        REQUIRE(status == SolverStatus::Success);
+        CHECK_THAT(x[0], WithinRel(3e-20, 1e-6));   // LM stops at 100 tolerances, on a step below 1E-12
+        CHECK_THAT(x[1], WithinRel(2e-20, 1e-6));
+    }
+}
+
+TEST_CASE("CS-BUG-TINY-IMPLICIT: the warning W002 is for an implicit tiny value, once per variable",
+          "[library-gaps][tiny-implicit]") {
+    SECTION("not for an explicit tiny value (its value is exact)") {
+        auto run = runModel("c = 2.33E-20\nd = 3.3E-30*2\n");
+        REQUIRE(run.solveOk);
+        CHECK(tinyValueWarnings(run, "c") == 0);
+        CHECK(tinyValueWarnings(run, "d") == 0);
+    }
+    SECTION("not for an exact 0, nor for a value above the tolerance") {
+        auto run = runModel("0 = x\n2E-8 = y\n");
+        REQUIRE(run.solveOk);
+        CHECK(run["x"] == 0.0);
+        CHECK(tinyValueWarnings(run, "x") == 0);
+        CHECK(tinyValueWarnings(run, "y") == 0);
+    }
+    SECTION("the text: the value, the tolerance, the advice") {
+        auto run = runModel("2.33E-20 = c\n");
+        REQUIRE(run.solveOk);
+        REQUIRE(run.warningItems.size() == 1);
+        const auto& w = run.warningItems[0];
+        CHECK(w.code == "W002");
+        CHECK(w.severity == DiagnosticSeverity::Warning);
+        CHECK(w.message.find("c = 2.33e-20 is below the solver tolerance (1e-09)") == 0);
+        CHECK(w.message.find("only the digits that the convergence of its block can give") != std::string::npos);
+        CHECK(w.message.find("write it explicitly (c = ...)") != std::string::npos);
+    }
+    SECTION("once per variable: a second solve of the same system does not warn again") {
+        EESParser parser;
+        auto parsed = parser.parse("2.33E-20 = c\n");
+        REQUIRE(parsed.success);
+        IR ir = IR::fromAST(parsed.program);
+        StructuralAnalysisResult structure = StructuralAnalyzer::analyze(ir);
+        REQUIRE(structure.success);
+        Solver solver(ir, structure);
+        SolverOptions options;
+        auto countW002 = [](const SolveResult& result) {
+            int count = 0;
+            for (const auto& br : result.blockResults)
+                for (const auto& d : br.diagnostics.items())
+                    if (d.code == "W002") ++count;
+            return count;
+        };
+        const SolveResult first = solver.solve(options);
+        REQUIRE(first.success);
+        CHECK(countW002(first) == 1);
+        const SolveResult second = solver.solve(options);
+        REQUIRE(second.success);
+        CHECK(countW002(second) == 0);
+    }
+}
+
+TEST_CASE("CS-BUG-TINY-IMPLICIT: equations with cancelling terms or a zero root solve as before (iterations +1 at most)",
+          "[library-gaps][tiny-implicit]") {
+    // iteration counts of the previous (absolute) test in the comments
+    SECTION("a - b = 0 with a, b ~ 5") {                      // 2
+        auto run = runModel("a - b = 0\na + b = 10\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["a"], WithinRel(5.0, 1e-12));
+        CHECK_THAT(run["b"], WithinRel(5.0, 1e-12));
+        CHECK(run.iterations <= 3);
+    }
+    SECTION("x = 0, written so that it is implicit") {        // 2
+        auto run = runModel("0 = x\n");
+        REQUIRE(run.solveOk);
+        CHECK(run["x"] == 0.0);
+        CHECK(run.iterations <= 3);
+    }
+    SECTION("sin(x) = 0 from the guess 3: the root pi, where F is the function itself") {   // 3
+        auto run = runModel("sin(x) = 0\n", {}, "x = 3\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(std::sin(run["x"]), WithinAbs(0.0, 1e-9));
+        CHECK(run.iterations <= 4);
+    }
+    SECTION("log(x) = 0 from the guess 2") {                  // 6
+        auto run = runModel("log(x) = 0\n", {}, "x = 2\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["x"], WithinAbs(1.0, 1e-9));
+        CHECK(run.iterations <= 7);
+    }
+}
+
+TEST_CASE("CS-BUG-TINY-IMPLICIT: an equation without a root is still rejected, tiny or not",
+          "[library-gaps][tiny-implicit]") {
+    // x^2 + 1E-11 = 0: |F| >= 1E-11 is far below 1E-9, so the absolute test accepted x = 0 (SUCCESS, no root). Terms below
+    // 1E-12 (kMinResidualWeight) cannot be told from rounding: 1E-20 is accepted as before.
+    auto tiny = runModel("x^2 + 1E-11 = 0\n");
+    INFO(tiny.message);
+    CHECK_FALSE(tiny.solveOk);
+    auto ordinary = runModel("x^2 + 1 = 0\n");
+    CHECK_FALSE(ordinary.solveOk);
+}
+
+TEST_CASE("CS-BUG-TINY-IMPLICIT: an energy balance of terms ~5E7 converges at the rounding level of its terms",
+          "[library-gaps][tiny-implicit]") {
+    // The air preheater balance of the CGAM model: F cannot go below 3.7E-9 = 2 ulp of the terms, so the absolute test
+    // (1E-9) never held: Newton1D stalled for 150 iterations and Phase 2 to 4 (bisection, polish) accepted the 1E-2 test.
+    auto run = runModel("mair = 94.917\n"
+                        "mfg = 96.231\n"
+                        "h2 = 4.1731e5\n"
+                        "h3 = 9.2113e5\n"
+                        "h5 = 1.3145e6\n"
+                        "mair*(h3 - h2) = mfg*(h5 - h6)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["h6"], WithinRel(1.3145e6 - 94.917 * (9.2113e5 - 4.1731e5) / 96.231, 1e-12));
+    // The first iterations are the trust-region growth of Newton1D from the guess 1 (radius 100, doubling): 14 here,
+    // 150 (a stall at |F| = 3.7E-9, then bisection and polish) with the absolute test
+    CHECK(run.iterations <= 20);
 }

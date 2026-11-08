@@ -2026,6 +2026,37 @@ See `examples/coolsolve.conf` for the full list of options. Key sections:
 > `coolsolve.conf`: temperature is always in °C, pressure in Pa, energy in J.
 > See the warning at the top of this page.
 
+### Convergence tolerance
+
+`tolerance` (default `1e-9`) is the residual at which a block is solved. The residual of an equation is
+`LHS − RHS`; it is compared with `tolerance` after dividing it by a weight `w` that depends on the size `S` of the
+terms of the equation (the magnitude of each term of both sides, plus the sum of `|∂F/∂x · x|` over the unknowns):
+
+| The block holds | `w` of an equation | The equation is met when |
+|---|---|---|
+| an equation of terms of order 1 up to about `7·10⁴` | `1` | `\|LHS − RHS\| < tolerance`, the absolute test |
+| only equations of terms below 1 (`a + b = 5E-20`) | `max(S, 10⁻¹²)` | the residual is `tolerance` times the terms (down to `10⁻²¹`): values of `10⁻²⁰` are solved to their digits, not set to 0 |
+| an equation of terms above `7·10⁴` (energy balances in W) | `64·ε·S / tolerance` for that equation | the residual is within 64 ulp of the terms, a level that the arithmetic cannot go below (`1.4·10⁻⁶` for terms of `10⁸`) |
+
+An equation of tiny terms in a block that also holds enthalpies of `10⁶` keeps the absolute test: its residual
+(a pressure drop of `10⁻²³` Pa, a `MIN(a, b)` of two noisy `10⁻⁸`) is rounding noise of the block, which a test
+relative to its own terms would never meet. `relativeTolerance` is applied to the same weighted residual. The merit
+function of the line search, the iteration trace and `maxResidual` stay on the raw residual. An explicit equation
+`x = expr` is evaluated, not iterated, and is exact. A residual-only evaluation (line search, bisection) uses the
+weights of the last evaluation of the block that computed the Jacobian.
+
+**Warning `W002`.** A variable that an implicit block solved and whose value is not 0 but below `tolerance` in
+magnitude is reported once as `warning: x = 2.33e-20 is below the solver tolerance (1e-09): it has only the digits
+that the convergence of its block can give — check its equation, or write it explicitly (x = ...)`. In a block whose
+equations all have tiny terms the value is solved to the digits of its equation; in a block that also holds terms of
+order 1 or more it is only known to the absolute `tolerance`. Either way, a model whose variables span such
+magnitudes deserves a look at the equation (units, a variable that should be 0). A variable of an explicit equation
+(`c = 2.33E-20`) is exact and does not warn.
+
+The weight floor `10⁻¹²` means that a residual below `tolerance·10⁻¹²` (`10⁻²¹`) is always accepted: an equation
+whose terms are all below that is not resolved. `x^3 = 8E-60` stops at `x ≈ 9·10⁻⁸` (`x³ ≈ 7·10⁻²²`), not at
+`2·10⁻²⁰`; write such an equation in scaled variables (`x = x_s·1E-20`).
+
 ---
 
 ## 11. Lookup tables

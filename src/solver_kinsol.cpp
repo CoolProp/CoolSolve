@@ -194,7 +194,7 @@ SolverStatus KINSOLSolver::solveLineSearch(Problem& problem, Eigen::VectorXd& y,
     const int n = y.size();
     Eigen::VectorXd F(n), dy(n);
     Eigen::MatrixXd J(n, n), J_unscaled(n, n);
-    double initialResidualNorm = 0.0;
+    double initialRho = 0.0;   // weighted residual (residualWeight, solver_common.h) at the start
     auto startTime = std::chrono::high_resolution_clock::now();
 
     for (int iter = 0; iter < options.maxIterations; ++iter) {
@@ -217,7 +217,9 @@ SolverStatus KINSOLSolver::solveLineSearch(Problem& problem, Eigen::VectorXd& y,
         J = J_unscaled * scale.asDiagonal();
 
         double residualNorm = F.lpNorm<Eigen::Infinity>();
-        if (iter == 0) initialResidualNorm = residualNorm;
+        // The convergence tests use the weighted residual (residualWeight, solver_common.h)
+        const double rhoNorm = weightedResidualNorm(F, problem.residualScale, options.tolerance);
+        if (iter == 0) initialRho = rhoNorm;
 
         if (options.verbose) {
             std::cout << "KINSOL(LS) iter " << iter << ": ||F||_inf = " << residualNorm << std::endl;
@@ -235,14 +237,14 @@ SolverStatus KINSOLSolver::solveLineSearch(Problem& problem, Eigen::VectorXd& y,
         }
 
         // Convergence: absolute.
-        if (residualNorm < options.tolerance) {
+        if (rhoNorm < options.tolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             return SolverStatus::Success;
         }
         // Convergence: relative.
-        if (initialResidualNorm > 0 &&
-            residualNorm / initialResidualNorm < options.relativeTolerance) {
+        if (initialRho > 0 &&
+            rhoNorm / initialRho < options.relativeTolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             return SolverStatus::Success;
@@ -275,7 +277,7 @@ SolverStatus KINSOLSolver::solveLineSearch(Problem& problem, Eigen::VectorXd& y,
 
         if (lambda == 0.0) {
             // Line search could not find sufficient decrease.
-            if (residualNorm < options.lsRelaxedTolerance) {
+            if (rhoNorm < options.lsRelaxedTolerance) {
                 if (trace) { trace->finalStatus = SolverStatus::Success;
                              trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 return SolverStatus::Success;
@@ -299,7 +301,7 @@ SolverStatus KINSOLSolver::solveLineSearch(Problem& problem, Eigen::VectorXd& y,
             trace->iterations.back().lambda = lambda;
         }
 
-        if (stepNorm < options.stepTolerance && residualNorm < options.tolerance * 100) {
+        if (stepNorm < options.stepTolerance && rhoNorm < options.tolerance * 100) {
             if (trace) { trace->finalStatus = SolverStatus::Success;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             return SolverStatus::Success;
@@ -329,7 +331,7 @@ SolverStatus KINSOLSolver::solvePicard(Problem& problem, Eigen::VectorXd& y,
     const int n = y.size();
     const double omega = options.kinsolPicardOmega;
     Eigen::VectorXd F(n);
-    double initialResidualNorm = 0.0;
+    double initialRho = 0.0;   // weighted residual (residualWeight, solver_common.h) at the start
     auto startTime = std::chrono::high_resolution_clock::now();
 
     for (int iter = 0; iter < options.maxIterations; ++iter) {
@@ -352,7 +354,9 @@ SolverStatus KINSOLSolver::solvePicard(Problem& problem, Eigen::VectorXd& y,
         }
 
         double residualNorm = F.lpNorm<Eigen::Infinity>();
-        if (iter == 0) initialResidualNorm = residualNorm;
+        // The convergence tests use the weighted residual (residualWeight, solver_common.h)
+        const double rhoNorm = weightedResidualNorm(F, problem.residualScale, options.tolerance);
+        if (iter == 0) initialRho = rhoNorm;
 
         if (options.verbose) {
             std::cout << "KINSOL(Picard) iter " << iter << ": ||F||_inf = " << residualNorm << std::endl;
@@ -375,13 +379,13 @@ SolverStatus KINSOLSolver::solvePicard(Problem& problem, Eigen::VectorXd& y,
             if (detailedError) *detailedError = "KINSOL(Picard): residual became non-finite";
             return SolverStatus::Diverged;
         }
-        if (residualNorm < options.tolerance) {
+        if (rhoNorm < options.tolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             return SolverStatus::Success;
         }
-        if (initialResidualNorm > 0 &&
-            residualNorm / initialResidualNorm < options.relativeTolerance) {
+        if (initialRho > 0 &&
+            rhoNorm / initialRho < options.relativeTolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             return SolverStatus::Success;
@@ -395,7 +399,7 @@ SolverStatus KINSOLSolver::solvePicard(Problem& problem, Eigen::VectorXd& y,
             trace->iterations.back().stepNorm = stepNorm;
         }
 
-        if (stepNorm < options.stepTolerance && residualNorm < options.tolerance * 100) {
+        if (stepNorm < options.stepTolerance && rhoNorm < options.tolerance * 100) {
             if (trace) { trace->finalStatus = SolverStatus::Success;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             return SolverStatus::Success;
@@ -436,7 +440,7 @@ SolverStatus KINSOLSolver::solveFixedPoint(Problem& problem, Eigen::VectorXd& y,
     const double omega = options.kinsolPicardOmega;
 
     auto startTime = std::chrono::high_resolution_clock::now();
-    double initialResidualNorm = 0.0;
+    double initialRho = 0.0;   // weighted residual (residualWeight, solver_common.h) at the start
 
     // Evaluate G(y_0) and store y_0, G(y_0).
     auto evalG = [&](const Eigen::VectorXd& yv, Eigen::VectorXd& Gout, double& resNorm)
@@ -449,7 +453,7 @@ SolverStatus KINSOLSolver::solveFixedPoint(Problem& problem, Eigen::VectorXd& y,
         } catch (const std::exception&) {
             return false;
         }
-        resNorm = Fv.lpNorm<Eigen::Infinity>();
+        resNorm = weightedResidualNorm(Fv, problem.residualScale, options.tolerance);
         Gout = yv - omega * Fv;     // G(y) = y − ω·F(y)
         return true;
     };
@@ -463,7 +467,7 @@ SolverStatus KINSOLSolver::solveFixedPoint(Problem& problem, Eigen::VectorXd& y,
         if (detailedError) *detailedError = "KINSOL(FP): initial evaluation failed";
         return SolverStatus::EvaluationError;
     }
-    initialResidualNorm = res0;
+    initialRho = res0;
     Ys.push_back(y);
     Gs.push_back(G0);
 
@@ -478,7 +482,9 @@ SolverStatus KINSOLSolver::solveFixedPoint(Problem& problem, Eigen::VectorXd& y,
         }
 
         int k = static_cast<int>(Ys.size()) - 1;     // index of the current iterate
-        double residualNorm = (Ys[k] - Gs[k]).lpNorm<Eigen::Infinity>() / std::max(omega, 1e-300);
+        const Eigen::VectorXd Fk = (Ys[k] - Gs[k]) / std::max(omega, 1e-300);
+        double residualNorm = Fk.lpNorm<Eigen::Infinity>();
+        const double rhoNorm = weightedResidualNorm(Fk, problem.residualScale, options.tolerance);
         // (||F|| = ||y − G(y)||/ω ; for ω=1 this is just ||Ys−Gs||.)
 
         if (options.verbose) {
@@ -504,14 +510,14 @@ SolverStatus KINSOLSolver::solveFixedPoint(Problem& problem, Eigen::VectorXd& y,
             if (detailedError) *detailedError = "KINSOL(FP): residual became non-finite";
             return SolverStatus::Diverged;
         }
-        if (residualNorm < options.tolerance) {
+        if (rhoNorm < options.tolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             y = Ys[k];
             return SolverStatus::Success;
         }
-        if (initialResidualNorm > 0 &&
-            residualNorm / initialResidualNorm < options.relativeTolerance) {
+        if (initialRho > 0 &&
+            rhoNorm / initialRho < options.relativeTolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             y = Ys[k];

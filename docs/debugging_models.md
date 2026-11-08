@@ -191,8 +191,18 @@ Use `equations.md` and `report.md` to see which variables appear in the largest 
 For difficult models, you can adjust `SolverOptions` in code (e.g. in `runner.cpp` or via a future CLI):
 
 - `maxIterations` – increase for large blocks (e.g. 500).
-- `tolerance` – loosen if near-convergence is acceptable.
+- `tolerance` – loosen if near-convergence is acceptable. It applies to the residual of each equation relative to the
+  size of its terms ([Language Reference §10](language_reference.md#convergence-tolerance)): the same absolute `1e-9`
+  for terms of order 1, relative to the terms in a block whose equations all have terms below 1, and not below the rounding level of the terms above `7·10⁴`.
 - `lsRelaxedTolerance` – accept convergence when line search fails but residual is small.
+
+**`warning: x = … is below the solver tolerance (…)` (`W002`).** A variable solved by an implicit block has a
+value between 0 and `tolerance` (1e-9) in magnitude. Its digits are right only if its block holds nothing but tiny
+terms (the convergence test is then relative to them); beside terms of order 1 it is only known to `1e-9`. Such a
+value is often a sign of a mistake: a quantity in the wrong unit (W instead of
+kW), a difference of two equal numbers (`Q1 − Q2` = 1e-16 is rounding noise, not a flow), or a variable that should
+be 0. Check its equation; to silence the warning for a value that is really that small, write the equation
+explicitly (`c = 2.33E-20`). It is reported once per variable.
 
 ## Example: condenser_3zones
 

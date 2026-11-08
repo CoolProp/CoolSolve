@@ -817,6 +817,24 @@ ADValue ExpressionEvaluator::evaluate(const ExprPtr& expr) {
     throw std::runtime_error("Unknown expression type");
 }
 
+ADValue ExpressionEvaluator::evaluateTerms(const ExprPtr& expr, double& termSum) {
+    if (expr && expr->is<BinaryOp>()) {
+        const auto& op = expr->as<BinaryOp>();
+        if (op.op == "+" || op.op == "-") {
+            ADValue left = evaluateTerms(op.left, termSum);
+            ADValue right = evaluateTerms(op.right, termSum);
+            return op.op == "+" ? left + right : left - right;
+        }
+    } else if (expr && expr->is<UnaryOp>()) {
+        const auto& op = expr->as<UnaryOp>();
+        if (op.op == "-") return -evaluateTerms(op.operand, termSum);
+        if (op.op == "+") return evaluateTerms(op.operand, termSum);
+    }
+    ADValue term = evaluate(expr);
+    termSum += std::abs(term.value);
+    return term;
+}
+
 std::string ExpressionEvaluator::evaluateString(const ExprPtr& expr) {
     if (!expr) {
         throw std::runtime_error("Null expression pointer");
@@ -2662,7 +2680,15 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     result.residuals.resize(equations_.size());
     if (computeJacobian) {
         result.jacobian.resize(equations_.size(), std::vector<double>(variables_.size(), 0.0));
+        result.scale.assign(equations_.size(), 0.0);
     }
+    // Scale of the residual of equation `eq` (EvaluationResult::scale): the magnitude of its terms plus
+    // sum_j |dF/dx_j * x_j|. Only with the Jacobian: a residual-only evaluation does no more work than before.
+    auto setScale = [&](size_t eq, double termSum, const ADValue& residual) {
+        double sum = termSum;
+        for (size_t var = 0; var < variables_.size(); ++var) sum += std::abs(residual.gradient[var] * x[var]);
+        result.scale[eq] = sum;
+    };
     
     ExpressionEvaluator exprEval(variables_.size(), config_);
     exprEval.setResidualOnly(!computeJacobian);
@@ -2766,6 +2792,7 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
                         for (size_t var = 0; var < variables_.size(); ++var) {
                             result.jacobian[targetIdx][var] = residual.gradient[var];
                         }
+                        setScale(targetIdx, std::abs(oldOutputs[outName].value) + std::abs(newValue.value), residual);
                     }
                 }
             }
@@ -2826,18 +2853,21 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
                 for (size_t var = 0; var < variables_.size(); ++var) {
                     result.jacobian[eq][var] = standIn.gradient[var];
                 }
+                setScale(eq, std::abs(standIn.value), standIn);
             }
             continue;
         }
 
-        ADValue lhs = exprEval.evaluate(eqInfo->lhs);
-        ADValue rhs = exprEval.evaluate(eqInfo->rhs);
+        double termSum = 0.0;
+        ADValue lhs = computeJacobian ? exprEval.evaluateTerms(eqInfo->lhs, termSum) : exprEval.evaluate(eqInfo->lhs);
+        ADValue rhs = computeJacobian ? exprEval.evaluateTerms(eqInfo->rhs, termSum) : exprEval.evaluate(eqInfo->rhs);
         ADValue residual = lhs - rhs;
         result.residuals[eq] = residual.value;
         if (computeJacobian) {
             for (size_t var = 0; var < variables_.size(); ++var) {
                 result.jacobian[eq][var] = residual.gradient[var];
             }
+            setScale(eq, termSum, residual);
         }
     }
     

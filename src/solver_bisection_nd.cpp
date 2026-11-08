@@ -95,6 +95,11 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
     // Probe on a structured grid: x0 ± scale_i * e_i for each coordinate,
     // plus random perturbations if needed.
 
+    // Weighted residual (residualWeight, solver_common.h): what the tolerances are compared with
+    auto rhoOf = [&](const Eigen::VectorXd& F) {
+        return weightedResidualNorm(F, problem.residualScale, options.tolerance);
+    };
+
     struct Vertex { Eigen::VectorXd x; Eigen::VectorXd F; std::vector<int> signs; };
     std::vector<Vertex> simplex;
     // Keep a pool of all valid evaluated points for fallback
@@ -109,7 +114,7 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
         v.F.resize(n);
         if (safeEval(v.x, v.F)) {
             v.signs = signPattern(v.F);
-            if (v.F.lpNorm<Eigen::Infinity>() < options.tolerance) {
+            if (rhoOf(v.F) < options.tolerance) {
                 // Already converged
                 if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 return SolverStatus::Success;
@@ -128,7 +133,7 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
             v.F.resize(n);
             if (safeEval(v.x, v.F)) {
                 v.signs = signPattern(v.F);
-                if (v.F.lpNorm<Eigen::Infinity>() < options.tolerance) {
+                if (rhoOf(v.F) < options.tolerance) {
                     x = v.x;
                     if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                     return SolverStatus::Success;
@@ -175,7 +180,7 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
                 v.F.resize(n);
                 if (safeEval(v.x, v.F)) {
                     v.signs = signPattern(v.F);
-                    if (v.F.lpNorm<Eigen::Infinity>() < options.tolerance) {
+                    if (rhoOf(v.F) < options.tolerance) {
                         x = v.x;
                         if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                         return SolverStatus::Success;
@@ -197,7 +202,7 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
         v.F.resize(n);
         if (safeEval(v.x, v.F)) {
             v.signs = signPattern(v.F);
-            if (v.F.lpNorm<Eigen::Infinity>() < options.tolerance) {
+            if (rhoOf(v.F) < options.tolerance) {
                 x = v.x;
                 if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 return SolverStatus::Success;
@@ -285,11 +290,12 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
 
         // Find vertex with smallest residual (candidate solution)
         int bestVtx = 0;
-        double bestResidual = simplex[0].F.lpNorm<Eigen::Infinity>();
+        double bestRho = rhoOf(simplex[0].F);
         for (size_t vi = 1; vi < simplex.size(); ++vi) {
-            double r = simplex[vi].F.lpNorm<Eigen::Infinity>();
-            if (r < bestResidual) { bestResidual = r; bestVtx = static_cast<int>(vi); }
+            double r = rhoOf(simplex[vi].F);
+            if (r < bestRho) { bestRho = r; bestVtx = static_cast<int>(vi); }
         }
+        const double bestResidual = simplex[bestVtx].F.lpNorm<Eigen::Infinity>();
 
         if (trace) {
             SolverTrace::Iteration ti;
@@ -304,7 +310,7 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
             trace->iterations.push_back(ti);
         }
 
-        if (bestResidual < options.tolerance) {
+        if (bestRho < options.tolerance) {
             x = simplex[bestVtx].x;
             if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             return SolverStatus::Success;
@@ -330,7 +336,7 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
         // Check simplex diameter convergence
         if (maxLen < options.stepTolerance) {
             x = simplex[bestVtx].x;
-            if (bestResidual < options.lsRelaxedTolerance) {
+            if (bestRho < options.lsRelaxedTolerance) {
                 if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 return SolverStatus::Success;
             }
@@ -363,7 +369,7 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
             }
             vmid.signs = signPattern(vmid.F);
 
-            if (vmid.F.lpNorm<Eigen::Infinity>() < options.tolerance) {
+            if (rhoOf(vmid.F) < options.tolerance) {
                 x = vmid.x;
                 if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 return SolverStatus::Success;
@@ -411,7 +417,7 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
                 vperturb.x(k) += (0.5 + 0.5 * randn(rng)) * std::max(scale(k), 1.0);
             vperturb.F.resize(n);
             if (safeEval(vperturb.x, vperturb.F)) {
-                if (vperturb.F.lpNorm<Eigen::Infinity>() < options.tolerance) {
+                if (rhoOf(vperturb.F) < options.tolerance) {
                     x = vperturb.x;
                     if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                     return SolverStatus::Success;

@@ -99,7 +99,7 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
     Eigen::VectorXd y = x.cwiseQuotient(scale);
     Eigen::VectorXd F(n);
     Eigen::MatrixXd J(n, n), J_unscaled(n, n);
-    double initialResidualNorm = 0.0;
+    double initialRho = 0.0;   // weighted residual (residualWeight, solver_common.h) at the start
     double delta = options.trInitialRadius;
     bool deltaInitialized = !options.trAdaptiveRadius; // defer if adaptive
     int consecutiveRejects = 0;
@@ -176,7 +176,9 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
         }
 
         double residualNorm = F.lpNorm<Eigen::Infinity>();
-        if (iter == 0) initialResidualNorm = residualNorm;
+        // The convergence tests use the weighted residual (residualWeight, solver_common.h)
+        const double rhoNorm = weightedResidualNorm(F, problem.residualScale, options.tolerance);
+        if (iter == 0) initialRho = rhoNorm;
 
         if (options.verbose)
             std::cout << "TrustRegion iter " << iter << ": ||F||=" << residualNorm
@@ -205,12 +207,12 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
             trace->iterations.push_back(ti);
         }
 
-        if (residualNorm < options.tolerance) {
+        if (rhoNorm < options.tolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             x = y.cwiseProduct(scale);
             return SolverStatus::Success;
         }
-        if (initialResidualNorm > 0 && residualNorm / initialResidualNorm < options.relativeTolerance) {
+        if (initialRho > 0 && rhoNorm / initialRho < options.relativeTolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             x = y.cwiseProduct(scale);
             return SolverStatus::Success;
@@ -220,7 +222,7 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
         Eigen::VectorXd g = J.transpose() * F;
         double gNormSq = g.squaredNorm();
         if (gNormSq < 1e-30) {
-            if (residualNorm < options.lsRelaxedTolerance) {
+            if (rhoNorm < options.lsRelaxedTolerance) {
                 if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 x = y.cwiseProduct(scale);
                 return SolverStatus::Success;
@@ -316,7 +318,7 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
                 trace->iterations.back().stepNorm = stepNorm;
 
             if (stepNorm < options.stepTolerance) {
-                double newNorm = F_new.lpNorm<Eigen::Infinity>();
+                double newNorm = weightedResidualNorm(F_new, problem.residualScale, options.tolerance);
                 if (newNorm < options.tolerance * 100 || newNorm < options.lsRelaxedTolerance) {
                     if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                     x = y.cwiseProduct(scale);

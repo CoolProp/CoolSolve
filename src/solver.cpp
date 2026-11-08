@@ -527,6 +527,37 @@ void Solver::setStringVariable(const std::string& name, const std::string& value
     evaluator_.setStringVariableValue(name, value);
 }
 
+namespace {
+
+/**
+ * Give \p problem the callback that evaluates \p blockEval: residuals F and, on request, the Jacobian J.
+ * Each evaluation that computes the Jacobian also stores the residual scale S of the block in
+ * `problem.residualScale` (EvaluationResult::scale), and a residual-only evaluation leaves it as it was:
+ * the solvers weight their convergence tests with the scale of the last Jacobian evaluation.
+ * The problem is written by its callback: one problem per thread.
+ */
+void setBlockEvaluate(NonLinearSolver::Problem& problem, BlockEvaluator& blockEval,
+                      const std::map<std::string, double>& externalVars,
+                      const std::map<std::string, std::string>& externalStringVars) {
+    problem.evaluate = [&problem, &blockEval, &externalVars, &externalStringVars]
+                       (const Eigen::VectorXd& xv, Eigen::VectorXd& F, Eigen::MatrixXd& J, bool computeJacobian) {
+        std::vector<double> x_std(xv.data(), xv.data() + xv.size());
+        auto result = blockEval.evaluate(x_std, externalVars, externalStringVars, computeJacobian);
+        const size_t nEqs = result.residuals.size();
+        F.resize(nEqs);
+        for (size_t i = 0; i < nEqs; ++i) F[i] = result.residuals[i];
+        if (computeJacobian) {
+            J.resize(nEqs, xv.size());
+            for (size_t i = 0; i < nEqs; ++i) {
+                for (size_t j = 0; j < result.jacobian[i].size(); ++j) J(i, j) = result.jacobian[i][j];
+            }
+            problem.residualScale = Eigen::Map<const Eigen::VectorXd>(result.scale.data(), result.scale.size());
+        }
+    };
+}
+
+}  // namespace
+
 bool Solver::tryExplicitSolve(size_t blockIndex) {
     const Block& block = analysis_.blocks[blockIndex];
     if (block.equationIds.size() != 1 || block.variables.size() != 1)
@@ -611,19 +642,23 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
             std::vector<double> emptyX;  // No unknowns
             auto evalResult = blockEval.evaluate(emptyX, externalVars, externalStringVars);
             
-            // Check that all residuals are within tolerance
+            // Check that all residuals are within tolerance (the tolerance of an equation is scaled by the
+            // weight of its terms, `residualWeight`: it is `tolerance` itself for terms of order 1)
+            const double blockScale = evalResult.scale.empty()
+                ? 0.0 : *std::max_element(evalResult.scale.begin(), evalResult.scale.end());
             for (size_t i = 0; i < evalResult.residuals.size(); ++i) {
                 double residual = std::abs(evalResult.residuals[i]);
-                if (residual > options.tolerance) {
+                const double allowed = options.tolerance * residualWeight(evalResult.scale[i], blockScale, options.tolerance);
+                if (residual > allowed) {
                     if (options.verbose) {
                         std::cerr << "Block " << blockIndex << " (zero unknowns): residual["
                                   << i << "] = " << residual << " exceeds tolerance " 
-                                  << options.tolerance << std::endl;
+                                  << allowed << std::endl;
                     }
                     if (outErrorMessage) {
                         std::ostringstream ss;
                         ss << "Check equation failed: residual = " << residual 
-                           << " (tolerance = " << options.tolerance << "). "
+                           << " (tolerance = " << allowed << "). "
                            << "This indicates an overdetermined or inconsistent system - "
                            << "the same variable may be defined by multiple conflicting equations.";
                         *outErrorMessage = ss.str();
@@ -725,12 +760,12 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         }
         
         // Lambda for evaluating the 1D residual+derivative
-        Newton1DSolver::Eval1D eval1D = [&](double xval) -> std::pair<double, double> {
+        Newton1DSolver::Eval1D eval1D = [&](double xval) -> Newton1DSolver::Eval1DResult {
             std::vector<double> x_std = {xval};
             auto er = blockEval.evaluate(x_std, externalVars, externalStringVars);
             double f = er.residuals[0];
             double j = (er.jacobian.size() > 0 && er.jacobian[0].size() > 0) ? er.jacobian[0][0] : 0.0;
-            return {f, j};
+            return {f, j, er.scale.empty() ? 1.0 : er.scale[0]};
         };
         
         double xCur = x[0];
@@ -954,12 +989,12 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                     if (!explicitOk) {
                         // 1D Newton solver on the reduced block
                         double xCur = evaluator_.getVariableValue(reducedBlock.variables[0]);
-                        Newton1DSolver::Eval1D eval1D = [&](double xval) -> std::pair<double, double> {
+                        Newton1DSolver::Eval1D eval1D = [&](double xval) -> Newton1DSolver::Eval1DResult {
                             std::vector<double> x_std = {xval};
                             auto er = reducedEval.evaluate(x_std, reducedExternalVars, externalStringVars);
                             double f = er.residuals[0];
                             double j = (er.jacobian.size() > 0 && er.jacobian[0].size() > 0) ? er.jacobian[0][0] : 0.0;
-                            return {f, j};
+                            return {f, j, er.scale.empty() ? 1.0 : er.scale[0]};
                         };
 
                         SolverStatus st = Newton1DSolver::solveSimple(eval1D, xCur, options);
@@ -1046,13 +1081,13 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                                     if (!explOk) {
                                         // Newton1D on sub-block
                                         double xCur = evaluator_.getVariableValue(sb.variables[0]);
-                                        Newton1DSolver::Eval1D eval1D = [&](double xval) -> std::pair<double, double> {
+                                        Newton1DSolver::Eval1D eval1D = [&](double xval) -> Newton1DSolver::Eval1DResult {
                                             std::vector<double> x_std = {xval};
                                             auto er = subEval.evaluate(x_std, subExternal, externalStringVars);
                                             double f = er.residuals[0];
                                             double j = (er.jacobian.size() > 0 && er.jacobian[0].size() > 0)
                                                        ? er.jacobian[0][0] : 0.0;
-                                            return {f, j};
+                                            return {f, j, er.scale.empty() ? 1.0 : er.scale[0]};
                                         };
 
                                         SolverStatus st = Newton1DSolver::solveSimple(eval1D, xCur, options);
@@ -1073,22 +1108,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
 
                                     NonLinearSolver::Problem subProblem;
                                     subProblem.size = static_cast<int>(subN);
-                                    subProblem.evaluate = [&subEval, &subExternal, &externalStringVars]
-                                        (const Eigen::VectorXd& xv, Eigen::VectorXd& F,
-                                         Eigen::MatrixXd& J, bool computeJ) {
-                                        std::vector<double> x_std(xv.data(), xv.data() + xv.size());
-                                        auto res = subEval.evaluate(x_std, subExternal,
-                                                                     externalStringVars, computeJ);
-                                        const size_t ne = res.residuals.size();
-                                        F.resize(ne);
-                                        for (size_t i = 0; i < ne; ++i) F[i] = res.residuals[i];
-                                        if (computeJ) {
-                                            J.resize(ne, xv.size());
-                                            for (size_t i = 0; i < ne; ++i)
-                                                for (size_t j = 0; j < res.jacobian[i].size(); ++j)
-                                                    J(i, j) = res.jacobian[i][j];
-                                        }
-                                    };
+                                    setBlockEvaluate(subProblem, subEval, subExternal, externalStringVars);
 
                                     std::string subErr;
                                     SolverStatus sStatus = solveBlockSequential(
@@ -1129,25 +1149,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
 
                         NonLinearSolver::Problem reducedProblem;
                         reducedProblem.size = static_cast<int>(nReduced);
-                        reducedProblem.evaluate = [&reducedEval, &reducedExternalVars, &externalStringVars]
-                                                  (const Eigen::VectorXd& xv,
-                                                   Eigen::VectorXd& F,
-                                                   Eigen::MatrixXd& J,
-                                                   bool computeJacobian) {
-                            std::vector<double> x_std(xv.data(), xv.data() + xv.size());
-                            auto result = reducedEval.evaluate(x_std, reducedExternalVars, externalStringVars, computeJacobian);
-                            const size_t nEqs = result.residuals.size();
-                            F.resize(nEqs);
-                            for (size_t i = 0; i < nEqs; ++i) F[i] = result.residuals[i];
-                            if (computeJacobian) {
-                                J.resize(nEqs, xv.size());
-                                for (size_t i = 0; i < nEqs; ++i) {
-                                    for (size_t j = 0; j < result.jacobian[i].size(); ++j) {
-                                        J(i, j) = result.jacobian[i][j];
-                                    }
-                                }
-                            }
-                        };
+                        setBlockEvaluate(reducedProblem, reducedEval, reducedExternalVars, externalStringVars);
 
                         SolverStatus rStatus;
                         if (options.pipelineMode == SolverPipelineMode::Parallel && options.solverPipeline.size() > 1) {
@@ -1259,35 +1261,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
     NonLinearSolver::Problem problem;
     problem.size = static_cast<int>(n);
     
-    // Lambda to evaluate block
-    problem.evaluate = [&blockEval, &varNames, &externalVars, &externalStringVars]
-                       (const Eigen::VectorXd& xv,
-                        Eigen::VectorXd& F,
-                        Eigen::MatrixXd& J,
-                        bool computeJacobian) {
-        // Convert Eigen vector to std::vector
-        std::vector<double> x_std(xv.data(), xv.data() + xv.size());
-        
-        // Evaluate block (pass computeJacobian to skip CoolProp derivatives)
-        auto result = blockEval.evaluate(x_std, externalVars, externalStringVars, computeJacobian);
-        
-        // Copy residuals
-        const size_t nEqs = result.residuals.size();
-        F.resize(nEqs);
-        for (size_t i = 0; i < nEqs; ++i) {
-            F[i] = result.residuals[i];
-        }
-        
-        // Copy Jacobian if requested
-        if (computeJacobian) {
-            J.resize(nEqs, xv.size());
-            for (size_t i = 0; i < nEqs; ++i) {
-                for (size_t j = 0; j < result.jacobian[i].size(); ++j) {
-                    J(i, j) = result.jacobian[i][j];
-                }
-            }
-        }
-    };
+    setBlockEvaluate(problem, blockEval, externalVars, externalStringVars);
     
     // Dispatch to the configured pipeline mode
     SolverStatus status;
@@ -1412,6 +1386,11 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
     // that subsequent solvers can start from a better point instead of always
     // resetting to the original initial guess.
     Eigen::VectorXd bestX = x;
+    // The residual norms of this function are weighted residuals (residualWeight, solver_common.h), the
+    // quantity that the tolerance is compared with; the weights are those of the last Jacobian evaluation.
+    auto weighted = [&](const Eigen::VectorXd& F) {
+        return weightedResidualNorm(F, problem.residualScale, options.tolerance);
+    };
     double bestResidualNorm = std::numeric_limits<double>::max();
     double initialResidualNorm = std::numeric_limits<double>::max();
 
@@ -1421,7 +1400,7 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
         Eigen::MatrixXd J0;
         try {
             problem.evaluate(x, F0, J0, false);
-            bestResidualNorm = F0.lpNorm<Eigen::Infinity>();
+            bestResidualNorm = weighted(F0);
             initialResidualNorm = bestResidualNorm;
         } catch (...) {
             // If even the initial eval fails, keep max residual
@@ -1484,7 +1463,7 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
                 Eigen::VectorXd F_init(n);
                 Eigen::MatrixXd J_dummy;
                 problem.evaluate(x_init, F_init, J_dummy, false);
-                initResidualNorm = F_init.lpNorm<Eigen::Infinity>();
+                initResidualNorm = weighted(F_init);
             } catch (...) {}
 
             // Use whichever starting point has the smaller residual
@@ -1549,7 +1528,7 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
             Eigen::MatrixXd J_dummy;
             try {
                 problem.evaluate(x, F_curr, J_dummy, false);
-                double currResidualNorm = F_curr.lpNorm<Eigen::Infinity>();
+                double currResidualNorm = weighted(F_curr);
                 if (currResidualNorm < bestResidualNorm) {
                     bestResidualNorm = currResidualNorm;
                     bestX = x;
@@ -1696,23 +1675,7 @@ SolverStatus Solver::solveBlockParallel(size_t blockIndex,
                 // Create a thread-local problem lambda
                 NonLinearSolver::Problem localProblem;
                 localProblem.size = static_cast<int>(varNames.size());
-                localProblem.evaluate = [&blockEval, &varNames, &externalVars, &externalStringVars]
-                                        (const Eigen::VectorXd& xv,
-                                         Eigen::VectorXd& F,
-                                         Eigen::MatrixXd& J,
-                                         bool computeJacobian) {
-                    std::vector<double> x_std(xv.data(), xv.data() + xv.size());
-                    auto evalResult = blockEval.evaluate(x_std, externalVars, externalStringVars, computeJacobian);
-                    const size_t nEqs = evalResult.residuals.size();
-                    F.resize(nEqs);
-                    for (size_t i = 0; i < nEqs; ++i) F[i] = evalResult.residuals[i];
-                    if (computeJacobian) {
-                        J.resize(nEqs, xv.size());
-                        for (size_t i = 0; i < nEqs; ++i)
-                            for (size_t j = 0; j < evalResult.jacobian[i].size(); ++j)
-                                J(i, j) = evalResult.jacobian[i][j];
-                    }
-                };
+                setBlockEvaluate(localProblem, blockEval, externalVars, externalStringVars);
 
                 result.status = runSolverStrategy(strategy, blockIndex, localProblem,
                                                   blockEval, varNames,
@@ -1846,7 +1809,7 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
         }
     }
 
-    double initialResidualNorm = 0.0;
+    double initialRho = 0.0;   // weighted residual at the start
 
     for (int iter = 0; iter < options.partitionedMaxIterations; ++iter) {
         if (options.cancelToken && options.cancelToken->load(std::memory_order_relaxed)) {
@@ -1874,8 +1837,10 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
         }
 
         double residualNorm = F.lpNorm<Eigen::Infinity>();
+        // The convergence tests use the weighted residual (residualWeight, solver_common.h)
+        const double rhoNorm = weightedResidualNorm(F, evalResult.scale, options.tolerance);
         if (iter == 0) {
-            initialResidualNorm = residualNorm;
+            initialRho = rhoNorm;
         }
 
         if (options.verbose) {
@@ -1893,7 +1858,7 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
             trace->iterations.push_back(traceIter);
         }
 
-        if (residualNorm < options.tolerance) {
+        if (rhoNorm < options.tolerance) {
             if (trace) {
                 trace->finalStatus = SolverStatus::Success;
                 trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
@@ -1901,7 +1866,7 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
             return SolverStatus::Success;
         }
 
-        if (initialResidualNorm > 0 && residualNorm / initialResidualNorm < options.relativeTolerance) {
+        if (initialRho > 0 && rhoNorm / initialRho < options.relativeTolerance) {
             if (trace) {
                 trace->finalStatus = SolverStatus::Success;
                 trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
@@ -1931,7 +1896,7 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
         }
 
         if (stepNorm < options.stepTolerance) {
-            if (residualNorm < options.tolerance * 100 || residualNorm < options.lsRelaxedTolerance) {
+            if (rhoNorm < options.tolerance * 100 || rhoNorm < options.lsRelaxedTolerance) {
                 if (trace) {
                     trace->finalStatus = SolverStatus::Success;
                     trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
@@ -2229,6 +2194,8 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
 
         double tearNorm = F_tear.lpNorm<Eigen::Infinity>();
         double fullNorm = F.lpNorm<Eigen::Infinity>();
+        // The convergence tests use the weighted residual (residualWeight, solver_common.h)
+        const double fullRho = weightedResidualNorm(F, evalResult.scale, options.tolerance);
         if (trace) {
             SolverTrace::Iteration traceIter;
             traceIter.iter = outer;
@@ -2264,7 +2231,7 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
         // to declare convergence.  Checking only tear residuals can hide
         // failures in the acyclic forward sweep (e.g. silently skipped
         // equations due to evaluation errors).
-        if (fullNorm < options.tolerance) {
+        if (fullRho < options.tolerance) {
             if (trace) {
                 trace->finalStatus = SolverStatus::Success;
                 trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
@@ -2278,7 +2245,7 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
             // Schur complement is singular — tear Newton step impossible.
             // However, if the acyclic forward sweep already brought the
             // full residual close to tolerance, accept the current x.
-            if (fullNorm < std::max(options.tolerance * 1000.0, 1e-3)) {
+            if (fullRho < std::max(options.tolerance * 1000.0, 1e-3)) {
                 if (trace) {
                     trace->finalStatus = SolverStatus::Success;
                     trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
@@ -2719,25 +2686,6 @@ SolverStatus Solver::solveBlockMultiStartParallel(
     for (const auto& [name, value] : evaluator_.getAllStringVariables())
         externalStringVars[name] = value;
 
-    NonLinearSolver::Problem problem;
-    problem.size = static_cast<int>(n);
-    problem.evaluate = [&blockEval, &externalVars, &externalStringVars](
-                           const Eigen::VectorXd& xv, Eigen::VectorXd& F,
-                           Eigen::MatrixXd& J, bool computeJacobian) {
-        std::vector<double> x_std(xv.data(), xv.data() + xv.size());
-        auto result = blockEval.evaluate(x_std, externalVars, externalStringVars,
-                                         computeJacobian);
-        const size_t nEqs = result.residuals.size();
-        F.resize(nEqs);
-        for (size_t i = 0; i < nEqs; ++i) F[i] = result.residuals[i];
-        if (computeJacobian) {
-            J.resize(nEqs, xv.size());
-            for (size_t i = 0; i < nEqs; ++i)
-                for (size_t j = 0; j < result.jacobian[i].size(); ++j)
-                    J(i, j) = result.jacobian[i][j];
-        }
-    };
-
     // Keep the evaluator on the genuine initial guess (already restored by the
     // caller) so solveBlockSequential's warm-start read is consistent across
     // all worker threads.
@@ -2766,7 +2714,7 @@ SolverStatus Solver::solveBlockMultiStartParallel(
             std::string label = candidates[k].second;
             int idx = static_cast<int>(k);
             futures.push_back(std::async(std::launch::async,
-                [this, blockIndex, &varNames, &problem, &blockEval,
+                [this, blockIndex, n, &varNames, &blockEval,
                  &externalVars, &externalStringVars, &options, parallelStop,
                  x0 = std::move(x0), label = std::move(label), idx]() mutable {
                     MSTaskResult r;
@@ -2785,6 +2733,9 @@ SolverStatus Solver::solveBlockMultiStartParallel(
                     // Pass the candidate as the warm-start context so solver
                     // chaining stays within this candidate (the shared
                     // evaluator still holds the original guess).
+                    NonLinearSolver::Problem problem;   // one per candidate: its callback writes the residual scale
+                    problem.size = static_cast<int>(n);
+                    setBlockEvaluate(problem, blockEval, externalVars, externalStringVars);
                     SolverStatus st = solveBlockSequential(
                         blockIndex, problem, blockEval, varNames,
                         externalVars, externalStringVars, x, threadOpts, pt, &err,
@@ -2876,6 +2827,19 @@ SolverStatus Solver::solveBlockMultiStartParallel(
     return firstAttemptStatus;
 }
 
+void Solver::warnTinyValues(size_t blockIndex, double tolerance, DiagnosticCollector& out) {
+    for (const std::string& name : evaluator_.getBlock(blockIndex).getVariables()) {
+        const double value = evaluator_.getVariableValue(name);
+        if (value == 0.0 || !(std::abs(value) < tolerance)) continue;
+        if (!tinyValueWarned_.insert(name).second) continue;
+        std::ostringstream message;
+        message << name << " = " << value << " is below the solver tolerance (" << tolerance
+                << "): it has only the digits that the convergence of its block can give — check its equation, or write it explicitly ("
+                << name << " = ...)";
+        out.push(DiagnosticSeverity::Warning, "W002", message.str(), "solver");
+    }
+}
+
 SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
     auto startTime = std::chrono::high_resolution_clock::now();
 
@@ -2958,6 +2922,9 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
                 blockError = e.what();
             }
         }
+
+        if (blockStatus == SolverStatus::Success && trace->solverType != "Explicit")
+            warnTinyValues(blockIdx, opts.tolerance, blockDiag);
 
         // Detach diagnostics pointer (blockDiag goes out of scope later)
         evaluator_.getBlock(blockIdx).setDiagnostics(nullptr);

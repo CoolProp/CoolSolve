@@ -61,7 +61,7 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
     Eigen::MatrixXd J(n, n), J_unscaled(n, n);
     double lambda = options.lmInitialLambda;
     double nu = 2.0;   // Nielsen's rejection multiplier (doubles on consecutive rejects)
-    double initialResidualNorm = 0.0;
+    double initialRho = 0.0;   // weighted residual (residualWeight, solver_common.h) at the start
 
     // Cumulative diagonal scaling (Nielsen): D never decreases across iterations
     Eigen::VectorXd D_cumulative = Eigen::VectorXd::Constant(n, 1e-6);
@@ -88,7 +88,9 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
         } catch (const std::exception&) { throw; }
 
         double residualNorm = F.lpNorm<Eigen::Infinity>();
-        if (iter == 0) initialResidualNorm = residualNorm;
+        // The convergence tests use the weighted residual (residualWeight, solver_common.h)
+        const double rhoNorm = weightedResidualNorm(F, problem.residualScale, options.tolerance);
+        if (iter == 0) initialRho = rhoNorm;
 
         if (options.verbose)
             std::cout << "LM iter " << iter << ": ||F||=" << residualNorm
@@ -118,12 +120,12 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
         }
 
         // Convergence checks
-        if (residualNorm < options.tolerance) {
+        if (rhoNorm < options.tolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             x = y.cwiseProduct(scale);
             return SolverStatus::Success;
         }
-        if (initialResidualNorm > 0 && residualNorm / initialResidualNorm < options.relativeTolerance) {
+        if (initialRho > 0 && rhoNorm / initialRho < options.relativeTolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             x = y.cwiseProduct(scale);
             return SolverStatus::Success;
@@ -237,7 +239,7 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
             }
 
             if (stepNorm < options.stepTolerance) {
-                double nn = F_new.lpNorm<Eigen::Infinity>();
+                double nn = weightedResidualNorm(F_new, problem.residualScale, options.tolerance);
                 if (nn < options.tolerance * 100 || nn < options.lsRelaxedTolerance) {
                     if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                     x = y.cwiseProduct(scale);

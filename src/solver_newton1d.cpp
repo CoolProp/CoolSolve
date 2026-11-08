@@ -49,6 +49,7 @@ struct StepControl {
 
     double xAcc = 0.0;     ///< last accepted iterate
     double fAcc = std::numeric_limits<double>::infinity();  ///< F at the last accepted iterate
+    double scaleAcc = 1.0;  ///< residual scale (Eval1DResult::scale) at the last accepted iterate
     bool newtonTrial = false;  ///< the current iterate is a Newton step taken from xAcc
     int rejections = 0;    ///< successive rejections of the current step
 
@@ -64,15 +65,22 @@ struct StepControl {
     }
 
     /// Accept the iterate \p x (residual \p f); \p newtonStep tells whether the step taken from it is a Newton step.
-    void accept(double x, double f, bool newtonStep) {
+    void accept(double x, double f, bool newtonStep, double scale) {
         xAcc = x;
         fAcc = f;
+        scaleAcc = scale;
         newtonTrial = newtonStep;
         rejections = 0;
     }
 
     bool exhausted() const { return rejections > kMaxRejections; }
 };
+
+/// Weighted residual rho = |f| / w of an evaluation (`residualWeight`, solver_common.h): the quantity
+/// that the tolerances of the solver are compared with.
+double weightedResidual(double f, double scale, const SolverOptions& options) {
+    return std::abs(f) / residualWeight(scale, scale, options.tolerance);
+}
 
 }  // namespace
 
@@ -104,10 +112,10 @@ SolverStatus Newton1DSolver::solve(
     // for problems where the initial guess is far from the solution.
     int phase1MaxIter = std::min(options.maxIterations, 50);
     for (int iter = 0; iter < phase1MaxIter && !converged; ++iter) {
-        double f, j;
+        double f, j, s;
         try {
-            auto [fv, jv] = eval(xCur);
-            f = fv; j = jv;
+            auto [fv, jv, sv] = eval(xCur);
+            f = fv; j = jv; s = sv;
         } catch (const std::exception& e) {
             if (isFatalEvaluationError(e.what())) {
                 if (outErrorMessage) *outErrorMessage = e.what();
@@ -132,7 +140,7 @@ SolverStatus Newton1DSolver::solve(
             trace->iterations.push_back(traceIter);
         }
 
-        if (std::abs(f) < options.tolerance) {
+        if (weightedResidual(f, s, options) < options.tolerance) {
             converged = true;
             break;
         }
@@ -198,7 +206,7 @@ SolverStatus Newton1DSolver::solve(
             radius *= 2.0;
         }
 
-        stepControl.accept(xCur, f, newtonStep);
+        stepControl.accept(xCur, f, newtonStep, s);
         xCur += dx;
         if (trace && !trace->iterations.empty()) {
             trace->iterations.back().stepNorm = std::abs(dx);
@@ -243,14 +251,14 @@ SolverStatus Newton1DSolver::solve(
 
         for (double probe : probes) {
             try {
-                auto [f, j] = eval(probe);
+                auto [f, j, s] = eval(probe);
                 if (!std::isfinite(f)) continue;
                 results.push_back({probe, f, true});
                 if (std::abs(f) < bestF) {
                     bestF = std::abs(f);
                     bestX = probe;
                 }
-                if (std::abs(f) < options.tolerance) {
+                if (weightedResidual(f, s, options) < options.tolerance) {
                     xCur = probe;
                     converged = true;
                     break;
@@ -277,7 +285,7 @@ SolverStatus Newton1DSolver::solve(
                     double mid = (lo + hi) / 2.0;
                     double fmid = 1e30;
                     try {
-                        auto [fm, jm] = eval(mid);
+                        auto [fm, jm, sm] = eval(mid);
                         fmid = std::abs(fm);
                     } catch (...) {
                         fmid = 1e30; // Evaluation failed — likely a pole
@@ -308,7 +316,7 @@ SolverStatus Newton1DSolver::solve(
         for (int iter = 0; iter < options.maxIterations && !converged; ++iter) {
             double xMid = (xLo + xHi) / 2.0;
             try {
-                auto [f, j] = eval(xMid);
+                auto [f, j, s] = eval(xMid);
 
                 if (trace) {
                     SolverTrace::Iteration traceIter;
@@ -323,7 +331,7 @@ SolverStatus Newton1DSolver::solve(
                     trace->iterations.push_back(traceIter);
                 }
 
-                if (std::abs(f) < options.tolerance) {
+                if (weightedResidual(f, s, options) < options.tolerance) {
                     xCur = xMid;
                     converged = true;
                     break;
@@ -334,7 +342,7 @@ SolverStatus Newton1DSolver::solve(
                     double xNewton = xMid - f / j;
                     if (xNewton > xLo && xNewton < xHi) {
                         try {
-                            auto [fn, jn] = eval(xNewton);
+                            auto [fn, jn, sn] = eval(xNewton);
                             if (std::abs(fn) < std::abs(f)) {
                                 if (fn * fLo < 0) { xHi = xNewton; fHi = fn; }
                                 else { xLo = xNewton; fLo = fn; }
@@ -366,14 +374,14 @@ SolverStatus Newton1DSolver::solve(
         StepControl polishControl;
         for (int iter = 0; iter < 50 && !converged; ++iter) {
             try {
-                auto [f, j] = eval(xCur);
-                if (std::abs(f) < options.tolerance) { converged = true; break; }
+                auto [f, j, s] = eval(xCur);
+                if (weightedResidual(f, s, options) < options.tolerance) { converged = true; break; }
                 if (polishControl.reject(xCur, f, false)) {
                     if (polishControl.exhausted()) break;
                     continue;
                 }
                 const bool newtonStep = std::abs(j) >= 1e-30;
-                polishControl.accept(xCur, f, newtonStep);
+                polishControl.accept(xCur, f, newtonStep, s);
                 if (!newtonStep) break;
                 double dx = -f / j;
                 double maxStep = std::max(std::abs(xCur) * 2.0, 1e6);
@@ -384,7 +392,7 @@ SolverStatus Newton1DSolver::solve(
             }
         }
         // The polish cannot go further: accept the best iterate if its residual is small
-        if (!converged && std::abs(polishControl.fAcc) < options.lsRelaxedTolerance) {
+        if (!converged && weightedResidual(polishControl.fAcc, polishControl.scaleAcc, options) < options.lsRelaxedTolerance) {
             xCur = polishControl.xAcc;
             converged = true;
         }
@@ -413,8 +421,8 @@ SolverStatus Newton1DSolver::solveSimple(
     double xCur = x;
     for (int iter = 0; iter < options.maxIterations; ++iter) {
         try {
-            auto [f, j] = eval(xCur);
-            if (std::abs(f) < options.tolerance) {
+            auto [f, j, s] = eval(xCur);
+            if (weightedResidual(f, s, options) < options.tolerance) {
                 x = xCur;
                 return SolverStatus::Success;
             }
