@@ -47,6 +47,10 @@ namespace {
         UnitType unitType;
     };
 
+    /// Code of the specific volume in VariableInfo::inferredProperty: CoolProp has none ("V" is the viscosity),
+    /// the value is 1/D (humid air: V of HAPropsSI).
+    constexpr const char* kVolumeCode = "VOL";
+
     struct FluidGuessState {
         double T_target;
         double P_target;
@@ -63,7 +67,7 @@ namespace {
         if (n == "enthalpy" || n == "h") return PropMapping{"H", UnitType::SpecificEnergy};
         if (n == "entropy" || n == "s") return PropMapping{"S", UnitType::SpecificEntropy};
         if (n == "internalenergy" || n == "u") return PropMapping{"U", UnitType::SpecificEnergy};
-        if (n == "volume" || n == "v") return PropMapping{"D", UnitType::Density}; // Density or Specific Volume
+        if (n == "volume" || n == "v") return PropMapping{kVolumeCode, UnitType::SpecificVolume};
         if (n == "density" || n == "rho") return PropMapping{"D", UnitType::Density};
         if (n == "quality" || n == "x" || n == "q") return PropMapping{"Q", UnitType::Dimensionless};
         if (n == "viscosity" || n == "mu") return PropMapping{"V", UnitType::Viscosity};
@@ -73,6 +77,19 @@ namespace {
         return std::nullopt;
     }
 
+    /// The mapping of a code stored in VariableInfo::inferredProperty (getPropMapping reads names: it knows a code
+    /// only where it is also a name, "T", "P", "H", "S", "U", "Q"; the name "v" is the volume, the code "V" the viscosity).
+    std::optional<PropMapping> getCodeMapping(const std::string& code) {
+        if (code == kVolumeCode) return PropMapping{kVolumeCode, UnitType::SpecificVolume};
+        if (code == "V") return PropMapping{"V", UnitType::Viscosity};
+        return getPropMapping(code);
+    }
+
+    /// The property of HAPropsSI for a code: its specific volume V, per kg of dry air, stands for D and VOL.
+    std::string humidAirCode(const std::string& code) {
+        return (code == "D" || code == kVolumeCode) ? "V" : code;
+    }
+
     std::string getUnitString(UnitType type, const UnitSystem& units) {
         switch (type) {
             case UnitType::Temperature: return units.temperature;
@@ -80,6 +97,7 @@ namespace {
             case UnitType::SpecificEnergy: return units.specific_energy;
             case UnitType::SpecificEntropy: return units.specific_entropy;
             case UnitType::Density: return units.density;
+            case UnitType::SpecificVolume: return units.specific_volume;
             case UnitType::Viscosity: return units.viscosity;
             case UnitType::Conductivity: return units.conductivity;
             case UnitType::SpecificHeat: return units.specific_heat;
@@ -168,7 +186,9 @@ void inferVariables(IR& ir) {
             const auto& lhsVar = eq.lhs->as<Variable>();
             const auto& func = eq.rhs->as<FunctionCall>();
             
-            auto mapping = getPropMapping(func.name);
+            // v(...) is evaluated as the viscosity (CS-BUG-V-ALIAS), not a volume: its label and guess say what it is
+            const bool isVAlias = func.name.size() == 1 && std::tolower(static_cast<unsigned char>(func.name[0])) == 'v';
+            auto mapping = getPropMapping(isVAlias ? "viscosity" : func.name);
             if (mapping) {
                 // It is a thermo function
                 std::string fluidName = extractString((!func.args.empty()) ? func.args[0] : nullptr, ir);
@@ -207,13 +227,15 @@ static bool tryComputeProperty(const std::string& cpFluid, const std::string& pr
     try {
         auto t1 = std::chrono::high_resolution_clock::now();
         // an ideal gas has the value of its ideal-gas model at (T, P), the same as its property calls (CoolProp basis)
+        const bool volume = prop == kVolumeCode;   // 1/D
+        const std::string cpProp = volume ? "D" : prop;
         const CoolProp::parameters idealParam =
-            prop == "H" ? CoolProp::iHmass : prop == "S" ? CoolProp::iSmass : prop == "U" ? CoolProp::iUmass :
-            prop == "D" ? CoolProp::iDmass : prop == "T" ? CoolProp::iT : prop == "P" ? CoolProp::iP :
+            cpProp == "H" ? CoolProp::iHmass : cpProp == "S" ? CoolProp::iSmass : cpProp == "U" ? CoolProp::iUmass :
+            cpProp == "D" ? CoolProp::iDmass : cpProp == "T" ? CoolProp::iT : cpProp == "P" ? CoolProp::iP :
             CoolProp::INVALID_PARAMETER;
         double valSI = (idealGas && idealParam != CoolProp::INVALID_PARAMETER)
             ? idealGasProperty(cpFluid, idealParam, CoolProp::iT, T_K, CoolProp::iP, P_Pa, false).value
-            : CoolProp::PropsSI(prop, "T", T_K, "P", P_Pa, cpFluid);
+            : CoolProp::PropsSI(cpProp, "T", T_K, "P", P_Pa, cpFluid);
         auto t2 = std::chrono::high_resolution_clock::now();
         double call_time = std::chrono::duration<double, std::milli>(t2 - t1).count();
         g_inference_propsSI_calls++;
@@ -224,7 +246,7 @@ static bool tryComputeProperty(const std::string& cpFluid, const std::string& pr
         }
         
         if (std::isfinite(valSI)) {
-            outValue = valSI;
+            outValue = volume ? 1.0 / valSI : valSI;
             return true;
         }
     } catch (...) {
@@ -239,7 +261,7 @@ std::optional<double> computeThermoGuessAt(const std::string& inferredFluid,
                                            const std::string& units) {
     if (inferredFluid.empty() || propCode.empty()) return std::nullopt;
 
-    auto propMap = getPropMapping(propCode);
+    auto propMap = getCodeMapping(propCode);
     if (!propMap) return std::nullopt;
 
     auto fluid = FluidRegistry::getFluid(inferredFluid);
@@ -249,8 +271,7 @@ std::optional<double> computeThermoGuessAt(const std::string& inferredFluid,
 
     // Humid air uses HAPropsSI with a default humidity ratio R = 0.5.
     if (fluid->getType() == FluidType::HumidAir) {
-        std::string outProp = propMap->code;
-        if (outProp == "D") outProp = "V"; // HAPropsSI uses V for volume
+        const std::string outProp = humidAirCode(propMap->code);
         try {
             double valSI = HumidAir::HAPropsSI(outProp, "T", T_K, "P", P_Pa, "R", 0.5);
             if (!std::isfinite(valSI)) return std::nullopt;
@@ -322,14 +343,13 @@ void initializeVariables(IR& ir) {
                 double P = 101325.0;
                 double R = 0.5;
                 
-                std::string outProp = info.inferredProperty;
-                if (outProp == "D") outProp = "V"; // HAPropsSI uses V for volume
+                const std::string outProp = humidAirCode(info.inferredProperty);
                 
                 try {
                     double valSI = HumidAir::HAPropsSI(outProp, "T", T, "P", P, "R", R);
                     
                     if (std::isfinite(valSI)) {
-                        auto propMap = getPropMapping(info.inferredProperty);
+                        auto propMap = getCodeMapping(info.inferredProperty);
                         if (propMap) {
                             if (propMap->code == "D" && outProp == "V") {
                                 if (valSI != 0) valSI = 1.0 / valSI;
@@ -374,7 +394,7 @@ void initializeVariables(IR& ir) {
                 }
                 
                 if (valueFound) {
-                    auto propMap = getPropMapping(info.inferredProperty);
+                    auto propMap = getCodeMapping(info.inferredProperty);
                     if (propMap) {
                         if (propMap->unitType == UnitType::SpecificEnergy) {
                             valSI += fluid->getReferenceState().h_offset;

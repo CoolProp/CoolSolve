@@ -20,6 +20,7 @@ enum class UnitType {
     SpecificEnergy, // J/kg, kJ/kg (Enthalpy, Internal Energy)
     SpecificEntropy,// J/kg-K, kJ/kg-K (Entropy)
     Density,        // kg/m^3
+    SpecificVolume, // m^3/kg
     Dimensionless
 };
 
@@ -38,6 +39,7 @@ struct UnitSystem {
     std::string specific_energy = "J/kg";
     std::string specific_entropy = "J/kg-K";
     std::string density = "kg/m^3";
+    std::string specific_volume = "m^3/kg";
 };
 
 /**

@@ -767,7 +767,8 @@ thread with its own `CoolSolveRunner` instance — no global state is shared.
 
 `inferVariables(IR&)` is called as step 3 of every `runner.run()` (regardless
 of whether debug mode is on).  It populates `VariableInfo.inferredProperty`
-(T/P/H/S/D/Q/V/L/C) and `VariableInfo.inferredFluid` for every variable that
+(T/P/H/S/D/Q/V/L/C, and `VOL` for the specific volume, which CoolProp has no
+code for: `V` is the viscosity) and `VariableInfo.inferredFluid` for every variable that
 appears as an argument to a thermodynamic function.
 
 After the solve thread completes, the server extracts this data into the

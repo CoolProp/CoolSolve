@@ -22,6 +22,7 @@
 #include "coolsolve/solution_checker.h"
 #include "coolsolve/solver_common.h"
 #include "coolsolve/units.h"
+#include "coolsolve/variable_inference.h"
 #include "AbstractState.h"
 #include "CoolProp.h"
 #include "HumidAirProp.h"
@@ -61,6 +62,7 @@ struct ModelRun {
     int iterations = 0;      ///< iterations of all the blocks (the trace of each block)
     std::map<std::string, double, CaseInsensitiveLess> vars;
     std::map<std::string, std::string, CaseInsensitiveLess> strings;   ///< string variables of the solution
+    std::map<std::string, std::string, CaseInsensitiveLess> units;   ///< unit of each variable, as written in the .sol file
 
     double operator[](const std::string& name) const { return vars.at(name); }
 };
@@ -108,6 +110,7 @@ ModelRun runModel(const std::string& code,
         run.message = runner.getParseResult().errors[0].message;
     if (run.solveOk) {
         const auto& res = runner.getSolveResult();
+        for (const auto& [name, info] : runner.getIR().getVariables()) run.units[name] = info.units;
         run.vars = res.variables;
         run.strings = res.stringVariables;
         for (const auto& br : res.blockResults) run.iterations += br.iterations;
@@ -23765,5 +23768,184 @@ TEST_CASE("CS-GAP-QUALITY-DOME: negative tests, incompressibles, ideal gases and
         auto run = runModel("x_ha = quality(AirH2O, T=25, P=1E5, R=0.5)\n");
         INFO(run.message);
         CHECK(anyContains(run.checkErrors, "'quality' is not available for humid air (AirH2O)"));
+    }
+}
+
+// ============================================================================
+// CS-BUG-UNIT-VOLUME: VOLUME() is a specific volume, in m^3/kg, as label and as initial guess
+// ============================================================================
+
+namespace {
+
+/// Unit and initial guess of the variable `name` of `code`, after the variable inference (what the solver starts from).
+struct InferredStart {
+    std::string units;
+    std::string property;
+    double guess = 0.0;
+};
+
+InferredStart inferredStart(const std::string& code, const std::string& name) {
+    EESParser parser;
+    auto parsed = parser.parse(code);
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    inferVariables(ir);
+    initializeVariables(ir);
+    const VariableInfo* info = ir.getVariable(name);
+    REQUIRE(info != nullptr);
+    REQUIRE(info->guessValue.has_value());
+    return {info->units, info->inferredProperty, *info->guessValue};
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-UNIT-VOLUME: register reproducer, VOLUME of R22 is in m^3/kg", "[library-gaps][unit-volume]") {
+    // used to be: v = 0.049 "kg/m^3"
+    auto run = runModel("v = VOLUME('R22', T=8, P=5E5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.units.at("v") == "m^3/kg");
+    CHECK_THAT(run["v"], WithinRel(1.0 / CoolProp::PropsSI("D", "T", 8 + 273.15, "P", 5E5, "R22"), 1e-9));
+    CHECK(run.verified);
+}
+
+TEST_CASE("CS-BUG-UNIT-VOLUME: every kind of fluid, the density keeps kg/m^3", "[library-gaps][unit-volume]") {
+    auto run = runModel("v_w = VOLUME(Water, T=25, P=1E5)\n"
+                        "v_a = VOLUME(Air, T=25, P=1E5)\n"
+                        "v_n = VOLUME(N2, T=25, P=1E5)\n"                         // ideal gas
+                        "v_e = VOLUME(EthyleneGlycol, T=25, P=1E5, C=30)\n"       // incompressible
+                        "v_h = VOLUME(AirH2O, T=25, P=1E5, R=0.5)\n"              // humid air, per kg of dry air
+                        "d_w = DENSITY(Water, T=25, P=1E5)\n"
+                        "d_h = DENSITY(AirH2O, T=25, P=1E5, R=0.5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    for (const char* v : {"v_w", "v_a", "v_n", "v_e", "v_h"}) {
+        INFO(v);
+        CHECK(run.units.at(v) == "m^3/kg");
+    }
+    for (const char* d : {"d_w", "d_h"}) {
+        INFO(d);
+        CHECK(run.units.at(d) == "kg/m^3");
+    }
+    CHECK_THAT(run["v_w"], WithinRel(1.0 / run["d_w"], 1e-9));
+    CHECK_THAT(run["v_h"], WithinRel(HumidAir::HAPropsSI("V", "T", 25 + 273.15, "P", 1E5, "R", 0.5), 1e-9));
+    CHECK(run.verified);
+}
+
+TEST_CASE("CS-BUG-UNIT-VOLUME: a volume given as an input (v=, volume=) is a specific volume", "[library-gaps][unit-volume]") {
+    // used to be: vv = 0.00100.. "kg/m^3"
+    const double vWater = 1.0 / CoolProp::PropsSI("D", "T", 40 + 273.15, "P", 1E5, "Water");
+    std::ostringstream code;
+    code << std::setprecision(15) << "vv = " << vWater << "\n"
+         << "h = ENTHALPY(Water, P=1E5, v=vv)\n"
+         << "vw = " << vWater << "\n"
+         << "T = TEMPERATURE(Water, P=1E5, volume=vw)\n";
+    auto run = runModel(code.str());
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.units.at("vv") == "m^3/kg");
+    CHECK(run.units.at("vw") == "m^3/kg");
+    CHECK(run.units.at("h") == "J/kg");
+    CHECK(run.units.at("T") == "C");
+    CHECK_THAT(run["h"], WithinRel(CoolProp::PropsSI("H", "T", 40 + 273.15, "P", 1E5, "Water"), 1e-6));
+    CHECK_THAT(run["T"], WithinAbs(40.0, 1e-6));
+}
+
+TEST_CASE("CS-BUG-UNIT-VOLUME: the initial guess of a VOLUME() is a specific volume", "[library-gaps][unit-volume]") {
+    // used to be the density at 20 C, 1 atm: 998 for water, 1.2 for air
+    const double T = 293.15, P = 101325.0;
+    SECTION("real fluids") {
+        for (const std::string fluid : {"Water", "R22", "Nitrogen"}) {
+            INFO(fluid);
+            const auto start = inferredStart("v = VOLUME(" + fluid + ", T=t_1, P=p_1)\nt_1 = 25\np_1 = 1E5\n", "v");
+            CHECK(start.units == "m^3/kg");
+            CHECK_THAT(start.guess, WithinRel(1.0 / CoolProp::PropsSI("D", "T", T, "P", P, fluid), 1e-9));
+        }
+        CHECK(inferredStart("v = VOLUME(Water, T=t_1, P=p_1)\nt_1 = 25\np_1 = 1E5\n", "v").guess < 0.01);
+    }
+    SECTION("ideal gas, on the ideal-gas model") {
+        const auto start = inferredStart("v = VOLUME(N2, T=t_1, P=p_1)\nt_1 = 25\np_1 = 1E5\n", "v");
+        CHECK(start.units == "m^3/kg");
+        CHECK_THAT(start.guess, WithinRel(8.314462618 / 0.0280134 * T / P, 2e-3));   // R T / P
+    }
+    SECTION("air, whatever the model (real gas, 'Air_ha' of EES, humid air AirH2O)") {
+        // humid air is inferred as 'Air_ha', which the fluid registry reads as the real gas Air: its guess is the volume
+        // of dry air, per kg, of the order of the volume of humid air (0.858 at 25 C, 50 %)
+        for (const std::string fluid : {"Air", "AirH2O"}) {
+            INFO(fluid);
+            const auto start = inferredStart("v = VOLUME(" + fluid + ", T=t_1, P=p_1, R=0.5)\nt_1 = 25\np_1 = 1E5\n", "v");
+            CHECK(start.units == "m^3/kg");
+            CHECK_THAT(start.guess, WithinRel(1.0 / CoolProp::PropsSI("D", "T", T, "P", P, "Air"), 1e-3));
+            CHECK_THAT(start.guess, WithinRel(HumidAir::HAPropsSI("V", "T", 298.15, "P", 101325.0, "R", 0.5), 0.05));
+        }
+    }
+    SECTION("the density keeps its guess in kg/m^3") {
+        const auto start = inferredStart("d = DENSITY(Water, T=t_1, P=p_1)\nt_1 = 25\np_1 = 1E5\n", "d");
+        CHECK(start.units == "kg/m^3");
+        CHECK_THAT(start.guess, WithinRel(CoolProp::PropsSI("D", "T", T, "P", P, "Water"), 1e-9));
+    }
+    SECTION("a volume input of a state call") {
+        const auto start = inferredStart("h = ENTHALPY(Water, P=1E5, v=vv)\nvv = 0.001\n", "vv");
+        CHECK(start.units == "m^3/kg");
+    }
+}
+
+TEST_CASE("CS-BUG-UNIT-VOLUME: the multi-start candidates of a volume are specific volumes", "[library-gaps][unit-volume]") {
+    const double expected = 1.0 / CoolProp::PropsSI("D", "T", 400.0, "P", 2E5, "Water");   // vapour
+    auto v = computeThermoGuessAt("Water", "VOL", 400.0, 2E5, "m^3/kg");
+    REQUIRE(v.has_value());
+    CHECK_THAT(*v, WithinRel(expected, 1e-9));
+    auto va = computeThermoGuessAt("Air_ha", "VOL", 300.0, 1E5, "m^3/kg");   // dry air, see the guess test
+    REQUIRE(va.has_value());
+    CHECK_THAT(*va, WithinRel(HumidAir::HAPropsSI("V", "T", 300.0, "P", 1E5, "R", 0.5), 0.05));
+    // the code "V" is the viscosity (it was read as the volume, and gave the density)
+    auto mu = computeThermoGuessAt("Water", "V", 400.0, 2E5, "Pa-s");
+    REQUIRE(mu.has_value());
+    CHECK_THAT(*mu, WithinRel(CoolProp::PropsSI("V", "T", 400.0, "P", 2E5, "Water"), 1e-9));
+}
+
+TEST_CASE("CS-BUG-UNIT-VOLUME: rho = 1/v with v = VOLUME() raises no unit warning", "[library-gaps][unit-volume]") {
+    auto run = runModel("p_1 = 2E5\nt_1 = 150\n"
+                        "v_1 = VOLUME(Water, T=t_1, P=p_1)\n"
+                        "r = 1/v_1\n"
+                        "r_check = DENSITY(Water, T=t_1, P=p_1)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.units.at("v_1") == "m^3/kg");
+    CHECK_THAT(run["r"], WithinRel(run["r_check"], 1e-9));
+    // rho = 1/v is a plain variable: CoolSolve does not propagate units, there is no unit warning
+    CHECK(run.warnings.empty());
+}
+
+TEST_CASE("CS-BUG-UNIT-VOLUME: negative tests, what is not a volume keeps its label", "[library-gaps][unit-volume]") {
+    SECTION("v(...) is evaluated as the viscosity (CS-BUG-V-ALIAS): it is not relabelled as a volume") {
+        // the unit and the guess are those of what it computes, a viscosity: not hidden behind a plausible volume
+        auto run = runModel("y = v('Water', T=25, P=1E5)\n");
+        INFO(run.message);
+        const auto start = inferredStart("y = v(Water, T=t_1, P=p_1)\nt_1 = 25\np_1 = 1E5\n", "y");
+        CHECK(start.units == "Pa-s");
+        CHECK_THAT(start.guess, WithinRel(CoolProp::PropsSI("V", "T", 293.15, "P", 101325.0, "Water"), 1e-9));
+    }
+    SECTION("viscosity, conductivity, enthalpy keep their units") {
+        auto run = runModel("mu = VISCOSITY(Water, T=25, P=1E5)\n"
+                            "k = CONDUCTIVITY(Water, T=25, P=1E5)\n"
+                            "h = ENTHALPY(Water, T=25, P=1E5)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.units.at("mu") == "Pa-s");
+        CHECK(run.units.at("k") == "W/m-K");
+        CHECK(run.units.at("h") == "J/kg");
+        const auto mu = inferredStart("mu = VISCOSITY(Water, T=t_1, P=p_1)\nt_1 = 25\np_1 = 1E5\n", "mu");
+        CHECK_THAT(mu.guess, WithinRel(CoolProp::PropsSI("V", "T", 293.15, "P", 101325.0, "Water"), 1e-9));
+    }
+    SECTION("a volume of an unknown fluid is still an error, naming the variable") {
+        auto run = runModel("v = VOLUME(NoSuchFluid, T=8, P=5E5)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("v") != std::string::npos);
+        CHECK(run.message.find("NoSuchFluid") != std::string::npos);
+    }
+    SECTION("a density written as a volume is still hinted") {
+        auto run = runModel("h = ENTHALPY(Water, P=1E5, v=1000)\n");
+        CHECK(anyContains(run.warnings, "m³/kg is unusually large"));
     }
 }

@@ -229,7 +229,7 @@ export interface DebugFilesResponse {
 export interface InferredVariable {
   name: string;
   value: number;
-  inferredProperty: string; // T, P, H, S, D, Q, V, L, C
+  inferredProperty: string; // T, P, H, S, D, Q, V (viscosity), VOL (specific volume), L, C
   inferredFluid: string;
   units: string;
   isArray: boolean;

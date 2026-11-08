@@ -471,6 +471,10 @@ double UnitConverter::toSI(double value, UnitType type, const std::string& unit)
         case UnitType::Density:
             if (u == "kg/m^3" || u == "kg/m3") return value;
             break;
+
+        case UnitType::SpecificVolume:
+            if (u == "m^3/kg" || u == "m3/kg") return value;
+            break;
             
         case UnitType::Dimensionless:
             return value;
@@ -559,6 +563,10 @@ double UnitConverter::fromSI(double value, UnitType type, const std::string& uni
             
         case UnitType::Density:
             if (u == "kg/m^3" || u == "kg/m3") return value;
+            break;
+
+        case UnitType::SpecificVolume:
+            if (u == "m^3/kg" || u == "m3/kg") return value;
             break;
             
         case UnitType::Dimensionless:

@@ -1250,7 +1250,8 @@ int startServer(const ServerOptions& options) {
                             else if (info.inferredProperty == "S") inferred = "[J/(kg·K)]";
                             else if (info.inferredProperty == "D") inferred = "[kg/m³]";
                             else if (info.inferredProperty == "Q") inferred = "[-]";
-                            else if (info.inferredProperty == "V") inferred = "[m³/kg]";
+                            else if (info.inferredProperty == "VOL") inferred = "[m³/kg]";
+                            else if (info.inferredProperty == "V") inferred = "[Pa·s]";
                             else if (info.inferredProperty == "C") inferred = "[J/(kg·K)]";
                             else if (info.inferredProperty == "L") inferred = "[W/(m·K)]";
                             if (!inferred.empty()) {
