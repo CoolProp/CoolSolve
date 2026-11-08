@@ -328,6 +328,13 @@ private:
     // CoolProp function evaluation
     ADValue evaluateCoolPropFunction(const FunctionCall& func);
 
+    // A property of the humid air AirH2O at the state of three inputs, with its derivatives: the property functions
+    // and CALL psychprops both evaluate it here (see its definition). Throws when CoolProp has no value.
+    ADValue evaluateHumidAirProperty(const std::string& funcName, const std::string& label, const std::string& fluidName,
+                                     const std::map<std::string, ADValue>& inputs);
+    /// The built-in procedure CALL psychprops (positional or named inputs; EES help `hs786.htm`).
+    void evaluatePsychpropsCall(const ProcedureCall& call);
+
     // The EES ammonia-water mixture NH3H2O (src/evaluator_nh3h2o.cpp): its property functions, called from
     // evaluateCoolPropFunction with the named inputs already evaluated, and the procedure CALL NH3H2O.
     ADValue evaluateAmmoniaWaterFunction(const FunctionCall& func, const std::string& funcName,

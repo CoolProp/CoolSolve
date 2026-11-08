@@ -335,7 +335,7 @@ HUMRAT,Thermophysical,"Humidity ratio [kg_w/kg_da], requires 3 inputs",Yes,1,"sr
 RELHUM,Thermophysical,"Relative humidity [0-1], requires 3 inputs",Yes,1,"src/evaluator.cpp, aliases: r",
 WETBULB,Thermophysical,"Wet bulb temperature, requires 3 inputs",Yes,1,"src/evaluator.cpp, aliases: b",
 DEWPOINT,Thermophysical,"Dew point temperature, requires 3 inputs",Yes,1,"src/evaluator.cpp, aliases: d",
-PSYCHPROPS,Thermophysical,General psychrometric property function,Partial,2,"src/evaluator.cpp — built-in procedure (positional T,P,R inputs → 9 outputs; v, h, s, u per kg of humid air instead of dry air: CS-BUG-PSYCHPROPS-BASIS; named inputs: CS-GAP-PSYCHPROPS-NAMED); inputs outside CoolProp's humid-air range are an error that names the input and the limit"
+PSYCHPROPS,Thermophysical,General psychrometric property function,Yes,2,"src/evaluator.cpp (evaluatePsychpropsCall), src/parser.cpp, include/coolsolve/psychprops.h — built-in procedure with the named inputs of the EES help (P and two of T, R, W, B, D, H, V, S, in any order, optional AirH2O first) or the positional T,P,R; 9 outputs, any of them left out (commas kept); outputs equal the AirH2O property functions (per kg of dry air, with derivatives, so an input may be an unknown); an output written with its own input variable is that input; the entropy keeps CoolProp's reference state; inputs outside CoolProp's humid-air range are an error that names the input and the limit"
 # --- Thermophysical Functions: Lennard-Jones ---,,,,,,
 EK_LJ,Thermophysical,Lennard-Jones energy parameter ε/k [K],No,4,,
 SIGMA_LJ,Thermophysical,Lennard-Jones size parameter σ [nm],No,4,,

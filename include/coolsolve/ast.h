@@ -124,6 +124,12 @@ struct ProcedureCall {
     /// one entry per output, null for a variable (`outputVars[i]`) and the expression where
     /// `outputVars[i]` is an empty placeholder. `IR::lowerCallExpressionOutputs` lowers them (CS-GAP-CALL-EXPR-OUT).
     std::vector<ExprPtr> outputExprs;
+    /// The identifier of each input (`T`, `P`, `R`, ...) of a CALL whose inputs are named
+    /// (`CALL psychprops(T=T_1, P=P_1, R=RH_1 : ...)`), parallel to `inputArgs`; empty for the positional form.
+    std::vector<std::string> inputNames;
+    /// The position, among the outputs of the procedure, of each entry of `outputVars` when some outputs are skipped
+    /// (`CALL psychprops(... : , , h_1, , , w_1)`: the slots 2 and 5); empty when `outputVars[i]` is output `i`.
+    std::vector<int> outputSlots;
 };
 
 struct FunctionDefinition {

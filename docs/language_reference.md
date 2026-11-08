@@ -826,17 +826,54 @@ For dry air above 350 °C (gas turbines) use the ideal-gas substance `Air`. The 
 supersaturated air (`W` above the saturation value) is not an error: `relhum` returns `W/W_sat`, which
 is greater than 1.
 
+**Reference state of the entropy.** `entropy(AirH2O, ...)` keeps CoolProp's reference state, not the one of EES
+(referenced to 0 K, as the fluid `Air`): at 25 °C, 100 kPa and R = 0.4 EES gives 5.775 kJ/kg-K and CoolSolve
+0.168 kJ/kg-K. Differences of entropy compare with EES, absolute values do not.
+
 ### PSYCHPROPS built-in procedure
 
 ```ees
-CALL psychprops(T_1, P_1, R_1 : T, v, h, s, u, W, R, Twb, Tdp)
+CALL psychprops(T=T_1, P=P_1, R=RH_1 : T_o, v, h, s, u, w, R_o, WetB, DewP)
 ```
 
-Returns all nine psychrometric properties at the specified state
-(`T` in °C, `P` in Pa, `R` = relative humidity in [0..1]). Outputs are
-returned in CoolSolve's fixed unit system (temperature in °C, see the warning
-at the top of this page). Inputs outside the validity range above are an error that names the input
-and the limit.
+The EES procedure PSYCHPROPS (help *PsychProps*): all the psychrometric properties of the humid air `AirH2O` in one
+statement. Every output is the AirH2O property function of the same quantity at the state of the three inputs, so
+the procedure returns **exactly the values of** `temperature`, `volume`, `enthalpy`, `entropy`, `intenergy`, `humrat`,
+`relhum`, `wetbulb` and `dewpoint` **of AirH2O**, with the same derivatives.
+
+**Inputs.** The pressure `P` and two other state properties, written by name in any order: `T`, `R`, `W`, `B`, `D`, `H`,
+`V`, `S` (the single-letter identifiers of the thermophysical functions, any case; `W` humidity ratio, `R` relative
+humidity, `B` wet-bulb and `D` dew-point temperature), usually `T`, `P` and one humidity. The substance may be written
+first (`CALL psychprops(AirH2O, T=T_1, P=P_1, R=RH_1 : ...)`, with or without quotes); it can only be `AirH2O`.
+`R` and `W` cannot both be inputs (CoolProp). The positional form `CALL psychprops(T_1, P_1, R_1 : ...)` (`T`, `P`, `R`
+in this order) is still accepted. A missing `P`, an unknown name (`X=`, `U=`), a name given twice, a number of inputs
+other than three, a substance other than AirH2O or an input without its name is a parse error naming the input.
+Inputs are in CoolSolve's fixed units (°C, Pa, J/kg).
+
+**Outputs**, in this order: temperature `T` (°C), specific volume `v` (m³/kg of dry air), enthalpy `h` (J/kg of dry air),
+entropy `s` (J/kg-K of dry air), internal energy `u` (= h − P·v, J/kg of dry air), humidity ratio `w`, relative humidity
+`R`, wet-bulb `WetB` and dew-point `DewP` temperatures (°C). All specific properties are **per kg of dry air**, as in
+EES (`airh2o.htm`), not per kg of humid air: `v` is CoolProp's `Vda`, `v`/(1 + `w`) its `Vha`.
+
+- Outputs are optional (EES): leave a name out and keep the comma (`CALL psychprops(T=T_1, P=P_1, R=RH_1 : , , h_1, , , w_1)`
+  or `: {T_1}, {v_1}, h_1, {s_1}, {u_1}, w_1`); the last ones can simply be left off. Only the outputs written are
+  computed. At most nine.
+- An output that is written with the variable of the input of the same quantity is that input and not an equation: in the
+  example of the EES help `T_1` and `RH_1` are inputs and outputs (`CALL psychprops(T=T_1, P=P_1, R=RH_1 : T_1, v_1, h_1,
+  s_1, u_1, omega_1, RH_1, WetB_1, DewP_1)`) and the model is square. Another variable (`T_o`) receives the value, as
+  an equation `T_o = T_1`.
+- An input may be an unknown: `CALL psychprops(T=T_1, P=P_1, R=RH_1 : , , h)` with `h = 50000` solves for `T_1`, as
+  `T_1 = temperature(AirH2O, H=h, P=P_1, R=RH_1)` does (derivatives as for the functions, evaluated only when an input
+  is an unknown). Keep the guess of `R` inside 0 to 1: CoolProp has no value beyond.
+- A state outside CoolProp's validity range (see §4 above) is an error that names the call, its inputs in your units and
+  the limit, not a placeholder value.
+
+**Differences from EES.** The numbers are those of CoolProp's humid-air model, EES's `AirH2O` is an ideal-gas mixture:
+for the example of the EES help (25 °C, 100 kPa, R = 0.4: v = 0.8668 m³/kg, h = 45.45 kJ/kg, u = −41.23 kJ/kg,
+ω = 0.007986, WetB = 16.16 °C, DewP = 10.48 °C) CoolSolve gives 0.86655, 45.58, −41.08, 0.008021, 16.16 and 10.48, i.e.
+ω larger by 0.4 % (CoolProp's enhancement factor of water vapour) and h, u by 0.13 to 0.15 kJ/kg. The entropy keeps
+CoolProp's reference state, not the one of EES (referenced to 0 K as `Air`): the example gives s = 5.775 kJ/kg-K in EES
+and 0.168 kJ/kg-K here, so only differences of entropy compare (the same holds for `entropy(AirH2O, ...)`).
 
 ---
 

@@ -3,9 +3,11 @@
 #include "coolsolve/constants.h"
 #include "coolsolve/diagnostic.h"
 #include "coolsolve/ees_string.h"
+#include "coolsolve/fluids.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/library_store.h"
 #include "coolsolve/libr_ashrae.h"
+#include "coolsolve/psychprops.h"
 #include "coolsolve/units.h"
 #include "coolsolve/user_hints.h"
 #include <peglib.h>
@@ -877,6 +879,7 @@ private:
             "unitsystem", "error", "warning",  // UNITSYSTEM('K') and the built-in procedures CALL error('msg'), CALL warning('msg')
             "colebrook",  // the built-in procedure CALL Colebrook(Re, RR : f)
             "nh3h2o",  // the built-in procedure CALL NH3H2O(Code, In1, In2, In3 : T, P, x, h, s, u, v, q)
+            "psychprops",  // the built-in procedure CALL psychprops(T=T, P=P, R=R : T, v, h, s, u, w, R, WetB, DewP)
             "ntumethod", "effectivenessntu",
             "lmtd",
             "integral", "integralvalue",  // equation-based dynamic solver
@@ -3315,6 +3318,118 @@ private:
         return lower == "colebrook" && !procedureNames_.count(name);
     }
 
+    /// True for a CALL of the built-in procedure psychprops: it always runs, whatever the model defines under that name.
+    static bool isBuiltinPsychprops(const std::string& name) {
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        return lower == "psychprops";
+    }
+
+    /// The identifiers (lower case) that CALL psychprops takes as inputs, as the text of its messages.
+    static std::string psychpropsInputList() { return "P and two of T, R, W, B, D, H, V, S"; }
+
+    /// The inputs of CALL psychprops (EES help `hs786.htm`): the positional form `T, P, R`, or the named form
+    /// `T=T_1, P=P_1, R=RH_1` (P and two of the identifiers of AirH2O, in any order), optionally after the substance
+    /// AirH2O. For the named form `args` becomes the text of the values and `names` their identifiers as written.
+    /// Returns why the inputs are refused ("" when they are fine); the evaluator checks the positional form.
+    std::string psychpropsInputs(std::vector<std::string>& args, std::vector<std::string>& names) {
+        const auto nameOf = [&](const std::string& arg) {   // "T" of "T=T_1", "" when the argument has no name
+            const size_t eq = namedArgumentEquals(arg);
+            const std::string name = eq == std::string::npos ? "" : trim(arg.substr(0, eq));
+            return isIdentifier(name) ? name : "";
+        };
+        if (std::all_of(args.begin(), args.end(), [&](const std::string& arg) { return nameOf(arg).empty(); }))
+            return "";
+
+        const std::string usage = "CALL psychprops(T=T_1, P=P_1, R=RH_1 : ...)";
+        std::vector<std::string> values;
+        std::set<std::string> seen;
+        for (size_t i = 0; i < args.size(); ++i) {
+            const std::string arg = trim(args[i]);
+            std::string name = nameOf(arg);
+            if (name.empty()) {
+                // the substance may come first, as in the property functions; psychprops is for AirH2O only
+                std::string substance = arg;
+                if (substance.size() >= 2 && substance.front() == '\'' && substance.back() == '\'')
+                    substance = trim(substance.substr(1, substance.size() - 2));
+                if (i > 0 || !isIdentifier(substance)) {
+                    return "psychprops: the argument '" + arg + "' has no name; with named inputs every input is written "
+                           "name=value (" + usage + ")";
+                }
+                const auto fluid = FluidRegistry::getFluid(substance);
+                if (!fluid || fluid->getType() != FluidType::HumidAir)
+                    return "psychprops: the substance '" + substance + "' is not AirH2O; the procedure gives the "
+                           "properties of humid air (" + usage + ")";
+                continue;
+            }
+            std::string lower = name;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            const auto known = std::find(std::begin(psychprops::kInputIdentifiers), std::end(psychprops::kInputIdentifiers), lower);
+            if (known == std::end(psychprops::kInputIdentifiers))
+                return "psychprops: unknown input '" + name + "' in '" + arg + "'; the inputs are " + psychpropsInputList() +
+                       " (the identifiers of AirH2O)";
+            if (!seen.insert(lower).second) return "psychprops: the input " + name + " is given twice";
+            names.push_back(name);
+            values.push_back(arg.substr(namedArgumentEquals(arg) + 1));
+        }
+        if (seen.count("r") && seen.count("w"))
+            return "psychprops: R (relative humidity) and W (humidity ratio) cannot both be inputs (a limit of CoolProp's "
+                   "humid-air model); give one of them with T and P";
+        std::string given;
+        for (const auto& name : names) given += (given.empty() ? "" : ", ") + name;
+        if (!seen.count("p"))
+            return "psychprops: the pressure P is missing among its inputs (" + (given.empty() ? "none" : given) + "); the inputs are " +
+                   psychpropsInputList() + ", as in " + usage;
+        if (names.size() != 3)
+            return "psychprops takes three inputs, " + psychpropsInputList() + ", got " + std::to_string(names.size()) + " (" + given + ")";
+        args = values;
+        return "";
+    }
+
+    /// The outputs of CALL psychprops are at fixed positions (T, v, h, s, u, w, R, WetB, DewP) and may be skipped
+    /// (`: , , h_1, , , w_1`, EES help): `position` is where each output written stood in the list (0-based), `slots`
+    /// receives the position of each output kept (it stays empty when they are the first outputs in order). An output
+    /// written with the variable that is the input of the same quantity (`T=T_1, ... : T_1, ...`, the EES help example,
+    /// with T and R) is that input and is dropped: it would be the equation T_1 = T_1 and the system would have more
+    /// equations than unknowns. Returns why the outputs are refused ("" when fine).
+    std::string psychpropsOutputs(const std::vector<ExprPtr>& inputArgs, const std::vector<std::string>& inputNames,
+                                  std::vector<Variable>& outputVars, std::vector<ExprPtr>& outputExprs,
+                                  const std::vector<size_t>& position, std::vector<int>& slots) {
+        std::vector<Variable> keptVars;
+        std::vector<ExprPtr> keptExprs;
+        std::vector<int> keptSlots;
+        for (size_t k = 0; k < outputVars.size(); ++k) {
+            if (position[k] >= static_cast<size_t>(psychprops::kOutputCount))
+                return "psychprops has " + std::to_string(psychprops::kOutputCount) + " outputs (T, v, h, s, u, w, R, WetB, "
+                       "DewP): the output number " + std::to_string(position[k] + 1) + " does not exist";
+            const bool isVariable = outputExprs.empty() || !outputExprs[k];
+            bool echo = false;
+            if (isVariable) {
+                auto output = std::make_shared<Expression>();
+                output->node = outputVars[k];
+                for (size_t j = 0; j < inputArgs.size() && !echo; ++j) {
+                    std::string identifier = !inputNames.empty() ? inputNames[j] : j < 3 ? psychprops::kPositionalInputs[j] : "";
+                    std::transform(identifier.begin(), identifier.end(), identifier.begin(), ::tolower);
+                    // the same variable, element included (`T[i]`), as written
+                    echo = identifier == psychprops::kOutputs[position[k]].input && inputArgs[j]->is<Variable>() &&
+                           eesCompareFolded(formatExpr(inputArgs[j]), formatExpr(output)) == 0;
+                }
+            }
+            if (echo) continue;
+            keptVars.push_back(outputVars[k]);
+            if (!outputExprs.empty()) keptExprs.push_back(outputExprs[k]);
+            keptSlots.push_back(static_cast<int>(position[k]));
+        }
+        if (keptVars.empty() && !outputVars.empty())
+            return "psychprops: every output written is an input (the same variable) and nothing is left to compute";
+        bool inOrder = true;
+        for (size_t k = 0; k < keptSlots.size(); ++k) inOrder = inOrder && keptSlots[k] == static_cast<int>(k);
+        outputVars = std::move(keptVars);
+        if (!outputExprs.empty()) outputExprs = std::move(keptExprs);
+        if (!inOrder) slots = std::move(keptSlots);
+        return "";
+    }
+
     // `errorMsg`, when given, receives the reason why a CALL statement was refused
     // (an argument that cannot be parsed, an output that is not a variable).
     StmtPtr tryParseProcedureCall(const std::string& line, int lineNum, std::string* errorMsg = nullptr) {
@@ -3402,6 +3517,12 @@ private:
 
         std::vector<ExprPtr> inputArgs;
         std::vector<std::string> inputStrs = splitArguments(inputsStr);
+        std::vector<std::string> inputNames;   // CALL psychprops(T=T_1, ...): the identifier of each input
+        const bool psychpropsCall = isBuiltinPsychprops(name);
+        if (psychpropsCall) {
+            const std::string why = psychpropsInputs(inputStrs, inputNames);
+            if (!why.empty()) return refuse(why);
+        }
         for (size_t i = 0; i < inputStrs.size(); ++i) {
             auto expr = parseExpression(inputStrs[i], lineNum);
             if (!expr)
@@ -3422,10 +3543,12 @@ private:
         // FUNCTION/PROCEDURE the statements run in order and nothing solves such an equation.
         std::vector<Variable> outputVars;
         std::vector<ExprPtr> outputExprs;   // filled only when an output is an expression
+        std::vector<size_t> outputPositions;   // where each output stood in the list: an empty one is skipped, not dropped
         std::vector<std::string> outputStrs = splitArguments(outputsStr);
         for (size_t i = 0; i < outputStrs.size(); ++i) {
             std::string ts = trim(outputStrs[i]);
             if (ts.empty()) continue;
+            outputPositions.push_back(i);
             
             auto expr = parseExpression(ts, lineNum);
             if (!expr)
@@ -3453,7 +3576,15 @@ private:
                           "CALL Colebrook(Re, RR, f); got " + std::to_string(inputArgs.size()) + " input(s) and " +
                           std::to_string(outputVars.size()) + " output(s)");
         
-        return makeProcedureCall(name, std::move(inputArgs), std::move(outputVars), lineNum, std::move(outputExprs));
+        std::vector<int> outputSlots;
+        if (psychpropsCall) {
+            const std::string why = psychpropsOutputs(inputArgs, inputNames, outputVars, outputExprs, outputPositions, outputSlots);
+            if (!why.empty()) return refuse(why);
+        }
+        StmtPtr call = makeProcedureCall(name, std::move(inputArgs), std::move(outputVars), lineNum, std::move(outputExprs));
+        call->as<ProcedureCall>().inputNames = std::move(inputNames);
+        call->as<ProcedureCall>().outputSlots = std::move(outputSlots);
+        return call;
     }
 
     StmtPtr tryParseEquationOrAssignment(const std::string& line, int lineNum,

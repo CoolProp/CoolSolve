@@ -457,6 +457,7 @@ CoolSolve/
 │   ├── evaluator.h             # Block and system evaluators
 │   ├── libr_ashrae.h           # LiBr-H2O solution properties (EES routines X_LIBR, H_LIBR, T_LIBR, P_LIBR)
 │   ├── nh3h2o.h                # Ammonia-water: IAPWS G4-01 formulation, saturation, 15 flashes (fluid and CALL NH3H2O)
+│   ├── psychprops.h            # The nine outputs of CALL psychprops (EES PSYCHPROPS), shared by parser and evaluator
 │   ├── taylor_jet.h            # Truncated Taylor arithmetic in 3 variables (exact derivatives of the Helmholtz energy)
 │   ├── solution_checker.h      # Post-solve solution verification
 │   ├── usage_log.h             # GUI solve-attempt log (append + aggregated stats)

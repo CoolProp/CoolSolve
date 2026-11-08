@@ -3,6 +3,7 @@
 #include "coolsolve/ees_string.h"
 #include "coolsolve/libr_ashrae.h"
 #include "coolsolve/lookup_table.h"
+#include "coolsolve/psychprops.h"
 #include "coolsolve/units.h"
 #include "coolsolve/fluids.h"
 #include "coolsolve/user_hints.h"
@@ -680,69 +681,13 @@ std::string ExpressionEvaluator::resolveVariableName(const Variable& var) {
 }
 
 void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
-    // Built-in PSYCHPROPS procedure (EES compatibility).
-    // Signature:
-    //   CALL psychprops(T, P, RH : T, v, h, s, u, W, R, Twb, Tdp)
-    // where RH is the relative humidity (0..1).  Inputs are in the configured
-    // unit system; outputs are assembled in the configured unit system too.
+    // Built-in PSYCHPROPS procedure (EES compatibility): the model's own procedure of that name never runs
     {
         std::string lowerCallName = call.name;
         std::transform(lowerCallName.begin(), lowerCallName.end(),
                        lowerCallName.begin(), ::tolower);
         if (lowerCallName == "psychprops") {
-            if (call.inputArgs.size() != 3) {
-                throw std::runtime_error(
-                    "psychprops expects 3 inputs (T, P, R), got " +
-                    std::to_string(call.inputArgs.size()));
-            }
-            if (call.outputVars.size() < 1 || call.outputVars.size() > 9) {
-                throw std::runtime_error(
-                    "psychprops expects 1 to 9 outputs (T, v, h, s, u, W, R, Twb, Tdp), got " +
-                    std::to_string(call.outputVars.size()));
-            }
-            
-            ADValue tIn = evaluate(call.inputArgs[0]);
-            ADValue pIn = evaluate(call.inputArgs[1]);
-            ADValue rIn = evaluate(call.inputArgs[2]);
-            
-            const UnitSystem& units = coolpropConfig_.units;
-            double tSI = UnitConverter::toSI(tIn.value, UnitType::Temperature, units.temperature);
-            double pSI = UnitConverter::toSI(pIn.value, UnitType::Pressure, units.pressure);
-            double rVal = rIn.value;
-            
-            auto callHA = [&](const std::string& out) -> double {
-                return timedHAPropsSI(out, "T", tSI, "P", pSI, "R", rVal);
-            };
-            // Assemble all 9 outputs in SI then convert to configured units.
-            struct OutputSpec { std::string name; double valueSI; UnitType ut; std::string unit; };
-            std::vector<OutputSpec> outs;
-            outs.push_back({"T", tSI, UnitType::Temperature, units.temperature});
-            outs.push_back({"v", callHA("Vha"), UnitType::Dimensionless, ""});       // m^3/kg dry air
-            outs.push_back({"h", callHA("Hha"), UnitType::SpecificEnergy, units.specific_energy}); // J/kg dry air
-            outs.push_back({"s", callHA("Sha"), UnitType::SpecificEntropy, units.specific_entropy});
-            // Internal energy u = h - p*v (dry-basis); CoolProp has no direct "Uha"
-            double v_si = outs[1].valueSI;
-            double h_si = outs[2].valueSI;
-            outs.push_back({"u", h_si - pSI * v_si, UnitType::SpecificEnergy, units.specific_energy});
-            outs.push_back({"W", callHA("W"), UnitType::Dimensionless, ""});
-            outs.push_back({"R", rVal, UnitType::Dimensionless, ""});
-            outs.push_back({"Twb", callHA("Twb"), UnitType::Temperature, units.temperature});
-            outs.push_back({"Tdp", callHA("Tdp"), UnitType::Temperature, units.temperature});
-            
-            for (size_t i = 0; i < call.outputVars.size(); ++i) {
-                std::string outVarName = resolveVariableName(call.outputVars[i]);
-                double raw = outs[i].valueSI;
-                if (!std::isfinite(raw)) {
-                    throw std::runtime_error("psychprops: CoolProp returned non-finite for '" +
-                                             outs[i].name + "' " +
-                                             humidAirFailureDetail({HAParam::T, HAParam::P, HAParam::R},
-                                                                   {tSI, pSI, rVal}, units));
-                }
-                double finalVal = (outs[i].ut == UnitType::Dimensionless)
-                    ? raw
-                    : UnitConverter::fromSI(raw, outs[i].ut, outs[i].unit);
-                setVariable(outVarName, ADValue::constant(finalVal, numVariables_));
-            }
+            evaluatePsychpropsCall(call);
             return;
         }
     }
@@ -1321,6 +1266,237 @@ static std::runtime_error idealGasNeedsSecondInput(const std::string& funcName, 
                               "temperature (or h or u), or two inputs such as T and P / d and P");
 }
 
+/// The state of a humid-air property needs three distinct inputs, and CoolProp takes the water content as R or as W,
+/// never both. `inputs` is keyed by the lower-case EES identifier (`t`, `p`, `r`, ...).
+static void requireHumidAirInputs(const std::map<std::string, ADValue>& inputs) {
+    if (inputs.size() != 3) {
+        throw std::runtime_error("Humid Air properties require 2 or 3 input properties, got " +
+                                std::to_string(inputs.size()));
+    }
+    // R (relative humidity) and W (humidity ratio) cannot both be specified (CoolProp limitation)
+    if (inputs.count("r") && inputs.count("w")) {
+        throw std::runtime_error(
+            "CoolProp HumidAir cannot accept both R (relative humidity) and W (humidity ratio) as inputs. "
+            "If you need T at R=1 with given W, use dewpoint() instead: T_c = dewpoint(airH2O, P=..., W=..., T=T_ref)");
+    }
+}
+
+/// The AirH2O property `funcName` (`enthalpy`, `volume`, `humrat`, ...) at the state fixed by the three `inputs`
+/// (lower-case EES identifier -> value in the units of the model), with its derivatives. The property functions of
+/// AirH2O and CALL psychprops both come here, so that the procedure returns what the functions return. `label` names
+/// the caller in the unit hints and in the errors. Throws when CoolProp has no value (inputs out of its range, an
+/// output it has no name for): the property functions turn it into the penalty value, CALL psychprops reports it.
+ADValue ExpressionEvaluator::evaluateHumidAirProperty(const std::string& funcName, const std::string& label,
+                                                      const std::string& fluidName,
+                                                      const std::map<std::string, ADValue>& inputs) {
+    const UnitSystem& units = coolpropConfig_.units;
+    std::vector<std::string> inputNamesList;
+    std::vector<ADValue> inputValues;
+    for (const auto& [name, val] : inputs) {
+        inputNamesList.push_back(name);
+        inputValues.push_back(val);
+    }
+
+    HAParam outParam = getHAOutputParam(funcName);
+    std::vector<HAParam> inParams;
+    for (const auto& name : inputNamesList) {
+        inParams.push_back(getHAParam(name));
+    }
+
+    std::string outputStr = haParamToString(outParam);
+    std::vector<std::string> inputStrs;
+    for (auto p : inParams) {
+        inputStrs.push_back(haParamToString(p));
+    }
+
+    std::vector<double> vals;
+    for (size_t i = 0; i < 3; ++i) {
+        double v = inputValues[i].value;
+        if (unitHints_)
+            if (const auto kind = thermoKindFromHAName(inputNamesList[i]))
+                checkThermoInputValueHint(diagnostics_, label + "()", units, *kind, inputNamesList[i], v);
+        UnitType type = haParamToUnitType(inParams[i]);
+
+        if (type != UnitType::Dimensionless) {
+            v = UnitConverter::toSI(v, type, 
+                type == UnitType::Temperature ? units.temperature : 
+                type == UnitType::Pressure ? units.pressure :
+                type == UnitType::SpecificEnergy ? units.specific_energy :
+                type == UnitType::SpecificEntropy ? units.specific_entropy :
+                type == UnitType::Density ? units.density : "");
+        }
+        vals.push_back(v);
+    }
+
+    // The output at the inputs `v`; the density is 1/Vda, so its derivatives below are those of 1/Vda as well
+    // (a failure of CoolProp stays NaN/Inf: 1/Inf must not become a density of 0).
+    auto haOutput = [&](const std::vector<double>& v) {
+        const double r = timedHAPropsSI(outputStr, inputStrs[0], v[0], inputStrs[1], v[1], inputStrs[2], v[2]);
+        return (outParam == HAParam::Rho && std::isfinite(r)) ? 1.0 / r : r;
+    };
+
+    double result = haOutput(vals);
+
+    if (!std::isfinite(result)) {
+        // Special handling for relative humidity with supersaturated air:
+        // when W > W_sat at the given T and P, HAPropsSI("R",...) returns
+        // NaN.  Compute RH = W / W_sat instead (gives RH > 1, which the
+        // model can use to detect condensation).
+        bool handled = false;
+        if (outParam == HAParam::R) {
+            // Find the W and non-W inputs
+            int wIdx = -1;
+            for (size_t k = 0; k < 3; ++k) {
+                if (inParams[k] == HAParam::W) { wIdx = k; break; }
+            }
+            if (wIdx >= 0) {
+                // Build a call with R=1 instead of W to get W_sat
+                std::vector<std::string> satStrs;
+                std::vector<double> satVals;
+                for (size_t k = 0; k < 3; ++k) {
+                    if ((int)k == wIdx) {
+                        satStrs.push_back("R");
+                        satVals.push_back(1.0);
+                    } else {
+                        satStrs.push_back(inputStrs[k]);
+                        satVals.push_back(vals[k]);
+                    }
+                }
+                double wSat = timedHAPropsSI("W", satStrs[0], satVals[0],
+                                             satStrs[1], satVals[1],
+                                             satStrs[2], satVals[2]);
+                if (std::isfinite(wSat) && wSat > 0) {
+                    result = vals[wIdx] / wSat;
+                    handled = true;
+                }
+            }
+        }
+        if (!handled) {
+            // CoolProp returns NaN/Inf instead of throwing (inputs outside its validity range, output it has
+            // no name for). Reported like every other CoolProp failure: C001 below, with the penalty value
+            // kept for the iterations, and the solution check turns it into an error.
+            if (outParam == HAParam::Unknown)
+                throw std::runtime_error("'" + label + "' is not available for humid air (" + fluidName +
+                                         "): CoolSolve has no CoolProp humid-air output for it");
+            throw std::runtime_error("CoolProp returned invalid result (NaN or Inf) for " + label + "(" +
+                                     fluidName + ") " + humidAirFailureDetail(inParams, vals, units));
+        }
+    }
+
+    // Convert output from SI
+    UnitType outType = haParamToUnitType(outParam);
+    if (outType != UnitType::Dimensionless) {
+        result = UnitConverter::fromSI(result, outType, 
+            outType == UnitType::Temperature ? units.temperature : 
+            outType == UnitType::Pressure ? units.pressure :
+            outType == UnitType::SpecificEnergy ? units.specific_energy :
+            outType == UnitType::SpecificEntropy ? units.specific_entropy :
+            outType == UnitType::Density ? units.density : "");
+    }
+
+    // Derivatives. They are chained with the gradients of the inputs: when no input depends on an unknown (the
+    // state is a parameter or the result of another block) every term is 0 and the 6 CoolProp calls are skipped.
+    const double relEps = 1e-6;
+    const double absEps = 1e-8;
+    std::vector<double> dResult_dInput(3, 0.0);
+    const bool dependsOnUnknowns = std::any_of(inputValues.begin(), inputValues.end(), [](const ADValue& input) {
+        return std::any_of(input.gradient.begin(), input.gradient.end(), [](double g) { return g != 0.0; });
+    });
+
+    for (size_t i = 0; dependsOnUnknowns && i < 3; ++i) {
+        double step = std::max(relEps * std::abs(vals[i]), absEps);
+        std::vector<double> vPlus = vals;
+        std::vector<double> vMinus = vals;
+        vPlus[i] += step;
+        vMinus[i] -= step;
+
+        double rPlus = haOutput(vPlus);
+        double rMinus = haOutput(vMinus);
+
+        if (std::isfinite(rPlus) && std::isfinite(rMinus)) {
+            dResult_dInput[i] = (rPlus - rMinus) / (2.0 * step);
+        }
+    }
+
+    // Scaling factors for derivatives
+    auto getScale = [&](UnitType t, const std::string& u, bool toSI) {
+        return toSI ? UnitConverter::scaleToSI(t, u) : UnitConverter::scaleFromSI(t, u);
+    };
+
+    double outScale = getScale(outType, 
+        outType == UnitType::Temperature ? units.temperature : 
+        outType == UnitType::Pressure ? units.pressure :
+        outType == UnitType::SpecificEnergy ? units.specific_energy :
+        outType == UnitType::SpecificEntropy ? units.specific_entropy :
+        outType == UnitType::Density ? units.density : "", false);
+
+    ADValue output(result, numVariables_);
+    for (size_t j = 0; j < 3; ++j) {
+        UnitType inType = haParamToUnitType(inParams[j]);
+        double inScale = getScale(inType, 
+            inType == UnitType::Temperature ? units.temperature : 
+            inType == UnitType::Pressure ? units.pressure :
+            inType == UnitType::SpecificEnergy ? units.specific_energy :
+            inType == UnitType::SpecificEntropy ? units.specific_entropy :
+            inType == UnitType::Density ? units.density : "", true);
+
+        double dTotal = dResult_dInput[j] * outScale * inScale;
+        for (size_t i = 0; i < numVariables_; ++i) {
+            output.gradient[i] += dTotal * inputValues[j].gradient[i];
+        }
+    }
+
+    return output;
+}
+
+
+/// CALL psychprops(T=T_1, P=P_1, R=RH_1 : T, v, h, s, u, w, R, WetB, DewP) (EES help `hs786.htm`), or the positional form
+/// CALL psychprops(T, P, R : ...). The inputs are P and two other state properties of AirH2O; each output is the AirH2O
+/// property function of the same quantity (psychprops.h) at that state, so the procedure returns what `volume`,
+/// `enthalpy`, ... return (per kg of dry air) with the same derivatives (a state that depends on unknowns is solved
+/// for, as with the functions). An output that is also an input is the input. Skipped outputs (`outputSlots`) are not
+/// computed. Inputs and outputs are in the units of the model. A state outside CoolProp's range is an error.
+void ExpressionEvaluator::evaluatePsychpropsCall(const ProcedureCall& call) {
+    if (call.inputArgs.size() != 3) {
+        throw std::runtime_error(
+            "psychprops expects 3 inputs (T, P, R), got " +
+            std::to_string(call.inputArgs.size()));
+    }
+    if (call.outputVars.size() < 1 || call.outputVars.size() > psychprops::kOutputCount) {
+        throw std::runtime_error(
+            "psychprops expects 1 to 9 outputs (T, v, h, s, u, W, R, Twb, Tdp), got " +
+            std::to_string(call.outputVars.size()));
+    }
+    if (!call.inputNames.empty() && call.inputNames.size() != call.inputArgs.size()) {
+        throw std::runtime_error("psychprops: " + std::to_string(call.inputNames.size()) + " input names for " +
+                                 std::to_string(call.inputArgs.size()) + " inputs");
+    }
+    if (!call.outputSlots.empty() && call.outputSlots.size() != call.outputVars.size()) {
+        throw std::runtime_error("psychprops: " + std::to_string(call.outputSlots.size()) + " output positions for " +
+                                 std::to_string(call.outputVars.size()) + " outputs");
+    }
+
+    std::map<std::string, ADValue> inputs;   // by lower-case identifier, as the property functions take them
+    for (size_t i = 0; i < call.inputArgs.size(); ++i) {
+        std::string identifier = call.inputNames.empty() ? psychprops::kPositionalInputs[i] : call.inputNames[i];
+        std::transform(identifier.begin(), identifier.end(), identifier.begin(), ::tolower);
+        inputs[identifier] = evaluate(call.inputArgs[i]);
+    }
+    requireHumidAirInputs(inputs);
+
+    for (size_t i = 0; i < call.outputVars.size(); ++i) {
+        const int slot = call.outputSlots.empty() ? static_cast<int>(i) : call.outputSlots[i];
+        if (slot < 0 || slot >= psychprops::kOutputCount)
+            throw std::runtime_error("psychprops has " + std::to_string(psychprops::kOutputCount) + " outputs, got a position " +
+                                     std::to_string(slot + 1));
+        const psychprops::Output& output = psychprops::kOutputs[slot];
+        const auto given = inputs.find(output.input);
+        setVariable(resolveVariableName(call.outputVars[i]),
+                    given != inputs.end() ? given->second
+                                          : evaluateHumidAirProperty(output.function, "psychprops", "AirH2O", inputs));
+    }
+}
+
 ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) {
     std::string funcName = func.name;
     std::transform(funcName.begin(), funcName.end(), funcName.begin(), ::tolower);
@@ -1488,176 +1664,10 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         if (inputs.size() == 2) {
             inputs["w"] = ADValue::constant(0.0, numVariables_);
         }
-        
-        if (inputs.size() != 3) {
-            throw std::runtime_error("Humid Air properties require 2 or 3 input properties, got " + 
-                                    std::to_string(inputs.size()));
-        }
-        
-        // Check for incompatible water-content inputs (CoolProp limitation)
-        // R (relative humidity) and W (humidity ratio) cannot both be specified
-        bool hasR = inputs.find("r") != inputs.end();
-        bool hasW = inputs.find("w") != inputs.end();
-        if (hasR && hasW) {
-            throw std::runtime_error(
-                "CoolProp HumidAir cannot accept both R (relative humidity) and W (humidity ratio) as inputs. "
-                "If you need T at R=1 with given W, use dewpoint() instead: T_c = dewpoint(airH2O, P=..., W=..., T=T_ref)");
-        }
-        
-        std::vector<std::string> inputNamesList;
-        std::vector<ADValue> inputValues;
-        for (const auto& [name, val] : inputs) {
-            inputNamesList.push_back(name);
-            inputValues.push_back(val);
-        }
-        
-        HAParam outParam = getHAOutputParam(funcName);
-        std::vector<HAParam> inParams;
-        for (const auto& name : inputNamesList) {
-            inParams.push_back(getHAParam(name));
-        }
-        
-        std::string outputStr = haParamToString(outParam);
-        std::vector<std::string> inputStrs;
-        for (auto p : inParams) {
-            inputStrs.push_back(haParamToString(p));
-        }
-        
-        std::vector<double> vals;
-        for (size_t i = 0; i < 3; ++i) {
-            double v = inputValues[i].value;
-            if (unitHints_)
-                if (const auto kind = thermoKindFromHAName(inputNamesList[i]))
-                    checkThermoInputValueHint(diagnostics_, func.name + "()", units, *kind, inputNamesList[i], v);
-            UnitType type = haParamToUnitType(inParams[i]);
-            
-            if (type != UnitType::Dimensionless) {
-                v = UnitConverter::toSI(v, type, 
-                    type == UnitType::Temperature ? units.temperature : 
-                    type == UnitType::Pressure ? units.pressure :
-                    type == UnitType::SpecificEnergy ? units.specific_energy :
-                    type == UnitType::SpecificEntropy ? units.specific_entropy :
-                    type == UnitType::Density ? units.density : "");
-            }
-            vals.push_back(v);
-        }
-        
-        // The output at the inputs `v`; the density is 1/Vda, so its derivatives below are those of 1/Vda as well
-        // (a failure of CoolProp stays NaN/Inf: 1/Inf must not become a density of 0).
-        auto haOutput = [&](const std::vector<double>& v) {
-            const double r = timedHAPropsSI(outputStr, inputStrs[0], v[0], inputStrs[1], v[1], inputStrs[2], v[2]);
-            return (outParam == HAParam::Rho && std::isfinite(r)) ? 1.0 / r : r;
-        };
+        requireHumidAirInputs(inputs);
 
         try {
-            double result = haOutput(vals);
-            
-            if (!std::isfinite(result)) {
-                // Special handling for relative humidity with supersaturated air:
-                // when W > W_sat at the given T and P, HAPropsSI("R",...) returns
-                // NaN.  Compute RH = W / W_sat instead (gives RH > 1, which the
-                // model can use to detect condensation).
-                bool handled = false;
-                if (outParam == HAParam::R) {
-                    // Find the W and non-W inputs
-                    int wIdx = -1;
-                    for (size_t k = 0; k < 3; ++k) {
-                        if (inParams[k] == HAParam::W) { wIdx = k; break; }
-                    }
-                    if (wIdx >= 0) {
-                        // Build a call with R=1 instead of W to get W_sat
-                        std::vector<std::string> satStrs;
-                        std::vector<double> satVals;
-                        for (size_t k = 0; k < 3; ++k) {
-                            if ((int)k == wIdx) {
-                                satStrs.push_back("R");
-                                satVals.push_back(1.0);
-                            } else {
-                                satStrs.push_back(inputStrs[k]);
-                                satVals.push_back(vals[k]);
-                            }
-                        }
-                        double wSat = timedHAPropsSI("W", satStrs[0], satVals[0],
-                                                     satStrs[1], satVals[1],
-                                                     satStrs[2], satVals[2]);
-                        if (std::isfinite(wSat) && wSat > 0) {
-                            result = vals[wIdx] / wSat;
-                            handled = true;
-                        }
-                    }
-                }
-                if (!handled) {
-                    // CoolProp returns NaN/Inf instead of throwing (inputs outside its validity range, output it has
-                    // no name for). Reported like every other CoolProp failure: C001 below, with the penalty value
-                    // kept for the iterations, and the solution check turns it into an error.
-                    if (outParam == HAParam::Unknown)
-                        throw std::runtime_error("'" + func.name + "' is not available for humid air (" + eesFluidName +
-                                                 "): CoolSolve has no CoolProp humid-air output for it");
-                    throw std::runtime_error("CoolProp returned invalid result (NaN or Inf) for " + func.name + "(" +
-                                             eesFluidName + ") " + humidAirFailureDetail(inParams, vals, units));
-                }
-            }
-            
-            // Convert output from SI
-            UnitType outType = haParamToUnitType(outParam);
-            if (outType != UnitType::Dimensionless) {
-                result = UnitConverter::fromSI(result, outType, 
-                    outType == UnitType::Temperature ? units.temperature : 
-                    outType == UnitType::Pressure ? units.pressure :
-                    outType == UnitType::SpecificEnergy ? units.specific_energy :
-                    outType == UnitType::SpecificEntropy ? units.specific_entropy :
-                    outType == UnitType::Density ? units.density : "");
-            }
-            
-            // Derivatives
-            const double relEps = 1e-6;
-            const double absEps = 1e-8;
-            std::vector<double> dResult_dInput(3, 0.0);
-            
-            for (size_t i = 0; i < 3; ++i) {
-                double step = std::max(relEps * std::abs(vals[i]), absEps);
-                std::vector<double> vPlus = vals;
-                std::vector<double> vMinus = vals;
-                vPlus[i] += step;
-                vMinus[i] -= step;
-                
-                double rPlus = haOutput(vPlus);
-                double rMinus = haOutput(vMinus);
-                
-                if (std::isfinite(rPlus) && std::isfinite(rMinus)) {
-                    dResult_dInput[i] = (rPlus - rMinus) / (2.0 * step);
-                }
-            }
-            
-            // Scaling factors for derivatives
-            auto getScale = [&](UnitType t, const std::string& u, bool toSI) {
-                return toSI ? UnitConverter::scaleToSI(t, u) : UnitConverter::scaleFromSI(t, u);
-            };
-            
-            double outScale = getScale(outType, 
-                outType == UnitType::Temperature ? units.temperature : 
-                outType == UnitType::Pressure ? units.pressure :
-                outType == UnitType::SpecificEnergy ? units.specific_energy :
-                outType == UnitType::SpecificEntropy ? units.specific_entropy :
-                outType == UnitType::Density ? units.density : "", false);
-                
-            ADValue output(result, numVariables_);
-            for (size_t j = 0; j < 3; ++j) {
-                UnitType inType = haParamToUnitType(inParams[j]);
-                double inScale = getScale(inType, 
-                    inType == UnitType::Temperature ? units.temperature : 
-                    inType == UnitType::Pressure ? units.pressure :
-                    inType == UnitType::SpecificEnergy ? units.specific_energy :
-                    inType == UnitType::SpecificEntropy ? units.specific_entropy :
-                    inType == UnitType::Density ? units.density : "", true);
-                    
-                double dTotal = dResult_dInput[j] * outScale * inScale;
-                for (size_t i = 0; i < numVariables_; ++i) {
-                    output.gradient[i] += dTotal * inputValues[j].gradient[i];
-                }
-            }
-            
-            return output;
+            return evaluateHumidAirProperty(funcName, func.name, eesFluidName, inputs);
         } catch (const std::exception& e) {
             // Penalty-based HumidAir error handling (consistent with PropsSI)
             if (diagnostics_) {
@@ -1670,7 +1680,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             return output;
         }
     }
-    
+
     // --- Standard CoolProp Handling ---
     if (fluid->getType() == FluidType::Unknown) {
         auto unsupported = std::dynamic_pointer_cast<UnsupportedFluid>(fluid);

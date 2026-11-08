@@ -12748,8 +12748,10 @@ TEST_CASE("CS-BUG-HUMIDAIR-HIGHT: PSYCHPROPS out of range is an error that says 
     auto hot = runModel("T_1 = 400\nP_1 = 101325\nR_1 = 0.5\n" + call);
     CHECK_FALSE(hot.solveOk);
     INFO(hot.message);
-    CHECK(hot.message.find("psychprops: CoolProp returned non-finite for") != std::string::npos);
-    CHECK(hot.message.find("with inputs T=400 C, P=101325 Pa, R=0.5") != std::string::npos);
+    // the message is that of the property functions (the procedure evaluates them, CS-BUG-PSYCHPROPS-BASIS): their inputs
+    // in the order of their identifiers
+    CHECK(hot.message.find("CoolProp returned invalid result (NaN or Inf) for psychprops(AirH2O)") != std::string::npos);
+    CHECK(hot.message.find("with inputs P=101325 Pa, R=0.5, T=400 C") != std::string::npos);
     CHECK(hot.message.find("(-143.15 C to 350 C)") != std::string::npos);
     CHECK(hot.message.find("ideal-gas fluid Air") != std::string::npos);
     auto ok = runModel("T_1 = 40\nP_1 = 101325\nR_1 = 0.5\n" + call);
@@ -22404,4 +22406,408 @@ c = rep(0)
     // k = 1..5: 1 + 1 + 10 + 10 + 10 = 32; k >= 4 twice: 200; k = 2 with n > 0: 1000
     CHECK_THAT(run["b"], WithinAbs(32.0 + 200.0 + 1000.0, 1e-12));
     CHECK_THAT(run["c"], WithinAbs(32.0 + 200.0, 1e-12));
+}
+
+// ============================================================================
+// CS-BUG-PSYCHPROPS-BASIS and CS-GAP-PSYCHPROPS-NAMED: CALL psychprops
+// ============================================================================
+// EES gives every specific property of AirH2O per kg of DRY air (help `airh2o.htm`), and so does PSYCHPROPS (help
+// `hs786.htm`: v = 0.8668 m3/kg at 25 C, 100 kPa, R = 0.4); CoolSolve returned v, h, s, u per kg of humid air
+// (CoolProp's Vha, Hha, Sha), a factor (1 + w) off, silently. The procedure now evaluates the AirH2O property
+// functions, so it returns what they return, with their derivatives. The named-input form of the help
+// (`CALL psychprops(T=T_1, P=P_1, R=RH_1 : ...)`) was a parse error; the outputs that the help lets the model skip
+// (`: {T_1}, {v_1}, h_1, ...`) shifted the following ones, silently.
+
+#include "coolsolve/psychprops.h"
+
+namespace {
+
+/// A state for CALL psychprops: the assignments that define its inputs and the inputs as they are written in a call.
+struct PsychState {
+    std::string name;
+    std::string defs;     ///< equations that define the variables of `inputs`
+    std::string inputs;   ///< `T=T_1, P=P_1, R=RH_1`: the arguments of the call, and of each AirH2O property function
+};
+
+/// The model that calls psychprops with all nine outputs (T_o, v, h, s, u, w, R_o, Twb, Tdp) at `state` and, from the
+/// same arguments, the AirH2O property function of each output (ref_T_o, ref_v, ...).
+std::string psychpropsModel(const PsychState& state) {
+    static const char* const outputs[psychprops::kOutputCount] = {"T_o", "v", "h", "s", "u", "w", "R_o", "Twb", "Tdp"};
+    std::string model = state.defs + "CALL psychprops(" + state.inputs + " : ";
+    for (int k = 0; k < psychprops::kOutputCount; ++k) model += std::string(k ? ", " : "") + outputs[k];
+    model += ")\n";
+    // the reference functions take the substance first, so the substance of the call (if any) is not repeated
+    std::string args = state.inputs;
+    const size_t firstName = args.find('=');
+    const size_t comma = args.find(',');
+    if (comma != std::string::npos && comma < firstName) args = args.substr(comma + 1);
+    for (int k = 0; k < psychprops::kOutputCount; ++k)
+        model += std::string("ref_") + outputs[k] + " = " + psychprops::kOutputs[k].function + "(AirH2O, " + args + ")\n";
+    return model;
+}
+
+const PsychState kPsychStates[] = {
+    {"T, P, R (the help example, in Pa)", "T_1 = 25\nP_1 = 100000\nRH_1 = 0.4\n", "T=T_1, P=P_1, R=RH_1"},
+    {"any order, cold and humid", "T_1 = 5\nP_1 = 101325\nRH_1 = 0.9\n", "P=P_1, R=RH_1, T=T_1"},
+    {"substance first, humidity ratio", "T_1 = 40\nP_1 = 200000\nw_1 = 0.01\n", "AirH2O, T=T_1, P=P_1, W=w_1"},
+    {"lower case, wet-bulb temperature", "T_1 = 15\nP_1 = 101325\nTwb_1 = 10\n", "t=T_1, p=P_1, b=Twb_1"},
+    {"dew-point temperature", "T_1 = 30\nP_1 = 101325\nTdp_1 = 12\n", "T=T_1, P=P_1, D=Tdp_1"},
+    {"T is an output: enthalpy, pressure and relative humidity", "P_1 = 101325\nh_1 = 50000\nRH_1 = 0.5\n", "P=P_1, H=h_1, R=RH_1"},
+};
+
+}  // namespace
+
+TEST_CASE("CS-BUG-PSYCHPROPS-BASIS: register reproducer, v, h, s and u are per kg of dry air", "[library-gaps][psychprops]") {
+    auto run = runModel("T_1 = 25\nP_1 = 100000\nRH_1 = 0.4\n"
+                        "CALL psychprops(T_1, P_1, RH_1 : T_o, v, h, s, u, w, R_o, Twb, Tdp)\n"
+                        "v_ref = volume(AirH2O, T=T_1, P=P_1, R=RH_1)\n"
+                        "h_ref = enthalpy(AirH2O, T=T_1, P=P_1, R=RH_1)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // was: v = 0.85965 = v_ref/(1 + w) and h = 45215 (Vha, Hha)
+    CHECK_THAT(run["v"], WithinRel(run["v_ref"], 1e-9));
+    CHECK_THAT(run["h"], WithinRel(run["h_ref"], 1e-9));
+    // CoolProp's per-kg-of-dry-air outputs ...
+    const double T = 298.15, P = 1e5, R = 0.4;
+    CHECK_THAT(run["v"], WithinRel(HumidAir::HAPropsSI("Vda", "T", T, "P", P, "R", R), 1e-9));
+    CHECK_THAT(run["h"], WithinRel(HumidAir::HAPropsSI("Hda", "T", T, "P", P, "R", R), 1e-9));
+    CHECK_THAT(run["s"], WithinRel(HumidAir::HAPropsSI("Sda", "T", T, "P", P, "R", R), 1e-9));
+    // ... and the per-kg-of-humid-air ones are those divided by (1 + w)
+    CHECK_THAT(run["v"] / (1.0 + run["w"]), WithinRel(HumidAir::HAPropsSI("Vha", "T", T, "P", P, "R", R), 1e-9));
+    CHECK_THAT(run["h"] / (1.0 + run["w"]), WithinRel(HumidAir::HAPropsSI("Hha", "T", T, "P", P, "R", R), 1e-9));
+    // u = h - P v (per kg of dry air), as intenergy(AirH2O)
+    CHECK_THAT(run["u"], WithinRel(run["h"] - 1e5 * run["v"], 1e-9));
+    // the outputs that are inputs or humidity properties
+    CHECK_THAT(run["T_o"], WithinAbs(25.0, 1e-9));
+    CHECK_THAT(run["R_o"], WithinAbs(0.4, 1e-9));
+    CHECK_THAT(run["w"], WithinRel(HumidAir::HAPropsSI("W", "T", T, "P", P, "R", R), 1e-9));
+    CHECK_THAT(run["Twb"], WithinAbs(HumidAir::HAPropsSI("Twb", "T", T, "P", P, "R", R) - 273.15, 1e-9));
+    CHECK_THAT(run["Tdp"], WithinAbs(HumidAir::HAPropsSI("Tdp", "T", T, "P", P, "R", R) - 273.15, 1e-9));
+    // the property functions did not change
+    CHECK_THAT(run["v_ref"], WithinRel(HumidAir::HAPropsSI("V", "T", T, "P", P, "R", R), 1e-9));
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function 'psychprops'"));
+}
+
+TEST_CASE("CS-GAP-PSYCHPROPS-NAMED: the EES help example, in named form, within the difference of the humid-air models",
+          "[library-gaps][psychprops]") {
+    // hs786.htm: $UnitSystem SI C kPa mass, T = 25 C, P = 100 kPa, R = 0.4. CoolSolve's units are SI-C-Pa-J: P in Pa,
+    // h and u in J/kg. T_1 and RH_1 are inputs AND outputs of the call, as in the help.
+    auto run = runModel("T_1=25 [C]\nP_1=100000 [Pa]\nRH_1=0.4\n"
+                        "CALL psychprops ( T =T_1, P =P_1, R =RH_1:T_1, v_1,h_1,s_1,u_1,omega_1,RH_1,WetB_1,DewP_1)\n");
+    INFO(run.message);
+    REQUIRE(run.parseOk);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function 'psychprops'"));
+    CHECK_THAT(run["T_1"], WithinAbs(25.0, 1e-12));
+    CHECK_THAT(run["RH_1"], WithinAbs(0.4, 1e-12));
+    // The values of the help (v = 0.8668 m3/kg, h = 45.45 kJ/kg, u = -41.23 kJ/kg, omega = 0.007986, WetB = 16.16 C,
+    // DewP = 10.48 C) against CoolSolve's (0.86655, 45.578 kJ/kg, -41.077 kJ/kg, 0.0080212, 16.159 C, 10.479 C). The two
+    // are different models of humid air: EES computes an ideal-gas mixture (ASHRAE Fundamentals 2009, chapter 1,
+    // equation 28, help airh2o.htm), CoolProp the real mixture of Hyland and Wexler with the enhancement factor of water
+    // vapour, which makes omega 0.44 % larger here and h and u 0.13 and 0.15 kJ/kg larger. The tolerances are about twice
+    // the observed differences: 0.1 % on v, 0.3 kJ/kg on h and u, 1 % on omega, 0.05 K on the temperatures.
+    CHECK_THAT(run["v_1"], WithinRel(0.8668, 1e-3));
+    CHECK_THAT(run["h_1"], WithinAbs(45450.0, 300.0));
+    CHECK_THAT(run["u_1"], WithinAbs(-41230.0, 300.0));
+    CHECK_THAT(run["omega_1"], WithinRel(0.007986, 1e-2));
+    CHECK_THAT(run["WetB_1"], WithinAbs(16.16, 0.05));
+    CHECK_THAT(run["DewP_1"], WithinAbs(10.48, 0.05));
+    // The entropy keeps CoolProp's reference state (documented in the language reference): the help's 5.775 kJ/kg-K is
+    // 0.1676 kJ/kg-K here, so only differences of entropy compare with EES.
+    CHECK_THAT(run["s_1"], WithinRel(HumidAir::HAPropsSI("Sda", "T", 298.15, "P", 1e5, "R", 0.4), 1e-9));
+}
+
+TEST_CASE("CS-BUG-PSYCHPROPS-BASIS: the outputs equal the AirH2O property functions, in every form of the inputs",
+          "[library-gaps][psychprops]") {
+    for (const auto& state : kPsychStates) {
+        INFO(state.name);
+        auto run = runModel(psychpropsModel(state));
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_FALSE(anyContains(run.warnings, "Unknown function 'psychprops'"));
+        for (const char* output : {"T_o", "v", "h", "s", "u", "w", "R_o", "Twb", "Tdp"}) {
+            INFO(output);
+            CHECK_THAT(run[output], WithinRel(run[std::string("ref_") + output], 1e-9));
+        }
+        CHECK_THAT(run["u"], WithinRel(run["h"] - run["P_1"] * run["v"], 1e-9));   // u = h - P v, per kg of dry air
+    }
+}
+
+TEST_CASE("CS-GAP-PSYCHPROPS-NAMED: the named form equals the positional form", "[library-gaps][psychprops]") {
+    const std::string outputs = " : T_o, v, h, s, u, w, R_o, Twb, Tdp)\n";
+    const std::string defs = "T_1 = 25\nP_1 = 100000\nRH_1 = 0.4\n";
+    auto positional = runModel(defs + "CALL psychprops(T_1, P_1, RH_1" + outputs);
+    REQUIRE(positional.solveOk);
+    // the writings of the named form: any order, any case, spaces around `=` and before the parenthesis (as in the
+    // help), the substance first, in quotes or without
+    for (const char* inputs : {"T=T_1, P=P_1, R=RH_1", "R=RH_1, P=P_1, T=T_1", "t = T_1, p = P_1, r = RH_1",
+                               "AirH2O, T=T_1, P=P_1, R=RH_1", "'AirH2O', P=P_1, T=T_1, R=RH_1", "airh2o, R=RH_1, T=T_1, P=P_1"}) {
+        INFO(inputs);
+        auto named = runModel(defs + "CALL psychprops ( " + inputs + outputs);
+        INFO(named.message);
+        REQUIRE(named.solveOk);
+        CHECK(named.verified);
+        for (const char* output : {"T_o", "v", "h", "s", "u", "w", "R_o", "Twb", "Tdp"}) {
+            INFO(output);
+            CHECK_THAT(named[output], WithinRel(positional[output], 1e-12));
+        }
+    }
+    // an expression is an input like any other, and the model's own PROCEDURE of that name never runs
+    auto expression = runModel("P_1 = 100000\nCALL psychprops(T=20 + 5, P=P_1/2*2, R=0.2*2 : , , h)\n");
+    REQUIRE(expression.solveOk);
+    CHECK_THAT(expression["h"], WithinRel(positional["h"], 1e-12));
+}
+
+TEST_CASE("CS-GAP-PSYCHPROPS-NAMED: outputs left out keep the position of the others (help hs786.htm)", "[library-gaps][psychprops]") {
+    const std::string defs = "T_1 = 25\nP_1 = 100000\nRH_1 = 0.4\n";
+    const std::string reference = "h_ref = enthalpy(AirH2O, T=T_1, P=P_1, R=RH_1)\n"
+                                  "w_ref = humrat(AirH2O, T=T_1, P=P_1, R=RH_1)\n"
+                                  "Twb_ref = wetbulb(AirH2O, T=T_1, P=P_1, R=RH_1)\n"
+                                  "u_ref = intenergy(AirH2O, T=T_1, P=P_1, R=RH_1)\n";
+    // the second example of the help, with the left-out names in braces; was: h_1 = 25 (the temperature) and
+    // omega_1 = the volume
+    auto help = runModel(defs + "Call psychprops ( T =T_1, P =P_1, R =RH_1: {T_1}, {v_1}, h_1, {s_1},  {u_1}, omega_1)\n" + reference);
+    INFO(help.message);
+    REQUIRE(help.solveOk);
+    CHECK(help.verified);
+    CHECK_THAT(help["h_1"], WithinRel(help["h_ref"], 1e-9));
+    CHECK_THAT(help["omega_1"], WithinRel(help["w_ref"], 1e-9));
+    // the names removed, the commas kept; trailing commas; positional inputs; the last outputs only
+    struct Case { const char* call; const char* output; const char* reference; };
+    for (const Case& c : {Case{"CALL psychprops(T=T_1, P=P_1, R=RH_1 : , , x)", "x", "h_ref"},
+                          Case{"CALL psychprops(T=T_1, P=P_1, R=RH_1 : , , , , , x, ,)", "x", "w_ref"},
+                          Case{"CALL psychprops(T_1, P_1, RH_1 : , , , , u_1)", "u_1", "u_ref"},
+                          Case{"CALL psychprops(P=P_1, R=RH_1, T=T_1 : , , , , , , , x)", "x", "Twb_ref"},
+                          Case{"CALL psychprops(T=T_1, P=P_1, R=RH_1 : , x)", "x", "v_ref"}}) {
+        INFO(c.call);
+        auto run = runModel(defs + c.call + "\n" + reference + "v_ref = volume(AirH2O, T=T_1, P=P_1, R=RH_1)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run[c.output], WithinRel(run[c.reference], 1e-9));
+    }
+    // an output beyond the ninth does not exist, even when the others are left out
+    CHECK(parseErrors(defs + "CALL psychprops(T=T_1, P=P_1, R=RH_1 : , , , , , , , , , x)\n").size() == 1);
+    auto tenth = parseErrors(defs + "CALL psychprops(T=T_1, P=P_1, R=RH_1 : a, b, c, d, e, f, g, h, i, j)\n");
+    REQUIRE(tenth.size() == 1);
+    CHECK(tenth[0].find("psychprops has 9 outputs") != std::string::npos);
+    CHECK(tenth[0].find("the output number 10 does not exist") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-PSYCHPROPS-NAMED: an output that is its own input is that input, not one more equation", "[library-gaps][psychprops]") {
+    // The help example writes T_1 and RH_1 as inputs and as outputs: with T_1 = 25 and RH_1 = 0.4 as equations the system
+    // would have 12 equations and 10 unknowns. Written with the same variable, the output is the input.
+    const std::string call = "CALL psychprops(T=T_1, P=P_1, R=RH_1 : T_1, v_1, h_1, s_1, u_1, omega_1, RH_1, WetB_1, DewP_1)\n";
+    auto run = runModel("T_1 = 25\nP_1 = 100000\nRH_1 = 0.4\n" + call);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["h_1"], WithinRel(HumidAir::HAPropsSI("Hda", "T", 298.15, "P", 1e5, "R", 0.4), 1e-9));
+    // the same in the positional form, and in the case where the input is the unknown (T_1 from h_1)
+    auto positional = runModel("T_1 = 25\nP_1 = 100000\nRH_1 = 0.4\nCALL psychprops(T_1, P_1, RH_1 : T_1, v_1, h_1, s_1, u_1, omega_1, RH_1, WetB_1, DewP_1)\n");
+    REQUIRE(positional.solveOk);
+    CHECK_THAT(positional["h_1"], WithinRel(run["h_1"], 1e-12));
+    auto inverse = runModel("P_1 = 100000\nRH_1 = 0.4\nh_1 = 50000\n" + call);
+    INFO(inverse.message);
+    REQUIRE(inverse.solveOk);
+    CHECK(inverse.verified);
+    CHECK_THAT(HumidAir::HAPropsSI("Hda", "T", inverse["T_1"] + 273.15, "P", 1e5, "R", 0.4), WithinRel(50000.0, 1e-9));
+    // another variable for the temperature is an equation (T_o = T_1)
+    auto other = runModel("T_1 = 25\nP_1 = 100000\nRH_1 = 0.4\nCALL psychprops(T=T_1, P=P_1, R=RH_1 : T_o, v, , , , , R_o)\n");
+    REQUIRE(other.solveOk);
+    CHECK_THAT(other["T_o"], WithinAbs(25.0, 1e-9));
+    CHECK_THAT(other["R_o"], WithinAbs(0.4, 1e-9));
+    // an element of an array is the same variable as the input written with that element (in a loop too) ...
+    auto loop = runModel("DUPLICATE i = 1, 2\n  T[i] = 10 + 10*i\n  CALL psychprops(T=T[i], P=100000, R=0.5 : T[i], , h[i])\nEND\n");
+    INFO(loop.message);
+    REQUIRE(loop.solveOk);
+    CHECK_THAT(loop["h[2]"], WithinRel(HumidAir::HAPropsSI("Hda", "T", 303.15, "P", 1e5, "R", 0.5), 1e-9));
+    // ... and another element is another variable: an equation, here the temperature of the next state
+    auto next = runModel("T[1] = 10\nCALL psychprops(T=T[1], P=100000, R=0.5 : T[2])\n");
+    INFO(next.message);
+    REQUIRE(next.solveOk);
+    CHECK_THAT(next["T[2]"], WithinAbs(10.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-PSYCHPROPS-NAMED: P and two of the identifiers of AirH2O, as the property functions", "[library-gaps][psychprops]") {
+    // the help: three inputs, one of which is P; the identifiers are those of the thermophysical functions. Another pair
+    // than T and a humidity gives T as an output.
+    for (const char* inputs : {"P=P_1, T=T_1, B=Twb_1", "P=P_1, T=T_1, D=Tdp_1", "P=P_1, T=T_1, H=h_1", "P=P_1, H=h_1, W=w_1"}) {
+        INFO(inputs);
+        auto run = runModel(std::string("P_1 = 101325\nT_1 = 20\nTwb_1 = 15\nTdp_1 = 10\nh_1 = 40000\nw_1 = 0.008\n"
+                                        "CALL psychprops(") + inputs + " : T_o, v, h, s, u, w, R_o, Twb, Tdp)\n"
+                            "v_ref = volume(AirH2O, " + inputs + ")\nT_ref = temperature(AirH2O, " + inputs + ")\n"
+                            "s_ref = entropy(AirH2O, " + inputs + ")\nR_ref = relhum(AirH2O, " + inputs + ")\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["v"], WithinRel(run["v_ref"], 1e-9));
+        CHECK_THAT(run["T_o"], WithinRel(run["T_ref"], 1e-9));
+        CHECK_THAT(run["s"], WithinRel(run["s_ref"], 1e-9));
+        CHECK_THAT(run["R_o"], WithinRel(run["R_ref"], 1e-9));
+    }
+}
+
+TEST_CASE("CS-BUG-PSYCHPROPS-BASIS: the outputs have the derivatives of the property functions", "[library-gaps][psychprops]") {
+    // The evaluator: the gradient of every output with respect to an unknown input is that of the property function
+    // (a central difference of CoolProp's value, chained with the gradient of the input) and the value is exact.
+    auto gradients = [](const std::string& code, const std::string& output, double Tvalue) {
+        EESParser parser;
+        auto parsed = parser.parse(code);
+        REQUIRE(parsed.success);
+        IR ir = IR::fromAST(parsed.program);
+        ExpressionEvaluator ev(1);
+        ev.setVariable("Tv", ADValue::independent(Tvalue, 0, 1));
+        for (const auto& eq : ir.getEquations()) {
+            if (eq.procedureCall) {
+                ev.evaluateProcedureCall(*eq.procedureCall);
+                break;
+            }
+            if (eq.rhs) ev.setVariable(eq.lhs->as<Variable>().name, ev.evaluate(eq.rhs));
+        }
+        return ev.getVariable(output);
+    };
+    const std::string call = "CALL psychprops(T=Tv, P=100000, R=0.4 : To, v, h, s, u, w, Ro, Twb, Tdp)\n";
+    struct Output { const char* name; const char* function; const char* coolprop; bool kelvin; };
+    for (const Output& o : {Output{"v", "volume", "Vda", false}, Output{"h", "enthalpy", "Hda", false},
+                            Output{"s", "entropy", "Sda", false}, Output{"u", "intenergy", "Uda", false},
+                            Output{"w", "humrat", "W", false}, Output{"Twb", "wetbulb", "Twb", true},
+                            Output{"Tdp", "dewpoint", "Tdp", true}}) {
+        INFO(o.name);
+        const ADValue out = gradients(call, o.name, 25.0);
+        const ADValue ref = gradients(std::string("y = ") + o.function + "(AirH2O, T=Tv, P=100000, R=0.4)\n", "y", 25.0);
+        // the derivative exists and is the one of the property function
+        REQUIRE(out.gradient.size() == 1);
+        CHECK_THAT(out.value, WithinRel(ref.value, 1e-12));
+        CHECK(out.gradient[0] != 0.0);
+        CHECK_THAT(out.gradient[0], WithinRel(ref.gradient[0], 1e-12));
+        // ... and it is the derivative of CoolProp's value with respect to T
+        // (Twb and Tdp are iterated inside CoolProp, so a wide step and a loose tolerance for this independent difference)
+        const double step = 1e-2;
+        const double fd = (HumidAir::HAPropsSI(o.coolprop, "T", 298.15 + step, "P", 1e5, "R", 0.4) -
+                           HumidAir::HAPropsSI(o.coolprop, "T", 298.15 - step, "P", 1e5, "R", 0.4)) / (2.0 * step);
+        CHECK_THAT(out.gradient[0], WithinRel(fd, 1e-3));
+    }
+    // the echo of T has the derivative 1, a constant has 0
+    CHECK_THAT(gradients(call, "To", 25.0).gradient[0], WithinAbs(1.0, 1e-15));
+    CHECK_THAT(gradients(call, "Ro", 25.0).gradient[0], WithinAbs(0.0, 1e-15));
+}
+
+TEST_CASE("CS-BUG-PSYCHPROPS-BASIS: a state solved for an input, in a coupled block, in a few iterations", "[library-gaps][psychprops]") {
+    // was: the outputs had no derivative with respect to the inputs, so the unknown T_1 had a zero column in the Jacobian
+    // and the block failed (LineSearchFailed at iteration 0)
+    const std::string code = "P_1 = 100000\nRH_1 = 0.4\nCALL psychprops(T=T_1, P=P_1, R=RH_1 : T_o, v, h, s, u, w, R_o, Twb, Tdp)\n"
+                             "h = 50000\nT_ref = temperature(AirH2O, H=50000, P=P_1, R=RH_1)\n";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["T_1"], WithinRel(run["T_ref"], 1e-9));
+    CHECK_THAT(run["T_o"], WithinRel(run["T_1"], 1e-12));
+    CHECK_THAT(HumidAir::HAPropsSI("Hda", "T", run["T_1"] + 273.15, "P", 1e5, "R", 0.4), WithinRel(50000.0, 1e-9));
+    CHECK_THAT(run["u"], WithinRel(run["h"] - 1e5 * run["v"], 1e-9));
+    const int iterations = solverIterations(code);
+    INFO("iterations = " << iterations);
+    CHECK(iterations >= 0);
+    CHECK(iterations <= 10);
+    // the relative humidity from the wet-bulb temperature, and the humidity ratio from the relative humidity, solved
+    // for through the procedure as through the functions (a guess inside the range of R, whose limit is 1)
+    auto wetBulb = runModel("T_1 = 25\nP_1 = 100000\nCALL psychprops(T=T_1, P=P_1, R=RH_1 : , , , , , , , Twb_1)\nTwb_1 = 16\n"
+                            "RH_ref = relhum(AirH2O, T=T_1, P=P_1, B=16)\n", {}, "RH_1 = 0.5\n");
+    INFO(wetBulb.message);
+    REQUIRE(wetBulb.solveOk);
+    CHECK(wetBulb.verified);
+    CHECK_THAT(wetBulb["RH_1"], WithinRel(wetBulb["RH_ref"], 1e-9));
+    auto humidity = runModel("T_1 = 25\nP_1 = 100000\nRH_1 = 0.4\nCALL psychprops(T=T_1, P=P_1, W=W_1 : , , , , , , RH_1)\n",
+                             {}, "W_1 = 0.01\n");
+    INFO(humidity.message);
+    REQUIRE(humidity.solveOk);
+    CHECK(humidity.verified);
+    CHECK_THAT(humidity["W_1"], WithinRel(HumidAir::HAPropsSI("W", "T", 298.15, "P", 1e5, "R", 0.4), 1e-9));
+}
+
+TEST_CASE("CS-GAP-PSYCHPROPS-NAMED: a call the help does not allow is refused with the reason", "[library-gaps][psychprops]") {
+    const std::string defs = "T_1 = 25\nP_1 = 100000\nRH_1 = 0.4\nw_1 = 0.01\n";
+    auto refused = [&](const std::string& call, const std::vector<std::string>& needles) {
+        INFO(call);
+        const auto errors = parseErrors(defs + call + "\n");
+        REQUIRE(errors.size() == 1);
+        INFO(errors[0]);
+        for (const auto& needle : needles) CHECK(errors[0].find(needle) != std::string::npos);
+        // ... and the run stops at the parser: no solution is produced
+        auto run = runModel(defs + call + "\n");
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+    };
+    // an unknown input name is named, with the accepted ones (U is no input of CoolProp's humid-air model)
+    refused("CALL psychprops(T=T_1, P=P_1, X=RH_1 : a)", {"unknown input 'X'", "'X=RH_1'", "P and two of T, R, W, B, D, H, V, S"});
+    refused("CALL psychprops(T=T_1, P=P_1, U=RH_1 : a)", {"unknown input 'U'"});
+    refused("CALL psychprops(Temperature=T_1, P=P_1, R=RH_1 : a)", {"unknown input 'Temperature'"});
+    // the pressure is required: named, with what was given
+    refused("CALL psychprops(T=T_1, R=RH_1, B=15 : a)", {"the pressure P is missing", "(T, R, B)", "CALL psychprops(T=T_1, P=P_1, R=RH_1"});
+    refused("CALL psychprops(T=T_1, R=RH_1 : a)", {"the pressure P is missing", "(T, R)"});
+    // three inputs: not two, not four
+    refused("CALL psychprops(T=T_1, P=P_1 : a)", {"takes three inputs", "got 2 (T, P)"});
+    refused("CALL psychprops(T=T_1, P=P_1, R=RH_1, B=15 : a)", {"takes three inputs", "got 4 (T, P, R, B)"});
+    // an input given twice, an input without name among named ones, a substance that is not AirH2O
+    refused("CALL psychprops(T=T_1, t=T_1, P=P_1 : a)", {"the input t is given twice"});
+    refused("CALL psychprops(T=T_1, P_1, R=RH_1 : a)", {"the argument 'P_1' has no name", "name=value"});
+    refused("CALL psychprops(T=T_1, R=RH_1, AirH2O, P=P_1 : a)", {"the argument 'AirH2O' has no name"});
+    refused("CALL psychprops(Steam, T=T_1, P=P_1, R=RH_1 : a)", {"the substance 'Steam' is not AirH2O"});
+    refused("CALL psychprops(T_1, P=P_1, R=RH_1 : a)", {"the substance 'T_1' is not AirH2O"});
+    // CoolProp takes the water content as R or as W, not both
+    refused("CALL psychprops(P=P_1, R=RH_1, W=w_1 : a)", {"R (relative humidity) and W (humidity ratio) cannot both be inputs"});
+    // outputs: all of them written as the inputs they are, or beyond the ninth
+    refused("CALL psychprops(T=T_1, P=P_1, R=RH_1 : T_1)", {"every output written is an input", "nothing is left to compute"});
+    refused("CALL psychprops(T=T_1, P=P_1, R=RH_1 : a, b, c, d, e, f, g, h, i, j)", {"psychprops has 9 outputs", "the output number 10"});
+    // an argument that is not an expression is reported with its text
+    refused("CALL psychprops(T=T_1, P=P_1, R= : a)", {"psychprops", "''"});
+    // the positional form still checks its inputs where it is evaluated
+    auto two = runModel(defs + "CALL psychprops(T_1, P_1 : a, b)\n");
+    CHECK_FALSE(two.solveOk);
+    CHECK(two.message.find("psychprops expects 3 inputs (T, P, R), got 2") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-PSYCHPROPS-NAMED: a state outside CoolProp's range is an error that names the call and its inputs", "[library-gaps][psychprops]") {
+    auto hot = runModel("T_1 = 400\nP_1 = 101325\nRH_1 = 0.5\nCALL psychprops(T=T_1, P=P_1, R=RH_1 : , v)\n");
+    CHECK_FALSE(hot.solveOk);
+    INFO(hot.message);
+    CHECK(hot.message.find("psychprops(AirH2O)") != std::string::npos);
+    CHECK(hot.message.find("with inputs P=101325 Pa, R=0.5, T=400 C") != std::string::npos);
+    CHECK(hot.message.find("(-143.15 C to 350 C)") != std::string::npos);
+    // the same call with an output that is an input only does not need CoolProp
+    auto echo = runModel("T_1 = 400\nP_1 = 101325\nRH_1 = 0.5\nCALL psychprops(T=T_1, P=P_1, R=RH_1 : T_o)\n");
+    REQUIRE(echo.solveOk);
+    CHECK_THAT(echo["T_o"], WithinAbs(400.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-PSYCHPROPS-NAMED: psychprops is a known built-in, other unknown procedures still warn", "[library-gaps][psychprops]") {
+    // was: the warning "Unknown function 'psychprops'" on every call, positional or named
+    for (const char* call : {"CALL psychprops(T_1, P_1, RH_1 : , , h)", "CALL psychprops(T=T_1, P=P_1, R=RH_1 : , , h)",
+                             "CALL PsychProps(AirH2O, T=T_1, P=P_1, R=RH_1 : , , h)"}) {
+        INFO(call);
+        auto run = runModel(std::string("T_1 = 25\nP_1 = 100000\nRH_1 = 0.4\n") + call + "\n");
+        REQUIRE(run.solveOk);
+        CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+        CHECK(run.warnings.empty());
+    }
+    // the exception is for the built-in only: a procedure that does not exist is still reported
+    auto unknown = runModel("x = 1\nCALL nosuchprocedure(x : y)\n");
+    CHECK(anyContains(unknown.warnings, "Unknown function 'nosuchprocedure'"));
+}
+
+TEST_CASE("CS-GAP-PSYCHPROPS-NAMED: named inputs and skipped outputs in a DUPLICATE loop", "[library-gaps][psychprops]") {
+    auto run = runModel("DUPLICATE i = 1, 3\n  T[i] = 10 + 10*i\n  CALL psychprops(T=T[i], P=100000, R=0.5 : , , h[i], , , w[i])\nEND\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (int i = 1; i <= 3; ++i) {
+        INFO(i);
+        const double T = 283.15 + 10.0 * i;
+        CHECK_THAT(run["h[" + std::to_string(i) + "]"], WithinRel(HumidAir::HAPropsSI("Hda", "T", T, "P", 1e5, "R", 0.5), 1e-9));
+        CHECK_THAT(run["w[" + std::to_string(i) + "]"], WithinRel(HumidAir::HAPropsSI("W", "T", T, "P", 1e5, "R", 0.5), 1e-9));
+    }
 }

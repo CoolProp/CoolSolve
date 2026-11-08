@@ -179,6 +179,8 @@ static StmtPtr cloneStmtWithSubstitution(const StmtPtr& stmt, const std::string&
         for (const auto& outExpr : call.outputExprs) {
             newCall.outputExprs.push_back(cloneExprWithSubstitution(outExpr, iteratorVar, value));
         }
+        newCall.inputNames = call.inputNames;
+        newCall.outputSlots = call.outputSlots;
         result->node = std::move(newCall);
     } else if (stmt->is<Comment>()) {
         result->node = stmt->as<Comment>();
