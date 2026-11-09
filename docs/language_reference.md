@@ -2066,18 +2066,18 @@ Guess values live in a `.initials` file next to the model, one
 
 ## 10. Configuration
 
-See `examples/coolsolve.conf` for the full list of options. Key sections:
+`coolsolve.conf`, next to the `.eescode` file, holds one `key = value` per line (no sections); every key, with
+its default and when to change it, is documented in `examples/coolsolve.conf`. The groups of keys:
 
-- `[coolprop]` — backend (`HEOS`, `BICUBIC&HEOS`, `TTSE&HEOS`), analytical
-  derivatives, AbstractState caching.
-- `[solver]` — pipeline order (Newton, TrustRegion, LM, BisectionND,
-  Homotopy, Partitioned, Kinsol), tolerances, iteration limits.
-- `[deepsearch]` — `deepSearchPipeline` / `deepSearchPipelineMode` used by
-  the GUI **Try Harder** button (defaults to the full sequential chain).
-- `[multistart]` — `multiStartMode` (`always` / `deepsearch` / `never`),
-  `multiStartMaxRestarts`, `multiStartNumCores` (default 4). The legacy
-  `multiStartEnabled` boolean is still accepted.
-- `[tearing]` — SCC-based block reduction options.
+- convergence: `tolerance` (below), `relativeTolerance`, iteration limits, line search, scaling, `timeoutSeconds`;
+- solver pipeline: `solverPipeline` (Newton, TrustRegion, LM, BisectionND, Homotopy, Partitioned, Kinsol; default
+  Newton), `pipelineMode`, the *Try Harder* pipeline (`deepSearchPipeline`), multi-start (`multiStartMode`), and
+  the tuning keys of each solver;
+- block pre-processing: `enableTearing`, `enableSymbolicReduction`;
+- CoolProp: `coolpropBackend` (`HEOS`, `BICUBIC&HEOS`, `TTSE&HEOS`), AbstractState API, analytical derivatives,
+  caching, superancillaries;
+- dynamic models: the `integral…` keys (§12);
+- LaTeX report: `enableLatexReport`, `latexCompiler`.
 
 > **Note on units.** The unit system itself is **not** configurable through
 > `coolsolve.conf`: temperature is always in °C, pressure in Pa, energy in J.

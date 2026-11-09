@@ -88,34 +88,13 @@ CoolSolve uses several file formats for input and verification:
 
 - **.eescode**: The EES source code to be parsed and solved.
 - **.initials**: Initial values for variables, used to seed the solver or evaluator. Format: `variable=value` (one per line).
-- **coolsolve.conf**: Optional solver configuration. Place in the **same folder** as your .eescode file (not in subfolders). Format: `key = value` per line; lines starting with `#` are comments. Only the options you set override the defaults (see `include/coolsolve/solver.h` for `SolverOptions`). An example with all keys and comments is in `examples/coolsolve.conf`. In debug mode (`-d`), this file is copied into the debug folder. Key options:
-  - **Pipeline options**:
-    - `solverPipeline`: Comma-separated list of solvers to try (e.g. `Newton, LM, TrustRegion, BisectionND, Homotopy, Partitioned`). Available solvers: `Newton`, `TrustRegion`, `LM` (or `LevenbergMarquardt`), `BisectionND`, `Homotopy`, `Partitioned`, `Kinsol`.
-    - `pipelineMode`: `sequential` (default) or `parallel` (first-to-converge wins)
-    - `deepSearchPipeline` / `deepSearchPipelineMode`: pipeline used when the GUI **Try Harder** button is clicked after a failed solve (defaults to the full sequential chain). Deep Search also forces tearing and symbolic reduction on.
-    - `enableTearing`: When `true`, use structural tearing for blocks of size ≥ `tearingMinBlockSize`.
-    - `enableSymbolicReduction`: When `true`, pre-process blocks to reduce their size via explicit extraction, CoolProp call inversion, and equation substitution, with automatic re-decomposition of the reduced block.
-    - `bisectionNDMaxBlockSize`: Maximum block size for BisectionND (default: `8`).
-    - `bisectionNDIterFactor`: Multiplier for BisectionND iteration budget (default: `1.0`).
-    - `lsNonMonotoneMemory`: Number of recent merit values kept for non-monotone acceptance (default: `10`). Set to `1` for classic monotone line search.
-    - `multiStartMode`: When to retry a failed multi-variable block from alternative starting points — `always`, `deepsearch` (default; only when running a Deep Search), or `never`. The legacy `multiStartEnabled = true/false` is still accepted and maps to `always`/`never`.
-    - `multiStartMaxRestarts`: Number of alternative starting points to try on a failed block (default: `4`).
-    - `multiStartNumCores`: Threads for concurrent multi-start candidates (default: `4`; `N`>1 or `0`=auto runs candidates in parallel, first-to-converge wins).
-   - **Integration options** (equation-based `INTEGRAL` models — all inert by default; see [Language Reference §12](docs/language_reference.md#12-equation-based-integration-dynamicdae-solving)):
-     - `integralMethod`: Integrator — `RK4` (default), `RK45` (adaptive), `EulerExplicit`, or `EulerImplicit`.
-     - `integralFixedStep`: Fixed step size when the `INTEGRAL` call gives none (`0` ⇒ `integralMaxSteps` steps for fixed methods, or adapt for RK45). A step given in the model (5th `INTEGRAL` argument) always wins.
-     - `integralMaxSteps`: Number of steps of a fixed-step method without an explicit step (default: `1000`); budget of RK45 (`4·integralMaxSteps` attempted steps). A march that stops before the upper limit is an error.
-     - `integralRelTol` / `integralAbsTol`: RK45 error control (defaults `1e-6` / `1e-9`).
-     - `integralMinStep` / `integralMaxStep`: Step-size bounds (`0` = auto).
-     - `integralRichardson`: Richardson extrapolation on fixed-step methods (default: `false`).
-     - `integralOutputInterval`: Default `$IntegralTable` row interval when `:n` is omitted (`0` = every step).
-   - **CoolProp Integration options**:
-    - `coolpropBackend`: CoolProp backend string (default: `HEOS`). Options: `HEOS`, `INCOMP`, `TTSE&HEOS`, `BICUBIC&HEOS`.
-    - `coolpropUseAbstractState`: Use the low-level `AbstractState` API instead of `PropsSI` (default: `true`). Provides 2–5× speedup by caching fluid objects and avoiding string parsing.
-    - `coolpropEnableAnalyticalDerivatives`: Use `first_partial_deriv()` for exact gradients with a forward-FD consistency check (default: `true`). Falls back to finite differences near phase boundaries where analytical derivatives are inaccurate.
-    - These three keys do not apply to the ideal-gas substances (`N2`, `CO2`, `H2O`, …), always evaluated from the ideal-gas part of their HEOS equation of state with exact derivatives ([Language Reference §5](docs/language_reference.md)).
-    - `coolpropCacheEnabled`: Enable thread-local `AbstractState` caching (default: `true`).
-    - `coolpropEnableSuperancillaries`: Enable CoolProp superancillary equations (default: `true`).
+- **coolsolve.conf**: Optional solver configuration, one `key = value` per line, placed in the **same folder** as the `.eescode` file: only the keys it sets override the defaults. Every key, with its default and when to change it, is documented in **[`examples/coolsolve.conf`](examples/coolsolve.conf)**; the GUI configuration editor edits the same keys. The groups of options:
+  - **Convergence**: tolerances, iteration limits, line search, variable scaling, timeout.
+  - **Solver pipeline**: which solvers run and in what order (`solverPipeline`; default `Newton`), sequential or parallel, the *Try Harder* (Deep Search) pipeline, multi-start, and the tuning of each solver.
+  - **Block pre-processing**: structural tearing and symbolic block reduction (off by default).
+  - **CoolProp**: backend, AbstractState API, analytical derivatives, caching, superancillaries.
+  - **Dynamic models** (`INTEGRAL`): integrator, step size, error control, `$IntegralTable` output interval.
+  - **LaTeX report**: generation and compiler.
 
 ## Building
 
