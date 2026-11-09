@@ -81,10 +81,10 @@ struct StepControl {
     bool exhausted() const { return rejections > kMaxRejections; }
 };
 
-/// Weighted residual rho = |f| / w of an evaluation (`residualWeight`, solver_common.h): the quantity
-/// that the tolerances of the solver are compared with.
-double weightedResidual(double f, double scale, const SolverOptions& options) {
-    return std::abs(f) / residualWeight(scale, scale, options.tolerance);
+/// Weighted residual of an evaluation (`weightedResidual`, solver_common.h; the block is the equation itself):
+/// the quantity that the tolerances of the solver are compared with.
+double rho1D(double f, double scale) {
+    return weightedResidual(f, scale, scale);
 }
 
 /// A sign change of F found by Phase 1 or 2: F(lo) = flo and F(hi) = fhi have opposite signs;
@@ -149,7 +149,7 @@ SolverStatus Newton1DSolver::solve(
             trace->iterations.push_back(traceIter);
         }
 
-        if (weightedResidual(f, s, options) < options.tolerance) {
+        if (rho1D(f, s) < options.tolerance) {
             converged = true;
             break;
         }
@@ -253,7 +253,7 @@ SolverStatus Newton1DSolver::solve(
                     trace->iterations.push_back(traceIter);
                 }
 
-                if (weightedResidual(f, s, options) < options.tolerance) {
+                if (rho1D(f, s) < options.tolerance) {
                     xCur = xMid;
                     return true;
                 }
@@ -265,7 +265,7 @@ SolverStatus Newton1DSolver::solve(
                         try {
                             auto [fn, jn, sn] = eval(xNewton);
                             if (std::abs(fn) < std::abs(f)) {
-                                if (weightedResidual(fn, sn, options) < options.tolerance) {
+                                if (rho1D(fn, sn) < options.tolerance) {
                                     xCur = xNewton;
                                     return true;
                                 }
@@ -282,7 +282,7 @@ SolverStatus Newton1DSolver::solve(
                 else { xLo = xMid; fLo = f; }
 
                 if (xHi - xLo < options.stepTolerance) {
-                    if (weightedResidual(f, s, options) < options.lsRelaxedTolerance) {
+                    if (rho1D(f, s) < options.lsRelaxedTolerance) {
                         xCur = xMid;
                         return true;
                     }
@@ -360,7 +360,7 @@ SolverStatus Newton1DSolver::solve(
                     bestF = std::abs(f);
                     bestX = probe;
                 }
-                if (weightedResidual(f, s, options) < options.tolerance) {
+                if (rho1D(f, s) < options.tolerance) {
                     xCur = probe;
                     converged = true;
                     break;
@@ -418,7 +418,7 @@ SolverStatus Newton1DSolver::solve(
         for (int iter = 0; iter < 50 && !converged; ++iter) {
             try {
                 auto [f, j, s] = eval(xCur);
-                if (weightedResidual(f, s, options) < options.tolerance) { converged = true; break; }
+                if (rho1D(f, s) < options.tolerance) { converged = true; break; }
                 if (polishControl.reject(xCur, f, false)) {
                     if (polishControl.exhausted()) break;
                     continue;
@@ -436,7 +436,7 @@ SolverStatus Newton1DSolver::solve(
             }
         }
         // The polish cannot go further: accept the best iterate if its residual is small
-        if (!converged && weightedResidual(polishControl.fAcc, polishControl.scaleAcc, options) < options.lsRelaxedTolerance) {
+        if (!converged && rho1D(polishControl.fAcc, polishControl.scaleAcc) < options.lsRelaxedTolerance) {
             xCur = polishControl.xAcc;
             converged = true;
         }
@@ -467,7 +467,7 @@ SolverStatus Newton1DSolver::solveSimple(
     for (int iter = 0; iter < options.maxIterations; ++iter) {
         try {
             auto [f, j, s] = eval(xCur);
-            if (weightedResidual(f, s, options) < options.tolerance) {
+            if (rho1D(f, s) < options.tolerance) {
                 x = xCur;
                 return SolverStatus::Success;
             }

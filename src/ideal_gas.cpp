@@ -79,20 +79,21 @@ IdealGasPoint evaluate(Gas& gas, double T, bool withDcp) {
     return p;
 }
 
-/// The dilute-gas transport property (viscosity or conductivity) at T: CoolProp's model on the imposed-gas state at
-/// 1 Pa, where the density terms vanish (they are below 1e-5 of the dilute term for T >= 200 K).
-double transport(Gas& gas, parameters which, double T) {
+/// The dilute-gas transport property `which` (viscosity, conductivity, or the Prandtl number cp * mu / k with the
+/// ideal-gas cp \p cp) at T: CoolProp's models on the imposed-gas state at 1 Pa, where the density terms vanish
+/// (they are below 1e-5 of the dilute term for T >= 200 K). One state update.
+double transport(Gas& gas, parameters which, double T, double cp = 0.0) {
     if (!(T > 0.0) || !std::isfinite(T))
         throw idealError(gas, "the temperature " + numberText(T) + " K is not positive");
     try {
         gas.state->update(CoolProp::DmolarT_INPUTS, 1.0 / (gas.R * T), T);
-        return which == CoolProp::iviscosity ? gas.state->viscosity() : gas.state->conductivity();
+        if (which == CoolProp::iviscosity) return gas.state->viscosity();
+        if (which == CoolProp::iconductivity) return gas.state->conductivity();
+        return cp * gas.state->viscosity() / gas.state->conductivity();
     } catch (const std::exception& e) {
         throw idealError(gas, e.what());
     }
 }
-
-bool fixesTemperature(parameters p) { return p == CoolProp::iT || p == CoolProp::iHmass || p == CoolProp::iUmass; }
 
 /**
  * Safeguarded Newton iteration for the temperature T of the increasing function f(T) = target, `eval(T, f, df)`.
@@ -126,11 +127,11 @@ double solveTemperature(Gas& gas, Eval&& eval, double target, const std::string&
 /// The temperature T and the pressure P of the state fixed by two inputs.
 void solveState(Gas& gas, parameters a, double va, parameters b, double vb, double& T, double& P) {
     const double R = gas.Rs;
-    if (fixesTemperature(a) && fixesTemperature(b))
+    if (idealGasFixesTemperature(a) && idealGasFixesTemperature(b))
         throw idealError(gas, "two inputs that each fix the temperature (T, h, u) do not fix the state");
-    if (!fixesTemperature(a) && fixesTemperature(b)) { std::swap(a, b); std::swap(va, vb); }
+    if (!idealGasFixesTemperature(a) && idealGasFixesTemperature(b)) { std::swap(a, b); std::swap(va, vb); }
 
-    if (fixesTemperature(a)) {
+    if (idealGasFixesTemperature(a)) {
         if (a == CoolProp::iT) T = va;
         else if (a == CoolProp::iHmass)
             T = solveTemperature(gas, [&](double x, double& f, double& d) {
@@ -221,21 +222,14 @@ IdealGasValue idealGasProperty(const std::string& coolPropName, parameters outpu
         case CoolProp::iZ: v = 1.0; break;
         case CoolProp::imolar_mass: v = gas.M; break;
         case CoolProp::iviscosity: case CoolProp::iconductivity: case CoolProp::iPrandtl: {
-            // dilute gas: a function of T alone
-            auto transportAt = [&](double x, double& mu, double& k) {
-                mu = transport(gas, CoolProp::iviscosity, x);
-                k = transport(gas, CoolProp::iconductivity, x);
-            };
-            auto property = [&](double x, double cp) {
-                if (output == CoolProp::iviscosity) return transport(gas, CoolProp::iviscosity, x);
-                if (output == CoolProp::iconductivity) return transport(gas, CoolProp::iconductivity, x);
-                double mu, k; transportAt(x, mu, k); return cp * mu / k;
-            };
-            v = property(T, p.cp);
+            // dilute gas: a function of T alone; the Prandtl number also needs cp at the shifted temperatures
+            v = transport(gas, output, T, p.cp);
             if (derivatives) {   // central difference in T: CoolProp has no derivative of its transport models
                 const double h = 1e-5 * T;
-                const IdealGasPoint up = evaluate(gas, T + h, false), down = evaluate(gas, T - h, false);
-                dT = (property(T + h, up.cp) - property(T - h, down.cp)) / (2.0 * h);
+                const bool prandtl = output == CoolProp::iPrandtl;
+                const double cpUp = prandtl ? evaluate(gas, T + h, false).cp : 0.0;
+                const double cpDown = prandtl ? evaluate(gas, T - h, false).cp : 0.0;
+                dT = (transport(gas, output, T + h, cpUp) - transport(gas, output, T - h, cpDown)) / (2.0 * h);
             }
             break;
         }

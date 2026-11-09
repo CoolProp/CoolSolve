@@ -686,19 +686,17 @@ x_sup = quality(R410A, T=50, P=3000E3)    "100: superheated vapour"
 x_sub = quality(R410A, T=40, P=3000E3)    "-100: compressed liquid"
 ```
 
-- The value is a **constant** outside the dome: its derivative is 0 there, as it was (a flat 0). A model that solves
-  for a state through `quality(...) = 0.5` converges from a guess on either side of the dome (the library gaps tests
-  solve it from the compressed liquid, the dome and the superheated vapour). At a state that is saturated by
+- The value is a **constant** outside the dome: its derivative is 0 there. A model that solves for a state through
+  `quality(...) = 0.5` converges from a guess on either side of the dome. At a state that is saturated by
   construction (`h` equal to the enthalpy of the saturated liquid to the last digits) the rounding of the state may
   put it on either side: 0 inside the dome or -100; write a test on the quality with a margin.
-- **Behaviour change.** Before this change `quality` returned 0 for every single-phase state. A model that compares
-  the quality with 0 or 1 outside the dome (`IF (x > 0.99) THEN`, `x >= 1`) must account for 100 and -100: use
-  `x > 0.99` together with `x < 2` or test `PHASE$` instead.
+- A model that compares the quality with 0 or 1 outside the dome (`IF (x > 0.99) THEN`, `x >= 1`) must account for
+  100 and -100: use `x > 0.99` together with `x < 2` or test `PHASE$` instead.
 - Used as an **input** of another call (`enthalpy(Water, P=P, x=x_1)`), a quality outside [0, 1] is clamped to 0 or 1
   with the warning *Quality input x=100.000000 clamped to 1 (superheated)*, and the final check of the solution
   rejects it, as for any quality input outside [0, 1].
 - `quality` of an incompressible fluid or of humid air, and of an ideal gas, are errors (no phase change, see the
-  *Fluids* section), as before.
+  *Fluids* section).
 
 ### Molar mass of a chemical element
 
@@ -993,7 +991,7 @@ table below) minus `R·T`: `h − u − R·T = 0`.
 
 **Transport properties.** `viscosity`, `conductivity` and `prandtl` (alias `mu`, `k`, `l`) of an ideal gas are
 those of the **dilute gas**, functions of `T` only, with or without `P` (a pressure given is ignored: the ideal gas has no
-density dependence; `viscosity(CO2, T=25, P=1E7)` is `viscosity(CO2, T=25)`, no longer the dense real
+density dependence; `viscosity(CO2, T=25, P=1E7)` is `viscosity(CO2, T=25)`, not the dense real
 gas). They are CoolProp's transport models at the zero-density limit (evaluated at 1 Pa), with a central
 finite difference in `T` for the derivative (CoolProp has none for its transport models), and `prandtl` is `cp·μ/k`:
 
@@ -1117,7 +1115,7 @@ rise at 3000 K (CoolProp − NASA, kJ/kmol and % of the rise):
 
 For comparison, `Δh` at 3000 K of the other gases is at most 0.12 % of the rise (`H2` +108, `CO` −89, `CO2` −94, `O2` −82
 kJ/kmol). The deviations are those of CoolProp's equations of state outside their range (their `Tmax`: 625 K for `CH4`,
-2000 K for `H2O`), the same as with the real-gas calls of earlier versions; the enthalpy rise of the combustion
+2000 K for `H2O`); the enthalpy rise of the combustion
 products at the flame temperature is within 0.1 % (JANAF at 2400 K: `N2` +0.004 %, `O2` +0.04 %, `CO2` −0.03 %,
 `H2O` −0.014 %, `CO` −0.05 %, `H2` +0.10 %). The NASA-Glenn polynomials are a planned follow-up (register entry
 `CS-GAP-FLUIDS-NASA-SPECIES`).
@@ -2088,18 +2086,24 @@ See `examples/coolsolve.conf` for the full list of options. Key sections:
 ### Convergence tolerance
 
 `tolerance` (default `1e-9`) is the residual at which a block is solved. The residual of an equation is
-`LHS − RHS`; it is compared with `tolerance` after dividing it by a weight `w` that depends on the size `S` of the
-terms of the equation (the magnitude of each term of both sides, plus the sum of `|∂F/∂x · x|` over the unknowns):
+`LHS − RHS`; an equation is met when `|LHS − RHS| < max(tolerance · w, 64·ε·S)`, with `S` the size of the terms of
+the equation (the magnitude of each term of both sides, plus the sum of `|∂F/∂x · x|` over the unknowns):
 
 | The block holds | `w` of an equation | The equation is met when |
 |---|---|---|
-| an equation of terms of order 1 up to about `7·10⁴` | `1` | `\|LHS − RHS\| < tolerance`, the absolute test |
+| an equation of terms of order 1 or more | `1` | `\|LHS − RHS\| < tolerance`, the absolute test |
 | only equations of terms below 1 (`a + b = 5E-20`) | `max(S, 10⁻¹²)` | the residual is `tolerance` times the terms (down to `10⁻²¹`): values of `10⁻²⁰` are solved to their digits, not set to 0 |
-| an equation of terms above `7·10⁴` (energy balances in W) | `64·ε·S / tolerance` for that equation | the residual is within 64 ulp of the terms, a level that the arithmetic cannot go below (`1.4·10⁻⁶` for terms of `10⁸`) |
 
-An equation of tiny terms in a block that also holds enthalpies of `10⁶` keeps the absolute test: its residual
-(a pressure drop of `10⁻²³` Pa, a `MIN(a, b)` of two noisy `10⁻⁸`) is rounding noise of the block, which a test
-relative to its own terms would never meet. `relativeTolerance` is applied to the same weighted residual. The merit
+`64·ε·S` is the rounding level of the terms (64 ulp), which the arithmetic cannot go below: a residual within it
+meets every test. It exceeds `tolerance` only for terms above about `7·10⁴` (energy balances in W: `1.4·10⁻⁶` for
+terms of `10⁸`). An equation of tiny terms in a block that also holds enthalpies of `10⁶` keeps the absolute test: its
+residual (a pressure drop of `10⁻²³` Pa, a `MIN(a, b)` of two noisy `10⁻⁸`) is rounding noise of the block, which a
+test relative to its own terms would never meet. The looser acceptance thresholds (`100 · tolerance` on a stalled
+step, `lsRelaxedTolerance`, the fallback of the tearing solver) are applied the same way, with the same rounding level:
+they are never multiplied by it. `relativeTolerance` compares the distance to convergence, the largest
+`|LHS − RHS| / max(tolerance · w, 64·ε·S)`, with its value at the start, so that a guess of huge terms (a residual of
+`10²⁰`) does not make a point that is still wrong look converged. A derivative that is infinite at the point (`sqrt` at
+0) gives no `S`: the absolute test. The merit
 function of the line search, the iteration trace and `maxResidual` stay on the raw residual. An explicit equation
 `x = expr` is evaluated, not iterated, and is exact. A residual-only evaluation (line search, bisection) uses the
 weights of the last evaluation of the block that computed the Jacobian.

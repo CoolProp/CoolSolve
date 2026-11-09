@@ -1456,13 +1456,15 @@ ADValue ExpressionEvaluator::evaluateHumidAirProperty(const std::string& funcNam
     }
 
     // Derivatives. They are chained with the gradients of the inputs: when no input depends on an unknown (the
-    // state is a parameter or the result of another block) every term is 0 and the 6 CoolProp calls are skipped.
+    // state is a parameter or the result of another block) every term is 0 and the 6 CoolProp calls are skipped,
+    // as they are in an evaluation of the residuals only (no Jacobian), like the derivatives of the other fluids.
     const double relEps = 1e-6;
     const double absEps = 1e-8;
     std::vector<double> dResult_dInput(3, 0.0);
-    const bool dependsOnUnknowns = std::any_of(inputValues.begin(), inputValues.end(), [](const ADValue& input) {
-        return std::any_of(input.gradient.begin(), input.gradient.end(), [](double g) { return g != 0.0; });
-    });
+    const bool dependsOnUnknowns = !residualOnly_ &&
+        std::any_of(inputValues.begin(), inputValues.end(), [](const ADValue& input) {
+            return std::any_of(input.gradient.begin(), input.gradient.end(), [](double g) { return g != 0.0; });
+        });
 
     for (size_t i = 0; dependsOnUnknowns && i < 3; ++i) {
         double step = std::max(relEps * std::abs(vals[i]), absEps);
@@ -1823,13 +1825,13 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     // An ideal gas has no phase change: quality (as an output or an input), the saturation functions and the surface
     // tension are errors that name the real fluid, before anything else is looked at.
     if (fluid->getType() == FluidType::IdealGas) {
-        const auto idealGas = std::dynamic_pointer_cast<IdealGasFluid>(fluid);
         bool phaseChange = funcName == "quality" || funcName == "x" || funcName == "q" || funcName == "t_sat" ||
                            funcName == "tsat" || funcName == "p_sat" || funcName == "psat" ||
                            funcName == "surfacetension";
         for (const auto& [inputName, value] : inputs)
             phaseChange = phaseChange || inputName == "q" || inputName == "x" || inputName == "quality";
-        if (phaseChange) throw idealGasNoPhaseChange(func, eesFluidName, *idealGas);
+        if (phaseChange)
+            throw idealGasNoPhaseChange(func, eesFluidName, dynamic_cast<const IdealGasFluid&>(*fluid));
     }
 
     if (fluid->getType() == FluidType::IdealGas && inputs.size() == 1) {
@@ -1950,8 +1952,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
 
     // The two inputs of an ideal gas must be independent (T, h and u each fix the temperature)
     if (fluid->getType() == FluidType::IdealGas) {
-        auto fixesT = [](CoolProp::parameters p) { return p == CoolProp::iT || p == CoolProp::iHmass || p == CoolProp::iUmass; };
-        const bool bothFixTemperature = fixesT(input1Param) && fixesT(input2Param);
+        const bool bothFixTemperature = idealGasFixesTemperature(input1Param) && idealGasFixesTemperature(input2Param);
         if (bothFixTemperature || input1Param == input2Param)
             throw idealGasDependentInputs(func.name, eesFluidName, inputNamesList[0], inputNamesList[1], bothFixTemperature);
     }

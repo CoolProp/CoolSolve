@@ -23544,8 +23544,8 @@ TEST_CASE("CS-GAP-IDEAL-GAS-MODEL: the CoolProp backend and the AbstractState op
 
 // ============================================================================
 // CS-BUG-TINY-IMPLICIT: the convergence tests of the solvers weight the residual of each equation with the
-// scale of its terms (residualWeight, solver_common.h): w = 1 for terms of order 1 to 7E4 (today's absolute test),
-// w = S for terms below 1, w = 64 eps S / tolerance for terms beyond 7E4 (the rounding level of the terms)
+// scale S of its terms (weightedResidual, solver_common.h): rho < thr is |F| < max(thr * w, 64 eps S), w = 1 for a
+// block with terms of order 1 or more, w = S for a block of terms below 1; 64 eps S is the rounding level of the terms
 // ============================================================================
 
 namespace {
@@ -23560,33 +23560,96 @@ int tinyValueWarnings(const ModelRun& run, const std::string& name) {
 
 }  // namespace
 
-TEST_CASE("CS-BUG-TINY-IMPLICIT: the weight of a residual (relative in a block of tiny terms, else 1 or a rounding level)",
+TEST_CASE("CS-BUG-TINY-IMPLICIT: the weighted residual (relative in a block of tiny terms, else absolute, 0 within rounding)",
           "[library-gaps][tiny-implicit]") {
     const double eps = std::numeric_limits<double>::epsilon();
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
     // a block of one equation (blockScale = scale)
-    CHECK(residualWeight(1.0, 1.0, 1e-9) == 1.0);
-    CHECK(residualWeight(5.0, 5.0, 1e-9) == 1.0);
-    CHECK(residualWeight(7e4, 7e4, 1e-9) == 1.0);                             // up to 64 eps / tolerance
-    CHECK(residualWeight(1e-3, 1e-3, 1e-9) == 1e-3);                          // below 1: the scale itself
-    CHECK(residualWeight(5e-11, 5e-11, 1e-9) == 5e-11);
-    CHECK(residualWeight(5e-20, 5e-20, 1e-9) == kMinResidualWeight);          // ... down to 1E-12 (|F| < 1E-21)
-    CHECK(residualWeight(0.0, 0.0, 1e-9) == kMinResidualWeight);              // no zero weight
-    CHECK_THAT(residualWeight(1e8, 1e8, 1e-9), WithinRel(64.0 * eps * 1e8 / 1e-9, 1e-12));   // ~1.4E3
-    CHECK(residualWeight(1e8, 1e8, 1e-9) * 1e-9 < 2e-6);                      // x = Q1 - Q2, Q ~ 1E8: |F| <= ~1.4E-6, not 0.1
-    // in a block with an equation of terms of order 1 or more, an equation of tiny terms keeps today's absolute test
-    CHECK(residualWeight(1e-23, 1.5e6, 1e-9) == 1.0);
-    CHECK(residualWeight(1e-23, 0.5, 1e-9) == kMinResidualWeight);
+    CHECK(weightedResidual(2e-9, 1.0, 1.0) == 2e-9);                          // terms of order 1: absolute
+    CHECK(weightedResidual(2e-9, 5.0, 5.0) == 2e-9);
+    CHECK(weightedResidual(2e-9, 7e4, 7e4) == 2e-9);                          // the floor 64 eps S is 1E-9 at 7E4
+    CHECK_THAT(weightedResidual(2e-12, 1e-3, 1e-3), WithinRel(2e-9, 1e-12));  // below 1: relative to the scale
+    CHECK_THAT(weightedResidual(1e-21, 5e-20, 5e-20), WithinRel(1e-9, 1e-12));   // ... down to 1E-12 (|F| < 1E-21)
+    CHECK_THAT(weightedResidual(1e-21, 0.0, 0.0), WithinRel(1e-9, 1e-12));    // no zero weight
+    CHECK(weightedResidual(0.0, 0.0, 0.0) == 0.0);
+    // the rounding level 64 eps S: within it rho = 0, beyond it the residual itself (x = Q1 - Q2, Q ~ 1E8)
+    CHECK(weightedResidual(1e-6, 1e8, 1e8) == 0.0);                           // 64 eps 1E8 = 1.4E-6
+    CHECK(weightedResidual(2e-6, 1e8, 1e8) == 2e-6);
+    // in a block with an equation of terms of order 1 or more, an equation of tiny terms keeps the absolute test
+    CHECK(weightedResidual(1e-23, 1e-23, 1.5e6) == 1e-23);
+    CHECK_THAT(weightedResidual(1e-23, 1e-23, 0.5), WithinRel(1e-11, 1e-12));
+    // the floor is not multiplied by the threshold: S = 5E7 (the CGAM balance, 64 eps S = 7.1E-7)
+    CHECK_FALSE(weightedResidual(0.5, 5e7, 5e7) < 1e-2);                      // lsRelaxedTolerance stays absolute
+    CHECK(weightedResidual(5e-7, 5e7, 5e7) < 1e-9);                           // within the rounding level: every test
+    CHECK(weightedResidual(1e-6, 5e7, 5e7) == 1e-6);                          // beyond it: the residual itself
+    // equivalence with |F| < max(thr * w, 64 eps S) for every threshold
+    for (double thr : {1e-9, 1e-7, 1e-3, 1e-2}) {
+        for (double S : {0.0, 1e-20, 1e-3, 0.5, 2.0, 7e4, 1e6, 5e7, 1e10}) {
+            for (double blockScale : {S, 2.0}) {
+                const double w = blockScale < 1.0 ? std::max(S, kMinResidualWeight) : 1.0;
+                const double floor = kRoundingUlps * eps * S;
+                for (double F : {0.0, 1e-25, 1e-15, 1e-11, 3e-10, 2e-9, 1e-7, 7e-7, 1e-5, 5e-3, 0.5, 30.0}) {
+                    if (std::abs(F - thr * w) <= 1e-9 * F || std::abs(F - floor) <= 1e-9 * F) continue;   // on a boundary
+                    INFO("thr " << thr << " S " << S << " blockScale " << blockScale << " F " << F);
+                    CHECK((weightedResidual(F, S, blockScale) < thr) == (F < std::max(thr * w, floor) || F == 0.0));
+                }
+            }
+        }
+    }
+    // no usable scale (an infinite derivative: sqrt at 0) is the absolute test; NaN stays NaN
+    CHECK(weightedResidual(2.0, inf, inf) == 2.0);
+    CHECK(weightedResidual(2.0, nan, 1.0) == 2.0);
+    CHECK(weightedResidual(-2e-9, inf, 0.5) == 2e-9);
+    CHECK(std::isnan(weightedResidual(nan, 1.0, 1.0)));
+    CHECK(std::isnan(weightedResidual(nan, 0.0, 0.0)));
+    CHECK(std::isnan(weightedResidual(nan, inf, inf)));
     // weightedResidualNorm: no scale (or one of another size) is the plain norm; NaN stays NaN
     Eigen::VectorXd F(2);
     F << 3e-14, -2e-9;
-    CHECK(weightedResidualNorm(F, Eigen::VectorXd(), 1e-9) == 2e-9);
+    CHECK(weightedResidualNorm(F, Eigen::VectorXd()) == 2e-9);
     Eigen::VectorXd S(2);
     S << 5e-14, 4.0;                       // a block with an equation of terms 4: both residuals are absolute
-    CHECK_THAT(weightedResidualNorm(F, S, 1e-9), WithinRel(2e-9, 1e-12));
+    CHECK_THAT(weightedResidualNorm(F, S), WithinRel(2e-9, 1e-12));
     S << 5e-14, 4e-13;                     // a block of tiny terms: 3E-14/5E-14 and 2E-9/1E-12
-    CHECK_THAT(weightedResidualNorm(F, S, 1e-9), WithinRel(2e-9 / 1e-12, 1e-12));
-    F[1] = std::numeric_limits<double>::quiet_NaN();
-    CHECK(std::isnan(weightedResidualNorm(F, S, 1e-9)));
+    CHECK_THAT(weightedResidualNorm(F, S), WithinRel(2e-9 / 1e-12, 1e-12));
+    S << 5e-14, inf;                       // the block scale is that of the finite scales
+    CHECK(blockResidualScale(S) == 5e-14);
+    CHECK_THAT(weightedResidualNorm(F, S), WithinRel(3e-14 / 1e-12, 1e-12));   // a tiny block; Inf: |F| itself
+    S << 4.0, inf;
+    CHECK_THAT(weightedResidualNorm(F, S), WithinRel(2e-9, 1e-12));
+    F[1] = -2.0;
+    CHECK(weightedResidualNorm(F, S) == 2.0);
+    // the distance to convergence of the relativeTolerance test: |F| / max(tolerance * w, 64 eps S)
+    CHECK_THAT(convergenceDistance(F, Eigen::VectorXd(), 1e-9), WithinRel(2.0 / 1e-9, 1e-12));
+    CHECK_THAT(convergenceDistance(F, S, 1e-9), WithinRel(2.0 / 1e-9, 1e-12));   // Inf: the tolerance itself
+    Eigen::VectorXd F1(1), S1(1);
+    F1 << 2e20;                            // a*1E20 + b*1E20 = 5 at (1, 1): terms 4E20, the rounding level 5.7E6
+    S1 << 4e20;
+    CHECK_THAT(convergenceDistance(F1, S1, 1e-9), WithinRel(2e20 / (kRoundingUlps * eps * 4e20), 1e-12));
+    F1 << 1e4;                             // at (0, 1E-16): terms 2E4, met at 1E-9: still 1E13 tolerances away
+    S1 << 2e4;
+    CHECK_THAT(convergenceDistance(F1, S1, 1e-9), WithinRel(1e4 / 1e-9, 1e-12));
+    F[1] = nan;
+    CHECK(std::isnan(weightedResidualNorm(F, S)));
+    CHECK(std::isnan(convergenceDistance(F, S, 1e-9)));
+}
+
+TEST_CASE("CS-BUG-TINY-IMPLICIT: an infinite derivative at the guess is not a converged equation",
+          "[library-gaps][tiny-implicit]") {
+    // sqrt(x-1) = 2 from the default guess x = 1: d sqrt/dx is infinite there, so is the scale S, and a weight
+    // that grew with S took F = -2 for converged (SUCCESS in 1 iteration, then the solution check failed)
+    auto run = runModel("sqrt(x-1) = 2\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x"], WithinRel(5.0, 1e-9));
+    // the same from a guess on the other side of the root
+    auto above = runModel("sqrt(x-1) = 2\n", {}, "x = 9\n");
+    INFO(above.message);
+    REQUIRE(above.solveOk);
+    CHECK(above.verified);
+    CHECK_THAT(above["x"], WithinRel(5.0, 1e-9));
 }
 
 TEST_CASE("CS-BUG-TINY-IMPLICIT: an implicit block recovers a tiny value (register reproducers)",
@@ -23741,6 +23804,8 @@ TEST_CASE("CS-BUG-TINY-IMPLICIT: an equation without a root is still rejected, t
     CHECK_FALSE(tiny.solveOk);
     auto ordinary = runModel("x^2 + 1 = 0\n");
     CHECK_FALSE(ordinary.solveOk);
+    // the progress summary of the pipeline compares weighted residuals, and says so
+    CHECK(ordinary.message.find("Initial weighted residual ||rho||_inf = ") != std::string::npos);
 }
 
 TEST_CASE("CS-BUG-TINY-IMPLICIT: an energy balance of terms ~5E7 converges at the rounding level of its terms",

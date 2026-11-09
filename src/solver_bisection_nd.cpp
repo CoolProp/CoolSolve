@@ -80,6 +80,8 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
         return SolverStatus::InvalidInput;
     }
 
+    ensureResidualScale(problem, x);   // its evaluations compute no Jacobian
+
     // Helper: safe evaluate returning success flag
     Eigen::VectorXd F(n);
     Eigen::MatrixXd Jdummy;
@@ -95,9 +97,9 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
     // Probe on a structured grid: x0 ± scale_i * e_i for each coordinate,
     // plus random perturbations if needed.
 
-    // Weighted residual (residualWeight, solver_common.h): what the tolerances are compared with
+    // Weighted residual (weightedResidual, solver_common.h): what the tolerances are compared with
     auto rhoOf = [&](const Eigen::VectorXd& F) {
-        return weightedResidualNorm(F, problem.residualScale, options.tolerance);
+        return weightedResidualNorm(F, problem.residualScale);
     };
 
     struct Vertex { Eigen::VectorXd x; Eigen::VectorXd F; std::vector<int> signs; };

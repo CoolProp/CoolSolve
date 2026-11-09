@@ -29,6 +29,11 @@ constexpr double kIdealGasStandardPressureSI = 1.0e5;
 constexpr double kIdealGasSolveTMinSI = 50.0;
 constexpr double kIdealGasSolveTMaxSI = 20000.0;
 
+/// True for an input that fixes the temperature of an ideal gas by itself (T, h, u): two of them do not fix the state.
+inline bool idealGasFixesTemperature(CoolProp::parameters p) {
+    return p == CoolProp::iT || p == CoolProp::iHmass || p == CoolProp::iUmass;
+}
+
 /// The temperature-only ideal-gas properties of a substance at T, per kg, SI (CoolProp basis).
 struct IdealGasPoint {
     double cp;       ///< specific heat cp0 [J/kg-K]

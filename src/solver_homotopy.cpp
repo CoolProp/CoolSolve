@@ -133,7 +133,7 @@ SolverStatus HomotopySolver::solve(Problem& problem,
                 Eigen::MatrixXd Jd;
                 try {
                     problem.evaluate(x, Fcheck, Jd, false);
-                    if (weightedResidualNorm(Fcheck, problem.residualScale, options.tolerance) < options.tolerance) {
+                    if (weightedResidualNorm(Fcheck, problem.residualScale) < options.tolerance) {
                         if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                         return SolverStatus::Success;
                     }

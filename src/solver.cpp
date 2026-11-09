@@ -556,6 +556,17 @@ void setBlockEvaluate(NonLinearSolver::Problem& problem, BlockEvaluator& blockEv
     };
 }
 
+/// The 1D evaluation of a block of one unknown \p blockEval for Newton1D: residual, derivative and residual scale
+/// (1, the absolute tests, when the evaluation gives none).
+Newton1DSolver::Eval1D makeEval1D(BlockEvaluator& blockEval, const std::map<std::string, double>& externalVars,
+                                  const std::map<std::string, std::string>& externalStringVars) {
+    return [&blockEval, &externalVars, &externalStringVars](double xval) -> Newton1DSolver::Eval1DResult {
+        auto er = blockEval.evaluate({xval}, externalVars, externalStringVars);
+        const double j = (!er.jacobian.empty() && !er.jacobian[0].empty()) ? er.jacobian[0][0] : 0.0;
+        return {er.residuals[0], j, er.scale.empty() ? 1.0 : er.scale[0]};
+    };
+}
+
 }  // namespace
 
 bool Solver::tryExplicitSolve(size_t blockIndex) {
@@ -642,23 +653,26 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
             std::vector<double> emptyX;  // No unknowns
             auto evalResult = blockEval.evaluate(emptyX, externalVars, externalStringVars);
             
-            // Check that all residuals are within tolerance (the tolerance of an equation is scaled by the
-            // weight of its terms, `residualWeight`: it is `tolerance` itself for terms of order 1)
-            const double blockScale = evalResult.scale.empty()
-                ? 0.0 : *std::max_element(evalResult.scale.begin(), evalResult.scale.end());
+            // Check that all residuals are within tolerance: the weighted residual (`weightedResidual`), which is
+            // the residual itself for terms of order 1
+            const bool weighted = evalResult.scale.size() == evalResult.residuals.size();
+            const double blockScale = weighted ? blockResidualScale(evalResult.scale) : 0.0;
             for (size_t i = 0; i < evalResult.residuals.size(); ++i) {
-                double residual = std::abs(evalResult.residuals[i]);
-                const double allowed = options.tolerance * residualWeight(evalResult.scale[i], blockScale, options.tolerance);
-                if (residual > allowed) {
+                const double residual = std::abs(evalResult.residuals[i]);
+                const double rho = weighted
+                    ? weightedResidual(evalResult.residuals[i], evalResult.scale[i], blockScale) : residual;
+                if (rho > options.tolerance) {
+                    std::ostringstream what;
+                    what << "residual = " << residual;
+                    if (rho != residual) what << ", weighted residual = " << rho;
+                    what << " (tolerance = " << options.tolerance << ")";
                     if (options.verbose) {
                         std::cerr << "Block " << blockIndex << " (zero unknowns): residual["
-                                  << i << "] = " << residual << " exceeds tolerance " 
-                                  << allowed << std::endl;
+                                  << i << "]: " << what.str() << std::endl;
                     }
                     if (outErrorMessage) {
                         std::ostringstream ss;
-                        ss << "Check equation failed: residual = " << residual 
-                           << " (tolerance = " << allowed << "). "
+                        ss << "Check equation failed: " << what.str() << ". "
                            << "This indicates an overdetermined or inconsistent system - "
                            << "the same variable may be defined by multiple conflicting equations.";
                         *outErrorMessage = ss.str();
@@ -760,14 +774,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                 trace->solverType += " -> Newton1D";
         }
         
-        // Lambda for evaluating the 1D residual+derivative
-        Newton1DSolver::Eval1D eval1D = [&](double xval) -> Newton1DSolver::Eval1DResult {
-            std::vector<double> x_std = {xval};
-            auto er = blockEval.evaluate(x_std, externalVars, externalStringVars);
-            double f = er.residuals[0];
-            double j = (er.jacobian.size() > 0 && er.jacobian[0].size() > 0) ? er.jacobian[0][0] : 0.0;
-            return {f, j, er.scale.empty() ? 1.0 : er.scale[0]};
-        };
+        Newton1DSolver::Eval1D eval1D = makeEval1D(blockEval, externalVars, externalStringVars);
         
         double xCur = x[0];
         std::string errorMsg;
@@ -992,13 +999,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                     if (!explicitOk) {
                         // 1D Newton solver on the reduced block
                         double xCur = evaluator_.getVariableValue(reducedBlock.variables[0]);
-                        Newton1DSolver::Eval1D eval1D = [&](double xval) -> Newton1DSolver::Eval1DResult {
-                            std::vector<double> x_std = {xval};
-                            auto er = reducedEval.evaluate(x_std, reducedExternalVars, externalStringVars);
-                            double f = er.residuals[0];
-                            double j = (er.jacobian.size() > 0 && er.jacobian[0].size() > 0) ? er.jacobian[0][0] : 0.0;
-                            return {f, j, er.scale.empty() ? 1.0 : er.scale[0]};
-                        };
+                        Newton1DSolver::Eval1D eval1D = makeEval1D(reducedEval, reducedExternalVars, externalStringVars);
 
                         SolverStatus st = Newton1DSolver::solveSimple(eval1D, xCur, options);
 
@@ -1084,14 +1085,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                                     if (!explOk) {
                                         // Newton1D on sub-block
                                         double xCur = evaluator_.getVariableValue(sb.variables[0]);
-                                        Newton1DSolver::Eval1D eval1D = [&](double xval) -> Newton1DSolver::Eval1DResult {
-                                            std::vector<double> x_std = {xval};
-                                            auto er = subEval.evaluate(x_std, subExternal, externalStringVars);
-                                            double f = er.residuals[0];
-                                            double j = (er.jacobian.size() > 0 && er.jacobian[0].size() > 0)
-                                                       ? er.jacobian[0][0] : 0.0;
-                                            return {f, j, er.scale.empty() ? 1.0 : er.scale[0]};
-                                        };
+                                        Newton1DSolver::Eval1D eval1D = makeEval1D(subEval, subExternal, externalStringVars);
 
                                         SolverStatus st = Newton1DSolver::solveSimple(eval1D, xCur, options);
 
@@ -1402,13 +1396,15 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
     // that subsequent solvers can start from a better point instead of always
     // resetting to the original initial guess.
     Eigen::VectorXd bestX = x;
-    // The residual norms of this function are weighted residuals (residualWeight, solver_common.h), the
-    // quantity that the tolerance is compared with; the weights are those of the last Jacobian evaluation.
+    // The residual norms of this function are weighted residuals (weightedResidual, solver_common.h), the
+    // quantity that the tolerance is compared with, with the scale of the last Jacobian evaluation. That scale
+    // changes as the solvers run (there is none before the first): the residual vectors are kept and two points
+    // are always compared with the scale of the moment. An empty vector is a point that could not be evaluated.
     auto weighted = [&](const Eigen::VectorXd& F) {
-        return weightedResidualNorm(F, problem.residualScale, options.tolerance);
+        return F.size() == 0 ? std::numeric_limits<double>::max() : weightedResidualNorm(F, problem.residualScale);
     };
-    double bestResidualNorm = std::numeric_limits<double>::max();
-    double initialResidualNorm = std::numeric_limits<double>::max();
+    Eigen::VectorXd bestF;      // residuals at bestX
+    Eigen::VectorXd initialF;   // residuals at the initial guess
 
     // Evaluate residual at the initial guess for comparison
     {
@@ -1416,8 +1412,8 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
         Eigen::MatrixXd J0;
         try {
             problem.evaluate(x, F0, J0, false);
-            bestResidualNorm = weighted(F0);
-            initialResidualNorm = bestResidualNorm;
+            bestF = F0;
+            initialF = F0;
         } catch (...) {
             rethrowIfFatalEvaluationError();
             // If even the initial eval fails, keep max residual
@@ -1435,7 +1431,7 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
     bool skipPartitioned = false; // set if Partitioned worsens the solution
 
     for (int round = 0; round < MAX_ROUNDS; ++round) {
-        double roundStartResidual = bestResidualNorm;
+        const Eigen::VectorXd roundStartF = bestF;
 
         // Check timeout before each pipeline round
         if (TimeoutGuard::hasTimedOut()) break;
@@ -1484,6 +1480,7 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
             } catch (...) { rethrowIfFatalEvaluationError(); }
 
             // Use whichever starting point has the smaller residual
+            const double bestResidualNorm = weighted(bestF);
             if (bestResidualNorm < initResidualNorm) {
                 x = bestX;
                 if (options.verbose) {
@@ -1546,9 +1543,10 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
             Eigen::MatrixXd J_dummy;
             try {
                 problem.evaluate(x, F_curr, J_dummy, false);
-                double currResidualNorm = weighted(F_curr);
+                const double currResidualNorm = weighted(F_curr);
+                const double bestResidualNorm = weighted(bestF);
                 if (currResidualNorm < bestResidualNorm) {
-                    bestResidualNorm = currResidualNorm;
+                    bestF = F_curr;
                     bestX = x;
                 } else if (strategy == SolverStrategy::Partitioned &&
                            currResidualNorm > bestResidualNorm * 10.0) {
@@ -1578,6 +1576,8 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
     } // end of pipeline loop
 
     // Check if this round made sufficient progress to justify restarting
+    const double bestResidualNorm = weighted(bestF);
+    const double roundStartResidual = weighted(roundStartF);
     if (bestResidualNorm < roundStartResidual * (1.0 - RESTART_MIN_IMPROVEMENT) &&
         bestResidualNorm > options.tolerance) {
         if (options.verbose) {
@@ -1604,8 +1604,10 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
             ss << lastError;
         }
         // Add summary of progress made
+        const double initialResidualNorm = weighted(initialF);
+        const double bestResidualNorm = weighted(bestF);
         if (initialResidualNorm < std::numeric_limits<double>::max()) {
-            ss << "\nInitial ||F||_inf = " << initialResidualNorm
+            ss << "\nInitial weighted residual ||rho||_inf = " << initialResidualNorm
                << ", best achieved = " << bestResidualNorm;
             if (bestResidualNorm < initialResidualNorm * 0.9) {
                 double reduction = (1.0 - bestResidualNorm / initialResidualNorm) * 100.0;
@@ -1847,7 +1849,7 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
         }
     }
 
-    double initialRho = 0.0;   // weighted residual at the start
+    double initialDistance = 0.0;   // convergenceDistance (solver_common.h) at the start: relativeTolerance
 
     for (int iter = 0; iter < options.partitionedMaxIterations; ++iter) {
         if (options.cancelToken && options.cancelToken->load(std::memory_order_relaxed)) {
@@ -1876,10 +1878,11 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
         }
 
         double residualNorm = F.lpNorm<Eigen::Infinity>();
-        // The convergence tests use the weighted residual (residualWeight, solver_common.h)
-        const double rhoNorm = weightedResidualNorm(F, evalResult.scale, options.tolerance);
+        // The convergence tests use the weighted residual (weightedResidual, solver_common.h)
+        const double rhoNorm = weightedResidualNorm(F, evalResult.scale);
+        const double distance = convergenceDistance(F, evalResult.scale, options.tolerance);
         if (iter == 0) {
-            initialRho = rhoNorm;
+            initialDistance = distance;
         }
 
         if (options.verbose) {
@@ -1905,7 +1908,7 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
             return SolverStatus::Success;
         }
 
-        if (initialRho > 0 && rhoNorm / initialRho < options.relativeTolerance) {
+        if (initialDistance > 0 && distance / initialDistance < options.relativeTolerance) {
             if (trace) {
                 trace->finalStatus = SolverStatus::Success;
                 trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
@@ -2235,8 +2238,8 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
 
         double tearNorm = F_tear.lpNorm<Eigen::Infinity>();
         double fullNorm = F.lpNorm<Eigen::Infinity>();
-        // The convergence tests use the weighted residual (residualWeight, solver_common.h)
-        const double fullRho = weightedResidualNorm(F, evalResult.scale, options.tolerance);
+        // The convergence tests use the weighted residual (weightedResidual, solver_common.h)
+        const double fullRho = weightedResidualNorm(F, evalResult.scale);
         if (trace) {
             SolverTrace::Iteration traceIter;
             traceIter.iter = outer;

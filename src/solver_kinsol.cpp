@@ -195,7 +195,7 @@ SolverStatus KINSOLSolver::solveLineSearch(Problem& problem, Eigen::VectorXd& y,
     const int n = y.size();
     Eigen::VectorXd F(n), dy(n);
     Eigen::MatrixXd J(n, n), J_unscaled(n, n);
-    double initialRho = 0.0;   // weighted residual (residualWeight, solver_common.h) at the start
+    double initialDistance = 0.0;   // convergenceDistance (solver_common.h) at the start: relativeTolerance
     auto startTime = std::chrono::high_resolution_clock::now();
 
     for (int iter = 0; iter < options.maxIterations; ++iter) {
@@ -218,9 +218,10 @@ SolverStatus KINSOLSolver::solveLineSearch(Problem& problem, Eigen::VectorXd& y,
         J = J_unscaled * scale.asDiagonal();
 
         double residualNorm = F.lpNorm<Eigen::Infinity>();
-        // The convergence tests use the weighted residual (residualWeight, solver_common.h)
-        const double rhoNorm = weightedResidualNorm(F, problem.residualScale, options.tolerance);
-        if (iter == 0) initialRho = rhoNorm;
+        // The convergence tests use the weighted residual (weightedResidual, solver_common.h)
+        const double rhoNorm = weightedResidualNorm(F, problem.residualScale);
+        const double distance = convergenceDistance(F, problem.residualScale, options.tolerance);
+        if (iter == 0) initialDistance = distance;
 
         if (options.verbose) {
             std::cout << "KINSOL(LS) iter " << iter << ": ||F||_inf = " << residualNorm << std::endl;
@@ -244,8 +245,8 @@ SolverStatus KINSOLSolver::solveLineSearch(Problem& problem, Eigen::VectorXd& y,
             return SolverStatus::Success;
         }
         // Convergence: relative.
-        if (initialRho > 0 &&
-            rhoNorm / initialRho < options.relativeTolerance) {
+        if (initialDistance > 0 &&
+            distance / initialDistance < options.relativeTolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             return SolverStatus::Success;
@@ -332,8 +333,9 @@ SolverStatus KINSOLSolver::solvePicard(Problem& problem, Eigen::VectorXd& y,
     const int n = y.size();
     const double omega = options.kinsolPicardOmega;
     Eigen::VectorXd F(n);
-    double initialRho = 0.0;   // weighted residual (residualWeight, solver_common.h) at the start
+    double initialDistance = 0.0;   // convergenceDistance (solver_common.h) at the start: relativeTolerance
     auto startTime = std::chrono::high_resolution_clock::now();
+    ensureResidualScale(problem, y.cwiseProduct(scale));   // its iterations evaluate no Jacobian
 
     for (int iter = 0; iter < options.maxIterations; ++iter) {
         if (TimeoutGuard::hasTimedOut()) {
@@ -355,9 +357,10 @@ SolverStatus KINSOLSolver::solvePicard(Problem& problem, Eigen::VectorXd& y,
         }
 
         double residualNorm = F.lpNorm<Eigen::Infinity>();
-        // The convergence tests use the weighted residual (residualWeight, solver_common.h)
-        const double rhoNorm = weightedResidualNorm(F, problem.residualScale, options.tolerance);
-        if (iter == 0) initialRho = rhoNorm;
+        // The convergence tests use the weighted residual (weightedResidual, solver_common.h)
+        const double rhoNorm = weightedResidualNorm(F, problem.residualScale);
+        const double distance = convergenceDistance(F, problem.residualScale, options.tolerance);
+        if (iter == 0) initialDistance = distance;
 
         if (options.verbose) {
             std::cout << "KINSOL(Picard) iter " << iter << ": ||F||_inf = " << residualNorm << std::endl;
@@ -385,8 +388,8 @@ SolverStatus KINSOLSolver::solvePicard(Problem& problem, Eigen::VectorXd& y,
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             return SolverStatus::Success;
         }
-        if (initialRho > 0 &&
-            rhoNorm / initialRho < options.relativeTolerance) {
+        if (initialDistance > 0 &&
+            distance / initialDistance < options.relativeTolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             return SolverStatus::Success;
@@ -441,11 +444,10 @@ SolverStatus KINSOLSolver::solveFixedPoint(Problem& problem, Eigen::VectorXd& y,
     const double omega = options.kinsolPicardOmega;
 
     auto startTime = std::chrono::high_resolution_clock::now();
-    double initialRho = 0.0;   // weighted residual (residualWeight, solver_common.h) at the start
+    ensureResidualScale(problem, y.cwiseProduct(scale));   // its iterations evaluate no Jacobian
 
-    // Evaluate G(y_0) and store y_0, G(y_0).
-    auto evalG = [&](const Eigen::VectorXd& yv, Eigen::VectorXd& Gout, double& resNorm)
-                     -> bool {
+    // Evaluate G(y), and F(y) when asked (\p Fout).
+    auto evalG = [&](const Eigen::VectorXd& yv, Eigen::VectorXd& Gout, Eigen::VectorXd* Fout = nullptr) -> bool {
         Eigen::VectorXd xu = yv.cwiseProduct(scale);
         Eigen::VectorXd Fv(n);
         Eigen::MatrixXd Jdummy;
@@ -455,21 +457,21 @@ SolverStatus KINSOLSolver::solveFixedPoint(Problem& problem, Eigen::VectorXd& y,
             rethrowIfFatalEvaluationError();
             return false;
         }
-        resNorm = weightedResidualNorm(Fv, problem.residualScale, options.tolerance);
         Gout = yv - omega * Fv;     // G(y) = y − ω·F(y)
+        if (Fout) *Fout = Fv;
         return true;
     };
 
     std::vector<Eigen::VectorXd> Ys;   // iterates y_i
     std::vector<Eigen::VectorXd> Gs;   // G(y_i)
 
-    Eigen::VectorXd G0(n);
-    double res0 = 0.0;
-    if (!evalG(y, G0, res0)) {
+    Eigen::VectorXd G0(n), F0(n);
+    if (!evalG(y, G0, &F0)) {
         if (detailedError) *detailedError = "KINSOL(FP): initial evaluation failed";
         return SolverStatus::EvaluationError;
     }
-    initialRho = res0;
+    // convergenceDistance (solver_common.h) at the start: relativeTolerance
+    const double initialDistance = convergenceDistance(F0, problem.residualScale, options.tolerance);
     Ys.push_back(y);
     Gs.push_back(G0);
 
@@ -486,7 +488,8 @@ SolverStatus KINSOLSolver::solveFixedPoint(Problem& problem, Eigen::VectorXd& y,
         int k = static_cast<int>(Ys.size()) - 1;     // index of the current iterate
         const Eigen::VectorXd Fk = (Ys[k] - Gs[k]) / std::max(omega, 1e-300);
         double residualNorm = Fk.lpNorm<Eigen::Infinity>();
-        const double rhoNorm = weightedResidualNorm(Fk, problem.residualScale, options.tolerance);
+        const double rhoNorm = weightedResidualNorm(Fk, problem.residualScale);
+        const double distance = convergenceDistance(Fk, problem.residualScale, options.tolerance);
         // (||F|| = ||y − G(y)||/ω ; for ω=1 this is just ||Ys−Gs||.)
 
         if (options.verbose) {
@@ -518,8 +521,8 @@ SolverStatus KINSOLSolver::solveFixedPoint(Problem& problem, Eigen::VectorXd& y,
             y = Ys[k];
             return SolverStatus::Success;
         }
-        if (initialRho > 0 &&
-            rhoNorm / initialRho < options.relativeTolerance) {
+        if (initialDistance > 0 &&
+            distance / initialDistance < options.relativeTolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             y = Ys[k];
@@ -568,8 +571,7 @@ SolverStatus KINSOLSolver::solveFixedPoint(Problem& problem, Eigen::VectorXd& y,
 
         // Evaluate G at the new iterate for the next iteration.
         Eigen::VectorXd Gnew(n);
-        double resNew = 0.0;
-        if (!evalG(yNext, Gnew, resNew)) {
+        if (!evalG(yNext, Gnew)) {
             if (detailedError) *detailedError = "KINSOL(FP): evaluation failed during iteration";
             if (trace) { trace->finalStatus = SolverStatus::EvaluationError;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }

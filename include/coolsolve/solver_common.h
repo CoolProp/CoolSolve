@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <string_view>
 
 namespace coolsolve {
 
@@ -19,49 +20,95 @@ namespace coolsolve {
 // Weighted residual (convergence tests)
 // ============================================================================
 
-/// Smallest weight of a residual (`residualWeight`): an equation of terms below it is met at |F| < tolerance * this
+/// Smallest relative weight of a residual: an equation of terms below it is met at |F| < tolerance * this
 /// (1E-21 at the default tolerance): terms of 1E-23 are rounding noise of the iteration, not values to resolve.
 constexpr double kMinResidualWeight = 1e-12;
 
-/**
- * @brief Weight w of the residual of an equation of scale S (`EvaluationResult::scale`) in a block whose
- *        largest scale is \p blockScale (the scale of the equation itself for a block of one equation).
- *
- * The convergence tests compare rho = |F| / w with `tolerance`, `100 * tolerance`, `lsRelaxedTolerance`...
- *   - a block in which every equation has terms below 1 (blockScale < 1): w = max(S, 1E-12), the test is
- *     relative to the terms. An equation of terms 1E-20 is met at a residual of 1E-21, not at 1E-9, which any
- *     value below 1E-9 satisfies;
- *   - a block with an equation of terms of order 1 or more: w = 1, today's absolute test for all its equations.
- *     The residual of an equation of tiny terms beside enthalpies of 1E6 is rounding noise of the block (a
- *     pressure drop of 1E-23 Pa, `MIN(a, b)` of two noisy 1E-8: examples `condenser_3zones`, library
- *     `CSL-0127`), and a relative test on it would never be met;
- *   - S > 64 eps / tolerance (7E4 at the default tolerance): w = 64 eps S / tolerance, so that the test is
- *     not below 64 ulp of the terms, a rounding level that the residual cannot reach.
- */
-inline double residualWeight(double scale, double blockScale, double tolerance) {
-    const double relativeWeight = blockScale < 1.0 ? std::min(1.0, std::max(scale, kMinResidualWeight)) : 1.0;
-    const double roundingWeight = 64.0 * std::numeric_limits<double>::epsilon() * scale / tolerance;
-    return std::max(relativeWeight, roundingWeight);
+/// Rounding level of an equation, in ulp of the scale S of its terms: the residual of a sum of tens of terms,
+/// each from a CoolProp call or an AD product with a few ulp of error, cannot be resolved below it.
+constexpr double kRoundingUlps = 64.0;
+
+/// Relative weight w of an equation of finite scale S in a block of largest finite scale \p blockScale (`weightedResidual`).
+inline double relativeResidualWeight(double scale, double blockScale) {
+    return blockScale < 1.0 ? std::max(scale, kMinResidualWeight) : 1.0;
+}
+
+/// Rounding level 64 eps S of an equation of finite scale S (`kRoundingUlps`).
+inline double residualRoundingLevel(double scale) {
+    return kRoundingUlps * std::numeric_limits<double>::epsilon() * scale;
 }
 
 /**
- * @brief ||rho||_inf with rho_i = |F_i| / w_i (`residualWeight`); NaN if a residual is NaN.
+ * @brief Weighted residual rho of an equation of residual \p f and scale S = \p scale (`EvaluationResult::scale`)
+ *        in a block whose largest finite scale is \p blockScale (`blockResidualScale`; S itself for one equation).
+ *
+ * A convergence test `rho < thr` (thr = `tolerance`, `100 * tolerance`, `lsRelaxedTolerance`...) is exactly
+ * |F| < max(thr * w, 64 eps S), with
+ *   - w = max(S, 1E-12) in a block in which every equation has terms below 1 (blockScale < 1): the test is relative
+ *     to the terms (an equation of terms 1E-20 is met at 1E-21, not at 1E-9, which any value below 1E-9 satisfies);
+ *   - w = 1 otherwise, the absolute test for every equation of the block (an equation of tiny terms beside
+ *     enthalpies of 1E6 is rounding noise of the block: examples `condenser_3zones`, library `CSL-0127`);
+ *   - 64 eps S, the rounding level (`kRoundingUlps`), the same for every threshold: a residual within it gives
+ *     rho = 0. It exceeds tolerance * w only for S > 7E4 (default tolerance).
+ * A non-finite S (an infinite derivative, `sqrt` at 0) gives the absolute test rho = |F|; a NaN \p f gives NaN.
+ */
+inline double weightedResidual(double f, double scale, double blockScale) {
+    const double r = std::abs(f);
+    if (!std::isfinite(scale)) return r;
+    if (r <= residualRoundingLevel(scale)) return 0.0;   // false for a NaN f
+    return r / relativeResidualWeight(scale, blockScale);
+}
+
+/// The largest finite entry of \p scale (0 when there is none): the `blockScale` of `weightedResidual`.
+template <class Scale>   // Eigen::VectorXd or std::vector<double>
+double blockResidualScale(const Scale& scale) {
+    double blockScale = 0.0;
+    for (Eigen::Index i = 0; i < static_cast<Eigen::Index>(scale.size()); ++i)
+        if (std::isfinite(scale[i])) blockScale = std::max(blockScale, static_cast<double>(scale[i]));
+    return blockScale;
+}
+
+/**
+ * @brief ||rho||_inf with rho_i the weighted residual of equation i (`weightedResidual`); NaN if a residual is NaN.
  *
  * An empty or mismatching \p scale (a problem that gives none: no Jacobian has been evaluated yet, or a
- * hand-built problem) means w = 1: the plain ||F||_inf.
+ * hand-built problem) means the plain ||F||_inf.
  */
 template <class Scale>   // Eigen::VectorXd or std::vector<double>
-double weightedResidualNorm(const Eigen::VectorXd& F, const Scale& scale, double tolerance) {
+double weightedResidualNorm(const Eigen::VectorXd& F, const Scale& scale) {
     const bool weighted = static_cast<Eigen::Index>(scale.size()) == F.size();
-    double blockScale = 0.0;
-    if (weighted)
-        for (Eigen::Index i = 0; i < F.size(); ++i) blockScale = std::max(blockScale, static_cast<double>(scale[i]));
+    const double blockScale = weighted ? blockResidualScale(scale) : 0.0;
     double norm = 0.0;
     for (Eigen::Index i = 0; i < F.size(); ++i) {
-        const double rho = weighted ? std::abs(F[i]) / residualWeight(scale[i], blockScale, tolerance) : std::abs(F[i]);
+        const double rho = weighted ? weightedResidual(F[i], scale[i], blockScale) : std::abs(F[i]);
         if (!(rho <= norm)) {
             if (std::isnan(rho)) return rho;
             norm = rho;
+        }
+    }
+    return norm;
+}
+
+/**
+ * @brief Distance to convergence ||F_i / a_i||_inf, with a_i = max(tolerance * w_i, 64 eps S_i) the residual at which
+ *        equation i is met (`weightedResidual`; a_i = tolerance for a non-finite S): the `relativeTolerance` test
+ *        compares it with its value at the start. A start of huge terms (a residual of 1E20 at the guess) then does
+ *        not make a point that is still far from convergence look converged, as |F| / |F0| would.
+ *        An empty or mismatching \p scale gives ||F||_inf / tolerance.
+ */
+template <class Scale>   // Eigen::VectorXd or std::vector<double>
+double convergenceDistance(const Eigen::VectorXd& F, const Scale& scale, double tolerance) {
+    const bool weighted = static_cast<Eigen::Index>(scale.size()) == F.size();
+    const double blockScale = weighted ? blockResidualScale(scale) : 0.0;
+    double norm = 0.0;
+    for (Eigen::Index i = 0; i < F.size(); ++i) {
+        double allowed = tolerance;
+        if (weighted && std::isfinite(scale[i]))
+            allowed = std::max(tolerance * relativeResidualWeight(scale[i], blockScale), residualRoundingLevel(scale[i]));
+        const double d = std::abs(F[i]) / allowed;
+        if (!(d <= norm)) {
+            if (std::isnan(d)) return d;
+            norm = d;
         }
     }
     return norm;
@@ -214,10 +261,10 @@ struct SolverTrace;  // forward — full definition in solver.h
  * "CALL ERROR: <text>", see ExpressionEvaluator::evaluateProcedureCall).
  * A CoolProp failure is not fatal: it is recoverable (a penalty value).
  */
-inline bool isFatalEvaluationError(const std::string& what) {
-    return what.find("Unknown or unsupported function") != std::string::npos
-        || what.find("Unknown fluid") != std::string::npos
-        || what.find("CALL ERROR: ") != std::string::npos;
+inline bool isFatalEvaluationError(std::string_view what) {
+    return what.find("Unknown or unsupported function") != std::string_view::npos
+        || what.find("Unknown fluid") != std::string_view::npos
+        || what.find("CALL ERROR: ") != std::string_view::npos;
 }
 
 /**
@@ -235,6 +282,24 @@ inline void rethrowIfFatalEvaluationError() {
     } catch (const std::exception& e) {
         if (isFatalEvaluationError(e.what())) throw;
     } catch (...) {
+    }
+}
+
+/**
+ * @brief Give \p problem (a `NonLinearSolver::Problem`) its residual scale when it has none yet, by one
+ *        evaluation with the Jacobian at \p x, for a solver that otherwise evaluates residuals only (KINSOL
+ *        Picard and fixed point, BisectionND): its tests are then weighted as those of the other solvers.
+ *        A failed evaluation leaves the scale empty (the absolute tests); a fatal evaluation error is rethrown.
+ */
+template <class Problem>
+void ensureResidualScale(Problem& problem, const Eigen::VectorXd& x) {
+    if (problem.residualScale.size() != 0) return;
+    Eigen::VectorXd F(x.size());              // sized, as the solvers' own evaluations are
+    Eigen::MatrixXd J(x.size(), x.size());
+    try {
+        problem.evaluate(x, F, J, true);
+    } catch (...) {
+        rethrowIfFatalEvaluationError();
     }
 }
 

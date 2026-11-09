@@ -102,7 +102,7 @@ SolverStatus NewtonSolver::solve(Problem& problem,
     Eigen::VectorXd F(n), dy(n), x_unscaled(n);
     Eigen::MatrixXd J(n, n), J_unscaled(n, n);
     double initialResidualNorm = 0.0;
-    double initialRho = 0.0;
+    double initialDistance = 0.0;   // convergenceDistance at the start (relativeTolerance)
     const double startMagnitude = std::max(x.lpNorm<Eigen::Infinity>(), 1.0);
 
     // Non-monotone merit history (Grippo et al. 1986)
@@ -173,9 +173,10 @@ SolverStatus NewtonSolver::solve(Problem& problem,
         }
 
         double residualNorm = F.lpNorm<Eigen::Infinity>();
-        // The convergence tests use the weighted residual (residualWeight, solver_common.h)
-        const double rhoNorm = weightedResidualNorm(F, problem.residualScale, options.tolerance);
-        if (iter == 0) { initialResidualNorm = residualNorm; initialRho = rhoNorm; }
+        // The convergence tests use the weighted residual (weightedResidual, solver_common.h)
+        const double rhoNorm = weightedResidualNorm(F, problem.residualScale);
+        const double distance = convergenceDistance(F, problem.residualScale, options.tolerance);
+        if (iter == 0) { initialResidualNorm = residualNorm; initialDistance = distance; }
 
         // Track merit for non-monotone line search
         double phi = 0.5 * F.squaredNorm();
@@ -211,7 +212,7 @@ SolverStatus NewtonSolver::solve(Problem& problem,
             return SolverStatus::Success;
         }
         // Convergence: relative
-        if (initialRho > 0 && rhoNorm / initialRho < options.relativeTolerance) {
+        if (initialDistance > 0 && distance / initialDistance < options.relativeTolerance) {
             if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             x = y.cwiseProduct(scale);
             return SolverStatus::Success;

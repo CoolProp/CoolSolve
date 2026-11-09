@@ -480,7 +480,7 @@ Monotone line search,Solver,Armijo backtracking line search,Yes,1,Used in Newton
 Non-monotone line search,Solver,Relaxed line search for non-monotone convergence,Yes,2,,
 Symbolic reduction,Solver,Reduce system by substituting trivially solved variables,Yes,1,Structural analysis phase,
 Variable bounds,Solver,Lower/upper bounds on variables during iteration,Yes,1,SolverOptions struct,
-Convergence tolerance,Solver,Configurable tolerance (default 1e-9) applied to the residual of each equation relative to the size of its terms (absolute for terms of order 1; relative in a block whose equations all have terms below 1; not below the rounding level above 7e4); warning W002 for an implicit value below it,Yes,1,SolverOptions::tolerance; residualWeight in solver_common.h,
+Convergence tolerance,Solver,Configurable tolerance (default 1e-9) applied to the residual of each equation relative to the size of its terms (absolute for terms of order 1; relative in a block whose equations all have terms below 1; not below the rounding level above 7e4); warning W002 for an implicit value below it,Yes,1,SolverOptions::tolerance; weightedResidual in solver_common.h,
 Max iterations,Solver,Configurable max iterations (default 100),Yes,1,SolverOptions::maxIterations,
 Min/Max (optimization),Solver,Single-variable and multi-variable optimization,No,3,EES Calculate menu: Min/Max,
 Uncertainty propagation,Solver,Automatic uncertainty propagation analysis,No,4,EES Calculate menu: Uncertainty Propagation,
