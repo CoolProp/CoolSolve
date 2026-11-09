@@ -12,14 +12,27 @@ changes introduced.
 
 ### Behaviour changes
 
-- **`QUALITY` outside the saturation dome is 100 or -100, as EES.** It returned 0 for every single-phase state:
-  it is now 100 for a superheated vapour and -100 for a compressed liquid, for every input pair (`T, P`, `P, h`,
-  `P, s`, ...), for the pure fluids, the pseudo-pure fluids and the CoolProp mixtures; the supercritical states are
-  100 above the critical temperature and -100 below it (EES documents only the two subcooled and superheated
-  cases). Values inside the dome are unchanged. A model that compared the quality with 0 or 1 outside the dome
-  sees 100 or -100 now; a quality outside [0, 1] fed back as the quality input of another call is still clamped
-  with a warning, and the final check of the solution rejects it. See *Quality outside the saturation dome* in the
-  [Language Reference](language_reference.md).
+Model results can move: re-check models that use the items below.
+
+- **Ideal gases are exactly ideal** (`Air`, `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4` … `C8H18`, `H2O`): the
+  ideal-gas part of their CoolProp equation of state, `Pv = RT`, `h(T)`, `u = h − RT`, at any T and P, as in EES.
+  They were real-gas CoolProp states: results move by the real-gas residual (typically 0.1–1 %); `C8H18` or `H2O`
+  at room conditions are the gas, never the liquid; the transport properties are those of the dilute gas (a given P
+  is ignored); `quality`, `T_sat`, `P_sat` of an ideal gas are errors naming the real fluid
+  ([Language Reference §5](language_reference.md)).
+- **`QUALITY` outside the saturation dome is 100 (vapour side) or -100 (liquid side), as EES**, instead of 0, for
+  every input pair; supercritical states are 100 above the critical temperature and -100 below it. A model that
+  compares the quality with 0 or 1 outside the dome must account for it (*Quality outside the saturation dome*).
+- **`AND`/`OR` in IF and UNTIL conditions are read from left to right**, as EES (`AND` had priority).
+- **A `CALL ERROR` reached by any iterate stops the calculation**, as EES; a guarded model may need guesses that
+  keep the iterates out of the guarded range ([Debugging Models](debugging_models.md)).
+- **`CALL psychprops` returns v, h, s, u per kg of dry air** (as the AirH2O functions and EES) and accepts named
+  inputs (`T=`, `P=`, `R=`, …).
+- **Convergence test relative to the size of each equation's terms**: tiny values (1e-20) are solved instead of
+  being set to 0, and large energy balances converge at the rounding level of their terms; new warning `W002` for
+  an implicitly solved value below the tolerance (*Convergence tolerance*, Language Reference §10).
+- **`VOLUME` is labelled `m^3/kg`**, and `$IntegralTable` rows are at multiples of the output interval
+  (`integralOutputInterval` is now applied).
 
 ---
 

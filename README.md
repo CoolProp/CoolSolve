@@ -110,9 +110,10 @@ CoolSolve uses several file formats for input and verification:
      - `integralRichardson`: Richardson extrapolation on fixed-step methods (default: `false`).
      - `integralOutputInterval`: Default `$IntegralTable` row interval when `:n` is omitted (`0` = every step).
    - **CoolProp Integration options**:
-    - `coolpropBackend`: CoolProp backend string (default: `HEOS`). Options: `HEOS`, `INCOMP`, `TTSE&HEOS`, `BICUBIC&HEOS`. Not applied to the ideal-gas substances (`N2`, `CO2`, `H2O`, … : always the HEOS ideal-gas part, [Language Reference §5](docs/language_reference.md)).
-    - `coolpropUseAbstractState`: Use the low-level `AbstractState` API instead of `PropsSI` (default: `true`). Provides 2–5× speedup by caching fluid objects and avoiding string parsing. Not applied to ideal gases.
-    - `coolpropEnableAnalyticalDerivatives`: Use `first_partial_deriv()` for exact gradients with a forward-FD consistency check (default: `true`). Falls back to finite differences near phase boundaries where analytical derivatives are inaccurate. Ideal gases always have exact analytical derivatives, whatever this key.
+    - `coolpropBackend`: CoolProp backend string (default: `HEOS`). Options: `HEOS`, `INCOMP`, `TTSE&HEOS`, `BICUBIC&HEOS`.
+    - `coolpropUseAbstractState`: Use the low-level `AbstractState` API instead of `PropsSI` (default: `true`). Provides 2–5× speedup by caching fluid objects and avoiding string parsing.
+    - `coolpropEnableAnalyticalDerivatives`: Use `first_partial_deriv()` for exact gradients with a forward-FD consistency check (default: `true`). Falls back to finite differences near phase boundaries where analytical derivatives are inaccurate.
+    - These three keys do not apply to the ideal-gas substances (`N2`, `CO2`, `H2O`, …), always evaluated from the ideal-gas part of their HEOS equation of state with exact derivatives ([Language Reference §5](docs/language_reference.md)).
     - `coolpropCacheEnabled`: Enable thread-local `AbstractState` caching (default: `true`).
     - `coolpropEnableSuperancillaries`: Enable CoolProp superancillary equations (default: `true`).
 
@@ -348,16 +349,13 @@ cd build
 # Run all unit tests (parser, evaluator, Newton, tearing, config, etc.)
 ./coolsolve_tests
 
-# Run comprehensive example file tests (solves all 40 .eescode examples,
+# Run comprehensive example file tests (solves every .eescode example,
 # checks expected values, and runs solution verification on each)
 ./coolsolve_tests "[examples-comprehensive]"
 
-# Library regression (slow, about five minutes): solves every runnable model of the
-# CoolSolve Library (the checkout embedded in the build, or COOLSOLVE_LIBRARY_DIR=<checkout>)
-# and compares it with its stored .sol baseline; report in library_regression.md.
-# The library's own `python3 tools/test_models.py --coolsolve <abs path>/coolsolve` gives the same verdicts.
-# COOLSOLVE_LIBRARY_TEST_FILTER=CSL-0001,CSL-0009:coolsolve selects targets,
-# COOLSOLVE_LIBRARY_TEST_EXCLUDE=CSL-0009:coolsolve leaves some out.
+# Library regression: every runnable CoolSolve Library model against its .sol baseline
+# (the checkout embedded in the build, or COOLSOLVE_LIBRARY_DIR=<checkout>; targets selected with
+# COOLSOLVE_LIBRARY_TEST_FILTER / COOLSOLVE_LIBRARY_TEST_EXCLUDE, e.g. CSL-0001,CSL-0009:coolsolve)
 ./coolsolve_tests "[library-regression]"
 
 # Library tests: the model index/loader (unit tests) and, against the running GUI
@@ -385,7 +383,7 @@ The `examples/` folder is used by the CLI and the regression tests only — the 
 
 The comprehensive test runs all `.eescode` files in the `examples/` folder, validates solutions against known expected values (with 1% tolerance), and performs **solution verification** — independently re-evaluating every equation to confirm LHS ≈ RHS. A detailed report is written to `examples/test_examples.md`.
 
-The library regression solves every runnable model of the CoolSolve Library (the main file of each *verified* or *modified* model, and every variant with a `.sol` baseline: about 320 targets) with the CLI's pipeline and requires each variable of its `.sol` baseline to be met within `1e-9 + 1e-6·max(|new|, |baseline|)`. It writes `library_regression.md` (in the working directory, the build folder) with the verdict of every target (PASS, DEVIATION with the worst variable, FAIL with the solver message) and the time it took; it is skipped when no library is available. It is a hidden test (`[.]`): `./coolsolve_tests` and `ctest` do not run it unless it is asked for by its tag; its self-tests (a small library written to a temporary folder: locating the library, reading a baseline, the comparison rule, every verdict) are ordinary unit tests.
+The library regression solves the main file of each *verified* or *modified* library model and every variant with a `.sol` baseline, with the CLI's pipeline, and requires each baseline variable within `1e-9 + 1e-6·max(|new|, |baseline|)` (the rule of the library's `tools/test_models.py`). It writes `library_regression.md` in the build folder (PASS, DEVIATION with the worst variable, FAIL with the solver message) and is hidden: `./coolsolve_tests` and `ctest` run only its self-tests. See [Contributing §2.4](docs/contributing.md#24-run-the-full-test-suite).
 
 The robustness test runs every solvable example under multiple solver configurations and reports a summary table of successes, failures, and iteration counts per configuration. A detailed report is written to `examples/solver_robustness_report.md`.
 
@@ -469,7 +467,7 @@ CoolSolve/
 ├── include/coolsolve/integral/
 │   └── *.h                     # Equation-based dynamic solver (IntegralProblem, IntegralTable, Integrator, IntegralSolver)
 ├── src/
-    ├── parser.cpp              # CoolSolve language parser
+│   ├── parser.cpp              # CoolSolve language parser
 │   ├── ir.cpp                  # IR building and LaTeX generation
 │   ├── structural_analysis.cpp # Matching and SCC algorithms
 │   ├── autodiff_node.cpp       # AD function implementations
@@ -491,9 +489,9 @@ CoolSolve/
 │   ├── solver.cpp              # Pipeline orchestrator, Newton, tearing, config loading
 │   ├── solver_bisection_nd.cpp # Multi-dimensional bisection solver
 │   ├── solver_homotopy.cpp     # Homotopy continuation solver
-    │   ├── solver_lm.cpp           # Levenberg-Marquardt solver
-    │   ├── solver_kinsol.cpp       # KINSOL (SUNDIALS-style) solver: line search / Picard / Anderson
-    │   ├── solver_newton.cpp       # Newton + line search solver
+│   ├── solver_lm.cpp           # Levenberg-Marquardt solver
+│   ├── solver_kinsol.cpp       # KINSOL (SUNDIALS-style) solver: line search / Picard / Anderson
+│   ├── solver_newton.cpp       # Newton + line search solver
 │   ├── solver_symbolic.cpp     # Symbolic block reduction preprocessing
 │   ├── solver_trust_region.cpp # Trust-region dogleg solver
 │   ├── usage_log.cpp           # GUI solve-attempt log: CSV append + cached statistics

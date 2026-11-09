@@ -403,29 +403,27 @@ One line per fixed item. The regression tests are in `tests/test_library_gaps.cp
 | `CS-BUG-HINT-ARG-DEFAULT` | An argument that is no known state input (`u=`, `mu=`, `B=` of a real fluid, an unknown CoolProp input) is never checked; for `AirH2O` the enthalpy is not checked | 2026-10-18, `main` |
 | `CS-BUG-FLUID-HINT-CO2` | No *"Did you mean"* for a registered fluid (`CO2`, `R22`, `Steam`, `Air`); the AirH2O hint for `Air` only with `humrat`, `relhum`, `wetbulb`, `dewpoint` | 2026-10-18, `main` |
 | `CS-BUG-PROC-NEG-POW` | The AD derivative of `x^y` (`pow(ADValue, ADValue)`, used whenever both operands are expressions, e.g. in FUNCTION/PROCEDURE bodies) went through `ln(x)` for every component: a negative base gave a NaN Jacobian row even with a constant exponent (`q^3`, `log10(pL)^2`), which spread to the equations using the CALL output (*SingularJacobian* at iteration 0). The power rule is now used for d/dx, `ln(x)` only where the exponent varies. Also: the Jacobian of `solver_singular_diagnostics.md` was copied with a wrong (column-major) stride, and that file now lists non-finite entries and zero rows/columns. Found in `CSL-0326`, `CSL-0327` | 2026-11-01, `fix/ad-pow-negative-base` `b26946d` |
-
----
 | `CS-GAP-NH3H2O` | The EES ammonia-water mixture: the fluid `NH3H2O` (any three of `T`, `P`, `X` mass fraction, `Q`, `H`, `S`, `U`, `V`; `Enthalpy`, `Entropy`, `IntEnergy`, `Volume`, `Density`, `Temperature`, `Pressure`, `Quality`, `MassFraction`, `SpecHeat`, `VolExpCoef`) and `CALL NH3H2O(Code, In1, In2, In3 : T, P, x, h, s, u, v, q)` with the 15 codes of EES and its fixed units (K, bar, kJ/kg). EES's model (Ibrahim & Klein 1993) has no published coefficients, so the formulation is the IAPWS Guideline G4-01 (Tillner-Roth & Friend 1998: Helmholtz energy, IAPWS-95 for water), in `src/nh3h2o.cpp` (formulation; the Helmholtz energy is written once over a scalar type and evaluated with truncated Taylor arithmetic, `include/coolsolve/taylor_jet.h`, so all derivatives are exact) and `src/nh3h2o_flash.cpp` (saturation solver with guesses from the liquid fugacities and warm-start caches; the 15 flashes as outer root searches around the saturation solver, a full Newton polish and the implicit function theorem for the derivatives); glue in `src/evaluator_nh3h2o.cpp` (units, trial-point limits). Verified against Tables 6 to 8 of the guideline, pure water (CoolProp), the EES reference points (the two formulations agree within ~1 %; `h`, `s`, `u` have another reference state) and by round trips over all combinations. Solver tolerance 1e-12 on scaled residuals, with a measured noise floor for compositions within 1e-5 of pure (test `Saturation: the equilibrium equations hold to 1e-11`). Remainder, still open: the transport properties `Conductivity`, `Viscosity`, `SurfaceTension` (Cuenca 2013, Conde 2004) are errors that say so. **Branch `feat/nh3h2o`, not merged: review needed, see [nh3h2o_review.md](nh3h2o_review.md)** | v0.4 preparation, `feat/nh3h2o` |
-| `CS-BUG-IF-SINGLELINE` | Not a bug (round-5 EES-help review, 2026-11-07): its reproducer `y = IF c THEN a ELSE b` is not EES syntax (help `gswpvg.htm`, `_if.htm`: `IF … THEN … ELSE` is a statement of FUNCTION/PROCEDURE bodies with one statement after `THEN` and after `ELSE`; none of the 746 EES files of the collection writes `v = IF … THEN`) and it is a parse error today; every EES single-line form evaluates correctly (with or without parentheses and `ELSE`, `=` and `:=`, AND/OR groups, `=>`/`=<`, string conditions, comments, `THEN CALL`, `THEN GOTO`, `ELSE IF` ladders, in DUPLICATE and REPEAT). The precedence of AND/OR is `CS-BUG-IF-ANDOR-ORDER`, `IFNOT` is `CS-GAP-IFNOT` | 2026-11-07, `fix/library-gaps-5` (review only) |
-| `CS-FEAT-LIB-TEST` | Library regression: `./coolsolve_tests "[library-regression]"` (hidden, about 5 min) solves in-process, with the CLI's pipeline (`coolsolve.conf`, CoolProp configuration, final verification at 1e-3), the main file of every *verified*/*modified* library model and every variant with a `.sol` (320 targets on library `fd2a6ef`: 320 PASS) and requires each baseline variable within 1e-9 + 1e-6·max(\|new\|, \|baseline\|); same targets and verdicts as the library's `tools/test_models.py`, stricter on an empty or malformed baseline and on a NaN/inf result; library = `COOLSOLVE_LIBRARY_DIR` or the checkout embedded in the build, `$INCLUDE` resolved in it; `COOLSOLVE_LIBRARY_TEST_FILTER` / `_EXCLUDE`; report `library_regression.md`; self-tests on a small library in the unit suite (`tests/test_library_regression.cpp`). Open: a CI | 2026-11-07, `fix/library-gaps-5` |
-| `CS-BUG-EXTRACT-FMT-BYTE` | `tools/ees_extract.py` recognises a variable record by its structure (display format 0–5, plausible floats, bounds ≠ [0, 0], a name that occurs in the code) instead of `byte+74 == 3`, and warns when a variable defined by an equation has no record. When a name occurs in several blocks of records the first block is used; in files with stale records (e.g. `ExpanderSimpleModelSQ110701.EES`) that block can disagree with the copies the old filter took, and the stale check (`CS-BUG-EXTRACT-STALE`) lists the names; tests `tests/test_ees_tools.py` | 2026-11-07, `fix/library-gaps-5` |
-| `CS-BUG-EXTRACT-NAME-CHARS` | Records of names with `\`, `%`, `\|`, `#`, `°` and Latin-1 letters are decoded (names as CoolSolve accepts them, whole-word match in the code); string variables and the built-in constants `g#`, `R#`… are not listed; tests `tests/test_ees_tools.py` | 2026-11-07, `fix/library-gaps-5` |
-| `CS-BUG-EXTRACT-DECIMAL-RANGE` | The range comma of `SUM/PRODUCT(…, i=a,b)` and `DUPLICATE i=a,b` is never rewritten as a decimal point and no longer makes a dot-format file look like a comma file; tests `tests/test_ees_tools.py` | 2026-11-07, `fix/library-gaps-5` |
-| `CS-BUG-EXTRACT-TABLE-FP` | The table scan starts after the first block of variable records and validates the grid (row count from the column layout with its state bytes, plausible cells); a structure that fails is not emitted and is reported; tables of the same name no longer overwrite each other. On the 439 files of the collection: 9 phantom tables gone, 90 files gain real tables, 36 row/column counts corrected; tests `tests/test_ees_tools.py` | 2026-11-07, `fix/library-gaps-5` |
-| `CS-BUG-EXTRACT-LOOKUP-STRING` | String columns of embedded tables are decoded and written as text cells (layout 31 + 11n + 3 + strings), with correct table boundaries and names; tests `tests/test_ees_tools.py` | 2026-11-07, `fix/library-gaps-5` |
-| `CS-BUG-EXTRACT-NUL` | Control characters (NUL padding of plain-text and RTF equations alike, not only RTF) are stripped from every output; UTF-16 equations are decoded; tests `tests/test_ees_tools.py` | 2026-11-07, `fix/library-gaps-5` |
-| `CS-BUG-EXTRACT-STALE` | The extractor warns about inf/NaN stored values and about values that contradict an explicit equation of numbers and stored variables (MODULE bodies included), states the limitation in the `#` header of `ees_variables.csv`, the report and `docs/ees_import.md`, and `compare_solution.py` marks the suspect rows; a file without warning is not proof (46 of 428 collection files have inf/NaN values, 37 an equation mismatch); tests `tests/test_ees_tools.py` | 2026-11-07, `fix/library-gaps-5` |
-| `CS-BUG-COMPARE-UNIT-CASE` | `compare_solution.py --ees-units` matches unit names without regard to case (`kj`, `kpa`, `k`); `mW`, `mJ`, `mPa` are not converted, and all-lower-case `mw`, `mj`, `mpa` are read as mega (documented); tests `tests/test_ees_tools.py` | 2026-11-07, `fix/library-gaps-5` |
-| `CS-BUG-IF-ANDOR-ORDER` | `AND`/`OR` in the IF, ELSE IF and UNTIL conditions of FUNCTION/PROCEDURE bodies are evaluated strictly left to right, as in EES (no priority of AND over OR; a parenthesised group first): `parseCondition` splits at the last top-level AND/OR (`src/parser.cpp`); the reproducer gives `r` = 2. Tests `[library-gaps][if-andor]`, with the guard tests of the single-line IF forms (`CS-BUG-IF-SINGLELINE`) | 2026-11-07, `fix/library-gaps-5` |
-| `CS-BUG-PSYCHPROPS-BASIS` | `CALL psychprops` returns v, h, s and u per kg of **dry** air: each output is now the AirH2O property function of the same quantity (`evaluateHumidAirProperty`, the code path of `volume`/`enthalpy`/`entropy`/`intenergy(AirH2O, …)` extracted in `src/evaluator.cpp`), with its derivatives (the procedure had none). The reproducer gives v = v_ref = 0.86655 m³/kg, h = 45.578 kJ/kg, u = h − P·v = −41.077 kJ/kg (help: 0.8668, 45.45, −41.23; CoolProp's humid-air model, not an ideal-gas mixture). The finite-difference derivatives of every AirH2O function are skipped when no input depends on an unknown (faster models). Tests `[library-gaps][psychprops]` | 2026-11-08, `fix/library-gaps-5` |
-| `CS-GAP-PSYCHPROPS-NAMED` | Named inputs as in help `hs786.htm`: `CALL psychprops(T=T_1, P=P_1, R=RH_1 : …)`, P and two of T, R, W, B, D, H, V, S in any order, the substance `AirH2O` optional; skipped outputs keep their position (`: , , h_1`, `{v_1}`, trailing ones dropped); an output written with the variable of the input of the same quantity is that input (the help example is square); the warning *Unknown function 'psychprops'* is gone. A missing P, an unknown or repeated name, R with W, another substance, an unnamed input among named ones, not three inputs or more than nine outputs are parse errors naming the cause (`src/parser.cpp`, `include/coolsolve/psychprops.h`). Other procedures are unchanged (`CS-GAP-CALL-OUT-OMITTED`) | 2026-11-08, `fix/library-gaps-5` |
-| `CS-GAP-IDEAL-GAS-MODEL` | The 17 ideal-gas substances are exactly ideal: the ideal-gas part (alpha0) of their CoolProp equation of state on a separate per-thread HEOS state with the gas phase imposed (`src/ideal_gas.cpp`), with CoolProp's R and M, re-anchored to the NASA-Glenn Δh_f and s° (Air keeps CoolProp's reference); pv = RT, u = h − RT, cp − cv = R, Z = 1, s = s0(T) − R ln(P/1 bar) at any T and P. Any two independent inputs among T, P, h, u, d/v, s (T from h, u or s by a safeguarded Newton on [50 K, 20000 K]); analytical derivatives, implicit-function theorem for the inversions; dilute-gas transport of T only (P ignored); `quality`/`x`, `t_sat`, `p_sat`, `surfacetension` are errors naming the real fluid, `PHASE$` is `gas`; the internal pressures (101325, 100, 0.01 Pa) are gone; 3–8× cheaper per call. The reproducers give h − u − RT = 0 (CO2), `enthalpy(C8H18,T=25,P=1E5)` = Δh_f/M (the gas), `volume(He,T=20,P=14E6)` = RT/P; `CSL-0283` moves from 6.3e-2 to 1.2e-4 of the EES value (EES's R), `CSL-0225` from 9.5e-2 to 2.5e-5, `CSL-0152` (H2O at a partial pressure was the liquid) from 0.67 to 8.6e-5. Soundness against NASA-Glenn 200–3000 K: cp⁰ within 0.5 % for 11 species (H2 −0.6 % at 200 K); CH4 beyond 0.5 % above 660 K (−5.3 % at 3000 K), C5H12 above 830 K (−19 %), C6H14 at 340–530 K and above 1480 K, C7H16 above 1320 K, C8H18 ±1.1 % at 300–1600 K, H2O above 1520 K (−2.1 %): unchanged from before (same alpha0), NASA polynomials are the follow-up `CS-GAP-FLUIDS-NASA-SPECIES`. Library regression: 230 PASS, 90 DEVIATION (real-gas residual, cp at 25 °C −0.16 % for Air; models mixing T-only and (T,P) states; table in the commit message), baselines to re-explain in the library. Tests `[library-gaps][ideal-gas-model]` and the rewritten ideal-gas tags | 2026-11-08, `fix/library-gaps-5` |
-| `CS-BUG-TINY-IMPLICIT` | The convergence tests weight each residual by the scale S of its equation's terms (sum of the term magnitudes + Σ|∂F/∂x·x|, computed with the Jacobian, `residualWeight` in `solver_common.h`): relative to S (floor 1e-12) in a block whose equations all have terms below 1, today's absolute test in a block holding terms ≥ 1 (a per-equation relative test regressed `condenser_3zones` and `CSL-0127`, whose tiny equations are rounding noise beside enthalpies of 1e6), and not below 64·ε·S/tol for terms above ~7e4; every acceptance test of every solver (Newton, LM, TrustRegion, Kinsol, Newton1D, BisectionND, Homotopy final check, partitioned, tearing, zero-unknown block, pipeline restart) uses it, `relativeTolerance` included; merit, line search, trace and `maxResidual` stay raw. Warning `W002` for an implicitly solved value in (0, tolerance), once per variable. Reproducers: `c` = 2.33e-20, `a` = 3e-20 / `b` = 2e-20, the 1E20 system verified. CGAM solver stage 177 → 14.6 ms (no more 150-iteration stalls at 2 ulp of terms ~5e7); 16 of 50 examples converge in fewer iterations, `orc_simple` +1. Library 229 PASS / 91 DEVIATION / 0 FAIL: `CSL-0240` PASS → DEVIATION (its baseline `W_dot_shaft_p` = 11852.782 was accepted 0.3 off by the absolute test on terms ~1e-5; now 11852.480, analytic 11852.5: baseline to re-explain), `CSL-0315` and `CSL-0323` closer to their converged values. Limit (documented): a residual below tol·1e-12 = 1e-21 is always accepted, so `x^3 = 8E-60` stops at x ≈ 9e-8 (scale the variable). Tests `[library-gaps][tiny-implicit]` | 2026-11-08, `fix/library-gaps-5` |
-| `CS-GAP-QUALITY-DOME` | `QUALITY` outside the dome returns 100 on the vapour side and −100 on the liquid side, as EES (help `a0ftve.htm`), for every input pair: the side is CoolProp's phase (`qualityOutsideDome` in `src/evaluator.cpp`; also on the PropsSI fallback), for pure, pseudo-pure and mixture fluids; supercritical: 100 above Tc (EES stores 100 for CO2 at 35 °C / 20 bar, `CSL-0225`), −100 for T < Tc, P > Pc (CoolSolve's rule, §8); derivative 0 outside the dome (no derivative call); two-phase values and the clamp of a quality input unchanged (a ±100 fed back as input is clamped with a warning and fails the final check). Reproducer 100 / −100. Library 220 PASS / 100 DEVIATION / 0 FAIL: 9 PASS → DEVIATION (`CSL-0019`, `-0036`, `-0054`, `-0134`, `-0159`, `-0172`, `-0208`, `-0210`, `-0238`), each a 0 → ±100 that matches the stored EES value (CSL-0134: no EES baseline, state subcooled); `CSL-0225` and `CSL-0329` one variable more, also to the EES 100: baselines to re-explain. Note in `docs/versions.md` (next release). Tests `[library-gaps][quality-dome]` | 2026-11-08, `fix/library-gaps-5` |
-| `CS-BUG-UNIT-VOLUME` | A `VOLUME()` output and a `v=` / `volume=` input are labelled `m^3/kg` and start from a specific volume (1/D at 20 °C, 1 atm; 1.0e-3 for water instead of 998): new `UnitType::SpecificVolume` and `inferredProperty` code `VOL` (`src/variable_inference.cpp`, one 1/D in `tryComputeProperty`); the stored code `V` is read as the viscosity, no longer as the name `v` (a viscosity variable had a density type and multi-start guess); the GUI unit-hint table (`server.cpp`) follows. `v(...)`, which evaluates the viscosity (`CS-BUG-V-ALIAS`, open), is labelled `Pa-s` with a viscosity guess. Reproducer: `v = 4.889e-02 "m^3/kg"`. Library 219 PASS / 101 DEVIATION / 0 FAIL: `CSL-0135` `turbine_stodola_offdesign` PASS → DEVIATION (`P_in` 3.5e-5 off; its cone-law residual is 3.6e-5 at the baseline, 8e-9 now: the baseline is under-converged, to re-explain); 88 library `.sol` files carry the old `kg/m^3` label on volumes (units are not compared; tidy at the next re-baseline). Tests `[library-gaps][unit-volume]` | 2026-11-09, `fix/library-gaps-5` |
-| `CS-BUG-NEWTON1D-BRACKET-COLLAPSE` | Newton1D Phase 3 accepts a bracket that shrank below `stepTolerance` only when its weighted residual is below `lsRelaxedTolerance` (as Phase 4 and BisectionND); otherwise F jumps across it (a pole, or the penalty 1e4 that a failed CoolProp call returns at the edge of its domain: water at 1 bar fails below h = 66.489 J/kg, the triple point), the bracket is dropped and the next one is tried (Phase 1's, then all of Phase 2's, best midpoint first); if the pipeline fails too, the block error says *F changes sign across a jump, not through a root*. A Newton trial point inside the bracket that meets `tolerance` is accepted. Reproducer (guess h = 1): h = 2.6758e6 J/kg in 79 iterations, checked (was SUCCESS at 66.49, then *CoolProp evaluation failed in final solution*). Examples: no verdict or iteration change; library 219 / 101 / 0, `CSL-0029` 154 → 132 iterations. Left as is: a pole without a root exhausts `maxIterations` near the pole and fails without explanation. Tests `[library-gaps][newton1d-bracket]` | 2026-11-09, `fix/library-gaps-5` |
-| `CS-BUG-CALL-ERROR-ITERATE` | A `CALL ERROR` reached by an iterate from the user's guesses is a fatal evaluation error (`isFatalEvaluationError` + `rethrowIfFatalEvaluationError` in `solver_common.h`): the initial-guess evaluation, line searches, every pipeline solver and its fall-through, the parallel pipeline (its threads stop), tearing, partitioned, symbolic reduction, Newton1D phases 1, 3 (Phase-1 bracket) and 4, `solveSimple` and the solution check end the run at once with the message, no later block is solved. The exploratory points of CoolSolve alone, which EES never evaluates (Newton1D Phase-2 probes and their brackets, multi-start candidates, which run only after a non-fatal failure), skip a point that raises it; a multi-start failure ends with the first such message. `CALL WARNING` and CoolProp failures stay recoverable. The EES help says only that ERROR halts the calculation. Reproducer: was SUCCESS (29 iterations at `479f520`), now *CALL ERROR: x too small 1.00*. Library 219 / 101 / 0 unchanged (none of the 23 files with `CALL ERROR` reaches it from its guesses). Tests `[library-gaps][call-error-iterate]` | 2026-11-09, `fix/library-gaps-5` |
-| `CS-BUG-INTEGRAL-TABLE-INTERVAL`, `CS-BUG-INTEGRAL-OUTPUT-INTERVAL` | `$IntegralTable` rows are at `t0 + k·n` and at the upper limit, independent of the integration step (EES help: *"totally independent of the step size"*): a row between two steps is interpolated linearly between the rows of the steps around it, every column alike (`IntegralTable::interpolate`), a row on a step is that step's row bit for bit; `integralOutputInterval` (configuration) is the interval when `:n` is omitted, also for the default table; no interval: a row at every step, as before and as the help says. `:n` ≤ 0 (number or variable), a negative key and more than 1e6 rows are errors (`:0` silently meant every step). EES evidence: stored tables of 3 EES files (5001 rows at 10 for `tau:10`); a last row at a non-multiple upper limit is kept, not verified (§8). Reproducers: rows at 0, 10, …, 50 (were 0, 16.67, 33.33, 50); the key gives 5 rows (were 21). Library: verdicts unchanged (tables are not compared); `CSL-0014` 1001 → 1009 rows at 600 s, `CSL-0041` 3001 → 5001 rows at 10 s, the layout of its EES table; their `.sol` tables change at the next re-baseline. Tests `[library-gaps][integral-table-interval]` | 2026-11-09, `fix/library-gaps-5` |
+| `CS-BUG-IF-SINGLELINE` | Not a bug: `y = IF c THEN a ELSE b` is not EES syntax (IF is a statement of FUNCTION/PROCEDURE bodies, help `_if.htm`); guard tests of the single-line forms | 2026-11-07, `fix/library-gaps-5` (review only) |
+| `CS-FEAT-LIB-TEST` | Library regression `./coolsolve_tests "[library-regression]"` (hidden): every runnable library model against its `.sol`, the verdicts of `tools/test_models.py`, report `library_regression.md` (`tests/test_library_regression.cpp`) | 2026-11-07, `fix/library-gaps-5` |
+| `CS-BUG-EXTRACT-FMT-BYTE` | `ees_extract.py` recognises variable records by their structure, not one format byte, and warns about a variable without record; tests `tests/test_ees_tools.py` | 2026-11-07, `fix/library-gaps-5` |
+| `CS-BUG-EXTRACT-NAME-CHARS` | Names with `\`, `%`, `\|`, `#`, `°` and Latin-1 letters are decoded; string variables and built-in constants are not listed | 2026-11-07, `fix/library-gaps-5` |
+| `CS-BUG-EXTRACT-DECIMAL-RANGE` | The range comma of `SUM/PRODUCT(…, i=a,b)` and `DUPLICATE i=a,b` is never read as a decimal point | 2026-11-07, `fix/library-gaps-5` |
+| `CS-BUG-EXTRACT-TABLE-FP` | The table scan validates the grid: no phantom tables, a failing structure is reported, tables of the same name kept apart | 2026-11-07, `fix/library-gaps-5` |
+| `CS-BUG-EXTRACT-LOOKUP-STRING` | String columns of embedded tables are decoded and written as text cells | 2026-11-07, `fix/library-gaps-5` |
+| `CS-BUG-EXTRACT-NUL` | Control characters stripped from every output; UTF-16 equations decoded | 2026-11-07, `fix/library-gaps-5` |
+| `CS-BUG-EXTRACT-STALE` | Warnings for inf/NaN stored values and for values that contradict an explicit equation; `compare_solution.py` marks the suspect rows | 2026-11-07, `fix/library-gaps-5` |
+| `CS-BUG-COMPARE-UNIT-CASE` | `compare_solution.py --ees-units` matches unit names without regard to case (lower-case `mw`, `mj`, `mpa` read as mega, documented) | 2026-11-07, `fix/library-gaps-5` |
+| `CS-BUG-IF-ANDOR-ORDER` | `AND`/`OR` in IF, ELSE IF and UNTIL conditions are read left to right, as EES (`parseCondition`, `src/parser.cpp`); tests `[library-gaps][if-andor]` | 2026-11-07, `fix/library-gaps-5` |
+| `CS-BUG-PSYCHPROPS-BASIS` | `CALL psychprops` returns v, h, s, u per kg of dry air, each output being the AirH2O property function of the same quantity with its derivatives (`evaluateHumidAirProperty`) | 2026-11-08, `fix/library-gaps-5` |
+| `CS-GAP-PSYCHPROPS-NAMED` | Named inputs `CALL psychprops(T=…, P=…, R=… : …)` (P and two of T, R, W, B, D, H, V, S), optional `AirH2O`, skipped outputs (`include/coolsolve/psychprops.h`) | 2026-11-08, `fix/library-gaps-5` |
+| `CS-GAP-IDEAL-GAS-MODEL` | The 17 ideal gases are exactly ideal: the alpha0 part of their CoolProp EOS, re-anchored to NASA-Glenn Δh_f and s°, any two inputs, analytical derivatives, dilute-gas transport (`src/ideal_gas.cpp`); NASA comparison in the Language Reference §5 | 2026-11-08, `fix/library-gaps-5` |
+| `CS-BUG-TINY-IMPLICIT` | Convergence tests weighted by the scale of each equation's terms (`solver_common.h`): relative in blocks of tiny terms, absolute otherwise, and met within 64 ulp of the terms; warning `W002` | 2026-11-08, `fix/library-gaps-5` |
+| `CS-GAP-QUALITY-DOME` | `QUALITY` outside the dome is 100 (vapour side) or −100 (liquid side), as EES; supercritical: 100 above Tc, −100 below (`qualityOutsideDome`, `src/evaluator.cpp`) | 2026-11-08, `fix/library-gaps-5` |
+| `CS-BUG-UNIT-VOLUME` | `VOLUME` and `v=` inputs labelled `m^3/kg` and guessed from a specific volume (`UnitType::SpecificVolume`, inference code `VOL`) | 2026-11-09, `fix/library-gaps-5` |
+| `CS-BUG-NEWTON1D-BRACKET-COLLAPSE` | Newton1D accepts a collapsed bracket only with a small residual; a jump of F (pole, CoolProp penalty) is reported and the next bracket tried | 2026-11-09, `fix/library-gaps-5` |
+| `CS-BUG-CALL-ERROR-ITERATE` | A `CALL ERROR` reached by an iterate from the guesses stops the calculation, as EES (`rethrowIfFatalEvaluationError`, `solver_common.h`); CoolSolve's own probes and multi-start candidates only skip it | 2026-11-09, `fix/library-gaps-5` |
+| `CS-BUG-INTEGRAL-TABLE-INTERVAL`, `CS-BUG-INTEGRAL-OUTPUT-INTERVAL` | `$IntegralTable` rows at `t0 + k·n` and at the upper limit, interpolated between steps as EES; `integralOutputInterval` applied | 2026-11-09, `fix/library-gaps-5` |
 
 ## 8. Unverified by a reviewer
 
@@ -451,314 +449,96 @@ Items that a reviewer reproduced were moved to §4/§5 (e.g. `CS-BUG-PI-FUNCTION
 
 ---
 
-## 9. Fix campaign: status and handover
+## 9. Fix campaign: status and next steps
 
-Campaign started on 2026-10-10 to fix the register items in the order of the
-library models they block. Round 1 (branches `fix/library-gaps` and `fix/library-gaps-2`, the 37 items of §7)
-is merged into `main` (`ecaaaac`). **Round 2** ran on 2026-10-12 on branch
-`fix/library-gaps-3` (from `main` @ `4c80b25`, not merged yet) and was paused by the
-maintainer at the end of the day.
+The register items are fixed one per commit (`git log --grep <ID>`); §7 keeps one line per closed item. This section
+keeps only the current state, the queue and the open decisions: the history of the rounds is in git.
 
-**State at the pause (2026-10-12).** Round 2 closed 10 items (§7, `fix/library-gaps-3`):
-`CS-GAP-NDAY` (with all the SETP.LIB time functions), `CS-BUG-IMPLICIT-PROC`,
-`CS-BUG-LOCAL-UNASSIGNED`, `CS-GAP-STRING-LOCAL-UNSET`, `CS-BUG-NO-SOL-DELETE`,
-`CS-GAP-COLEBROOK`, `CS-BUG-PI-FUNCTION`, `CS-GAP-ARRAY-ARG`, `CS-BUG-DUPLICATE-VAR-BOUND`
-and `CS-GAP-CONSTANT`. Commits: `3bc0ae8` plan, `36cdbcf` + merge `e70f62f` date/time functions,
-`3130543` body check, `c2d1ab6` `--no-sol`, `f615dc7` Colebrook, `de2f5d3` constants in bodies,
-`5f9ed66` ranges and bounds. Unit suite 657 → 727 test cases; examples 41/46 solve
-(unchanged); library regression 151 targets, 3 deviations, all expected (re-baseline,
-queue 1a). Library models (148) in the library working tree: 108 verified / 8 runs /
-31 blocked / 1 failing (`CSL-0119` freed). **The library working tree is not committed**
-(maintainer): `CSL-0119` re-check (native file verified, variant deleted, native `.sol`
-added), `CSL-0024` correction (`PROCEDURE weibe` inputs), `CSL-0153` native correction
-(dead `fluidev$` block), three lines of the library roadmap §8, `library.json`/`library.html`.
+**State (2026-11-09).** Rounds 1–4 are in `main`. Round 5 runs on `fix/library-gaps-5` (from `main` @ `37e29f1`):
+the EES-help review of the register, `CS-FEAT-LIB-TEST`, the `tools/` items, `CS-BUG-IF-ANDOR-ORDER` and the eight
+silent-result items of wave 1 are closed (§7). Baselines (CoolProp pin `8eb3b778`, library `a4ea304`): unit suite
+1333 test cases; examples 45/48 solving (not `cooling_tower2`, `orc_complex`, `turbocompressor_interpolate`);
+library regression 219 PASS / 101 DEVIATION / 0 FAIL.
 
-**Round 3** (2026-10-15, branch `fix/library-gaps-4` from `main` @ `0f7dc19`, after the library
-embedding): same process, one Sonnet agent per gap, reviewed and committed one gap at a time
-(not pushed). Closed so far: `CS-GAP-ELSEIF-CHAIN`, `CS-GAP-UPPERCASE`, `CS-GAP-INTERP-EES`, `CS-GAP-INTERP-EXTRAP`, `CS-GAP-LOOKUP-NONAME`, `CS-GAP-SUM-INDEXED`, `CS-BUG-DUPLICATE-INDEX-EXPR`, `CS-BUG-RECURSION-CRASH`, `CS-BUG-VAR-ANNOTATION`, `CS-BUG-CONVERT-UNIT`, `CS-BUG-HUMIDAIR-HIGHT`, `CS-BUG-HUMIDAIR-PROPS`, `CS-BUG-CONVERTTEMP-UNIT`, `CS-GAP-CONVERT-UNQUOTED`, `CS-BUG-DUPLICATE-CALL-BLOCK`, `CS-BUG-STRING-ALIAS`, `CS-GAP-GOTO`, `CS-BUG-REPEAT-LIMIT`, `CS-BUG-MAIN-REPEAT`, `CS-BUG-MAIN-SEMICOLON`, `CS-BUG-DUPLICATE-HEADER-COMMENT`, `CS-BUG-NEWTON1D-DIVERGE`, `CS-BUG-INPUT-CLAMP`, `CS-GAP-END-PROCEDURE`, `CS-GAP-LOOKUPROW` (with `CS-BUG-LOOKUP-STRING`, `CS-BUG-LOOKUP-STRING-ARG`), `CS-GAP-GE-ARROW`, `CS-GAP-REPEAT-UNTIL-BARE`, `CS-BUG-TINY-VALUE` (with `CS-BUG-EXPLICIT-ROUNDOFF`), `CS-BUG-LOOKUP-WRITE`, `CS-GAP-ISIDEALGAS`, `CS-GAP-IDEAL-TRANSPORT-T`, `CS-BUG-IDEAL-SINGLE-INPUT`, `CS-BUG-IDEAL-INTENERGY`, `CS-BUG-EX-REFRIGERATION-COMPRESSOR`, `CS-BUG-EX-TURBOCOMPRESSOR`, `CS-BUG-EX-RANKINE2`, `CS-GAP-FLUIDS-C8H18`, `CS-GAP-UNITSYSTEM` (warning), `CS-GAP-MOLARMASS-ELEMENT`, `CS-GAP-FLUIDS-ABS` (ASHRAE LiBr-H2O part), `CS-BUG-INCOMP-LIBR`, `CS-GAP-INCOMPRESSIBLE` (EES form of the registered substances), `CS-BUG-INCOMP-SEAWATER`, `CS-BUG-INCOMP-SOLIDS`, `CS-BUG-INCOMP-CONC-AD`. Unit suite 736 → 1176 test cases;
-examples 41/46 → 43/46 (`simple_centrifugal_compressor`, `water_libr`). The CoolSolve Library is being edited by another agent in parallel: the
-re-checks run on scratch copies and the library changes are listed for the maintainer.
+**Library re-baselines due** (library work, for the maintainer). The 101 deviations are baselines that the wave-1
+fixes made obsolete, none is a regression: 90 models of `CS-GAP-IDEAL-GAS-MODEL` (real-gas residual removed; table
+of classes in the commit message of `adb89c5`), 9 qualities 0 → ±100 of `CS-GAP-QUALITY-DOME` (`CSL-0019`, `0036`,
+`0054`, `0134`, `0159`, `0172`, `0208`, `0210`, `0238`), and the under-converged baselines of `CSL-0240` and
+`CSL-0135`. At the same re-baseline: the `$IntegralTable` sections of `CSL-0014` and `CSL-0041`, the 88 volume
+labels (`kg/m^3` → `m^3/kg`) and `COOLPROP_BASELINE` of `tools/test_models.py` (`75af7816` → `8eb3b778`).
 
-**State at the pause (2026-10-16, `609238c`).** The last block of round 3 closed the absorption and
-incompressible items: `CS-GAP-FLUIDS-ABS` (ASHRAE LiBr part: `X_LIBR`, `H_LIBR`, `T_LIBR`, `P_LIBR` in their own
-module `src/libr_ashrae.cpp`; solved in CoolSolve, not CoolProp: EES's ASHRAE correlation and API are needed, and
-CoolProp's `INCOMP::LiBr` has no enthalpy of mixing), `CS-BUG-INCOMP-LIBR`, `CS-GAP-INCOMPRESSIBLE` (EES form
-`cp('EG',T=T,C=30)`), `CS-BUG-INCOMP-SEAWATER`, `CS-BUG-INCOMP-SOLIDS` and `CS-BUG-INCOMP-CONC-AD` (incompressibles now
-go through CoolProp's AbstractState). Placeholder for future work: `CS-GAP-LIBR-PK` (a more recent LiBr-H2O
-correlation, the EES `LiBrH2O` library of Pátek & Klomfar) is a register row, and its EES routines are known
-names that fail with a message naming the register item (one dispatch point, `evaluateAbsorptionFunction`,
-`src/evaluator.cpp`; module layout in `include/coolsolve/libr_ashrae.h`); `CS-GAP-NH3H2O` (ammonia-water) was
-a placeholder too and is implemented since (round 4, below). Registered
-along the way (P3, open): `CS-BUG-INTERNALENERGY-UNQUOTED`, `CS-BUG-HINT-ARG-DEFAULT`. Nothing is pushed.
+**Queue** (round 5, next first; the recommended option is in each register row):
+1. *Wave 2, performance and robustness*: `CS-BUG-BLOCK-EVAL-SCALING` (per-block list of the external variables read,
+   computed once; measure on `CSL-0079`/`CSL-0326`), `CS-BUG-NONFINITE-START`, `CS-BUG-GUESS-INFER`,
+   `CS-BUG-NEWTON-CYCLE` (tearing first, then column scaling; measured on the examples and the library regression).
+2. *Wave 3, blocked library models*: `CS-GAP-IFNOT` with `CS-BUG-STRING-ORDER`, `CS-GAP-PROC-COMMENT`,
+   `CS-GAP-USER-STRING-FUNC`, `CS-GAP-IFSTR`, `CS-GAP-INTEGRALVALUE`, `CS-GAP-PSYCHRO-SAT`, `CS-GAP-FLUIDS-ALIAS` with
+   `-R1336MZZ`, `CS-GAP-INDEX-VAR`, `CS-GAP-HEATING-VALUE` with `-ENTHALPY-FUSION`, `CS-BUG-WATER-NEAR-FREEZING` with
+   `CS-GAP-FREEZINGPT` and the melting/sublimation functions of `CS-GAP-ICE`, `CS-GAP-INCOMP-EES-NAMES`,
+   `CS-GAP-CALL-OUT-OMITTED`, `CS-GAP-PROP-HQ`, `CS-GAP-HUMIDAIR-HIGHT`, `CS-GAP-INTEGRAL-DECREASING`,
+   `CS-BUG-MULTILINE-COMMENT-START`.
+3. *Wave 4, diagnostics and cosmetics*: `CS-BUG-NONSQUARE-DIAG`, `CS-GAP-BODY-LOCALS-SOL`, `CS-BUG-SOL-STRING` (with
+   a re-baseline of 74 library `.sol` files), hide the `__out…` auxiliaries, `CS-BUG-GUI-WARNING-CASE`,
+   `CS-BUG-STRING-FUNC-WARNING`, `CS-BUG-INTERNALENERGY-UNQUOTED`, `CS-BUG-MAIN-ASSIGN` (a parse error),
+   `CS-BUG-LOOKUP-HINT`, `CS-DOC-EESCSV`, `CS-DOC-SQUARE-INTEGRAL`, the rows found in wave 1 (`CS-BUG-V-ALIAS`,
+   `CS-BUG-QUALITY-ALIAS-PARSE`, `CS-BUG-HUMIDAIR-GUESS`, `CS-BUG-INCOMP-GUESS`), `CS-GAP-INTERP2D` (may be deferred).
+4. *Wave 5, `CHEM_EQUIL`*: `CS-GAP-FLUIDS-NASA-SPECIES` (NASA-Glenn polynomials for OH, H, O, N, NO, NO2, on the
+   reference of the ideal gases), then `CS-GAP-CHEM-EQUIL` (element-potential Gibbs minimisation of the 14 species,
+   `src/chem_equil.cpp`, derivatives by the implicit-function theorem; validate on `CSL-0150`, T_ad = 2417.129 K, and
+   `CSL-0264`), then re-check `CSL-0150`, `CSL-0264`, `CSL-0278`.
 
-**Round 4 (2026-10-18, v0.4 preparation).** `fix/library-gaps-4` is merged into `main` (fast-forward, not pushed
-yet); the unit hints are fixed (`CS-BUG-HINT-FAHRENHEIT`, `CS-BUG-HINT-ARG-DEFAULT`, `CS-BUG-FLUID-HINT-CO2`, §7).
-`CS-GAP-NH3H2O` is implemented on the branch `feat/nh3h2o` (IAPWS G4-01; **not merged into `main`**: it adds a solver
-core of its own and small hooks in the shared evaluator, to be reviewed — [nh3h2o_review.md](nh3h2o_review.md));
-the Windows installer script is fixed on the same branch (`3d2ca05`). Unit suite 1209 test cases, examples 43/46
-(see the baselines below); the library re-checks are done (above). The release plan is in the temporary handover
-`HANDOVER_v0.4.md` at the root of the repository (not committed).
+**Maintainer decisions in force.**
+- Water below its melting line is a clear error (keep CoolProp's AbstractState message), and the freezing/melting
+  library models use an explicit latent heat; solid phases come later, following
+  [solid_phase_properties.md](solid_phase_properties.md).
+- Large features: only `CHEM_EQUIL` with the NASA species in round 5. Deferred: bounds, parametric-table file,
+  Min/Max, LiBr Pátek–Klomfar (`CS-GAP-LIBR-PK`), NH3H2O transport, INCOMP oils, cubic `INTERPOLATE`, native unit
+  systems, tooling (`--library`, Export for EES, `--library-dir`, diagrams).
+- Not planned (the model is rewritten): `MODULE`, `.lkt` tables (every table is a CSV of the model folder),
+  several integration variables in `INTEGRAL`, the (T,h), (s,v), (u,v) and pseudo-pure (T,x) pairs, `EES_REFPROP`,
+  `CALL NASA`, `StringPos`, `$IF` on a non-constant string. FUNCTION/PROCEDURE bodies are explicit (an implicit
+  statement in a body is an error); the SETP.LIB time functions are built-ins.
 
-**Round 5 (from 2026-11-07, branch `fix/library-gaps-5` from `main` @ `37e29f1`).** Plan: every open item of
-§3–§5 and §8 with its options, ordered in waves (0 infrastructure and register cleanup, 1 silent wrong results,
-2 performance and robustness, 3 blocked library models, 4 diagnostics, 5 `CHEM_EQUIL` with the NASA species), one
-Sonnet agent at a time following [contributing.md](contributing.md), reviewed and committed one item at a time.
-Maintainer decisions: ideal gases from the ideal-gas part of their CoolProp equation of state
-(`CS-GAP-IDEAL-GAS-MODEL`, with a check against JANAF/NASA); water below its melting line a clear error for now
-(`CS-BUG-WATER-NEAR-FREEZING`), solid phases in a design study ([solid_phase_properties.md](solid_phase_properties.md));
-of the large features only `CHEM_EQUIL` + `CS-GAP-FLUIDS-NASA-SPECIES`. The register reproducers were re-run on
-`37e29f1`: all open except `CS-BUG-IF-SINGLELINE`. The EES-help review of the same day closed
-`CS-BUG-IF-SINGLELINE` (§7), registered `CS-GAP-IFNOT`, `CS-GAP-INTERP2D`, `CS-GAP-PSYCHPROPS-NAMED`, `CS-GAP-ICE`,
-`CS-BUG-IF-ANDOR-ORDER`, `CS-BUG-STRING-ORDER` and `CS-BUG-PSYCHPROPS-BASIS` (from §8), merged the §8 array-index
-suggestion into `CS-GAP-INDEX-VAR`, corrected `CS-GAP-IFSTR` (EES has only the 5-argument `IF$`) and
-`CS-BUG-MAIN-ASSIGN` (EES rejects `:=` in the main program: the fix is an error), and added the EES definitions
-needed by `CS-GAP-HEATING-VALUE`, `CS-GAP-FREEZINGPT`, `CS-GAP-ENTHALPY-FUSION`, `CS-GAP-CHEM-EQUIL` (not in the
-online help: convention read from the 5 files that use it) and `CS-GAP-QUALITY-DOME`. Deleted from §8: the
-`CALL` with a numeric and a string output (six variants and the shipped `BRINEPROP` with a string output solve; the
-EES `Brineprop.LIB` has no string output) and the humid-air `density` inversion by the symbolic reduction (only
-two-input calls are inverted, and an inverted humid-air call is a loud error).
-
-**State at the pause (2026-11-07, maintainer stop).** Done on `fix/library-gaps-5` (not pushed): the register review
-above, `CS-FEAT-LIB-TEST` (library regression, 320/320 PASS), the solid-phase design study, the eight `tools/`
-items (`CS-BUG-EXTRACT-*`, `CS-BUG-COMPARE-UNIT-CASE`) and `CS-BUG-IF-ANDOR-ORDER` (§7). Unfinished:
-`CS-BUG-PSYCHPROPS-BASIS` + `CS-GAP-PSYCHPROPS-NAMED`, parked unverified on branch `wip/psychprops-basis`. The queue
-(waves 1–5 with the recommended option of each item), the maintainer rules (one agent at a time, contributing.md for
-every item) and the agent brief are in the temporary `HANDOVER_round5.md` at the root of the branch.
-
-**Wave 1 of round 5 done (2026-11-08/09, `fix/library-gaps-5`, not pushed).** The eight silent-result items, one
-commit each (§7): `CS-BUG-PSYCHPROPS-BASIS` + `CS-GAP-PSYCHPROPS-NAMED` (`9c8a3a4`), `CS-GAP-IDEAL-GAS-MODEL`
-(`adb89c5`), `CS-BUG-TINY-IMPLICIT` (`b9574b0`), `CS-GAP-QUALITY-DOME` (`94e1198`), `CS-BUG-UNIT-VOLUME` (`1ecbd34`),
-`CS-BUG-NEWTON1D-BRACKET-COLLAPSE` (`479f520`), `CS-BUG-CALL-ERROR-ITERATE` (`f2ea938`), `CS-BUG-INTEGRAL-TABLE-INTERVAL`
-+ `CS-BUG-INTEGRAL-OUTPUT-INTERVAL` (`6b254eb`). End-of-wave check at `6b254eb`: unit suite 1331 passed + 2 pdflatex
-skips, examples 45/48 solving with the three known failures (`cooling_tower2`, `orc_complex`,
-`turbocompressor_interpolate`), unchanged from the start of the wave. Maintainer rule of 2026-11-08: `[solver-robustness]`
-is not run on the development machine (full unit suite and examples instead); the library regression is kept.
-Library regression 219 PASS / 101 DEVIATION / 0 FAIL (320/320 PASS at the start): every new deviation is a baseline
-that the fixes made obsolete, **to re-explain in the library** — the 90 models of the ideal-gas model (table in the
-commit message of `adb89c5`), `CSL-0240` (`b9574b0`, baseline accepted 0.3 off), 9 qualities 0 → ±100 matching EES
-(`94e1198`), `CSL-0135` (`1ecbd34`, under-converged baseline); the `$IntegralTable` sections of `CSL-0014` and
-`CSL-0041` and 88 volume labels change at the next re-baseline. New rows: `CS-BUG-V-ALIAS`, `CS-BUG-QUALITY-ALIAS-PARSE`,
-`CS-BUG-HUMIDAIR-GUESS`, `CS-BUG-INCOMP-GUESS` (§5); EES checks in §8 (ideal-gas transport and P, supercritical
-`QUALITY`, last `$IntegralTable` row). Documented limit of `CS-BUG-TINY-IMPLICIT`: a residual below 1e-21 is accepted
-(`x^3 = 8E-60` stops at 9e-8).
-
-**Open points of round 3** (choices of the implementers, to confirm in EES or by the maintainer):
-an `ENDIF` that closes no `IF` in a body is ignored with warning `P008` (evidence: `Brineprop.lib`);
-`Uppercase$`/`Lowercase$` convert ASCII and Latin-1 letters only; in `INTERPOLATE('t','A','B',A=3)` the named
-first column is the input (symmetric reading of the help) and the EES form of `INTERPOLATE2` takes any two of
-its three columns as inputs; extrapolation below the first node is assumed symmetric to the upper end; at an
-interior node the derivative of `INTERPOLATE` is one of the two one-sided slopes; `INTERPOLATE2` clamps (EES
-unknown), but a degenerate 2-D grid (one distinct x or y, warning L002) falls back to the 1-D interpolation and
-so extrapolates. `SUM(expr, i=a, b)` with a > b is an error (EES: not checked; a DUPLICATE counts
-down); the indexed `PRODUCT` form is assumed to exist in EES. A terminating recursion (an IF guard) is refused like any
-call cycle, as the EES help says; the evaluator nests at most 200 routine calls. A local assigned only on a path that an IF or a GOTO skips reads as a default value at run
-time (the body check is flow-insensitive, text order).
-
-**Library re-checks of 2026-10-18 (done; the library working tree is not committed).** Every follow-up listed after
-round 3 was run on scratch copies with CoolSolve `4798e2b` (`feat/nh3h2o`) and applied to the library
-(`tools/build_index.py`, `tools/test_models.py`: 251 targets, 0 failure; library roadmap §8):
-- *verified on the native file, variant deleted, native `.sol`, README and header without history*: `CSL-0079`,
-  `CSL-0072`, `CSL-0035`, `CSL-0157`, `CSL-0154`, `CSL-0153`, `CSL-0012`, `CSL-0160`, `CSL-0188`, `CSL-0223`, `CSL-0115`
-  (its 7 `Lookup('tprofile',i,k) = …` writes are reported with `P009`), `CSL-0046`, `CSL-0152` (needs its guess file),
-  `CSL-0075`, `CSL-0159`, `CSL-0080`, `CSL-0164`, and `CSL-0043` (new: 30/30 variables of the EES stored solution within
-  5.6e-4). `CSL-0078` stays `failing` (over-determined as the original stands).
-- *faithful forms restored*: `CSL-0122`, `CSL-0129` (indexed `SUM`, `DUPLICATE h[i+1] = …`), `CSL-0123` (`until i>9`,
-  `convert(lbm/hr,kg/s)`), the `_coolsolve` variants of `CSL-0011` and `CSL-0149` (native `INTERPOLATE` call form, valid
-  EES now), `CSL-0069` (both files converge from the default guesses; the guess files stay).
-- *still blocked, `missing_features` cut to the open IDs*: `CSL-0116` (`CS-GAP-INCLUDE`, BRINEPROP2; the compressor
-  catalogue table is missing from the collection), `CSL-0011` and `CSL-0149` (`CS-GAP-INCLUDE`), `CSL-0081`
-  (`CS-GAP-INTEGRALVALUE`: its GOTO ladders parse, then the check of variables read before assignment stops on the
-  `INTEGRALVALUE` history variables), `CSL-0150` (`CS-GAP-CHEM-EQUIL`, `CS-GAP-FLUIDS-NASA-SPECIES`; the
-  no-dissociation case runs unchanged with `DISSOCIATION$ = 'NO'`).
-- *re-baselines* (`CS-BUG-INPUT-CLAMP`): `CSL-0008` (3 files, ≤ 5e-5: `specheat(cf$,T=..,P=1)` at the 1 Pa of the source)
-  and `CSL-0146` (the CO2 partial pressures of the air, 30–300 Pa: `T2` 611.48 → 611.60 K; the maximum deviation from the
-  Ebsilon table moves from 4.7e-3 to 5.7e-3, above the 5e-3 bound of the source test; against a TESPy re-run
-  (`~/svn/tespy`, 2026-10-19) the maximum is 2.9e-3, 2.0e-3 before: the clamp had suppressed the CO2 pressure term of
-  the air entropy across the compressor) `CSL-0160` had its `.sol` rewritten with the native file.
-- *decisions left to the maintainer*: `CSL-0075` (`Gamma` 1.4095 from CoolProp's real-mixture `cv` at 8 bar, the variant's
-  `cp/(cp − R_mix)` gave 1.3863 and the EES mixture rules ≈ 1.398; `Di_dph` 3.3e-4 from the EES stored value); `CSL-0146`
-  (above); `CSL-0069` (score 1 now that it converges from the default guesses, level 2 kept); `CSL-0080` (the native
-  file runs the operating point of the stored EES solution: the control-panel full-load values do not converge in the
-  cooling-coil block); `CSL-0044` (`coolsolve_version` without commit); `CSL-0202` is `failing` (not re-checked).
-- *not re-checked (no closed ID applies)*: `CSL-0162`, `CSL-0163`, `CSL-0074` (`CS-GAP-INCLUDE`, BRINEPROP),
-  `CSL-0028` (`CS-GAP-PSYCHRO-SAT`), `CSL-0058` (`CS-GAP-FLUIDS-ALIAS`), `CSL-0166`, `CSL-0040`
-  (`CS-GAP-IF-NO-CONSTANT`), `CSL-0041`, `CSL-0059`, `CSL-0158` (round-2 rewrites, queue 1c/1d).
-- *re-checked 2026-10-31 (card C-452, 0.4.0@9768373)*: `CSL-0131` (`CS-BUG-IMPLICIT-PROC`: the implicit Hughmark statement of its
-  native FUNCTION is now a parse error; the root is found by an explicit bisection in the body, native file `verified`,
-  130 values of the LaboThapPy example within 1e-3, max 2.2e-5; the `_coolsolve` variant is deleted); `CSL-0262`
-  (`CS-BUG-LOOKUP-WRITE`: the native file still stops on the table `data` written by `NPV` and read by `procIRR`, as the
-  register row says; stays `blocked`, its runnable variant re-verified against the EES stored solution).
-
-**Maintainer decisions of 2026-10-12** (also in the register rows):
-- `CS-GAP-INTEGRAL-MULTIVAR`: not implemented. `INTEGRAL` keeps a single integration
-  variable (usually time); several variables are a possible future improvement. The
-  model is rewritten to avoid the double integration (`CSL-0059`).
-- `CS-GAP-LKT`: not a gap. CoolSolve uses no external table: every table is internal,
-  stored as a CSV file in the model folder; the model is rewritten (`CSL-0116`).
-- `CS-GAP-NDAY`: a built-in function, next to the mathematical functions; extended at the
-  maintainer's request to all the time functions of the EES library SETP.LIB (`nDay_`,
-  `NumDay_`, `AveDay_`, `EqnTime_`; source `~/Nextcloud/thermo_models/solar/SETP.LIB`).
-- `CS-BUG-IMPLICIT-PROC`: FUNCTION/PROCEDURE bodies are always 100 % explicit (assignments
-  executed in order). A routine can be called implicitly — the solver iterates through
-  the call — but an implicit statement *inside* a body is an error (done). The models are
-  rewritten explicitly (`CSL-0131`, `CSL-0158`): an explicit iteration in the body, a
-  built-in that iterates internally (`CALL Colebrook`), or the implicit equation in the
-  main program.
-- `CS-GAP-STRINGPOS`: not implemented; the model is rewritten (`CSL-0158`).
+**Open points for the maintainer.**
+- EES runs: the rows of §8.
+- Choices of the implementers, to confirm in EES: an `ENDIF` closing no `IF` is ignored (`P008`); `Uppercase$` /
+  `Lowercase$` convert ASCII and Latin-1 only; the named first column of `INTERPOLATE` is the input; extrapolation
+  below the first node mirrors the upper end; `INTERPOLATE2` clamps, except on a degenerate grid (`L002`);
+  `SUM(expr, i=a, b)` with a > b is an error and a `DUPLICATE` with a > b counts down; the indexed `PRODUCT` exists;
+  a terminating recursion is refused (200 nested calls at most); a local assigned only on a skipped path reads a
+  default value; the SETP month rounds half away from zero; 2-D ranges expand last index fastest; variable-size
+  header arrays, range bounds using a DUPLICATE index, `A[1..3]=[…]` and string `$CONSTANT`s are errors; a body
+  local named like a built-in constant shadows it; `Colebrook(Re, RR)` as a function is not implemented.
+- `air_screw_compressor` needs its `.initials` to converge at `tolerance = 1e-9` since the CoolProp pin
+  ([solver_roadmap.md](solver_roadmap.md) §3.2).
+- `tools/ees_extract.py`: in files with stale records the first block of records is used (11 values changed in 4
+  files, all flagged); prefer the block that agrees with the equations?
+- Library repository: `tools/test_models.py` fails with a relative `--coolsolve` path (resolve it); pending library
+  decisions of the earlier rounds (check them against the library roadmap §8): `CSL-0078` fixes `P_ev`, `P_cd`,
+  `M_dot_r` at the EES values; `CSL-0155` is failing (§8); `CSL-0042` is verified against an independent RK4 only;
+  the verification notes of `CSL-0124` and `CSL-0113` predate their `g#` correction; `CSL-0075` (`Gamma` from the
+  real-mixture `cv`), `CSL-0146` (Ebsilon deviation 5.7e-3 against a 5e-3 bound; TESPy 2.9e-3), `CSL-0080`
+  (operating point of the stored EES solution), `CSL-0202` (failing); the `pi_val` workarounds of
+  `CS-BUG-PI-FUNCTION` in the heat-transfer models can go back to the native `pi`/`g#`; `CSL-0158` needs quoted CSV
+  headers and an `R717_CHECK` without `StringPos`.
 
 **How to resume.**
-- Process (maintainer, 2026-10-12), one gap at a time: write the tests first and check
-  that they fail; implement; run the targeted tests, then `./coolsolve_tests` and
-  `./coolsolve_tests "[examples-comprehensive]"` (not the robustness suite); commit with a
-  short but explicit message; test the involved models in the CoolSolve Library and update
-  their docs (a model that leaves the *blocked* group gets a README and a header without
-  any history of the problem); fill §7 (one line) and this queue; move to the next gap.
-- Agents **one at a time**: Claude Haiku for easy tasks and housekeeping, Sonnet for coding
-  tasks, Opus for complex coding and new features. The supervising session reviews the
-  diff, re-runs the suites and commits CoolSolve; the library is committed by the
-  maintainer (list what to commit). When the maintainer allows a second agent in
-  parallel, give it a git worktree with its own build: copy only the
-  `.fetchcontent_cache/*-src` folders and `gui/dist`, configure with
-  `-DFETCHCONTENT_FULLY_DISCONNECTED=ON` (a shared cache would share CoolProp's build
-  folder); concurrent `coolsolve_tests` runs collide in `/tmp/coolsolve_test_library_gaps`
-  (give one a private `TMPDIR`). An agent that ends without its report is asked for it
-  with a message.
-- **Never run the `coolsolve` CLI inside a library or example folder**: work on scratch
-  copies. A successful run writes `<model>_report.tex` (git-ignored, invisible in
-  `git status`) and, before `c2d1ab6`, `--no-sol` deleted the committed `.sol` baselines
-  (152 were deleted and restored on 2026-10-12). `tools/test_models.py` works in temp
-  copies and is safe (about 10 minutes for the 151 targets).
-- *Fix task*: follow [contributing.md](contributing.md); tests in
-  `tests/test_library_gaps.cpp` (tag `[library-gaps][<tag>]`, names `"<ID>: …"`, register
-  reproducer with the EES value, negative tests); minimal fix reusing existing code, zero
-  overhead when unused; for parser-level changes also run the library regression and
-  compare the parse of every `.eescode` (examples and library, on copies) before/after;
-  update the language reference, `ees_vs_coolsolve.csv`, `gui/src/languages/ees.ts`.
-- *Re-check task* (library, never committed by agents; library workflow §6): for
-  each model listing the closed ID, remove it; solve the native file in a scratch
-  copy; if it now runs and agrees with its reference, set `verified`/`runs`, write
-  the native `.sol`, delete the `_coolsolve` variant, and write the README and header
-  **as if the model had always worked** (no history of the problem); otherwise
-  update the gap list; then `tools/build_index.py`, `tools/test_models.py` and one
-  line in the library roadmap §8. A decision that makes an item *not a gap* turns the
-  `_coolsolve` rewrite into the native file of the model. A genuine error of the source
-  that a CoolSolve check now reveals is corrected in the model and logged in one line of
-  its conversion log (`CSL-0024`, `CSL-0153`).
-- *EES references*: the EES help is in `/home/sylvain/svn/CoolProp/ees_docs/eeshelp`
-  (HTML; `nDay_` and `Colebrook` are not in it: they come from EES add-on libraries);
-  the EES 9.920 installation in `~/progs/EES32` (its `Userlib`).
-- *Build*: CoolProp is pinned in `CMakeLists.txt` (`COOLSOLVE_COOLPROP_PINNED_TAG` =
-  `8eb3b778`, master of 2026-10-31, 8.1.0dev; bumped from `75af7816` on 2026-11-03 with
-  identical `.sol` files on all 43 solved examples); `cmake` warns when a build directory
-  caches another tag (`cmake -DCOOLSOLVE_COOLPROP_TAG=8eb3b778 ..` aligns it) and
-  `coolsolve --version` prints the CoolProp revision linked. A bump is deliberate
-  ([contributing.md](contributing.md#pinned-coolprop-version)). New `.cpp` files need `cmake .`.
-- *Baselines* of round 4 (pin `75af7816`, `feat/nh3h2o` @ `4798e2b`, 2026-10-18): unit suite 1209 test cases; examples 43/46
-  solve (not solving `cooling_tower2`, `orc_complex`, `turbocompressor_interpolate`); library regression
-  (`tools/test_models.py --exclude CSL-0009:coolsolve`, library working tree of 2026-10-18) 251 targets, 0 failure
-  (the re-baselines of `CSL-0008`, `CSL-0146` and `CSL-0160` are in the working tree).
-- *Baselines* at the pause of round 3 (pin `75af7816`, `609238c`): unit suite 1176 test cases (2 skipped
-  without `pdflatex`); examples 43/46 solve, not solving `cooling_tower2`, `orc_complex`,
-  `turbocompressor_interpolate`; library regression (`tools/test_models.py --exclude CSL-0009:coolsolve`, library
-  working tree of 2026-10-16) 249 targets, 244 OK, 5 expected deviations: the re-baselines `CSL-0008` (3 variants),
-  `CSL-0146`, `CSL-0160:coolsolve` listed in the library follow-ups of round 3.
-- *Baselines* of round 2 (pin `75af7816`, `5f9ed66`): unit suite 727 test cases; examples 41/46 solve,
-  not solving `cooling_tower2`, `orc_complex`, `simple_centrifugal_compressor`,
-  `turbocompressor_interpolate`, `water_libr` (`orc_solar_complex` is skipped by the test:
-  it starts with `$bookmark`; it still fails on `MODULE` and `$COMMON`); library regression
-  151 targets, 3 expected deviations `CSL-0113`, `CSL-0124`, `CSL-0153:coolsolve` (their
-  `.sol` were computed with `g#` = 1 in the Kuo correlation, queue 1a), 0 other failure
-  with the library working tree above. `air_screw_compressor` ships its `.initials`:
-  without it the model does not converge at `tolerance = 1e-9` since the pin (to explore,
-  `solver_roadmap.md` §3.2).
-
-**Queue** (next first):
-0. **Next CoolSolve tasks (from 2026-10-16)**, by priority, same process (tests first, one Sonnet agent per gap,
-   review, commit):
-   (a) the P2 silent items `CS-BUG-TINY-IMPLICIT` and `CS-GAP-IDEAL-GAS-MODEL`;
-   (b) `CS-GAP-INTEGRAL-DECREASING`, `CS-GAP-CALL-OUT-OMITTED`, `CS-BUG-CALL-ERROR-ITERATE`;
-   (c) a cosmetic batch: `CS-BUG-INTERNALENERGY-UNQUOTED`, `CS-BUG-HINT-ARG-DEFAULT`, `CS-BUG-FLUID-HINT-CO2`,
-   `CS-BUG-STRING-FUNC-WARNING`, `CS-BUG-GUI-WARNING-CASE` (and the rest of item 6);
-   (d) `CS-GAP-INCLUDE` / `CS-FEAT-IMPORT` (item 7): **done** (2026-11-04, §7); the library re-checks of the
-   models it blocked are listed there;
-   (e) future work, absorption machines (P3, no library model needs them yet): `CS-GAP-LIBR-PK` — first decide the
-   route: a CoolSolve module `libr_patek_klomfar` next to `libr_ashrae`, or a generic CoolProp contribution (a
-   Gibbs-energy solution class that would also give `INCOMP::LiBr` its enthalpy of mixing; CoolProp
-   `dev/incompressible_liquids/NOTES_mixing_models.md`), then check the EES `*_LiBrH2O` signatures in the EES help
-   (online: `https://fchartsoftware.com/ees/libr_help/`) and take reference values from an EES run; the
-   remainders `CS-GAP-FLUIDS-ABS` (`V_LIBR`: coefficients unpublished; `Q_LIBR`, `VISC_LIBR`, `COND_LIBR`) and
-   `CS-GAP-INCOMPRESSIBLE` (thermal oils); small: CoolProp's `MITSW` has a saturation pressure that CoolSolve's
-   `p_sat` of an incompressible does not expose yet (not registered).
-   The library re-checks of this block (`CSL-0043`, `CSL-0152`, `CSL-0116`) and the re-baselines are done (2026-10-18, see
-   the library re-checks above).
-1. Library follow-ups of round 2 (library tasks, no CoolSolve change expected):
-   (a) re-baseline `CSL-0124`, `CSL-0113` and `CSL-0153:coolsolve` (the old values had `g#` = 1
-   in the Kuo procedure: `alpha_tp_cd` 211.1 → 170.8 in `CSL-0124`, `a_cd` 5.59 → 5.85 in
-   `CSL-0113`, 65 condenser-dependent variables in `CSL-0153`); compare with their EES references
-   and correct their verification notes; (b) restore the native `pi`/`g#` in the bodies that worked
-   around `CS-BUG-PI-FUNCTION` (`pi_val` locals, literal factors): `condensation_film`,
-   `gas_pipe_insulated_pressure_drop` (variant), `conduction_resistances_and_shapes`,
-   `plate_hx_heat_transfer`, `plate_hx_correlations`, `flow_boiling_in_tubes`,
-   `two_phase_nonboiling_in_tube`, `free_conv_enclosed_and_jackets`, `tube_bank_nusselt` (README),
-   and their mentions in the roadmap and `sources/ht/inventory.csv`; (c) `CSL-0158`: the native
-   file now parses and is square (Colebrook, ranges and constants fixed; the EES friction factor
-   is reproduced to 5e-9 from EES's own Re_D = 1 164 166.45); next: quote the column headers of its
-   companion CSV (they lost their commas: `'ø88.9 Steel, Seamless'` is not found) and rewrite
-   `R717_CHECK` without `StringPos` (decision), then re-check; (d) the decision rewrites:
-   `CSL-0131` (explicit iteration of the Hughmark void fraction in its FUNCTION), `CSL-0059` (its
-   `_coolsolve` variant, one integration variable over [0, 1], becomes the native file) and the
-   `.lkt` table of `CSL-0116` (a CSV in the model folder; the model stays blocked by other items);
-   (e) re-check `CSL-0157` (its DUPLICATE now expands, 399 equations; next blocker
-   `CS-GAP-LOOKUP-NONAME`) and `CSL-0150` (next `CS-GAP-SUM-INDEXED`).
-2. BrineProp family: `CS-GAP-ELSEIF-CHAIN`, `CS-GAP-UPPERCASE` (both done, round 3; the unit labels `U$[Pro]`
-   are already a lookup table read with `LOOKUP$`). Expected to free `CSL-0079`, `CSL-0072`
-   and `CSL-0078`. (The one-word `ELSEIF` is not EES syntax and is a parse error: nothing to fix.)
-3. `CS-GAP-INTERP-EES` and `CS-GAP-INTERP-EXTRAP` (both done, round 3): `CSL-0035`; `CSL-0011` and
-   `CSL-0149` also need `CS-GAP-INCLUDE`.
-4. Unblocking items found in round 2: `CS-GAP-LOOKUP-NONAME` (the last blocker of `CSL-0157`; done, round 3) and
-   `CS-GAP-SUM-INDEXED` (4 models: `CSL-0152`, `CSL-0122`, `CSL-0150`, `CSL-0129`; done, round 3).
-5. Crashes and silent bugs: `CS-BUG-RECURSION-CRASH` (segfault; done, round 3), `CS-BUG-VAR-ANNOTATION` (done, round 3),
-   `CS-BUG-CONVERT-UNIT` (done, round 3), `CS-BUG-CONVERTTEMP-UNIT` (found and done, round 3), `CS-BUG-DUPLICATE-INDEX-EXPR` (done, round 3), `CS-BUG-DUPLICATE-CALL-BLOCK` (done, round 3),
-   `CS-BUG-STRING-ALIAS` (done, round 3), `CS-GAP-GOTO` (done, round 3), `CS-BUG-REPEAT-LIMIT` (found and done, round 3), `CS-BUG-MAIN-REPEAT` (found and done, round 3), `CS-BUG-MAIN-ASSIGN` (found in round 3; check what EES does with `:=` in the Equations window), `CS-BUG-HUMIDAIR-PROPS` (done, round 3), `CS-BUG-HUMIDAIR-HIGHT` (done, round 3; the model above 350 °C is `CS-GAP-HUMIDAIR-HIGHT`); parser hygiene
-   `CS-BUG-MAIN-SEMICOLON`, `CS-BUG-DUPLICATE-HEADER-COMMENT` (both done, round 3).
-6. By priority: the two P2 bugs `CS-BUG-NEWTON1D-DIVERGE` (Newton1D step control; done, round 3) and
-   `CS-BUG-INPUT-CLAMP` (clamp floors, solve against verification; done, round 3), then the single-model items
-   (`CS-GAP-IF-NO-CONSTANT`, `CS-GAP-FLUIDS-C8H18`, `CS-GAP-GE-ARROW` (both done, round 3), `CS-GAP-IDEAL-GAS-MODEL` (P2, silent with T and P),
-   `CS-GAP-REPEAT-UNTIL-BARE` (done, round 3), `CS-GAP-LOOKUPROW`, `CS-GAP-END-PROCEDURE` (both done, round 3),
-   `CS-GAP-ISIDEALGAS`, `CS-GAP-IDEAL-TRANSPORT-T` (both done, round 3), `CS-BUG-IDEAL-SINGLE-INPUT` (found and done, round 3), `CS-GAP-INTEGRAL-DECREASING`, `CS-GAP-CALL-OUT-OMITTED`, …); the example fixes
-   `CS-BUG-EX-REFRIGERATION-COMPRESSOR`, `CS-BUG-EX-TURBOCOMPRESSOR`, `CS-BUG-EX-RANKINE2` (all three done, round 3)
-   (one commit each, with the `tests/test_examples.cpp` expectation); small: `CS-BUG-EXPLICIT-ROUNDOFF` (done, round 3),
-   `CS-BUG-CALL-ERROR-ITERATE`, `CS-BUG-TINY-VALUE` (done, round 3; the implicit case is `CS-BUG-TINY-IMPLICIT`, P2 silent); `CS-BUG-LOOKUP-WRITE` (done, round 3); cosmetic:
-   `CS-BUG-GUI-WARNING-CASE`, `CS-BUG-FLUID-HINT-CO2`, `CS-BUG-STRING-FUNC-WARNING`, `CS-BUG-LOOKUP-STRING-ARG` (done, round 3), `CS-BUG-NONSQUARE-DIAG`, `CS-GAP-BODY-LOCALS-SOL`,
-   `CS-BUG-INTEGRAL-TABLE-INTERVAL` with `CS-BUG-INTEGRAL-OUTPUT-INTERVAL`, hide internal `__…`
-   variables (`__out…` of CALL outputs) from `.sol`/JSON/GUI as the `INTEGRAL`
-   auxiliaries already are.
-7. `CS-GAP-INCLUDE` / `CS-FEAT-IMPORT` (§2.3), a feature of its own (**done** 2026-11-04, with `CS-GAP-HX` closed by
-   the library model `CSL-0332`); serving the
-   library dashboard `library.html` in the GUI (§2.1–§2.2) belongs to the same
-   integration work.
-8. Close-out: merge the branch; decide on `air_screw_compressor` (tolerance-1e-9 failure
-   above).
-
-**Open points of round 2** (choices made by the implementers, to confirm in EES or by the
-maintainer): the SETP month is rounded half away from zero (EES `round` of x.5 not checked);
-a `DUPLICATE` whose first bound exceeds the last counts down; 2-D ranges expand with the last
-index fastest; refused with an error (possible future work): variable-size header arrays
-`FUNCTION f(n, A[1..n])`, range bounds using a DUPLICATE index (`sum(x[1..i])`), `A[1..3]=[…]`,
-string `$CONSTANT`s; `$CONSTANT` names are replaced by their values (not in the solution); a body
-local named like a built-in constant (`c# = …`) shadows it; `Constants::isConstant` is
-case-sensitive (`PI`, `pi`, `Pi`); the function form `Colebrook(Re, RR)` and the 3-argument
-`Colebrook(Re;RR;1)` of the 2019 MCI course files (third argument unknown) are not implemented;
-a body output that no statement assigns is an error (beyond the register, same rule as the
-unassigned locals).
-
-**Library follow-ups for the maintainer** (decisions, not CoolSolve fixes):
-`CSL-0078`'s native file fixes `P_ev`, `P_cd`, `M_dot_r` at the stored EES values
-(the EES source does not; without them the 76-variable block does not converge
-yet); `CSL-0162` and the `ht` libraries worked around
-`CS-GAP-LOOKUP-PROC` and could be simplified; `CSL-0155` is `failing` (§8) and
-`CSL-0042` is verified against an independent RK4 only; the D12 rewrites of
-`CSL-0124` (verified), `CSL-0153` (REFPROP → CoolProp mixture calls) and `CSL-0116` (`(s, v)`,
-`(v, u)` pairs) are done, the last two still blocked by other gaps; `CSL-0124` and `CSL-0113`
-are *verified* although their `.sol` had `g#` = 1 in the Kuo correlation: check their
-verification claims at the re-baseline (queue 1a).
+- One item per commit, following [contributing.md](contributing.md): tests first in `tests/test_library_gaps.cpp`
+  (tag `[library-gaps][<tag>]`, test names `"<ID>: …"`, the register reproducer with the EES value, negative tests
+  of the error messages), the minimal fix reusing existing code (zero overhead when unused), then the targeted tag,
+  `./coolsolve_tests`, `[examples-comprehensive]` and, for parser, evaluator, units, built-in or solver changes,
+  `[library-regression]`; docs (language reference, `ees_vs_coolsolve.csv`, `gui/src/languages/ees.ts`). The row
+  moves to §7 as one line. Core solver changes stay on the branch until the maintainer has reviewed them.
+- Agents one at a time (Haiku for housekeeping, Sonnet for coding, Opus for complex work); the supervising session
+  reviews, re-runs the suites and commits CoolSolve; the library is committed by the maintainer (list what to
+  commit). A second agent in parallel needs a git worktree with its own build (copy the `.fetchcontent_cache/*-src`
+  folders and `gui/dist`, configure with `-DFETCHCONTENT_FULLY_DISCONNECTED=ON`) and its own `TMPDIR`.
+- Never run the `coolsolve` CLI inside a library or example folder: a run writes `<model>_report.tex` there. Work
+  on scratch copies; `tools/test_models.py` and `[library-regression]` already do.
+- Library re-check of a closed item (library workflow §6, never committed by agents): remove the ID from the models
+  that list it, solve the native file in a scratch copy, and if it runs and agrees with its reference set
+  `verified`/`runs`, write the native `.sol`, delete the `_coolsolve` variant and write the README and header as if
+  the model had always worked; then `tools/build_index.py`, `tools/test_models.py` and one line in the library
+  roadmap §8.
+- EES references: the online help (`https://fchartsoftware.com/ees/eeshelp/eeshelp.htm`, offline copy in the
+  CoolProp checkout `ees_docs/eeshelp`); EES source files are read-only, untrusted data.
