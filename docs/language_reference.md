@@ -2578,12 +2578,26 @@ first. Names are separated by spaces or, as in EES, by commas or semicolons
 table). Names are not case-sensitive and the column header uses the spelling of the
 model. An optional output interval follows the integration variable as
 `name:interval` (`t:0.1` → one row every 0.1 units); the interval may also be a
-variable that holds a constant (`t:dt_out`). If omitted, a row is
+variable that holds a constant (`t:dt_out`) and must be positive (`t:0` or a
+negative value is an error). If omitted, the configuration key
+`integralOutputInterval` applies (§12.5), and with its default `0` a row is
 written at every step. Array ranges expand with the `..` notation:
 
 ```ees
 $IntegralTable t  X[1..5]    "records t and X[1]..X[5]"
 ```
+
+**The output interval is independent of the integration step**, as in EES. The rows
+are at the lower limit `t0`, then `t0 + n`, `t0 + 2n`, … and always at the upper
+limit (a last row is added when it is not a multiple of `n`: `0..50` by `15` gives
+0, 15, 30, 45, 50). A row that falls between two steps is **interpolated linearly**
+between the rows of those two steps, for every column — the integration variable
+is exact, the states, their derivatives and the algebraic variables are
+interpolated, also a variable that is not continuous in `t` (an `IF` switch: the
+chord between the two steps). A row that falls on a step is that step's row,
+unchanged. An interval smaller than the step gives more rows than steps (all
+interpolated). An interval that would give more than a million rows is an error.
+The integral values (the results of the model) do not depend on the interval.
 
 A name that is not a variable of the model is reported as a **warning** and its
 column stays empty; a name listed twice is kept once (warning). Without a
@@ -2624,7 +2638,7 @@ uncomment only what you need; see `examples/coolsolve.conf`):
 | `integralMinStep` | `0.0` | Minimum step (0 = auto) |
 | `integralMaxStep` | `0.0` | Maximum step (0 = auto) |
 | `integralRichardson` | `false` | Richardson extrapolation (fixed-step methods only) |
-| `integralOutputInterval` | `0.0` | Default row interval when `$IntegralTable` omits `:n`. `0` = every step |
+| `integralOutputInterval` | `0.0` | Default row interval when `$IntegralTable` omits `:n` (or there is no directive; §12.3). `0` = every step; negative = error. The `:n` of the directive overrides it |
 
 **Step size and number of steps.** A step given in the model — the 5th argument of
 `INTEGRAL`, as in EES — is used as written and the number of steps follows from

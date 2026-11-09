@@ -76,8 +76,12 @@ The integral solve works as follows:
    `y` using the chosen `Integrator`. The number of steps is fixed by the model
    step (or `integralMaxSteps` without one); a march that ends before `tf` is an
    error, never a success.
-6. **Record rows** into an `IntegralTable` honouring the output interval
-   from `$IntegralTable` (columns matched to variables without regard to case).
+6. **Record rows** into an `IntegralTable` (columns matched to variables without
+   regard to case): at every step without an output interval, else at
+   `t0 + k·n` and at `tf`, independent of the steps. A row between two steps is
+   interpolated linearly (`IntegralTable::interpolate`) between the rows of the
+   two steps around it, evaluated once each (the row of a step is reused by the
+   next one); a row on a step is that step's row.
 
 The key invariant: **`Solver` is called unmodified at each time step**.
 The integral layer only decides *when* to call it, *what* to fix as
@@ -266,7 +270,7 @@ before:
 | `integralMinStep` | `0.0` | Minimum step (0 = auto) |
 | `integralMaxStep` | `0.0` | Maximum step (0 = auto) |
 | `integralRichardson` | `false` | Richardson extrapolation (fixed-step only) |
-| `integralOutputInterval` | `0.0` | Default `$IntegralTable` row interval (`0` = every step) |
+| `integralOutputInterval` | `0.0` | Default `$IntegralTable` row interval when the directive has no `:n` (`0` = every step) |
 
 **Which step wins.** The step given in the model (5th `INTEGRAL` argument) is used as
 written, whatever `integralMaxSteps` says: the number of steps is `⌈(hi − lo)/step⌉`

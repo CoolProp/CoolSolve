@@ -472,7 +472,8 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
           + 'reducing truncation error by 1–2 orders at ~3× cost.' },
       { key: 'integralOutputInterval', label: 'Output interval', type: 'number', defaultVal: '0',
         description:
-          'Default $IntegralTable output interval when the directive omits the ":n". '
+          'Default $IntegralTable output interval when the directive omits the ":n" (or there is none). '
+          + 'Rows at t0, t0+n, t0+2n, ... and at the upper limit, interpolated linearly between the steps as in EES. '
           + '0 = record every step. Does not change the integration — only which rows are tabulated.' },
     ],
   },

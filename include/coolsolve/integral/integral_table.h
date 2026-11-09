@@ -26,7 +26,9 @@ namespace coolsolve {
  * Example EES syntax:  `$IntegralTable t:0.1  y  dydt  X[1..5]`
  * (names separated by spaces, `,` or `;`)
  *   - `integrationVar` = "t"
- *   - `outputInterval` = 0.1  (record a row roughly every 0.1 in t; 0 = every step)
+ *   - `outputInterval` = 0.1  (one row at every multiple of 0.1 from the lower limit, interpolated
+ *                              between the integration steps; no `:n` = the configuration key
+ *                              `integralOutputInterval`, 0 = every step)
  *   - `columns`        = ["t", "y", "dydt", "X[1]", "X[2]", ...]
  *
  * The parser (Phase 3) fills this in; `IntegralTable` and `IntegralSolver`
@@ -34,7 +36,8 @@ namespace coolsolve {
  */
 struct IntegralTableSpec {
     std::string integrationVar;            ///< The independent variable (e.g. "t").
-    double outputInterval = 0.0;            ///< Output spacing in t; 0 = every step.
+    double outputInterval = 0.0;            ///< Output spacing in t from `:n` (valid when `hasOutputInterval`).
+    bool hasOutputInterval = false;         ///< `:n` is a number (it must be positive, the solver checks it).
     /// Name of the variable holding the output interval (`$IntegralTable t:dt_out ...`, EES allows
     /// a variable set to a constant); empty when the interval is a number. Read by the solver.
     std::string outputIntervalVar;

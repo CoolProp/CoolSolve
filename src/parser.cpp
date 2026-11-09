@@ -3045,6 +3045,7 @@ private:
             }
             if (isNumber) {
                 spec.outputInterval = value;
+                spec.hasOutputInterval = true;
             } else if (!interval.empty() && nameStartsAt(interval, 0)) {
                 spec.outputIntervalVar = interval;   // a variable set to a constant (EES)
             } else {

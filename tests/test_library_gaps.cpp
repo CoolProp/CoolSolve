@@ -3935,6 +3935,251 @@ TEST_CASE("CS-BUG-INTEGRAL-TABLE-CASE: the integration variable is the same what
     CHECK(anyContains({other.message}, "same integration variable"));
 }
 
+// ---- CS-BUG-INTEGRAL-TABLE-INTERVAL, CS-BUG-INTEGRAL-OUTPUT-INTERVAL ---------
+
+namespace {
+
+/// One RK4 step of y' = lambda*y over h: y_new = R(lambda*h) y.
+double rk4Factor(double z) { return 1.0 + z + z*z/2.0 + z*z*z/6.0 + z*z*z*z/24.0; }
+
+/// The trajectory the default RK4 method gives for y' = -y/10, y(0) = 1, on the steps `h`, ..., h
+/// (`n` steps), as (t, y) points; the last step is `last` when it differs.
+std::vector<std::pair<double, double>> rk4DecayGrid(double h, int n, double last = 0.0) {
+    std::vector<std::pair<double, double>> g{{0.0, 1.0}};
+    for (int k = 1; k <= n; ++k) {
+        const double step = (k == n && last > 0.0) ? last : h;
+        g.push_back({g.back().first + step, g.back().second * rk4Factor(-step/10.0)});
+    }
+    return g;
+}
+
+/// Linear interpolation of the points `g` at `t`.
+double chord(const std::vector<std::pair<double, double>>& g, double t) {
+    for (size_t i = 1; i < g.size(); ++i)
+        if (t <= g[i].first + 1e-12)
+            return g[i-1].second + (t - g[i-1].first)/(g[i].first - g[i-1].first)*(g[i].second - g[i-1].second);
+    return g.back().second;
+}
+
+/// The integration-variable column of `table` holds `times` (within rounding).
+bool timesAre(const IntegralTable& table, const std::vector<double>& times) {
+    const auto& t = table.column(table.integrationVar());
+    if (t.size() != times.size()) return false;
+    for (size_t i = 0; i < t.size(); ++i)
+        if (std::abs(t[i] - times[i]) > 1e-9) return false;
+    return true;
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-INTERVAL: register reproducer, rows at 0, 10, ... 50 between the steps", "[library-gaps][integral-table-interval]") {
+    // was: rows at t = 0, 16.67, 33.33, 50 (the rows were on the steps 8.33 apart, rounded up to every second one)
+    auto run = runIntegral("y = 1 + integral(dydt, t, 0, 50)\ndydt = -y/10\n$IntegralTable t:10 y\n",
+                           [](SolverOptions& o) { o.integralMaxSteps = 6; });
+    REQUIRE(run.solveOk);
+    REQUIRE(run.table.numRows() == 6);
+    const auto grid = rk4DecayGrid(50.0/6.0, 6);
+    for (int k = 0; k <= 5; ++k) {
+        CAPTURE(k);
+        CHECK_THAT(run.cell("t", k), WithinAbs(10.0*k, 1e-9));
+        // linear between the stored steps (not exp(-t/10) itself)
+        CHECK_THAT(run.cell("y", k), WithinAbs(chord(grid, 10.0*k), 1e-12));
+        // within the RK4 and the chord error of the analytic trajectory
+        CHECK_THAT(run.cell("y", k), WithinAbs(std::exp(-k), 0.03));
+    }
+    // the integral itself (at the upper limit) is the one of the steps
+    CHECK_THAT(run["y"], WithinAbs(grid.back().second, 1e-12));
+    CHECK_THAT(run.cell("y", 5), WithinAbs(run["y"], 1e-12));
+    CHECK(run.warnings.empty());
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-INTERVAL: register reproducer with an explicit step", "[library-gaps][integral-table-interval]") {
+    // was: rows at 0, 12, 24, 36, 48, 50 (steps of 4: every third step)
+    auto run = runIntegral("y = 1 + integral(dydt, t, 0, 50, 4)\ndydt = -y/10\n$IntegralTable t:10 y\n");
+    REQUIRE(run.solveOk);
+    REQUIRE(run.table.numRows() == 6);
+    const auto grid = rk4DecayGrid(4.0, 13, 2.0);   // 12 steps of 4, then 2
+    for (int k = 0; k <= 5; ++k) {
+        CAPTURE(k);
+        CHECK_THAT(run.cell("t", k), WithinAbs(10.0*k, 1e-9));
+        CHECK_THAT(run.cell("y", k), WithinAbs(chord(grid, 10.0*k), 1e-12));
+        CHECK_THAT(run.cell("y", k), WithinAbs(std::exp(-k), 1e-2));
+    }
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-INTERVAL: an interval that is a multiple of the step gives the rows of the steps", "[library-gaps][integral-table-interval]") {
+    const std::string model = "y = 1 + integral(dydt, t, 0, 4, 0.5)\ndydt = -y\nz = 3*y\n";
+    auto every = runIntegral(model + "$IntegralTable t y dydt z\n");
+    REQUIRE(every.solveOk);
+    REQUIRE(every.table.numRows() == 9);
+    for (int multiple : {1, 2, 4, 8}) {
+        INFO("interval = " << 0.5*multiple);
+        auto run = runIntegral(model + "$IntegralTable t:" + std::to_string(0.5*multiple) + " y dydt z\n");
+        REQUIRE(run.solveOk);
+        REQUIRE(run.table.numRows() == 8/multiple + 1);
+        for (int k = 0; k < run.table.numRows(); ++k)
+            for (const char* col : {"t", "y", "dydt", "z"}) {
+                CAPTURE(k, col);
+                CHECK(run.cell(col, k) == every.cell(col, k*multiple));   // the same values, bit for bit
+            }
+        CHECK(run.warnings.empty());
+    }
+    // an interval of the same size as the step: the table of every step
+    auto same = runIntegral(model + "$IntegralTable t:0.5 y dydt z\n");
+    REQUIRE(same.solveOk);
+    CHECK(same.table.column("y") == every.table.column("y"));
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-INTERVAL: an interval smaller than the step gives interpolated rows", "[library-gaps][integral-table-interval]") {
+    // steps of 1 over [0, 4]; rows every 0.25: four rows per step
+    auto run = runIntegral("y = 1 + integral(dydt, t, 0, 4, 1)\ndydt = -y/10\n$IntegralTable t:0.25 y\n");
+    REQUIRE(run.solveOk);
+    REQUIRE(run.table.numRows() == 17);
+    const auto grid = rk4DecayGrid(1.0, 4);
+    for (int k = 0; k < 17; ++k) {
+        CAPTURE(k);
+        CHECK_THAT(run.cell("t", k), WithinAbs(0.25*k, 1e-12));
+        CHECK_THAT(run.cell("y", k), WithinAbs(chord(grid, 0.25*k), 1e-12));
+    }
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-INTERVAL: every column is interpolated, the integration variable is not rounded", "[library-gaps][integral-table-interval]") {
+    // y, its derivative, an algebraic variable and a switch (not continuous in t: interpolated linearly too)
+    auto run = runIntegral("y = 1 + integral(dydt, t, 0, 50)\ndydt = -y/10\nz = 3*y + t\n"
+                           "s = if(t, 20, 0, 0, 1)\n$IntegralTable t:10 y dydt z s\n",
+                           [](SolverOptions& o) { o.integralMaxSteps = 6; });
+    REQUIRE(run.solveOk);
+    REQUIRE(run.table.numRows() == 6);
+    for (int k = 0; k < 6; ++k) {
+        CAPTURE(k);
+        CHECK_THAT(run.cell("t", k), WithinAbs(10.0*k, 1e-9));
+        CHECK_THAT(run.cell("dydt", k), WithinAbs(-run.cell("y", k)/10.0, 1e-12));
+        CHECK_THAT(run.cell("z", k), WithinAbs(3.0*run.cell("y", k) + 10.0*k, 1e-9));
+    }
+    // s switches from 0 to 1 at t = 20 (the step ends are 16.67 and 25): 0.4 at t = 20 is the chord
+    CHECK_THAT(run.cell("s", 1), WithinAbs(0.0, 1e-12));   // 10 lies between the steps 8.33 and 16.67
+    CHECK_THAT(run.cell("s", 2), WithinAbs((20.0 - 50.0/3.0)/(50.0/6.0), 1e-9));
+    CHECK_THAT(run.cell("s", 3), WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-INTERVAL: the last row is the upper limit when it is not a multiple of the interval", "[library-gaps][integral-table-interval]") {
+    // 0..50 by 15: rows 0, 15, 30, 45 and 50 (the end of the integration is always a row)
+    auto run = runIntegral("y = 1 + integral(dydt, t, 0, 50)\ndydt = -y/10\n$IntegralTable t:15 y\n",
+                           [](SolverOptions& o) { o.integralMaxSteps = 10; });
+    REQUIRE(run.solveOk);
+    REQUIRE(run.table.numRows() == 5);
+    CHECK_THAT(run.cell("t", 0), WithinAbs(0.0, 1e-12));
+    CHECK_THAT(run.cell("t", 1), WithinAbs(15.0, 1e-9));
+    CHECK_THAT(run.cell("t", 2), WithinAbs(30.0, 1e-9));
+    CHECK_THAT(run.cell("t", 3), WithinAbs(45.0, 1e-9));
+    CHECK_THAT(run.cell("t", 4), WithinAbs(50.0, 1e-12));
+    CHECK_THAT(run.cell("y", 4), WithinAbs(run["y"], 1e-12));
+    // an interval larger than the integration interval: the two ends
+    auto wide = runIntegral("y = 1 + integral(dydt, t, 0, 50)\ndydt = -y/10\n$IntegralTable t:80 y\n",
+                            [](SolverOptions& o) { o.integralMaxSteps = 10; });
+    REQUIRE(wide.solveOk);
+    CHECK(timesAre(wide.table, {0.0, 50.0}));
+    // the lower limit is the origin of the rows: 5, 15, 25, ... from 5
+    auto shifted = runIntegral("y = 1 + integral(dydt, t, 5, 50)\ndydt = -y/10\n$IntegralTable t:20 y\n",
+                               [](SolverOptions& o) { o.integralMaxSteps = 9; });
+    REQUIRE(shifted.solveOk);
+    CHECK(timesAre(shifted.table, {5.0, 25.0, 45.0, 50.0}));
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-INTERVAL: rows with RK45 and symbolic limits", "[library-gaps][integral-table-interval]") {
+    auto run = runIntegral("t_end = 50\ny = 1 + integral(dydt, t, 0, t_end)\ndydt = -y/10\n$IntegralTable t:10 y\n",
+                           [](SolverOptions& o) { o.integralMethod = "RK45"; });
+    REQUIRE(run.solveOk);
+    REQUIRE(run.table.numRows() == 6);
+    for (int k = 0; k <= 5; ++k) {
+        CAPTURE(k);
+        CHECK_THAT(run.cell("t", k), WithinAbs(10.0*k, 1e-9));
+        CHECK_THAT(run.cell("y", k), WithinAbs(std::exp(-k), 0.05*std::exp(-k) + 1e-3));
+    }
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-TABLE-INTERVAL: negative tests (integration direction, interval value)", "[library-gaps][integral-table-interval]") {
+    const std::string model = "y = 1 + integral(dydt, t, 0, 50)\ndydt = -y/10\n";
+    auto steps = [](SolverOptions& o) { o.integralMaxSteps = 10; };
+    SECTION("the decreasing direction is CS-GAP-INTEGRAL-DECREASING: a clear error, with or without interval") {
+        auto run = runIntegral("y = 1 + integral(dydt, t, 50, 0)\ndydt = -y/10\n$IntegralTable t:10 y\n", steps);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "upper limit must be greater"));
+    }
+    SECTION("an interval of 0 or below is an error") {
+        for (const char* n : {"0", "-10", "-0.5"}) {
+            INFO("$IntegralTable t:" << n);
+            auto run = runIntegral(model + "$IntegralTable t:" + n + " y\n", steps);
+            CHECK_FALSE(run.solveOk);
+            CHECK(anyContains({run.message}, "must be positive"));
+            CHECK(anyContains({run.message}, "$IntegralTable"));
+        }
+    }
+    SECTION("an interval variable that holds 0 or a negative value is an error") {
+        for (const char* v : {"0", "-2"}) {
+            INFO("dt_out = " << v);
+            auto run = runIntegral(std::string("dt_out = ") + v + "\n" + model + "$IntegralTable t:dt_out y\n", steps);
+            CHECK_FALSE(run.solveOk);
+            CHECK(anyContains({run.message}, "output interval 'dt_out' must be positive"));
+        }
+    }
+    SECTION("an interval that would write more than a million rows is an error") {
+        auto run = runIntegral(model + "$IntegralTable t:1e-6 y\n", steps);
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "would write more than"));
+    }
+    SECTION("the output is not touched when the interval is fine") {
+        auto run = runIntegral(model + "$IntegralTable t:25 y\n", steps);
+        CHECK(run.solveOk);
+        CHECK(run.table.numRows() == 3);
+    }
+}
+
+TEST_CASE("CS-BUG-INTEGRAL-OUTPUT-INTERVAL: register reproducer, the configuration key is the default interval", "[library-gaps][integral-table-interval]") {
+    // was: 21 rows (a row at every step); expected 5
+    const std::string model = "y = 1 + integral(dydt, t, 0, 2)\ndydt = -y\n";
+    auto configure = [](double interval) {
+        return [interval](SolverOptions& o) { o.integralMaxSteps = 20; o.integralOutputInterval = interval; };
+    };
+    auto run = runIntegral(model + "$IntegralTable t y\n", configure(0.5));
+    REQUIRE(run.solveOk);
+    REQUIRE(run.table.numRows() == 5);
+    for (int k = 0; k < 5; ++k) {
+        CAPTURE(k);
+        CHECK_THAT(run.cell("t", k), WithinAbs(0.5*k, 1e-12));
+        CHECK_THAT(run.cell("y", k), WithinAbs(std::exp(-0.5*k), 1e-5));
+    }
+    SECTION("the `:n` of the directive overrides the key") {
+        auto over = runIntegral(model + "$IntegralTable t:1 y\n", configure(0.5));
+        REQUIRE(over.solveOk);
+        CHECK(timesAre(over.table, {0.0, 1.0, 2.0}));
+        auto variable = runIntegral("dt_out = 1\n" + model + "$IntegralTable t:dt_out y\n", configure(0.5));
+        REQUIRE(variable.solveOk);
+        CHECK(variable.table.numRows() == 3);
+    }
+    SECTION("0 (the default) is a row at every step") {
+        auto all = runIntegral(model + "$IntegralTable t y\n", configure(0.0));
+        REQUIRE(all.solveOk);
+        CHECK(all.table.numRows() == 21);
+    }
+    SECTION("the key also applies to the default table of a model without the directive") {
+        auto plain = runIntegral(model, configure(0.5));
+        REQUIRE(plain.solveOk);
+        CHECK(plain.table.numRows() == 5);
+    }
+    SECTION("a key that is not a multiple of the step gives interpolated rows") {
+        auto odd = runIntegral(model + "$IntegralTable t y\n", configure(0.75));
+        REQUIRE(odd.solveOk);
+        CHECK(timesAre(odd.table, {0.0, 0.75, 1.5, 2.0}));
+        CHECK_THAT(odd.cell("y", 1), WithinAbs(std::exp(-0.75), 1e-3));
+    }
+    SECTION("a negative key is an error") {
+        auto bad = runIntegral(model + "$IntegralTable t y\n", configure(-0.5));
+        CHECK_FALSE(bad.solveOk);
+        CHECK(anyContains({bad.message}, "integralOutputInterval must be zero (every step) or positive"));
+    }
+}
+
 // ============================================================================
 // CS-GAP-LOOKUP-PROC: lookup functions inside FUNCTION / PROCEDURE bodies
 // ============================================================================

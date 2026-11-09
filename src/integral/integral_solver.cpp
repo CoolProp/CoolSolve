@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -311,7 +312,7 @@ Eigen::VectorXd IntegralSolver::evaluateRHS(double t, const Eigen::VectorXd& y) 
     }
 
     SolveResult r = march_->solver->solve(solverOpts_, false);
-    lastAlgebraic_ = r;  // refreshed for recordRow / readDerivative
+    lastAlgebraic_ = r;  // refreshed for the table rows / readDerivative
     if (!r.success) {
         throw std::runtime_error("Algebraic solve failed at t=" + std::to_string(t) +
                                  ": " + r.errorMessage);
@@ -454,6 +455,9 @@ bool IntegralSolver::resolveSymbolicInterval(double& t0, double& tf, double& ste
     return true;
 }
 
+/// More rows than this over the integration interval is an output interval typed wrongly.
+constexpr double kMaxTableRows = 1.0e6;
+
 // ============================================================================
 // Time-march loop
 // ============================================================================
@@ -592,12 +596,10 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
     }
     result.table = IntegralTable(problem_.integrationVar);
     result.table.setColumns(columns);
-    double outInterval = spec.outputInterval;
 
-    auto recordRow = [&](double t) {
-        // Evaluate the algebraic subsystem at (t, y) so every tabulated column
-        // (states, derivatives, algebraic vars) is consistent at this point.
-        const Eigen::VectorXd yCur = currentY_;  // set by the march loop below
+    // Values of every tabulated column at (t, yCur): the algebraic subsystem is evaluated there so
+    // states, derivatives and algebraic variables are consistent at this point.
+    auto evalRow = [&](double t, const Eigen::VectorXd& yCur) {
         try {
             (void)evaluateRHS(t, yCur);
         } catch (...) {
@@ -614,7 +616,7 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
             auto it = known.find(col);
             if (it != known.end()) vals[col] = it->second;
         }
-        result.table.appendRow(t, vals);
+        return vals;
     };
 
     // ---- Initial state at t0 ----------------------------------------------
@@ -644,17 +646,39 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
         result.errorMessage = "Initial algebraic solve failed: " + initRes.errorMessage;
         return result;
     }
-    // The output interval may be given as a variable holding a constant (`$IntegralTable t:dt_out ...`).
-    if (!spec.outputIntervalVar.empty()) {
+    // Output interval: `:n` of the directive (a number, or a variable holding a constant), else the
+    // configuration key `integralOutputInterval`; 0 = a row at every step.
+    double outInterval = solverOpts_.integralOutputInterval;
+    std::string intervalSource = "integralOutputInterval";
+    bool fromDirective = false;
+    if (spec.hasOutputInterval) {
+        outInterval = spec.outputInterval;
+        intervalSource = "$IntegralTable: the output interval";
+        fromDirective = true;
+    } else if (!spec.outputIntervalVar.empty()) {
         auto it = initRes.variables.find(spec.outputIntervalVar);
-        if (it != initRes.variables.end() && std::isfinite(it->second) && it->second >= 0.0) {
+        if (it != initRes.variables.end() && std::isfinite(it->second)) {
             outInterval = it->second;
+            intervalSource = "$IntegralTable: the output interval '" + spec.outputIntervalVar + "'";
+            fromDirective = true;
         } else {
+            outInterval = 0.0;
             result.diagnostics.push(DiagnosticSeverity::Warning, "I001",
                                     "$IntegralTable: the output interval '" + spec.outputIntervalVar +
-                                    "' is not a variable of the model with a non-negative value; "
+                                    "' is not a variable of the model with a finite value; "
                                     "a row is written at every step", "integral");
         }
+    }
+    if (!std::isfinite(outInterval) || outInterval < 0.0 || (fromDirective && outInterval == 0.0)) {
+        result.errorMessage = intervalSource + " must be " + (fromDirective ? "positive" : "zero (every step) or positive") +
+                              "; got " + std::to_string(outInterval);
+        return result;
+    }
+    if (outInterval > 0.0 && span / outInterval > kMaxTableRows) {
+        result.errorMessage = intervalSource + " " + std::to_string(outInterval) + " would write more than " +
+                              std::to_string(static_cast<long long>(kMaxTableRows)) + " rows over [" +
+                              std::to_string(t0) + ", " + std::to_string(tf) + "]";
+        return result;
     }
     // Recover y(t0) from each state's base expression.
     try {
@@ -664,16 +688,20 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
         result.errorMessage = std::string("Initial value of a state: ") + e.what();
         return result;
     }
-    currentY_ = y0;
     lastAlgebraic_ = initRes;
-    recordRow(t0);
+    std::optional<std::map<std::string, double>> rowAtT = evalRow(t0, y0);   // row at the start of the step, while known
+    result.table.appendRow(t0, *rowAtT);
 
     // ---- March -------------------------------------------------------------
     Eigen::VectorXd y = y0;
     double t = t0;
     int taken = 0;
     int rejected = 0;
-    double nextRecordT = (outInterval > 0.0) ? t0 + outInterval : tf;
+    // Rows at t0 + k*outInterval, independent of the steps (EES): a row between two steps is
+    // interpolated linearly between the rows of the steps around it (`bracket`, two rows).
+    long long nextRow = 1;
+    IntegralTable bracket(problem_.integrationVar);
+    bracket.setColumns(columns);
     RHSFunction rhs = [this](double tt, const Eigen::VectorXd& yy) {
         return evaluateRHS(tt, yy);
     };
@@ -697,9 +725,11 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
             }
             double hTry = h;
             if (t + hTry >= tf - tolT) hTry = tf - t;  // land exactly on tf
+            const double tPrev = t;
+            const Eigen::VectorXd yPrev = y;
 
             StepResult sr = ig->step(t, y, rhs, hTry, intOpt);
-            lastAlgebraic_ = {};  // recordRow will refresh via evaluateRHS
+            lastAlgebraic_ = {};  // the row evaluation refreshes it via evaluateRHS
 
             if (!sr.accepted) {
                 ++rejected;
@@ -718,7 +748,6 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
             y = sr.yNew;
             t += sr.stepTaken;
             if (t >= tf - tolT) t = tf;   // what is left of the interval is rounding
-            currentY_ = y;
             ++taken;
             result.acceptedStepSizes.push_back(sr.stepTaken);
             if (adaptive) {
@@ -726,12 +755,35 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
                 h = std::min(hMax, std::max(hMin, hn));
             }
 
-            // Record honouring the output interval (always record the final point).
-            bool isLast = (t >= tf);
-            if (outInterval <= 0.0 || isLast || t >= nextRecordT - 1e-9) {
-                recordRow(t);
-                if (!isLast && outInterval > 0.0)
-                    nextRecordT = std::min(tf, t + outInterval);
+            // Rows of this step: at every step (no interval), else the output times it reached
+            // (a time on the step's end is that row; the final point is always a row).
+            const bool isLast = (t >= tf);
+            bool onStep = isLast || outInterval <= 0.0;
+            std::vector<double> between;   // output times strictly inside (tPrev, t)
+            while (outInterval > 0.0) {
+                const double tOut = t0 + static_cast<double>(nextRow) * outInterval;
+                if (tOut >= tf - tolT || tOut > t + tolT) break;
+                if (tOut >= t - tolT) onStep = true;
+                else between.push_back(tOut);
+                ++nextRow;
+            }
+            if (between.empty() && !onStep) {
+                rowAtT.reset();   // no row at this step: the next step evaluates its own start
+            } else if (between.empty()) {
+                rowAtT = evalRow(t, y);
+                result.table.appendRow(t, *rowAtT);
+            } else {
+                const auto rowPrev = rowAtT ? *rowAtT : evalRow(tPrev, yPrev);
+                rowAtT = evalRow(t, y);
+                bracket.clear();
+                bracket.appendRow(tPrev, rowPrev);
+                bracket.appendRow(t, *rowAtT);
+                for (double tOut : between) {
+                    std::map<std::string, double> vals;
+                    for (const auto& col : columns) vals[col] = bracket.interpolate(col, tOut);
+                    result.table.appendRow(tOut, vals);
+                }
+                if (onStep) result.table.appendRow(t, *rowAtT);
             }
         }
     } catch (const std::exception& e) {

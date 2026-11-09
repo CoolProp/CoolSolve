@@ -121,8 +121,7 @@ private:
     double evalBaseExpr(const ExprPtr& expr,
                         const std::map<std::string, double, CaseInsensitiveLess>& vars) const;
 
-    // March-loop scratch state (kept as members so recordRow can read them).
-    Eigen::VectorXd currentY_;
+    // March-loop scratch state (kept as members so the row evaluation can read them).
     SolveResult lastAlgebraic_;
 
     /// Driver equations (`v = <literal>`) for integrator-owned variables
