@@ -39,6 +39,9 @@ struct SolutionCheckResult {
     int worstEquationId = -1;
     std::vector<EquationCheckResult> checks;
     DiagnosticCollector diagnostics;
+    /// The message of a fatal evaluation error (a `CALL ERROR` of the model, see `isFatalEvaluationError`)
+    /// raised while checking an equation: the check stops there, the remaining equations are not checked.
+    std::string fatalError;
 };
 
 /**
@@ -49,6 +52,9 @@ struct SolutionCheckResult {
  *
  * Procedure CALLs are evaluated by running the procedure and comparing
  * each output's old value with the value returned by the procedure.
+ *
+ * A fatal evaluation error (`CALL ERROR`) stops the check at once: it is
+ * reported as a violation and in `SolutionCheckResult::fatalError`.
  *
  * The verification tolerance should be significantly looser than the solver's
  * Newton convergence tolerance. The solver tolerance (e.g. 1e-6) controls how

@@ -72,6 +72,13 @@ Outside the GUI, the equivalent is to send `{"deepSearch": true}` to the
 - **Typical causes**: Incorrect initial values, wrong units (e.g. P=1 interpreted as 1 Pa instead of 1 bar), cascaded errors from a previous block.
 - **Check**: Error message for the exact invalid input. Inspect `coolsolve_residuals.md` for suspicious values (e.g. enthalpy = 1.0 instead of ~4e5 for air).
 
+### A CALL ERROR stops the calculation at an early iterate
+
+- **Meaning**: a `CALL ERROR` of a `FUNCTION` or `PROCEDURE` of the model was reached by an iterate that starts from the guesses (the initial guess, a Newton step, a line-search trial...), not necessarily by the solution. The EES help only says that the `ERROR` procedure halts the calculation; CoolSolve stops at once, as EES does: the status is `EvaluationError` and the message is that of the call, with the value of the iterate (`CALL ERROR: x too small 1.00`). No other solver or block is tried afterwards. (A `CALL WARNING` never stops the run, and nor does a CoolProp failure, which the solver recovers from.) The exploratory points that CoolSolve alone tries after a failure (the probes of the one-unknown solver, the multi-start candidates) are different: one that raises a `CALL ERROR` is skipped; when no multi-start candidate solves the block, its failure message ends with the `CALL ERROR` of the first candidate that raised one (`multi-start candidate 1 (scale x0.1): CALL ERROR: ...`).
+- **Typical causes**: a guard (`IF (x < 2) THEN CALL ERROR(...)`) that the solution respects but the default guess (1 for every unknown) or an early Newton step does not, e.g. a step that overshoots to a negative value.
+- **Fix**: give the unknowns that the guard concerns a value inside the allowed range, close to the solution, in the `.initials` file (or in the *Variables* table of the GUI). The message gives the value of the iterate that reached the error: a step that overshoots (e.g. to a negative value) is cured by a guess nearer the solution, as the first step of a Newton iteration is the one that leaves the range. A guard that is only a protection of the model against its own iterates (not a physical limit) can also be written so that it holds at the solution only, e.g. `CALL WARNING`, which is reported at the solution and ignored while iterating.
+- **Check**: the message of the block, and `solver_trace.md` for the iterates before the one that stopped.
+
 ### SingularJacobian
 
 - **Meaning**: Jacobian is rank-deficient; Newton cannot compute a unique step.

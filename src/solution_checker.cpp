@@ -1,4 +1,5 @@
 #include "coolsolve/solution_checker.h"
+#include "coolsolve/solver_common.h"
 #include <iostream>
 #include <fstream>
 #include <iomanip>
@@ -112,6 +113,10 @@ SolutionCheckResult checkSolution(
                     result.violatedCount++;
                     result.allSatisfied = false;
                 }
+                if (isFatalEvaluationError(e.what())) {   // a CALL ERROR: the check stops here
+                    result.fatalError = e.what();
+                    return result;
+                }
                 // Skip sibling CALL equations
                 size_t nOut = eqInfo.procedureCall->outputVars.size();
                 if (nOut > 1) {
@@ -218,6 +223,10 @@ SolutionCheckResult checkSolution(
             result.checks.push_back(check);
             result.violatedCount++;
             result.allSatisfied = false;
+            if (isFatalEvaluationError(e.what())) {   // a CALL ERROR: the check stops here
+                result.fatalError = e.what();
+                return result;
+            }
             continue;
         }
 

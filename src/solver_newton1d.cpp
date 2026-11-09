@@ -229,8 +229,11 @@ SolverStatus Newton1DSolver::solve(
     // below stepTolerance is a root only if that residual is small; otherwise F jumps across it (a pole,
     // or a CoolProp evaluation error returning the penalty value at the edge of its domain): the
     // bracket is given up (false) and the reason recorded in collapseNote.
+    // A CALL ERROR (fatal evaluation error) reached by the bisection stops the calculation when the bracket
+    // is that of Phase 1 (its ends are iterates from the guess, as in EES); the bracket of a Phase-2 probe
+    // is an exploration of CoolSolve alone, where a guard only drops the bracket (`fromGuess` false).
     std::string collapseNote;
-    auto bisectBracket = [&](const Bracket& bracket) -> bool {
+    auto bisectBracket = [&](const Bracket& bracket, bool fromGuess) -> bool {
         double xLo = bracket.lo, fLo = bracket.flo, xHi = bracket.hi, fHi = bracket.fhi;
         for (int iter = 0; iter < options.maxIterations; ++iter) {
             double xMid = (xLo + xHi) / 2.0;
@@ -270,7 +273,7 @@ SolverStatus Newton1DSolver::solve(
                                 else { xLo = xNewton; fLo = fn; }
                                 continue;
                             }
-                        } catch (...) {}
+                        } catch (...) { if (fromGuess) rethrowIfFatalEvaluationError(); }
                     }
                 }
 
@@ -292,8 +295,14 @@ SolverStatus Newton1DSolver::solve(
                     collapseNote = note.str();
                     return false;
                 }
-            } catch (...) {
+            } catch (const std::exception& e) {
+                if (isFatalEvaluationError(e.what())) {
+                    if (fromGuess) throw;
+                    return false;   // a CALL ERROR of an exploratory bracket: give it up, the next one is tried
+                }
                 // Evaluation failed at midpoint — narrow bracket from the other side
+                xHi = xMid;
+            } catch (...) {
                 xHi = xMid;
             }
         }
@@ -302,7 +311,7 @@ SolverStatus Newton1DSolver::solve(
 
     // The bracket of Phase 1 first; if it holds no root, Phase 2 looks for others.
     if (!converged && hasBracket) {
-        converged = bisectBracket({xLo, fLo, xHi, fHi, 0.0});
+        converged = bisectBracket({xLo, fLo, xHi, fHi, 0.0}, true);
         hasBracket = false;
     }
 
@@ -357,6 +366,7 @@ SolverStatus Newton1DSolver::solve(
                     break;
                 }
             } catch (...) {
+                // an invalid probe, a CALL ERROR included: the probes are explorations of CoolSolve alone
                 results.push_back({probe, 0.0, false});
             }
         }
@@ -380,7 +390,7 @@ SolverStatus Newton1DSolver::solve(
                         auto [fm, jm, sm] = eval(mid);
                         fmid = std::abs(fm);
                     } catch (...) {
-                        fmid = 1e30; // Evaluation failed — likely a pole
+                        fmid = 1e30; // Evaluation failed — likely a pole (or a CALL ERROR: an exploratory point)
                     }
                     brackets.push_back({lo, flo_v, hi, fhi_v, fmid});
                 }
@@ -391,7 +401,7 @@ SolverStatus Newton1DSolver::solve(
                              [](const Bracket& a, const Bracket& b) { return a.midF < b.midF; });
             for (const Bracket& bracket : brackets) {
                 hasBracket = true;
-                if (bisectBracket(bracket)) { converged = true; break; }
+                if (bisectBracket(bracket, false)) { converged = true; break; }
             }
         }
 
@@ -421,6 +431,7 @@ SolverStatus Newton1DSolver::solve(
                 if (std::abs(dx) > maxStep) dx = (dx > 0 ? 1.0 : -1.0) * maxStep;
                 xCur += dx;
             } catch (...) {
+                rethrowIfFatalEvaluationError();
                 break;
             }
         }
@@ -466,6 +477,7 @@ SolverStatus Newton1DSolver::solveSimple(
             if (std::abs(dx) > maxStep) dx = (dx > 0 ? 1.0 : -1.0) * maxStep;
             xCur += dx;
         } catch (...) {
+            rethrowIfFatalEvaluationError();
             break;
         }
     }

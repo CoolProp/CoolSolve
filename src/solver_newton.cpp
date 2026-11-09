@@ -56,6 +56,7 @@ double NewtonSolver::lineSearch(Problem& problem,
         try {
             problem.evaluate(x_new, F_new, J_dummy, false);
         } catch (const std::exception&) {
+            rethrowIfFatalEvaluationError();
             lambda *= options.lsRho;
             continue;
         }
@@ -286,7 +287,7 @@ SolverStatus NewtonSolver::solve(Problem& problem,
                 try {
                     problem.evaluate(yt.cwiseProduct(scale), Ft, Jd, false);
                     if (0.5 * Ft.squaredNorm() < 0.5 * F.squaredNorm()) { lambda = fb; break; }
-                } catch (...) { continue; }
+                } catch (...) { rethrowIfFatalEvaluationError(); continue; }
             }
             if (lambda == 0.0) {
                 if (trace) { trace->finalStatus = SolverStatus::LineSearchFailed; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }

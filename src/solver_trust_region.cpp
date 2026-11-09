@@ -284,6 +284,7 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
         try {
             problem.evaluate(y_new.cwiseProduct(scale), F_new, Jd, false);
         } catch (const std::exception&) {
+            rethrowIfFatalEvaluationError();
             // Evaluation failed — smoothly shrink delta
             delta *= options.trShrinkFactor;
             consecutiveRejects++;

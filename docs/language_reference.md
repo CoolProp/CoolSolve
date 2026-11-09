@@ -1888,6 +1888,26 @@ other routines, is evaluated again: a model without the statement runs exactly a
 `/ALL`), which CoolSolve does not. The `$Warnings` directive does not change anything: the help of EES states
 that a warning of the `WARNING` procedure is always displayed.
 
+**When an error stops the calculation.** The opposite holds for `CALL ERROR`. The help of the `ERROR` procedure says
+that it "allows the user to halt calculations with an explanatory message"; it does not say at which point of the
+iteration, and CoolSolve takes it as EES does: the calculation stops as soon as an iterate that starts from the
+guesses of the model reaches the call, not only the solution. An `ERROR` in a branch that the converged solution never
+takes still halts the run when the initial guess or an early iterate passes through that branch: CoolSolve does not
+backtrack from it, it does not try the next solver of the pipeline, and the blocks that follow are not solved. The run
+ends with the message of the call, the value in place of `XXX` being that of the iterate (`x too small 1.00`), and the
+failing block. A model that relies on a guard such as `IF (x < 2) THEN CALL ERROR(...)` needs an initial guess
+(`.initials`) that keeps the iterates out of the guarded range: see *A CALL ERROR stops the calculation at an early
+iterate* in `debugging_models.md`.
+
+The points that CoolSolve alone tries, after the iteration from the guesses has failed without such an error, are
+explorations that EES does not make, and a point that raises a `CALL ERROR` is only skipped: a probe of the
+one-unknown solver (Newton1D) is invalid like any probe that cannot be evaluated, a bracket found by the probes whose
+bisection reaches the error is dropped for the next one, and a multi-start candidate is dropped for the next
+candidate. If no candidate solves, the block fails and its message ends with the `CALL ERROR` of the first candidate
+that raised one. The check of the solution evaluates every `ERROR` at the solution in any case, so a
+solution that lies in a guarded range is rejected. Failures of CoolProp (an input out of range) are not errors of this
+kind: the iteration recovers from them, with a penalty value, and reports them only when they hold at the solution.
+
 ### CALL Colebrook (Darcy friction factor)
 
 `Colebrook` is the procedure of an EES add-on library that EES models call for the Darcy friction factor `f`

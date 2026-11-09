@@ -87,7 +87,7 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
         try {
             problem.evaluate(xv, Fout, Jdummy, false);
             return Fout.allFinite();
-        } catch (...) { return false; }
+        } catch (...) { rethrowIfFatalEvaluationError(); return false; }
     };
 
     // --- Phase 1: Build initial simplex with diverse sign patterns ---

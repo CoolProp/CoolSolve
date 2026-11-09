@@ -618,7 +618,7 @@ bool Solver::tryExplicitSolve(size_t blockIndex) {
 SolverStatus Solver::solveBlock(size_t blockIndex, 
                                 const SolverOptions& options,
                                 SolverTrace* trace,
-                                std::string* outErrorMessage) {
+                                std::string* outErrorMessage) try {
     BlockEvaluator& blockEval = evaluator_.getBlock(blockIndex);
     const auto& varNames = blockEval.getVariables();
     const size_t n = varNames.size();
@@ -928,6 +928,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                                   << std::endl;
                     }
                 } catch (const std::exception& e) {
+                    rethrowIfFatalEvaluationError();
                     if (options.verbose) {
                         std::cerr << "  Symbolic pre-solve failed for " << step.variable
                                   << ": " << e.what() << std::endl;
@@ -984,7 +985,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                                     std::cout << "  Reduced explicit: " << reducedBlock.variables[0]
                                               << " = " << val << std::endl;
                                 }
-                            } catch (...) {}
+                            } catch (...) { rethrowIfFatalEvaluationError(); }
                         }
                     }
 
@@ -1077,7 +1078,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                                                 double val = evalExpr(eq.rhs);
                                                 evaluator_.setVariableValue(sb.variables[0], val);
                                                 explOk = true;
-                                            } catch (...) {}
+                                            } catch (...) { rethrowIfFatalEvaluationError(); }
                                         }
                                     }
                                     if (!explOk) {
@@ -1122,6 +1123,9 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                                         for (size_t vi = 0; vi < subN; ++vi) {
                                             evaluator_.setVariableValue(sb.variables[vi], xs[vi]);
                                         }
+                                    } else if (isFatalEvaluationError(subErr)) {
+                                        if (outErrorMessage) *outErrorMessage = subErr;
+                                        return SolverStatus::EvaluationError;
                                     } else {
                                         subBlockFailed = true;
                                     }
@@ -1168,6 +1172,8 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                             for (size_t i = 0; i < nReduced; ++i) {
                                 evaluator_.setVariableValue(reducedBlock.variables[i], xr[i]);
                             }
+                        } else if (outErrorMessage && isFatalEvaluationError(*outErrorMessage)) {
+                            return SolverStatus::EvaluationError;
                         } else {
                             reductionFailed = true;
                         }
@@ -1195,6 +1201,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                                       << std::endl;
                         }
                     } catch (const std::exception& e) {
+                        rethrowIfFatalEvaluationError();
                         if (options.verbose) {
                             std::cerr << "  Symbolic post-solve failed for " << step.variable
                                       << ": " << e.what() << std::endl;
@@ -1292,6 +1299,12 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
     }
     
     return status;
+} catch (const std::exception& e) {
+    // A fatal evaluation error (CALL ERROR, unsupported function) leaves the solvers as an exception
+    // (rethrowIfFatalEvaluationError): it ends the block, and with it the calculation.
+    if (!isFatalEvaluationError(e.what())) throw;
+    if (outErrorMessage) *outErrorMessage = e.what();
+    return SolverStatus::EvaluationError;
 }
 
 // ----------------------------------------------------------------------------
@@ -1308,7 +1321,7 @@ SolverStatus Solver::runSolverStrategy(SolverStrategy strategy,
                                        Eigen::VectorXd& x,
                                        const SolverOptions& options,
                                        SolverTrace* trace,
-                                       std::string* outErrorMessage) {
+                                       std::string* outErrorMessage) try {
     const size_t n = varNames.size();
 
     // Partitioned solver needs structural info – handle specially
@@ -1358,14 +1371,12 @@ SolverStatus Solver::runSolverStrategy(SolverStrategy strategy,
         if (solverOpts.maxIterations < minIter) solverOpts.maxIterations = minIter;
     }
 
-    try {
-        return solver->solve(problem, x, solverOpts, trace, outErrorMessage);
-    } catch (const std::exception& e) {
-        if (outErrorMessage) {
-            *outErrorMessage = e.what();
-        }
-        return SolverStatus::EvaluationError;
+    return solver->solve(problem, x, solverOpts, trace, outErrorMessage);
+} catch (const std::exception& e) {
+    if (outErrorMessage) {
+        *outErrorMessage = e.what();
     }
+    return SolverStatus::EvaluationError;
 }
 
 // ----------------------------------------------------------------------------
@@ -1382,7 +1393,7 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
                                           const SolverOptions& options,
                                           SolverTrace* trace,
                                           std::string* outErrorMessage,
-                                          const Eigen::VectorXd* warmStartGuess) {
+                                          const Eigen::VectorXd* warmStartGuess) try {
     const size_t n = varNames.size();
     SolverStatus status = SolverStatus::InvalidInput;
     std::string lastError;
@@ -1408,6 +1419,7 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
             bestResidualNorm = weighted(F0);
             initialResidualNorm = bestResidualNorm;
         } catch (...) {
+            rethrowIfFatalEvaluationError();
             // If even the initial eval fails, keep max residual
         }
     }
@@ -1469,7 +1481,7 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
                 Eigen::MatrixXd J_dummy;
                 problem.evaluate(x_init, F_init, J_dummy, false);
                 initResidualNorm = weighted(F_init);
-            } catch (...) {}
+            } catch (...) { rethrowIfFatalEvaluationError(); }
 
             // Use whichever starting point has the smaller residual
             if (bestResidualNorm < initResidualNorm) {
@@ -1507,6 +1519,7 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
                 problem.evaluate(x, F_att, J_att, false);
                 attempt.finalResidual = F_att.lpNorm<Eigen::Infinity>();
             } catch (...) {
+                rethrowIfFatalEvaluationError();
                 attempt.finalResidual = std::numeric_limits<double>::max();
             }
             if (trace && !trace->iterations.empty()) {
@@ -1543,6 +1556,7 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
                     skipPartitioned = true;
                 }
             } catch (...) {
+                rethrowIfFatalEvaluationError();
                 if (strategy == SolverStrategy::Partitioned) {
                     skipPartitioned = true;
                 }
@@ -1607,6 +1621,12 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
         *outErrorMessage += ss.str();
     }
     return status;
+} catch (const std::exception& e) {
+    // A fatal evaluation error of an initial or warm-start evaluation (the solvers' own are converted by
+    // runSolverStrategy): the pipeline stops.
+    if (!isFatalEvaluationError(e.what())) throw;
+    if (outErrorMessage) *outErrorMessage = e.what();
+    return SolverStatus::EvaluationError;
 }
 
 // ----------------------------------------------------------------------------
@@ -1688,7 +1708,9 @@ SolverStatus Solver::solveBlockParallel(size_t blockIndex,
                                                   result.solution, threadOptions,
                                                   &result.trace, &result.error);
 
-                if (result.status == SolverStatus::Success) {
+                // A winner, or a fatal evaluation error (CALL ERROR): the other threads stop
+                if (result.status == SolverStatus::Success ||
+                    (result.status == SolverStatus::EvaluationError && isFatalEvaluationError(result.error))) {
                     parallelStop->store(true, std::memory_order_release);
                 }
                 return result;
@@ -1698,9 +1720,14 @@ SolverStatus Solver::solveBlockParallel(size_t blockIndex,
     // Collect results – pick the first successful one
     SolverStatus bestStatus = SolverStatus::InvalidInput;
     std::string allErrors;
+    std::string fatalError;   // the first fatal evaluation error (CALL ERROR) of a thread
 
     for (auto& fut : futures) {
         ThreadResult result = fut.get();
+        if (fatalError.empty() && result.status == SolverStatus::EvaluationError &&
+            isFatalEvaluationError(result.error)) {
+            fatalError = result.error;
+        }
 
         if (result.status == SolverStatus::Success && bestStatus != SolverStatus::Success) {
             bestStatus = SolverStatus::Success;
@@ -1736,6 +1763,12 @@ SolverStatus Solver::solveBlockParallel(size_t blockIndex,
     parallelStop->store(true, std::memory_order_release);
     if (cancelMonitor.joinable()) cancelMonitor.join();
 
+    // A fatal evaluation error is the result, even when another thread converged: an iterate of the pipeline
+    // reached the CALL ERROR (the first fatal error stopped the threads that were still running)
+    if (!fatalError.empty()) {
+        if (outErrorMessage) *outErrorMessage = fatalError;
+        return SolverStatus::EvaluationError;
+    }
     return bestStatus;
 }
 
@@ -1826,6 +1859,7 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
             std::vector<double> x_std(x.data(), x.data() + x.size());
             evalResult = blockEval.evaluate(x_std, externalVars, externalStringVars);
         } catch (const std::exception& e) {
+            rethrowIfFatalEvaluationError();
             if (outErrorMessage) {
                 *outErrorMessage = std::string("Partitioned solver evaluation failed: ") + e.what();
             }
@@ -2070,6 +2104,7 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
         try {
             evalResult = blockEval.evaluate(x_std, externalVars, externalStringVars);
         } catch (const std::exception& e) {
+            rethrowIfFatalEvaluationError();
             if (stepPending && backtrack()) continue;   // trial point not evaluable: shorter step
             if (outErrorMessage) *outErrorMessage = std::string("Tearing evaluation failed: ") + e.what();
             if (trace) {
@@ -2135,6 +2170,7 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
         try {
             evalResult = blockEval.evaluate(x_std, externalVars, externalStringVars);
         } catch (const std::exception& e) {
+            rethrowIfFatalEvaluationError();
             if (outErrorMessage) *outErrorMessage = std::string("Tearing evaluation failed: ") + e.what();
             if (trace) {
                 trace->finalStatus = SolverStatus::EvaluationError;
@@ -2527,6 +2563,7 @@ SolverStatus Solver::solveBlockWithMultiStart(size_t blockIndex,
                                             trace, outErrorMessage, multistartInfo);
     }
 
+    std::string candidateFatal;   // the CALL ERROR of the first candidate that raised one
     for (size_t k = 0; k < candidates.size(); ++k) {
         if (TimeoutGuard::hasTimedOut()) break;
 
@@ -2588,6 +2625,13 @@ SolverStatus Solver::solveBlockWithMultiStart(size_t blockIndex,
             return SolverStatus::Success;
         }
 
+        // A candidate is an exploratory start of CoolSolve alone (EES has none): one whose iterates raise a
+        // CALL ERROR is dropped and the next is tried; the first such message is reported if none solves
+        if (candStatus == SolverStatus::EvaluationError && isFatalEvaluationError(candError)) {
+            if (candidateFatal.empty()) candidateFatal = "multi-start candidate " + std::to_string(k + 1) + " (" + candLabel + "): " + candError;
+            continue;
+        }
+
         // Candidate failed too — keep the lowest-residual state for restoration.
         double candResidual = candidateResidualNorm(pt);
         if (candStatus != SolverStatus::EvaluationError && candResidual < bestResidual) {
@@ -2617,7 +2661,10 @@ SolverStatus Solver::solveBlockWithMultiStart(size_t blockIndex,
                   << " restart(s); restored best |F|=" << bestResidual
                   << " (candidate " << (bestCandidate + 1) << ").\n";
     }
-    if (outErrorMessage) *outErrorMessage = firstError;
+    if (outErrorMessage) {
+        *outErrorMessage = firstError;
+        if (!candidateFatal.empty()) *outErrorMessage += "\n" + candidateFatal;
+    }
     return status;
 }
 
@@ -2649,6 +2696,7 @@ struct MSTaskResult {
     Eigen::VectorXd finalX;   // solver's final iterate (== solution when converged)
     double residualNorm = std::numeric_limits<double>::infinity();
     SolverTrace trace;
+    std::string fatalError;   // the message of a fatal evaluation error (CALL ERROR) that ended the attempt
 };
 } // namespace
 
@@ -2707,6 +2755,7 @@ SolverStatus Solver::solveBlockMultiStartParallel(
 
     const int waveSize = std::max(1, numCores);
     size_t launched = 0;
+    std::string candidateFatal;   // the CALL ERROR of the first candidate that raised one
 
     while (launched < candidates.size()) {
         if (TimeoutGuard::hasTimedOut()) break;
@@ -2764,6 +2813,7 @@ SolverStatus Solver::solveBlockMultiStartParallel(
                                 ? pt->iterations.back().residualNorm
                                 : std::numeric_limits<double>::infinity();
                         r.trace = std::move(tlocal);
+                        if (st == SolverStatus::EvaluationError && isFatalEvaluationError(err)) r.fatalError = err;
                     }
                     return r;
                 }));
@@ -2780,6 +2830,11 @@ SolverStatus Solver::solveBlockMultiStartParallel(
                     parallelStop->store(true, std::memory_order_release);
             }
             MSTaskResult r = fut.get();
+
+            // A candidate is an exploratory start of CoolSolve alone: one whose iterates raise a CALL ERROR is
+            // dropped (the others go on); the first such message is reported if none solves
+            if (!r.fatalError.empty() && candidateFatal.empty())
+                candidateFatal = "multi-start candidate " + std::to_string(r.index + 1) + " (" + r.label + "): " + r.fatalError;
 
             if (r.converged) {
                 // Winner — write solution back, update trace/info, return.
@@ -2828,7 +2883,10 @@ SolverStatus Solver::solveBlockMultiStartParallel(
                   << " restart(s) [parallel]; restored best |F|=" << best.residualNorm
                   << " (candidate " << (best.index + 1) << ").\n";
     }
-    if (outErrorMessage) *outErrorMessage = firstAttemptError;
+    if (outErrorMessage) {
+        *outErrorMessage = firstAttemptError;
+        if (!candidateFatal.empty()) *outErrorMessage += "\n" + candidateFatal;
+    }
     return firstAttemptStatus;
 }
 

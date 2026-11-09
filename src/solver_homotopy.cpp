@@ -112,7 +112,7 @@ SolverStatus HomotopySolver::solve(Problem& problem,
             Eigen::VectorXd Factual(n);
             Eigen::MatrixXd Jd;
             try { problem.evaluate(x_trial, Factual, Jd, false); }
-            catch (...) { Factual.setConstant(1e30); }
+            catch (...) { rethrowIfFatalEvaluationError(); Factual.setConstant(1e30); }
             ti.residualNorm = Factual.lpNorm<Eigen::Infinity>();
             ti.stepNorm = dt;
             ti.lambda = t_new;
@@ -148,7 +148,7 @@ SolverStatus HomotopySolver::solve(Problem& problem,
                         return SolverStatus::Success;
                     }
                     x = x_save;  // restore if polish diverged
-                } catch (...) {}
+                } catch (...) { rethrowIfFatalEvaluationError(); }
 
                 // Homotopy reached t=1 but final solution isn't precise enough
                 // Return the best we have

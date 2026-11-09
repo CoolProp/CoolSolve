@@ -1650,6 +1650,7 @@ int startServer(const ServerOptions& options) {
                     // Verify solution: check for CoolProp errors in final values
                     // (catches unphysical inputs that were clamped during iteration)
                     bool solutionValid = success;
+                    std::string checkFatalError;   // a CALL ERROR reached by the check
                     if (runner.isSolveSuccess() && runner.isIRSuccess()) {
                         auto checkResult = checkSolution(
                             runner.getIR(),
@@ -1658,6 +1659,7 @@ int startServer(const ServerOptions& options) {
                             solverOpts.coolpropConfig,
                             1e-3,
                             &runner.getLookupTableStore());
+                        checkFatalError = checkResult.fatalError;
                         if (!checkResult.allSatisfied) {
                             solutionValid = false;
                             // Merge checker diagnostics into runner diagnostics
@@ -1687,7 +1689,9 @@ int startServer(const ServerOptions& options) {
                         // Override success to false if solution verification failed
                         resultJson["success"] = false;
                         resultJson["status"] = "SolutionCheckFailed";
-                        resultJson["errorMessage"] = "Solution verification failed: CoolProp evaluation errors in final solution";
+                        resultJson["errorMessage"] = checkFatalError.empty()
+                            ? "Solution verification failed: CoolProp evaluation errors in final solution"
+                            : checkFatalError;   // a CALL ERROR reached by the check
                     }
                     if (runner.isParseSuccess()) {
                         const auto& ir = runner.getIR();

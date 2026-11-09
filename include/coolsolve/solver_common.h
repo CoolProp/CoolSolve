@@ -209,11 +209,33 @@ struct SolverTrace;  // forward — full definition in solver.h
  *        that no solver strategy can recover from.
  *
  * Fatal errors include unsupported functions or unknown fluids, where
- * iterating with different values won't help.
+ * iterating with different values won't help, and a `CALL ERROR` of the model
+ * (EES halts the calculation as soon as any iterate reaches it; the message is
+ * "CALL ERROR: <text>", see ExpressionEvaluator::evaluateProcedureCall).
+ * A CoolProp failure is not fatal: it is recoverable (a penalty value).
  */
 inline bool isFatalEvaluationError(const std::string& what) {
     return what.find("Unknown or unsupported function") != std::string::npos
-        || what.find("Unknown fluid") != std::string::npos;
+        || what.find("Unknown fluid") != std::string::npos
+        || what.find("CALL ERROR: ") != std::string::npos;
+}
+
+/**
+ * @brief Rethrow the exception being handled if it is a fatal evaluation error.
+ *
+ * Call it first in every `catch` block that would otherwise treat an evaluation
+ * failure as a recoverable point (backtrack, shrink the step, try another
+ * start): a fatal error then leaves the solver as an exception, which
+ * `Solver::runSolverStrategy` turns into `SolverStatus::EvaluationError` with
+ * the message. Does nothing for any other exception.
+ */
+inline void rethrowIfFatalEvaluationError() {
+    try {
+        throw;
+    } catch (const std::exception& e) {
+        if (isFatalEvaluationError(e.what())) throw;
+    } catch (...) {
+    }
 }
 
 }  // namespace coolsolve

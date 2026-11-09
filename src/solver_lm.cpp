@@ -185,6 +185,7 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
                     }
                 }
             } catch (...) {
+                rethrowIfFatalEvaluationError();
                 // Perturbation failed — fall back to velocity-only step
             }
         }
@@ -199,6 +200,7 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
             problem.evaluate(y_new.cwiseProduct(scale), F_new, Jd, false);
             phi_new = 0.5 * F_new.squaredNorm();
         } catch (...) {
+            rethrowIfFatalEvaluationError();
             lambda *= options.lmLambdaIncrease;
             nu = 2.0;
             if (lambda > options.lmMaxLambda) {

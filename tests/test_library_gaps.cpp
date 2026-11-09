@@ -69,10 +69,12 @@ struct ModelRun {
 
 /// Write `code` to a temporary model file, solve it and verify the solution.
 /// `tables` maps a lookup-table name to its CSV text (written as `<model>-<name>.csv`);
-/// `initials`, when not empty, is the text of the model's `.initials` file (guess values).
+/// `initials`, when not empty, is the text of the model's `.initials` file (guess values);
+/// `configure`, when given, changes the solver options (tolerance 1e-9 otherwise) before the run.
 ModelRun runModel(const std::string& code,
                   const std::map<std::string, std::string>& tables = {},
-                  const std::string& initials = "") {
+                  const std::string& initials = "",
+                  const std::function<void(SolverOptions&)>& configure = {}) {
     static int counter = 0;
     const fs::path dir = fs::temp_directory_path() / "coolsolve_test_library_gaps";
     fs::create_directories(dir);
@@ -99,6 +101,7 @@ ModelRun runModel(const std::string& code,
     CoolSolveRunner runner(file.string());
     SolverOptions options;
     options.tolerance = 1e-9;
+    if (configure) configure(options);
     run.solveOk = runner.run(options);
     run.parseOk = runner.isParseSuccess();
     for (const auto& d : runner.getDiagnostics().items())
@@ -24078,3 +24081,559 @@ TEST_CASE("CS-BUG-NEWTON1D-BRACKET-COLLAPSE: a block that jumps without a root f
     CHECK(run.message.find("Block 0 (size 1, vars: x) failed") != std::string::npos);
     CHECK(run.message.find("F changes sign across a jump, not through a root") != std::string::npos);
 }
+
+// ============================================================================
+// CS-BUG-CALL-ERROR-ITERATE: a CALL ERROR reached by any iterate stops the calculation (EES help, ERROR procedure)
+// ============================================================================
+
+namespace {
+
+/// The reproducer of the register: x + f(x) = 12, f has a CALL ERROR below 2; the solution is x = 3.
+const char* const kGuardedFunction = R"(
+FUNCTION f(x)
+  IF (x < 2) THEN CALL ERROR('x too small XXXF2', x)
+  f = x^2
+END
+)";
+
+/// A block whose first Newton step leaves the guarded range: 10 ln(chk(x)) = 11 from x = 8 goes to 0.16,
+/// and the root is 3.004 (a model that solved before the fix, the error being recovered by backtracking).
+const char* const kGuardedLog = R"(
+FUNCTION chk(x)
+  IF (x < 2) THEN CALL ERROR('x too small XXXF2', x)
+  chk = x
+END
+)";
+
+/// The two-variable form of the same (y = x + 1 couples the two equations into one block).
+const char* const kGuardedLogPair = "10*ln(chk(x)) + 0.1*y = 11.4\nx - y = -1\n";
+
+/// Options that give one solver of the pipeline (the others are off, so that the solver itself is tested).
+std::function<void(SolverOptions&)> onlySolver(SolverStrategy strategy) {
+    return [strategy](SolverOptions& o) { o.solverPipeline = {strategy}; };
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: the classifier of fatal evaluation errors", "[library-gaps][call-error-iterate]") {
+    CHECK(isFatalEvaluationError("CALL ERROR: x too small 1.00"));
+    CHECK(isFatalEvaluationError("Block 0 failed: [Newton] CALL ERROR: x too small 1.00"));   // inside a longer message
+    CHECK(isFatalEvaluationError("Unknown fluid: Foo"));                                      // the existing ones
+    CHECK_FALSE(isFatalEvaluationError("CALL WARNING: x too small 1.00"));
+    CHECK_FALSE(isFatalEvaluationError("CoolProp error in enthalpy(): T out of range"));
+    CHECK_FALSE(isFatalEvaluationError("Division by zero"));
+    // rethrowIfFatalEvaluationError rethrows a fatal exception and swallows the others
+    const auto handle = [](const std::string& what) {
+        try {
+            throw std::runtime_error(what);
+        } catch (...) {
+            rethrowIfFatalEvaluationError();
+        }
+    };
+    CHECK_THROWS_WITH(handle("CALL ERROR: stop"), "CALL ERROR: stop");
+    CHECK_NOTHROW(handle("CoolProp error in enthalpy(): T out of range"));
+    CHECK_NOTHROW(handle("CALL WARNING: stop"));
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: reproducer of the register", "[library-gaps][call-error-iterate]") {
+    // The default guess x = 1 is below 2: EES stops with the message (it was SUCCESS, x = 3, after the
+    // iterate had been recovered by the solver)
+    auto run = runModel(std::string(kGuardedFunction) + "x + f(x) = 12\n");
+    CHECK_FALSE(run.solveOk);
+    INFO(run.message);
+    CHECK(run.message.find("Block 0 (size 1, vars: x) failed: EvaluationError") != std::string::npos);
+    CHECK(run.message.find("CALL ERROR: x too small 1.00") != std::string::npos);   // XXXF2 gives the value of the iterate
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: an ERROR in a PROCEDURE stops the calculation, with its message",
+          "[library-gaps][call-error-iterate]") {
+    auto run = runModel(R"(
+PROCEDURE p(x : y)
+  IF (x < 2) THEN CALL ERROR('p: x too small XXXF2', x)
+  y = x^2
+END
+CALL p(x : y)
+x + y = 12
+)");
+    CHECK_FALSE(run.solveOk);
+    INFO(run.message);
+    CHECK(run.message.find("CALL ERROR: p: x too small 1.00") != std::string::npos);
+
+    // without a message, EES writes a generic text that names the routine and the value
+    auto generic = runModel(R"(
+FUNCTION g(x)
+  IF (x < 2) THEN CALL ERROR(x)
+  g = x^2
+END
+x + g(x) = 12
+)");
+    CHECK_FALSE(generic.solveOk);
+    INFO(generic.message);
+    CHECK(generic.message.find("The value of the parameter is 1 in function g") != std::string::npos);
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: an iterate after the first one stops the calculation too (Newton1D)",
+          "[library-gaps][call-error-iterate]") {
+    const std::string code = std::string(kGuardedLog) + "10*ln(chk(x)) = 11\n";
+    // from x = 8 the first Newton step lands at 0.16: the solver does not backtrack, the error stops it
+    auto run = runModel(code, {}, "x = 8\n");
+    CHECK_FALSE(run.solveOk);
+    INFO(run.message);
+    CHECK(run.message.find("CALL ERROR: x too small 0.16") != std::string::npos);
+
+    // from a guess whose iterates all stay at 2 and above, the same model solves
+    auto fine = runModel(code, {}, "x = 3.5\n");
+    REQUIRE(fine.solveOk);
+    CHECK(fine.verified);
+    CHECK_THAT(fine["x"], WithinAbs(std::exp(1.1), 1e-7));
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: every solver of the N-D pipeline stops on a CALL ERROR",
+          "[library-gaps][call-error-iterate]") {
+    const std::string code = std::string(kGuardedLog) + kGuardedLogPair;
+    const std::string initials = "x = 8\ny = 9\n";
+
+    SECTION("with the guess that no iterate leaves the range, every solver solves the block") {
+        for (SolverStrategy strategy : {SolverStrategy::Newton, SolverStrategy::TrustRegion,
+                                        SolverStrategy::LevenbergMarquardt, SolverStrategy::Kinsol}) {
+            INFO("strategy " << strategyToString(strategy));
+            auto run = runModel(code, {}, "x = 3.5\ny = 4.5\n", onlySolver(strategy));
+            REQUIRE(run.solveOk);
+            CHECK(run.verified);
+        }
+    }
+
+    SECTION("each solver alone, from a guess whose first step leaves the range") {
+        for (SolverStrategy strategy : {SolverStrategy::Newton, SolverStrategy::TrustRegion,
+                                        SolverStrategy::LevenbergMarquardt, SolverStrategy::Kinsol,
+                                        SolverStrategy::BisectionND, SolverStrategy::Homotopy,
+                                        SolverStrategy::Partitioned}) {
+            INFO("strategy " << strategyToString(strategy));
+            auto run = runModel(code, {}, initials, [strategy](SolverOptions& o) {
+                o.solverPipeline = {strategy};
+                o.partitionedMinBlockSize = 1;
+            });
+            // a solver that never evaluates the guarded range (Partitioned) may still solve; none may
+            // report a solution reached through the error
+            if (run.solveOk) {
+                CHECK(run.verified);
+            } else {
+                INFO(run.message);
+                CHECK(run.message.find("CALL ERROR: x too small") != std::string::npos);
+            }
+        }
+    }
+
+    SECTION("the default pipeline stops, and does not fall through to the next solver") {
+        auto run = runModel(code, {}, initials, [](SolverOptions& o) {
+            o.solverPipeline = {SolverStrategy::Newton, SolverStrategy::TrustRegion, SolverStrategy::LevenbergMarquardt};
+        });
+        CHECK_FALSE(run.solveOk);
+        INFO(run.message);
+        CHECK(run.message.find("CALL ERROR: x too small") != std::string::npos);
+        CHECK(run.message.find("[TrustRegion]") == std::string::npos);   // the next solvers were not tried
+        CHECK(run.message.find("[LevenbergMarquardt]") == std::string::npos);
+    }
+
+    SECTION("the parallel pipeline") {
+        auto run = runModel(code, {}, initials, [](SolverOptions& o) {
+            o.pipelineMode = SolverPipelineMode::Parallel;
+            o.solverPipeline = {SolverStrategy::Newton, SolverStrategy::TrustRegion, SolverStrategy::LevenbergMarquardt};
+        });
+        CHECK_FALSE(run.solveOk);
+        INFO(run.message);
+        CHECK(run.message.find("CALL ERROR: x too small") != std::string::npos);
+    }
+
+    SECTION("tearing") {
+        auto run = runModel(code, {}, initials, [](SolverOptions& o) {
+            o.enableTearing = true;
+            o.tearingMinBlockSize = 2;
+        });
+        CHECK_FALSE(run.solveOk);
+        INFO(run.message);
+        CHECK(run.message.find("CALL ERROR: x too small") != std::string::npos);
+    }
+
+    SECTION("symbolic reduction") {
+        auto run = runModel(code, {}, initials, [](SolverOptions& o) { o.enableSymbolicReduction = true; });
+        CHECK_FALSE(run.solveOk);
+        INFO(run.message);
+        CHECK(run.message.find("CALL ERROR: x too small") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: a multi-start candidate that raises a CALL ERROR is dropped, the next is tried",
+          "[library-gaps][call-error-iterate]") {
+    // 1/x + 1/y = 2/0.3, x y = 0.09 (solution x = y = 0.3): the Jacobian at the default guess (1, 1) is singular, so the
+    // first attempt fails without a CALL ERROR and the multi-start runs. Its candidates are the guess x0.1, x0.3, x3, x10:
+    // the first starts at 0.1, inside the guarded range, the second at the solution.
+    const std::string code = R"(
+FUNCTION g(x)
+  IF (ABS(x - 0.1) < 0.02) THEN CALL ERROR('candidate at XXXF2', x)
+  g = x
+END
+1/g(x) + 1/y = 2/0.3
+x*y = 0.09
+)";
+    for (int cores : {1, 4}) {
+        INFO("multi-start cores " << cores);
+        auto run = runModel(code, {}, "", [cores](SolverOptions& o) {
+            o.solverPipeline = {SolverStrategy::Newton};
+            o.multiStartMode = MultiStartMode::Always;
+            o.multiStartNumCores = cores;
+        });
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);   // the solution check passes
+        CHECK_THAT(run["x"], WithinAbs(0.3, 1e-4));
+        CHECK_THAT(run["y"], WithinAbs(0.3, 1e-4));
+    }
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: a multi-start whose candidates all raise a CALL ERROR fails and says so",
+          "[library-gaps][call-error-iterate]") {
+    // the block 1/x + 1/y = 20, x y = 0.01 (solution 0.1), guarded at the start point of each candidate
+    // (0.1, 0.3, 3, 10): every candidate raises at its first evaluation; the first attempt from the guess (1, 1)
+    // never lands exactly on one (the windows are 1E-9 wide)
+    const std::string code = R"(
+FUNCTION g(x)
+  IF (ABS(x - 0.1) < 1e-9) THEN CALL ERROR('start point XXXF2', x)
+  IF (ABS(x - 0.3) < 1e-9) THEN CALL ERROR('start point XXXF2', x)
+  IF (ABS(x - 3) < 1e-9) THEN CALL ERROR('start point XXXF2', x)
+  IF (ABS(x - 10) < 1e-9) THEN CALL ERROR('start point XXXF2', x)
+  g = x
+END
+1/g(x) + 1/y = 20
+x*y = 0.01
+)";
+    for (int cores : {1, 4}) {
+        INFO("multi-start cores " << cores);
+        auto run = runModel(code, {}, "", [cores](SolverOptions& o) {
+            o.solverPipeline = {SolverStrategy::Newton};
+            o.multiStartMode = MultiStartMode::Always;
+            o.multiStartNumCores = cores;
+        });
+        CHECK_FALSE(run.solveOk);
+        INFO(run.message);
+        CHECK(run.message.find("Block 0 (size 2") != std::string::npos);
+        CHECK(run.message.find("multi-start candidate 1 (scale x0.1): CALL ERROR: start point 0.10") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: the CALL ERROR of the user's guess stops the run before any multi-start",
+          "[library-gaps][call-error-iterate]") {
+    const std::string code = std::string(kGuardedFunction) + "x + f(x) + y = 14\nx - y = 1\n";
+    auto run = runModel(code, {}, "", [](SolverOptions& o) {
+        o.multiStartMode = MultiStartMode::Always;
+    });
+    CHECK_FALSE(run.solveOk);
+    INFO(run.message);
+    CHECK(run.message.find("CALL ERROR: x too small 1.00") != std::string::npos);
+    CHECK(run.message.find("multi-start candidate") == std::string::npos);   // none was tried
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: a block that follows is not solved after the error",
+          "[library-gaps][call-error-iterate]") {
+    auto run = runModel(std::string(kGuardedFunction) + "x + f(x) = 12\nz = x + 1\n");
+    CHECK_FALSE(run.solveOk);
+    INFO(run.message);
+    CHECK(run.message.find("CALL ERROR: x too small 1.00") != std::string::npos);
+    CHECK(run.vars.empty());   // nothing is reported as a solution
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: an ERROR that no iterate reaches does not stop the calculation",
+          "[library-gaps][call-error-iterate]") {
+    // the guess x = 10 converges to 3 from above; the branch of the ERROR is never taken
+    auto run = runModel(std::string(kGuardedFunction) + "x + f(x) = 12\n", {}, "x = 10\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x"], WithinAbs(3.0, 1e-7));
+
+    // an ERROR in a branch of a block that is not evaluated at all
+    auto unused = runModel(R"(
+FUNCTION f(x)
+  IF (x < 0) THEN CALL ERROR('negative XXXF2', x)
+  f = x^2
+END
+x + f(x) = 12
+)");
+    REQUIRE(unused.solveOk);
+    CHECK_THAT(unused["x"], WithinAbs(3.0, 1e-7));
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: CALL WARNING at an early iterate is not an error",
+          "[library-gaps][call-error-iterate]") {
+    auto run = runModel(R"(
+FUNCTION f(x)
+  IF (x < 2) THEN CALL WARNING('x too small XXXF2', x)
+  f = x^2
+END
+x + f(x) = 12
+)");
+    REQUIRE(run.solveOk);   // the guess x = 1 passes through the warning
+    CHECK(run.verified);
+    CHECK_THAT(run["x"], WithinAbs(3.0, 1e-7));
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: a CoolProp failure at an early iterate stays recoverable",
+          "[library-gaps][call-error-iterate]") {
+    // T = -300 C is below absolute zero: CoolProp fails at the guess (penalty value), the solver recovers
+    auto run = runModel("h = enthalpy(Water, T=T, P=101325)\nh = 3.0e6\n", {}, "T = -300\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["h"], WithinAbs(3.0e6, 1e-3));
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: the solution check stops at a CALL ERROR", "[library-gaps][call-error-iterate]") {
+    const fs::path file = fs::temp_directory_path() / "coolsolve_test_library_gaps" / "call_error_check.eescode";
+    fs::create_directories(file.parent_path());
+    {
+        std::ofstream f(file);
+        f << kGuardedFunction << "x + f(x) = 12\ny = 2*x\n";
+    }
+    {
+        std::ofstream guess(file.parent_path() / "call_error_check.initials");
+        guess << "x = 10\n";   // the iterates stay above 2
+    }
+    CoolSolveRunner runner(file.string());
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    REQUIRE(runner.run(options));
+    fs::remove(file);
+    fs::remove(file.parent_path() / "call_error_check.initials");
+
+    auto variables = runner.getSolveResult().variables;
+    const auto atSolution = checkSolution(runner.getIR(), variables, runner.getSolveResult().stringVariables,
+                                          options.coolpropConfig, 1e-3, &runner.getLookupTableStore());
+    CHECK(atSolution.allSatisfied);
+    CHECK(atSolution.fatalError.empty());
+
+    variables["x"] = 1.0;   // a point of the branch of the CALL ERROR
+    const auto atError = checkSolution(runner.getIR(), variables, runner.getSolveResult().stringVariables,
+                                       options.coolpropConfig, 1e-3, &runner.getLookupTableStore());
+    CHECK_FALSE(atError.allSatisfied);
+    CHECK(atError.fatalError.find("CALL ERROR: x too small 1.00") != std::string::npos);
+    CHECK(atError.violatedCount == 1);   // the check stopped: y = 2*x was not checked
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: a fatal error at any evaluation stops each solver at that evaluation",
+          "[library-gaps][call-error-iterate]") {
+    // x0^2 + x1^2 = 4, x0 x1 = 1 from (3, 2). The k-th evaluation (of any kind: Jacobian, line search, probe,
+    // homotopy step...) raises `what`; k runs over every evaluation of the solver until it needs fewer.
+    constexpr int kMaxEvaluation = 400;
+    for (SolverStrategy strategy : {SolverStrategy::Newton, SolverStrategy::TrustRegion,
+                                    SolverStrategy::LevenbergMarquardt, SolverStrategy::Kinsol,
+                                    SolverStrategy::BisectionND, SolverStrategy::Homotopy}) {
+        INFO("strategy " << strategyToString(strategy));
+        int fatalStops = 0;
+        for (int k = 1; k <= kMaxEvaluation; ++k) {
+            for (const bool fatal : {true, false}) {
+                INFO("evaluation " << k << (fatal ? ", CALL ERROR" : ", CoolProp-like failure"));
+                int evaluations = 0;
+                NonLinearSolver::Problem problem;
+                problem.size = 2;
+                problem.evaluate = [&](const Eigen::VectorXd& x, Eigen::VectorXd& F, Eigen::MatrixXd& J, bool jac) {
+                    if (++evaluations == k)
+                        throw std::runtime_error(fatal ? "CALL ERROR: stop at the iterate"
+                                                       : "CoolProp error in enthalpy(): out of range");
+                    F.resize(2);
+                    F(0) = x(0) * x(0) + x(1) * x(1) - 4.0;
+                    F(1) = x(0) * x(1) - 1.0;
+                    if (jac) {
+                        J.resize(2, 2);
+                        J << 2.0 * x(0), 2.0 * x(1), x(1), x(0);
+                    }
+                };
+                SolverOptions options;
+                options.tolerance = 1e-10;
+                Eigen::VectorXd x(2);
+                x << 3.0, 2.0;
+                std::string detail;
+                std::string thrown;
+                SolverStatus status = SolverStatus::InvalidInput;
+                try {
+                    status = createSolver(strategy)->solve(problem, x, options, nullptr, &detail);
+                } catch (const std::exception& e) {
+                    thrown = e.what();
+                }
+                if (evaluations < k) break;   // the solver needed fewer than k evaluations: the error was not reached
+                if (fatal) {
+                    // the solver ends at the evaluation that raised the error: an exception or an EvaluationError
+                    CHECK(evaluations == k);
+                    const bool stopped = !thrown.empty() ? isFatalEvaluationError(thrown)
+                                                         : (status == SolverStatus::EvaluationError &&
+                                                            isFatalEvaluationError(detail));
+                    CHECK(stopped);
+                    if (stopped) ++fatalStops;
+                } else {
+                    // a recoverable failure never leaves the solver as a CALL ERROR
+                    CHECK_FALSE(isFatalEvaluationError(thrown));
+                    CHECK_FALSE(isFatalEvaluationError(detail));
+                }
+            }
+        }
+        CHECK(fatalStops >= 3);   // the first evaluations of every solver were exercised
+    }
+}
+
+namespace {
+
+/// Run Newton1D on `fn` from x = 100, the `k`-th evaluation raising `what`; returns what the solver did.
+struct Newton1DInjection {
+    int evaluations = 0;
+    SolverStatus status = SolverStatus::InvalidInput;
+    std::string thrown;    ///< the exception that left the solver
+    std::string detail;    ///< its error message
+    double x = 100.0;
+    bool stoppedFatal() const {
+        return !thrown.empty() ? isFatalEvaluationError(thrown)
+                               : (status == SolverStatus::EvaluationError && isFatalEvaluationError(detail));
+    }
+};
+
+Newton1DInjection runNewton1D(const std::function<std::pair<double, double>(double)>& fn, int k, const char* what,
+                              std::vector<double>* visited = nullptr) {
+    SolverOptions options;
+    options.tolerance = 1e-9;
+    Newton1DInjection out;
+    Newton1DSolver::Eval1D eval = [&](double x) {
+        ++out.evaluations;
+        if (visited) visited->push_back(x);
+        if (out.evaluations == k) throw std::runtime_error(what);
+        return fn(x);
+    };
+    try {
+        out.status = Newton1DSolver::solve(eval, out.x, {}, options, nullptr, &out.detail);
+    } catch (const std::exception& e) {
+        out.thrown = e.what();
+    }
+    return out;
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: Newton1D stops at a CALL ERROR of its iterates (phases 1, 3, 4)",
+          "[library-gaps][call-error-iterate]") {
+    using Fn = std::function<std::pair<double, double>(double)>;
+    // Phase 1 and the bisection of its bracket (Phase 3): F = cbrt(x - 7) and F = x - 3E5 (no derivative) from x = 100
+    const std::vector<std::pair<std::string, Fn>> bracketed = {
+        {"cbrt(x - 7)", [](double x) { const double c = std::cbrt(x - 7.0);
+                                       return std::make_pair(c, c == 0.0 ? 1e300 : 1.0 / (3.0 * c * c)); }},
+        {"x - 3E5", [](double x) { return std::make_pair(x - 3e5, 0.0); }},
+    };
+    for (const auto& [label, fn] : bracketed) {
+        INFO(label);
+        int fatalStops = 0;
+        for (int k = 1; k <= 200; ++k) {
+            INFO("evaluation " << k);
+            const auto fatal = runNewton1D(fn, k, "CALL ERROR: stop at the iterate");
+            if (fatal.evaluations < k) break;   // the solver needed fewer evaluations
+            CHECK(fatal.evaluations == k);       // it stopped at the evaluation that raised the error
+            CHECK(fatal.stoppedFatal());
+            fatalStops += fatal.stoppedFatal();
+            // a failure that is not a CALL ERROR never leaves the solver as one
+            const auto recoverable = runNewton1D(fn, k, "CoolProp error in enthalpy(): out of range");
+            CHECK_FALSE(isFatalEvaluationError(recoverable.thrown));
+            CHECK_FALSE(isFatalEvaluationError(recoverable.detail));
+        }
+        CHECK(fatalStops >= 10);
+    }
+
+    // Phase 4 (the polish from the best probe): F = x^2 + 1 has no root, the probes (56 of them, from x = 0.0) are
+    // explorations, every other evaluation is an iterate
+    const Fn noRoot = [](double x) { return std::make_pair(x * x + 1.0, 2.0 * x); };
+    std::vector<double> visited;
+    const auto baseline = runNewton1D(noRoot, 0, "", &visited);
+    REQUIRE(baseline.status != SolverStatus::Success);
+    size_t firstProbe = 0;
+    while (firstProbe < visited.size() && visited[firstProbe] != 0.0) ++firstProbe;
+    REQUIRE(firstProbe + 56 < visited.size());   // and the polish follows the probes
+    int polishStops = 0;
+    for (int k = 1; k <= baseline.evaluations; ++k) {
+        INFO("evaluation " << k);
+        const auto fatal = runNewton1D(noRoot, k, "CALL ERROR: stop at the iterate");
+        const bool probe = k > static_cast<int>(firstProbe) && k <= static_cast<int>(firstProbe) + 56;
+        if (probe) {
+            CHECK_FALSE(fatal.stoppedFatal());   // Phase 2: the probe is invalid, the exploration goes on
+        } else {
+            CHECK(fatal.evaluations == k);
+            CHECK(fatal.stoppedFatal());
+            if (k > static_cast<int>(firstProbe) + 56) polishStops += fatal.stoppedFatal();
+        }
+    }
+    CHECK(polishStops >= 1);   // Phase 4 was reached
+}
+
+TEST_CASE("CS-BUG-CALL-ERROR-ITERATE: Newton1D skips a probe or an exploratory bracket that raises a CALL ERROR",
+          "[library-gaps][call-error-iterate]") {
+    SolverOptions options;
+    options.tolerance = 1e-9;
+
+    SECTION("a probe that raises is invalid, another probe solves") {
+        // F = 1 above 3 (no derivative: Phase 1 explores outwards and finds no bracket), x^2 - 4 below; the probes
+        // 0, +-0.5, +-1 are guarded, the probe 2 is the root
+        Newton1DSolver::Eval1D eval = [](double x) {
+            if (std::abs(x) < 1.5) throw std::runtime_error("CALL ERROR: probe at the guard");
+            return x > 3.0 ? std::make_pair(1.0, 0.0) : std::make_pair(x * x - 4.0, 2.0 * x);
+        };
+        double x = 100.0;
+        REQUIRE(Newton1DSolver::solve(eval, x, {}, options) == SolverStatus::Success);
+        CHECK_THAT(std::abs(x), WithinAbs(2.0, 1e-8));
+    }
+
+    SECTION("a bracket of the probes whose bisection raises is dropped, the next one is tried") {
+        // F = (x - 7)(x + 13), without derivative: the probes bracket 7 in [5, 10] and -13 in [-20, -10]; the bracket
+        // [5, 10] is tried first and its bisection reaches the guard (5.5, 6.5) at 6.25
+        Newton1DSolver::Eval1D eval = [](double x) {
+            if (x > 5.5 && x < 6.5) throw std::runtime_error("CALL ERROR: bisection at the guard");
+            return std::make_pair((x - 7.0) * (x + 13.0), 0.0);
+        };
+        double x = 100.0;
+        REQUIRE(Newton1DSolver::solve(eval, x, {}, options) == SolverStatus::Success);
+        CHECK_THAT(x, WithinAbs(-13.0, 1e-6));
+    }
+
+    SECTION("the same guard at an iterate from the guess is fatal") {
+        // started at 6, inside the guard (5.5, 6.5): the iterate of Phase 1 raises
+        Newton1DSolver::Eval1D eval = [](double x) {
+            if (x > 5.5 && x < 6.5) throw std::runtime_error("CALL ERROR: iterate at the guard");
+            return std::make_pair((x - 7.0) * (x + 13.0), 2.0 * x + 6.0);
+        };
+        double x = 6.0;
+        std::string message;
+        CHECK(Newton1DSolver::solve(eval, x, {}, options, nullptr, &message) == SolverStatus::EvaluationError);
+        CHECK(isFatalEvaluationError(message));
+    }
+
+    SECTION("solveSimple (the Newton1D of the symbolic reduction) stops at an iterate") {
+        int evaluations = 0;
+        Newton1DSolver::Eval1D eval = [&](double x) {
+            if (++evaluations == 3) throw std::runtime_error("CALL ERROR: stop at the iterate");
+            return std::make_pair(x * x - 9.0, 2.0 * x);
+        };
+        double x = 100.0;
+        CHECK_THROWS_WITH(Newton1DSolver::solveSimple(eval, x, options), "CALL ERROR: stop at the iterate");
+        CHECK(evaluations == 3);
+    }
+
+    SECTION("in a model") {
+        // the probes 0, 0.5, 1 (and the negative ones) raise; the root is 2 (also -2)
+        auto run = runModel(R"(
+FUNCTION h(x)
+  IF (ABS(x) < 1.5) THEN CALL ERROR('probe at XXXF2', x)
+  IF (x > 3) THEN
+    h = 1
+  ELSE
+    h = x^2 - 4
+  ENDIF
+END
+h(x) = 0
+)", {}, "x = 100\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);   // the solution check passes
+        CHECK_THAT(std::abs(run["x"]), WithinAbs(2.0, 1e-7));
+    }
+}
+

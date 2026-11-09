@@ -92,6 +92,7 @@ double KINSOLSolver::lineSearch(Problem& problem,
         try {
             problem.evaluate(xTrial.cwiseProduct(scale), FTrial, Jdummy, false);
         } catch (const std::exception&) {
+            rethrowIfFatalEvaluationError();
             // Evaluation failed (e.g. CoolProp penalty region): shrink and retry.
             lambdaPrev = lambda;
             havePrev = true;
@@ -451,6 +452,7 @@ SolverStatus KINSOLSolver::solveFixedPoint(Problem& problem, Eigen::VectorXd& y,
         try {
             problem.evaluate(xu, Fv, Jdummy, false);
         } catch (const std::exception&) {
+            rethrowIfFatalEvaluationError();
             return false;
         }
         resNorm = weightedResidualNorm(Fv, problem.residualScale, options.tolerance);
