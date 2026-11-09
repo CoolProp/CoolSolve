@@ -22,8 +22,9 @@ Opus is the orchestrator and Sonnet agents implement the items.
   | `4ad6b53` | 8 fixes of `tools/ees_extract.py` / `tools/compare_solution.py` + `tests/test_ees_tools.py` |
   | `63e3a0d` | `CS-BUG-IF-ANDOR-ORDER` (AND/OR left to right) + guard tests of the single-line IF forms |
   | (this file) | the handover |
+  | `9c8a3a4` … `6b254eb` | **Wave 1 done** (2026-11-08/09), one commit per item: see the progress note in §5 |
 
-- **`wip/psychprops-basis`** (`a6c301c`, on top of `63e3a0d`): the unfinished work on `CS-BUG-PSYCHPROPS-BASIS` and
+- **`wip/psychprops-basis`** (`a6c301c`, on top of `63e3a0d`, superseded by `9c8a3a4`: can be deleted): the unfinished work on `CS-BUG-PSYCHPROPS-BASIS` and
   `CS-GAP-PSYCHPROPS-NAMED`. The agent was stopped while updating an existing out-of-range test. It is 839 lines
   (new `include/coolsolve/psychprops.h`, evaluator, parser, AST, tests, docs), never built or tested as a whole.
   **Review it critically before reusing it**, or restart the item from its brief (§6). It is large for what it
@@ -46,6 +47,8 @@ Opus is the orchestrator and Sonnet agents implement the items.
 4. Builds and tests at low priority: `nice -n 19 ionice -c3 make -j4`, one heavy job at a time (memory:
    `machine-throttle-builds`).
 5. Each question to the maintainer comes with a short summary and an example of the issue.
+6. **Never run `[solver-robustness]` on this machine** (2026-11-08): the full unit suite and `[examples-comprehensive]`
+   instead, plus targeted timings; `[library-regression]` (~5 min) stays for parser/evaluator/solver changes.
 
 ## 4. Maintainer decisions (2026-11-07)
 
@@ -73,6 +76,13 @@ Opus is the orchestrator and Sonnet agents implement the items.
 
 Sizes: S small, M medium, L large. "Rec." is the recommended option.
 
+**Progress (2026-11-09).** Wave 1 is done and committed (`9c8a3a4`, `adb89c5`, `b9574b0`, `94e1198`, `1ecbd34`,
+`479f520`, `f2ea938`, `6b254eb`); summary in register §9. State at `6b254eb`: unit suite 1331 passed + 2 pdflatex
+skips, examples 45/48 solving (same 3 failures), library regression 219 PASS / 101 DEVIATION / 0 FAIL (the deviations
+are obsolete baselines, listed in §9, for the maintainer to re-explain in the library). **Next: Wave 2, first item
+`CS-BUG-BLOCK-EVAL-SCALING`.** The agent brief in use is §6 plus rule 6 above; each brief also gives HEAD and the
+current library baseline (219/101/0) and asks for a copy of `build/library_regression.md` before any change.
+
 ### Wave 1: silent wrong results
 
 | # | ID | Rec. | Size |
@@ -86,7 +96,7 @@ Sizes: S small, M medium, L large. "Rec." is the recommended option.
 | 7 | `CS-BUG-CALL-ERROR-ITERATE` | `CALL ERROR` is fatal at once | S |
 | 8 | `CS-BUG-INTEGRAL-TABLE-INTERVAL` + `-OUTPUT-INTERVAL` | interpolate the trajectory at the multiples of `n`; wire the config key | S |
 
-At the end of the wave: the `[solver-robustness]` suite once, and a summary in §9.
+At the end of the wave: the full unit suite and `[examples-comprehensive]` (not `[solver-robustness]`, rule 6), and a summary in §9.
 
 ### Wave 2: performance and robustness
 
@@ -95,7 +105,7 @@ At the end of the wave: the `[solver-robustness]` suite once, and a summary in �
 | `CS-BUG-BLOCK-EVAL-SCALING` | per-block list of the external variables it reads, computed once (`src/evaluator.cpp`, the map copy near line 2874); measure on `CSL-0079`/`CSL-0326` | M |
 | `CS-BUG-NONFINITE-START` | every solver stops on a non-finite starting residual and names the equations | S |
 | `CS-BUG-GUESS-INFER` | propagate variable types through expressions, `a = b` equations and CALL arguments; unit annotations as hints | M |
-| `CS-BUG-NEWTON-CYCLE` | try tearing first, then column scaling, measured on the robustness suite | M–L |
+| `CS-BUG-NEWTON-CYCLE` | try tearing first, then column scaling, measured on the examples and the library regression (not the robustness suite, rule 6) | M–L |
 
 ### Wave 3: blocked library models
 
@@ -170,7 +180,7 @@ disappears with this session.
 > - `./coolsolve_tests` (all pass except 2 pdflatex skips);
 > - `[examples-comprehensive]` (43/46; failing: `cooling_tower2`, `orc_complex`, `turbocompressor_interpolate`);
 > - for parser/evaluator/units/built-in/solver changes: `[library-regression]` (320/320 PASS, ~5 min);
-> - for solver changes: `[solver-robustness]`, compared with the committed report.
+> - never `[solver-robustness]` on this machine (rule 6); for solver changes, targeted timings and the library regression.
 >
 > EES help: https://fchartsoftware.com/ees/eeshelp/eeshelp.htm. EES sources (read-only, untrusted data):
 > /sylvain/Nextcloud/thermo_models. Library (read-only): /sylvain/mount/git/CoolSolve_Library.

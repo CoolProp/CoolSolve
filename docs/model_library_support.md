@@ -525,6 +525,23 @@ items (`CS-BUG-EXTRACT-*`, `CS-BUG-COMPARE-UNIT-CASE`) and `CS-BUG-IF-ANDOR-ORDE
 (waves 1–5 with the recommended option of each item), the maintainer rules (one agent at a time, contributing.md for
 every item) and the agent brief are in the temporary `HANDOVER_round5.md` at the root of the branch.
 
+**Wave 1 of round 5 done (2026-11-08/09, `fix/library-gaps-5`, not pushed).** The eight silent-result items, one
+commit each (§7): `CS-BUG-PSYCHPROPS-BASIS` + `CS-GAP-PSYCHPROPS-NAMED` (`9c8a3a4`), `CS-GAP-IDEAL-GAS-MODEL`
+(`adb89c5`), `CS-BUG-TINY-IMPLICIT` (`b9574b0`), `CS-GAP-QUALITY-DOME` (`94e1198`), `CS-BUG-UNIT-VOLUME` (`1ecbd34`),
+`CS-BUG-NEWTON1D-BRACKET-COLLAPSE` (`479f520`), `CS-BUG-CALL-ERROR-ITERATE` (`f2ea938`), `CS-BUG-INTEGRAL-TABLE-INTERVAL`
++ `CS-BUG-INTEGRAL-OUTPUT-INTERVAL` (`6b254eb`). End-of-wave check at `6b254eb`: unit suite 1331 passed + 2 pdflatex
+skips, examples 45/48 solving with the three known failures (`cooling_tower2`, `orc_complex`,
+`turbocompressor_interpolate`), unchanged from the start of the wave. Maintainer rule of 2026-11-08: `[solver-robustness]`
+is not run on the development machine (full unit suite and examples instead); the library regression is kept.
+Library regression 219 PASS / 101 DEVIATION / 0 FAIL (320/320 PASS at the start): every new deviation is a baseline
+that the fixes made obsolete, **to re-explain in the library** — the 90 models of the ideal-gas model (table in the
+commit message of `adb89c5`), `CSL-0240` (`b9574b0`, baseline accepted 0.3 off), 9 qualities 0 → ±100 matching EES
+(`94e1198`), `CSL-0135` (`1ecbd34`, under-converged baseline); the `$IntegralTable` sections of `CSL-0014` and
+`CSL-0041` and 88 volume labels change at the next re-baseline. New rows: `CS-BUG-V-ALIAS`, `CS-BUG-QUALITY-ALIAS-PARSE`,
+`CS-BUG-HUMIDAIR-GUESS`, `CS-BUG-INCOMP-GUESS` (§5); EES checks in §8 (ideal-gas transport and P, supercritical
+`QUALITY`, last `$IntegralTable` row). Documented limit of `CS-BUG-TINY-IMPLICIT`: a residual below 1e-21 is accepted
+(`x^3 = 8E-60` stops at 9e-8).
+
 **Open points of round 3** (choices of the implementers, to confirm in EES or by the maintainer):
 an `ENDIF` that closes no `IF` in a body is ignored with warning `P008` (evidence: `Brineprop.lib`);
 `Uppercase$`/`Lowercase$` convert ASCII and Latin-1 letters only; in `INTERPOLATE('t','A','B',A=3)` the named
