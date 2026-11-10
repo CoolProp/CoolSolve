@@ -296,12 +296,12 @@ output, and limitations.
 
 ### 6.1 Evaluation overhead and time marching (November 2026)
 
-**Steps 1 to 6 are done.** Steps 1 to 4 are in `main` (`749e577`,
-`7035305`) and reviewed: results and review below. On the branch
-`perf/slots-bdf`, for review: the check equations of the march (the one
-defect of the review, `f00c581`), step 5 (evaluation by slots, `1348da0`)
-and step 6 (BDF, item 1 of §6.2, `f1e8e28`); their results follow the
-specification of each step. Before this work one algebraic solve cost about
+**Steps 1 to 6 are done, reviewed and in `main`**: steps 1 to 4 (`749e577`,
+`7035305`), the check equations of the march (the one defect of their
+review, `f00c581`), step 5 (evaluation by slots, `1348da0`) and step 6 (BDF,
+item 1 of §6.2, `f1e8e28`). The results of each step follow its
+specification, the two reviews follow the results; what the second review
+leaves open is in §6.2 (items 3 to 6). Before this work one algebraic solve cost about
 0.21 µs × blocks × variables whatever the equations contained, and a dynamic
 model paid it four times per RK4 step: the greenhouse models went from 141 s
 and 459 s to 0.57 s and 0.94 s with RK4, 0.12 s and 0.15 s with BDF at
@@ -677,8 +677,9 @@ hourly rows; in brackets the measurement of scipy's `BDF` above:
   20 to 30% fewer evaluations than scipy at the same accuracy: the Jacobian
   is computed without scipy's second evaluation of its columns whose
   difference is too small, and the matrix is factorised again after every
-  change of step. At 1e-6 the run needs `integralMaxSteps` above 1 000 (the
-  budget is 4 000 attempted steps; it stops at 86% of the interval).
+  change of step. At 1e-6 the run took `integralMaxSteps` above 1 000 (the
+  budget was 4 000 attempted steps; it stopped at 86% of the interval) until
+  the review below made the budget follow the step of the model.
 - A row between two steps is solved at the states of the interpolant of the
   method (`Integrator::denseOutput`): with steps of 10 to 40 minutes, a
   linear interpolation of the rows of the steps would cost the accuracy that
@@ -689,8 +690,10 @@ hourly rows; in brackets the measurement of scipy's `BDF` above:
   does not let it converge: at t = 229 620 s of the pipe model the vents
   start to open between the predictor and the solution (the kink of
   `u_ven = min(max(...), 0), 1)`), and the iteration with the slope of the
-  closed vents oscillates. Its tables are those of `7035305` at the 6 digits
-  of the CSV, 11.96 → 0.55 s (climate) and 32.65 → 0.83 s (pipe), 3.5 to 3.9
+  closed vents oscillates. Its tables are those of `7035305` within 6e-6 of
+  the largest value of each column (the last digit of some values of the
+  CSV: the iteration now stops at the weighted test, not at |G| < 1e-12),
+  11.96 → 0.55 s (climate) and 32.65 → 0.83 s (pipe), 3.5 to 3.9
   evaluations per step.
 - The cause on the two engine models: the intake flow
   `IF(p - p_out, 0, m_dot)` jumps with the pressure, a state, which starts at
@@ -709,11 +712,71 @@ hourly rows; in brackets the measurement of scipy's `BDF` above:
   it, a BDF row is the model at that time. The two ice storage tanks start
   exactly on the phase boundary: the derivative jumps at t = 0⁺ and the
   heat discharged is a state that starts at 0, so the relative error of the
-  first step does not decrease with the step. RK45 fails on
-  `examples/ice_storage_tank` at the default tolerance too (both binaries);
-  the library variant passes with RK45 at 1e-6 and with BDF at 1e-4.
+  first step does not decrease with the step. They failed at the default
+  tolerance, as `examples/ice_storage_tank` with RK45 on both binaries,
+  until the review below changed the minimum step.
 - The 417 `.eescode` files give the outputs of step 5 (none uses BDF or
   `EulerImplicit`); the 1368 test cases pass.
+
+#### Review of steps 5 and 6
+
+Binaries of `7035305` (`main` before the branch) and of the branch, on the
+418 `.eescode` files of the library and of `examples/` and on the 19 dynamic
+models with each method.
+
+- **No regression at the default settings.** The 418 models give the same
+  `.sol`, `-integral.csv`, JSON, exit code and messages (381 succeed, 37 fail
+  alike; 301 s → 289 s in total). The robustness matrix (30 solver
+  configurations × 48 examples) is that of
+  `examples/solver_robustness_report.md`. The dynamic models are the same
+  with `EulerExplicit` and `RK45`. Read line by line, the slots, the operator
+  codes, the configuration by reference and the fast path of the explicit
+  blocks keep the semantics of the evaluation by names, and the BDF is the
+  algorithm of scipy.
+- **`EulerImplicit` changes its results at the level of its tolerance**, as
+  specified (weighted test): at most 6e-6 of the largest value of a column,
+  far below the error of the method, for runs 10 to 40 times shorter. It
+  stops on the two engine models as on `main`.
+- **Defect 1, the budget of the adaptive methods ignored the step of the
+  model.** BDF at the default tolerances stopped at 86% and 73% of the
+  interval of the two greenhouse models (4 000 attempted steps, where their
+  own steps give 4 320 and 8 640 RK4 steps); RK45 stopped on the pipe model,
+  on `main` too. The budget is now 4 attempted steps for each of
+  `integralMaxSteps`, or for each of the steps of the step of the model when
+  there are more.
+- **Defect 2, the automatic minimum step was 1e-9 of the interval.**
+  `examples/ice_storage_tank` needs a first step of 7.6e-10 s (BDF) out of
+  50 000 s, and the driver raised to that minimum the step that follows the
+  first one, which BDF chooses. It is now the resolution of the integration variable (ten times
+  the spacing of the floating-point numbers at `t`, the rule of scipy).
+  `examples/ice_storage_tank` passes with BDF (286 steps, 235 rejected,
+  0.03 s) and RK45 (24 steps, 134 rejected), the library variant with both.
+- **What remains: the two engine models with an implicit method.** Their
+  trajectory stays on the switch of the intake (a sliding mode): no implicit
+  step has a solution there, and accepting an iterate that did not converge
+  was the silent error that step 4a removed (`EulerImplicit` before it: 30 s
+  and a heat to the walls 16% off the RK4 value). BDF stops in 0.02 s with a message
+  that says so. RK4 steps across the switch; RK45 follows it with very short
+  steps and completes with `integralMaxSteps = 50000` (9 s). The messages and
+  the documentation now say this instead of advising RK45.
+- **With these two corrections BDF at the default tolerances runs every
+  dynamic model that RK4 runs, except the two engine models.** Largest
+  difference of a temperature of the table with a fine RK4 run (a quarter of
+  the step; a tenth for the building), the three methods at their defaults:
+
+  | Model | RK4 | RK45 | BDF |
+  |---|---|---|---|
+  | `greenhouse_climate_dynamic` | 0.003 K, 17 280 evaluations | 0.005 K, 26 425 | 0.0005 K, 10 696 |
+  | `greenhouse_heating_pipe_dynamic` | 0.018 K, 34 560 | 0.011 K, 39 088 | 0.0005 K, 13 449 |
+  | `building_rc_network` (and `_3r2c`) | 0.011 K | 0.010 K | 0.0005 K |
+  | `dhw_tank_dynamic` | 0.0007 K | 0.14 K | 0.0004 K |
+
+  On the ice tank of the library the largest difference of a column, in
+  parts of its largest value, is 7e-4 (RK4), 8e-5 (BDF) and 7e-2 (RK45, for
+  the reason of item 3 of §6.2); the final values of the other models agree
+  within 2e-5 between BDF and RK4.
+- Tests: each defect has a test that fails on the driver before the
+  correction (`tests/test_integrator_bdf.cpp`); the 1369 test cases pass.
 
 #### Acceptance
 
@@ -735,9 +798,9 @@ hourly rows; in brackets the measurement of scipy's `BDF` above:
   the binaries before and after (as in the review).
 - Step 6: a step whose iteration does not converge is never accepted; the
   dynamic models of the library give their RK4 tables within the tolerance
-  asked. Met, except where a right-hand side jumps with a state (the engine
-  models: no implicit solution) or at the initial point (the ice tanks: as
-  RK45), see the results of step 6.
+  asked. Met, except where the trajectory stays on a jump of the right-hand
+  side with a state (the engine models: no implicit solution), see the
+  review of steps 5 and 6.
 - To measure again: `perf record --call-graph dwarf` on the short
   models (the stacks need DWARF unwinding in a Release build), and the
   block evaluation count and time of `profiling.md` (`-d`).
@@ -750,10 +813,14 @@ Items are listed by priority. Each is independent.
 |---|-------------|-----------------|------------------|
 | 1 | ~~**BDF / DASSL-style stiff variable-step integrator**~~ | Done: `integralMethod = BDF`, §6.1 step 6 | – |
 | 2 | **Sparse factorization of the Jacobian of large blocks** | `thermosyphon_hx`, the slowest model of the library (61 s), gains nothing from §6.1: 95% of its run is the dense `ColPivHouseholderQR` of the 3599 × 3599 Jacobian of one block in `NewtonSolver::solve` (6 iterations of 10 s; the 3332 block evaluations of the run take 3 s). This Jacobian has 19 074 structural non-zeros (5.3 per row), and a sparse LU of a matrix with its pattern takes 15 ms (SuperLU, 42 351 non-zeros in L + U). Eigen has `SparseLU`: use it above a block size to be measured, with the dense pivoted QR as fallback when it finds the matrix singular | 3–5 days, plus the robustness re-validation |
-| 3 | **Pantelides-style index reduction** | Enable fully-implicit (high-index) DAE models in the dynamic solver. Currently high-index systems are detected and rejected; dummy-derivative index reduction would make them solvable | 2–3 weeks |
-| 4 | **Hybrd-native `O(n²)` triangular solve for TrustRegion Broyden mode** | Realize the speedup §4.6 found missing: solve directly against the maintained `R` instead of reconstructing dense `J` and re-running `ColPivHouseholderQR` every iteration | 3–5 days, plus a careful robustness re-validation (loses rank-revealing pivoting, reopening the numerical-instability concern) |
-| 5 | **Pseudo-arclength continuation in Homotopy** | Pass turning points (where the homotopy path folds back in `t`), a known failure mode for hard thermodynamic models with non-monotonic `t`-paths. Keller (1977) augmented system with the Tier-1 hybrd-style TrustRegion as corrector | 1–2 weeks |
-| 6 | **Dynamic column scaling in Newton and LM** | Extend the `diag ← max(diag, ‖J[:,j]‖)` rule (already in TR) to Newton and LM via a shared `updateScalingFactors()` helper in `solver_common.h`. Gated by a renamed `dynamicScaling` option | 3–5 days |
+| 3 | **Rows of RK45 and RK4 at the states of an interpolant** | A row between two steps is the linear interpolation of the rows of the steps around it, for every method but BDF. With RK45, whose steps are long, `dhw_tank_dynamic` is 0.14 K off on the tank temperature (BDF: 0.0004 K) and its tap power 87% of its largest value off at one row; the ice tank of the library 7% on `T_w`. With RK4 when the rows are not at the steps (`building_rc_network`: steps of 604.8 s, rows every 600 s), `Q_dot_capa_in` is 12% of its largest value off where the occupancy switches. Give RK45 the continuous extension of Dormand and Prince (from the stages of the step) and the fixed-step methods the cubic Hermite interpolant (y and f at both ends) through `Integrator::denseOutput`: the driver already solves the rows at the interpolated states | 2–3 days |
+| 4 | **Switches on a state** | Where the trajectory stays on a jump of the right-hand side (the intake of the two engine models) an implicit method stops, RK45 takes 13 000 steps and RK4 alternates with an error of the order of its step. A start on a switch costs rejected steps (`examples/ice_storage_tank`: 235 of 521 with BDF). Locate the change of sign of the condition of an `IF` on a state between two steps (a root on the interpolant) and restart the method there; on a surface that holds the trajectory, integrate with the flow that keeps it there, or report the surface. To be measured first: how many models switch on a state | 1–2 weeks |
+| 5 | **Jacobian of the right-hand side from the derivatives of the algebraic solve** | BDF and `EulerImplicit` difference the right-hand side: n + 1 algebraic solves per Jacobian for n states. The blocks have analytic derivatives: the Jacobian of f follows from them by the implicit function theorem. To be measured first: the share of the Jacobians in the evaluations of BDF, which `integral.md` counts with the steps | 1 week |
+| 6 | **BDF for a model without a step** | At the default tolerances BDF is as accurate as RK4 at the steps of the models or more (review of steps 5 and 6, §6.1), with 1.6 to 2.6 times fewer evaluations on the greenhouse models, and it needs no step. It cannot be the default while it stops on a switch that holds the trajectory (item 4); an automatic choice (BDF, then RK4 where the implicit step has no solution) is the alternative. In the library, the two dynamic greenhouse models can set `integralMethod = BDF` with tolerances of 1e-4 / 1e-6: 0.12 s and 0.15 s instead of 0.57 s and 0.94 s, within 0.03 K | 1–2 days, plus the re-validation of the dynamic models |
+| 7 | **Pantelides-style index reduction** | Enable fully-implicit (high-index) DAE models in the dynamic solver. Currently high-index systems are detected and rejected; dummy-derivative index reduction would make them solvable | 2–3 weeks |
+| 8 | **Hybrd-native `O(n²)` triangular solve for TrustRegion Broyden mode** | Realize the speedup §4.6 found missing: solve directly against the maintained `R` instead of reconstructing dense `J` and re-running `ColPivHouseholderQR` every iteration | 3–5 days, plus a careful robustness re-validation (loses rank-revealing pivoting, reopening the numerical-instability concern) |
+| 9 | **Pseudo-arclength continuation in Homotopy** | Pass turning points (where the homotopy path folds back in `t`), a known failure mode for hard thermodynamic models with non-monotonic `t`-paths. Keller (1977) augmented system with the Tier-1 hybrd-style TrustRegion as corrector | 1–2 weeks |
+| 10 | **Dynamic column scaling in Newton and LM** | Extend the `diag ← max(diag, ‖J[:,j]‖)` rule (already in TR) to Newton and LM via a shared `updateScalingFactors()` helper in `solver_common.h`. Gated by a renamed `dynamicScaling` option | 3–5 days |
 
 ### Not recommended
 
