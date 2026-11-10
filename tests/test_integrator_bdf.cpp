@@ -316,4 +316,26 @@ TEST_CASE("Integral march with BDF: an exhausted budget is an error, not a trunc
     const IntegralSolveResult r = solver.solve(opt);
     CHECK_FALSE(r.success);
     CHECK_THAT(r.errorMessage, ContainsSubstring("before reaching the upper limit"));
+
+    // With a step in the model the budget is at least that of its steps (1000 here), whatever integralMaxSteps
+    auto stepped = buildModel("y = 1 + integral(dydt, t, 0, 10, 0.01)\ndydt = -50*y\n");
+    IntegralSolver steppedSolver(stepped->program, *stepped->ir, stepped->analysis, SolverOptions{});
+    CHECK(steppedSolver.solve(opt).success);
+}
+
+TEST_CASE("Integral march with BDF and RK45: a state that starts at 0 on a jump of the right-hand side",
+          "[integral][bdf]") {
+    // dy/dt jumps by 0.2 % as y leaves 0 (the start of examples/ice_storage_tank): the error control lets the first
+    // step pass only where absTol dominates the weight of y, many orders below 1e-9 of the interval
+    auto m = buildModel("y = integral(dydt, t, 0, 50000)\ndydt = IF(y, 1.002E6, 1E6)\n");
+    for (auto method : {IntegratorOptions::BDF, IntegratorOptions::RK45}) {
+        INFO(methodToString(method));
+        IntegralSolver solver(m->program, *m->ir, m->analysis, SolverOptions{});
+        IntegratorOptions opt;
+        opt.method = method;
+        const IntegralSolveResult r = solver.solve(opt);
+        REQUIRE(r.success);
+        CHECK_THAT(r.algebraicResult.variables.at("y"), WithinRel(1.002e6 * 50000.0, 1e-5));
+        CHECK(r.totalSteps + r.rejectedSteps < 300);
+    }
 }

@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -545,11 +546,11 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
     // Step size. An explicit step (5th INTEGRAL argument, else `integralFixedStep`) is honoured as
     // given: the number of steps follows from (hi - lo) / step and `integralMaxSteps` does not
     // apply. Without one, a fixed-step method takes exactly `integralMaxSteps` steps; RK45 and BDF
-    // adapt (the step of the model is their first trial step) and `integralMaxSteps` bounds the work.
+    // adapt (the step of the model is their first trial step) within a budget of attempted steps.
     const bool adaptive = (intOpt.method == IntegratorOptions::RK45 || intOpt.method == IntegratorOptions::BDF);
     const int maxSteps = std::max(1, intOpt.maxSteps);
     double h = 0.0;
-    long long plannedSteps = 0;   // fixed-step methods
+    long long plannedSteps = 0;   // fixed-step methods; for the adaptive ones, the steps their budget counts
     if (!adaptive) {
         const double explicitStep = modelStep > 0.0 ? modelStep : intOpt.fixedStep;
         if (explicitStep > 0.0) {
@@ -568,8 +569,21 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
         }
     } else {
         h = (modelStep > 0.0) ? modelStep : std::min(span / 10.0, span);
+        // The budget counts at least the steps of the step of the model: a model whose step takes more than
+        // `integralMaxSteps` steps runs with an adaptive method as it does with a fixed-step one.
+        const double modelSteps = modelStep > 0.0 ? std::min(std::ceil(span / modelStep - 1e-9), 5.0e8) : 0.0;
+        plannedSteps = std::max<long long>(maxSteps, static_cast<long long>(modelSteps));
     }
-    const double hMin = intOpt.minStep > 0.0 ? intOpt.minStep : span * 1e-9;
+    // The smallest step of an adaptive method: `integralMinStep` when given, else the resolution of the
+    // integration variable at t (ten times the spacing of the doubles there, as scipy; around t = 0, where that
+    // spacing vanishes, 1e-30 of the interval). A fraction of the interval such as 1e-9 is too much: the error
+    // control passes a jump of the right-hand side at the lower limit, with a state that starts at 0, only with
+    // a first step of about absTol / jump (below 1e-9 s for the 50 000 s of examples/ice_storage_tank).
+    const auto minStepAt = [&](double tt) {
+        if (intOpt.minStep > 0.0) return intOpt.minStep;
+        const double a = std::abs(tt);
+        return std::max(10.0 * (std::nextafter(a, std::numeric_limits<double>::infinity()) - a), span * 1e-30);
+    };
     const double hMax = intOpt.maxStep > 0.0 ? intOpt.maxStep : span;
     const double tolT = 1e-9 * span;   // what is left of the interval below this is not a step
 
@@ -743,8 +757,8 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
         return evaluateRHS(tt, yy);
     };
     // Fixed-step methods take exactly `plannedSteps` steps. An adaptive method may reject steps: its
-    // budget is 4 * integralMaxSteps attempted (accepted + rejected) steps.
-    const long long maxAttempts = adaptive ? 4LL * maxSteps : plannedSteps;
+    // budget is 4 attempted (accepted + rejected) steps for each of its `plannedSteps`.
+    const long long maxAttempts = adaptive ? 4LL * plannedSteps : plannedSteps;
     long long attempts = 0;
 
     try {
@@ -770,6 +784,7 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
 
             if (!sr.accepted) {
                 ++rejected;
+                const double hMin = minStepAt(t);
                 double hn = sr.nextStep > 0.0 ? sr.nextStep : hTry * 0.5;
                 h = std::min(hMax, std::max(hMin, hn));
                 if (h <= hMin) {
@@ -780,8 +795,8 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
                     if (!sr.rejectReason.empty())
                         what << ": the last step was rejected because " << sr.rejectReason << ". With an implicit "
                              << "method this happens where the right-hand side jumps with a state (an IF on a state "
-                                "variable): the implicit step may have no solution, however short. RK4 or RK45 step "
-                                "across such a switch";
+                                "variable): the implicit step may have no solution, however short. RK4 steps across "
+                                "such a switch (RK45 too, with a large integralMaxSteps)";
                     result.errorMessage = what.str();
                     result.totalSteps = taken;
                     result.rejectedSteps = rejected;
@@ -797,7 +812,7 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
             result.acceptedStepSizes.push_back(sr.stepTaken);
             if (adaptive) {
                 double hn = sr.nextStep > 0.0 ? sr.nextStep : hTry;
-                h = std::min(hMax, std::max(hMin, hn));
+                h = std::min(hMax, std::max(minStepAt(t), hn));
             }
 
             // Rows of this step: at every step (no interval), else the output times it reached
@@ -869,9 +884,9 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
         result.errorMessage =
             "The integration stopped at " + problem_.integrationVar + " = " + std::to_string(t) +
             " before reaching the upper limit " + std::to_string(tf) + ": the budget of " +
-            std::to_string(maxAttempts) + " attempted steps (4 x integralMaxSteps = 4 x " +
-            std::to_string(maxSteps) + ") is exhausted. Increase integralMaxSteps, give a step in "
-            "INTEGRAL(), or loosen integralRelTol / integralAbsTol";
+            std::to_string(maxAttempts) + " attempted steps (4 x " + std::to_string(plannedSteps) +
+            ": integralMaxSteps, or the number of steps that the step of INTEGRAL() gives when it is larger) is "
+            "exhausted. Increase integralMaxSteps, or loosen integralRelTol / integralAbsTol";
         return result;
     }
     result.success = true;

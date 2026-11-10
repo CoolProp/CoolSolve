@@ -297,20 +297,20 @@ The debug folder gains two extra files for these models:
 
 **"The integration stopped at … before reaching the upper limit" (`integralMaxSteps`).**
 Only an adaptive run (RK45, BDF) can end this way: it did not reach the upper limit within
-its budget of `4·integralMaxSteps` attempted steps (accepted + rejected). A fixed-step
-method always takes `(hi−lo)/step` steps (the step of the `INTEGRAL` call, else
+its budget of attempted steps (accepted + rejected): 4 for each of `integralMaxSteps`, or
+for each of the `(hi−lo)/step` steps of the `INTEGRAL` call when there are more. A
+fixed-step method always takes `(hi−lo)/step` steps (the step of the `INTEGRAL` call, else
 `integralFixedStep`, else `integralMaxSteps` equal steps), so a long interval with a
 small step is not an error — it only takes time. Typical causes: the step size
-collapsed (RK45 rejecting many steps on a stiff system), or the budget is small for the
-interval. Fixes:
+collapsed (RK45 rejecting many steps on a stiff system, or following a switch on a state,
+see below), or the budget is small for the interval. Fixes:
 
 - For RK45 on a stiff system: use `integralMethod = BDF`, with `integralRelTol` /
   `integralAbsTol` set to the accuracy needed (1e-4 / 1e-6 keeps the temperatures of the
   greenhouse models of the library within 0.03 K, see [Dynamic Solving §2.3](integral_table.md#23-integrators)).
-- For BDF at a tight tolerance on a long interval: raise `integralMaxSteps`, or loosen
-  the tolerances.
-- Give the step in the model (5th `INTEGRAL` argument) or set `integralFixedStep`:
-  the step count is then `(tf−t0)/step` whatever `integralMaxSteps` says.
+- Raise `integralMaxSteps`, or loosen the tolerances.
+- Use a fixed-step method with the step in the model (5th `INTEGRAL` argument) or
+  `integralFixedStep`: the step count is then `(tf−t0)/step` whatever `integralMaxSteps` says.
 
 **"Algebraic solve failed at t=… — The step h = … may be too large for RK4".** With a
 fixed-step explicit method (`RK4`, `EulerExplicit`) a step above the stability limit of
@@ -329,14 +329,16 @@ side that jumps with a state (an `IF` on a state variable) is the usual cause: t
 step then has no solution.
 
 **"Step size dropped below minimum (…) at t=…: the last step was rejected because the
-Newton iteration diverges".** BDF halved its step down to the minimum and its implicit
-iteration still does not converge: the right-hand side jumps with a state, as the intake
-`IF(p - p_out, 0, m_dot)` of `examples/engine_weibe_cycle` where the pressure reaches the
-outside pressure; there the implicit step has no solution however short it is. Use RK4 or
-RK45, which step across the switch. Without such a reason (the steps were rejected by
-their error), BDF and RK45 met a jump of the right-hand side that the error control cannot
-pass, typically at the initial point with a state that starts at 0: loosen
-`integralRelTol` / `integralAbsTol` to the scale of that state.
+Newton iteration …".** BDF halved its step down to the minimum (the resolution of the
+integration variable, unless `integralMinStep` is set) and its implicit iteration still
+does not converge: the trajectory stays on a jump of the right-hand side with a state, as
+the intake `IF(p - p_out, 0, m_dot)` of `examples/engine_weibe_cycle`, where the pressure
+follows the outside pressure with a flow that switches on and off; there the implicit step
+has no solution however short it is. Use RK4, which steps across the switch (RK45 follows
+it with very short steps and needs a large `integralMaxSteps`), or write the switch as a
+continuous function of the state. Without such a reason (the steps were rejected by their
+error), the solution cannot be followed at the tolerances asked (a singularity, or
+`integralMinStep` set too large): loosen `integralRelTol` / `integralAbsTol`.
 
 **"The upper limit '…' of INTEGRAL() depends on the integration variable … or on a
 state".** The limits and the step of `INTEGRAL` are read once, at the initial point:

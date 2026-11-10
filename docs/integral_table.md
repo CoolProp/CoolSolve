@@ -157,8 +157,9 @@ Its gain is the accuracy given up: on the greenhouse models of the library (10
 and 15 states, 6 days), `integralRelTol = 1e-4` (`integralAbsTol = 1e-6`) keeps
 the hourly rows within 0.03 K of RK4 at 15 s with 2 900 and 4 800 evaluations,
 against 17 280 and 34 560 for RK4 at the steps of the models (0.13 s and 0.18 s
-per run instead of 0.6 s and 0.9 s); `1e-6` gives 0.0005 K with 10 700 and
-13 400 evaluations (the budget then needs `integralMaxSteps` above 1 000).
+per run instead of 0.6 s and 0.9 s); the default `1e-6` gives 0.0005 K with
+10 700 and 13 400 evaluations, where RK4 at the steps of the models is within
+0.003 K and 0.02 K.
 
 `EulerImplicit` uses the same iteration with its fixed step: the Jacobian kept
 from step to step, renewed at the predicted point when the iteration does not
@@ -168,13 +169,24 @@ control starts to act between the predictor and the solution. A step that still
 does not converge is an error.
 
 **Where an implicit method fails.** It needs a right-hand side continuous in the
-states. Where `f` jumps with a state (`IF(p - p_out, 0, m_dot)`: the intake of
-`examples/engine_weibe_cycle`), the implicit step may have no solution however
-short it is: BDF and `EulerImplicit` stop there with a message that says so,
-while RK4 and RK45 step across the switch. An error-controlled method (BDF, RK45)
-also fails where `f` jumps at the initial point and a state starts at 0 (the
-relative error of that state does not decrease with the step): loosen
-`integralRelTol` / `integralAbsTol` to the scale of that state.
+states. A jump that the trajectory crosses is passed with short steps. A jump on
+which the trajectory stays is not: the intake of `examples/engine_weibe_cycle`,
+`IF(p - p_out, 0, m_dot)`, switches the flow off as soon as the pressure reaches
+the outside pressure and on again below it, so the pressure follows the outside
+pressure with a flow that switches at every step (a sliding mode). The implicit
+step then has no solution however short it is: BDF and `EulerImplicit` stop
+there with a message that says so. RK4 steps across the switch, with a flow
+that alternates from step to step and an error of the order of the step; RK45
+follows the switch with very short steps and needs `integralMaxSteps` of about
+50 000 on that example.
+
+**The smallest step.** An error-controlled method (BDF, RK45) passes a jump of `f`
+at the initial point, with a state that starts at 0, only with a first step short
+enough for `integralAbsTol` to dominate the weight of that state (below 1e-9 s
+for the 50 000 s of `examples/ice_storage_tank`). The automatic minimum step is
+therefore the resolution of the integration variable (ten times the spacing of
+the floating-point numbers at `t`), not a fraction of the interval;
+`integralMinStep` sets another one.
 
 ### 2.4 Auxiliary states (an `INTEGRAL` inside a larger expression)
 
@@ -335,19 +347,21 @@ before:
 |-----|---------|---------|
 | `integralMethod` | `RK4` | `RK4`, `RK45`, `BDF`, `EulerExplicit`, or `EulerImplicit` |
 | `integralFixedStep` | `0.0` | Fixed step size when the `INTEGRAL` call has none. `0` ⇒ `integralMaxSteps` steps (fixed methods) |
-| `integralMaxSteps` | `1000` | Number of steps of a fixed-step method without an explicit step; RK45 and BDF budget (`4·integralMaxSteps` attempted steps) |
+| `integralMaxSteps` | `1000` | Number of steps of a fixed-step method without an explicit step; RK45 and BDF budget (4 attempted steps for each, see below) |
 | `integralRelTol` | `1e-6` | RK45 and BDF local relative error control; weights of the Newton test of BDF and EulerImplicit |
 | `integralAbsTol` | `1e-9` | RK45 and BDF absolute error floor (same uses) |
-| `integralMinStep` | `0.0` | Minimum step (0 = auto) |
-| `integralMaxStep` | `0.0` | Maximum step (0 = auto) |
+| `integralMinStep` | `0.0` | Minimum step of RK45 and BDF (0 = auto: the resolution of the integration variable, §2.3) |
+| `integralMaxStep` | `0.0` | Maximum step of RK45 and BDF (0 = auto: the interval) |
 | `integralRichardson` | `false` | Richardson extrapolation (fixed-step only) |
 | `integralOutputInterval` | `0.0` | Default `$IntegralTable` row interval when the directive has no `:n` (`0` = every step) |
 
-**Which step wins.** The step given in the model (5th `INTEGRAL` argument) is used as
-written, whatever `integralMaxSteps` says: the number of steps is `⌈(hi − lo)/step⌉`
-(the last one is shortened). Next comes `integralFixedStep`. Without either, a
-fixed-step method takes exactly `integralMaxSteps` steps and RK45 or BDF adapts within its
-budget (the step of the model is then their first trial step). Stopping before `hi` is an error.
+**Which step wins.** With a fixed-step method, the step given in the model (5th
+`INTEGRAL` argument) is used as written, whatever `integralMaxSteps` says: the number of
+steps is `⌈(hi − lo)/step⌉` (the last one is shortened). Next comes `integralFixedStep`.
+Without either, the method takes exactly `integralMaxSteps` steps. RK45 and BDF adapt
+(the step of the model is their first trial step) within a budget of 4 attempted steps,
+accepted or rejected, for each of `integralMaxSteps`, or for each of the
+`⌈(hi − lo)/step⌉` steps of the model when there are more. Stopping before `hi` is an error.
 
 The `$IntegralAutoStep` and `$IntegralStop` directives are recognised for
 EES compatibility but **not interpreted** — they emit a diagnostic pointing

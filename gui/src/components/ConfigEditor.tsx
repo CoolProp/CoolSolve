@@ -446,17 +446,19 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
           + 'RK45 (Dormand-Prince adaptive embedded pair; variable step, error-controlled), '
           + 'BDF (variable order 1-5 and step, implicit: for stiff models; set the tolerances to the accuracy '
           + 'needed, 1e-4 / 1e-6 is a good start). An implicit method needs a right-hand side continuous in the '
-          + 'states: where it jumps with a state (an IF on a state variable) use RK4 or RK45. '
+          + 'states: where the trajectory stays on a jump with a state (an IF on a state variable that switches '
+          + 'a flow on and off) use RK4. '
           + 'Ignored for non-integral models.' },
       { key: 'integralFixedStep', label: 'Fixed step', type: 'number', defaultVal: '0',
         description:
           'Fixed time step, used when the INTEGRAL() call has no step of its own (a step given as the 5th '
           + 'argument of INTEGRAL always wins). 0 ⇒ derive the step from integralMaxSteps and the integration interval. '
-          + 'Used by EulerExplicit, EulerImplicit, RK4 (and by RK45 and BDF as the initial step guess).' },
+          + 'Used by EulerExplicit, EulerImplicit and RK4; RK45 and BDF choose their steps.' },
       { key: 'integralMaxSteps', label: 'Max steps', type: 'number', defaultVal: '1000',
         description:
           'Number of steps of a fixed-step method that has no explicit step (the step is then interval/maxSteps); '
-          + 'it does not apply when the model gives a step. For RK45 and BDF it is the budget: 4·maxSteps attempted steps. '
+          + 'it does not apply when the model gives a step. For RK45 and BDF it is the budget: 4 attempted steps for each '
+          + 'of maxSteps, or for each step of the step of the model when there are more. '
           + 'A run that stops before the upper limit is reported as an error.' },
       { key: 'integralRelTol', label: 'Relative tol.', type: 'number', defaultVal: '1e-6',
         description:
@@ -466,7 +468,7 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
       { key: 'integralAbsTol', label: 'Absolute tol.', type: 'number', defaultVal: '1e-9',
         description: 'RK45 and BDF absolute-error floor (same uses). Prevents over-tightening the step when |y| ≈ 0.' },
       { key: 'integralMinStep', label: 'Min step', type: 'number', defaultVal: '0',
-        description: 'Minimum step size for RK45 and BDF (0 = auto, derived from the interval). ' },
+        description: 'Minimum step size for RK45 and BDF (0 = auto: the resolution of the integration variable).' },
       { key: 'integralMaxStep', label: 'Max step', type: 'number', defaultVal: '0',
         description: 'Maximum step size for RK45 and BDF (0 = auto = the full interval).' },
       { key: 'integralRichardson', label: 'Richardson', type: 'boolean', defaultVal: 'false',
