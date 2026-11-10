@@ -365,7 +365,8 @@ TEST_CASE("A fixed step too large for an explicit method says that it may be too
 // ============================================================================
 
 TEST_CASE("EulerImplicit fails on a step that does not converge, with the time and the residual", "[eval-overhead]") {
-    // f = -10 sign(y): the Newton iteration of a step of 1 jumps between -9 and 11 and never converges
+    // f = -10 sign(y): the Newton iteration of a step of 1 jumps between -9 and 11 and never converges, with the
+    // kept Jacobian, a renewed one or one at every iterate (all 0)
     RHSFunction f = [](double, const Eigen::VectorXd& y) {
         Eigen::VectorXd r(1);
         r(0) = y(0) > 0.0 ? -10.0 : 10.0;
@@ -382,7 +383,7 @@ TEST_CASE("EulerImplicit fails on a step that does not converge, with the time a
         const std::string what = e.what();
         CHECK_THAT(what, ContainsSubstring("EulerImplicit"));
         CHECK_THAT(what, ContainsSubstring("from t = 2 to 3"));
-        CHECK_THAT(what, ContainsSubstring("did not converge after 30 iterations"));
+        CHECK_THAT(what, ContainsSubstring("did not converge"));
         CHECK_THAT(what, ContainsSubstring("largest residual"));
     }
 }

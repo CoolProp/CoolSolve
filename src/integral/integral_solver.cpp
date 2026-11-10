@@ -544,9 +544,9 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
 
     // Step size. An explicit step (5th INTEGRAL argument, else `integralFixedStep`) is honoured as
     // given: the number of steps follows from (hi - lo) / step and `integralMaxSteps` does not
-    // apply. Without one, a fixed-step method takes exactly `integralMaxSteps` steps; RK45 adapts
-    // and `integralMaxSteps` bounds the work (see below).
-    const bool adaptive = (intOpt.method == IntegratorOptions::RK45);
+    // apply. Without one, a fixed-step method takes exactly `integralMaxSteps` steps; RK45 and BDF
+    // adapt (the step of the model is their first trial step) and `integralMaxSteps` bounds the work.
+    const bool adaptive = (intOpt.method == IntegratorOptions::RK45 || intOpt.method == IntegratorOptions::BDF);
     const int maxSteps = std::max(1, intOpt.maxSteps);
     double h = 0.0;
     long long plannedSteps = 0;   // fixed-step methods
@@ -742,8 +742,8 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
     RHSFunction rhs = [this](double tt, const Eigen::VectorXd& yy) {
         return evaluateRHS(tt, yy);
     };
-    // Fixed-step methods take exactly `plannedSteps` steps. RK45 may reject steps: its budget is
-    // 4 * integralMaxSteps attempted (accepted + rejected) steps.
+    // Fixed-step methods take exactly `plannedSteps` steps. An adaptive method may reject steps: its
+    // budget is 4 * integralMaxSteps attempted (accepted + rejected) steps.
     const long long maxAttempts = adaptive ? 4LL * maxSteps : plannedSteps;
     long long attempts = 0;
 
@@ -766,14 +766,23 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
             const Eigen::VectorXd yPrev = y;
 
             StepResult sr = ig->step(t, y, rhs, hTry, intOpt);
+            result.rhsEvaluations += sr.rhsEvaluations;
 
             if (!sr.accepted) {
                 ++rejected;
                 double hn = sr.nextStep > 0.0 ? sr.nextStep : hTry * 0.5;
                 h = std::min(hMax, std::max(hMin, hn));
                 if (h <= hMin) {
-                    result.errorMessage = "Step size dropped below minimum (" +
-                                          std::to_string(h) + ") at t=" + std::to_string(t);
+                    std::ostringstream what;
+                    what << "Step size dropped below minimum (" << h << ") at t=" << t;
+                    // An implicit iteration that fails however short the step: a right-hand side that jumps with a
+                    // state has no implicit solution on the switch (e.g. the intake of examples/engine_weibe_cycle)
+                    if (!sr.rejectReason.empty())
+                        what << ": the last step was rejected because " << sr.rejectReason << ". With an implicit "
+                             << "method this happens where the right-hand side jumps with a state (an IF on a state "
+                                "variable): the implicit step may have no solution, however short. RK4 or RK45 step "
+                                "across such a switch";
+                    result.errorMessage = what.str();
                     result.totalSteps = taken;
                     result.rejectedSteps = rejected;
                     return result;
@@ -808,6 +817,18 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
             } else if (between.empty()) {
                 rowAtT = evalRow(t, y);
                 result.table.appendRow(t, *rowAtT);
+            } else if (Eigen::VectorXd yOut; ig->denseOutput(between.front(), yOut)) {
+                // The method's interpolant gives the states at each output time: the row is solved there
+                for (double tOut : between) {
+                    ig->denseOutput(tOut, yOut);
+                    result.table.appendRow(tOut, evalRow(tOut, yOut));
+                }
+                if (onStep) {
+                    rowAtT = evalRow(t, y);
+                    result.table.appendRow(t, *rowAtT);
+                } else {
+                    rowAtT.reset();
+                }
             } else {
                 const auto rowPrev = rowAtT ? *rowAtT : evalRow(tPrev, yPrev);
                 rowAtT = evalRow(t, y);

@@ -74,15 +74,19 @@ The integral solve works as follows:
 5. **March in time**: at each step, fix `(t, y)` as externals, call the
    algebraic `Solver` on the blocks of the reduced system that depend on `t` or
    on a state to evaluate `f` (§3.3), then advance `y` using the chosen
-   `Integrator`. The number of steps is fixed by the model
-   step (or `integralMaxSteps` without one); a march that ends before `tf` is an
-   error, never a success.
+   `Integrator`. The number of steps of a fixed-step method is set by the model
+   step (or `integralMaxSteps` without one); RK45 and BDF choose their steps
+   within a budget. A march that ends before `tf` is an error, never a success.
 6. **Record rows** into an `IntegralTable` (columns matched to variables without
    regard to case): at every step without an output interval, else at
    `t0 + k·n` and at `tf`, independent of the steps. A row between two steps is
    interpolated linearly (`IntegralTable::interpolate`) between the rows of the
    two steps around it, evaluated once each (the row of a step is reused by the
-   next one); a row on a step is that step's row.
+   next one); a row on a step is that step's row. With BDF, whose steps are long,
+   the states at a row between two steps come from the method's own interpolant
+   (`Integrator::denseOutput`) and the model is solved there: every column of the
+   row is that of the model at that time, an input that switches inside the step
+   included.
 
 The key invariant: **the algebraic `Solver` is reused unmodified at each time step**.
 The integral layer only decides *when* to call it, *what* to fix as
@@ -114,14 +118,63 @@ Two non-obvious obstacles had to be overcome to reuse the algebraic
 | Method | Step formula | Algebraic solves/step | Notes |
 |--------|-------------|-----------------------|-------|
 | **Euler explicit** | `y_{n+1} = y_n + h·f(t_n, y_n, z_n)` | 1 | Cheapest; 1st order |
-| **Euler implicit** | Newton on `y_{n+1} − y_n − h·f(t_{n+1}, y_{n+1}) = 0` | 1 + (n+1) per iteration | A-stable; 1st order; a step that does not converge is an error |
+| **Euler implicit** | Newton on `y_{n+1} − y_n − h·f(t_{n+1}, y_{n+1}) = 0` | 1 + 2 or 3 iterations (a Jacobian, n evaluations, when renewed) | A-stable; 1st order; a step that does not converge is an error |
 | **RK4** | 4 stages, classic Butcher tableau | 4 | 4th order; **default** |
 | **RK45** | 6 stages, Dormand–Prince embedded pair (4th + 5th) | 6 | Adaptive; error-estimation step control |
+| **BDF** | Variable-order (1–5) NDF, `y_{n+1}` from the backward differences | 2 or 3 iterations (a Jacobian, n + 1 evaluations, when renewed) | Adaptive step and order; for stiff models |
 | **Richardson** | Combine one `h` step + two `h/2` steps | triples | Reduces truncation error; fixed-step only |
 
 The general Richardson combination is `(2^p·I_{h/2} − I_h)/(2^p − 1)`
 where `p` is the base method's order (the EES formula `(4·I_{h/2} − I_h)/3`
 is the `p = 2` special case).
+
+#### BDF and the implicit Newton iteration
+
+`BDF` (`integralMethod = BDF`) is the variable-order, variable-step method of
+Shampine and Reichelt (the numerical differentiation formulas NDF1–NDF5 of
+MATLAB's `ode15s` and scipy's `BDF`). It is meant for stiff models: those whose
+fastest time constant, not the accuracy asked, sets the step of an explicit
+method. It keeps from one step to the next the backward differences of the
+solution, a finite-difference Jacobian of `f` and the factorisation of the
+Newton matrix `I − c·J`. Each step:
+
+- predicts the state from the differences and solves the implicit formula with a
+  simplified Newton iteration (`src/integral/implicit_newton.h`), tested with the
+  weights `integralAbsTol + integralRelTol·|y|`; when it does not converge, the
+  Jacobian is renewed and the iteration tried again; if it still does not
+  converge, the step is rejected and halved;
+- estimates its local error from the Newton correction and is rejected and
+  shortened above the tolerance;
+- after `order + 1` steps of the same size, compares the errors of the orders
+  `k − 1`, `k`, `k + 1` and takes the order and step that promise the longest step.
+
+The first step is chosen from `f` at the initial point, within the step of the
+model (the 5th argument of `INTEGRAL`, else a tenth of the interval).
+`integral.md` gives the number of evaluations of the right-hand side, those of the
+Jacobians and of the rejected steps included.
+
+Its gain is the accuracy given up: on the greenhouse models of the library (10
+and 15 states, 6 days), `integralRelTol = 1e-4` (`integralAbsTol = 1e-6`) keeps
+the hourly rows within 0.03 K of RK4 at 15 s with 2 900 and 4 800 evaluations,
+against 17 280 and 34 560 for RK4 at the steps of the models (0.13 s and 0.18 s
+per run instead of 0.6 s and 0.9 s); `1e-6` gives 0.0005 K with 10 700 and
+13 400 evaluations (the budget then needs `integralMaxSteps` above 1 000).
+
+`EulerImplicit` uses the same iteration with its fixed step: the Jacobian kept
+from step to step, renewed at the predicted point when the iteration does not
+converge, and, since a fixed step cannot be shortened, the full Newton iteration
+(a Jacobian at every iterate) when even the renewed Jacobian fails, as where a
+control starts to act between the predictor and the solution. A step that still
+does not converge is an error.
+
+**Where an implicit method fails.** It needs a right-hand side continuous in the
+states. Where `f` jumps with a state (`IF(p - p_out, 0, m_dot)`: the intake of
+`examples/engine_weibe_cycle`), the implicit step may have no solution however
+short it is: BDF and `EulerImplicit` stop there with a message that says so,
+while RK4 and RK45 step across the switch. An error-controlled method (BDF, RK45)
+also fails where `f` jumps at the initial point and a state starts at 0 (the
+relative error of that state does not decrease with the step): loosen
+`integralRelTol` / `integralAbsTol` to the scale of that state.
 
 ### 2.4 Auxiliary states (an `INTEGRAL` inside a larger expression)
 
@@ -181,6 +234,8 @@ src/integral/
 ├── integrator_euler_implicit.cpp    Fixed step, implicit Euler (+Richardson)
 ├── integrator_rk4.cpp               Fixed step, classic RK4 (+Richardson)
 ├── integrator_rk45.cpp              Variable step, Dormand-Prince RK45
+├── integrator_bdf.cpp               Variable order and step, BDF (NDF) for stiff models
+├── implicit_newton.h / .cpp         Newton iteration and Jacobian of BDF and EulerImplicit
 ├── richardson.cpp                   Richardson extrapolation helper (shared)
 ├── integral_solver.cpp              Time-march loop, reuses algebraic Solver
 └── integral_extraction.cpp          Walk IR, classify state vs algebraic vars
@@ -189,6 +244,7 @@ tests/
 ├── test_integrator_euler.cpp        TDD: Euler explicit/implicit vs analytical
 ├── test_integrator_rk4.cpp          TDD: RK4 vs analytical
 ├── test_integrator_rk45.cpp         TDD: RK45 + adaptive step control
+├── test_integrator_bdf.cpp          BDF, its interpolant and the march with it; EulerImplicit's iteration
 ├── test_richardson.cpp              TDD: Richardson error reduction
 ├── test_integral_extraction.cpp     TDD: IR → IntegralProblem classification
 ├── test_integral_table.cpp          TDD: IntegralTable store/interpolate/toCSV
@@ -277,11 +333,11 @@ before:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `integralMethod` | `RK4` | `RK4`, `RK45`, `EulerExplicit`, or `EulerImplicit` |
+| `integralMethod` | `RK4` | `RK4`, `RK45`, `BDF`, `EulerExplicit`, or `EulerImplicit` |
 | `integralFixedStep` | `0.0` | Fixed step size when the `INTEGRAL` call has none. `0` ⇒ `integralMaxSteps` steps (fixed methods) |
-| `integralMaxSteps` | `1000` | Number of steps of a fixed-step method without an explicit step; RK45 budget (`4·integralMaxSteps` attempted steps) |
-| `integralRelTol` | `1e-6` | RK45 local relative error control |
-| `integralAbsTol` | `1e-9` | RK45 absolute error floor |
+| `integralMaxSteps` | `1000` | Number of steps of a fixed-step method without an explicit step; RK45 and BDF budget (`4·integralMaxSteps` attempted steps) |
+| `integralRelTol` | `1e-6` | RK45 and BDF local relative error control; weights of the Newton test of BDF and EulerImplicit |
+| `integralAbsTol` | `1e-9` | RK45 and BDF absolute error floor (same uses) |
 | `integralMinStep` | `0.0` | Minimum step (0 = auto) |
 | `integralMaxStep` | `0.0` | Maximum step (0 = auto) |
 | `integralRichardson` | `false` | Richardson extrapolation (fixed-step only) |
@@ -290,8 +346,8 @@ before:
 **Which step wins.** The step given in the model (5th `INTEGRAL` argument) is used as
 written, whatever `integralMaxSteps` says: the number of steps is `⌈(hi − lo)/step⌉`
 (the last one is shortened). Next comes `integralFixedStep`. Without either, a
-fixed-step method takes exactly `integralMaxSteps` steps and RK45 adapts within its
-budget. Stopping before `hi` is an error.
+fixed-step method takes exactly `integralMaxSteps` steps and RK45 or BDF adapts within its
+budget (the step of the model is then their first trial step). Stopping before `hi` is an error.
 
 The `$IntegralAutoStep` and `$IntegralStop` directives are recognised for
 EES compatibility but **not interpreted** — they emit a diagnostic pointing
@@ -308,7 +364,7 @@ After a successful integral solve, CoolSolve writes the trajectory to:
 | **Auto CSV** | `<modelname>-integral.csv` next to the `.eescode` file (first column = integration var, then `$IntegralTable` columns in order). Regenerated on each run. |
 | **`.sol` file** | Appended `# IntegralTable` block (backward compatible). |
 | **CLI JSON** | `"integralTable"` and `"integralCsv"` fields in the analysis/solution JSON. |
-| **Debug folder** | `integral.md` (problem summary, method, step count, step statistics, trajectory preview) + copy of the CSV. |
+| **Debug folder** | `integral.md` (problem summary, method, step count, step statistics, evaluations of the right-hand side, trajectory preview) + copy of the CSV. |
 | **GUI** | **Integral** tab in the bottom panel: scrollable columnar table, optional Plotly line plot, CSV export button. |
 | **ZIP bundle** | The CSV is exported in the ZIP bundle and restored on upload (round-trip identical to the parametric study). |
 
@@ -341,19 +397,17 @@ empty column.
   requires an EES-style Parametric table that CoolSolve does not have.
 - **Stiff systems.** An explicit method may need many steps on a stiff
   system (a fixed step above its stability limit ends in a failed algebraic solve,
-  whose message says that the step may be too large); use `EulerImplicit` as a
-  workaround until a BDF/stiff integrator is added. `EulerImplicit` re-evaluates its
-  Jacobian by finite differences at every iteration, so it is expensive per step, and
-  its iteration may not converge on a large step of a discontinuous model (an error).
+  whose message says that the step may be too large); use `BDF` with a tolerance
+  matched to the accuracy needed (§2.3). An implicit method (BDF, `EulerImplicit`)
+  needs a right-hand side continuous in the states (§2.3).
 
 ### 7.2 Planned improvements
 
 | # | Improvement | Priority |
 |---|-------------|----------|
-| 1 | **BDF / DASSL-style stiff variable-step integrator** — slots in via the existing `Integrator` factory | High |
-| 2 | **Pantelides-style index reduction** — enable fully-implicit (high-index) DAE models | Medium |
-| 3 | **Event detection** (zero-crossing) inside the RK45 step for precise stop locations | Low |
-| 4 | **`INTEGRALVALUE` full evaluator dispatch** — wire the active-table context during a step | Low |
+| 1 | **Pantelides-style index reduction** — enable fully-implicit (high-index) DAE models | Medium |
+| 2 | **Event detection** (zero-crossing) inside the RK45 and BDF steps for precise stop locations, and to restart BDF at a switch of the right-hand side | Low |
+| 3 | **`INTEGRALVALUE` full evaluator dispatch** — wire the active-table context during a step | Low |
 
 ---
 

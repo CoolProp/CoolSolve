@@ -17,5 +17,6 @@ std::unique_ptr<Integrator> makeEulerExplicit();
 std::unique_ptr<Integrator> makeEulerImplicit();
 std::unique_ptr<Integrator> makeRK4();
 std::unique_ptr<Integrator> makeRK45();
+std::unique_ptr<Integrator> makeBDF();
 
 }  // namespace coolsolve

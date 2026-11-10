@@ -736,6 +736,8 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
             md << " (" << integralResult_.errorMessage << ")";
         md << "\n- Accepted steps: " << integralResult_.totalSteps << "\n";
         md << "- Rejected steps: " << integralResult_.rejectedSteps << "\n";
+        md << "- Evaluations of the right-hand side by the integrator (Jacobians and rejected steps included): "
+           << integralResult_.rhsEvaluations << "\n";
         if (!integralResult_.acceptedStepSizes.empty()) {
             double mn = integralResult_.acceptedStepSizes.front();
             double mx = mn, sum = 0.0;
