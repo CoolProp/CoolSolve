@@ -461,6 +461,8 @@ CoolSolve/
 │   │   ├── integrator_euler_implicit.cpp  # Backward Euler, A-stable (fixed step)
 │   │   ├── integrator_rk4.cpp             # Classic RK4 (fixed step, default)
 │   │   ├── integrator_rk45.cpp            # Dormand-Prince RK45 (adaptive)
+│   │   ├── integrator_bdf.cpp             # Variable-order BDF (NDF) for stiff models (adaptive)
+│   │   ├── implicit_newton.cpp            # Newton iteration and Jacobian of BDF and implicit Euler
 │   │   ├── richardson.cpp                 # Richardson extrapolation wrapper
 │   │   ├── integral_table.cpp             # Trajectory storage + interpolation + CSV
 │   │   ├── integral_extraction.cpp        # IR → IntegralProblem classification

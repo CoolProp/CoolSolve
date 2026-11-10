@@ -281,8 +281,8 @@ future work).
 
 CoolSolve solves equation-based initial-value differential–algebraic
 equation (DAE) systems written in the EES integral form. The feature is
-delivered (RK4 default + RK45 adaptive + Euler explicit/implicit +
-optional Richardson extrapolation), lives in its own module
+delivered (RK4 default + RK45 adaptive + BDF for stiff models + Euler
+explicit/implicit + optional Richardson extrapolation), lives in its own module
 (`src/integral/`, `include/coolsolve/integral/`), and reuses the
 algebraic `Solver` unmodified at each time step.
 
@@ -296,14 +296,16 @@ output, and limitations.
 
 ### 6.1 Evaluation overhead and time marching (November 2026)
 
-**Steps 1 to 4 are in `main`** (`749e577`, `7035305`) and reviewed: results
-and review below. To do, in this order: the check equations of the march
-(the one defect of the review), step 5 (evaluation by slots, measured on a
-prototype: it replaces the compiled evaluation first planned), step 6 (stiff
-integrator, item 1 of §6.2, now specified from measurements). Before this
-work one algebraic solve cost about 0.21 µs × blocks × variables whatever
-the equations contained, and a dynamic model paid it four times per RK4
-step.
+**Steps 1 to 6 are done.** Steps 1 to 4 are in `main` (`749e577`,
+`7035305`) and reviewed: results and review below. On the branch
+`perf/slots-bdf`, for review: the check equations of the march (the one
+defect of the review, `f00c581`), step 5 (evaluation by slots, `1348da0`)
+and step 6 (BDF, item 1 of §6.2, `f1e8e28`); their results follow the
+specification of each step. Before this work one algebraic solve cost about
+0.21 µs × blocks × variables whatever the equations contained, and a dynamic
+model paid it four times per RK4 step: the greenhouse models went from 141 s
+and 459 s to 0.57 s and 0.94 s with RK4, 0.12 s and 0.15 s with BDF at
+0.02 K.
 
 #### Diagnosis
 
@@ -459,7 +461,7 @@ What remains of a stage is broken down under step 5 below.
   is written by `solveBlock` and by the multi-start between two candidates,
   not by the strategies that run in parallel, and the parallel multi-start
   keeps its copy.
-- **One regression, to fix first.** A check equation (a block without
+- **One regression, fixed in `f00c581`.** A check equation (a block without
   variable: the equation left over when a system with as many equations as
   unknowns defines a variable twice) is no longer verified during the march:
   `marchBlocks_` is built from the variables of the blocks, and this block
@@ -468,7 +470,9 @@ What remains of a stage is broken down under step 5 below.
   success. Fix: such a block is in the march when one of its equations reads
   a dependent variable (tried on the prototype below: the error is back, the
   greenhouse outputs and times do not change), with a test in
-  `test_evaluation_overhead.cpp`.
+  `test_evaluation_overhead.cpp`. Done so: the march stops at t = 0.0005 with
+  `Check equation failed`; the same model with a check equation that holds
+  at every t integrates.
 - Step 4a changes two results, rightly: with `EulerImplicit`,
   `single_cylinder_engine_weibe` (library) and `engine_weibe_cycle`
   (`examples/`) ended with success after 26 s; they now stop at their first
@@ -538,6 +542,45 @@ at every line:
   on doubles) would act on the first two: 2.7× at the very most (a bound,
   not a measurement), for 1–2 weeks. Not planned; to reconsider after
   step 6 if a model needs it.
+
+#### Results of step 5
+
+`1348da0` against `7035305`, same machine (Release, one thread), full runs,
+best of three:
+
+| | `7035305` | Step 5 | Prototype a to g | Target |
+|---|------:|------:|------:|------:|
+| Climate, full run | 1.74 s | **0.57 s** | 0.60 s | under 0.7 s |
+| Pipe, full run | 3.82 s | **0.94 s** | 0.93 s | under 1.1 s |
+| Per RHS evaluation, climate / pipe (Python reference) | 0.10 / 0.11 ms | 33 / 27 µs | 34 / 27 µs | – (90 / 30 µs) |
+| Steady state, process | 0.018 s | 0.016 s | – | – |
+
+- The `.sol` and `-integral.csv` files, stdout and stderr of the three
+  models are those of `7035305`, byte for byte. So are those of the 417
+  `.eescode` files of the library and of `examples/` (exit code, stdout
+  without the path of the report, stderr, `.sol`, `-integral.csv`; 380
+  succeed with both binaries). `[library-regression]`: 222 PASS, 101
+  DEVIATION, 0 FAIL, as before. The 1354 test cases pass,
+  `examples/test_examples.md` is unchanged.
+- What differs from the prototype. (b) The code is the default member
+  initializer of `UnaryOp` / `BinaryOp` (`OpCode code = opCodeOf(op)`):
+  every construction of a node sets it, the copies of `ir.cpp` are aggregate
+  initialisations; the other `op == "..."` of the code base are unchanged.
+  (c) The slots are those of an `ExpressionBindings` of the `BlockEvaluator`
+  (the `Variable` nodes of its equations to their slots). The entries of the
+  state are found once, when `SystemEvaluator::initializeFromGuesses` binds
+  each block to its state (`BlockEvaluator::bindState`); any other map is
+  looked up once per name and evaluation (the prototype kept the last map
+  by its address, which a later map at the same address would have fooled).
+  A reference to a name that is neither a variable of the block nor one it
+  reads (the unquoted fluid of a property call) is read by name, instead of
+  taking the slots away from the block. `SystemEvaluator` is no longer
+  copyable. (d) `SystemEvaluator::setBlockVariableValue` writes through the
+  entry found at the binding. (e) `BlockEvaluator` lists its calls of
+  standard functions (`reachesStandardFunction`, which follows the dispatch
+  of `evaluateFunctionCall`; a routine registered later removes the calls of
+  its name). (f) `setBlockEvaluationTiming`, on with `-d` and in the GUI for
+  a solve with tracing. (g) As in the prototype.
 
 #### Step 6: the stiff integrator, measured
 
@@ -613,15 +656,75 @@ Eigen), as an `Integrator` next to RK45:
   models of the review, which RK4 integrates at the same step (cause not
   investigated).
 
+#### Results of step 6
+
+`f1e8e28`: `integralMethod = BDF` (`src/integral/integrator_bdf.cpp`), the
+Newton iteration and Jacobian it shares with `EulerImplicit`
+(`src/integral/implicit_newton.h`). Same models, `integralAbsTol` =
+`integralRelTol` / 100, RHS evaluations of the integrator (Jacobians and
+rejected steps included), the largest difference with RK4 at 15 s at the
+hourly rows; in brackets the measurement of scipy's `BDF` above:
+
+| `integralRelTol` | climate: evaluations, error, run | pipe: evaluations, error, run |
+|---|---|---|
+| 1e-3 | 1 238 (1 444), 0.085 K / 11 Pa (0.18 K / 13 Pa), 0.07 s | 2 740 (3 267), 0.21 K / 14 Pa (0.22 K / 16 Pa), 0.10 s |
+| 1e-4 | **2 921** (4 149), **0.021 K** / 1.9 Pa (0.024 K / 1.3 Pa), 0.12 s | **4 811** (5 734), **0.026 K** / 2.3 Pa (0.024 K / 1.3 Pa), 0.15 s |
+| 1e-5 | 6 135 (8 947), 0.0025 K / 0.15 Pa (0.002 K / 0.17 Pa), 0.24 s | 8 299 (10 579), 0.0036 K / 0.16 Pa (0.005 K / 0.20 Pa), 0.24 s |
+| 1e-6 | 10 695 (14 077), 0.0003 K / 0.02 Pa (0.0002 K / 0.02 Pa), 0.37 s | 13 401 (17 243), 0.0005 K / 0.02 Pa (0.0008 K / 0.02 Pa), 0.38 s |
+| RK4 at the step of the model | 17 280, 0.003 K / 0.02 Pa, 0.57 s | 34 560, 0.018 K / 1.0 Pa, 0.94 s |
+
+- The acceptance at 1e-4 is met (0.03 K, 5 000 and 7 000 evaluations), with
+  20 to 30% fewer evaluations than scipy at the same accuracy: the Jacobian
+  is computed without scipy's second evaluation of its columns whose
+  difference is too small, and the matrix is factorised again after every
+  change of step. At 1e-6 the run needs `integralMaxSteps` above 1 000 (the
+  budget is 4 000 attempted steps; it stops at 86% of the interval).
+- A row between two steps is solved at the states of the interpolant of the
+  method (`Integrator::denseOutput`): with steps of 10 to 40 minutes, a
+  linear interpolation of the rows of the steps would cost the accuracy that
+  the steps keep. One more algebraic solve per row (145 rows).
+- `EulerImplicit` runs on the same iteration: the Jacobian kept, renewed at
+  the predicted point, then, since a fixed step cannot be shortened, the full
+  Newton iteration (a Jacobian at every iterate) where the renewed Jacobian
+  does not let it converge: at t = 229 620 s of the pipe model the vents
+  start to open between the predictor and the solution (the kink of
+  `u_ven = min(max(...), 0), 1)`), and the iteration with the slope of the
+  closed vents oscillates. Its tables are those of `7035305` at the 6 digits
+  of the CSV, 11.96 → 0.55 s (climate) and 32.65 → 0.83 s (pipe), 3.5 to 3.9
+  evaluations per step.
+- The cause on the two engine models: the intake flow
+  `IF(p - p_out, 0, m_dot)` jumps with the pressure, a state, which starts at
+  `p_out`. The trajectory slides along `p = p_out`, where an implicit step has
+  no solution however short (RK45 chatters along it: 12 939 steps, 246 169
+  evaluations). BDF halves its step to the minimum and stops with a message
+  that says so; `EulerImplicit` stops at its first step, as since step 4a.
+- The other dynamic models of the library and of `examples/`, BDF at the
+  default tolerance against their RK4 tables: `dhw_tank_dynamic` within
+  2e-5 of the largest value of each column with 372 evaluations (RK4:
+  72 000), `building_rc_network_3r2c` within 0.011 K on its states (with 5 149
+  evaluations, more than its 4 000 with RK4: it is not stiff at the RK4 step;
+  983 at 1e-4), the piston and compressor models within 1e-5. The columns of
+  inputs that switch at a row time (`Q_dot_sol`, `Q_dot_sens`) differ: an RK4
+  row there is the linear interpolation of the rows of the two steps around
+  it, a BDF row is the model at that time. The two ice storage tanks start
+  exactly on the phase boundary: the derivative jumps at t = 0⁺ and the
+  heat discharged is a state that starts at 0, so the relative error of the
+  first step does not decrease with the step. RK45 fails on
+  `examples/ice_storage_tank` at the default tolerance too (both binaries);
+  the library variant passes with RK45 at 1e-6 and with BDF at 1e-4.
+- The 417 `.eescode` files give the outputs of step 5 (none uses BDF or
+  `EulerImplicit`); the 1368 test cases pass.
+
 #### Acceptance
 
 - The three models are the benchmark, each step timed against the
   tables above. Target after steps 1 to 3: climate under 8 s, pipe
   under 12 s, the steady-state process under 0.05 s (met). After step 5:
-  climate under 0.7 s, pipe under 1.1 s. After step 6, at a tolerance of
-  1e-4: the hourly rows within 0.03 K of RK4 at 15 s in at most 5 000
-  (climate) and 7 000 (pipe) RHS evaluations, those of the Jacobians
-  included (scipy's BDF: 4 149 and 5 734; RK4: 17 280 and 34 560).
+  climate under 0.7 s, pipe under 1.1 s (met: 0.57 s and 0.94 s). After
+  step 6, at a tolerance of 1e-4: the hourly rows within 0.03 K of RK4 at
+  15 s in at most 5 000 (climate) and 7 000 (pipe) RHS evaluations, those of
+  the Jacobians included (scipy's BDF: 4 149 and 5 734; RK4: 17 280 and
+  34 560). Met: 0.021 K in 2 921, 0.026 K in 4 811.
 - Steps 1 to 3 and 5 change no number: the `-integral.csv` and `.sol` files
   of the three models are reproduced to the last digit, the unit tests
   pass and `examples/solver_robustness_report.md` is unchanged. Steps 1
@@ -632,7 +735,9 @@ Eigen), as an `Integrator` next to RK45:
   the binaries before and after (as in the review).
 - Step 6: a step whose iteration does not converge is never accepted; the
   dynamic models of the library give their RK4 tables within the tolerance
-  asked.
+  asked. Met, except where a right-hand side jumps with a state (the engine
+  models: no implicit solution) or at the initial point (the ice tanks: as
+  RK45), see the results of step 6.
 - To measure again: `perf record --call-graph dwarf` on the short
   models (the stacks need DWARF unwinding in a Release build), and the
   block evaluation count and time of `profiling.md` (`-d`).
@@ -643,7 +748,7 @@ Items are listed by priority. Each is independent.
 
 | # | Improvement | Primary benefit | Estimated effort |
 |---|-------------|-----------------|------------------|
-| 1 | **BDF / DASSL-style stiff variable-step integrator** | A genuinely stiff ODE/DAE integrator for the dynamic solver. RK45 takes many steps on stiff systems; BDF reuses the same per-step algebraic-solve infrastructure and slots in via the existing `Integrator` factory. Specified and measured on the greenhouse models: §6.1, step 6 | 1–2 weeks |
+| 1 | ~~**BDF / DASSL-style stiff variable-step integrator**~~ | Done: `integralMethod = BDF`, §6.1 step 6 | – |
 | 2 | **Sparse factorization of the Jacobian of large blocks** | `thermosyphon_hx`, the slowest model of the library (61 s), gains nothing from §6.1: 95% of its run is the dense `ColPivHouseholderQR` of the 3599 × 3599 Jacobian of one block in `NewtonSolver::solve` (6 iterations of 10 s; the 3332 block evaluations of the run take 3 s). This Jacobian has 19 074 structural non-zeros (5.3 per row), and a sparse LU of a matrix with its pattern takes 15 ms (SuperLU, 42 351 non-zeros in L + U). Eigen has `SparseLU`: use it above a block size to be measured, with the dense pivoted QR as fallback when it finds the matrix singular | 3–5 days, plus the robustness re-validation |
 | 3 | **Pantelides-style index reduction** | Enable fully-implicit (high-index) DAE models in the dynamic solver. Currently high-index systems are detected and rejected; dummy-derivative index reduction would make them solvable | 2–3 weeks |
 | 4 | **Hybrd-native `O(n²)` triangular solve for TrustRegion Broyden mode** | Realize the speedup §4.6 found missing: solve directly against the maintained `R` instead of reconstructing dense `J` and re-running `ColPivHouseholderQR` every iteration | 3–5 days, plus a careful robustness re-validation (loses rank-revealing pivoting, reopening the numerical-instability concern) |
