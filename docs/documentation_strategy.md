@@ -8,7 +8,7 @@ The CoolSolve repository already contains structured Markdown documentation:
 - `docs/debugging_models.md` — how to diagnose solver failures
 - `docs/deployment_ubuntu_apache.md` — server deployment guide
 - `docs/gui.md` — GUI architecture reference
-- `docs/solver_roadmap.md` — solver algorithm roadmap
+- `docs/solver_roadmap.md` — algebraic solver roadmap
 - `docs/symbolic_redecomposition.md` — symbolic reduction internals
 
 The goal is to surface this content as official, navigable documentation reachable from:

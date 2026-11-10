@@ -344,8 +344,10 @@ immediately visible to users.
       Only document features that are implemented and tested.
 - [ ] **`docs/debugging_models.md`** — extend if the feature introduces a
       new failure mode or a new diagnostic file.
-- [ ] **`docs/solver_roadmap.md`** — update if a roadmap item is now
-      delivered, or if the new feature replaces a planned approach.
+- [ ] **`docs/solver_roadmap.md`** — update if an algebraic-solver roadmap
+      item is now delivered, or if the new feature replaces a planned approach.
+- [ ] **`docs/integral_table.md`** — update if the change is in the dynamic
+      solver (`INTEGRAL`): behaviour, the cost of a step, or a planned item.
 - [ ] **`docs/gui.md`** — required for any GUI-visible change.
 - [ ] **`docs/symbolic_redecomposition.md`** — update only if the
       symbolic-reduction algorithm itself changes.

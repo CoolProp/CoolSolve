@@ -65,12 +65,12 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 | Document | Description |
 |----------|-------------|
 | [Language Reference](docs/language_reference.md) | CoolSolve language syntax, built-in functions, and configuration keys |
-| [Dynamic Solving](docs/integral_table.md) | Equation-based `INTEGRAL` / `$IntegralTable` — algorithms, architecture, and limitations |
+| [Dynamic Solving](docs/integral_table.md) | Equation-based `INTEGRAL` / `$IntegralTable`: algorithms, the cost of a step, limitations, and what is planned next |
 | [Debugging Models](docs/debugging_models.md) | Diagnosing and fixing solver failures |
 | [Importing EES Models](docs/ees_import.md) | Reading binary EES files (equations, guesses, stored solution, tables, units) and importing/verifying them in CoolSolve |
 | [Model Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) | The curated EES model collection, embedded in the GUI: toolbar **Library** button, dashboard at `/library/` |
 | [Model Library Support](docs/model_library_support.md) | How CoolSolve embeds and serves the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library), the features it needs, and the register of EES gaps found while importing models |
-| [Solver Roadmap](docs/solver_roadmap.md) | Performance roadmap, algorithm details, and implementation status |
+| [Solver Roadmap](docs/solver_roadmap.md) | Algebraic solver: algorithms, performance, and what is planned next |
 | [Symbolic Block Reduction](docs/symbolic_redecomposition.md) | Symbolic block reduction algorithm |
 | [Solid Phases (design study)](docs/solid_phase_properties.md) | Proposal for ice, dry ice, PCM and brine freezing properties coherent with CoolProp (not implemented) |
 | [GUI & REST API](docs/gui.md) | Web interface, REST API, and parametric studies |
@@ -80,7 +80,10 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 ## Performance and Roadmap
 
-For details on current performance optimizations and the future roadmap for solver integration, see the [Solver Roadmap](docs/solver_roadmap.md).
+The algebraic solver — algorithms, measured robustness, and what is planned
+next — is the [Solver Roadmap](docs/solver_roadmap.md). The dynamic solver
+(`INTEGRAL`) — integrators, the cost of a step, and what is planned next — is
+[Dynamic Solving](docs/integral_table.md).
 
 ## File Formats
 
@@ -541,7 +544,7 @@ For the full language syntax, built-in functions, and CoolProp integration detai
 
 The [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) is embedded, browsable and importable (`$INCLUDE <name>`); next steps are a command-line access (`coolsolve --library`), an *Export for EES* that writes the included routines into one file, editor completion of library functions, and improved plotting capabilities — see [Model Library Support](docs/model_library_support.md). 
 
-Planned improvements for the solver include a sparse factorization of the Jacobian of large blocks, pseudo-arclength continuation, and an improved plotting interface. See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
+Planned improvements for the algebraic solver include a sparse factorization of the Jacobian of large blocks and pseudo-arclength continuation. See [docs/solver_roadmap.md](docs/solver_roadmap.md). What remains for the dynamic solver is in [Dynamic Solving](docs/integral_table.md).
 
 Planned property models for the absorption machines: a more recent LiBr-H2O correlation (the EES `LiBrH2O` library, Pátek & Klomfar 2006; register item `CS-GAP-LIBR-PK`) next to the ASHRAE routines, and the transport properties of ammonia-water (conductivity, viscosity, surface tension; `CS-GAP-NH3H2O` remainder) — see [Model Library Support](docs/model_library_support.md).
 

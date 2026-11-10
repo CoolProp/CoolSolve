@@ -153,13 +153,26 @@ model (the 5th argument of `INTEGRAL`, else a tenth of the interval).
 `integral.md` gives the number of evaluations of the right-hand side, those of the
 Jacobians and of the rejected steps included.
 
-Its gain is the accuracy given up: on the greenhouse models of the library (10
-and 15 states, 6 days), `integralRelTol = 1e-4` (`integralAbsTol = 1e-6`) keeps
-the hourly rows within 0.03 K of RK4 at 15 s with 2 900 and 4 800 evaluations,
-against 17 280 and 34 560 for RK4 at the steps of the models (0.13 s and 0.18 s
-per run instead of 0.6 s and 0.9 s); the default `1e-6` gives 0.0005 K with
-10 700 and 13 400 evaluations, where RK4 at the steps of the models is within
-0.003 K and 0.02 K.
+Its gain is the accuracy given up, measured on the greenhouse models of the library
+(10 and 15 states, 6 days; Release, one thread). The figure is the largest
+temperature difference at the hourly rows: the RK4 row and the 1e-4 row against
+RK4 at 15 s, the default row on the full run against a fine RK4 (a quarter of the
+model step). Evaluations include the Jacobians and the rejected steps.
+
+| | climate | pipe |
+|---|---|---|
+| RK4 at the step of the model (120 s, 60 s) | 17 280 evaluations, 0.57 s, within 0.003 K | 34 560, 0.94 s, within 0.018 K |
+| BDF, `integralRelTol` 1e-4 (`integralAbsTol` 1e-6) | 2 921, 0.12 s, 0.021 K | 4 811, 0.15 s, 0.026 K |
+| BDF, default 1e-6 | 10 696, 0.0005 K | 13 449, 0.0005 K |
+
+Against a fine RK4 (a quarter of the model step; a tenth for the building), each
+method at its default: `building_rc_network` is within 0.011 K (RK4), 0.010 K
+(RK45) and 0.0005 K (BDF); `dhw_tank_dynamic` within 0.0007 K, 0.14 K and
+0.0004 K. The RK45 miss on the tank is a row interpolated linearly between long
+steps (§7.2). On the ice tank of the library the largest difference of a column,
+in parts of its largest value, is 7e-4 (RK4), 8e-5 (BDF) and 7e-2 (RK45, same
+cause). Final values of the other dynamic models agree within 2e-5 between BDF
+and RK4.
 
 `EulerImplicit` uses the same iteration with its fixed step: the Jacobian kept
 from step to step, renewed at the predicted point when the iteration does not
@@ -293,16 +306,20 @@ At time `t` with state `y`, the RHS `f(t, y)` is evaluated by:
    (the closure of `t` and the states through the blocks, `dependentVariables`).
    The other blocks (parameters, constants of the model and everything computed
    from them only) were solved by the complete solve at `t0` and keep their
-   values: they are not solved again at every stage.
+   values: they are not solved again at every stage. A block with no unknown — a
+   check equation, the equation left when a variable is defined twice — is marched
+   when one of its equations reads a dependent variable, and a check that fails
+   stops the march.
 3. Read the integrand variables (`dydt`, ...) from the state of the solver — those
    are `f`. No `SolveResult` is built for a stage: a table row reads its columns
    from the state too, and the result at `tf` is the state after the last row.
 
-Each block reads the variables it does not own from the state by reference
-(`BlockEvaluator::evaluate`), and an explicit block `x = expr` is evaluated without
-derivatives, so the cost of a stage is that of the evaluation of its equations: for
-the greenhouse models of the library (about 200 blocks, no property call) a stage
-takes 0.1 ms (docs/solver_roadmap.md §6.1).
+Each block reads the variables it does not own from the state by reference, and each
+reference, operator and standard function is resolved once per block (a slot), not
+looked up by name at every evaluation. An explicit block `x = expr` is evaluated
+without derivatives, trace or diagnostics. On the greenhouse models (about 200
+blocks, no property call) one evaluation of the right-hand side takes 33 µs
+(climate) and 27 µs (pipe), Release, one thread — the runs of §2.3.
 
 The lookup tables of the model (companion `<model>-<table>.csv` files, or the tables of
 the GUI session) are owned by the runner and given to `IntegralSolver`, which hands them
@@ -311,13 +328,8 @@ limits). `INTERPOLATE` / `LOOKUP` therefore work in the equations of an `INTEGRA
 and in its `FUNCTION`s / `PROCEDURE`s, with the weather (or any forcing) table read at
 each step (`examples/building_rc_network.eescode`).
 
-For **implicit Euler**, steps 1–3 are wrapped inside the nonlinear solve
-for `y_{n+1}`: a Newton iteration on `G(y_{n+1}) = y_{n+1} − y_n − h·f(t_{n+1}, y_{n+1})`
-with a finite-difference Jacobian of `f` (one RHS evaluation per state and per
-iteration), at most 30 iterations. It converges when `|G| < 1E-12` or the correction is
-below 1E-12 (or, after the 30 iterations, at a few ulps of `y`, the rounding of a large
-state). A step that does not converge is an error with the time and the residual: its
-state would be off the trajectory.
+For **implicit Euler** and **BDF**, steps 1–3 are the `f` of the Newton iteration of
+§2.3. A step that does not converge is an error; its state is not written.
 
 ---
 
@@ -333,7 +345,7 @@ keyed by the integration variable first. It supports:
 `INTEGRALVALUE(t, 'X')` in the evaluator is a thin call to
 `IntegralTable::interpolate` — meaningful only *during* an integration step.
 The parser recognises the function; full evaluator dispatch is a deferred
-follow-up.
+follow-up (§7.2).
 
 ---
 
@@ -414,14 +426,62 @@ empty column.
   whose message says that the step may be too large); use `BDF` with a tolerance
   matched to the accuracy needed (§2.3). An implicit method (BDF, `EulerImplicit`)
   needs a right-hand side continuous in the states (§2.3).
+- **Rows between steps**, for every method but BDF, are the linear interpolation of
+  the two step rows (§2.1). A long step that crosses a switch of an input can put a
+  column off by a large fraction of its range (§7.2).
 
 ### 7.2 Planned improvements
 
-| # | Improvement | Priority |
-|---|-------------|----------|
-| 1 | **Pantelides-style index reduction** — enable fully-implicit (high-index) DAE models | Medium |
-| 2 | **Event detection** (zero-crossing) inside the RK45 and BDF steps for precise stop locations, and to restart BDF at a switch of the right-hand side | Low |
-| 3 | **`INTEGRALVALUE` full evaluator dispatch** — wire the active-table context during a step | Low |
+In order. Each item is independent, except item 4, which waits on item 2 before
+BDF can be the default.
+
+**1. Interpolant for the rows of RK45 and of the fixed-step methods** (2–3 days).
+A row between two steps is the linear interpolation of the step rows, except with
+BDF (§2.1). RK45 steps are long: `dhw_tank_dynamic` is 0.14 K off on the tank
+temperature (BDF: 0.0004 K) and its tap power is 87% of its largest value off at
+one row; the ice tank of the library is 7% off on `T_w`. RK4 with rows off the
+steps (`building_rc_network`: steps of 604.8 s, rows every 600 s) is 12% of the
+largest value off on `Q_dot_capa_in` where the occupancy switches. Give RK45 the
+continuous extension of Dormand and Prince (from the stages of the step) and the
+fixed-step methods the cubic Hermite interpolant (`y` and `f` at both ends),
+through `Integrator::denseOutput`. The driver already solves a row at the
+interpolated states.
+
+**2. Switches on a state** (1–2 weeks). The case with no implicit solution is
+§2.3 (the intake of the two engine models): RK45 follows the switch with very
+short steps, RK4 crosses it with an error of the order of its step. A start on
+a switch costs rejected steps (`examples/ice_storage_tank`: 235 of 521 with
+BDF). Locate the change of sign of an `IF` on a state between two steps (a root
+of the condition on the interpolant) and restart there. On a surface that holds
+the trajectory, integrate with the flow that stays on it, or report the surface.
+This is the event detection worth building: `$IntegralStop` stays uninterpreted.
+Count first how many models switch on a state.
+
+**3. Jacobian of `f` from the algebraic derivatives** (1 week). BDF and
+`EulerImplicit` difference `f`: n + 1 algebraic solves per Jacobian, for n states.
+The blocks have analytic derivatives, so the Jacobian of `f` follows by the
+implicit function theorem. Measure first the share of the Jacobians in the
+evaluations `integral.md` reports.
+
+**4. BDF when the model gives no step** (1–2 days, plus re-validation of the
+dynamic models). At the default tolerances BDF matches RK4 at the steps of the
+models, or beats it (§2.3), with fewer evaluations, and it needs no step. It
+cannot be the default while it stops on a switch that holds the trajectory (item
+2); the alternative is BDF, then RK4 where the implicit step has no solution. The
+two greenhouse models can set `integralMethod = BDF` at 1e-4 / 1e-6 today: 0.12 s
+and 0.15 s instead of 0.57 s and 0.94 s, within 0.03 K.
+
+**5. Pantelides-style index reduction** (2–3 weeks). High-index systems are
+detected and rejected (§1.2). Dummy derivatives would make a fully implicit DAE
+solvable.
+
+**6. `INTEGRALVALUE` evaluator dispatch.** The parser recognises
+`INTEGRALVALUE(t, 'X')`; the evaluator does not (§4). Wire it to the table of the
+step in progress.
+
+An explicit stabilized method (RKC2, no Jacobian) was tried on the two greenhouse
+models and not kept: the error is erratic (climate model: 0.07 K at a step of
+600 s, 20 K at 300 s, 64 K at 900 s).
 
 ---
 
@@ -441,3 +501,17 @@ Bundled examples:
 - `examples/integral_coupled_algebraic.eescode` — state coupled to an
   algebraic variable (heat-transfer cell, exercises the algebraic-resolve
   path).
+
+---
+
+## 9. References
+
+- Hairer, E., Wanner, G. (1996): *Solving Ordinary Differential Equations II:
+  Stiff and Differential-Algebraic Problems* (Springer). The implicit Newton
+  iteration (§2.3).
+- Shampine, L. F., Reichelt, M. W. (1997): *The MATLAB ODE Suite*. SIAM J. Sci.
+  Comput. 18. The NDF implemented by `BDF`.
+- Dormand, J. R., Prince, P. J. (1980): *A family of embedded Runge-Kutta
+  formulae*. J. Comp. Appl. Math. 6. RK45, and the continuous extension of §7.2.
+- Pantelides, C. C. (1988): *The consistent initialization of
+  differential-algebraic systems*. SIAM J. Sci. Stat. Comput. 9.
