@@ -628,7 +628,7 @@ Contents:
 - A scrollable columnar table with the integration variable as the first
   (highlighted) column, followed by the `$IntegralTable` variables.
 - A row/step count and, when available, the accepted/rejected step counts
-  (RK45).
+  (RK45, BDF).
 - A Y-variable selector + `PlotlyChart` line plot of one tabulated variable
   versus the integration variable.
 - An **Export CSV** button that re-serialises the table to a downloadable

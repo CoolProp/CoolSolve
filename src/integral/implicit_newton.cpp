@@ -33,16 +33,17 @@ double newtonTolerance(double relTol) {
 
 int RhsJacobian::compute(const RHSFunction& rhs, double t, const Eigen::VectorXd& y, const Eigen::VectorXd& f,
                          double threshold) {
+    // Built aside: an evaluation that throws leaves the previous Jacobian and factors as they were
     const Eigen::Index n = y.size();
-    if (factor_.size() != n) factor_ = Eigen::VectorXd::Constant(n, std::sqrt(kEps));
-    J_.resize(n, n);
+    Eigen::VectorXd factor = factor_.size() == n ? factor_ : Eigen::VectorXd::Constant(n, std::sqrt(kEps));
+    Eigen::MatrixXd J(n, n);
     for (Eigen::Index j = 0; j < n; ++j) {
         // The step in the direction of f (towards where the solution goes), exactly representable
         const double yScale = (f(j) >= 0.0 ? 1.0 : -1.0) * std::max(threshold, std::abs(y(j)));
-        double h = (y(j) + factor_(j) * yScale) - y(j);
+        double h = (y(j) + factor(j) * yScale) - y(j);
         while (h == 0.0) {
-            factor_(j) *= kFactorIncrease;
-            h = (y(j) + factor_(j) * yScale) - y(j);
+            factor(j) *= kFactorIncrease;
+            h = (y(j) + factor(j) * yScale) - y(j);
         }
         Eigen::VectorXd yp = y;
         yp(j) += h;
@@ -51,11 +52,13 @@ int RhsJacobian::compute(const RHSFunction& rhs, double t, const Eigen::VectorXd
         Eigen::Index iMax = 0;
         const double maxDiff = diff.cwiseAbs().maxCoeff(&iMax);
         const double fScale = std::max(std::abs(f(iMax)), std::abs(fp(iMax)));
-        J_.col(j) = diff / h;
-        if (maxDiff < kDiffSmall * fScale) factor_(j) *= kFactorIncrease;
-        else if (maxDiff > kDiffBig * fScale) factor_(j) *= kFactorDecrease;
-        factor_(j) = std::max(factor_(j), kMinFactor);
+        J.col(j) = diff / h;
+        if (maxDiff < kDiffSmall * fScale) factor(j) *= kFactorIncrease;
+        else if (maxDiff > kDiffBig * fScale) factor(j) *= kFactorDecrease;
+        factor(j) = std::max(factor(j), kMinFactor);
     }
+    J_ = std::move(J);
+    factor_ = std::move(factor);
     return static_cast<int>(n);
 }
 
