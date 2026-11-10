@@ -11,6 +11,8 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <functional>
 
@@ -22,6 +24,14 @@ namespace coolsolve {
 void resetProfilingStats();
 void resetCoolPropUnitHints();
 std::string getProfilingStatsString();
+
+/**
+ * @brief Time every block evaluation for the profile (the block evaluation time of `profiling.md`, debug mode).
+ *
+ * Off by default: two clock reads per evaluation cost about 3% of a run made of explicit blocks. The count of
+ * the evaluations is kept either way. The CLI turns it on with `-d`, the GUI server for a solve with tracing.
+ */
+void setBlockEvaluationTiming(bool on);
 
 /**
  * @brief Perform a one-time CoolProp warmup call and return its duration.
@@ -129,6 +139,9 @@ struct CoolPropConfig {
     UnitSystem units;
 };
 
+/// A CoolPropConfig with the default settings, for the evaluators built without one (it lives as long as the program).
+const CoolPropConfig& defaultCoolPropConfig();
+
 // ============================================================================
 // Input Clamping Log
 // ============================================================================
@@ -151,6 +164,20 @@ struct InputClampLog {
 // ============================================================================
 
 /**
+ * @brief What a block resolves once about the expressions of its equations, so that an evaluation does not
+ *        look names up (BlockEvaluator; docs/solver_roadmap.md §6.1, step 5). Keyed by the AST nodes of the
+ *        equations: the nodes of the bodies of the user routines are not in it.
+ */
+struct ExpressionBindings {
+    /// The slot of each variable reference: its value is the entry of that index in the values given with
+    /// ExpressionEvaluator::setBindings. A reference without a slot is looked up by its name.
+    std::unordered_map<const Variable*, size_t> slotOf;
+    /// The calls that evaluateFunctionCall hands to evaluateStandardFunction whatever the values (exp, max, IF, ...):
+    /// they skip the search of the user routines, property, string and lookup functions.
+    std::unordered_set<const FunctionCall*> standardCalls;
+};
+
+/**
  * @brief Evaluates AST expressions with automatic differentiation.
  * 
  * This class traverses the expression tree and computes both values and 
@@ -168,7 +195,12 @@ public:
      */
     static constexpr int kMaxRoutineCallDepth = 200;
 
-    ExpressionEvaluator(size_t numVariables, const CoolPropConfig& config = CoolPropConfig());
+    /**
+     * @param numVariables Size of the gradients
+     * @param config Referenced, not copied: it must outlive the evaluator (and the body evaluators it makes)
+     */
+    ExpressionEvaluator(size_t numVariables, const CoolPropConfig& config = defaultCoolPropConfig());
+    ExpressionEvaluator(size_t numVariables, CoolPropConfig&& config) = delete;   ///< no temporary configuration
     
     /**
      * @brief Set the value of a variable for evaluation.
@@ -274,6 +306,17 @@ public:
     }
 
     /**
+     * @brief Use what a block resolved about its expressions (\p bindings, null: nothing), and the values of
+     *        its slots (\p slotValues, indexed by ExpressionBindings::slotOf; null: every variable is looked up
+     *        by name). Both are referenced and must outlive the evaluations; the body evaluators of the user
+     *        routines do not inherit them.
+     */
+    void setBindings(const ExpressionBindings* bindings, const ADValue* slotValues) {
+        bindings_ = bindings;
+        slotValues_ = slotValues;
+    }
+
+    /**
      * @brief Resolve a variable name, including evaluating indices for array access.
      */
     std::string resolveVariableName(const Variable& var);
@@ -352,8 +395,10 @@ private:
     const ProcedureTable* sharedProcedures_ = nullptr;   ///< see setRoutines; used instead of userProcedures_
     const VariableValues* externalNumbers_ = nullptr;    ///< see setExternalValues
     const StringValues* externalStrings_ = nullptr;      ///< see setExternalValues
+    const ExpressionBindings* bindings_ = nullptr;       ///< see setBindings
+    const ADValue* slotValues_ = nullptr;                ///< see setBindings
     mutable std::set<std::string, CaseInsensitiveLess> missingVariables_;
-    CoolPropConfig coolpropConfig_;
+    const CoolPropConfig* coolpropConfig_;               ///< referenced, see the constructor
 
     /// The routine tables in use: the shared ones (setRoutines), else those of registerFunction / registerProcedure.
     const FunctionTable& functions() const { return sharedFunctions_ ? *sharedFunctions_ : userFunctions_; }
@@ -541,14 +586,25 @@ public:
     bool isExplicitAssignment() const { return explicitAssignment_; }
 
     /**
-     * @brief Register a user-defined function for this block.
+     * @brief Register a user-defined function for this block (a call of that name is no standard function).
      */
-    void registerFunction(const FunctionDefinition& func) { functions_[func.name] = func; }
+    void registerFunction(const FunctionDefinition& func);
     
     /**
-     * @brief Register a user-defined procedure for this block.
+     * @brief Register a user-defined procedure for this block (a call of that name is no standard function).
      */
-    void registerProcedure(const ProcedureDefinition& proc) { procedures_[proc.name] = proc; }
+    void registerProcedure(const ProcedureDefinition& proc);
+
+    /**
+     * @brief Find once the entries of \p state that hold the variables the block reads and does not own: an
+     *        evaluation given this very map reads them through these entries, without a lookup by name.
+     *
+     * The entries stay valid while no entry of \p state is erased (SystemEvaluator never erases one) and while
+     * the map lives: the SystemEvaluator that owns the block binds it to its own state. Any other map given to
+     * `evaluate` (the copy of a parallel multi-start) is read by name. Does nothing for a block whose variable
+     * references cannot all be bound to slots, or when \p state lacks one of the variables.
+     */
+    void bindState(const VariableValues& state);
     
     void setDiagnostics(DiagnosticCollector* diag) { diagnostics_ = diag; }
 
@@ -588,6 +644,9 @@ private:
     /// True if an equation of the block calls one of `names` (a CALL included).
     bool callsAnyOf(const std::set<std::string, CaseInsensitiveLess>& names) const;
 
+    /// Fill bindings_ and slotsUsable_ from the equations (constructor); \p setsStrings: the block assigns strings.
+    void resolveBindings(bool setsStrings);
+
     bool hasStringCallOutputs_ = false;
     bool explicitAssignment_ = false;   ///< see isExplicitAssignment
     bool mayCallWarning_ = false;
@@ -610,6 +669,13 @@ private:
     /// The variables the equations of the block refer to that are not its own (EquationInfo::variables): an
     /// evaluation binds them once from the external values; any other name is read there when evaluated.
     std::vector<std::string> externalNames_;
+    /// The slots of the variable references (the own variables, then externalNames_) and the standard calls.
+    ExpressionBindings bindings_;
+    /// Every reference to a variable of the block has a slot: an evaluation fills the slots instead of binding
+    /// names (false for a block with a CALL, a string assignment or an array index computed at evaluation).
+    bool slotsUsable_ = false;
+    const VariableValues* boundState_ = nullptr;   ///< see bindState
+    std::vector<const double*> boundEntries_;      ///< the entries of *boundState_ of externalNames_
 };
 
 // ============================================================================
@@ -634,6 +700,9 @@ public:
     SystemEvaluator(const IR& ir, 
                     const StructuralAnalysisResult& analysisResult,
                     const CoolPropConfig& config = CoolPropConfig());
+    /// Not copied: its blocks are bound to its state (BlockEvaluator::bindState).
+    SystemEvaluator(const SystemEvaluator&) = delete;
+    SystemEvaluator& operator=(const SystemEvaluator&) = delete;
     
     /**
      * @brief Get the number of blocks.
@@ -650,6 +719,12 @@ public:
      * @brief Set the current solution state for a variable.
      */
     void setVariableValue(const std::string& name, double value);
+
+    /**
+     * @brief Set the value of the variable of block \p blockIndex, a block of one variable: the entry of the
+     *        state is found once (initializeFromGuesses), not by name at each call. Same as setVariableValue.
+     */
+    void setBlockVariableValue(size_t blockIndex, double value);
     
     /**
      * @brief Set the current solution state for a string variable.
@@ -687,7 +762,8 @@ public:
     const std::map<std::string, std::string, CaseInsensitiveLess>& getAllStringVariables() const { return currentStringState_; }
     
     /**
-     * @brief Initialize all variables with guess values from the IR.
+     * @brief Initialize all variables with guess values from the IR, then bind the blocks to the state
+     *        (BlockEvaluator::bindState, setBlockVariableValue).
      */
     void initializeFromGuesses();
 
@@ -747,6 +823,9 @@ private:
     std::map<std::string, std::string, CaseInsensitiveLess> currentStringState_;
     std::set<std::pair<int, std::string>> reportedCallWarnings_;   ///< (line, message) of the warnings already reported
     CoolPropConfig config_;
+    /// The entry of the state of the variable of each block of one variable, null before initializeFromGuesses
+    /// or for another block (see setBlockVariableValue).
+    std::vector<double*> blockVariableEntries_;
 };
 
 // ============================================================================

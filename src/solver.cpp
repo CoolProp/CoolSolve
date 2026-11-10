@@ -582,7 +582,7 @@ bool Solver::tryExplicitSolve(size_t blockIndex) {
         EvaluationResult result = blockEval.evaluate({0.0}, evaluator_.getAllVariables(),
                                                      evaluator_.getAllStringVariables(), false);
         if (result.residuals.empty()) return false;
-        evaluator_.setVariableValue(blockEval.getVariables()[0], 0.0 - result.residuals[0]);   // 0.0 - r: a zero stays +0
+        evaluator_.setBlockVariableValue(blockIndex, 0.0 - result.residuals[0]);   // 0.0 - r: a zero stays +0
         return true;
     } catch (const std::exception&) {
         return false;
@@ -2400,9 +2400,11 @@ SolverStatus Solver::solveBlockWithMultiStart(size_t blockIndex,
     // leaves the evaluator state at its (possibly diverged) iterate after a
     // failure, so reading the "default" guess later would return that garbage.
     // Multi-start candidates must be derived from the genuine initial guess.
+    // Only a block of several variables can multi-start: the guess of a block of one variable is not read.
     const auto& varNames0 = evaluator_.getBlock(blockIndex).getVariables();
-    Eigen::VectorXd originalGuess(varNames0.size());
-    for (size_t i = 0; i < varNames0.size(); ++i) {
+    const bool mayMultiStart = varNames0.size() > 1 && options.isMultiStartActive();
+    Eigen::VectorXd originalGuess(mayMultiStart ? varNames0.size() : 0);
+    for (Eigen::Index i = 0; i < originalGuess.size(); ++i) {
         originalGuess[i] = evaluator_.getVariableValue(varNames0[i]);
     }
 
@@ -2901,6 +2903,21 @@ SolverStatus Solver::solveBlocks(const std::vector<size_t>& blocks, const Solver
         if (opts.cancelToken && opts.cancelToken->load()) {
             if (errorMessage) *errorMessage = "Solve cancelled by user";
             return SolverStatus::MaxIterations;
+        }
+        // An explicit block with nothing to report at its solution (no string it sets, no CALL WARNING, no unit
+        // hint to check) is evaluated directly, without the trace, the diagnostics and the timeout guard of
+        // solveSystemBlock (this function keeps neither the trace nor the diagnostics). If the evaluation fails,
+        // solveSystemBlock tries the block again and says why.
+        const BlockEvaluator& block = evaluator_.getBlock(blockIdx);
+        if (block.isExplicitAssignment() && !block.hasStringCallOutputs() && !block.mayCallWarning() &&
+            !block.unitHintsPending() && tryExplicitSolve(blockIdx)) {
+            try {
+                evaluator_.checkInputClamps(blockIdx);
+                continue;
+            } catch (const std::exception& e) {
+                if (errorMessage) *errorMessage = blockFailureMessage(blockIdx, SolverStatus::EvaluationError, e.what());
+                return SolverStatus::EvaluationError;
+            }
         }
         SolverTrace trace;
         DiagnosticCollector blockDiag;

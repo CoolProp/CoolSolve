@@ -1507,6 +1507,9 @@ int startServer(const ServerOptions& options) {
                     
                     // Apply CoolProp config from solver options
                     applyCoolPropConfig(solverOpts.coolpropConfig);
+                    // The block evaluation time of the profile written with the debug output (never switched
+                    // off: another session may be tracing)
+                    if (enableTracing) setBlockEvaluationTiming(true);
                     
                     session.addProgressEvent("{\"type\":\"progress\",\"message\":\"Parsing...\"}");
                     
