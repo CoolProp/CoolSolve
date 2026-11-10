@@ -1,6 +1,6 @@
 # CoolSolve — Solver Architecture & Roadmap
 
-*Last updated: July 2026.*
+*Last updated: November 2026.*
 
 This document describes the architecture, algorithm portfolio, and
 forward-looking roadmap of CoolSolve's solver subsystem.
@@ -294,11 +294,117 @@ output, and limitations.
 
 ## 6. Future work
 
+### 6.1 Evaluation overhead and time marching (plan, November 2026)
+
+**Not implemented.** This is the first priority of the roadmap: one
+algebraic solve costs about 0.21 µs × blocks × variables whatever the
+equations contain, and a dynamic model pays it four times per RK4 step.
+
+#### Diagnosis
+
+Measured on the three greenhouse models of the CoolSolve Library
+(`models/buildings/greenhouses`, library commit `eedb4ee`), CoolSolve
+`bc7c92c`, Release build, one thread, with `perf` and temporary timers
+around the phases of a block solve. The models make no property call.
+
+| Model | CoolSolve | Python reference of the model |
+|-------|-----------|-------------------------------|
+| `greenhouse_steady_state` (147 equations) | 0.49 s for the process, 4.6 ms for the solve | 0.3 ms for the solve (scipy `root`, 5 unknowns) |
+| `greenhouse_climate_dynamic` (10 states, RK4, 4320 steps of 120 s) | 141 s, 8.1 ms per RHS evaluation | 6.4 s for 17280 steps of 30 s, 0.09 ms per RHS evaluation |
+| `greenhouse_heating_pipe_dynamic` (15 states, RK4, 8640 steps of 60 s) | 459 s, 13.2 ms per RHS evaluation | 1.9 s for 17280 steps of 30 s, 0.03 ms per RHS evaluation |
+
+The READMEs of the models report 477 s and 1503 s against 20 s and
+6.8 s: the same ratios, measured on a run about 3.3 times slower.
+
+Once the states and the time are pinned, the structure is already the
+right one: the pipe model is 243 explicit blocks of one equation (Newton
+never runs), the climate model 192 explicit blocks and one block of 5
+variables (the pipe balance, 2.7 Newton iterations per stage). The time
+goes into what is done around each block:
+
+| Share of one RHS evaluation | climate | pipe |
+|-----------------------------|--------:|-----:|
+| Three copies of all the variables, for every block: `externalVars` in `Solver::solveBlock`, the same map again in `Solver::tryExplicitSolve`, then one `setVariable` per variable into a new `ExpressionEvaluator` in `BlockEvaluator::evaluate` | 83% | 85% |
+| Evaluating the expressions of the model | ≈ 2% | 2% |
+| The implicit block, its evaluations included | 2% | – |
+| Rest: freeing the copies, per-block trace and result | ≈ 12% | 13% |
+
+- The cost is 0.21 µs per block and per variable in the three models
+  (40 µs per block with 197 variables, 53 µs with 243): it grows with
+  the square of the model size and is paid by every solve, also in a
+  parametric table or a multi-start, not only by `INTEGRAL`.
+- The copies exist because `SystemEvaluator` holds its state in a
+  `std::map` with `CaseInsensitiveLess` and `BlockEvaluator::evaluate`
+  takes a `std::map<std::string, double>`: each caller converts.
+- Every explicit evaluation computes a gradient and a residual scale
+  that are not read (`computeJacobian` defaults to `true`).
+- 93 of the 193 march blocks of the climate model and 97 of the 243 of
+  the pipe model depend neither on the time nor on a state, and are
+  solved again at every stage.
+- The steady-state solve has the same profile: 3.6 ms for its 111
+  explicit blocks, 1.0 ms for the 36-variable Newton block (7
+  iterations). The other 0.47 s of the process is `warmupCoolProp()`,
+  which loads the CoolProp fluid library for a model that never uses
+  it. `--no-superancillary` does not shorten it: the load builds the
+  superancillaries of every fluid (about 80% of its time).
+- Not the cause: Newton, the Jacobian and the linear algebra (2% at
+  most), RK4 itself, the length of the run (the time per stage is
+  constant). `enableTearing` and `enableSymbolicReduction` leave the
+  time of the 5-variable block and of the 36-variable block unchanged.
+- Integrators: the system is mildly stiff. RK45 keeps an average step
+  of 177 s at `integralRelTol` 1e-6 and 198 s at 1e-4 (33 and 36
+  rejections over 6 h), so stability sets its step and it needs more
+  RHS evaluations than RK4 at 120 s. `EulerImplicit` needs 28 RHS
+  evaluations per step at 120 s (a finite-difference Jacobian at every
+  inner iteration).
+
+A throwaway prototype of steps 1 and 2 below (explicit blocks only,
+kept outside the repository) gave, with trajectory tables identical to
+the stock ones to the last digit:
+
+| | Stock | Step 1 | Steps 1 + 2 |
+|---|------:|-------:|------------:|
+| Climate, full run | 141 s | 8.7 s | 6.6 s |
+| Pipe, full run | 459 s | 14.5 s | 10.6 s |
+| Per RHS evaluation, climate / pipe | 8.1 / 13.2 ms | 0.46 / 0.40 ms | 0.35 / 0.29 ms |
+| Steady-state: solve / process (with step 3) | 4.6 ms / 0.49 s | 1.3 ms / 0.01 s | – |
+
+#### Plan
+
+Steps 1 to 4 are independent and small. Step 5 is to be decided on the
+measurements made after steps 1 and 2.
+
+| # | Step | Change | Gain | Effort |
+|---|------|--------|------|--------|
+| 1 | **Evaluate a block without copying the state** | `BlockEvaluator::evaluate` reads the external variables from the state of `SystemEvaluator` by reference and binds only the variables its equations refer to (`EquationInfo::variables`, listed once in the constructor); any other name is looked up in the state when it is read, instead of defaulting to 1. `Solver::solveBlock` tries the explicit evaluation before anything else. The five copy loops (`solveBlock`, `tryExplicitSolve`, the zero-unknown check, `SystemEvaluator::evaluateBlock`, `publishStringOutputs`) become that one path. Explicit blocks are evaluated without the Jacobian. The Newton path gets the same binding. The function and procedure tables are referenced, not copied into each new `ExpressionEvaluator` (seen in the code, not exercised by these models) | Measured: 16× (climate), 32× (pipe), 3.5× on the steady-state solve | 2–3 days |
+| 2 | **March only what changes** | The blocks that depend neither on the integration variable nor on a state are solved once at the initial point: `dependentVariables()` of `integral_solver.cpp` already gives the set, and `Solver::solve` takes the list of blocks to solve. `IntegralSolver::evaluateRHS` reads the integrands from the evaluator state; a `SolveResult` is built only for a table row and for the final point (today one per stage, copied into `lastAlgebraic_`: 15–20 µs, about 5% of a stage after step 1) | Measured for the first part: a further 24% (climate) and 27% (pipe) | 1–2 days |
+| 3 | **No CoolProp warm-up without a property call** | `CoolSolveRunner::run` calls `warmupCoolProp()` after the IR is built, and only when the model calls a property function, directly or in a routine (the test of `SystemEvaluator` for the unit hints, `withCallingRoutines`). The GUI server keeps its background warm-up | Measured: 0.49 s → 0.01 s for the steady-state model. A model with property calls keeps the 0.45 s: building every superancillary at load is CoolProp's, to raise upstream | 0.5 day |
+| 4 | **Defects found on the way** | (a) `EulerImplicit` accepts a step whose inner Newton iteration has not converged: at a step of 600 s on the climate model all 36 steps end with a relative residual of order 1 after 30 iterations, the air temperature after 6 h is 20.88 °C instead of 18.93 °C and the status is success. It must fail with the time and the residual. (b) `integral.md` always prints `Method: RK4` (`runner.cpp` builds the label from a default `SolverOptions`). (c) A fixed step too large for an explicit method ends as `Block … LineSearchFailed` in the algebraic solve: the message should say that the step may be too large | Correctness and diagnosis | 0.5 day |
+| 5 | **Compiled block evaluation** | After steps 1 and 2 a stage is still 4 to 10 times the Python one. What is left is the evaluation itself: the AST is walked with a new `ExpressionEvaluator` per call, each variable reference is a case-insensitive string lookup (for an array element, of a name built from its indices), each intermediate value is an `ADValue` with a heap-allocated gradient. That is 0.6–1.1 µs per explicit equation, 60 µs per evaluation of the 36-variable block and 135 µs per solve of the 5-variable block (36% of a climate stage after step 2). Compile each block once into a flat list of operations on integer slots of one value array, without gradients when no Jacobian is asked; a node the compiler does not handle (CALL, user function, string) keeps the present evaluator | Estimated, not measured: 10× or more on a stage | 1–2 weeks |
+| 6 | **Stiff integrator** (item 1 of §6.2) | What these models ask of it: a Jacobian kept from step to step, a convergence test weighted with `integralRelTol` / `integralAbsTol` (`EulerImplicit` uses an absolute 1e-12), a step rejected and shortened when the iteration does not converge, an error-controlled step. It reduces the number of steps (the weather is hourly, the explicit stability limit is below 300 s), not the cost of a stage: it comes after steps 1 and 2 | Not measured | as §6.2 |
+
+#### Acceptance
+
+- The three models are the benchmark, each step timed against the
+  tables above. Target after steps 1 to 3: climate under 8 s, pipe
+  under 12 s, the steady-state process under 0.05 s.
+- Steps 1 to 3 change no number: the `-integral.csv` and `.sol` files
+  of the three models are reproduced to the last digit, the unit tests
+  pass and `examples/solver_robustness_report.md` is unchanged. Step 1
+  changes how a block sees the variables it does not own: the library
+  regression is the check for CALLs, user functions, string variables
+  and array elements with a computed index.
+- To measure again: `perf record --call-graph dwarf` on the short
+  models (the stacks need DWARF unwinding in a Release build), and the
+  block evaluation count and time of `profiling.md` (`-d`).
+
+### 6.2 Other items
+
 Items are listed by priority. Each is independent.
 
 | # | Improvement | Primary benefit | Estimated effort |
 |---|-------------|-----------------|------------------|
-| 1 | **BDF / DASSL-style stiff variable-step integrator** | A genuinely stiff ODE/DAE integrator for the dynamic solver. RK45 takes many steps on stiff systems; BDF reuses the same per-step algebraic-solve infrastructure and slots in via the existing `Integrator` factory | 1–2 weeks |
+| 1 | **BDF / DASSL-style stiff variable-step integrator** | A genuinely stiff ODE/DAE integrator for the dynamic solver. RK45 takes many steps on stiff systems; BDF reuses the same per-step algebraic-solve infrastructure and slots in via the existing `Integrator` factory. Requirements from the greenhouse models: §6.1, step 6 | 1–2 weeks |
 | 2 | **Pantelides-style index reduction** | Enable fully-implicit (high-index) DAE models in the dynamic solver. Currently high-index systems are detected and rejected; dummy-derivative index reduction would make them solvable | 2–3 weeks |
 | 3 | **Hybrd-native `O(n²)` triangular solve for TrustRegion Broyden mode** | Realize the speedup §4.6 found missing: solve directly against the maintained `R` instead of reconstructing dense `J` and re-running `ColPivHouseholderQR` every iteration | 3–5 days, plus a careful robustness re-validation (loses rank-revealing pivoting, reopening the numerical-instability concern) |
 | 4 | **Pseudo-arclength continuation in Homotopy** | Pass turning points (where the homotopy path folds back in `t`), a known failure mode for hard thermodynamic models with non-monotonic `t`-paths. Keller (1977) augmented system with the Tier-1 hybrd-style TrustRegion as corrector | 1–2 weeks |
