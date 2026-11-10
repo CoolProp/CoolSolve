@@ -286,6 +286,13 @@ struct ProfilingStats {
 
 static ProfilingStats g_profilingStats;
 
+/// See setBlockEvaluationTiming. Read at every block evaluation: relaxed, a stale value only misses or adds a timing.
+static std::atomic<bool> g_timeBlockEvaluations{false};
+
+void setBlockEvaluationTiming(bool on) {
+    g_timeBlockEvaluations.store(on, std::memory_order_relaxed);
+}
+
 // One-time CoolProp warmup to pay first-call cost up front.
 double warmupCoolProp() {
     if (g_profilingStats.coolprop_warmup_performed) {
@@ -629,8 +636,13 @@ private:
     static void execute(ExpressionEvaluator& eval, const StmtPtr& stmt, Jump& jump);
 };
 
+const CoolPropConfig& defaultCoolPropConfig() {
+    static const CoolPropConfig config;
+    return config;
+}
+
 ExpressionEvaluator::ExpressionEvaluator(size_t numVariables, const CoolPropConfig& config)
-    : numVariables_(numVariables), coolpropConfig_(config) {}
+    : numVariables_(numVariables), coolpropConfig_(&config) {}
 
 void ExpressionEvaluator::setVariable(const std::string& name, const ADValue& value) {
     variables_[name] = value;
@@ -863,15 +875,15 @@ ADValue ExpressionEvaluator::evaluate(const ExprPtr& expr) {
 ADValue ExpressionEvaluator::evaluateTerms(const ExprPtr& expr, double& termSum) {
     if (expr && expr->is<BinaryOp>()) {
         const auto& op = expr->as<BinaryOp>();
-        if (op.op == "+" || op.op == "-") {
+        if (op.code == OpCode::Add || op.code == OpCode::Sub) {
             ADValue left = evaluateTerms(op.left, termSum);
             ADValue right = evaluateTerms(op.right, termSum);
-            return op.op == "+" ? left + right : left - right;
+            return op.code == OpCode::Add ? left + right : left - right;
         }
     } else if (expr && expr->is<UnaryOp>()) {
         const auto& op = expr->as<UnaryOp>();
-        if (op.op == "-") return -evaluateTerms(op.operand, termSum);
-        if (op.op == "+") return evaluateTerms(op.operand, termSum);
+        if (op.code == OpCode::Sub) return -evaluateTerms(op.operand, termSum);
+        if (op.code == OpCode::Add) return evaluateTerms(op.operand, termSum);
     }
     ADValue term = evaluate(expr);
     termSum += std::abs(term.value);
@@ -916,7 +928,7 @@ std::string ExpressionEvaluator::evaluateString(const ExprPtr& expr) {
             
             // Evaluate named-arg state inputs in SI units
             std::map<std::string, double> stateSI;
-            const UnitSystem& units = coolpropConfig_.units;
+            const UnitSystem& units = coolpropConfig_->units;
             for (const auto& [argName, argExpr] : call.namedArgs) {
                 std::string lk = argName;
                 std::transform(lk.begin(), lk.end(), lk.begin(), ::tolower);
@@ -936,7 +948,7 @@ std::string ExpressionEvaluator::evaluateString(const ExprPtr& expr) {
             
             try {
                 auto state = g_abstractStateCache.getOrCreate(
-                    coolpropConfig_.getBackendString(), fluid->getCoolPropName());
+                    coolpropConfig_->getBackendString(), fluid->getCoolPropName());
                 auto pairStr = [](const std::string& k) {
                     if (k == "t") return CoolProp::iT;
                     if (k == "p") return CoolProp::iP;
@@ -997,6 +1009,10 @@ ADValue ExpressionEvaluator::evaluateNumber(const NumberLiteral& num) {
 }
 
 ADValue ExpressionEvaluator::evaluateVariable(const Variable& var) {
+    if (slotValues_) {   // a reference of the block's equations: its value is in its slot
+        const auto slot = bindings_->slotOf.find(&var);
+        if (slot != bindings_->slotOf.end()) return slotValues_[slot->second];
+    }
     std::string name = resolveVariableName(var);
     
     if (hasVariable(name)) {
@@ -1013,9 +1029,9 @@ ADValue ExpressionEvaluator::evaluateVariable(const Variable& var) {
 ADValue ExpressionEvaluator::evaluateUnaryOp(const UnaryOp& op) {
     ADValue operand = evaluate(op.operand);
     
-    if (op.op == "-") {
+    if (op.code == OpCode::Sub) {
         return -operand;
-    } else if (op.op == "+") {
+    } else if (op.code == OpCode::Add) {
         return operand;
     }
     
@@ -1042,40 +1058,31 @@ std::string ExpressionEvaluator::fluidNameOf(const ExprPtr& arg) {
 ADValue ExpressionEvaluator::evaluateBinaryOp(const BinaryOp& op) {
     // Conditions of IF statements compare strings with = and <>, without regard to case
     // as EES does (CS-BUG-STRING-CASE; the helper is shared with the $IF directives).
-    if ((op.op == "=" || op.op == "<>") && (isStringExpression(op.left) || isStringExpression(op.right))) {
+    if ((op.code == OpCode::Eq || op.code == OpCode::Ne) && (isStringExpression(op.left) || isStringExpression(op.right))) {
         const bool equal = eesStringEqual(evaluateString(op.left), evaluateString(op.right));
-        return ADValue::constant(equal == (op.op == "=") ? 1.0 : -1.0, numVariables_);
+        return ADValue::constant(equal == (op.code == OpCode::Eq) ? 1.0 : -1.0, numVariables_);
     }
 
     ADValue left = evaluate(op.left);
     ADValue right = evaluate(op.right);
     
-    if (op.op == "+") {
-        return left + right;
-    } else if (op.op == "-") {
-        return left - right;
-    } else if (op.op == "*") {
-        return left * right;
-    } else if (op.op == "/") {
-        return left / right;
-    } else if (op.op == "^") {
-        return pow(left, right);
-    } else if (op.op == ">") {
-        return ADValue::constant(left.value > right.value ? 1.0 : -1.0, left.gradient.size());
-    } else if (op.op == "<") {
-        return ADValue::constant(left.value < right.value ? 1.0 : -1.0, left.gradient.size());
-    } else if (op.op == ">=") {
-        return ADValue::constant(left.value >= right.value ? 1.0 : -1.0, left.gradient.size());
-    } else if (op.op == "<=") {
-        return ADValue::constant(left.value <= right.value ? 1.0 : -1.0, left.gradient.size());
-    } else if (op.op == "=") {
-        return ADValue::constant(left.value == right.value ? 1.0 : -1.0, left.gradient.size());
-    } else if (op.op == "<>") {
-        return ADValue::constant(left.value != right.value ? 1.0 : -1.0, left.gradient.size());
-    } else if (op.op == "and") {
-        return ADValue::constant(left.value > 0.5 && right.value > 0.5 ? 1.0 : -1.0, left.gradient.size());
-    } else if (op.op == "or") {
-        return ADValue::constant(left.value > 0.5 || right.value > 0.5 ? 1.0 : -1.0, left.gradient.size());
+    switch (op.code) {
+        case OpCode::Add: return left + right;
+        case OpCode::Sub: return left - right;
+        case OpCode::Mul: return left * right;
+        case OpCode::Div: return left / right;
+        case OpCode::Pow: return pow(left, right);
+        case OpCode::Gt: return ADValue::constant(left.value > right.value ? 1.0 : -1.0, left.gradient.size());
+        case OpCode::Lt: return ADValue::constant(left.value < right.value ? 1.0 : -1.0, left.gradient.size());
+        case OpCode::Ge: return ADValue::constant(left.value >= right.value ? 1.0 : -1.0, left.gradient.size());
+        case OpCode::Le: return ADValue::constant(left.value <= right.value ? 1.0 : -1.0, left.gradient.size());
+        case OpCode::Eq: return ADValue::constant(left.value == right.value ? 1.0 : -1.0, left.gradient.size());
+        case OpCode::Ne: return ADValue::constant(left.value != right.value ? 1.0 : -1.0, left.gradient.size());
+        case OpCode::And:
+            return ADValue::constant(left.value > 0.5 && right.value > 0.5 ? 1.0 : -1.0, left.gradient.size());
+        case OpCode::Or:
+            return ADValue::constant(left.value > 0.5 || right.value > 0.5 ? 1.0 : -1.0, left.gradient.size());
+        case OpCode::Other: break;
     }
     
     throw std::runtime_error("Unknown binary operator: " + op.op);
@@ -1118,7 +1125,38 @@ static ADValue evaluateAbsorptionFunction(ExpressionEvaluator& evaluator, const 
     return out;
 }
 
+/// The functions that evaluateFunctionCall treats itself by their name, before the property, lookup and absorption
+/// functions: a function added to that chain must be added here (see reachesStandardFunction).
+static bool isFunctionTreatedByName(const std::string& lowerName) {
+    static const std::unordered_set<std::string> names = {
+        "isidealgas", "lookup$", "uppercase$", "lowercase$", "stringval", "convert", "converttemp", "unitsystem", "pi",
+    };
+    return names.count(lowerName) > 0;
+}
+
+/// True if evaluateFunctionCall hands \p func to evaluateStandardFunction whatever the values (exp, max, IF, ...):
+/// the call has no named argument, is no FUNCTION of \p functions nor PROCEDURE of \p procedures, and none of the
+/// functions evaluateFunctionCall treats itself. Follows the order of evaluateFunctionCall; a false only costs the
+/// dispatch at each evaluation.
+static bool reachesStandardFunction(const FunctionCall& func, const FunctionTable& functions,
+                                    const ProcedureTable& procedures) {
+    if (!func.namedArgs.empty()) return false;
+    std::string name = func.name;
+    std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+    return !functions.count(name) && !procedures.count(name) && !isFunctionTreatedByName(name) &&
+           !libr_ashrae::findRoutine(name) && !findCoolPropOutputParam(name).has_value() && !isLookupFunction(name);
+}
+
     ADValue ExpressionEvaluator::evaluateFunctionCall(const FunctionCall& func) {
+    // A standard function, recognised once by the block (ExpressionBindings::standardCalls)
+    if (bindings_ && bindings_->standardCalls.count(&func)) {
+        std::vector<ADValue> args;
+        args.reserve(func.args.size());
+        for (const auto& arg : func.args) args.push_back(evaluate(arg));
+        return evaluateStandardFunction(func.name, args);
+    }
+
+    // The dispatch by name: a function treated here by its name is listed in isFunctionTreatedByName
     std::string name = func.name;
     std::transform(name.begin(), name.end(), name.begin(), ::tolower);
     
@@ -1237,7 +1275,7 @@ static ADValue evaluateAbsorptionFunction(ExpressionEvaluator& evaluator, const 
     // UNITSYSTEM('K') — 1 if that unit setting is in use, 0 otherwise (used by EES
     // library routines to check the unit settings they were written for).
     if (name == "unitsystem" && func.args.size() == 1 && func.namedArgs.empty()) {
-        const bool active = unitSettingActive(evaluateString(func.args[0]), coolpropConfig_.units);
+        const bool active = unitSettingActive(evaluateString(func.args[0]), coolpropConfig_->units);
         return ADValue::constant(active ? 1.0 : 0.0, numVariables_);
     }
     
@@ -1271,7 +1309,7 @@ ExpressionEvaluator ExpressionEvaluator::makeBodyEvaluator(const char* kind, con
         throw std::runtime_error("more than " + std::to_string(kMaxRoutineCallDepth) + " routine calls are nested when entering " +
                                  kind + " '" + name + "': a recursive FUNCTION or PROCEDURE that does not terminate? "
                                  "(recursion is not allowed in EES)");
-    ExpressionEvaluator body(numVariables_, coolpropConfig_);
+    ExpressionEvaluator body(numVariables_, *coolpropConfig_);
     body.callDepth_ = callDepth_ + 1;
     body.sharedFunctions_ = &functions();     // the tables are referenced, not copied: they outlive the body
     body.sharedProcedures_ = &procedures();
@@ -1367,7 +1405,7 @@ static void requireHumidAirInputs(const std::map<std::string, ADValue>& inputs) 
 ADValue ExpressionEvaluator::evaluateHumidAirProperty(const std::string& funcName, const std::string& label,
                                                       const std::string& fluidName,
                                                       const std::map<std::string, ADValue>& inputs) {
-    const UnitSystem& units = coolpropConfig_.units;
+    const UnitSystem& units = coolpropConfig_->units;
     std::vector<std::string> inputNamesList;
     std::vector<ADValue> inputValues;
     for (const auto& [name, val] : inputs) {
@@ -1646,7 +1684,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 std::string cpFluidName = fluid->getCoolPropName();
                 try {
                     if (fluid->getType() == FluidType::Mixture) {   // mole-weighted, no state needed
-                        auto state = g_abstractStateCache.getOrCreate(coolpropConfig_.getBackendString(), cpFluidName);
+                        auto state = g_abstractStateCache.getOrCreate(coolpropConfig_->getBackendString(), cpFluidName);
                         return ADValue::constant(state->molar_mass() * KG_PER_KMOL, numVariables_);
                     }
                     double mm = timedPropsSI("M", "T", 300, "P", 101325, cpFluidName);
@@ -1695,11 +1733,11 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 if (funcName == "t_crit" || funcName == "tcrit") {
                     valueSI = CoolProp::Props1SI(cpFluidName, "Tcrit");
                     outType = UnitType::Temperature;
-                    outUnit = coolpropConfig_.units.temperature;
+                    outUnit = coolpropConfig_->units.temperature;
                 } else if (funcName == "p_crit" || funcName == "pcrit") {
                     valueSI = CoolProp::Props1SI(cpFluidName, "Pcrit");
                     outType = UnitType::Pressure;
-                    outUnit = coolpropConfig_.units.pressure;
+                    outUnit = coolpropConfig_->units.pressure;
                 } else if (funcName == "v_crit" || funcName == "vcrit") {
                     // v_crit = 1 / rhomass_critical
                     double rhoCrit = CoolProp::Props1SI(cpFluidName, "rhomass_critical");
@@ -1709,11 +1747,11 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 } else if (funcName == "t_triple" || funcName == "ttriple") {
                     valueSI = CoolProp::Props1SI(cpFluidName, "Ttriple");
                     outType = UnitType::Temperature;
-                    outUnit = coolpropConfig_.units.temperature;
+                    outUnit = coolpropConfig_->units.temperature;
                 } else if (funcName == "p_triple" || funcName == "ptriple") {
                     valueSI = CoolProp::Props1SI(cpFluidName, "ptriple");
                     outType = UnitType::Pressure;
-                    outUnit = coolpropConfig_.units.pressure;
+                    outUnit = coolpropConfig_->units.pressure;
                 } else if (funcName == "acentricfactor") {
                     valueSI = CoolProp::Props1SI(cpFluidName, "acentric");
                     outType = UnitType::Dimensionless;
@@ -1734,7 +1772,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         }
     }
     
-    const UnitSystem& units = coolpropConfig_.units;
+    const UnitSystem& units = coolpropConfig_->units;
     
     // --- Humid Air Handling ---
     if (fluid->getType() == FluidType::HumidAir) {
@@ -2123,7 +2161,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     // Fluids with an EES reference state (ideal-gas enthalpy of formation): enthalpy-type
     // inputs are given on the EES basis, CoolProp works on its own — shift them back.
     // The same offset is added to the results (postProcess below).
-    const ReferenceState refState = fluid->getReferenceState(coolpropConfig_.getBackendString());
+    const ReferenceState refState = fluid->getReferenceState(coolpropConfig_->getBackendString());
     auto toCoolPropBasis = [&](CoolProp::parameters param, double& v) {
         if (param == CoolProp::iHmass || param == CoolProp::iUmass) v -= refState.h_offset;
         else if (param == CoolProp::iSmass) v -= refState.s_offset;
@@ -2169,7 +2207,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         const char* unit = param == CoolProp::iP ? " Pa" : param == CoolProp::iT ? " K" : " kg/m³";
         std::string source = std::string("the lowest ") + quantity + " the solver evaluates";
         if (param != CoolProp::iDmass) {
-            const FluidLimits limits = g_abstractStateCache.fluidLimits(coolpropConfig_.getBackendString(), cpFluidName);
+            const FluidLimits limits = g_abstractStateCache.fluidLimits(coolpropConfig_->getBackendString(), cpFluidName);
             const double fluidLimit = (param == CoolProp::iP) ? limits.pMin : limits.Tmin;
             if (fluidLimit > 0.0 && fluidLimit < bound) {
                 bound = fluidLimit;
@@ -2310,12 +2348,12 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
 
         // ── AbstractState path (low-level API) ──────────────────────
         bool usedAbstractState = false;
-        if (coolpropConfig_.useAbstractState) {
+        if (coolpropConfig_->useAbstractState) {
             try {
                 auto startAS = std::chrono::high_resolution_clock::now();
                 
                 auto state = g_abstractStateCache.getOrCreate(
-                    coolpropConfig_.getBackendString(), cpFluidName);
+                    coolpropConfig_->getBackendString(), cpFluidName);
                 if (solution) setMassFraction(*state, massFraction);
                 
                 // Determine input pair and canonical ordering
@@ -2351,7 +2389,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 if (!residualOnly_ && !singlePhaseQuality) {
                     bool derivOk = false;
                     
-                    if (coolpropConfig_.enableAnalyticalDerivatives) {
+                    if (coolpropConfig_->enableAnalyticalDerivatives) {
                         // Analytical derivatives via first_partial_deriv() with
                         // forward-FD consistency check.  CoolProp's analytical
                         // derivatives can be wildly wrong near phase boundaries
@@ -2456,7 +2494,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                     // at the nominal inputs (the fraction is set before each; the next call sets its own).
                     if (concentrationVaries) {
                         const FluidLimits limits =
-                            g_abstractStateCache.fluidLimits(coolpropConfig_.getBackendString(), cpFluidName);
+                            g_abstractStateCache.fluidLimits(coolpropConfig_->getBackendString(), cpFluidName);
                         dResult_dFraction = massFractionDerivative([&](double x) {
                             setMassFraction(*state, x);
                             state->update(ipair, iv1, iv2);
@@ -2527,7 +2565,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 // Derivative with respect to the concentration of the solution (see the AbstractState path)
                 if (concentrationVaries) {
                     const FluidLimits limits =
-                        g_abstractStateCache.fluidLimits(coolpropConfig_.getBackendString(), cpFluidName);
+                        g_abstractStateCache.fluidLimits(coolpropConfig_->getBackendString(), cpFluidName);
                     dResult_dFraction = massFractionDerivative([&](double x) {
                         return timedPropsSI(outputStr, input1Str, val1, input2Str, val2,
                                             solution->getCoolPropNameWithFraction(x));
@@ -2716,6 +2754,7 @@ BlockEvaluator::BlockEvaluator(const Block& block, const IR& ir, const CoolPropC
     std::vector<size_t> producers;
     for (size_t i = 0; i < equations_.size(); ++i)
         if (!stringOutputs(*equations_[i]).empty()) producers.push_back(i);
+    resolveBindings(!producers.empty());
     if (producers.empty()) return;
     hasStringCallOutputs_ = true;
     std::vector<bool> placed(equations_.size(), false);
@@ -2745,13 +2784,96 @@ BlockEvaluator::BlockEvaluator(const Block& block, const IR& ir, const CoolPropC
         if (!placed[i]) evalOrder_.push_back(i);
 }
 
+void BlockEvaluator::resolveBindings(bool setsStrings) {
+    // The slots: the own variables, then externalNames_, by name. A reference with a computed array index
+    // (a name known only at evaluation) could be one of them: the block then keeps the binding by name, as does
+    // a block with a CALL (its outputs are set by name) or a string assignment.
+    std::map<std::string, size_t, CaseInsensitiveLess> slotByName;
+    for (size_t i = 0; i < variables_.size(); ++i) slotByName.emplace(variables_[i], i);
+    for (size_t k = 0; k < externalNames_.size(); ++k) slotByName.emplace(externalNames_[k], variables_.size() + k);
+    bool usable = !setsStrings;
+    std::function<void(const ExprPtr&)> visit = [&](const ExprPtr& expr) {
+        if (!expr) return;
+        if (expr->is<Variable>()) {
+            const auto& var = expr->as<Variable>();
+            // The name resolveVariableName gives, when the indices are integer constants
+            std::string name = var.name;
+            if (!var.indices.empty()) {
+                name += "[";
+                for (size_t i = 0; i < var.indices.size(); ++i) {
+                    const ExprPtr& index = var.indices[i];
+                    if (!index || !index->is<NumberLiteral>() ||   // computed at evaluation
+                        index->as<NumberLiteral>().value != static_cast<int>(index->as<NumberLiteral>().value)) {
+                        usable = false;
+                        return;
+                    }
+                    if (i > 0) name += ",";
+                    name += std::to_string(static_cast<int>(index->as<NumberLiteral>().value));
+                }
+                name += "]";
+            }
+            // A name of neither kind (the unquoted fluid of a property call) is read by name, from the state
+            const auto slot = slotByName.find(name);
+            if (slot != slotByName.end()) bindings_.slotOf.emplace(&var, slot->second);
+        } else if (expr->is<UnaryOp>()) {
+            visit(expr->as<UnaryOp>().operand);
+        } else if (expr->is<BinaryOp>()) {
+            visit(expr->as<BinaryOp>().left);
+            visit(expr->as<BinaryOp>().right);
+        } else if (expr->is<FunctionCall>()) {
+            const auto& call = expr->as<FunctionCall>();
+            if (reachesStandardFunction(call, functions_, procedures_)) bindings_.standardCalls.insert(&call);
+            for (const auto& arg : call.args) visit(arg);
+            for (const auto& named : call.namedArgs) visit(named.second);
+        }
+    };
+    for (const EquationInfo* eq : equations_) {
+        if (eq->procedureCall) usable = false;
+        visit(eq->lhs);
+        visit(eq->rhs);
+    }
+    slotsUsable_ = usable;
+    if (!slotsUsable_) bindings_.slotOf.clear();
+}
+
+/// Drop from \p standardCalls the calls of the routine \p name: a user routine hides a standard function.
+static void forgetStandardCalls(std::unordered_set<const FunctionCall*>& standardCalls, const std::string& name) {
+    for (auto it = standardCalls.begin(); it != standardCalls.end();)
+        it = eesCompareFolded((*it)->name, name) == 0 ? standardCalls.erase(it) : std::next(it);
+}
+
+void BlockEvaluator::registerFunction(const FunctionDefinition& func) {
+    functions_[func.name] = func;
+    forgetStandardCalls(bindings_.standardCalls, func.name);
+}
+
+void BlockEvaluator::registerProcedure(const ProcedureDefinition& proc) {
+    procedures_[proc.name] = proc;
+    forgetStandardCalls(bindings_.standardCalls, proc.name);
+}
+
+void BlockEvaluator::bindState(const VariableValues& state) {
+    boundState_ = nullptr;
+    boundEntries_.clear();
+    if (!slotsUsable_) return;
+    std::vector<const double*> entries(externalNames_.size());
+    for (size_t k = 0; k < externalNames_.size(); ++k) {
+        const auto it = state.find(externalNames_[k]);
+        if (it == state.end()) return;
+        entries[k] = &it->second;
+    }
+    boundEntries_ = std::move(entries);
+    boundState_ = &state;
+}
+
 EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
                                            const VariableValues& externalVars,
                                            const StringValues& externalStringVars,
                                            bool computeJacobian,
                                            std::vector<Diagnostic>* callWarnings,
                                            std::vector<std::string>* clampReport) {
-    auto eval_start = std::chrono::high_resolution_clock::now();
+    const bool timed = g_timeBlockEvaluations.load(std::memory_order_relaxed);
+    const auto eval_start = timed ? std::chrono::high_resolution_clock::now() : std::chrono::high_resolution_clock::time_point();
     g_profilingStats.block_evaluations++;
     
     if (x.size() != variables_.size()) {
@@ -2788,16 +2910,40 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     if (lookupTableStore_) exprEval.setLookupTableStore(lookupTableStore_);
     exprEval.setRoutines(&functions_, &procedures_);
 
-    // The unknowns from x, the other variables of the equations from the external values (bound once, as
-    // constants); a name built at evaluation (an array element with a computed index) is read there directly.
-    for (size_t i = 0; i < variables_.size(); ++i) {
-        exprEval.setVariable(variables_[i], nGrad ? ADValue::independent(x[i], i, nGrad) : ADValue::constant(x[i], 0));
+    // The unknowns from x, the other variables of the equations from the external values (as constants): in
+    // the slots of the references when the block has them (the entries of the state found by bindState, else
+    // looked up once), otherwise bound by name. Any other name is read from the external values when evaluated.
+    std::vector<ADValue> slotValues;
+    if (slotsUsable_) {
+        std::vector<const double*> found;
+        const double* const* entries = boundEntries_.data();
+        if (&externalVars != boundState_) {
+            found.resize(externalNames_.size());
+            for (size_t k = 0; k < externalNames_.size() && entries; ++k) {
+                const auto it = externalVars.find(externalNames_[k]);
+                if (it == externalVars.end()) entries = nullptr;   // missing: the binding by name says so
+                else found[k] = &it->second;
+            }
+            if (entries) entries = found.data();
+        }
+        if (entries) {
+            slotValues.reserve(variables_.size() + externalNames_.size());
+            for (size_t i = 0; i < variables_.size(); ++i)
+                slotValues.push_back(nGrad ? ADValue::independent(x[i], i, nGrad) : ADValue::constant(x[i], 0));
+            for (size_t k = 0; k < externalNames_.size(); ++k) slotValues.push_back(ADValue::constant(*entries[k], nGrad));
+        }
     }
-    for (const std::string& name : externalNames_) {
-        auto it = externalVars.find(name);
-        if (it != externalVars.end()) exprEval.setVariable(name, ADValue::constant(it->second, nGrad));
+    if (slotValues.empty()) {
+        for (size_t i = 0; i < variables_.size(); ++i) {
+            exprEval.setVariable(variables_[i], nGrad ? ADValue::independent(x[i], i, nGrad) : ADValue::constant(x[i], 0));
+        }
+        for (const std::string& name : externalNames_) {
+            auto it = externalVars.find(name);
+            if (it != externalVars.end()) exprEval.setVariable(name, ADValue::constant(it->second, nGrad));
+        }
     }
     exprEval.setExternalValues(&externalVars, &externalStringVars);
+    exprEval.setBindings(&bindings_, slotValues.empty() ? nullptr : slotValues.data());
     
     // Case-insensitive string comparison
     auto ciEqual = [](const std::string& a, const std::string& b) {
@@ -2960,8 +3106,10 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     }
     if (clampLog.fired) inputClamped_->store(true, std::memory_order_relaxed);
     
-    auto eval_end = std::chrono::high_resolution_clock::now();
-    g_profilingStats.block_eval_time_ms += std::chrono::duration<double, std::milli>(eval_end - eval_start).count();
+    if (timed) {
+        const auto eval_end = std::chrono::high_resolution_clock::now();
+        g_profilingStats.block_eval_time_ms += std::chrono::duration<double, std::milli>(eval_end - eval_start).count();
+    }
     
     return result;
 }
@@ -3001,6 +3149,13 @@ void SystemEvaluator::setVariableValue(const std::string& name, double value) {
     currentState_[name] = value;
 }
 
+void SystemEvaluator::setBlockVariableValue(size_t blockIndex, double value) {
+    if (blockIndex < blockVariableEntries_.size() && blockVariableEntries_[blockIndex])
+        *blockVariableEntries_[blockIndex] = value;
+    else
+        setVariableValue(blockEvaluators_.at(blockIndex).getVariables().at(0), value);
+}
+
 void SystemEvaluator::setStringVariableValue(const std::string& name, const std::string& value) {
     currentStringState_[name] = value;
 }
@@ -3032,6 +3187,16 @@ void SystemEvaluator::initializeFromGuesses() {
             if (info.solutionValue) currentState_[name] = *info.solutionValue;
             else if (info.guessValue) currentState_[name] = *info.guessValue;
             else currentState_[name] = 1.0;
+        }
+    }
+    // The entries of the state stay where they are (no entry is ever erased): find them once
+    blockVariableEntries_.assign(blockEvaluators_.size(), nullptr);
+    for (size_t b = 0; b < blockEvaluators_.size(); ++b) {
+        BlockEvaluator& blockEval = blockEvaluators_[b];
+        blockEval.bindState(currentState_);
+        if (blockEval.size() == 1) {
+            const auto it = currentState_.find(blockEval.getVariables()[0]);
+            if (it != currentState_.end()) blockVariableEntries_[b] = &it->second;
         }
     }
 }

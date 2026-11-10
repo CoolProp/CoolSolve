@@ -164,7 +164,7 @@ static ADValue assemble(double valueInModelUnits, const double dOutDIn[3], const
 
 ADValue ExpressionEvaluator::evaluateAmmoniaWaterFunction(const FunctionCall& func, const std::string& funcName,
                                                           std::map<std::string, ADValue>& inputs) {
-    const UnitSystem& units = coolpropConfig_.units;
+    const UnitSystem& units = coolpropConfig_->units;
     const ModelUnits model{units};
     const std::string label = func.name + "(NH3H2O)";
 

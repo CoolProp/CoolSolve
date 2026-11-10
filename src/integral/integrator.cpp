@@ -21,6 +21,7 @@ std::unique_ptr<Integrator> createIntegrator(IntegratorOptions::Method method) {
         case IntegratorOptions::EulerImplicit: return makeEulerImplicit();
         case IntegratorOptions::RK4:           return makeRK4();
         case IntegratorOptions::RK45:          return makeRK45();
+        case IntegratorOptions::BDF:           return makeBDF();
     }
     return makeRK4();  // unreachable
 }
@@ -31,6 +32,7 @@ std::string methodToString(IntegratorOptions::Method m) {
         case IntegratorOptions::EulerImplicit: return "EulerImplicit";
         case IntegratorOptions::RK4:           return "RK4";
         case IntegratorOptions::RK45:          return "RK45";
+        case IntegratorOptions::BDF:           return "BDF";
     }
     return "RK4";
 }
@@ -47,6 +49,8 @@ bool parseIntegralMethod(const std::string& s, IntegratorOptions::Method& out) {
         out = IntegratorOptions::RK4;
     else if (lower == "rk45" || lower == "dopri5" || lower == "dormandprince")
         out = IntegratorOptions::RK45;
+    else if (lower == "bdf" || lower == "ndf")
+        out = IntegratorOptions::BDF;
     else
         return false;
     return true;

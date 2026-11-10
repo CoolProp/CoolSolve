@@ -39,7 +39,9 @@ struct IntegralSolveResult {
 
     IntegralTable table;                    ///< Tabulated trajectory.
     int totalSteps = 0;                     ///< Accepted steps taken.
-    int rejectedSteps = 0;                  ///< RK45 steps rejected (diagnostics).
+    int rejectedSteps = 0;                  ///< Steps rejected by an adaptive method (RK45, BDF; diagnostics).
+    long long rhsEvaluations = 0;           ///< Evaluations of the right-hand side by the integrator, those of
+                                            ///< the Jacobians and of the rejected steps included (not the rows).
     std::vector<double> acceptedStepSizes;  ///< Per-step `h` (diagnostics).
 
     /// Final-step algebraic result (variables, status, block results). Holds the values at

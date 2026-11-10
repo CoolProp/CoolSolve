@@ -37,15 +37,47 @@ struct Variable {
     std::string flattenedName() const;
 };
 
+/**
+ * @brief The operator of a UnaryOp or a BinaryOp as a code, so that an evaluation switches on it instead of
+ *        comparing strings. Set from the text of the operator where the node is built (the default member
+ *        initializer of `code`); `Other` for a text without a code (the `..` of an array range).
+ */
+enum class OpCode : unsigned char { Other, Add, Sub, Mul, Div, Pow, Gt, Lt, Ge, Le, Eq, Ne, And, Or };
+
+/// The code of the operator text \p op ("+", "<>", "and", ...); OpCode::Other for any other text.
+inline OpCode opCodeOf(const std::string& op) {
+    if (op.size() == 1) {
+        switch (op[0]) {
+            case '+': return OpCode::Add;
+            case '-': return OpCode::Sub;
+            case '*': return OpCode::Mul;
+            case '/': return OpCode::Div;
+            case '^': return OpCode::Pow;
+            case '>': return OpCode::Gt;
+            case '<': return OpCode::Lt;
+            case '=': return OpCode::Eq;
+            default: return OpCode::Other;
+        }
+    }
+    if (op == ">=") return OpCode::Ge;
+    if (op == "<=") return OpCode::Le;
+    if (op == "<>") return OpCode::Ne;
+    if (op == "and") return OpCode::And;
+    if (op == "or") return OpCode::Or;
+    return OpCode::Other;
+}
+
 struct UnaryOp {
     std::string op;  // "-", "+"
     ExprPtr operand;
+    OpCode code = opCodeOf(op);   ///< the code of `op`, set when the node is built: changing `op` later needs a new code
 };
 
 struct BinaryOp {
     std::string op;  // "+", "-", "*", "/", "^"
     ExprPtr left;
     ExprPtr right;
+    OpCode code = opCodeOf(op);   ///< the code of `op`, set when the node is built: changing `op` later needs a new code
 };
 
 struct FunctionCall {

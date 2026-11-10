@@ -46,7 +46,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 - **Lookup Tables**: 1D/2D interpolation, cell access, text cells (`LOOKUP$`, the replacement of string arrays, which are not supported), the row of a key (`LOOKUP$ROW`), and aggregate functions from external CSV files, usable in equations, in `FUNCTION`/`PROCEDURE` bodies and in `INTEGRAL` models. A GUI panel lets you create and edit tables in-browser.
 
-- **Equation-Based Dynamic Solving (`INTEGRAL`)**: Solve initial-value DAE models in the EES integral form (`y = y0 + INTEGRAL(dydt, t, t0, tf)`). Supports coupled ODEs, algebraic variables, RK4/RK45/Euler integrators, Richardson extrapolation, and an **Integral** GUI tab. See [Language Reference §12](docs/language_reference.md#12-equation-based-integration-dynamicdae-solving) and [docs/integral_table.md](docs/integral_table.md).
+- **Equation-Based Dynamic Solving (`INTEGRAL`)**: Solve initial-value DAE models in the EES integral form (`y = y0 + INTEGRAL(dydt, t, t0, tf)`). Supports coupled ODEs, algebraic variables, RK4/RK45/Euler integrators, a variable-order BDF integrator for stiff models, Richardson extrapolation, and an **Integral** GUI tab. See [Language Reference §12](docs/language_reference.md#12-equation-based-integration-dynamicdae-solving) and [docs/integral_table.md](docs/integral_table.md).
 
   - **Solution Verification**: Post-solve check that re-evaluates every equation (LHS ≈ RHS) to catch bugs the solver's convergence check may miss.
 
@@ -461,6 +461,8 @@ CoolSolve/
 │   │   ├── integrator_euler_implicit.cpp  # Backward Euler, A-stable (fixed step)
 │   │   ├── integrator_rk4.cpp             # Classic RK4 (fixed step, default)
 │   │   ├── integrator_rk45.cpp            # Dormand-Prince RK45 (adaptive)
+│   │   ├── integrator_bdf.cpp             # Variable-order BDF (NDF) for stiff models (adaptive)
+│   │   ├── implicit_newton.cpp            # Newton iteration and Jacobian of BDF and implicit Euler
 │   │   ├── richardson.cpp                 # Richardson extrapolation wrapper
 │   │   ├── integral_table.cpp             # Trajectory storage + interpolation + CSV
 │   │   ├── integral_extraction.cpp        # IR → IntegralProblem classification
@@ -539,7 +541,7 @@ For the full language syntax, built-in functions, and CoolProp integration detai
 
 The [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) is embedded, browsable and importable (`$INCLUDE <name>`); next steps are a command-line access (`coolsolve --library`), an *Export for EES* that writes the included routines into one file, editor completion of library functions, and improved plotting capabilities — see [Model Library Support](docs/model_library_support.md). 
 
-Planned improvements for the solver include a stiff ODE integrator (BDF), pseudo-arclength continuation, and an improved plotting interface. See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
+Planned improvements for the solver include a sparse factorization of the Jacobian of large blocks, pseudo-arclength continuation, and an improved plotting interface. See [docs/solver_roadmap.md](docs/solver_roadmap.md) for the full prioritized roadmap.
 
 Planned property models for the absorption machines: a more recent LiBr-H2O correlation (the EES `LiBrH2O` library, Pátek & Klomfar 2006; register item `CS-GAP-LIBR-PK`) next to the ASHRAE routines, and the transport properties of ammonia-water (conductivity, viscosity, surface tension; `CS-GAP-NH3H2O` remainder) — see [Model Library Support](docs/model_library_support.md).
 

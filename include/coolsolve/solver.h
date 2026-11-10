@@ -381,14 +381,14 @@ struct SolverOptions {
     // this code path (zero overhead). Stored as plain values so solver.h stays
     // decoupled from the integrator module; the runner maps them into
     // IntegratorOptions via makeIntegratorOptions().
-    //   integralMethod: "EulerExplicit" | "EulerImplicit" | "RK4" | "RK45"
+    //   integralMethod: "EulerExplicit" | "EulerImplicit" | "RK4" | "RK45" | "BDF"
     std::string integralMethod   = "RK4";   // integration method (default: RK4)
     double integralFixedStep     = 0.0;     // 0 => derive from integralMaxSteps
     int    integralMaxSteps      = 1000;    // upper bound on number of steps
-    double integralRelTol        = 1e-6;    // RK45 relative error control
-    double integralAbsTol        = 1e-9;    // RK45 absolute error floor
-    double integralMinStep       = 0.0;     // RK45 minimum step (0 = auto)
-    double integralMaxStep       = 0.0;     // RK45 maximum step (0 = auto)
+    double integralRelTol        = 1e-6;    // RK45 / BDF relative error control (and Newton weights of BDF, EulerImplicit)
+    double integralAbsTol        = 1e-9;    // RK45 / BDF absolute error floor (same uses)
+    double integralMinStep       = 0.0;     // RK45 / BDF minimum step (0 = auto)
+    double integralMaxStep       = 0.0;     // RK45 / BDF maximum step (0 = auto)
     bool   integralRichardson    = false;   // Richardson extrapolation (fixed step)
     double integralOutputInterval= 0.0;     // default output spacing when
                                             //   $IntegralTable omits the ':n'

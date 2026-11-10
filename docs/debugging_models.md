@@ -290,41 +290,55 @@ The debug folder gains two extra files for these models:
 
 | File | Use for diagnosis |
 |------|-------------------|
-| `integral.md` | Problem summary: state vs algebraic variables, integration variable, interval, chosen method, step count, min/avg/max accepted step, rejected-step count, and a trajectory preview |
+| `integral.md` | Problem summary: state vs algebraic variables, integration variable, interval, chosen method, step count, min/avg/max accepted step, rejected-step count, evaluations of the right-hand side, and a trajectory preview |
 | `integral_table.csv` | Full trajectory (integration variable first, then the `$IntegralTable` columns) |
 
 ### Common integration failures
 
 **"The integration stopped at … before reaching the upper limit" (`integralMaxSteps`).**
-Only an adaptive run (RK45) can end this way: it did not reach the upper limit within
-its budget of `4·integralMaxSteps` attempted steps (accepted + rejected). A fixed-step
-method always takes `(hi−lo)/step` steps (the step of the `INTEGRAL` call, else
+Only an adaptive run (RK45, BDF) can end this way: it did not reach the upper limit within
+its budget of attempted steps (accepted + rejected): 4 for each of `integralMaxSteps`, or
+for each of the `(hi−lo)/step` steps of the `INTEGRAL` call when there are more. A
+fixed-step method always takes `(hi−lo)/step` steps (the step of the `INTEGRAL` call, else
 `integralFixedStep`, else `integralMaxSteps` equal steps), so a long interval with a
 small step is not an error — it only takes time. Typical causes: the step size
-collapsed (RK45 rejecting many steps on a stiff system), or the budget is small for the
-interval. Fixes:
+collapsed (RK45 rejecting many steps on a stiff system, or following a switch on a state,
+see below), or the budget is small for the interval. Fixes:
 
-- For RK45 on a stiff system: this is the signal that a stiff (BDF) integrator
-  is warranted (not yet available — see `docs/solver_roadmap.md` §9.4); as a
-  workaround, raise `integralMaxSteps` and tighten `integralRelTol`/`integralAbsTol`
-  only if accuracy demands it, or use `EulerImplicit`.
-- Give the step in the model (5th `INTEGRAL` argument) or set `integralFixedStep`:
-  the step count is then `(tf−t0)/step` whatever `integralMaxSteps` says.
+- For RK45 on a stiff system: use `integralMethod = BDF`, with `integralRelTol` /
+  `integralAbsTol` set to the accuracy needed (1e-4 / 1e-6 keeps the temperatures of the
+  greenhouse models of the library within 0.03 K, see [Dynamic Solving §2.3](integral_table.md#23-integrators)).
+- Raise `integralMaxSteps`, or loosen the tolerances.
+- Use a fixed-step method with the step in the model (5th `INTEGRAL` argument) or
+  `integralFixedStep`: the step count is then `(tf−t0)/step` whatever `integralMaxSteps` says.
 
 **"Algebraic solve failed at t=… — The step h = … may be too large for RK4".** With a
 fixed-step explicit method (`RK4`, `EulerExplicit`) a step above the stability limit of
 the model (set by its fastest dynamics) makes the states grow from step to step until an
 algebraic block can no longer be solved (a `LineSearchFailed` on a residual of 1E+40, a
 property call out of range). Reduce the step of the `INTEGRAL` call (or
-`integralFixedStep`), or use `RK45`, which adapts its step, or `EulerImplicit`.
+`integralFixedStep`), or use `BDF`, which adapts its step and is stable on stiff models.
 
 **"EulerImplicit: the iteration of the step from t = … to … did not converge".** The
-Newton iteration that gives the state at the end of an implicit step (30 iterations at
-most, finite-difference Jacobian) did not converge; the message gives the largest
-residual of `y_new − y − h·f(t+h, y_new)`. The step is not accepted, since its state would
-be off the trajectory: reduce the step, or use `RK4` with a small step or `RK45`. A
-discontinuous model (a switch of a controller, `IF`, `MAX`) within the step is the usual
-cause.
+Newton iteration that gives the state at the end of an implicit step did not converge,
+with the Jacobian of the previous steps, with one renewed at the predicted point, nor with
+one at every iterate (30 iterations); the message gives why and the largest residual of
+`y_new − y − h·f(t+h, y_new)`. The step is not accepted, since its state would be off the
+trajectory: reduce the step, or use `BDF`, `RK4` with a small step or `RK45`. A right-hand
+side that jumps with a state (an `IF` on a state variable) is the usual cause: the implicit
+step then has no solution.
+
+**"Step size dropped below minimum (…) at t=…: the last step was rejected because the
+Newton iteration …".** BDF halved its step down to the minimum (the resolution of the
+integration variable, unless `integralMinStep` is set) and its implicit iteration still
+does not converge: the trajectory stays on a jump of the right-hand side with a state, as
+the intake `IF(p - p_out, 0, m_dot)` of `examples/engine_weibe_cycle`, where the pressure
+follows the outside pressure with a flow that switches on and off; there the implicit step
+has no solution however short it is. Use RK4, which steps across the switch (RK45 follows
+it with very short steps and needs a large `integralMaxSteps`), or write the switch as a
+continuous function of the state. Without such a reason (the steps were rejected by their
+error), the solution cannot be followed at the tolerances asked (a singularity, or
+`integralMinStep` set too large): loosen `integralRelTol` / `integralAbsTol`.
 
 **"The upper limit '…' of INTEGRAL() depends on the integration variable … or on a
 state".** The limits and the step of `INTEGRAL` are read once, at the initial point:
@@ -338,8 +352,8 @@ directive matches no variable (check the spelling; separators are spaces, `,` an
 **RK45 rejecting many steps.** The `rejectedSteps` count in `integral.md` is
 high. The error estimate exceeds the tolerance repeatedly, so the controller
 shrinks `h` toward `integralMinStep`. This usually means the system is stiff for
-an explicit Runge–Kutta method. Try `integralMethod = EulerImplicit` (A-stable,
-1st order) as a quick check, or use fixed-step RK4 with a small step.
+an explicit Runge–Kutta method. Use `integralMethod = BDF` (variable order, stable on
+stiff models), or fixed-step RK4 with a small step.
 
 **`High-index DAE detected` warning.** A purely algebraic equation constrains a
 state variable without going through its derivative. This is emitted as a

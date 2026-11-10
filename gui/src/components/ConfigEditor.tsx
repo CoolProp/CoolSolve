@@ -437,34 +437,40 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
     title: 'Integration',
     fields: [
       { key: 'integralMethod', label: 'Method', type: 'string', defaultVal: 'RK4',
-        options: ['EulerExplicit', 'EulerImplicit', 'RK4', 'RK45'],
+        options: ['EulerExplicit', 'EulerImplicit', 'RK4', 'RK45', 'BDF'],
         description:
           'Time-marching integrator for equation-based INTEGRAL / $IntegralTable models. '
           + 'One of: EulerExplicit (order 1, cheap, conditionally stable), '
-          + 'EulerImplicit (order 1, A-stable, good for stiff systems), '
+          + 'EulerImplicit (order 1, A-stable, fixed step), '
           + 'RK4 (classic 4th-order Runge-Kutta; fixed step, recommended default), '
-          + 'RK45 (Dormand-Prince adaptive embedded pair; variable step, error-controlled). '
+          + 'RK45 (Dormand-Prince adaptive embedded pair; variable step, error-controlled), '
+          + 'BDF (variable order 1-5 and step, implicit: for stiff models; set the tolerances to the accuracy '
+          + 'needed, 1e-4 / 1e-6 is a good start). An implicit method needs a right-hand side continuous in the '
+          + 'states: where the trajectory stays on a jump with a state (an IF on a state variable that switches '
+          + 'a flow on and off) use RK4. '
           + 'Ignored for non-integral models.' },
       { key: 'integralFixedStep', label: 'Fixed step', type: 'number', defaultVal: '0',
         description:
           'Fixed time step, used when the INTEGRAL() call has no step of its own (a step given as the 5th '
           + 'argument of INTEGRAL always wins). 0 ⇒ derive the step from integralMaxSteps and the integration interval. '
-          + 'Used by EulerExplicit, EulerImplicit, RK4 (and by RK45 as the initial step guess).' },
+          + 'Used by EulerExplicit, EulerImplicit and RK4; RK45 and BDF choose their steps.' },
       { key: 'integralMaxSteps', label: 'Max steps', type: 'number', defaultVal: '1000',
         description:
           'Number of steps of a fixed-step method that has no explicit step (the step is then interval/maxSteps); '
-          + 'it does not apply when the model gives a step. For RK45 it is the budget: 4·maxSteps attempted steps. '
+          + 'it does not apply when the model gives a step. For RK45 and BDF it is the budget: 4 attempted steps for each '
+          + 'of maxSteps, or for each step of the step of the model when there are more. '
           + 'A run that stops before the upper limit is reported as an error.' },
       { key: 'integralRelTol', label: 'Relative tol.', type: 'number', defaultVal: '1e-6',
         description:
-          'RK45 local-error control (relative component). '
-          + 'The step is accepted when the weighted error ≤ relTol·|y| + absTol. Ignored for fixed-step methods.' },
+          'RK45 and BDF local-error control (relative component). '
+          + 'The step is accepted when the RMS of the local errors, each divided by relTol·|y| + absTol, is at most 1. '
+          + 'The same weights test the Newton iteration of BDF and EulerImplicit. Ignored by the explicit fixed-step methods.' },
       { key: 'integralAbsTol', label: 'Absolute tol.', type: 'number', defaultVal: '1e-9',
-        description: 'RK45 absolute-error floor. Prevents over-tightening the step when |y| ≈ 0.' },
+        description: 'RK45 and BDF absolute-error floor (same uses). Prevents over-tightening the step when |y| ≈ 0.' },
       { key: 'integralMinStep', label: 'Min step', type: 'number', defaultVal: '0',
-        description: 'Minimum step size for RK45 (0 = auto, derived from the interval). ' },
+        description: 'Minimum step size for RK45 and BDF (0 = auto: the resolution of the integration variable).' },
       { key: 'integralMaxStep', label: 'Max step', type: 'number', defaultVal: '0',
-        description: 'Maximum step size for RK45 (0 = auto = the full interval).' },
+        description: 'Maximum step size for RK45 and BDF (0 = auto = the full interval).' },
       { key: 'integralRichardson', label: 'Richardson', type: 'boolean', defaultVal: 'false',
         description:
           'Richardson extrapolation (fixed-step methods only). Runs one h step + two h/2 steps and '

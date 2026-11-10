@@ -1,7 +1,7 @@
 /**
  * @file test_evaluation_overhead.cpp
- * @brief The evaluation without copies of the state and the time march of the blocks that change
- *        (docs/solver_roadmap.md §6.1, steps 1 to 4).
+ * @brief The evaluation without copies of the state, by slots, and the time march of the blocks that change
+ *        (docs/solver_roadmap.md §6.1, steps 1 to 5).
  *
  * - BlockEvaluator::evaluate reads the variables a block does not own from the state, by reference;
  *   an explicit assignment evaluated for its value carries no gradient.
@@ -12,6 +12,9 @@
  * - callsPropertyFunctions decides the CoolProp warm-up.
  * - EulerImplicit fails on a step whose iteration does not converge; integral.md names the method used;
  *   a fixed step too large for an explicit method says so.
+ * - Step 5: the operators carry a code; a block reads its variables from slots (the entries of the state of its
+ *   SystemEvaluator, found once) and recognises its calls of standard functions once; the block evaluations are
+ *   timed only for the profile of the debug mode.
  */
 #include "coolsolve/evaluator.h"
 #include "coolsolve/integral/integral_solver.h"
@@ -29,6 +32,7 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <type_traits>
 
 using namespace coolsolve;
 using Catch::Matchers::ContainsSubstring;
@@ -288,6 +292,33 @@ TEST_CASE("Integral march: the blocks independent of t and of the states keep th
     CHECK(r.algebraicResult.success);
 }
 
+TEST_CASE("Integral march: a check equation that reads t or a state is verified at every evaluation", "[eval-overhead]") {
+    // z is defined twice: the second equation is a check equation, true at t = 0 only
+    auto m = buildModel(
+        "y = 1 + integral(dydt, t, 0, 1)\n"
+        "dydt = -y\n"
+        "z = 2*y\n"
+        "z = 2*y*(1 + t)\n"
+        "w = u\n");
+    IntegralSolver solver(m->program, *m->ir, m->analysis, SolverOptions{});
+    IntegratorOptions opt;
+    opt.method = IntegratorOptions::RK4;
+    opt.maxSteps = 20;
+    const IntegralSolveResult r = solver.solve(opt);
+    REQUIRE_FALSE(r.success);
+    CHECK_THAT(r.errorMessage, ContainsSubstring("Check equation failed"));
+
+    // The same check equation, true at every t, does not stop the march
+    auto holds = buildModel(
+        "y = 1 + integral(dydt, t, 0, 1)\n"
+        "dydt = -y\n"
+        "z = 2*y\n"
+        "z = 2*y*(1 + 0*t)\n"
+        "w = u\n");
+    IntegralSolver fine(holds->program, *holds->ir, holds->analysis, SolverOptions{});
+    CHECK(fine.solve(opt).success);
+}
+
 TEST_CASE("IntegralSolveResult names the method used, Richardson included", "[eval-overhead]") {
     auto m = buildModel("y = 1 + integral(dydt, t, 0, 1)\ndydt = -y\n");
     IntegralSolver solver(m->program, *m->ir, m->analysis, SolverOptions{});
@@ -334,7 +365,8 @@ TEST_CASE("A fixed step too large for an explicit method says that it may be too
 // ============================================================================
 
 TEST_CASE("EulerImplicit fails on a step that does not converge, with the time and the residual", "[eval-overhead]") {
-    // f = -10 sign(y): the Newton iteration of a step of 1 jumps between -9 and 11 and never converges
+    // f = -10 sign(y): the Newton iteration of a step of 1 jumps between -9 and 11 and never converges, with the
+    // kept Jacobian, a renewed one or one at every iterate (all 0)
     RHSFunction f = [](double, const Eigen::VectorXd& y) {
         Eigen::VectorXd r(1);
         r(0) = y(0) > 0.0 ? -10.0 : 10.0;
@@ -351,7 +383,7 @@ TEST_CASE("EulerImplicit fails on a step that does not converge, with the time a
         const std::string what = e.what();
         CHECK_THAT(what, ContainsSubstring("EulerImplicit"));
         CHECK_THAT(what, ContainsSubstring("from t = 2 to 3"));
-        CHECK_THAT(what, ContainsSubstring("did not converge after 30 iterations"));
+        CHECK_THAT(what, ContainsSubstring("did not converge"));
         CHECK_THAT(what, ContainsSubstring("largest residual"));
     }
 }
@@ -384,4 +416,136 @@ TEST_CASE("callsPropertyFunctions: property functions, routines that call them, 
         "y = 3\n")->ir));   // a routine that no equation calls
     CHECK(callsPropertyFunctions(*buildModel(
         "CALL psychprops(25, 101.325, 0.5 : Tout, v, h, s, u, W, R, Twb, Tdp)\n")->ir));
+}
+
+// ============================================================================
+// Step 5: operator codes, slots, standard calls, timing
+// ============================================================================
+
+TEST_CASE("Operators carry their code, set where the node is built", "[eval-overhead][eval-slots]") {
+    const std::pair<const char*, OpCode> codes[] = {
+        {"+", OpCode::Add}, {"-", OpCode::Sub}, {"*", OpCode::Mul}, {"/", OpCode::Div}, {"^", OpCode::Pow},
+        {">", OpCode::Gt},  {"<", OpCode::Lt},  {">=", OpCode::Ge}, {"<=", OpCode::Le}, {"=", OpCode::Eq},
+        {"<>", OpCode::Ne}, {"and", OpCode::And}, {"or", OpCode::Or}, {"..", OpCode::Other}, {"", OpCode::Other},
+    };
+    for (const auto& [text, code] : codes) {
+        CHECK(opCodeOf(text) == code);
+        CHECK(makeBinaryOp(text, makeNumber(1), makeNumber(2))->as<BinaryOp>().code == code);
+    }
+    CHECK(makeUnaryOp("-", makeNumber(1))->as<UnaryOp>().code == OpCode::Sub);
+    CHECK(BinaryOp{"<>", nullptr, nullptr}.code == OpCode::Ne);
+
+    // A node without a known operator is an error, as before
+    ExpressionEvaluator ev(0);
+    CHECK_THROWS_WITH(ev.evaluate(makeBinaryOp("..", makeNumber(1), makeNumber(2))),
+                      ContainsSubstring("Unknown binary operator"));
+    CHECK_THROWS_WITH(ev.evaluate(makeUnaryOp("!", makeNumber(1))), ContainsSubstring("Unknown unary operator"));
+
+    // The equations copied by DUPLICATE keep the codes of their operators; the comparisons of a body too
+    auto m = buildModel(
+        "FUNCTION f(i)\n  IF (i >= 2) AND (i <> 3) THEN\n    f := 1\n  ELSE\n    f := 0\n  ENDIF\nEND\n"
+        "DUPLICATE i=1,3\n  x[i] = 2^i - i/2 + f(i) + IF(i, 2, 1, 0, 0)\nEND\n");
+    Solver solver(*m->ir, m->analysis);
+    const SolveResult r = solver.solve();
+    REQUIRE(r.success);
+    CHECK(r.variables.at("x[1]") == 2.0 - 0.5 + 1.0);
+    CHECK(r.variables.at("x[2]") == 4.0 - 1.0 + 1.0);
+    CHECK(r.variables.at("x[3]") == 8.0 - 1.5);
+}
+
+TEST_CASE("ExpressionEvaluator refers to its configuration, never to a temporary", "[eval-overhead][eval-slots]") {
+    STATIC_REQUIRE(std::is_constructible_v<ExpressionEvaluator, size_t, const CoolPropConfig&>);
+    STATIC_REQUIRE_FALSE(std::is_constructible_v<ExpressionEvaluator, size_t, CoolPropConfig>);
+    CHECK(&defaultCoolPropConfig() == &defaultCoolPropConfig());
+    CHECK(defaultCoolPropConfig().backend == "HEOS");
+}
+
+TEST_CASE("A block bound to its state reads the entries of the state, another map by name", "[eval-overhead][eval-slots]") {
+    auto m = buildModel(
+        "a[1] = 2\n"
+        "a[2] = 3\n"
+        "b = 1.5\n"
+        "y^3 + y = a[1]*exp(b) + max(A[2], b) - a[2]^2/b + IF(b, a[1], 0)\n");
+    REQUIRE(m->analysis.success);
+    const size_t yBlock = blockOf(m->analysis, "y");
+    SystemEvaluator sys(*m->ir, m->analysis);
+    sys.initializeFromGuesses();
+    for (const auto& [name, value] : VariableValues{{"a[1]", 2.0}, {"a[2]", 3.0}, {"b", 1.5}, {"y", 2.0}})
+        sys.setVariableValue(name, value);
+
+    // Through the entries of the bound state, through a copy of it (looked up by name), and in a block evaluator
+    // that is not bound: the same residual, Jacobian and scale, bit for bit
+    const EvaluationResult bound = sys.evaluateBlock(yBlock);
+    const VariableValues copy = sys.getAllVariables();
+    BlockEvaluator& be = sys.getBlock(yBlock);
+    const EvaluationResult viaCopy = be.evaluate({2.0}, copy);
+    BlockEvaluator unbound(m->analysis.blocks[yBlock], *m->ir);
+    const EvaluationResult viaUnbound = unbound.evaluate({2.0}, copy);
+    const double expected = 8.0 + 2.0 - (2.0 * std::exp(1.5) + 3.0 - 9.0 / 1.5 + 2.0);
+    CHECK_THAT(bound.residuals[0], WithinAbs(expected, 1e-12));
+    for (const EvaluationResult* other : {&viaCopy, &viaUnbound}) {
+        CHECK(other->residuals == bound.residuals);
+        CHECK(other->jacobian == bound.jacobian);
+        CHECK(other->scale == bound.scale);
+    }
+    CHECK(bound.jacobian[0][0] == 3.0 * 4.0 + 1.0);
+
+    // The entries are read at each evaluation: a new value of the state is seen
+    sys.setVariableValue("B", 2.0);
+    CHECK_THAT(sys.evaluateBlock(yBlock).residuals[0],
+               WithinAbs(10.0 - (2.0 * std::exp(2.0) + 3.0 - 4.5 + 2.0), 1e-12));
+
+    // Another map that lacks a variable of the block: the former default, 1, with its warning
+    const VariableValues partial{{"a[1]", 2.0}, {"b", 1.5}};
+    const EvaluationResult missing = be.evaluate({2.0}, partial);
+    REQUIRE(missing.warnings.size() == 1);
+    CHECK_THAT(missing.warnings[0], ContainsSubstring("Undefined variable: a[2]", Catch::CaseSensitive::No));
+    CHECK_THAT(missing.residuals[0], WithinAbs(10.0 - (2.0 * std::exp(1.5) + 1.5 - 1.0 / 1.5 + 2.0), 1e-12));
+}
+
+TEST_CASE("A block bound to its state: the variable of a block of one variable is set in place", "[eval-overhead][eval-slots]") {
+    auto m = buildModel("a = 2\nb = 3*a\n");
+    REQUIRE(m->analysis.success);
+    const size_t bBlock = blockOf(m->analysis, "b");
+    SystemEvaluator sys(*m->ir, m->analysis);
+    sys.setBlockVariableValue(bBlock, 5.0);   // before initializeFromGuesses: by name
+    CHECK(sys.getVariableValue("b") == 5.0);
+    sys.initializeFromGuesses();
+    sys.setBlockVariableValue(bBlock, 7.0);
+    CHECK(sys.getVariableValue("B") == 7.0);
+    CHECK(sys.getAllVariables().at("b") == 7.0);
+}
+
+TEST_CASE("A user FUNCTION named like a standard function is called, not the standard one", "[eval-overhead][eval-slots]") {
+    auto m = buildModel(
+        "FUNCTION max(x, y)\n  max := x + y\nEND\n"
+        "z = max(2, 5) + exp(0)\n"
+        "w^2 = max(1, 3) + MIN(4, 9)\n");
+    REQUIRE(m->analysis.success);
+    Solver solver(*m->ir, m->analysis);
+    const SolveResult r = solver.solve();
+    REQUIRE(r.success);
+    CHECK(r.variables.at("z") == 8.0);
+    CHECK_THAT(std::abs(r.variables.at("w")), WithinAbs(std::sqrt(8.0), 1e-9));
+}
+
+TEST_CASE("Block evaluations are timed only when asked (the profile of the debug mode)", "[eval-overhead][eval-slots]") {
+    auto m = buildModel("a = 0.5\ny = sin(a) + cos(a)^2\n");
+    REQUIRE(m->analysis.success);
+    BlockEvaluator be(m->analysis.blocks[blockOf(m->analysis, "y")], *m->ir);
+    const VariableValues state{{"a", 0.5}};
+    const auto evaluationTime = [&] {
+        resetProfilingStats();
+        for (int i = 0; i < 2000; ++i) be.evaluate({0.0}, state, {}, false);
+        const std::string stats = getProfilingStatsString();
+        const auto at = stats.find("Block evaluations: 2000 (total: ");
+        REQUIRE(at != std::string::npos);
+        return std::stod(stats.substr(at + std::string("Block evaluations: 2000 (total: ").size()));
+    };
+    setBlockEvaluationTiming(false);
+    CHECK(evaluationTime() == 0.0);
+    setBlockEvaluationTiming(true);
+    CHECK(evaluationTime() > 0.0);
+    setBlockEvaluationTiming(false);
+    resetProfilingStats();
 }

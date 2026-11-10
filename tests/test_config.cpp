@@ -108,6 +108,23 @@ TEST_CASE("Integral options are loaded from config", "[config][solver][integral]
     REQUIRE(m == coolsolve::IntegratorOptions::RK45);
 }
 
+TEST_CASE("Integral options: the BDF method is read from config", "[config][solver][integral]") {
+    fs::path configPath = fs::temp_directory_path() / "coolsolve_test_integral_bdf.conf";
+    {
+        std::ofstream f(configPath);
+        REQUIRE(f.is_open());
+        f << "integralMethod = BDF\n";
+    }
+    coolsolve::SolverOptions options;
+    const bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+    fs::remove(configPath);
+    REQUIRE(loaded);
+    coolsolve::IntegratorOptions::Method m = coolsolve::IntegratorOptions::RK4;
+    REQUIRE(coolsolve::parseIntegralMethod(options.integralMethod, m));
+    CHECK(m == coolsolve::IntegratorOptions::BDF);
+    CHECK(coolsolve::methodToString(m) == "BDF");
+}
+
 TEST_CASE("CoolProp integration options are loaded from config", "[config][solver][coolprop]") {
     fs::path tmpDir = fs::temp_directory_path();
     fs::path configPath = tmpDir / "coolsolve_test_coolprop.conf";

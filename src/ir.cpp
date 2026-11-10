@@ -54,17 +54,11 @@ static ExprPtr cloneExprWithSubstitution(const ExprPtr& expr, const std::string&
         }
     } else if (expr->is<UnaryOp>()) {
         const auto& op = expr->as<UnaryOp>();
-        UnaryOp newOp;
-        newOp.op = op.op;
-        newOp.operand = cloneExprWithSubstitution(op.operand, iteratorVar, value);
-        result->node = std::move(newOp);
+        result->node = UnaryOp{op.op, cloneExprWithSubstitution(op.operand, iteratorVar, value)};
     } else if (expr->is<BinaryOp>()) {
         const auto& op = expr->as<BinaryOp>();
-        BinaryOp newOp;
-        newOp.op = op.op;
-        newOp.left = cloneExprWithSubstitution(op.left, iteratorVar, value);
-        newOp.right = cloneExprWithSubstitution(op.right, iteratorVar, value);
-        result->node = std::move(newOp);
+        result->node = BinaryOp{op.op, cloneExprWithSubstitution(op.left, iteratorVar, value),
+                                cloneExprWithSubstitution(op.right, iteratorVar, value)};
     } else if (expr->is<FunctionCall>()) {
         const auto& fc = expr->as<FunctionCall>();
         FunctionCall newFc;

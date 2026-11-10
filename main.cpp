@@ -174,6 +174,8 @@ int main(int argc, char* argv[]) {
     
     // Apply CoolProp configuration before any CoolProp calls
     coolsolve::applyCoolPropConfig(options.coolpropConfig);
+    // The block evaluation time of profiling.md: only in debug mode (two clock reads per evaluation)
+    coolsolve::setBlockEvaluationTiming(debugMode);
     
     // Use CoolSolveRunner to handle the execution pipeline
     coolsolve::CoolSolveRunner runner(inputFile);

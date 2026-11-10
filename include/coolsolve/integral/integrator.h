@@ -5,7 +5,7 @@
  *        dynamic solver (`INTEGRAL` / `$IntegralTable`).
  *
  * This module is intentionally decoupled from the EES parser/IR/evaluator so
- * that the numerical methods (Euler, RK4, Dormand-Prince RK45) can be unit
+ * that the numerical methods (Euler, RK4, Dormand-Prince RK45, BDF) can be unit
  * tested in isolation against analytical solutions (see
  * `tests/test_integrator_*.cpp`).  The orchestrator that wires these methods
  * to the algebraic `Solver` lives in `integral_solver.h`.
@@ -16,6 +16,8 @@
  *   - Dormand & Prince (1980), "A family of embedded Runge-Kutta formulae",
  *     J. Comp. Appl. Math. 6(1):19-26.
  *   - Press et al., *Numerical Recipes* 3rd ed., Ch. 17.
+ *   - Shampine & Reichelt (1997), "The MATLAB ODE Suite", SIAM J. Sci.
+ *     Comput. 18(1):1-22 (the variable-order NDF of the BDF method).
  */
 
 #include <Eigen/Dense>
@@ -37,16 +39,17 @@ struct IntegratorOptions {
         EulerExplicit,  ///< Fixed-step explicit Euler (1st order).
         EulerImplicit,  ///< Fixed-step implicit Euler (1st order, A-stable).
         RK4,            ///< Fixed-step classic Runge-Kutta (4th order). Default.
-        RK45            ///< Variable-step Dormand-Prince (embedded 4(5)). Adaptive.
+        RK45,           ///< Variable-step Dormand-Prince (embedded 4(5)). Adaptive.
+        BDF             ///< Variable-order (1-5), variable-step NDF for stiff systems. Adaptive.
     };
 
     Method method = RK4;          ///< Integration method (default: RK4).
     double fixedStep = 0.0;       ///< Requested step size. 0 => derive from `maxSteps`.
     int    maxSteps  = 1000;      ///< Upper bound on the number of steps.
-    double relTol    = 1e-6;      ///< RK45 relative error control.
-    double absTol    = 1e-9;      ///< RK45 absolute error floor.
-    double minStep   = 0.0;       ///< Minimum step size for RK45 (0 = auto).
-    double maxStep   = 0.0;       ///< Maximum step size for RK45 (0 = auto).
+    double relTol    = 1e-6;      ///< Relative error control (RK45, BDF) and weights of the Newton test (BDF, EulerImplicit).
+    double absTol    = 1e-9;      ///< Absolute error floor (same uses as relTol).
+    double minStep   = 0.0;       ///< Minimum step size of the adaptive methods (0 = auto).
+    double maxStep   = 0.0;       ///< Maximum step size of the adaptive methods (0 = auto).
     bool   richardson = false;    ///< Richardson extrapolation (fixed-step methods only).
 };
 
@@ -66,9 +69,12 @@ struct StepResult {
     Eigen::VectorXd yNew;          ///< State at `t + stepTaken`.
     double stepTaken     = 0.0;    ///< Step size actually used.
     double nextStep      = 0.0;    ///< Recommended next step (RK45 adaptive; = h for fixed).
-    double errorEstimate = 0.0;    ///< Normalised local error (RK45); 0 for fixed-step.
-    bool   accepted      = true;   ///< Whether the step satisfied the tolerance (RK45).
-    int    rhsEvaluations = 0;     ///< Number of RHS evaluations consumed (diagnostics).
+    double errorEstimate = 0.0;    ///< Normalised local error (RK45, BDF); 0 for fixed-step.
+    bool   accepted      = true;   ///< Whether the step satisfied the tolerance (RK45, BDF).
+    int    rhsEvaluations = 0;     ///< Number of RHS evaluations consumed, those of the Jacobians included.
+    /// Why a step was rejected other than by its error estimate (an implicit iteration that did not converge,
+    /// a right-hand side that could not be evaluated); empty otherwise.
+    std::string rejectReason;
 };
 
 /**
@@ -76,8 +82,11 @@ struct StepResult {
  *
  * Each concrete integrator advances the state from `(t, y)` by a proposed
  * step `h`.  For fixed-step methods `h` is used as-is; for the adaptive
- * `RK45` method `h` is the proposed step and `StepResult::stepTaken` / the
- * error estimate drive the outer step-size controller.
+ * methods (`RK45`, `BDF`) `h` is the proposed step and `StepResult::stepTaken` /
+ * the error estimate drive the outer step-size controller.  A multistep method
+ * (`BDF`) keeps its history from one call to the next: the caller passes back
+ * the `(t + stepTaken, yNew)` of the last accepted step, and any other point
+ * starts a new history.
  */
 class Integrator {
 public:
@@ -105,6 +114,14 @@ public:
      * combination factor 2^p.  Defaults to 1; concrete methods override.
      */
     virtual int order() const { return 1; }
+
+    /**
+     * @brief The state at `tq` inside the last accepted step, from the method's own interpolant.
+     *
+     * Valid between the accepted step and the next call of `step()`.
+     * @return false when the method has no interpolant (the caller interpolates between the steps itself).
+     */
+    virtual bool denseOutput(double /*tq*/, Eigen::VectorXd& /*yq*/) const { return false; }
 };
 
 /**

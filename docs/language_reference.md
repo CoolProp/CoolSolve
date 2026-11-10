@@ -2634,26 +2634,29 @@ uncomment only what you need; see `examples/coolsolve.conf`):
 
 | Key | Default | Meaning |
 |:----|:--------|:--------|
-| `integralMethod` | `RK4` | `RK4`, `RK45`, `EulerExplicit`, or `EulerImplicit` |
-| `integralFixedStep` | `0.0` | Fixed step size (used when the `INTEGRAL` call gives none). `0` ⇒ `integralMaxSteps` steps (fixed methods) or adapt (RK45) |
-| `integralMaxSteps` | `1000` | Number of steps of a fixed-step method that has no explicit step; budget of RK45 (§12.5) |
-| `integralRelTol` | `1e-6` | RK45 local relative error control |
-| `integralAbsTol` | `1e-9` | RK45 absolute error floor |
-| `integralMinStep` | `0.0` | Minimum step (0 = auto) |
-| `integralMaxStep` | `0.0` | Maximum step (0 = auto) |
+| `integralMethod` | `RK4` | `RK4`, `RK45`, `BDF`, `EulerExplicit`, or `EulerImplicit` |
+| `integralFixedStep` | `0.0` | Fixed step size (used when the `INTEGRAL` call gives none). `0` ⇒ `integralMaxSteps` steps (fixed methods) or adapt (RK45, BDF) |
+| `integralMaxSteps` | `1000` | Number of steps of a fixed-step method that has no explicit step; budget of RK45 and BDF (§12.5) |
+| `integralRelTol` | `1e-6` | RK45 and BDF local relative error control; weights of the Newton test of BDF and EulerImplicit |
+| `integralAbsTol` | `1e-9` | RK45 and BDF absolute error floor (same uses) |
+| `integralMinStep` | `0.0` | Minimum step of RK45 and BDF (0 = auto: the resolution of the integration variable) |
+| `integralMaxStep` | `0.0` | Maximum step of RK45 and BDF (0 = auto: the interval) |
 | `integralRichardson` | `false` | Richardson extrapolation (fixed-step methods only) |
 | `integralOutputInterval` | `0.0` | Default row interval when `$IntegralTable` omits `:n` (or there is no directive; §12.3). `0` = every step; negative = error. The `:n` of the directive overrides it |
 
-**Step size and number of steps.** A step given in the model — the 5th argument of
-`INTEGRAL`, as in EES — is used as written and the number of steps follows from
-`(hi - lo)/step` (the last step is shortened when the step does not divide the
-interval); `integralMaxSteps` does not apply. Without it, `integralFixedStep` is used
-the same way. With neither, a fixed-step method takes exactly `integralMaxSteps`
-steps (`(hi - lo)/integralMaxSteps` each), and RK45 chooses its own steps within a
-budget of `4·integralMaxSteps` attempted steps (accepted plus rejected; the explicit
-step of the model is then its first step). A run that stops before `hi` is an
-**error** (*"The integration stopped at … before reaching the upper limit …"*), never
-a truncated success.
+**Step size and number of steps.** With a fixed-step method, a step given in the model —
+the 5th argument of `INTEGRAL`, as in EES — is used as written and the number of steps
+follows from `(hi - lo)/step` (the last step is shortened when the step does not divide
+the interval); `integralMaxSteps` does not apply. Without it, `integralFixedStep` is used
+the same way. With neither, the method takes exactly `integralMaxSteps` steps
+(`(hi - lo)/integralMaxSteps` each).
+
+RK45 and BDF choose their own steps; the step of the model is only their first trial
+step. Their budget is 4 attempted steps (accepted plus rejected) for each of
+`integralMaxSteps`, or for each of the `(hi - lo)/step` steps of the model when there
+are more of them: a model whose step suits a fixed-step method also runs with an
+adaptive one. A run that stops before `hi` is an **error** (*"The integration stopped at
+… before reaching the upper limit …"*), never a truncated success.
 
 Method guidance:
 
@@ -2662,10 +2665,19 @@ Method guidance:
 - **`RK45`** — adaptive Dormand–Prince (embedded 4th/5th order). Adjusts the step
   from the error estimate; the right choice when the dynamics have fast and slow
   phases. Watch the rejected-step count on stiff systems.
+- **`BDF`** — variable order (1 to 5) and step, for stiff systems (the NDF of MATLAB's
+  `ode15s`): the fastest dynamics of the model do not limit its step, the tolerance
+  does. Set `integralRelTol` / `integralAbsTol` to the accuracy needed: at 1e-4 / 1e-6 the
+  greenhouse models of the library keep their temperatures within 0.03 K of a fine RK4 run
+  with 6 to 7 times fewer evaluations than RK4 at the steps of the models; the default
+  1e-6 / 1e-9 is about 50 times more accurate and costs 3 to 4 times more. Rows between two steps are solved at the states of the
+  method's interpolant. It needs a right-hand side continuous in the states: where the
+  trajectory stays on a jump of the right-hand side with a state (an `IF` on a state
+  variable that switches a flow on and off) the implicit step has no solution, and the run
+  stops with a message that says so (use RK4 there; RK45 needs a large `integralMaxSteps`).
 - **`EulerExplicit`** — 1st-order, cheapest; useful for quick checks.
-- **`EulerImplicit`** — 1st-order, A-stable; the quick choice for stiff systems. A step
-  whose Newton iteration does not converge stops the integration with an error (the time
-  and the residual).
+- **`EulerImplicit`** — 1st-order, A-stable, fixed step. A step whose Newton iteration
+  does not converge stops the integration with an error (the time and the residual).
 
 The `$IntegralAutoStep` and `$IntegralStop` directives are recognised for EES
 compatibility but **not interpreted** — they emit a diagnostic pointing at the
@@ -2721,5 +2733,4 @@ of the model"*. All calls must resolve to the same interval.
   table) is not supported — it requires an EES-style Parametric table CoolSolve
   does not have.
 - **Stiff systems.** An explicit method (RK4/RK45/EulerExplicit) may need many
-  steps on a stiff system; use `EulerImplicit` as a workaround until a BDF/stiff
-  integrator is added (see `docs/solver_roadmap.md` §9.4).
+  steps on a stiff system; use `BDF` (§12.5).
