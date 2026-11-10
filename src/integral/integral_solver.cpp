@@ -217,18 +217,27 @@ IntegralSolver::IntegralSolver(const Program& program, const IR& ir,
     }
 
     // The blocks the march solves at every evaluation of the right-hand side: those that depend on the
-    // integration variable or on a state (the driver blocks included). The others are solved by the
-    // complete solve at the initial point and keep their values.
+    // integration variable or on a state (the driver blocks included), and the check equations (blocks
+    // without variable) that read such a variable, verified at every evaluation. The others are solved by
+    // the complete solve at the initial point and keep their values.
     if (problem_.valid && march_ && march_->analysis->success) {
         std::set<std::string, CaseInsensitiveLess> seeds;
         for (const auto& st : problem_.states) seeds.insert(st.name);
         seeds.insert(problem_.integrationVar);
         const auto dynamic = dependentVariables(*march_->ir, *march_->analysis, seeds);
+        const auto isDynamic = [&](const std::string& v) { return dynamic.count(v) > 0; };
         const auto& blocks = march_->analysis->blocks;
-        for (size_t b = 0; b < blocks.size(); ++b)
-            if (std::any_of(blocks[b].variables.begin(), blocks[b].variables.end(),
-                            [&](const std::string& v) { return dynamic.count(v) > 0; }))
+        const auto& equations = march_->ir->getEquations();
+        const auto readsDynamic = [&](int eqId) {
+            return eqId >= 0 && eqId < static_cast<int>(equations.size()) &&
+                   std::any_of(equations[eqId].variables.begin(), equations[eqId].variables.end(), isDynamic);
+        };
+        for (size_t b = 0; b < blocks.size(); ++b) {
+            const auto& block = blocks[b];
+            if (std::any_of(block.variables.begin(), block.variables.end(), isDynamic) ||
+                (block.variables.empty() && std::any_of(block.equationIds.begin(), block.equationIds.end(), readsDynamic)))
                 marchBlocks_.push_back(b);
+        }
     }
 }
 

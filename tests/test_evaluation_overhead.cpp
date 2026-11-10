@@ -288,6 +288,33 @@ TEST_CASE("Integral march: the blocks independent of t and of the states keep th
     CHECK(r.algebraicResult.success);
 }
 
+TEST_CASE("Integral march: a check equation that reads t or a state is verified at every evaluation", "[eval-overhead]") {
+    // z is defined twice: the second equation is a check equation, true at t = 0 only
+    auto m = buildModel(
+        "y = 1 + integral(dydt, t, 0, 1)\n"
+        "dydt = -y\n"
+        "z = 2*y\n"
+        "z = 2*y*(1 + t)\n"
+        "w = u\n");
+    IntegralSolver solver(m->program, *m->ir, m->analysis, SolverOptions{});
+    IntegratorOptions opt;
+    opt.method = IntegratorOptions::RK4;
+    opt.maxSteps = 20;
+    const IntegralSolveResult r = solver.solve(opt);
+    REQUIRE_FALSE(r.success);
+    CHECK_THAT(r.errorMessage, ContainsSubstring("Check equation failed"));
+
+    // The same check equation, true at every t, does not stop the march
+    auto holds = buildModel(
+        "y = 1 + integral(dydt, t, 0, 1)\n"
+        "dydt = -y\n"
+        "z = 2*y\n"
+        "z = 2*y*(1 + 0*t)\n"
+        "w = u\n");
+    IntegralSolver fine(holds->program, *holds->ir, holds->analysis, SolverOptions{});
+    CHECK(fine.solve(opt).success);
+}
+
 TEST_CASE("IntegralSolveResult names the method used, Richardson included", "[eval-overhead]") {
     auto m = buildModel("y = 1 + integral(dydt, t, 0, 1)\ndydt = -y\n");
     IntegralSolver solver(m->program, *m->ir, m->analysis, SolverOptions{});
