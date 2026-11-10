@@ -72,8 +72,9 @@ The integral solve works as follows:
    zero-width interval, so `y(t0)` falls out of the algebraic solve of the
    remaining equations.
 5. **March in time**: at each step, fix `(t, y)` as externals, call the
-   algebraic `Solver` on the reduced system to evaluate `f`, then advance
-   `y` using the chosen `Integrator`. The number of steps is fixed by the model
+   algebraic `Solver` on the blocks of the reduced system that depend on `t` or
+   on a state to evaluate `f` (§3.3), then advance `y` using the chosen
+   `Integrator`. The number of steps is fixed by the model
    step (or `integralMaxSteps` without one); a march that ends before `tf` is an
    error, never a success.
 6. **Record rows** into an `IntegralTable` (columns matched to variables without
@@ -83,7 +84,7 @@ The integral solve works as follows:
    two steps around it, evaluated once each (the row of a step is reused by the
    next one); a row on a step is that step's row.
 
-The key invariant: **`Solver` is called unmodified at each time step**.
+The key invariant: **the algebraic `Solver` is reused unmodified at each time step**.
 The integral layer only decides *when* to call it, *what* to fix as
 external, and *how* to advance the state.
 
@@ -113,7 +114,7 @@ Two non-obvious obstacles had to be overcome to reuse the algebraic
 | Method | Step formula | Algebraic solves/step | Notes |
 |--------|-------------|-----------------------|-------|
 | **Euler explicit** | `y_{n+1} = y_n + h·f(t_n, y_n, z_n)` | 1 | Cheapest; 1st order |
-| **Euler implicit** | Implicit solve for `(y_{n+1}, z_{n+1})` | 1 coupled Newton | A-stable; 1st order |
+| **Euler implicit** | Newton on `y_{n+1} − y_n − h·f(t_{n+1}, y_{n+1}) = 0` | 1 + (n+1) per iteration | A-stable; 1st order; a step that does not converge is an error |
 | **RK4** | 4 stages, classic Butcher tableau | 4 | 4th order; **default** |
 | **RK45** | 6 stages, Dormand–Prince embedded pair (4th + 5th) | 6 | Adaptive; error-estimation step control |
 | **Richardson** | Combine one `h` step + two `h/2` steps | triples | Reduces truncation error; fixed-step only |
@@ -220,9 +221,20 @@ At time `t` with state `y`, the RHS `f(t, y)` is evaluated by:
 1. Write `t` and the components of `y` into the `SystemEvaluator`'s
    current state as **fixed/external** values (same mechanism the parametric
    sweep uses).
-2. Call `Solver::solve()` restricted to the algebraic blocks only.
-3. Read the integrand variables (`dydt`, ...) from the solution — those are
-   `f`.
+2. Call `Solver::solveBlocks()` on the blocks that depend on `t` or on a state
+   (the closure of `t` and the states through the blocks, `dependentVariables`).
+   The other blocks (parameters, constants of the model and everything computed
+   from them only) were solved by the complete solve at `t0` and keep their
+   values: they are not solved again at every stage.
+3. Read the integrand variables (`dydt`, ...) from the state of the solver — those
+   are `f`. No `SolveResult` is built for a stage: a table row reads its columns
+   from the state too, and the result at `tf` is the state after the last row.
+
+Each block reads the variables it does not own from the state by reference
+(`BlockEvaluator::evaluate`), and an explicit block `x = expr` is evaluated without
+derivatives, so the cost of a stage is that of the evaluation of its equations: for
+the greenhouse models of the library (about 200 blocks, no property call) a stage
+takes 0.1 ms (docs/solver_roadmap.md §6.1).
 
 The lookup tables of the model (companion `<model>-<table>.csv` files, or the tables of
 the GUI session) are owned by the runner and given to `IntegralSolver`, which hands them
@@ -232,9 +244,12 @@ and in its `FUNCTION`s / `PROCEDURE`s, with the weather (or any forcing) table r
 each step (`examples/building_rc_network.eescode`).
 
 For **implicit Euler**, steps 1–3 are wrapped inside the nonlinear solve
-for `y_{n+1}`: the block solver receives `y_{n+1}` as additional unknowns
-appended to the algebraic block, reusing the existing Newton/LM/TrustRegion
-machinery.
+for `y_{n+1}`: a Newton iteration on `G(y_{n+1}) = y_{n+1} − y_n − h·f(t_{n+1}, y_{n+1})`
+with a finite-difference Jacobian of `f` (one RHS evaluation per state and per
+iteration), at most 30 iterations. It converges when `|G| < 1E-12` or the correction is
+below 1E-12 (or, after the 30 iterations, at a few ulps of `y`, the rounding of a large
+state). A step that does not converge is an error with the time and the residual: its
+state would be off the trajectory.
 
 ---
 
@@ -325,8 +340,11 @@ empty column.
 - **2-arg table-based `INTEGRAL(integrand, var)`** is not supported — it
   requires an EES-style Parametric table that CoolSolve does not have.
 - **Stiff systems.** An explicit method may need many steps on a stiff
-  system; use `EulerImplicit` as a workaround until a BDF/stiff integrator
-  is added.
+  system (a fixed step above its stability limit ends in a failed algebraic solve,
+  whose message says that the step may be too large); use `EulerImplicit` as a
+  workaround until a BDF/stiff integrator is added. `EulerImplicit` re-evaluates its
+  Jacobian by finite differences at every iteration, so it is expensive per step, and
+  its iteration may not converge on a large step of a discontinuous model (an error).
 
 ### 7.2 Planned improvements
 

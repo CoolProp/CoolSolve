@@ -311,6 +311,21 @@ interval. Fixes:
 - Give the step in the model (5th `INTEGRAL` argument) or set `integralFixedStep`:
   the step count is then `(tf−t0)/step` whatever `integralMaxSteps` says.
 
+**"Algebraic solve failed at t=… — The step h = … may be too large for RK4".** With a
+fixed-step explicit method (`RK4`, `EulerExplicit`) a step above the stability limit of
+the model (set by its fastest dynamics) makes the states grow from step to step until an
+algebraic block can no longer be solved (a `LineSearchFailed` on a residual of 1E+40, a
+property call out of range). Reduce the step of the `INTEGRAL` call (or
+`integralFixedStep`), or use `RK45`, which adapts its step, or `EulerImplicit`.
+
+**"EulerImplicit: the iteration of the step from t = … to … did not converge".** The
+Newton iteration that gives the state at the end of an implicit step (30 iterations at
+most, finite-difference Jacobian) did not converge; the message gives the largest
+residual of `y_new − y − h·f(t+h, y_new)`. The step is not accepted, since its state would
+be off the trajectory: reduce the step, or use `RK4` with a small step or `RK45`. A
+discontinuous model (a switch of a controller, `IF`, `MAX`) within the step is the usual
+cause.
+
 **"The upper limit '…' of INTEGRAL() depends on the integration variable … or on a
 state".** The limits and the step of `INTEGRAL` are read once, at the initial point:
 they may be variables or expressions of the model but must not depend on `t` or on a

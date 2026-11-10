@@ -10,13 +10,19 @@
  * Each step solves the nonlinear fixed-point equation
  *     G(y_{n+1}) = y_{n+1} − y_n − h·f(t_{n+1}, y_{n+1}) = 0
  * with a small Newton iteration using a finite-difference Jacobian.  The
- * explicit Euler value is used as the initial predictor.  In Phase 5 this
+ * explicit Euler value is used as the initial predictor.  A step whose
+ * iteration does not converge is an error (the time and the residual G):
+ * accepting it would put a point off the trajectory in the table.  In Phase 5 this
  * same coupling is delegated to the algebraic `Solver` when state and
  * algebraic variables are solved together; here the integrator stays
  * self-contained so the numerics can be tested analytically.
  */
 #include "integrators_internal.h"
+#include <algorithm>
 #include <cmath>
+#include <limits>
+#include <sstream>
+#include <stdexcept>
 
 namespace coolsolve {
 
@@ -40,11 +46,15 @@ public:
         const double tol = 1e-12;
         const double fdEps = 1e-7;  // finite-difference perturbation scale
 
-        for (int inner = 0; inner < maxInner; ++inner) {
+        bool converged = false;
+        double gnorm = 0.0;
+        Eigen::VectorXd dy = Eigen::VectorXd::Constant(n, std::numeric_limits<double>::infinity());
+        int inner = 0;
+        for (; inner < maxInner; ++inner) {
             f1 = rhs(t1, ynew); ++evals;
             G = ynew - y - h * f1;
-            double gnorm = G.lpNorm<Eigen::Infinity>();
-            if (gnorm < tol) break;
+            gnorm = G.lpNorm<Eigen::Infinity>();
+            if (gnorm < tol) { converged = true; break; }
 
             // Finite-difference Jacobian of f at (t1, ynew).
             for (int j = 0; j < n; ++j) {
@@ -56,10 +66,25 @@ public:
             JG = Eigen::MatrixXd::Identity(n, n) - h * Jf;
 
             auto lu = JG.fullPivLu();
-            Eigen::VectorXd dy = lu.solve(-G);
+            dy = lu.solve(-G);
             if (!dy.allFinite()) break;
             ynew += dy;
-            if (dy.lpNorm<Eigen::Infinity>() < tol) break;
+            if (dy.lpNorm<Eigen::Infinity>() < tol) { converged = true; break; }
+        }
+        // The iterations are spent with a last correction of a few ulps of y: the iteration stalls at the rounding
+        // of y (a state above ~1E3 cannot get a correction below 1E-12), the step is converged
+        if (!converged && inner == maxInner) {
+            converged = true;
+            for (int i = 0; i < n; ++i)
+                if (!(std::abs(dy(i)) <= 4.0 * std::numeric_limits<double>::epsilon() * std::abs(ynew(i)))) converged = false;
+        }
+        if (!converged) {
+            std::ostringstream what;
+            what << "EulerImplicit: the iteration of the step from t = " << t << " to " << t1 << " (h = " << h
+                 << ") did not converge after " << std::min(inner + 1, maxInner)
+                 << " iterations: the largest residual of y_new - y - h*f(t+h, y_new) is " << gnorm
+                 << ". Reduce the step of INTEGRAL() (or integralFixedStep), or use RK4 or RK45";
+            throw std::runtime_error(what.str());
         }
 
         r.yNew = ynew;

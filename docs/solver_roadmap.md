@@ -294,11 +294,13 @@ output, and limitations.
 
 ## 6. Future work
 
-### 6.1 Evaluation overhead and time marching (plan, November 2026)
+### 6.1 Evaluation overhead and time marching (November 2026)
 
-**Not implemented.** This is the first priority of the roadmap: one
-algebraic solve costs about 0.21 µs × blocks × variables whatever the
-equations contain, and a dynamic model pays it four times per RK4 step.
+**Steps 1 to 4 implemented** (branch `perf/eval-overhead`, under review;
+results below). Step 5 is to be decided on those results, step 6 is item 1
+of §6.2. Before this work one algebraic solve cost about 0.21 µs × blocks ×
+variables whatever the equations contained, and a dynamic model paid it four
+times per RK4 step.
 
 #### Diagnosis
 
@@ -382,6 +384,63 @@ measurements made after steps 1 and 2.
 | 4 | **Defects found on the way** | (a) `EulerImplicit` accepts a step whose inner Newton iteration has not converged: at a step of 600 s on the climate model all 36 steps end with a relative residual of order 1 after 30 iterations, the air temperature after 6 h is 20.88 °C instead of 18.93 °C and the status is success. It must fail with the time and the residual. (b) `integral.md` always prints `Method: RK4` (`runner.cpp` builds the label from a default `SolverOptions`). (c) A fixed step too large for an explicit method ends as `Block … LineSearchFailed` in the algebraic solve: the message should say that the step may be too large | Correctness and diagnosis | 0.5 day |
 | 5 | **Compiled block evaluation** | After steps 1 and 2 a stage is still 4 to 10 times the Python one. What is left is the evaluation itself: the AST is walked with a new `ExpressionEvaluator` per call, each variable reference is a case-insensitive string lookup (for an array element, of a name built from its indices), each intermediate value is an `ADValue` with a heap-allocated gradient. That is 0.6–1.1 µs per explicit equation, 60 µs per evaluation of the 36-variable block and 135 µs per solve of the 5-variable block (36% of a climate stage after step 2). Compile each block once into a flat list of operations on integer slots of one value array, without gradients when no Jacobian is asked; a node the compiler does not handle (CALL, user function, string) keeps the present evaluator | Estimated, not measured: 10× or more on a stage | 1–2 weeks |
 | 6 | **Stiff integrator** (item 1 of §6.2) | What these models ask of it: a Jacobian kept from step to step, a convergence test weighted with `integralRelTol` / `integralAbsTol` (`EulerImplicit` uses an absolute 1e-12), a step rejected and shortened when the iteration does not converge, an error-controlled step. It reduces the number of steps (the weather is hourly, the explicit stability limit is below 300 s), not the cost of a stage: it comes after steps 1 and 2 | Not measured | as §6.2 |
+
+#### Results of steps 1 to 4
+
+Same models, same machine (Release, one thread), full runs; every
+`-integral.csv` and `.sol` file is identical to the stock one, byte for byte.
+
+| | Stock | Steps 1 + 3 | + step 2 | + two hot spots found on the way |
+|---|------:|-------:|------:|------:|
+| Climate, full run | 141 s | 3.90 s | 2.59 s | **1.77 s** (80×) |
+| Pipe, full run | 459 s | 8.57 s | 6.09 s | **4.01 s** (114×) |
+| Per RHS evaluation, climate / pipe | 8.1 / 13.2 ms | 0.22 / 0.25 ms | 0.15 / 0.18 ms | **0.10 / 0.12 ms** |
+| Steady state: solve / process | 4.96 ms / 0.53 s | – | – | **1.65 ms / 0.01 s** |
+
+The targets of the acceptance (climate under 8 s, pipe under 12 s, the
+steady-state process under 0.05 s) are met after steps 1 and 3. Against the
+Python references: the climate run is now 3.6 times shorter than the Python
+one (which takes four times more steps) and costs about the same per RHS
+evaluation (0.10 ms against 0.09 ms); the pipe costs 4 times the Python per
+evaluation (0.12 ms against 0.03 ms) and the run takes 2.1 times longer.
+
+What was done, beyond the plan:
+
+- Step 1 binds the external variables of an equation once per evaluation and
+  reads any other name from the state; an explicit assignment evaluated for
+  its value carries no gradient at all (`BlockEvaluator::isExplicitAssignment`).
+  Newton1D, which probes around the values of the other variables when its
+  Newton phase fails, reads them from the state only then, in the former order
+  (`Newton1DSolver::solve` with the state and the block variable).
+- Step 2: `Solver::solveBlocks` solves a list of blocks without building a
+  `SolveResult`; `solve()` shares its per-block work with it
+  (`solveSystemBlock`, `blockFailureMessage`). The march blocks are computed
+  once in the `IntegralSolver` constructor; the result at `tf` is the state
+  after the last row.
+- Hot spots found while measuring after step 2: every call of a function that
+  is not a property function (`exp`, `max`, `IF`, ...) threw and caught an
+  exception to find out (`getCoolPropOutputParam`; now a lookup returning an
+  optional): 30% of a stage. The check of the clamped inputs after each block
+  made a locked exchange on an atomic flag that is nearly always clear: 9% of
+  a stage of the pipe model.
+- Step 4: (a) EulerImplicit keeps its convergence tests (|G| < 1e-12, or a
+  correction below 1e-12) and accepts, after its 30 iterations, a last
+  correction within 4 ulps of y (a state above 1e3 cannot get a correction
+  below 1e-12); anything else is an error with the time, the step and the
+  largest residual. On the climate model the steps of 120 s converge as
+  before (identical table) and a step of 600 s now fails at t = 0 with a
+  residual of 232. (b) `integral.md` names the method used
+  (`IntegralSolveResult::method`). (c) A failed algebraic solve during the march
+  of `RK4` or `EulerExplicit` adds that the step may be too large.
+
+What remains of a stage (`perf` on the pipe model, self time): the
+evaluation itself. About a third is the case-insensitive lookups of variable
+names in `std::map`s (the evaluator's local map, the state, `setVariableValue`,
+`getVariableValue`), an eighth the strings, allocations and `ExpressionEvaluator`
+built for each evaluation, most of the rest the walk of the AST with an
+`ADValue` per node. That is what step 5 would remove. Estimate, not measured:
+it would bring the pipe model to the Python cost per evaluation, a factor of
+about 4 on a stage, and less on the climate model.
 
 #### Acceptance
 

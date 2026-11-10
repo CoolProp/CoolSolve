@@ -358,55 +358,61 @@ struct CoolPropParamInfo {
     UnitType unitType;
 };
 
-static CoolPropParamInfo getCoolPropOutputParam(const std::string& funcName) {
+/// The CoolProp output of the property function `funcName` (EES name or alias), none if it is not one.
+static std::optional<CoolPropParamInfo> findCoolPropOutputParam(const std::string& funcName) {
     std::string name = funcName;
     std::transform(name.begin(), name.end(), name.begin(), ::tolower);
     
-    if (name == "enthalpy" || name == "h") return {CoolProp::iHmass, UnitType::SpecificEnergy};
-    if (name == "entropy" || name == "s") return {CoolProp::iSmass, UnitType::SpecificEntropy};
-    if (name == "density" || name == "rho" || name == "d") return {CoolProp::iDmass, UnitType::Density};
-    if (name == "cp" || name == "specificheat" || name == "c_p") return {CoolProp::iCpmass, UnitType::SpecificHeat};
-    if (name == "cv" || name == "c_v") return {CoolProp::iCvmass, UnitType::SpecificHeat};
-    if (name == "temperature" || name == "t") return {CoolProp::iT, UnitType::Temperature};
-    if (name == "pressure" || name == "p") return {CoolProp::iP, UnitType::Pressure};
-    if (name == "quality" || name == "x" || name == "q") return {CoolProp::iQ, UnitType::Dimensionless};
-    if (name == "t_sat" || name == "tsat") return {CoolProp::iT, UnitType::Temperature};
-    if (name == "p_sat" || name == "psat") return {CoolProp::iP, UnitType::Pressure};
-    if (name == "viscosity" || name == "mu" || name == "v") return {CoolProp::iviscosity, UnitType::Viscosity};
-    if (name == "conductivity" || name == "k" || name == "l") return {CoolProp::iconductivity, UnitType::Conductivity};
-    if (name == "speed_of_sound" || name == "soundspeed" || name == "a") return {CoolProp::ispeed_sound, UnitType::Dimensionless}; 
-    if (name == "internalenergy" || name == "u" || name == "intenergy") return {CoolProp::iUmass, UnitType::SpecificEnergy};
+    if (name == "enthalpy" || name == "h") return CoolPropParamInfo{CoolProp::iHmass, UnitType::SpecificEnergy};
+    if (name == "entropy" || name == "s") return CoolPropParamInfo{CoolProp::iSmass, UnitType::SpecificEntropy};
+    if (name == "density" || name == "rho" || name == "d") return CoolPropParamInfo{CoolProp::iDmass, UnitType::Density};
+    if (name == "cp" || name == "specificheat" || name == "c_p") return CoolPropParamInfo{CoolProp::iCpmass, UnitType::SpecificHeat};
+    if (name == "cv" || name == "c_v") return CoolPropParamInfo{CoolProp::iCvmass, UnitType::SpecificHeat};
+    if (name == "temperature" || name == "t") return CoolPropParamInfo{CoolProp::iT, UnitType::Temperature};
+    if (name == "pressure" || name == "p") return CoolPropParamInfo{CoolProp::iP, UnitType::Pressure};
+    if (name == "quality" || name == "x" || name == "q") return CoolPropParamInfo{CoolProp::iQ, UnitType::Dimensionless};
+    if (name == "t_sat" || name == "tsat") return CoolPropParamInfo{CoolProp::iT, UnitType::Temperature};
+    if (name == "p_sat" || name == "psat") return CoolPropParamInfo{CoolProp::iP, UnitType::Pressure};
+    if (name == "viscosity" || name == "mu" || name == "v") return CoolPropParamInfo{CoolProp::iviscosity, UnitType::Viscosity};
+    if (name == "conductivity" || name == "k" || name == "l") return CoolPropParamInfo{CoolProp::iconductivity, UnitType::Conductivity};
+    if (name == "speed_of_sound" || name == "soundspeed" || name == "a") return CoolPropParamInfo{CoolProp::ispeed_sound, UnitType::Dimensionless}; 
+    if (name == "internalenergy" || name == "u" || name == "intenergy") return CoolPropParamInfo{CoolProp::iUmass, UnitType::SpecificEnergy};
     // Additional EES-style function names
-    if (name == "volume" || name == "v") return {CoolProp::iDmass, UnitType::Density};  // Inverted to specific volume after PropsSI call
-    if (name == "specheat" || name == "c") return {CoolProp::iCpmass, UnitType::SpecificHeat};
-    if (name == "molarmass" || name == "mm") return {CoolProp::imolar_mass, UnitType::Dimensionless};
+    if (name == "volume" || name == "v") return CoolPropParamInfo{CoolProp::iDmass, UnitType::Density};  // Inverted to specific volume after PropsSI call
+    if (name == "specheat" || name == "c") return CoolPropParamInfo{CoolProp::iCpmass, UnitType::SpecificHeat};
+    if (name == "molarmass" || name == "mm") return CoolPropParamInfo{CoolProp::imolar_mass, UnitType::Dimensionless};
     // Additional EES thermophysical properties (priority 2)
-    if (name == "prandtl") return {CoolProp::iPrandtl, UnitType::Dimensionless};
-    if (name == "surfacetension") return {CoolProp::isurface_tension, UnitType::Dimensionless}; // N/m (no config unit)
-    if (name == "compressibilityfactor") return {CoolProp::iZ, UnitType::Dimensionless};
-    if (name == "isentropicexponent") return {CoolProp::iisentropic_expansion_coefficient, UnitType::Dimensionless};
+    if (name == "prandtl") return CoolPropParamInfo{CoolProp::iPrandtl, UnitType::Dimensionless};
+    if (name == "surfacetension") return CoolPropParamInfo{CoolProp::isurface_tension, UnitType::Dimensionless}; // N/m (no config unit)
+    if (name == "compressibilityfactor") return CoolPropParamInfo{CoolProp::iZ, UnitType::Dimensionless};
+    if (name == "isentropicexponent") return CoolPropParamInfo{CoolProp::iisentropic_expansion_coefficient, UnitType::Dimensionless};
     // Derived / composed properties (handled in evaluateCoolPropFunction before
     // falling into the generic 2-input path).  Return a sentinel so that
     // isThermo-detection still routes them through the CoolProp path.
-    if (name == "kinematicviscosity") return {CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
-    if (name == "thermaldiffusivity") return {CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
+    if (name == "kinematicviscosity") return CoolPropParamInfo{CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
+    if (name == "thermaldiffusivity") return CoolPropParamInfo{CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
     // Pure-fluid constants (dispatched before the 2-input path).
-    if (name == "t_crit" || name == "tcrit") return {CoolProp::iT_critical, UnitType::Temperature};
-    if (name == "p_crit" || name == "pcrit") return {CoolProp::iP_critical, UnitType::Pressure};
-    if (name == "v_crit" || name == "vcrit") return {CoolProp::irhomass_critical, UnitType::Dimensionless};
-    if (name == "t_triple" || name == "ttriple") return {CoolProp::iT_triple, UnitType::Temperature};
-    if (name == "p_triple" || name == "ptriple") return {CoolProp::INVALID_PARAMETER, UnitType::Pressure};
-    if (name == "acentricfactor") return {CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
+    if (name == "t_crit" || name == "tcrit") return CoolPropParamInfo{CoolProp::iT_critical, UnitType::Temperature};
+    if (name == "p_crit" || name == "pcrit") return CoolPropParamInfo{CoolProp::iP_critical, UnitType::Pressure};
+    if (name == "v_crit" || name == "vcrit") return CoolPropParamInfo{CoolProp::irhomass_critical, UnitType::Dimensionless};
+    if (name == "t_triple" || name == "ttriple") return CoolPropParamInfo{CoolProp::iT_triple, UnitType::Temperature};
+    if (name == "p_triple" || name == "ptriple") return CoolPropParamInfo{CoolProp::INVALID_PARAMETER, UnitType::Pressure};
+    if (name == "acentricfactor") return CoolPropParamInfo{CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
     // PHASE$ is string-valued, but we still register it to catch accidental
     // numeric-context calls gracefully.
-    if (name == "phase$") return {CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
+    if (name == "phase$") return CoolPropParamInfo{CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
     
     // Humid Air specific outputs (mapped to dummy CoolProp params for type info)
-    if (name == "humrat" || name == "w") return {CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
-    if (name == "relhum" || name == "r") return {CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
-    if (name == "wetbulb" || name == "b") return {CoolProp::iT, UnitType::Temperature};
-    if (name == "dewpoint" || name == "d") return {CoolProp::iT, UnitType::Temperature};
+    if (name == "humrat" || name == "w") return CoolPropParamInfo{CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
+    if (name == "relhum" || name == "r") return CoolPropParamInfo{CoolProp::INVALID_PARAMETER, UnitType::Dimensionless};
+    if (name == "wetbulb" || name == "b") return CoolPropParamInfo{CoolProp::iT, UnitType::Temperature};
+    if (name == "dewpoint" || name == "d") return CoolPropParamInfo{CoolProp::iT, UnitType::Temperature};
     
+    return std::nullopt;
+}
+
+static CoolPropParamInfo getCoolPropOutputParam(const std::string& funcName) {
+    if (const auto info = findCoolPropOutputParam(funcName)) return *info;
     throw std::runtime_error("Unknown CoolProp output: " + funcName);
 }
 
@@ -639,17 +645,26 @@ std::string ExpressionEvaluator::getStringVariable(const std::string& name) cons
     if (it != stringVariables_.end()) {
         return it->second;
     }
+    if (externalStrings_) {
+        auto ext = externalStrings_->find(name);
+        if (ext != externalStrings_->end()) return ext->second;
+    }
     throw std::runtime_error("String variable not found: " + name);
 }
 
 bool ExpressionEvaluator::hasStringVariable(const std::string& name) const {
-    return stringVariables_.find(name) != stringVariables_.end();
+    return stringVariables_.find(name) != stringVariables_.end() ||
+           (externalStrings_ && externalStrings_->find(name) != externalStrings_->end());
 }
 
 ADValue ExpressionEvaluator::getVariable(const std::string& name) const {
     auto it = variables_.find(name);
     if (it != variables_.end()) {
         return it->second;
+    }
+    if (externalNumbers_) {
+        auto ext = externalNumbers_->find(name);
+        if (ext != externalNumbers_->end()) return ADValue::constant(ext->second, numVariables_);
     }
     
     // A built-in constant (pi, g#, R#, ...) is available in every scope: the main program gets it as
@@ -676,10 +691,18 @@ void ExpressionEvaluator::clear() {
 }
 
 void ExpressionEvaluator::registerFunction(const FunctionDefinition& func) {
+    if (sharedFunctions_) {   // the shared table becomes this evaluator's own
+        userFunctions_ = *sharedFunctions_;
+        sharedFunctions_ = nullptr;
+    }
     userFunctions_[func.name] = func;
 }
 
 void ExpressionEvaluator::registerProcedure(const ProcedureDefinition& proc) {
+    if (sharedProcedures_) {
+        userProcedures_ = *sharedProcedures_;
+        sharedProcedures_ = nullptr;
+    }
     userProcedures_[proc.name] = proc;
 }
 
@@ -713,8 +736,8 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
         }
     }
     
-    auto it = userProcedures_.find(call.name);
-    if (it == userProcedures_.end()) {
+    auto it = procedures().find(call.name);
+    if (it == procedures().end()) {
         std::string lowerName = call.name;
         std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), ::tolower);
         // Built-in CALL ERROR('message XXXF1', value): stop the calculation (EES).
@@ -1100,16 +1123,16 @@ static ADValue evaluateAbsorptionFunction(ExpressionEvaluator& evaluator, const 
     std::transform(name.begin(), name.end(), name.begin(), ::tolower);
     
     // Check for user-defined function first
-    auto it = userFunctions_.find(name);
-    if (it != userFunctions_.end()) {
+    auto it = functions().find(name);
+    if (it != functions().end()) {
         return evaluateUserFunction(it->second, func);
     }
     
     // Check for user-defined procedure called with inline syntax (single output)
     // EES allows: result = proc(a, b, c) when the procedure has exactly one output
     {
-        auto procIt = userProcedures_.find(name);
-        if (procIt != userProcedures_.end()) {
+        auto procIt = procedures().find(name);
+        if (procIt != procedures().end()) {
             const auto& proc = procIt->second;
             if (func.args.size() == proc.inputs.size()) {
                 if (proc.outputs.size() != 1) {
@@ -1148,13 +1171,7 @@ static ADValue evaluateAbsorptionFunction(ExpressionEvaluator& evaluator, const 
     if (const auto* routine = libr_ashrae::findRoutine(name)) return evaluateAbsorptionFunction(*this, *routine, func);
 
     // Check if it's a thermodynamic function handled by CoolProp
-    bool isThermo = false;
-    try {
-        getCoolPropOutputParam(name);
-        isThermo = true;
-    } catch (...) {
-        // Not a thermo function
-    }
+    const bool isThermo = findCoolPropOutputParam(name).has_value();
     
     // Named arguments make a property call (T=20), except in the EES form of INTERPOLATE (Col=value)
     if (isThermo || (!func.namedArgs.empty() && !isLookupFunction(name))) {
@@ -1256,8 +1273,8 @@ ExpressionEvaluator ExpressionEvaluator::makeBodyEvaluator(const char* kind, con
                                  "(recursion is not allowed in EES)");
     ExpressionEvaluator body(numVariables_, coolpropConfig_);
     body.callDepth_ = callDepth_ + 1;
-    body.userFunctions_ = userFunctions_;
-    body.userProcedures_ = userProcedures_;
+    body.sharedFunctions_ = &functions();     // the tables are referenced, not copied: they outlive the body
+    body.sharedProcedures_ = &procedures();
     body.lookupTableStore_ = lookupTableStore_;
     body.diagnostics_ = diagnostics_;   // warnings raised in a body (mixtures, CoolProp errors) are reported too
     body.callWarningSink_ = callWarningSink_;   // and so are the CALL WARNING of the bodies
@@ -2618,6 +2635,15 @@ RoutineNames withCallingRoutines(const IR& ir, RoutineNames names) {
     return names;
 }
 
+/// True if one of the equations of `ir` calls one of `names` (a CALL included).
+bool equationsCallAnyOf(const IR& ir, const RoutineNames& names) {
+    for (const auto& eq : ir.getEquations())
+        if (callsAnyOf(eq.lhs, names) || callsAnyOf(eq.rhs, names) ||
+            (eq.procedureCall && callsAnyOf(*eq.procedureCall, names)))
+            return true;
+    return false;
+}
+
 /// The user FUNCTIONs and PROCEDUREs whose body can execute `CALL WARNING`, directly or through
 /// the routines it calls. Empty for a model without that call.
 RoutineNames routinesThatWarn(const IR& ir) {
@@ -2631,6 +2657,13 @@ RoutineNames routinesThatWarn(const IR& ir) {
 bool assignsString(const EquationInfo& eq) { return isStringAssignment(eq) && !eq.rhs->is<StringLiteral>(); }
 
 }  // namespace
+
+bool callsPropertyFunctions(const IR& ir) {
+    const auto& thermo = IR::thermoFunctionNames();
+    RoutineNames names(thermo.begin(), thermo.end());
+    names.insert("psychprops");   // the humid air of CoolProp (evaluatePsychpropsCall)
+    return equationsCallAnyOf(ir, withCallingRoutines(ir, std::move(names)));
+}
 
 bool BlockEvaluator::callsAnyOf(const std::set<std::string, CaseInsensitiveLess>& names) const {
     for (const EquationInfo* eq : equations_)
@@ -2656,8 +2689,17 @@ BlockEvaluator::BlockEvaluator(const Block& block, const IR& ir, const CoolPropC
             equations_.push_back(&allEquations[eqId]);
         }
     }
-    for (size_t i = 0; i < variables_.size(); ++i) {
-        varToIndex_[variables_[i]] = i;
+    const std::set<std::string, CaseInsensitiveLess> own(variables_.begin(), variables_.end());
+    std::set<std::string, CaseInsensitiveLess> external;
+    for (const EquationInfo* eq : equations_)
+        for (const auto& name : eq->variables)
+            if (!own.count(name)) external.insert(name);
+    externalNames_.assign(external.begin(), external.end());
+    // The test of Solver::tryExplicitSolve: `x = expr` with x not in expr
+    if (equations_.size() == 1 && variables_.size() == 1) {
+        const EquationInfo& eq = *equations_[0];
+        explicitAssignment_ = eq.rhsVariables.count(variables_[0]) == 0 && eq.lhs && eq.lhs->is<Variable>() &&
+                              eesCompareFolded(eq.lhs->as<Variable>().flattenedName(), variables_[0]) == 0;
     }
     // CALLs that compute a string (CS-BUG-STRING-CALL-OUT) and string assignments `X$ = ...`
     // (CS-BUG-STRING-ALIAS): the strings they set are read by other equations of the block, so evaluate
@@ -2704,8 +2746,8 @@ BlockEvaluator::BlockEvaluator(const Block& block, const IR& ir, const CoolPropC
 }
 
 EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
-                                           const std::map<std::string, double>& externalVars,
-                                           const std::map<std::string, std::string>& externalStringVars,
+                                           const VariableValues& externalVars,
+                                           const StringValues& externalStringVars,
                                            bool computeJacobian,
                                            std::vector<Diagnostic>* callWarnings,
                                            std::vector<std::string>* clampReport) {
@@ -2730,7 +2772,10 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
         result.scale[eq] = sum;
     };
     
-    ExpressionEvaluator exprEval(variables_.size(), config_);
+    // An explicit assignment evaluated for its value carries no gradient: its right-hand side does not depend
+    // on its variable, so every gradient would be zero (isExplicitAssignment), and none is allocated.
+    const size_t nGrad = (computeJacobian || !explicitAssignment_) ? variables_.size() : 0;
+    ExpressionEvaluator exprEval(nGrad, config_);
     exprEval.setResidualOnly(!computeJacobian);
     if (diagnostics_) exprEval.setDiagnostics(diagnostics_);
     if (callWarnings) {   // the evaluation at the solution (SystemEvaluator::reportCallWarnings)
@@ -2741,20 +2786,18 @@ EvaluationResult BlockEvaluator::evaluate(const std::vector<double>& x,
     clampLog.report = clampReport;
     exprEval.setInputClampLog(&clampLog);
     if (lookupTableStore_) exprEval.setLookupTableStore(lookupTableStore_);
-    for (const auto& [name, func] : functions_) exprEval.registerFunction(func);
-    for (const auto& [name, proc] : procedures_) exprEval.registerProcedure(proc);
-    
+    exprEval.setRoutines(&functions_, &procedures_);
+
+    // The unknowns from x, the other variables of the equations from the external values (bound once, as
+    // constants); a name built at evaluation (an array element with a computed index) is read there directly.
     for (size_t i = 0; i < variables_.size(); ++i) {
-        exprEval.setVariable(variables_[i], ADValue::independent(x[i], i, variables_.size()));
+        exprEval.setVariable(variables_[i], nGrad ? ADValue::independent(x[i], i, nGrad) : ADValue::constant(x[i], 0));
     }
-    for (const auto& [name, value] : externalVars) {
-        if (varToIndex_.find(name) == varToIndex_.end()) {
-            exprEval.setVariable(name, ADValue::constant(value, variables_.size()));
-        }
+    for (const std::string& name : externalNames_) {
+        auto it = externalVars.find(name);
+        if (it != externalVars.end()) exprEval.setVariable(name, ADValue::constant(it->second, nGrad));
     }
-    for (const auto& [name, value] : externalStringVars) {
-        exprEval.setStringVariable(name, value);
-    }
+    exprEval.setExternalValues(&externalVars, &externalStringVars);
     
     // Case-insensitive string comparison
     auto ciEqual = [](const std::string& a, const std::string& b) {
@@ -2998,11 +3041,7 @@ void SystemEvaluator::publishStringOutputs(size_t blockIndex) {
     BlockEvaluator& blockEval = blockEvaluators_[blockIndex];
     std::vector<double> x;
     for (const auto& varName : blockEval.getVariables()) x.push_back(getVariableValue(varName));
-    std::map<std::string, double> externalVars;
-    for (const auto& [name, value] : currentState_) externalVars[name] = value;
-    std::map<std::string, std::string> externalStringVars;
-    for (const auto& [name, value] : currentStringState_) externalStringVars[name] = value;
-    const EvaluationResult result = blockEval.evaluate(x, externalVars, externalStringVars, false);
+    const EvaluationResult result = blockEval.evaluate(x, currentState_, currentStringState_, false);
     for (const auto& [name, value] : result.stringOutputs) currentStringState_[name] = value;
 }
 
@@ -3037,11 +3076,7 @@ EvaluationResult SystemEvaluator::evaluateBlock(size_t blockIndex, bool computeJ
     for (const auto& varName : blockEval.getVariables()) {
         x.push_back(getVariableValue(varName));
     }
-    std::map<std::string, double> externalVars;
-    for (const auto& [name, value] : currentState_) externalVars[name] = value;
-    std::map<std::string, std::string> externalStringVars;
-    for (const auto& [name, value] : currentStringState_) externalStringVars[name] = value;
-    return blockEval.evaluate(x, externalVars, externalStringVars, computeJacobian, callWarnings, clampReport);
+    return blockEval.evaluate(x, currentState_, currentStringState_, computeJacobian, callWarnings, clampReport);
 }
 
 // ============================================================================
@@ -3051,8 +3086,8 @@ EvaluationResult SystemEvaluator::evaluateBlock(size_t blockIndex, bool computeJ
 double compareJacobianWithFiniteDifferences(
     BlockEvaluator& evaluator,
     const std::vector<double>& x,
-    const std::map<std::string, double>& externalVars,
-    const std::map<std::string, std::string>& externalStringVars,
+    const VariableValues& externalVars,
+    const StringValues& externalStringVars,
     double epsilon,
     bool verbose) {
     

@@ -22,6 +22,7 @@
 #include <cmath>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -30,6 +31,11 @@ namespace coolsolve {
 namespace {
 
 std::string toLowerCopy(const std::string& s) { return eesFoldCase(s); }
+
+/// The algebraic solve of an evaluation of the right-hand side failed (IntegralSolver::evaluateRHS).
+struct AlgebraicSolveError : std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
 
 /// Does `expr` contain a top-level-or-nested INTEGRAL() call?
 bool containsIntegralCall(const ExprPtr& expr) {
@@ -209,6 +215,21 @@ IntegralSolver::IntegralSolver(const Program& program, const IR& ir,
         }
         if (forceAuxiliary.empty()) break;
     }
+
+    // The blocks the march solves at every evaluation of the right-hand side: those that depend on the
+    // integration variable or on a state (the driver blocks included). The others are solved by the
+    // complete solve at the initial point and keep their values.
+    if (problem_.valid && march_ && march_->analysis->success) {
+        std::set<std::string, CaseInsensitiveLess> seeds;
+        for (const auto& st : problem_.states) seeds.insert(st.name);
+        seeds.insert(problem_.integrationVar);
+        const auto dynamic = dependentVariables(*march_->ir, *march_->analysis, seeds);
+        const auto& blocks = march_->analysis->blocks;
+        for (size_t b = 0; b < blocks.size(); ++b)
+            if (std::any_of(blocks[b].variables.begin(), blocks[b].variables.end(),
+                            [&](const std::string& v) { return dynamic.count(v) > 0; }))
+                marchBlocks_.push_back(b);
+    }
 }
 
 std::unique_ptr<IntegralSolver::ReducedSystem> IntegralSolver::buildReduced(
@@ -311,19 +332,18 @@ Eigen::VectorXd IntegralSolver::evaluateRHS(double t, const Eigen::VectorXd& y) 
         march_->solver->setGuess(problem_.states[i].name, y(i));
     }
 
-    SolveResult r = march_->solver->solve(solverOpts_, false);
-    lastAlgebraic_ = r;  // refreshed for the table rows / readDerivative
-    if (!r.success) {
-        throw std::runtime_error("Algebraic solve failed at t=" + std::to_string(t) +
-                                 ": " + r.errorMessage);
+    std::string error;
+    if (march_->solver->solveBlocks(marchBlocks_, solverOpts_, &error) != SolverStatus::Success) {
+        throw AlgebraicSolveError("Algebraic solve failed at t=" + std::to_string(t) + ": " + error);
     }
 
     // f_i = derivative of state i, read from the algebraic solution.
+    const auto& state = march_->solver->getEvaluator().getAllVariables();
     Eigen::VectorXd f(static_cast<int>(problem_.states.size()));
     for (int i = 0; i < f.size(); ++i) {
         const auto& sv = problem_.states[i];
-        auto it = r.variables.find(sv.integrandVar);
-        if (it == r.variables.end())
+        auto it = state.find(sv.integrandVar);
+        if (it == state.end())
             throw std::runtime_error("The integrand '" + sv.integrandVar + "' of INTEGRAL() is not "
                                      "a variable of the model (nothing defines it)");
         f(i) = it->second;
@@ -465,6 +485,11 @@ constexpr double kMaxTableRows = 1.0e6;
 IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
     IntegralSolveResult result;
     result.problem = problem_;
+    const bool fixedStepMethod =
+        intOpt.method == IntegratorOptions::EulerExplicit ||
+        intOpt.method == IntegratorOptions::EulerImplicit ||
+        intOpt.method == IntegratorOptions::RK4;
+    result.method = methodToString(intOpt.method) + (intOpt.richardson && fixedStepMethod ? " + Richardson" : "");
     if (!problem_.valid || problem_.states.empty()) {
         result.errorMessage = problem_.errorMessage.empty()
                                   ? std::string("invalid IntegralProblem")
@@ -505,10 +530,6 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
     result.problem.fixedStep = modelStep;
 
     // Build the integrator (Richardson only for fixed-step methods).
-    const bool fixedStepMethod =
-        intOpt.method == IntegratorOptions::EulerExplicit ||
-        intOpt.method == IntegratorOptions::EulerImplicit ||
-        intOpt.method == IntegratorOptions::RK4;
     auto ig = wrapRichardson(createIntegrator(intOpt.method),
                              intOpt.richardson && fixedStepMethod);
 
@@ -603,18 +624,26 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
         try {
             (void)evaluateRHS(t, yCur);
         } catch (...) {
-            // Keep the previous algebraic state if the re-solve fails.
+            // Keep the algebraic state the failed re-solve reached.
         }
-        SolveResult last = lastAlgebraic_;  // refreshed by evaluateRHS
-        std::map<std::string, double, CaseInsensitiveLess> known;
-        for (const auto& [n, v] : last.variables) known[n] = v;
-        for (int i = 0; i < static_cast<int>(problem_.states.size()); ++i)
-            known[problem_.states[i].name] = yCur(i);
-        known[problem_.integrationVar] = t;
+        // The integration variable and the states as the integrator holds them, the others from the state
+        const auto& state = march_->solver->getEvaluator().getAllVariables();
         std::map<std::string, double> vals;
         for (const auto& col : result.table.columns()) {
-            auto it = known.find(col);
-            if (it != known.end()) vals[col] = it->second;
+            if (eesCompareFolded(col, problem_.integrationVar) == 0) {
+                vals[col] = t;
+                continue;
+            }
+            bool isState = false;
+            for (int i = 0; i < static_cast<int>(problem_.states.size()) && !isState; ++i) {
+                if (eesCompareFolded(col, problem_.states[i].name) == 0) {
+                    vals[col] = yCur(i);
+                    isState = true;
+                }
+            }
+            if (isState) continue;
+            auto it = state.find(col);
+            if (it != state.end()) vals[col] = it->second;
         }
         return vals;
     };
@@ -688,7 +717,6 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
         result.errorMessage = std::string("Initial value of a state: ") + e.what();
         return result;
     }
-    lastAlgebraic_ = initRes;
     std::optional<std::map<std::string, double>> rowAtT = evalRow(t0, y0);   // row at the start of the step, while known
     result.table.appendRow(t0, *rowAtT);
 
@@ -729,7 +757,6 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
             const Eigen::VectorXd yPrev = y;
 
             StepResult sr = ig->step(t, y, rhs, hTry, intOpt);
-            lastAlgebraic_ = {};  // the row evaluation refreshes it via evaluateRHS
 
             if (!sr.accepted) {
                 ++rejected;
@@ -788,6 +815,15 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
         }
     } catch (const std::exception& e) {
         result.errorMessage = e.what();
+        // An explicit method beyond its stability limit makes the states grow until an algebraic solve fails
+        if (dynamic_cast<const AlgebraicSolveError*>(&e) && !adaptive && intOpt.method != IntegratorOptions::EulerImplicit) {
+            std::ostringstream hint;
+            hint << "\nThe step h = " << h << " may be too large for " << methodToString(intOpt.method)
+                 << ": an explicit method with a fixed step is unstable above a limit set by the fastest dynamics of the "
+                    "model, and the states then diverge. Reduce the step of INTEGRAL() (or integralFixedStep), or use "
+                    "RK45 (adaptive step) or EulerImplicit";
+            result.errorMessage += hint.str();
+        }
         result.totalSteps = taken;
         result.rejectedSteps = rejected;
         // The table holds whatever was recorded before the failure.
@@ -813,7 +849,11 @@ IntegralSolveResult IntegralSolver::solve(const IntegratorOptions& intOpt) {
     // variables at t = tf) for downstream code (solution check, debug, .sol).
     // The internal variables of the INTEGRAL extraction (auxiliary states, integrand
     // definitions) are not part of the model: they are not reported.
-    result.algebraicResult = lastAlgebraic_;
+    // (the last row evaluation solved the system at the upper limit: the state holds that point)
+    result.algebraicResult.success = true;
+    result.algebraicResult.status = SolverStatus::Success;
+    result.algebraicResult.variables = march_->solver->getEvaluator().getAllVariables();
+    result.algebraicResult.stringVariables = march_->solver->getEvaluator().getAllStringVariables();
     for (const auto& name : problem_.internalNames)
         result.algebraicResult.variables.erase(name);
     return result;

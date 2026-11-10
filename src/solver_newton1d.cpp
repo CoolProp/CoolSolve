@@ -105,6 +105,40 @@ SolverStatus Newton1DSolver::solve(
     SolverTrace* trace,
     std::string* outErrorMessage)
 {
+    return solveWithProbes(eval, x, [&externalVars]() { return externalVars; }, options, trace, outErrorMessage);
+}
+
+SolverStatus Newton1DSolver::solve(
+    Eval1D& eval,
+    double& x,
+    const VariableValues& state,
+    const std::string& ownVariable,
+    const SolverOptions& options,
+    SolverTrace* trace,
+    std::string* outErrorMessage)
+{
+    auto others = [&state, &ownVariable]() {
+        auto sameName = [](const std::string& a, const std::string& b) {
+            return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char p, char q) {
+                return std::tolower(static_cast<unsigned char>(p)) == std::tolower(static_cast<unsigned char>(q));
+            });
+        };
+        std::map<std::string, double> values;
+        for (const auto& [name, value] : state)
+            if (!sameName(name, ownVariable)) values[name] = value;
+        return values;
+    };
+    return solveWithProbes(eval, x, others, options, trace, outErrorMessage);
+}
+
+SolverStatus Newton1DSolver::solveWithProbes(
+    Eval1D& eval,
+    double& x,
+    const ProbeValues& probeValues,
+    const SolverOptions& options,
+    SolverTrace* trace,
+    std::string* outErrorMessage)
+{
     double xCur = x;
     double radius = std::max(std::abs(xCur) * 2.0, 100.0);
     bool converged = false;
@@ -337,7 +371,7 @@ SolverStatus Newton1DSolver::solve(
         // KEY STRATEGY: Probe near external variable values.
         // Solutions of equations are typically at scales related to their inputs.
         // Without this, narrow sign-change regions near poles are missed.
-        for (const auto& [name, val] : externalVars) {
+        for (const auto& [name, val] : probeValues()) {
             if (!std::isfinite(val) || val == 0.0) continue;
             for (double frac : {0.5, 0.9, 0.95, 0.99, 1.0, 1.01, 1.05, 1.1, 1.5, 2.0}) {
                 probes.push_back(val * frac);

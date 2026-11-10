@@ -2663,7 +2663,9 @@ Method guidance:
   from the error estimate; the right choice when the dynamics have fast and slow
   phases. Watch the rejected-step count on stiff systems.
 - **`EulerExplicit`** — 1st-order, cheapest; useful for quick checks.
-- **`EulerImplicit`** — 1st-order, A-stable; the quick choice for stiff systems.
+- **`EulerImplicit`** — 1st-order, A-stable; the quick choice for stiff systems. A step
+  whose Newton iteration does not converge stops the integration with an error (the time
+  and the residual).
 
 The `$IntegralAutoStep` and `$IntegralStop` directives are recognised for EES
 compatibility but **not interpreted** — they emit a diagnostic pointing at the

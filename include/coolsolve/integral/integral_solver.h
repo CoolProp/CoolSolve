@@ -35,6 +35,7 @@ struct IntegralSolveResult {
     std::string errorMessage;
 
     IntegralProblem problem;                ///< Extracted dynamic structure.
+    std::string method;                     ///< The integrator used (methodToString), "+ Richardson" when extrapolated.
 
     IntegralTable table;                    ///< Tabulated trajectory.
     int totalSteps = 0;                     ///< Accepted steps taken.
@@ -109,8 +110,9 @@ private:
 
     std::unique_ptr<ReducedSystem> march_;                   ///< algebraic subsystem, reused each step
 
-    /// Evaluate the RHS f(t, y) by fixing (t, y) and solving the algebraic
-    /// subsystem. Throws std::runtime_error on algebraic failure.
+    /// Evaluate the RHS f(t, y) by fixing (t, y) and solving the blocks of the algebraic subsystem that
+    /// depend on them (`marchBlocks_`); the integrands are read from the state of `march_`.
+    /// Throws std::runtime_error on algebraic failure.
     Eigen::VectorXd evaluateRHS(double t, const Eigen::VectorXd& y);
 
     /// Read the i-th state's derivative from the last algebraic solve.
@@ -121,8 +123,9 @@ private:
     double evalBaseExpr(const ExprPtr& expr,
                         const std::map<std::string, double, CaseInsensitiveLess>& vars) const;
 
-    // March-loop scratch state (kept as members so the row evaluation can read them).
-    SolveResult lastAlgebraic_;
+    /// The blocks of `march_` that depend on the integration variable or on a state, in topological order:
+    /// the others are solved once, at the initial point, and keep their values along the trajectory.
+    std::vector<size_t> marchBlocks_;
 
     /// Driver equations (`v = <literal>`) for integrator-owned variables
     /// (states + integration var). Each step the literal is updated to the

@@ -899,6 +899,20 @@ public:
         std::string* outErrorMessage = nullptr);
 
     /**
+     * @brief The same solve for a block of one unknown \p ownVariable: the probes of Phase 2 are taken around
+     *        the values of \p state other than \p ownVariable, in the order of the map of the other overload.
+     *        They are read only when Phase 2 is reached; Newton alone copies nothing.
+     */
+    static SolverStatus solve(
+        Eval1D& eval,
+        double& x,
+        const VariableValues& state,
+        const std::string& ownVariable,
+        const SolverOptions& options,
+        SolverTrace* trace = nullptr,
+        std::string* outErrorMessage = nullptr);
+
+    /**
      * @brief Simplified Newton solver for well-conditioned 1D problems.
      *
      * Basic Newton iteration without probing or bracket detection.
@@ -914,6 +928,13 @@ public:
         Eval1D& eval,
         double& x,
         const SolverOptions& options);
+
+private:
+    /// The values Phase 2 probes around (name -> value), asked for when Phase 2 is reached.
+    using ProbeValues = std::function<std::map<std::string, double>()>;
+    static SolverStatus solveWithProbes(Eval1D& eval, double& x, const ProbeValues& probeValues,
+                                        const SolverOptions& options, SolverTrace* trace,
+                                        std::string* outErrorMessage);
 };
 
 // ============================================================================
@@ -1045,6 +1066,20 @@ public:
      */
     SolveResult solve(const SolverOptions& options = SolverOptions(),
                       bool enableTracing = false);
+
+    /**
+     * @brief Solve the blocks \p blocks (indices, in topological order) in the current state, block by block
+     *        as solve() does, without building a SolveResult: the other blocks keep their values.
+     *
+     * For a caller that solves part of the system many times and reads the values it needs from the state
+     * (getEvaluator().getAllVariables()): the time march of an INTEGRAL model, which solves at every evaluation
+     * of its right-hand side only the blocks that depend on the time or on a state.
+     *
+     * @param errorMessage On failure, the message of SolveResult::errorMessage (the block, its status, the error)
+     * @return Success, or the status of the first block that failed
+     */
+    SolverStatus solveBlocks(const std::vector<size_t>& blocks, const SolverOptions& options,
+                             std::string* errorMessage = nullptr);
     
     /**
      * @brief Set initial guess for a variable.
@@ -1083,6 +1118,21 @@ private:
      *        has only the digits that the terms allow. Once per variable.
      */
     void warnTinyValues(size_t blockIndex, double tolerance, DiagnosticCollector& out);
+
+    /// The options in effect: \p options, with the Deep Search pipeline, tearing and symbolic reduction when
+    /// `deepSearch` is set (the GUI's "Try Harder").
+    static SolverOptions effectiveOptions(const SolverOptions& options);
+
+    /**
+     * @brief Solve block \p blockIdx of the system (solve() and solveBlocks()): the pipeline with its multi-start
+     *        fallback, then at the solution the strings its CALLs set, its CALL WARNING, the check of its clamped
+     *        inputs and the warning W002. The diagnostics of its evaluations go to \p blockDiag.
+     */
+    SolverStatus solveSystemBlock(size_t blockIdx, const SolverOptions& opts, SolverTrace* trace,
+                                  DiagnosticCollector& blockDiag, std::string& blockError, std::string& multistartInfo);
+
+    /// "Block i (size n, vars: ...) failed: <status> - <error>", the message of a failed solve.
+    std::string blockFailureMessage(size_t blockIdx, SolverStatus status, const std::string& blockError) const;
     
     /**
      * @brief Solve a single block using the configured solver pipeline.
@@ -1184,8 +1234,8 @@ private:
                                    NonLinearSolver::Problem& problem,
                                    BlockEvaluator& blockEval,
                                    const std::vector<std::string>& varNames,
-                                   const std::map<std::string, double>& externalVars,
-                                   const std::map<std::string, std::string>& externalStringVars,
+                                   const VariableValues& externalVars,
+                                   const StringValues& externalStringVars,
                                    Eigen::VectorXd& x,
                                    const SolverOptions& options,
                                    SolverTrace* trace,
@@ -1198,8 +1248,8 @@ private:
                                       NonLinearSolver::Problem& problem,
                                       BlockEvaluator& blockEval,
                                       const std::vector<std::string>& varNames,
-                                      const std::map<std::string, double>& externalVars,
-                                      const std::map<std::string, std::string>& externalStringVars,
+                                      const VariableValues& externalVars,
+                                      const StringValues& externalStringVars,
                                       Eigen::VectorXd& x,
                                       const SolverOptions& options,
                                       SolverTrace* trace,
@@ -1217,8 +1267,8 @@ private:
                                     NonLinearSolver::Problem& problem,
                                     BlockEvaluator& blockEval,
                                     const std::vector<std::string>& varNames,
-                                    const std::map<std::string, double>& externalVars,
-                                    const std::map<std::string, std::string>& externalStringVars,
+                                    const VariableValues& externalVars,
+                                    const StringValues& externalStringVars,
                                     Eigen::VectorXd& x,
                                     const SolverOptions& options,
                                     SolverTrace* trace,
@@ -1234,8 +1284,8 @@ private:
     SolverStatus solveBlockPartitioned(size_t blockIndex,
                                        BlockEvaluator& blockEval,
                                        const std::vector<std::string>& varNames,
-                                       const std::map<std::string, double>& externalVars,
-                                       const std::map<std::string, std::string>& externalStringVars,
+                                       const VariableValues& externalVars,
+                                       const StringValues& externalStringVars,
                                        Eigen::VectorXd& x,
                                        const SolverOptions& options,
                                        SolverTrace* trace,
@@ -1259,8 +1309,8 @@ private:
     SolverStatus solveBlockTearing(size_t blockIndex,
                                    BlockEvaluator& blockEval,
                                    const std::vector<std::string>& varNames,
-                                   const std::map<std::string, double>& externalVars,
-                                   const std::map<std::string, std::string>& externalStringVars,
+                                   const VariableValues& externalVars,
+                                   const StringValues& externalStringVars,
                                    Eigen::VectorXd& x,
                                    const SolverOptions& options,
                                    SolverTrace* trace,

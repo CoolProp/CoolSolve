@@ -401,7 +401,7 @@ TEST_CASE("BlockEvaluator Jacobian verification", "[evaluator]") {
             // Test at multiple points - provide external variable values
             for (double testVal : {-2.0, 0.0, 1.5, 3.0}) {
                 std::vector<double> xBlock(vars.size(), testVal);
-                std::map<std::string, double> external;
+                coolsolve::VariableValues external;
                 // Set external variables that aren't in the block
                 for (const auto& [name, info] : ir.getVariables()) {
                     bool inBlock = std::find(vars.begin(), vars.end(), name) != vars.end();
@@ -433,7 +433,7 @@ TEST_CASE("BlockEvaluator Jacobian verification", "[evaluator]") {
             
             for (double testVal : {0.0, 0.5, 1.0, 2.0}) {
                 std::vector<double> xBlock(vars.size(), testVal);
-                std::map<std::string, double> external;
+                coolsolve::VariableValues external;
                 for (const auto& [name, info] : ir.getVariables()) {
                     bool inBlock = std::find(vars.begin(), vars.end(), name) != vars.end();
                     if (!inBlock) {
@@ -465,7 +465,7 @@ TEST_CASE("BlockEvaluator Jacobian verification", "[evaluator]") {
             
             if (block.size() >= 1) {
                 std::vector<double> xBlock(block.size(), 1.5);
-                std::map<std::string, double> external;
+                coolsolve::VariableValues external;
                 for (const auto& [name, info] : ir.getVariables()) {
                     bool inBlock = std::find(vars.begin(), vars.end(), name) != vars.end();
                     if (!inBlock) {
@@ -632,7 +632,7 @@ TEST_CASE("CoolProp function evaluation", "[coolprop]") {
             const auto& vars = blockEval.getVariables();
             
             // Set external variables (all variables not in this block)
-            std::map<std::string, double> external;
+            coolsolve::VariableValues external;
             for (const auto& [name, info] : ir.getVariables()) {
                 bool inBlock = std::find(vars.begin(), vars.end(), name) != vars.end();
                 if (!inBlock) {

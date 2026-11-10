@@ -67,11 +67,6 @@ CoolSolveRunner::CoolSolveRunner(const std::string& inputFile)
 bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
     resetCoolPropUnitHints();
 
-    // Pay the CoolProp first-call cost up front so that later timings
-    // (especially variable inference) are not distorted by library
-    // initialization overhead.
-    timing_.coolprop_warmup_time_ms = warmupCoolProp();
-
     auto pipeline_start = std::chrono::high_resolution_clock::now();
     
     // 1. Parse
@@ -104,6 +99,10 @@ bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
         ir_ = std::make_unique<IR>(IR::fromAST(parseResult_.program));
         t2 = std::chrono::high_resolution_clock::now();
         timing_.ir_time_ms = std::chrono::duration<double, std::milli>(t2 - t1).count();
+        // Pay the CoolProp first-call cost (loading its fluid library, about 0.45 s) up front so that the
+        // later timings (variable inference first) are not distorted by it, and only for a model that
+        // calls CoolProp: the others never load the library.
+        if (callsPropertyFunctions(*ir_)) timing_.coolprop_warmup_time_ms = warmupCoolProp();
     } catch (const ModelError& e) {
         // A model the IR cannot build (a DUPLICATE bound that is not an integer in one of the copies of a
         // nested loop) is reported like a parse error: every caller then shows the message.
@@ -731,7 +730,7 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         md << "\n- Algebraic variables: " << ip.algebraicVars.size() << "\n\n";
 
         md << "## Solve\n\n";
-        md << "- Method: " << methodToString(makeIntegratorOptions(SolverOptions{}).method) << "\n";
+        md << "- Method: " << (integralResult_.method.empty() ? "-" : integralResult_.method) << "\n";
         md << "- Status: " << (integralResult_.success ? "SUCCESS" : "FAILED");
         if (!integralResult_.errorMessage.empty())
             md << " (" << integralResult_.errorMessage << ")";

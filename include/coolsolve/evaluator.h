@@ -35,11 +35,32 @@ std::string getProfilingStatsString();
  */
 double warmupCoolProp();
 
+/**
+ * @brief True if the model calls CoolProp: a property function (enthalpy, humrat, phase$, ...) or
+ *        CALL psychprops, in an equation or in a FUNCTION / PROCEDURE that an equation can reach.
+ *
+ * A model without such a call never loads the CoolProp fluid library, so it does not need warmupCoolProp.
+ */
+bool callsPropertyFunctions(const IR& ir);
+
 // ============================================================================
 // CoolProp Configuration API
 // ============================================================================
 /// Apply CoolProp global configuration settings (call before any CoolProp calls)
 void applyCoolPropConfig(const struct CoolPropConfig& config);
+
+// ============================================================================
+// Variable values and routine tables
+// ============================================================================
+
+/// Values of the numeric variables by name. EES names are case-insensitive, and so is the lookup.
+using VariableValues = std::map<std::string, double, CaseInsensitiveLess>;
+/// Values of the string variables by name (case-insensitive).
+using StringValues = std::map<std::string, std::string, CaseInsensitiveLess>;
+/// The FUNCTIONs of a model by name (case-insensitive).
+using FunctionTable = std::map<std::string, FunctionDefinition, CaseInsensitiveLess>;
+/// The PROCEDUREs of a model by name (case-insensitive).
+using ProcedureTable = std::map<std::string, ProcedureDefinition, CaseInsensitiveLess>;
 
 // ============================================================================
 // Evaluation Result
@@ -230,7 +251,28 @@ public:
      * @brief Register a user-defined procedure.
      */
     void registerProcedure(const ProcedureDefinition& proc);
-    
+
+    /**
+     * @brief Use the routine tables \p functions and \p procedures, by reference: they are not copied
+     *        and must outlive the evaluator (and the bodies it evaluates). A later registerFunction or
+     *        registerProcedure copies them first.
+     */
+    void setRoutines(const FunctionTable* functions, const ProcedureTable* procedures) {
+        sharedFunctions_ = functions;
+        sharedProcedures_ = procedures;
+    }
+
+    /**
+     * @brief Read the variables this evaluator does not hold from \p numbers and \p strings, by reference
+     *        (null: none). They are looked up when an expression reads them, after the variables set with
+     *        setVariable / setStringVariable and before the built-in constants; the maps must outlive the
+     *        evaluator. The bodies of the user routines do not see them (their variables are local).
+     */
+    void setExternalValues(const VariableValues* numbers, const StringValues* strings) {
+        externalNumbers_ = numbers;
+        externalStrings_ = strings;
+    }
+
     /**
      * @brief Resolve a variable name, including evaluating indices for array access.
      */
@@ -304,11 +346,19 @@ private:
     int callDepth_ = 0;
     std::map<std::string, ADValue, CaseInsensitiveLess> variables_;
     std::map<std::string, std::string, CaseInsensitiveLess> stringVariables_;
-    std::map<std::string, FunctionDefinition, CaseInsensitiveLess> userFunctions_;
-    std::map<std::string, ProcedureDefinition, CaseInsensitiveLess> userProcedures_;
+    FunctionTable userFunctions_;
+    ProcedureTable userProcedures_;
+    const FunctionTable* sharedFunctions_ = nullptr;     ///< see setRoutines; used instead of userFunctions_
+    const ProcedureTable* sharedProcedures_ = nullptr;   ///< see setRoutines; used instead of userProcedures_
+    const VariableValues* externalNumbers_ = nullptr;    ///< see setExternalValues
+    const StringValues* externalStrings_ = nullptr;      ///< see setExternalValues
     mutable std::set<std::string, CaseInsensitiveLess> missingVariables_;
     CoolPropConfig coolpropConfig_;
-    
+
+    /// The routine tables in use: the shared ones (setRoutines), else those of registerFunction / registerProcedure.
+    const FunctionTable& functions() const { return sharedFunctions_ ? *sharedFunctions_ : userFunctions_; }
+    const ProcedureTable& procedures() const { return sharedProcedures_ ? *sharedProcedures_ : userProcedures_; }
+
     // Helper methods for evaluating different expression types
     ADValue evaluateNumber(const NumberLiteral& num);
     ADValue evaluateVariable(const Variable& var);
@@ -429,21 +479,24 @@ public:
     /**
      * @brief Evaluate the block at the given state.
      * @param x Values for the block's variables (in order of block.variables)
-     * @param externalVars Values for variables external to this block
-     * @param externalStringVars Values for string variables external to this block
+     * @param externalVars Values of the other variables, read by reference (not copied): typically the whole
+     *        state of the SystemEvaluator. A block variable takes its value from \p x, whether or not the map
+     *        holds it too.
+     * @param externalStringVars Values of the string variables, read by reference
      * @return Residuals and Jacobian
      */
     /**
      * @param computeJacobian When false, skip derivative computation
-     *        (saves CoolProp calls during line search; residuals only).
+     *        (saves CoolProp calls during line search; residuals only). For an explicit assignment
+     *        (isExplicitAssignment) no gradient is carried at all.
      * @param callWarnings When given, the `CALL WARNING` statements executed by the evaluation push their
      *        warnings (code `W001`) there; when null they do nothing (the case of every iteration).
      * @param clampReport When given, receives one message for each property-call input that the evaluation
      *        limited (see InputClampLog); when null nothing is described (the case of every iteration).
      */
     EvaluationResult evaluate(const std::vector<double>& x,
-                              const std::map<std::string, double>& externalVars = {},
-                              const std::map<std::string, std::string>& externalStringVars = {},
+                              const VariableValues& externalVars = {},
+                              const StringValues& externalStringVars = {},
                               bool computeJacobian = true,
                               std::vector<Diagnostic>* callWarnings = nullptr,
                               std::vector<std::string>* clampReport = nullptr);
@@ -452,7 +505,10 @@ public:
      * @brief True, once, if an evaluation of the block limited a property-call input since the last call
      *        (the flag is cleared). Only an input that depends on the unknowns of the block is limited.
      */
-    bool takeInputClamped() { return inputClamped_->exchange(false, std::memory_order_relaxed); }
+    bool takeInputClamped() {
+        // A plain load first: the flag is nearly always clear, and the exchange is a locked instruction
+        return inputClamped_->load(std::memory_order_relaxed) && inputClamped_->exchange(false, std::memory_order_relaxed);
+    }
     
     /**
      * @brief Get the variable names in this block.
@@ -473,7 +529,17 @@ public:
      * @brief Check if this block is explicit (can be solved directly).
      */
     bool isExplicit() const { return equationIds_.size() == 1; }
-    
+
+    /**
+     * @brief True for a block of one equation `x = expr` whose left-hand side is its variable x and whose
+     *        right-hand side does not contain x: x is the value of the right-hand side (Solver::tryExplicitSolve).
+     *
+     * Its residual depends on x only through the left-hand side, so an evaluation without the Jacobian
+     * carries no gradient: the values, the clamping of the property inputs (which looks at the dependence on
+     * x) and the messages are those of an evaluation with gradients.
+     */
+    bool isExplicitAssignment() const { return explicitAssignment_; }
+
     /**
      * @brief Register a user-defined function for this block.
      */
@@ -523,6 +589,7 @@ private:
     bool callsAnyOf(const std::set<std::string, CaseInsensitiveLess>& names) const;
 
     bool hasStringCallOutputs_ = false;
+    bool explicitAssignment_ = false;   ///< see isExplicitAssignment
     bool mayCallWarning_ = false;
     bool unitHintsPending_ = false;
     /// Set by `evaluate` when it limited a property-call input; an atomic because the multi-start
@@ -537,12 +604,12 @@ private:
     DiagnosticCollector* diagnostics_ = nullptr;
     const LookupTableStore* lookupTableStore_ = nullptr;
     std::vector<const EquationInfo*> equations_;
-    std::map<std::string, FunctionDefinition, CaseInsensitiveLess> functions_;
-    std::map<std::string, ProcedureDefinition, CaseInsensitiveLess> procedures_;
+    FunctionTable functions_;
+    ProcedureTable procedures_;
     CoolPropConfig config_;
-    
-    // Create mapping from variable name to index in block
-    std::map<std::string, size_t> varToIndex_;
+    /// The variables the equations of the block refer to that are not its own (EquationInfo::variables): an
+    /// evaluation binds them once from the external values; any other name is read there when evaluated.
+    std::vector<std::string> externalNames_;
 };
 
 // ============================================================================
@@ -702,8 +769,8 @@ private:
 double compareJacobianWithFiniteDifferences(
     BlockEvaluator& evaluator,
     const std::vector<double>& x,
-    const std::map<std::string, double>& externalVars = {},
-    const std::map<std::string, std::string>& externalStringVars = {},
+    const VariableValues& externalVars = {},
+    const StringValues& externalStringVars = {},
     double epsilon = 1e-7,
     bool verbose = false);
 

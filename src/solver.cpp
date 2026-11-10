@@ -537,8 +537,7 @@ namespace {
  * The problem is written by its callback: one problem per thread.
  */
 void setBlockEvaluate(NonLinearSolver::Problem& problem, BlockEvaluator& blockEval,
-                      const std::map<std::string, double>& externalVars,
-                      const std::map<std::string, std::string>& externalStringVars) {
+                      const VariableValues& externalVars, const StringValues& externalStringVars) {
     problem.evaluate = [&problem, &blockEval, &externalVars, &externalStringVars]
                        (const Eigen::VectorXd& xv, Eigen::VectorXd& F, Eigen::MatrixXd& J, bool computeJacobian) {
         std::vector<double> x_std(xv.data(), xv.data() + xv.size());
@@ -558,8 +557,8 @@ void setBlockEvaluate(NonLinearSolver::Problem& problem, BlockEvaluator& blockEv
 
 /// The 1D evaluation of a block of one unknown \p blockEval for Newton1D: residual, derivative and residual scale
 /// (1, the absolute tests, when the evaluation gives none).
-Newton1DSolver::Eval1D makeEval1D(BlockEvaluator& blockEval, const std::map<std::string, double>& externalVars,
-                                  const std::map<std::string, std::string>& externalStringVars) {
+Newton1DSolver::Eval1D makeEval1D(BlockEvaluator& blockEval, const VariableValues& externalVars,
+                                  const StringValues& externalStringVars) {
     return [&blockEval, &externalVars, &externalStringVars](double xval) -> Newton1DSolver::Eval1DResult {
         auto er = blockEval.evaluate({xval}, externalVars, externalStringVars);
         const double j = (!er.jacobian.empty() && !er.jacobian[0].empty()) ? er.jacobian[0][0] : 0.0;
@@ -570,56 +569,20 @@ Newton1DSolver::Eval1D makeEval1D(BlockEvaluator& blockEval, const std::map<std:
 }  // namespace
 
 bool Solver::tryExplicitSolve(size_t blockIndex) {
-    const Block& block = analysis_.blocks[blockIndex];
-    if (block.equationIds.size() != 1 || block.variables.size() != 1)
-        return false;
-
-    const int eqId = block.equationIds[0];
-    const std::string& outVar = block.variables[0];
-    const auto& equations = ir_.getEquations();
-    if (eqId < 0 || eqId >= static_cast<int>(equations.size()))
-        return false;
-
-    const EquationInfo& eq = equations[eqId];
-    // Structurally explicit: equation must be "x = expr(others)" so we can set x = value(RHS).
-    // 1) Output variable must not appear in the RHS.
-    if (eq.rhsVariables.count(outVar) != 0)
-        return false;
-    // 2) LHS must be exactly the output variable (not e.g. x^2 or f(x)).
-    if (!eq.lhs || !eq.lhs->is<Variable>())
-        return false;
-    const std::string& lhsName = eq.lhs->as<Variable>().flattenedName();
-    auto caseInsensitiveEqual = [](const std::string& a, const std::string& b) {
-        if (a.size() != b.size()) return false;
-        for (size_t i = 0; i < a.size(); ++i) {
-            if (std::tolower(static_cast<unsigned char>(a[i])) !=
-                std::tolower(static_cast<unsigned char>(b[i])))
-                return false;
-        }
-        return true;
-    };
-    if (!caseInsensitiveEqual(lhsName, outVar))
-        return false;
-
+    // Structurally explicit: the equation is "x = expr(others)", so x = value(RHS).
     BlockEvaluator& blockEval = evaluator_.getBlock(blockIndex);
-
-    std::map<std::string, double> externalVars;
-    for (const auto& [name, value] : evaluator_.getAllVariables()) {
-        if (!caseInsensitiveEqual(name, outVar))
-            externalVars[name] = value;
-    }
-    std::map<std::string, std::string> externalStringVars;
-    for (const auto& [name, value] : evaluator_.getAllStringVariables()) {
-        externalStringVars[name] = value;
-    }
+    if (!blockEval.isExplicitAssignment())
+        return false;
 
     try {
         // The residual is LHS - RHS = x - expr. At x = 0 it is -expr, exactly: the value is the right-hand
         // side as evaluated. (Evaluating at the current guess and taking x - residual loses everything below
         // ulp(x): a value below 1E-16 became 0 from the default guess 1, and 0.02 became 0.02 + 1.7E-17.)
-        EvaluationResult result = blockEval.evaluate({0.0}, externalVars, externalStringVars);
+        // The other variables are read from the state; no Jacobian is needed.
+        EvaluationResult result = blockEval.evaluate({0.0}, evaluator_.getAllVariables(),
+                                                     evaluator_.getAllStringVariables(), false);
         if (result.residuals.empty()) return false;
-        evaluator_.setVariableValue(outVar, 0.0 - result.residuals[0]);   // 0.0 - r: a zero stays +0
+        evaluator_.setVariableValue(blockEval.getVariables()[0], 0.0 - result.residuals[0]);   // 0.0 - r: a zero stays +0
         return true;
     } catch (const std::exception&) {
         return false;
@@ -633,21 +596,24 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
     BlockEvaluator& blockEval = evaluator_.getBlock(blockIndex);
     const auto& varNames = blockEval.getVariables();
     const size_t n = varNames.size();
+
+    // An explicit block `x = expr` (most blocks of a model) is evaluated before anything else
+    if (n == 1 && tryExplicitSolve(blockIndex)) {
+        if (trace) {
+            trace->solverType = "Explicit";
+            trace->finalStatus = SolverStatus::Success;
+        }
+        return SolverStatus::Success;
+    }
+
+    // The values of the other variables: the state itself, read by reference (BlockEvaluator::evaluate binds
+    // a block variable from x, so the state may hold it too)
+    const VariableValues& externalVars = evaluator_.getAllVariables();
+    const StringValues& externalStringVars = evaluator_.getAllStringVariables();
     
     if (n == 0) {
         // Zero-unknown block: this is a "check equation" where all variables are already determined.
         // We still need to verify the residual is near zero - if not, the system is overdetermined.
-        
-        // Get all current variable values as external vars for evaluation
-        std::map<std::string, double> externalVars;
-        for (const auto& [name, value] : evaluator_.getAllVariables()) {
-            externalVars[name] = value;
-        }
-        std::map<std::string, std::string> externalStringVars;
-        for (const auto& [name, value] : evaluator_.getAllStringVariables()) {
-            externalStringVars[name] = value;
-        }
-        
         // Evaluate the block's equations with all variables as external
         try {
             std::vector<double> emptyX;  // No unknowns
@@ -722,39 +688,13 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         }
         return true;
     };
-    
-    // Convert map to std::map<string, double> for evaluation
-    std::map<std::string, double> externalVars;
-    for (const auto& [name, value] : evaluator_.getAllVariables()) {
-        // Add only if not in this block
-        bool inBlock = false;
-        for (const auto& bvar : varNames) {
-            if (caseInsensitiveEqual(name, bvar)) {
-                inBlock = true;
-                break;
-            }
-        }
-        if (!inBlock) {
-            externalVars[name] = value;
-            if (options.verbose) {
-                std::cout << "  External " << name << " = " << value << std::endl;
-            }
-        }
-    }
-    
-    // Get external string variables
-    std::map<std::string, std::string> externalStringVars;
-    for (const auto& [name, value] : evaluator_.getAllStringVariables()) {
-        externalStringVars[name] = value;
-    }
-    
-    // For size-1 blocks, check if it's truly implicit or just needs direct evaluation
-    if (n == 1 && tryExplicitSolve(blockIndex)) {
-        if (trace) {
-            trace->solverType = "Explicit";
-            trace->finalStatus = SolverStatus::Success;
-        }
-        return SolverStatus::Success;
+    auto inBlock = [&](const std::string& name) {
+        return std::any_of(varNames.begin(), varNames.end(),
+                           [&](const std::string& bvar) { return caseInsensitiveEqual(name, bvar); });
+    };
+    if (options.verbose) {
+        for (const auto& [name, value] : externalVars)
+            if (!inBlock(name)) std::cout << "  External " << name << " = " << value << std::endl;
     }
 
     // For size-1 implicit blocks, use a specialized 1D root-finding solver.
@@ -779,7 +719,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
         double xCur = x[0];
         std::string errorMsg;
         SolverStatus status1D = Newton1DSolver::solve(
-            eval1D, xCur, externalVars, options, trace, &errorMsg);
+            eval1D, xCur, externalVars, varNames[0], options, trace, &errorMsg);
         
         if (status1D == SolverStatus::Success) {
             x[0] = xCur;
@@ -927,8 +867,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                         const auto& eq = ir_.getEquations()[step.equationId];
                         value = evalExpr(eq.rhs);
                     }
-                    evaluator_.setVariableValue(step.variable, value);
-                    externalVars[step.variable] = value;
+                    evaluator_.setVariableValue(step.variable, value);   // externalVars is the state: it sees it
                     if (options.verbose) {
                         std::cout << "  Pre-solve " << step.variable << " = " << value
                                   << (step.inverted ? " (CoolProp inversion)" : " (explicit)")
@@ -954,20 +893,9 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
 
                 size_t nReduced = reducedBlock.variables.size();
 
-                // Build reduced external vars (include pre-solved variables)
-                std::map<std::string, double> reducedExternalVars;
-                for (const auto& [name, value] : evaluator_.getAllVariables()) {
-                    bool inReducedBlock = false;
-                    for (const auto& rv : reducedBlock.variables) {
-                        if (caseInsensitiveEqual(name, rv)) {
-                            inReducedBlock = true;
-                            break;
-                        }
-                    }
-                    if (!inReducedBlock) {
-                        reducedExternalVars[name] = value;
-                    }
-                }
+                // The external values of the reduced block (and of its sub-blocks) are the state, the pre-solved
+                // variables included; the variables of the block being solved are bound from x
+                const VariableValues& reducedExternalVars = externalVars;
 
                 if (nReduced == 0) {
                     // All variables were extracted — nothing to solve
@@ -1054,16 +982,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                                 const auto& sb = subBlocks[si];
                                 size_t subN = sb.variables.size();
 
-                                // Build external vars for this sub-block
-                                // (everything not in this sub-block)
-                                std::map<std::string, double> subExternal;
-                                for (const auto& [name, value] : evaluator_.getAllVariables()) {
-                                    bool inSub = false;
-                                    for (const auto& sv : sb.variables) {
-                                        if (caseInsensitiveEqual(name, sv)) { inSub = true; break; }
-                                    }
-                                    if (!inSub) subExternal[name] = value;
-                                }
+                                const VariableValues& subExternal = externalVars;   // the state (see above)
 
                                 if (subN == 0) {
                                     continue;
@@ -1129,13 +1048,7 @@ SolverStatus Solver::solveBlock(size_t blockIndex,
                                 // (already done above via setVariableValue)
                             }
 
-                            if (!subBlockFailed) {
-                                solvedViaSubBlocks = true;
-                                // Update reducedExternalVars with all solved values
-                                for (const auto& rv : reducedBlock.variables) {
-                                    reducedExternalVars[rv] = evaluator_.getVariableValue(rv);
-                                }
-                            }
+                            if (!subBlockFailed) solvedViaSubBlocks = true;
                         }
 
                     if (!solvedViaSubBlocks) {
@@ -1310,8 +1223,8 @@ SolverStatus Solver::runSolverStrategy(SolverStrategy strategy,
                                        NonLinearSolver::Problem& problem,
                                        BlockEvaluator& blockEval,
                                        const std::vector<std::string>& varNames,
-                                       const std::map<std::string, double>& externalVars,
-                                       const std::map<std::string, std::string>& externalStringVars,
+                                       const VariableValues& externalVars,
+                                       const StringValues& externalStringVars,
                                        Eigen::VectorXd& x,
                                        const SolverOptions& options,
                                        SolverTrace* trace,
@@ -1381,8 +1294,8 @@ SolverStatus Solver::solveBlockSequential(size_t blockIndex,
                                           NonLinearSolver::Problem& problem,
                                           BlockEvaluator& blockEval,
                                           const std::vector<std::string>& varNames,
-                                          const std::map<std::string, double>& externalVars,
-                                          const std::map<std::string, std::string>& externalStringVars,
+                                          const VariableValues& externalVars,
+                                          const StringValues& externalStringVars,
                                           Eigen::VectorXd& x,
                                           const SolverOptions& options,
                                           SolverTrace* trace,
@@ -1639,8 +1552,8 @@ SolverStatus Solver::solveBlockParallel(size_t blockIndex,
                                         NonLinearSolver::Problem& problem,
                                         BlockEvaluator& blockEval,
                                         const std::vector<std::string>& varNames,
-                                        const std::map<std::string, double>& externalVars,
-                                        const std::map<std::string, std::string>& externalStringVars,
+                                        const VariableValues& externalVars,
+                                        const StringValues& externalStringVars,
                                         Eigen::VectorXd& x,
                                         const SolverOptions& options,
                                         SolverTrace* trace,
@@ -1778,8 +1691,8 @@ SolverStatus Solver::solveBlockParallel(size_t blockIndex,
 SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
                                            BlockEvaluator& blockEval,
                                            const std::vector<std::string>& varNames,
-                                           const std::map<std::string, double>& externalVars,
-                                           const std::map<std::string, std::string>& externalStringVars,
+                                           const VariableValues& externalVars,
+                                           const StringValues& externalStringVars,
                                            Eigen::VectorXd& x,
                                            const SolverOptions& options,
                                            SolverTrace* trace,
@@ -1968,8 +1881,8 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
 SolverStatus Solver::solveBlockTearing(size_t blockIndex,
                                        BlockEvaluator& blockEval,
                                        const std::vector<std::string>& varNames,
-                                       const std::map<std::string, double>& externalVars,
-                                       const std::map<std::string, std::string>& externalStringVars,
+                                       const VariableValues& externalVars,
+                                       const StringValues& externalStringVars,
                                        Eigen::VectorXd& x,
                                        const SolverOptions& options,
                                        SolverTrace* trace,
@@ -2731,16 +2644,16 @@ SolverStatus Solver::solveBlockMultiStartParallel(
                 std::tolower(static_cast<unsigned char>(b[i]))) return false;
         return true;
     };
-    std::map<std::string, double> externalVars;
+    // A copy of the state: the winner of a wave writes its solution to the state while the other
+    // candidates of the wave may still be evaluating
+    VariableValues externalVars;
     for (const auto& [name, value] : evaluator_.getAllVariables()) {
         bool inBlock = false;
         for (const auto& bvar : varNames)
             if (caseInsensitiveEqual(name, bvar)) { inBlock = true; break; }
         if (!inBlock) externalVars[name] = value;
     }
-    std::map<std::string, std::string> externalStringVars;
-    for (const auto& [name, value] : evaluator_.getAllStringVariables())
-        externalStringVars[name] = value;
+    const StringValues externalStringVars = evaluator_.getAllStringVariables();
 
     // Keep the evaluator on the genuine initial guess (already restored by the
     // caller) so solveBlockSequential's warm-start read is consistent across
@@ -2906,15 +2819,12 @@ void Solver::warnTinyValues(size_t blockIndex, double tolerance, DiagnosticColle
     }
 }
 
-SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
-    auto startTime = std::chrono::high_resolution_clock::now();
-
+SolverOptions Solver::effectiveOptions(const SolverOptions& options) {
     // Deep Search override: when options.deepSearch is set (the GUI's "Try
     // Harder" button), substitute the deep-search pipeline and force tearing +
     // symbolic reduction on, regardless of their normal defaults.  Multi-start
     // engagement is decided later via isMultiStartActive(), which already
-    // consults `deepSearch`.  We make a local copy so the rest of solve() can
-    // read a single, consistent options struct.
+    // consults `deepSearch`.
     SolverOptions effOpts = options;
     if (effOpts.deepSearch) {
         if (!effOpts.deepSearchPipeline.empty()) {
@@ -2926,6 +2836,90 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
         effOpts.enableTearing = true;
         effOpts.enableSymbolicReduction = true;
     }
+    return effOpts;
+}
+
+SolverStatus Solver::solveSystemBlock(size_t blockIdx, const SolverOptions& opts, SolverTrace* trace,
+                                      DiagnosticCollector& blockDiag, std::string& blockError,
+                                      std::string& multistartInfo) {
+    // Setup timeout protection
+    TimeoutGuard timeout(opts.timeoutSeconds);
+
+    // Set up per-block diagnostic collection for CoolProp errors
+    evaluator_.getBlock(blockIdx).setDiagnostics(&blockDiag);
+
+    // Multi-start fallback (roadmap §4.2): retries the block from
+    // alternative starting points if the normal pipeline fails.
+    SolverStatus blockStatus = solveBlockWithMultiStart(
+        blockIdx, opts, trace, &blockError, &multistartInfo);
+
+    // A CALL that computes a string (CS-BUG-STRING-CALL-OUT) hands it to the next blocks, and the
+    // CALL WARNING that holds at the solution is reported (not those of the iterates); a property
+    // input that the solver had to limit at the solution is an error (CS-BUG-INPUT-CLAMP)
+    if (blockStatus == SolverStatus::Success) {
+        try {
+            evaluator_.publishStringOutputs(blockIdx);
+            evaluator_.reportCallWarnings(blockIdx, blockDiag);
+            evaluator_.checkInputClamps(blockIdx);
+        } catch (const std::exception& e) {
+            blockStatus = SolverStatus::EvaluationError;
+            blockError = e.what();
+        }
+    }
+
+    if (blockStatus == SolverStatus::Success && trace->solverType != "Explicit")
+        warnTinyValues(blockIdx, opts.tolerance, blockDiag);
+
+    // Detach diagnostics pointer (blockDiag goes out of scope later)
+    evaluator_.getBlock(blockIdx).setDiagnostics(nullptr);
+    return blockStatus;
+}
+
+std::string Solver::blockFailureMessage(size_t blockIdx, SolverStatus status, const std::string& blockError) const {
+    const auto& block = evaluator_.getBlock(blockIdx);
+    std::ostringstream ss;
+    ss << "Block " << blockIdx << " (size " << block.size()
+       << ", vars: ";
+    const auto& vars = block.getVariables();
+    for (size_t i = 0; i < std::min(vars.size(), size_t(3)); ++i) {
+        if (i > 0) ss << ", ";
+        ss << vars[i];
+    }
+    if (vars.size() > 3) ss << ", ...";
+    ss << ") failed: " << statusToString(status);
+    if (!blockError.empty()) {
+        ss << " - " << blockError;
+    }
+    return ss.str();
+}
+
+SolverStatus Solver::solveBlocks(const std::vector<size_t>& blocks, const SolverOptions& options,
+                                 std::string* errorMessage) {
+    SolverOptions deepSearchOpts;
+    const SolverOptions& opts = options.deepSearch ? (deepSearchOpts = effectiveOptions(options)) : options;
+    for (size_t blockIdx : blocks) {
+        if (opts.cancelToken && opts.cancelToken->load()) {
+            if (errorMessage) *errorMessage = "Solve cancelled by user";
+            return SolverStatus::MaxIterations;
+        }
+        SolverTrace trace;
+        DiagnosticCollector blockDiag;
+        std::string blockError;
+        std::string multistartInfo;
+        const SolverStatus status = solveSystemBlock(blockIdx, opts, &trace, blockDiag, blockError, multistartInfo);
+        if (status != SolverStatus::Success) {
+            if (errorMessage) *errorMessage = blockFailureMessage(blockIdx, status, blockError);
+            return status;
+        }
+    }
+    return SolverStatus::Success;
+}
+
+SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
+    auto startTime = std::chrono::high_resolution_clock::now();
+
+    // A local copy so the rest of solve() reads a single, consistent options struct (effectiveOptions)
+    const SolverOptions effOpts = effectiveOptions(options);
     const SolverOptions& opts = effOpts;
 
     SolveResult result;
@@ -2961,39 +2955,10 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
             opts.progressCallback(static_cast<int>(blockIdx), totalBlocks, "start", 0, 0.0);
         }
 
-        // Setup timeout protection
-        TimeoutGuard timeout(opts.timeoutSeconds);
-
-        // Set up per-block diagnostic collection for CoolProp errors
         DiagnosticCollector blockDiag;
-        evaluator_.getBlock(blockIdx).setDiagnostics(&blockDiag);
-
         std::string blockError;
         std::string multistartInfo;
-        // Multi-start fallback (roadmap §4.2): retries the block from
-        // alternative starting points if the normal pipeline fails.
-        SolverStatus blockStatus = solveBlockWithMultiStart(
-            blockIdx, opts, trace, &blockError, &multistartInfo);
-        
-        // A CALL that computes a string (CS-BUG-STRING-CALL-OUT) hands it to the next blocks, and the
-        // CALL WARNING that holds at the solution is reported (not those of the iterates); a property
-        // input that the solver had to limit at the solution is an error (CS-BUG-INPUT-CLAMP)
-        if (blockStatus == SolverStatus::Success) {
-            try {
-                evaluator_.publishStringOutputs(blockIdx);
-                evaluator_.reportCallWarnings(blockIdx, blockDiag);
-                evaluator_.checkInputClamps(blockIdx);
-            } catch (const std::exception& e) {
-                blockStatus = SolverStatus::EvaluationError;
-                blockError = e.what();
-            }
-        }
-
-        if (blockStatus == SolverStatus::Success && trace->solverType != "Explicit")
-            warnTinyValues(blockIdx, opts.tolerance, blockDiag);
-
-        // Detach diagnostics pointer (blockDiag goes out of scope later)
-        evaluator_.getBlock(blockIdx).setDiagnostics(nullptr);
+        SolverStatus blockStatus = solveSystemBlock(blockIdx, opts, trace, blockDiag, blockError, multistartInfo);
         
         result.blocksEvaluated++;
         
@@ -3075,23 +3040,7 @@ SolveResult Solver::solve(const SolverOptions& options, bool enableTracing) {
             result.success = false;
             result.status = blockStatus;
             result.detailedError = blockError;
-
-            // Get block info for error message
-            const auto& block = evaluator_.getBlock(blockIdx);
-            std::ostringstream ss;
-            ss << "Block " << blockIdx << " (size " << block.size()
-               << ", vars: ";
-            const auto& vars = block.getVariables();
-            for (size_t i = 0; i < std::min(vars.size(), size_t(3)); ++i) {
-                if (i > 0) ss << ", ";
-                ss << vars[i];
-            }
-            if (vars.size() > 3) ss << ", ...";
-            ss << ") failed: " << statusToString(blockStatus);
-            if (!blockError.empty()) {
-                ss << " - " << blockError;
-            }
-            result.errorMessage = ss.str();
+            result.errorMessage = blockFailureMessage(blockIdx, blockStatus, blockError);
 
             // Copy partial solution anyway
             result.variables = evaluator_.getAllVariables();
