@@ -67,7 +67,7 @@ endif()
 FetchContent_Declare(
     nlohmann_json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3
+    GIT_TAG v3.12.0   # the version coolplot-core vendors (cpp/third_party): keep them equal
     GIT_SHALLOW TRUE
 )
 set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
@@ -84,6 +84,28 @@ set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(eigen)
+
+# coolplot-core - the presentation side of CoolPlot (chart spec and curve records in;
+# scene, SVG and PDF out), built from cpp/ of the CoolPlot repository. The Diagrams tab
+# draws what this commit composes, so it is pinned like CoolProp; bump it deliberately
+# (docs/coolplot_integration.md, "Moving to newer versions"). A local checkout:
+#   cmake -DFETCHCONTENT_SOURCE_DIR_COOLPLOT=/path/to/CoolPlot ..
+set(COOLSOLVE_COOLPLOT_PINNED_TAG "7338f4822aea0dd8131402b96e8eddda8f9ff86f")   # v1.5.0
+set(COOLSOLVE_COOLPLOT_TAG "${COOLSOLVE_COOLPLOT_PINNED_TAG}" CACHE STRING "CoolPlot git tag/branch/commit of coolplot-core (default: the pinned commit)")
+coolsolve_git_shallow("${COOLSOLVE_COOLPLOT_TAG}" _coolplot_shallow)
+FetchContent_Declare(
+    coolplot
+    GIT_REPOSITORY https://github.com/CoolProp/CoolPlot.git
+    GIT_TAG ${COOLSOLVE_COOLPLOT_TAG}
+    GIT_SHALLOW ${_coolplot_shallow}
+)
+FetchContent_GetProperties(coolplot)
+if(NOT coolplot_POPULATED)
+    FetchContent_Populate(coolplot)
+endif()
+set(COOLPLOT_CORE_TESTS OFF CACHE BOOL "" FORCE)    # no second Catch2
+set(COOLPLOT_CORE_PYTHON OFF CACHE BOOL "" FORCE)
+add_subdirectory(${coolplot_SOURCE_DIR}/cpp ${coolplot_BINARY_DIR} EXCLUDE_FROM_ALL)
 
 # cpp-httplib - Header-only HTTP server library (for GUI)
 if(COOLSOLVE_BUILD_GUI)
@@ -321,11 +343,12 @@ if(MSVC)
     target_compile_definitions(coolsolve_lib PUBLIC _USE_MATH_DEFINES)
 endif()
 
-# Link with nlohmann_json, Eigen, and Threads
+# Link with nlohmann_json, Eigen, Threads and coolplot-core
 target_link_libraries(coolsolve_lib PUBLIC
     nlohmann_json::nlohmann_json
     Eigen3::Eigen
     Threads::Threads
+    coolplot_core
 )
 
 # Link with CoolProp

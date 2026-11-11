@@ -104,7 +104,7 @@ CoolSolve uses several file formats for input and verification:
 ### Prerequisites
 
 - C++17 compatible compiler (GCC 7+, Clang 5+, or MSVC 2019+)
-- CMake 3.14 or later
+- CMake 3.16 or later
 - Git (for fetching dependencies, including the model library of GUI builds)
 - Python 3 (required by CoolProp's CMake scripts at configure time)
 - Node.js 18+ and npm (required to build the React GUI frontend)
@@ -126,6 +126,7 @@ CoolSolve is a **standalone library** that automatically downloads all its depen
 | **nlohmann/json** | JSON serialization |
 | **Eigen** | Linear algebra |
 | **Catch2** | Unit testing |
+| **coolplot-core** | Composition and SVG/PDF writing of the thermodynamic diagrams (`cpp/` of [CoolPlot](https://github.com/CoolProp/CoolPlot), pinned like CoolProp: `COOLSOLVE_COOLPLOT_PINNED_TAG`) |
 | **CoolSolve Library** | Model collection embedded in the GUI binary (`COOLSOLVE_EMBED_LIBRARY`, GUI builds only) |
 
 The **CoolSolve Library** is fetched like CoolProp but follows its `main` branch: every `cmake` configure pulls the latest pushed version, and every `cmake --build` re-embeds whatever is on disk, so a GUI binary always carries the current library (`coolsolve --version` prints its commit). To embed a local checkout instead (uncommitted changes included), or to build without it:
