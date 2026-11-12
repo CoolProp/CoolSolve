@@ -6,8 +6,10 @@ Opens the GUI in headless Chromium (Chrome DevTools Protocol, as test_gui_shortc
 that the tab draws coolplot-core's SVG served by POST /api/v1/diagram/scene: the default chart after
 load, the states of a solved model as cycle markers (GET /api/v1/diagram/states), a cycle of the state
 editor drawn with paths along the processes, the hover (a state marker's variables; elsewhere the state
-under the cursor from POST /api/v1/diagram/state), a rubber-band zoom and its reset, and the export of
-the diagram for the LaTeX report (thermo_diagrams.png). See docs/coolplot_integration.md, phases 1 and 2.
+under the cursor from POST /api/v1/diagram/state), a rubber-band zoom and its reset, the downloads of the
+chart (SVG and PDF from POST /api/v1/diagram/export, the chart spec for CoolPlot) and the export of the
+diagram for the LaTeX report (thermo_diagrams.png, the fallback of the server's PDF figure). See
+docs/coolplot_integration.md, phases 1, 2 and 4.
 
 Usage:
     # Start CoolSolve with --gui, then:
@@ -96,6 +98,7 @@ class Page:
         self.pending: dict[int, asyncio.Future] = {}
         self.scene_requests: list[dict] = []   # bodies of POST /api/v1/diagram/scene
         self.point_requests: list[dict] = []   # bodies of POST /api/v1/diagram/state
+        self.export_requests: list[dict] = []  # bodies of POST /api/v1/diagram/export
         self.report_plots: list | None = None   # the plots of POST /api/v1/latex/compile
         self.reader = asyncio.ensure_future(self._read())
 
@@ -113,6 +116,8 @@ class Page:
                         print(f"        POST /diagram/scene {body.get('fluid')} {body.get('figure_size_pt')}")
                 elif req["method"] == "POST" and req["url"].split("?")[0].endswith("/api/v1/diagram/state"):
                     self.point_requests.append(json.loads(req.get("postData") or "{}"))
+                elif req["method"] == "POST" and req["url"].split("?")[0].endswith("/api/v1/diagram/export"):
+                    self.export_requests.append(json.loads(req.get("postData") or "{}"))
             elif msg.get("method") == "Fetch.requestPaused":
                 # The report: read the plots, then fail the request so that nothing is compiled or downloaded
                 params = msg["params"]
@@ -194,9 +199,12 @@ async def run_tests(page: Page):
           size and abs(fig[0] - size[0] * 0.75) < 2 and abs(fig[1] - size[1] * 0.75) < 2
           and abs(size[2] - size[0]) < 3 and abs(size[3] - size[1]) < 3, f"canvas/svg {size}, figure {fig}")
     spec = req.get("spec", {})
-    check("the spec is CoolPlot's: ph, engineering units, DEF, no badge",
+    check("the spec is CoolPlot's: ph, engineering units, DEF, CoolPlot's default badge (no branding written)",
           spec.get("diagram") == "ph" and spec.get("units") == "engineering" and spec.get("limits") == "DEF"
-          and spec.get("settings", {}).get("branding") == {"references": "none", "versions": False}, json.dumps(spec)[:300])
+          and "branding" not in spec.get("settings", {}), json.dumps(spec)[:300])
+    check("the badge names the equation of state and the versions",
+          await page.wait_for(f"(() => {{ const t = {SVG}?.textContent || ''; return t.includes('Wagner and Pru') "
+                              "&& t.includes('CoolPlot 1.5.0'); })()", 10))
     check("no error shown", not await page.eval("!!document.querySelector('.diagram-status .diagram-error')"),
           await page.eval("document.querySelector('.diagram-status')?.textContent"))
     await page.idle()
@@ -303,6 +311,46 @@ async def run_tests(page: Page):
     check("reset: the whole chart again",
           await page.wait_for(f"{SVG}?.getAttribute('data-x-limits') === {json.dumps(before)}", 30))
     await page.idle()
+
+    print("\n=== Downloads: SVG, PDF, chart spec ===")
+    downloads = tempfile.mkdtemp(prefix="coolsolve_diagram_downloads_")
+    try:
+        await page.send("Page.setDownloadBehavior", behavior="allow", downloadPath=downloads)
+        check("the status line offers SVG, PDF and Spec",
+              await page.eval("[...document.querySelectorAll('.diagram-download')].map(b => b.dataset.format).join() === 'svg,pdf,spec'"))
+        for fmt in ("svg", "pdf", "spec"):
+            await page.eval(f"document.querySelector('.diagram-download[data-format=\"{fmt}\"]').click()")
+            await page.wait_for("[...document.querySelectorAll('.diagram-download')].every(b => !b.disabled)", 30)
+        end = time.time() + 30
+        names = []
+        while time.time() < end:
+            names = sorted(n for n in os.listdir(downloads) if not n.endswith(".crdownload"))
+            if len(names) >= 3:
+                break
+            await asyncio.sleep(0.2)
+        check("three files downloaded, named after the model and the diagram",
+              names == ["diagram_ph.json", "diagram_ph.pdf", "diagram_ph.svg"], f"{names}")
+        body = page.export_requests[-1] if page.export_requests else {}
+        check("the export asks for the chart on screen: its fluid, cycles, figure size and labels",
+              [r.get("format") for r in page.export_requests[-2:]] == ["svg", "pdf"] and body.get("fluid") == "R134a"
+              and body.get("cycles") and body.get("figure_size_pt") == page.scene_requests[-1].get("figure_size_pt")
+              and body.get("previous_labels") is not None, json.dumps(body)[:300])
+        if len(names) >= 3:
+            with open(os.path.join(downloads, "diagram_ph.svg"), "rb") as f:
+                svg = f.read()
+            with open(os.path.join(downloads, "diagram_ph.pdf"), "rb") as f:
+                pdf = f.read()
+            with open(os.path.join(downloads, "diagram_ph.json"), encoding="utf-8") as f:
+                spec = json.load(f)
+            check("the SVG is coolplot-core's, with the cycle", svg.startswith(b"<svg") and b'data-item="cycle/Cycle/loop/0"' in svg)
+            check("the PDF is coolplot-core's, with its fonts", pdf.startswith(b"%PDF-") and b"/FontFile2" in pdf)
+            check("the spec is the one composed: fluid and cycles written, as CoolPlot reads it",
+                  spec.get("diagram") == "ph" and spec.get("fluid", {}).get("components") == ["R134a"]
+                  and spec.get("cycles", [{}])[0].get("name") == "Cycle" and "states" in spec["cycles"][0], json.dumps(spec)[:300])
+        check("no download error shown", not await page.eval("!!document.querySelector('.diagram-status .diagram-error')"),
+              await page.eval("document.querySelector('.diagram-status')?.textContent"))
+    finally:
+        shutil.rmtree(downloads, ignore_errors=True)
 
     print("\n=== LaTeX report export ===")
     await page.send("Fetch.enable", patterns=[{"urlPattern": "*/api/v1/latex/*"}])
