@@ -87,10 +87,9 @@ export function defaultSpec(type: DiagramTypeOption, options: DiagramOptionsResp
     isolines: defaultIsolines(type),
     marked_points: ['critical'],
     settings: {
-      // No "look": the GUI's theme (sceneInput)
+      // No "look": the GUI's theme (sceneInput). No "branding": CoolPlot's badge, the references of the
+      // equation of state and the versions (definitions saved before keep the branding they have)
       labels: { mode: DEFAULT_LABEL_MODE, symbols: 'unicode' },
-      // No badge until phase 4 computes its lines, so that an exported spec draws as in the GUI
-      branding: { references: 'none', versions: false },
     },
   };
 }

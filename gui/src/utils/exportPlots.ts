@@ -4,7 +4,10 @@
  * Returns an array of { name, data } suitable for the /api/v1/latex/compile endpoint.
  *
  *   - The property diagram (coolplot-core's SVG in the Diagrams tab, `.thermo-diagram`) is rasterised
- *     in the browser (Image + canvas, 2×, white background) → "thermo_diagrams.png".
+ *     in the browser (Image + canvas, 2×, white background) → "thermo_diagrams.png". A fallback only:
+ *     the server draws the diagram definitions of the session as vector PDF figures when it compiles
+ *     the report (thermo_diagrams.pdf, which the report prefers), but not a chart the tab shows
+ *     without a stored definition (a new model's default chart), nor without a TrueType font.
  *   - Plotly charts (every <div class="js-plotly-plot">) go through Plotly.toImage():
  *     inside a ".parametric-plot" ancestor → "parametric_1.png", "parametric_2.png", …;
  *     any other chart → "plot_<n>.png".

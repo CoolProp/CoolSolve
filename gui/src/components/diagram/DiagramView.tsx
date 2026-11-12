@@ -7,15 +7,19 @@
  * newer one cancels the older, and the labels of the scene on screen are sent back when only the size or
  * the zoom changed. Drag a rectangle on the plot area to zoom (a new `view_SI`); double-click or the
  * button resets it. Hovering a state marker shows its variables, hovering elsewhere the state under the
- * cursor (useDiagramHover). Independent of the Diagrams tab's controls, so that diagrams can be shown
+ * cursor (useDiagramHover). The status line downloads the chart on screen as SVG or PDF (drawn by the
+ * server, `POST /api/v1/diagram/export`) and its spec as composed, which CoolPlot reads
+ * (`DiagramSpec.from_dict`). Independent of the Diagrams tab's controls, so that diagrams can be shown
  * elsewhere.
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
-import { AlertTriangle, ZoomOut } from 'lucide-react';
+import { AlertTriangle, Download, ZoomOut } from 'lucide-react';
 import { api } from '../../api/client';
 import type { CoolPlotSpec, DiagramSceneInput, DiagramSceneResponse, DiagramViewSI } from '../../api/types';
+import { useModelStore } from '../../stores/modelStore';
+import { downloadBlob } from '../../utils/download';
 import { toErrMsg } from '../../utils/errors';
 import { clientToSvg, inPlot, readPlotFrame, viewFromRectangle } from './svgCoords';
 import { useDiagramHover, type DrawnScene } from './useDiagramHover';
@@ -100,6 +104,9 @@ function svgNode(text: string, suffix: string): SVGSVGElement {
 
 const round1 = (v: number) => Math.round(v * 10) / 10;
 
+/** The figure in pt of a drawing area in px. */
+const figureOf = (size: [number, number]): [number, number] => [round1(size[0] * PT_PER_PX), round1(size[1] * PT_PER_PX)];
+
 function specWithView(spec: CoolPlotSpec, view: DiagramViewSI | null): CoolPlotSpec {
   const { view_SI: _view, ...rest } = spec;
   return view ? { ...rest, view_SI: view } : rest;
@@ -114,6 +121,9 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [band, setBand] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [exporting, setExporting] = useState<'' | 'svg' | 'pdf'>('');
+  const [exportError, setExportError] = useState('');
+  const modelName = useModelStore((s) => s.modelName);
   // The zoom when the owner does not control it, for one fluid and diagram type
   const [localView, setLocalView] = useState<{ chart: string; view: DiagramViewSI | null } | null>(null);
 
@@ -154,7 +164,7 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
   // Ask for a scene when what is drawn, the zoom, the size or the solution changes
   useEffect(() => {
     if (!input || !spec || size[0] < MIN_SIZE_PX || size[1] < MIN_SIZE_PX) return;
-    const figure: [number, number] = [round1(size[0] * PT_PER_PX), round1(size[1] * PT_PER_PX)];
+    const figure = figureOf(size);
     const requestKey = `${contentKey}|${JSON.stringify(spec.view_SI ?? null)}|${figure[0]}x${figure[1]}`;
     const matches = (k: { requestKey: string; revision: unknown } | null) =>
       !!k && k.requestKey === requestKey && Object.is(k.revision, revision);
@@ -276,6 +286,31 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
     window.addEventListener('mouseup', up);
   };
 
+  // Downloads of the chart on screen: the same request, its labels where they are
+  const exportChart = async (format: 'svg' | 'pdf') => {
+    if (!drawn) return;
+    setExporting(format);
+    try {
+      const { blob, filename } = await api.exportDiagram({
+        ...drawn.input,
+        figure_size_pt: figureOf(size),
+        previous_labels: drawn.scene.labels ?? [],
+        format,
+      });
+      downloadBlob(blob, filename);
+      setExportError('');
+    } catch (err: unknown) {
+      setExportError(`${format.toUpperCase()} not written: ${toErrMsg(err)}`);
+    } finally {
+      setExporting('');
+    }
+  };
+  const exportSpec = () => {
+    if (!drawn) return;
+    const name = `${modelName || 'diagram'}_${drawn.input.spec.diagram}`.replace(/[^A-Za-z0-9_.-]/g, '_');
+    downloadBlob(new Blob([`${JSON.stringify(drawn.scene.spec, null, 2)}\n`], { type: 'application/json' }), `${name}.json`);
+  };
+
   const scene = drawn?.scene;
   const warnings = scene?.diagnostics?.warnings ?? [];
   const timing = scene?.timing_ms;
@@ -333,6 +368,30 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
               </span>
             )}
             <span className="diagram-hint">Hover for values, drag to zoom{view ? ', double-click to reset' : ''}</span>
+            {exportError && <span className="diagram-error" title={exportError}>{exportError}</span>}
+            <span className="diagram-downloads">
+              <Download size={11} />
+              <button
+                className="diagram-download"
+                data-format="svg"
+                title="Download the chart as SVG"
+                disabled={!!exporting}
+                onClick={() => { void exportChart('svg'); }}
+              >SVG</button>
+              <button
+                className="diagram-download"
+                data-format="pdf"
+                title="Download the chart as PDF (vector, with its fonts)"
+                disabled={!!exporting}
+                onClick={() => { void exportChart('pdf'); }}
+              >PDF</button>
+              <button
+                className="diagram-download"
+                data-format="spec"
+                title="Export the chart spec (JSON) for CoolPlot: DiagramSpec.from_dict draws it with matplotlib"
+                onClick={exportSpec}
+              >Spec</button>
+            </span>
           </>
         ) : null}
       </div>
