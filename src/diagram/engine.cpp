@@ -3,9 +3,12 @@
 //
 // Mirrors CoolPlot (github.com/CoolProp/CoolPlot) at commit 7338f48 (v1.5.0): engine/engine.py (Engine: domain,
 // curves, warnings), engine/cache.py (CurveCache), thermo/native.py (the plots of the port), corelib.py
-// (compose_record) and chart.py (the plot area measured again after drawing, Chart.draw).
+// (compose_record), chart.py (the plot area measured again after drawing, Chart.draw) and render/pdf.py (the PDF
+// writer's plot area).
 // CoolPlot is MIT licensed: Copyright 2014-2019 Jorrit Wronski and the other developers.
 #include "coolsolve/diagram/engine.h"
+
+#include "coolsolve/diagram/references.h"
 
 #include "CoolProp/Configuration.h"
 #include "CoolProp/CoolProp.h"
@@ -13,11 +16,14 @@
 
 #include <coolplot/capi.h>
 #include <coolplot/compose.h>
+#include <coolplot/pdf.h>
 #include <coolplot/svg.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <list>
@@ -434,7 +440,7 @@ std::vector<PlannedCurve> Engine::curves(const Chart& chart, const Domain& domai
 
 json composeRecord(const json& specRecord, const PlanSpec& spec, const Domain& domain, const std::vector<PlannedCurve>& curves,
                    const std::vector<ResolvedCycle>& cycles, const std::optional<std::pair<double, double>>& plotSizePt,
-                   const json& previousLabels) {
+                   const json& previousLabels, const std::vector<std::string>& sources) {
     json ranges = json::object();
     for (const auto& [key, range] : domain.ranges_SI) ranges[key] = json::array({range.first, range.second});
     json domainRecord = {{"tp_box", domain.tp_box}, {"ranges_SI", ranges}};
@@ -468,30 +474,22 @@ json composeRecord(const json& specRecord, const PlanSpec& spec, const Domain& d
         }
         cyclesRecord.push_back({{"states", states}, {"chains", chains}});
     }
-    return {{"spec", specRecord},
-            {"domain", domainRecord},
-            {"curves", curvesRecord},
-            {"cycles", cyclesRecord},
-            {"plot_size_pt", plotSizePt ? json::array({plotSizePt->first, plotSizePt->second}) : json()},
-            {"previous_labels", previousLabels.is_array() ? previousLabels : json()}};
+    json record = {{"spec", specRecord},
+                   {"domain", domainRecord},
+                   {"curves", curvesRecord},
+                   {"cycles", cyclesRecord},
+                   {"plot_size_pt", plotSizePt ? json::array({plotSizePt->first, plotSizePt->second}) : json()},
+                   {"previous_labels", previousLabels.is_array() ? previousLabels : json()}};
+    // Only written when there are some, so the record of a chart without badge is the same as before 1.5
+    if (!sources.empty()) record["sources"] = sources;
+    return record;
 }
 
 // ---------------------------------------------------------------------------
-// The scene of a chart request
+// The scene of a chart request, and its files
 // ---------------------------------------------------------------------------
 
 namespace {
-
-/// Whether the spec asks for badge lines that need CoolProp (references, versions), which come in phase 4.
-/// Read as CoolPlot reads the record (spec.settings.Settings.from_dict).
-bool asksForSources(const json& spec) {
-    const json settings = spec.value("settings", json::object());
-    if (!settings.is_object()) return true;
-    const json branding = settings.value("branding", json());
-    if (branding.is_null()) return settings.value("calc", json()).is_null();  // a record before 1.2 has no badge
-    if (!branding.is_object()) return false;
-    return branding.value("references", std::string("short")) != "none" || branding.value("versions", true);
-}
 
 coolplot::Scene composeScene(const json& record) {
     try {
@@ -510,89 +508,128 @@ json isolineLabels(const coolplot::Scene& scene) {
     return labels;
 }
 
-}  // namespace
+coolplot::SvgOptions svgOptions(const std::pair<double, double>& figure) {
+    coolplot::SvgOptions options;
+    options.width = static_cast<int>(std::lround(figure.first * coolplot::PX_PER_PT));
+    options.height = static_cast<int>(std::lround(figure.second * coolplot::PX_PER_PT));
+    return options;
+}
 
-json scene(const SceneRequest& request) {
+coolplot::PdfOptions pdfOptions(const std::pair<double, double>& figure) {
+    coolplot::PdfOptions options;
+    options.width_pt = figure.first;
+    options.height_pt = figure.second;
+    return options;
+}
+
+/// A chart request composed into a scene, with what scene() reports of it.
+struct ComposedChart {
+    coolplot::DiagramSpec core;        ///< coolplot-core's reading of the spec (units, symbols)
+    std::string xKey, yKey;            ///< the axes
+    json specRecord;                   ///< the spec as composed, fluid and cycles written
+    std::vector<ResolvedCycle> cycles;
+    coolplot::Scene scene;
+    std::pair<double, double> figure;  ///< the page in points
+    json curveDiagnostics = json::array();
+    std::vector<std::string> warnings;
+    double curvesMs = 0.0, composeMs = 0.0;
+};
+
+/**
+ * The scene of a chart request for the plot area of a writer (the SVG writer, or the PDF writer when `pdf`): composed
+ * for the plot area of an empty scene, then again if drawing it changes the area by more than 2 % (Chart.draw); only
+ * the labels change, nothing is recalculated.
+ */
+ComposedChart composeChart(const SceneRequest& request, bool pdf) {
     const auto start = std::chrono::steady_clock::now();
+    ComposedChart out;
     ChartFluid fluid = chartFluid(request.fluid, request.backend);
     if (!request.spec.is_object()) throw DiagramError("The chart spec has to be a JSON object (CoolPlot's DiagramSpec record).");
-    json specRecord = request.spec;
-    specRecord.erase("fluid");  // the server writes them
-    specRecord.erase("cycles");
+    out.specRecord = request.spec;
+    out.specRecord.erase("fluid");  // the server writes them
+    out.specRecord.erase("cycles");
     // coolplot-core reads the spec first, so that a value it refuses (a theme, a unit system, a label mode) is
     // reported before any property is computed
-    coolplot::DiagramSpec core;
     try {
-        core = coolplot::DiagramSpec::from_json(specRecord);
+        out.core = coolplot::DiagramSpec::from_json(out.specRecord);
     } catch (const coolplot::Error& e) {
         throw DiagramError(e.what());
     } catch (const json::exception& e) {
         throw DiagramError(std::string("The chart spec is not a valid CoolPlot spec record: ") + e.what());
     }
-    const Chart chart(fluid, PlanSpec::fromJson(specRecord));
-    std::pair<double, double> figure = {core.settings.page.width_pt, core.settings.page.height_pt};
-    if (request.figureSizePt) figure = *request.figureSizePt;
-    if (!(figure.first >= 50.0 && figure.first <= 10000.0 && figure.second >= 50.0 && figure.second <= 10000.0))
+    const Chart chart(fluid, PlanSpec::fromJson(out.specRecord));
+    out.xKey = chart.spec.diagram.x;
+    out.yKey = chart.spec.diagram.y;
+    out.figure = {out.core.settings.page.width_pt, out.core.settings.page.height_pt};
+    if (request.figureSizePt) out.figure = *request.figureSizePt;
+    if (!(out.figure.first >= 50.0 && out.figure.first <= 10000.0 && out.figure.second >= 50.0 && out.figure.second <= 10000.0))
         throw DiagramError("The figure size is two numbers of points between 50 and 10000.");
+    out.specRecord["fluid"] = fluid.record();
+    const std::vector<std::string> sources = sourceLines(out.specRecord);  // Engine.source_lines
 
     Engine& engine = Engine::shared();
-    std::vector<std::string> warnings;
-    if (asksForSources(request.spec))
-        warnings.push_back("The badge lines naming the references of the equation of state and the versions come in a later "
-                           "version; the chart is drawn without them (set settings.branding to {\"references\": \"none\", "
-                           "\"versions\": false}).");
-    const Domain domain = engine.domain(chart, warnings);
-    json curveDiagnostics = json::array();
-    const std::vector<PlannedCurve> curves = engine.curves(chart, domain, plan(chart.spec, domain), curveDiagnostics, warnings);
-    const std::vector<ResolvedCycle> cycles = engine.withFluid(fluid, [&](FluidModel& model) {
-        return resolveCycles(request.cycles, request.solution, model, chart.spec.diagram, warnings);
+    const Domain domain = engine.domain(chart, out.warnings);
+    const std::vector<PlannedCurve> curves = engine.curves(chart, domain, plan(chart.spec, domain), out.curveDiagnostics, out.warnings);
+    out.cycles = engine.withFluid(fluid, [&](FluidModel& model) {
+        return resolveCycles(request.cycles, request.solution, model, chart.spec.diagram, out.warnings);
     });
-    specRecord["fluid"] = fluid.record();
-    specRecord["cycles"] = json::array();
-    for (const ResolvedCycle& cycle : cycles) specRecord["cycles"].push_back(cycle.spec);
-    const double curvesMs = elapsedMs(start);
+    out.specRecord["cycles"] = json::array();
+    for (const ResolvedCycle& cycle : out.cycles) out.specRecord["cycles"].push_back(cycle.spec);
+    out.curvesMs = elapsedMs(start);
 
-    // Compose for the plot area of the SVG writer, then again if drawing it changes the area by more than 2 %
-    // (Chart.draw); only the labels change, nothing is recalculated
     const auto composeStart = std::chrono::steady_clock::now();
-    coolplot::SvgOptions options;
-    options.width = static_cast<int>(std::lround(figure.first * coolplot::PX_PER_PT));
-    options.height = static_cast<int>(std::lround(figure.second * coolplot::PX_PER_PT));
-    std::pair<double, double> size = coolplot::svg_plot_size_pt(coolplot::Scene(), options);
-    json record = composeRecord(specRecord, chart.spec, domain, curves, cycles, size, request.previousLabels);
-    coolplot::Scene composed = composeScene(record);
-    const std::pair<double, double> drawn = coolplot::svg_plot_size_pt(composed, options);
+    auto plotSize = [&](const coolplot::Scene& scene) {
+        return pdf ? coolplot::pdf_plot_size_pt(scene, pdfOptions(out.figure)) : coolplot::svg_plot_size_pt(scene, svgOptions(out.figure));
+    };
+    std::pair<double, double> size = plotSize(coolplot::Scene());
+    json record = composeRecord(out.specRecord, chart.spec, domain, curves, out.cycles, size, request.previousLabels, sources);
+    out.scene = composeScene(record);
+    const std::pair<double, double> drawn = plotSize(out.scene);
     if (std::fabs(drawn.first - size.first) > 0.02 * size.first || std::fabs(drawn.second - size.second) > 0.02 * size.second) {
         size = drawn;
         record["plot_size_pt"] = json::array({size.first, size.second});
-        record["previous_labels"] = isolineLabels(composed);
-        composed = composeScene(record);
+        record["previous_labels"] = isolineLabels(out.scene);
+        out.scene = composeScene(record);
     }
-    const double composeMs = elapsedMs(composeStart);
+    out.composeMs = elapsedMs(composeStart);
+    return out;
+}
+
+/// A file name of the report's figures: the first diagram is "thermo_diagrams.pdf" (the name of the raster image the
+/// GUI sends too), the others "thermo_diagram_<n>.pdf" from 2 on (latex_report.cpp includes these).
+std::string reportDiagramName(size_t index) {
+    return index == 0 ? "thermo_diagrams.pdf" : "thermo_diagram_" + std::to_string(index + 1) + ".pdf";
+}
+
+}  // namespace
+
+json scene(const SceneRequest& request) {
+    ComposedChart chart = composeChart(request, false);
+    const coolplot::SvgOptions options = svgOptions(chart.figure);
     const auto svgStart = std::chrono::steady_clock::now();
-    const std::string svg = coolplot::scene_to_svg(composed, options);
+    const std::string svg = coolplot::scene_to_svg(chart.scene, options);
     const double svgMs = elapsedMs(svgStart);
 
     // The axes, with the units the GUI needs to turn a zoom window back into SI values
-    const coolplot::AxesSpec& axes = composed.axes;
+    const coolplot::AxesSpec& axes = chart.scene.axes;
     auto unitRecord = [&](const std::string& key) {
-        const coolplot::Unit& unit = core.units.at(key);
-        return json{{"label", coolplot::unit_text(unit.label, core.settings.labels.symbols)}, {"scale", unit.scale}, {"offset", unit.offset}};
+        const coolplot::Unit& unit = chart.core.units.at(key);
+        return json{{"label", coolplot::unit_text(unit.label, chart.core.settings.labels.symbols)}, {"scale", unit.scale}, {"offset", unit.offset}};
     };
-    const std::pair<double, double> plotSize = coolplot::svg_plot_size_pt(composed, options);
-    json axesRecord = {{"x_key", chart.spec.diagram.x},
-                       {"y_key", chart.spec.diagram.y},
+    const std::pair<double, double> plotSize = coolplot::svg_plot_size_pt(chart.scene, options);
+    json axesRecord = {{"x_key", chart.xKey},
+                       {"y_key", chart.yKey},
                        {"x_label", axes.x_label},
                        {"y_label", axes.y_label},
                        {"x_limits", json::array({axes.x_limits.lo, axes.x_limits.hi})},
                        {"y_limits", json::array({axes.y_limits.lo, axes.y_limits.hi})},
                        {"x_log", axes.x_log},
                        {"y_log", axes.y_log},
-                       {"x_unit", unitRecord(chart.spec.diagram.x)},
-                       {"y_unit", unitRecord(chart.spec.diagram.y)},
+                       {"x_unit", unitRecord(chart.xKey)},
+                       {"y_unit", unitRecord(chart.yKey)},
                        {"plot_size_pt", json::array({plotSize.first, plotSize.second})}};
     json states = json::array();
-    for (const ResolvedCycle& cycle : cycles)
+    for (const ResolvedCycle& cycle : chart.cycles)
         for (const auto& [number, state] : cycle.states) {
             const auto label = cycle.labels.find(number);
             states.push_back({{"cycle", cycle.index},
@@ -603,11 +640,93 @@ json scene(const SceneRequest& request) {
         }
     return {{"svg", svg},
             {"axes", axesRecord},
-            {"labels", isolineLabels(composed)},
+            {"labels", isolineLabels(chart.scene)},
             {"states", states},
-            {"spec", specRecord},
-            {"diagnostics", {{"curves", curveDiagnostics}, {"warnings", warnings}}},
-            {"timing_ms", {{"curves", curvesMs}, {"compose", composeMs}, {"svg", svgMs}}}};
+            {"spec", chart.specRecord},
+            {"diagnostics", {{"curves", chart.curveDiagnostics}, {"warnings", chart.warnings}}},
+            {"timing_ms", {{"curves", chart.curvesMs}, {"compose", chart.composeMs}, {"svg", svgMs}}}};
+}
+
+std::string chartFile(const SceneRequest& request, const std::string& format, std::vector<std::string>* warnings) {
+    if (format != "svg" && format != "pdf") throw DiagramError("A chart is written as \"svg\" or \"pdf\", not \"" + format + "\".");
+    const ComposedChart chart = composeChart(request, format == "pdf");
+    if (warnings) warnings->insert(warnings->end(), chart.warnings.begin(), chart.warnings.end());
+    if (format == "svg") return coolplot::scene_to_svg(chart.scene, svgOptions(chart.figure));
+    try {
+        return coolplot::scene_to_pdf(chart.scene, pdfOptions(chart.figure));
+    } catch (const coolplot::Error& e) {
+        // No TrueType font of the theme's families on this platform: the server's set-up, not the request
+        throw std::runtime_error(std::string("The PDF cannot be written: ") + e.what());
+    }
+}
+
+std::string chartFormat(const std::string& path) {
+    std::string extension = std::filesystem::path(path).extension().string();
+    for (char& c : extension) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (extension == ".svg") return "svg";
+    if (extension == ".pdf") return "pdf";
+    throw DiagramError("A chart file is .svg or .pdf, not '" + path + "'.");
+}
+
+const json& findDefinition(const json& document, const std::string& name) {
+    checkDefinitions(document);
+    static const json none = json::array();
+    const json& diagrams = document.contains("diagrams") ? document.at("diagrams") : none;
+    if (diagrams.empty()) throw DiagramError("The diagram definitions hold no diagram.");
+    if (name.empty()) return diagrams.at(0);
+    std::string names;
+    for (const json& diagram : diagrams) {
+        const std::string own = diagram.value("name", std::string());
+        if (own == name) return diagram;
+        names += (names.empty() ? "'" : ", '") + own + "'";
+    }
+    throw DiagramError("The diagram definitions have no diagram named '" + name + "' (they have " + names + ").");
+}
+
+SceneRequest definitionRequest(const json& definition) {
+    if (!definition.is_object() || !definition.contains("fluid") || !definition.at("fluid").is_string())
+        throw DiagramError("A diagram definition needs the name of its fluid (\"fluid\").");
+    SceneRequest request;
+    request.fluid = definition.at("fluid").get<std::string>();
+    request.spec = definition.value("spec", json::object());
+    request.cycles = definition.value("cycles", json::array());
+    return request;
+}
+
+std::vector<std::string> writeDiagramFile(const json& document, const std::string& name, const SolutionValues& solution,
+                                          const std::string& backend, const std::string& path) {
+    const std::string format = chartFormat(path);
+    SceneRequest request = definitionRequest(findDefinition(document, name));
+    request.backend = backend.empty() ? "HEOS" : backend;
+    request.solution = &solution;
+    std::vector<std::string> warnings;
+    const std::string file = chartFile(request, format, &warnings);
+    std::ofstream out(path, std::ios::binary);
+    if (!out.is_open() || !out.write(file.data(), static_cast<std::streamsize>(file.size())))
+        throw std::runtime_error("Cannot write the chart to '" + path + "'.");
+    return warnings;
+}
+
+std::vector<std::pair<std::string, std::string>> reportDiagrams(const json& document, const SolutionValues* solution,
+                                                                const std::string& backend, std::vector<std::string>& warnings) {
+    std::vector<std::pair<std::string, std::string>> files;
+    if (!document.is_object() || !document.contains("diagrams") || !document.at("diagrams").is_array()) return files;
+    const json& diagrams = document.at("diagrams");
+    for (size_t i = 0; i < diagrams.size() && i < REPORT_DIAGRAMS; ++i) {
+        const std::string label = diagrams[i].is_object() ? diagrams[i].value("name", std::string()) : std::string();
+        try {
+            SceneRequest request = definitionRequest(diagrams[i]);
+            request.backend = backend.empty() ? "HEOS" : backend;
+            request.solution = solution;
+            if (!request.spec.is_object()) request.spec = json::object();
+            if (!request.spec["settings"].is_object()) request.spec["settings"] = json::object();
+            request.spec["settings"]["look"] = "print";  // the report is printed
+            files.emplace_back(reportDiagramName(i), chartFile(request, "pdf", &warnings));
+        } catch (const std::exception& e) {
+            warnings.push_back("The diagram '" + label + "' is left out of the report: " + e.what());
+        }
+    }
+    return files;
 }
 
 // ---------------------------------------------------------------------------
