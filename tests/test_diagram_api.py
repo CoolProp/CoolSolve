@@ -3,7 +3,9 @@
 test_diagram_api.py — Integration tests of the Diagrams endpoints of the GUI server (docs/coolplot_integration.md §3).
 
 Tests GET /api/v1/diagram/options, POST /api/v1/diagram/scene (a default p-h chart of R134a, a chart of a solved
-model with its cycle from the model's variables, the errors), GET/PUT /api/v1/diagram/definitions, the definitions
+model with its cycle from the model's variables and the paths between its states, the errors), POST
+/api/v1/diagram/state (the state under the cursor), GET /api/v1/diagram/states (the states of the solved model),
+GET/PUT /api/v1/diagram/definitions, the definitions
 in the ZIP bundle (diagrams.json), their reset by New and their return by Back, and that the former route
 POST /api/v1/coolprop/saturation is gone.
 
@@ -265,6 +267,68 @@ def test_solved_cycle():
           [c["name"] for c in scene["spec"]["cycles"]] == ["Refrigeration", "Markers"]
           and any("Missing" in w and "P_99" in w for w in warnings), str(warnings))
 
+    # The paths between the states (phase 2): "auto" by default, CoolPlot's record, a kind for every connection
+    auto = {"name": "Auto", "states": states}
+    record = {"name": "Record", "states": states, "paths": [[[1, 2], "isentropic"]], "steps": 10}
+    status, scene = api("POST", "/diagram/scene", {"fluid": "R134a", "spec": default_spec(), "cycles": [auto, record]})
+    check("cycles with paths", status == 200, str(scene)[:300])
+    if status == 200:
+        cycles = scene["spec"]["cycles"]
+        check("auto paths: CoolPlot's default, nothing written", cycles[0]["paths"] == [] and cycles[0]["steps"] == 20,
+              json.dumps(cycles[0]["paths"]))
+        check("a record of paths and steps pass through", cycles[1]["paths"] == [[[1, 2], "isentropic"]] and cycles[1]["steps"] == 10)
+        check("the paths are drawn", 'data-item="cycle/Auto/loop/0"' in scene["svg"])
+        check("no warning about paths", not any("path" in w for w in scene["diagnostics"]["warnings"]),
+              str(scene["diagnostics"]["warnings"]))
+    status, result = api("POST", "/diagram/scene", {"fluid": "R134a", "spec": default_spec(),
+                                                    "cycles": [{"name": "Bad", "states": states, "paths": "zigzag"}]})
+    check("an unknown path kind: 400", status == 400 and "zigzag" in result.get("error", ""), f"{status} {result}")
+
+    # The states of the solved model from its property calls (§4.2)
+    status, model_states = api("GET", "/diagram/states")
+    check("states of the solved model", status == 200 and "R134a" in model_states.get("fluids", {}), str(model_states)[:300])
+    if status == 200 and "R134a" in model_states.get("fluids", {}):
+        found = model_states["fluids"]["R134a"]
+        by_number = {s["number"]: s for s in found}
+        check("unique state numbers", len(by_number) == len(found))
+        # h_1 = enthalpy(R134a, T=T_1, P=P_1) and s_1 = entropy(R134a, T=T_1, P=P_1) share T_1 and P_1: two calls
+        # without quality at the same (T, p) are one single-phase state (the rule as decided, plan §4.2)
+        check("state 1 holds P_1, T_1, h_1 and s_1 (calls at the same T and p merge)",
+              by_number.get(1, {}).get("vars") == {"p": "P_1", "T": "T_1", "h": "h_1", "s": "s_1"}
+              and by_number[1]["label"] is None, str(by_number.get(1)))
+        # h_2_s = enthalpy(R134a, P=P_2, s=s_1) shares only P_2 with state 2 and only s_1 with state 1: a state of
+        # its own (the isentropic outlet of the compressor)
+        check("the isentropic outlet is a state of its own",
+              any(s["vars"] == {"p": "P_2", "s": "s_1", "h": "h_2_s"} for s in found), str(found)[:400])
+        check("state 2: the outlet of the compressor (P_2, h_2, T_2)", by_number.get(2, {}).get("vars") == {"p": "P_2", "h": "h_2", "T": "T_2"},
+              str(by_number.get(2)))
+        check("every state has two independent properties",
+              all(len(set(s["vars"]) - {"T", "p"}) >= 1 for s in found), str(found)[:300])
+
+
+def test_state():
+    print("\n── State under the cursor ──")
+    status, result = api("POST", "/diagram/state", {"fluid": "R134a", "diagram": "ph", "x_SI": 3.0e5, "y_SI": 2.0e5})
+    state = (result or {}).get("state") or {}
+    check("a point inside the dome", status == 200 and 0.0 < state.get("Q", -1) < 1.0, str(result))
+    check("the axis values come back", state.get("h") == 3.0e5 and state.get("p") == 2.0e5, str(state))
+    check("a full state", set(state) == {"T", "p", "h", "s", "rho", "u", "v", "Q"}, str(state))
+    status, result = api("POST", "/diagram/state", {"fluid": "R134a", "diagram": "ph", "x_SI": 4.5e5, "y_SI": 2.0e5})
+    check("single phase: Q = -1", status == 200 and result["state"]["Q"] == -1.0, str(result))
+    status, result = api("POST", "/diagram/state", {"fluid": "R134a", "diagram": "ph", "x_SI": 3.0e5, "y_SI": 1e12})
+    check("outside the fluid's range: null", status == 200 and result == {"state": None}, str(result))
+    for name, body, message in (
+            ("unknown fluid", {"fluid": "Unobtainium", "diagram": "ph", "x_SI": 1, "y_SI": 1}, "Unknown fluid"),
+            ("unknown diagram", {"fluid": "R134a", "diagram": "xy", "x_SI": 1, "y_SI": 1}, "Unknown diagram type"),
+            ("no axis value", {"fluid": "R134a", "diagram": "ph", "x_SI": 3e5}, "y_SI"),
+            ("an axis value that is no number", {"fluid": "R134a", "diagram": "ph", "x_SI": "a", "y_SI": 1}, "x_SI")):
+        status, result = api("POST", "/diagram/state", body)
+        check(f"{name}: 400 with an error", status == 400 and message in (result or {}).get("error", ""), f"{status} {result}")
+    start = time.time()
+    for i in range(50):
+        api("POST", "/diagram/state", {"fluid": "R134a", "diagram": "ph", "x_SI": 2.0e5 + 1000 * i, "y_SI": 2.0e5})
+    print(f"  state under the cursor: {(time.time() - start) / 50 * 1000:.2f} ms per request (HTTP)")
+
 
 # ── Runner ───────────────────────────────────────────────────────────────────
 
@@ -312,6 +376,9 @@ def main():
         test_errors()
         definitions = test_definitions()
         test_bundle(definitions)
+        status, empty = api("GET", "/diagram/states")
+        check("no states without a solve", status == 200 and empty == {"fluids": {}}, str(empty))
+        test_state()
         test_solved_cycle()
     except Exception as e:
         print(f"\nFATAL ERROR: {e!r}")

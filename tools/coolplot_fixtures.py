@@ -96,7 +96,8 @@ def compose_case(out, name, chart):
         "spec": spec.to_dict(),
         "domain": {"tp_box": list(domain.tp_box), "ranges_SI": {k: list(v) for k, v in domain.ranges_SI}},
         "curves": [curve_record(r, c) for r, c in curves],
-        "cycles": [],
+        "cycles": [{"states": {str(n): st.to_dict() for n, st in states.items()},
+                    "chains": [[st.to_dict() for st in chain] for chain in chains]} for states, chains in cycles],
         "plot_size_pt": None,
         "previous_labels": None,
     }
@@ -137,6 +138,15 @@ def cases(out):
     chart.set_default_lines(rounding=True, labels=True)
     chart.set_lines("s", at_saturation={"T": 10}, labels=True)
     compose_case(out, "r290_ph_achp", chart)
+
+    # An R134a refrigeration cycle on p-h, its states given by p and h (SI) and joined by "auto" paths: a polytropic
+    # compression, isobars through the dome with the saturation states, an isenthalp (CoolPlot's cycle_paths)
+    chart = PropertyDiagram("R134a", "ph", units="SI", settings="interactive")
+    chart.set_lines("T", num=5, labels=True)
+    chart.set_lines("Q", num=3)
+    chart.add_cycle("Refrigeration", [{"p": 2.0e5, "h": 4.0e5}, {"p": 1.0e6, "h": 4.4e5}, {"p": 1.0e6, "h": 2.4e5},
+                                      {"p": 2.0e5, "h": 2.4e5}], labels={1: "su,cp"})
+    compose_case(out, "r134a_ph_cycle", chart)
 
     # CO2 p-h with the critical and triple points marked, a saturation scale and labels inside the dome
     chart = PropertyDiagram("CO2", "ph", units="KSI", settings="interactive")

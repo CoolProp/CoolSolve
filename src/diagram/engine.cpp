@@ -7,8 +7,6 @@
 // CoolPlot is MIT licensed: Copyright 2014-2019 Jorrit Wronski and the other developers.
 #include "coolsolve/diagram/engine.h"
 
-#include "coolsolve/units.h"
-
 #include "CoolProp/Configuration.h"
 #include "CoolProp/CoolProp.h"
 #include "CoolProp/plotting/CoolPropPlot.h"
@@ -21,6 +19,7 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <list>
 #include <set>
 #include <unordered_map>
@@ -125,47 +124,6 @@ json finiteOrNull(double value) {
     return std::isfinite(value) ? json(value) : json();
 }
 
-json stateToJson(const State& state) {
-    json out = json::object();
-    for (const auto& [key, value] : state)
-        if (std::isfinite(value)) out[key] = value;
-    return out;
-}
-
-// ---------------------------------------------------------------------------
-// CoolSolve's units (units.h: fixed, °C, Pa, J/kg, J/kg-K, kg/m^3, m^3/kg)
-// ---------------------------------------------------------------------------
-
-struct CoolSolveUnit {
-    std::string key;         ///< CoolPlot quantity key
-    UnitType type;
-    std::string unit;        ///< CoolSolve's unit (UnitSystem)
-    std::string label;       ///< the same unit spelled as coolplot-core's records write it
-    std::string difference;  ///< unit of a difference when it differs from the label
-};
-
-const std::vector<CoolSolveUnit>& coolsolveUnits() {
-    static const UnitSystem units;  // CoolSolve's units are fixed (units.h); the labels below spell them
-    static const std::vector<CoolSolveUnit> table = {
-        {"T", UnitType::Temperature, units.temperature, "deg C", "K"},
-        {"p", UnitType::Pressure, units.pressure, "Pa", ""},
-        {"h", UnitType::SpecificEnergy, units.specific_energy, "J/kg", ""},
-        {"s", UnitType::SpecificEntropy, units.specific_entropy, "J/kg/K", ""},
-        {"rho", UnitType::Density, units.density, "kg/m3", ""},
-        {"v", UnitType::SpecificVolume, units.specific_volume, "m3/kg", ""},
-        {"u", UnitType::SpecificEnergy, units.specific_energy, "J/kg", ""},
-        {"Q", UnitType::Dimensionless, "", "-", ""},
-    };
-    return table;
-}
-
-/// A solved value of quantity `key` in SI units.
-double solvedToSI(const std::string& key, double value) {
-    for (const CoolSolveUnit& u : coolsolveUnits())
-        if (u.key == key) return UnitConverter::toSI(value, u.type, u.unit);
-    throw DiagramError("'" + key + "' is not a quantity of a fluid state.");
-}
-
 /// The units of a unit system as {key: [label, scale, offset(, difference)]} for the fluid quantities.
 json unitTable(const coolplot::UnitSystem& units) {
     json table = json::object();
@@ -176,44 +134,6 @@ json unitTable(const coolplot::UnitSystem& units) {
         table[key] = entry;
     }
     return table;
-}
-
-// ---------------------------------------------------------------------------
-// Cycles (phase 1: full states from the solved values, straight chains)
-// ---------------------------------------------------------------------------
-
-/// The full state from the solved values (SI): two independent properties, the chart's axes first, (T, p) last
-/// (not independent inside the dome); the solved values are kept. Empty with `error` set when none works.
-std::optional<State> completeState(FluidModel& fluid, const State& given, const coolplot::DiagramType& diagram, std::string& error) {
-    std::vector<std::pair<std::string, std::string>> pairs;
-    auto has = [&given](const std::string& key) { return given.count(key) > 0; };
-    auto add = [&pairs](const std::string& a, const std::string& b) {
-        for (const auto& [x, y] : pairs)
-            if ((x == a && y == b) || (x == b && y == a)) return;
-        pairs.push_back({a, b});
-    };
-    auto isTp = [](const std::string& a, const std::string& b) { return (a == "T" && b == "p") || (a == "p" && b == "T"); };
-    if (has(diagram.x) && has(diagram.y) && !isTp(diagram.x, diagram.y)) add(diagram.x, diagram.y);
-    const std::vector<std::string>& keys = stateKeys();
-    for (size_t i = 0; i < keys.size(); ++i)
-        for (size_t j = i + 1; j < keys.size(); ++j)
-            if (has(keys[i]) && has(keys[j]) && !isTp(keys[i], keys[j]) && !(keys[i] == "rho" && keys[j] == "v"))
-                add(keys[i], keys[j]);
-    if (has("T") && has("p")) add("T", "p");
-    for (const auto& [a, b] : pairs) {
-        try {
-            State state = fluid.statePoint(a, given.at(a), b, given.at(b));
-            for (const auto& [key, value] : given) state[key] = value;  // the marker sits where the solver put it
-            State finite;
-            for (const auto& [key, value] : state)
-                if (std::isfinite(value)) finite[key] = value;
-            return finite;
-        } catch (const std::exception& e) {
-            error = e.what();
-        }
-    }
-    if (pairs.empty()) error = "no pair of independent properties";
-    return std::nullopt;
 }
 
 }  // namespace
@@ -509,198 +429,6 @@ std::vector<PlannedCurve> Engine::curves(const Chart& chart, const Domain& domai
 }
 
 // ---------------------------------------------------------------------------
-// Cycles
-// ---------------------------------------------------------------------------
-
-std::vector<ResolvedCycle> resolveCycles(const json& definitions, const SolutionValues* solution, FluidModel& fluid,
-                                         const coolplot::DiagramType& diagram, std::vector<std::string>& warnings) {
-    std::vector<ResolvedCycle> resolved;
-    if (definitions.is_null()) return resolved;
-    if (!definitions.is_array()) throw DiagramError("The cycles of a diagram are a list of cycle definitions.");
-    std::set<std::string> names;
-    for (size_t index = 0; index < definitions.size(); ++index) {
-        const json& def = definitions[index];
-        if (!def.is_object()) throw DiagramError("A cycle definition is an object, not " + def.dump() + ".");
-        const json nameField = def.value("name", json("Cycle " + std::to_string(index + 1)));
-        if (!nameField.is_string()) throw DiagramError("The name of a cycle is a text, not " + nameField.dump() + ".");
-        const std::string name = nameField.get<std::string>();
-        if (!names.insert(name).second) throw DiagramError("Cycle names have to be unique, got '" + name + "' twice.");
-        const std::string prefix = "Cycle '" + name + "'";
-        auto skip = [&](const std::string& why) { warnings.push_back(prefix + " is not drawn: " + why); };
-        try {
-            ResolvedCycle cycle;
-            cycle.index = index;
-            // The variables of each state: explicit states, or the elements of arrays
-            const json states = def.value("states", json::array());
-            const json arrays = def.value("arrays", json::object());
-            if (!states.is_array()) throw DiagramError(prefix + ": \"states\" is a list of states.");
-            if (!arrays.is_object()) throw DiagramError(prefix + ": \"arrays\" is {quantity key: array name}.");
-            if (!states.empty()) {
-                for (size_t j = 0; j < states.size(); ++j) {
-                    const json& s = states[j];
-                    const int number = s.value("number", static_cast<int>(j) + 1);
-                    if (cycle.vars.count(number)) throw DiagramError(prefix + ": state " + std::to_string(number) + " is given twice.");
-                    std::map<std::string, std::string>& vars = cycle.vars[number];
-                    const json given = s.value("vars", json::object());
-                    for (auto it = given.begin(); it != given.end(); ++it)
-                        vars[coolplot::quantity_key(it.key())] = it.value().get<std::string>();
-                    const std::string label = s.value("label", std::string());
-                    if (label.find_first_not_of(" \t") != std::string::npos) cycle.labels[number] = label;
-                }
-            } else if (!arrays.empty()) {
-                if (!solution) {
-                    skip("there is no solved model (solve the model first).");
-                    continue;
-                }
-                // State i where every array has an element i
-                std::optional<std::set<int>> common;
-                std::map<std::string, std::string> keyArray;
-                for (auto it = arrays.begin(); it != arrays.end(); ++it) {
-                    const std::string key = coolplot::quantity_key(it.key()), array = it.value().get<std::string>();
-                    keyArray[key] = array;
-                    std::set<int> indices;
-                    const std::string start = array + "[";
-                    for (auto v = solution->lower_bound(start); v != solution->end(); ++v) {
-                        const std::string& var = v->first;
-                        if (var.size() <= start.size() || CaseInsensitiveLess{}(start, var.substr(0, start.size())) ||
-                            CaseInsensitiveLess{}(var.substr(0, start.size()), start))
-                            break;
-                        const std::string inside = var.substr(start.size(), var.size() - start.size() - 1);
-                        if (var.back() != ']' || inside.empty() || inside.size() > 9 ||
-                            inside.find_first_not_of("0123456789") != std::string::npos)
-                            continue;  // not an element of a one-dimensional array
-                        indices.insert(std::stoi(inside));
-                    }
-                    if (!common) {
-                        common = indices;
-                    } else {
-                        std::set<int> both;
-                        std::set_intersection(common->begin(), common->end(), indices.begin(), indices.end(), std::inserter(both, both.end()));
-                        common = both;
-                    }
-                }
-                if (!common || common->empty()) {
-                    skip("its arrays have no common elements in the last solve.");
-                    continue;
-                }
-                for (int i : *common)
-                    for (const auto& [key, array] : keyArray) cycle.vars[i][key] = array + "[" + std::to_string(i) + "]";
-            } else {
-                continue;  // a cycle without states yet (the state editor stores it so): nothing to draw
-            }
-            if (!solution) {
-                skip("there is no solved model (solve the model first).");
-                continue;
-            }
-            // The full states. A cycle drawn as markers alone ("loops": []) leaves out a state it cannot compute (a
-            // group of inferred variables can be a saturation T and p, which fix no state); a cycle with chains is not drawn
-            const bool markersOnly = def.contains("loops") && def.at("loops").is_array() && def.at("loops").empty();
-            std::string problem;
-            for (const auto& [number, vars] : cycle.vars) {
-                std::string stateProblem;
-                State given;
-                for (const auto& [key, var] : vars) {
-                    const auto found = solution->find(var);
-                    if (found == solution->end()) {
-                        stateProblem = "the variable '" + var + "' has no value in the last solve.";
-                        break;
-                    }
-                    given[key] = solvedToSI(key, found->second);
-                }
-                if (stateProblem.empty() && given.size() < 2)
-                    stateProblem = "state " + std::to_string(number) + " needs two properties, it has " + std::to_string(given.size()) + ".";
-                std::optional<State> state;
-                if (stateProblem.empty()) {
-                    std::string error;
-                    state = completeState(fluid, given, diagram, error);
-                    if (!state) stateProblem = "state " + std::to_string(number) + " cannot be computed with " + fluid.name() + ": " + error;
-                }
-                if (stateProblem.empty()) {
-                    cycle.states[number] = *state;
-                } else if (markersOnly) {
-                    warnings.push_back(prefix + ": " + stateProblem + (stateProblem.back() == '.' ? "" : ".") + " It is left out.");
-                    cycle.labels.erase(number);
-                } else {
-                    problem = stateProblem;
-                    break;
-                }
-            }
-            if (problem.empty() && cycle.states.empty()) problem = "none of its states can be computed.";
-            if (!problem.empty()) {
-                skip(problem);
-                continue;
-            }
-            // The chains: given (an empty list: the state markers alone), or without "loops" one loop through the
-            // states in ascending order, closed unless "closed" is false (CoolPlot's default_loops)
-            std::vector<std::vector<int>> loops;
-            if (def.contains("loops") && !def.at("loops").is_null()) {
-                loops = def.at("loops").get<std::vector<std::vector<int>>>();
-            } else {
-                std::vector<int> loop;
-                for (const auto& [number, _] : cycle.states) loop.push_back(number);
-                if (def.value("closed", true) || loop.size() < 2) loop.push_back(loop.front());
-                loops.push_back(loop);
-            }
-            for (const std::vector<int>& loop : loops) {
-                if (loop.size() < 2) problem = "a chain needs at least two states.";
-                for (int number : loop)
-                    if (!cycle.states.count(number)) problem = "a chain refers to state " + std::to_string(number) + ", which is not defined.";
-            }
-            if (!problem.empty()) {
-                skip(problem);
-                continue;
-            }
-            const std::string paths = def.value("paths", std::string("straight"));
-            if (paths == "auto")
-                warnings.push_back(prefix + ": paths \"auto\" come in phase 2; the states are joined by straight lines.");
-            else if (paths != "straight")
-                warnings.push_back(prefix + ": unknown paths \"" + paths + "\"; the states are joined by straight lines.");
-            json loopsRecord = json::array(), pathsRecord = json::array();
-            std::set<std::pair<int, int>> straight;
-            for (const std::vector<int>& loop : loops) {
-                std::vector<State> chain;
-                for (int number : loop) chain.push_back(cycle.states.at(number));
-                cycle.chains.push_back(chain);
-                loopsRecord.push_back(loop);
-                for (size_t k = 0; k + 1 < loop.size(); ++k) straight.insert({loop[k], loop[k + 1]});
-            }
-            if (loops.empty()) {
-                // Markers only: coolplot-core draws the states of a cycle without chains, but CoolPlot's CycleSpec reads
-                // no loops as its default loop; a chain from each state to itself draws nothing there
-                for (const auto& [number, _] : cycle.states) {
-                    loopsRecord.push_back(json::array({number, number}));
-                    straight.insert({number, number});
-                }
-            }
-            for (const auto& [a, b] : straight) pathsRecord.push_back(json::array({json::array({a, b}), "straight"}));
-            // The cycle as CoolPlot's spec writes it (CycleSpec.to_dict): complete states, straight paths
-            json statesRecord = json::array();
-            for (const auto& [number, state] : cycle.states)
-                statesRecord.push_back(json::array({number, json{{"state", stateToJson(state)}}}));
-            cycle.spec = {{"name", name},
-                          {"states", statesRecord},
-                          {"loops", loopsRecord},
-                          {"paths", pathsRecord},
-                          {"numbers", def.value("numbers", true)},
-                          {"steps", 20},
-                          {"line_style", def.value("line_style", json())},
-                          {"marker_style", def.value("marker_style", json())}};
-            if (!cycle.labels.empty()) {
-                json labels = json::array();
-                for (const auto& [number, text] : cycle.labels) labels.push_back(json::array({number, text}));
-                cycle.spec["labels"] = labels;
-            }
-            resolved.push_back(std::move(cycle));
-        } catch (const coolplot::Error& e) {
-            throw DiagramError(prefix + ": " + e.what());
-        } catch (const json::exception& e) {
-            throw DiagramError(prefix + " is not a valid cycle definition: " + e.what());
-        }
-    }
-    return resolved;
-}
-
-// ---------------------------------------------------------------------------
 // The compose record (corelib.compose_record)
 // ---------------------------------------------------------------------------
 
@@ -713,7 +441,7 @@ json composeRecord(const json& specRecord, const PlanSpec& spec, const Domain& d
     // Written only when there are some, as CoolPlot does since 1.5
     if (!spec.marked_points.empty() && !domain.points.empty()) {
         json points = json::object();
-        for (const auto& [name, state] : domain.points) points[name] = stateToJson(state);
+        for (const auto& [name, state] : domain.points) points[name] = stateRecord(state);
         domainRecord["points"] = points;
     }
     if (spec.saturation_scale && !domain.scale.empty()) {
@@ -723,7 +451,7 @@ json composeRecord(const json& specRecord, const PlanSpec& spec, const Domain& d
     }
     if (spec.dome_labels && !domain.dome.empty()) {
         json dome = json::array();
-        for (const DomeEnd& end : domain.dome) dome.push_back(json::array({end.value_SI, stateToJson(end.bubble), stateToJson(end.dew)}));
+        for (const DomeEnd& end : domain.dome) dome.push_back(json::array({end.value_SI, stateRecord(end.bubble), stateRecord(end.dew)}));
         domainRecord["dome"] = dome;
     }
     json curvesRecord = json::array();
@@ -731,11 +459,11 @@ json composeRecord(const json& specRecord, const PlanSpec& spec, const Domain& d
     json cyclesRecord = json::array();
     for (const ResolvedCycle& cycle : cycles) {
         json states = json::object();
-        for (const auto& [number, state] : cycle.states) states[std::to_string(number)] = stateToJson(state);
+        for (const auto& [number, state] : cycle.states) states[std::to_string(number)] = stateRecord(state);
         json chains = json::array();
         for (const std::vector<State>& chain : cycle.chains) {
             json c = json::array();
-            for (const State& state : chain) c.push_back(stateToJson(state));
+            for (const State& state : chain) c.push_back(stateRecord(state));
             chains.push_back(c);
         }
         cyclesRecord.push_back({{"states", states}, {"chains", chains}});
@@ -871,7 +599,7 @@ json scene(const SceneRequest& request) {
                               {"number", number},
                               {"label", label == cycle.labels.end() ? "" : label->second},
                               {"vars", cycle.vars.at(number)},
-                              {"values_SI", stateToJson(state)}});
+                              {"values_SI", stateRecord(state)}});
         }
     return {{"svg", svg},
             {"axes", axesRecord},
@@ -883,21 +611,48 @@ json scene(const SceneRequest& request) {
 }
 
 // ---------------------------------------------------------------------------
-// Options, units, definitions
+// The state at a point of a chart
 // ---------------------------------------------------------------------------
 
-json coolsolveUnitSystem() {
-    json units = json::object();
-    for (const CoolSolveUnit& u : coolsolveUnits()) {
-        // display = SI * scale + offset, from CoolSolve's own conversions
-        const double offset = u.type == UnitType::Dimensionless ? 0.0 : UnitConverter::fromSI(0.0, u.type, u.unit);
-        const double scale = UnitConverter::scaleFromSI(u.type, u.unit);
-        json entry = json::array({u.label, scale, offset});
-        if (!u.difference.empty()) entry.push_back(u.difference);
-        units[u.key] = entry;
+json stateAt(const std::string& fluid, const std::string& backend, const std::string& diagram, double x_SI, double y_SI) {
+    const ChartFluid chart = chartFluid(fluid, backend);
+    coolplot::DiagramType type;
+    try {
+        type = coolplot::DiagramType::parse(diagram);
+    } catch (const coolplot::Error& e) {
+        throw DiagramError(e.what());
     }
-    return {{"name", "coolsolve"}, {"units", units}};
+    if (type.kind != "fluid") throw DiagramError("Charts of humid air ('" + type.name() + "') are not drawable yet.");
+    if (!std::isfinite(x_SI) || !std::isfinite(y_SI)) throw DiagramError("The point of a chart is two finite numbers in SI units.");
+    return Engine::shared().withFluid(chart, [&](FluidModel& model) -> json {
+        try {
+            model.update(type.x, x_SI, type.y, y_SI);
+        } catch (const std::exception&) {
+            return nullptr;  // no state there
+        }
+        State state;
+        for (const std::string& key : stateKeys()) {
+            try {
+                state[key] = model.get(key);
+            } catch (const std::exception&) {
+                state[key] = std::numeric_limits<double>::quiet_NaN();
+            }
+        }
+        // Outside the equation of state CoolProp may still answer, by extrapolation: no state there either
+        const double T = state.at("T"), p = state.at("p");
+        const double T_min = model.tMinK(), T_max = model.tMaxK(), p_min = model.pMinPa(), p_max = model.pMaxPa();
+        if (!std::isfinite(T) || !std::isfinite(p) || (std::isfinite(T_min) && T < T_min) || (std::isfinite(T_max) && T > T_max) ||
+            (std::isfinite(p_min) && p < p_min) || (std::isfinite(p_max) && p > p_max))
+            return nullptr;
+        json out = json::object();
+        for (const std::string& key : stateKeys()) out[key] = finiteOrNull(state.at(key));
+        return out;
+    });
 }
+
+// ---------------------------------------------------------------------------
+// Options, units, definitions
+// ---------------------------------------------------------------------------
 
 json options() {
     json types = json::array();

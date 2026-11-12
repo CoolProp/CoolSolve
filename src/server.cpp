@@ -17,6 +17,7 @@
 #include "coolsolve/library_store.h"
 #include "coolsolve/include_resolver.h"
 #include "coolsolve/diagram/engine.h"
+#include "coolsolve/diagram/states.h"
 
 #include <httplib.h>
 #include "CoolProp.h"
@@ -158,6 +159,7 @@ struct SessionSnapshot {
     std::string latexReportContent;
     bool latexReportAvailable = false;
     std::string diagramDefinitions;
+    json diagramStates;
 };
 
 // ============================================================================
@@ -228,6 +230,9 @@ struct Session {
     // when the model has none. Kept with the model: in the ZIP bundle and in the snapshot of Back.
     std::mutex diagramMutex;
     std::string diagramDefinitions;
+    // The thermodynamic states of the last solved model by fluid (diagram/states.h, GET /api/v1/diagram/states):
+    // computed with the inferred variables, kept and reset with them; under diagramMutex
+    json diagramStates;
     
     // Save current state as snapshot (for Back button)
     void saveSnapshot() {
@@ -249,6 +254,7 @@ struct Session {
         {
             std::lock_guard<std::mutex> lock(diagramMutex);
             snap->diagramDefinitions = diagramDefinitions;
+            snap->diagramStates = diagramStates;
         }
         {
             std::lock_guard<std::mutex> lock(resultMutex);
@@ -281,6 +287,7 @@ struct Session {
         {
             std::lock_guard<std::mutex> lock(diagramMutex);
             diagramDefinitions = previousState->diagramDefinitions;
+            diagramStates = previousState->diagramStates;
         }
         {
             std::lock_guard<std::mutex> lock(resultMutex);
@@ -1145,6 +1152,10 @@ int startServer(const ServerOptions& options) {
         // Clear inference data
         session.inferredVariables.clear();
         session.modelFluids.clear();
+        {
+            std::lock_guard<std::mutex> lock(session.diagramMutex);
+            session.diagramStates = json();
+        }
         
         // Clear LaTeX report
         session.latexReportContent.clear();
@@ -1653,6 +1664,14 @@ int startServer(const ServerOptions& options) {
                             }
                         }
                         session.modelFluids.assign(fluidSet.begin(), fluidSet.end());
+                        // The states of the model from its property calls (docs/coolplot_integration.md §4.2)
+                        json states;
+                        try {
+                            states = diagram::statesToJson(diagram::groupStates(ir, &runner.getSolveResult().variables));
+                        } catch (const std::exception&) {  // the Diagrams tab falls back to no states
+                        }
+                        std::lock_guard<std::mutex> lock(session.diagramMutex);
+                        session.diagramStates = states;
                     }
                     
                     // Build .sol content if successful
@@ -2668,6 +2687,8 @@ int startServer(const ServerOptions& options) {
     //   GET  /api/v1/diagram/options      what the Diagrams tab offers
     //   GET  /api/v1/diagram/definitions  the session's diagrams.json (§3.4)
     //   PUT  /api/v1/diagram/definitions
+    //   POST /api/v1/diagram/state        {fluid, diagram, x_SI, y_SI}: the state under the cursor
+    //   GET  /api/v1/diagram/states       the states of the solved model by fluid (§4.2)
     // ================================================================
     auto diagramError = [](httplib::Response& res, int status, const std::string& message) {
         res.status = status;
@@ -2720,6 +2741,43 @@ int startServer(const ServerOptions& options) {
         } catch (const std::exception& e) {
             diagramError(res, 500, std::string("Server error: ") + e.what());
         }
+    });
+
+    svr.Post("/api/v1/diagram/state", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        try {
+            const json body = json::parse(req.body);
+            if (!body.is_object() || !body.contains("fluid") || !body.at("fluid").is_string())
+                throw diagram::DiagramError("A state request needs the name of its fluid (\"fluid\").");
+            for (const char* key : {"x_SI", "y_SI"})
+                if (!body.contains(key) || !body.at(key).is_number())
+                    throw diagram::DiagramError(std::string("A state request needs the axis value \"") + key + "\" (a number in SI units).");
+            const json state = diagram::stateAt(body.at("fluid").get<std::string>(), sessionCoolPropBackend(session),
+                                                body.value("diagram", std::string("ph")), body.at("x_SI").get<double>(),
+                                                body.at("y_SI").get<double>());
+            res.set_content(json{{"state", state}}.dump(), "application/json");
+        } catch (const diagram::DiagramError& e) {
+            diagramError(res, 400, e.what());
+        } catch (const json::exception& e) {
+            diagramError(res, 400, std::string("Invalid JSON: ") + e.what());
+        } catch (const std::exception& e) {
+            diagramError(res, 500, std::string("Server error: ") + e.what());
+        }
+    });
+
+    svr.Get("/api/v1/diagram/states", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        bool solved = false;
+        {
+            std::lock_guard<std::mutex> lock(session.resultMutex);
+            solved = session.hasResult && session.lastResult.success;
+        }
+        json states;
+        if (solved) {
+            std::lock_guard<std::mutex> lock(session.diagramMutex);
+            states = session.diagramStates;
+        }
+        res.set_content((states.is_object() ? states : json{{"fluids", json::object()}}).dump(), "application/json");
     });
 
     svr.Get("/api/v1/diagram/definitions", [&](const httplib::Request& req, httplib::Response& res) {

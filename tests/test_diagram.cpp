@@ -6,7 +6,10 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "coolsolve/diagram/engine.h"
+#include "coolsolve/diagram/states.h"
 #include "coolsolve/fluids.h"
+#include "coolsolve/parser.h"
+#include "coolsolve/variable_inference.h"
 
 #include "CoolProp/AbstractState.h"
 #include "CoolProp/CoolProp.h"
@@ -363,11 +366,13 @@ namespace {
 constexpr double DOMAIN_TOL = 1e-12;  // ranges, box and saturation states, relative to the span of the quantity
 constexpr double CURVE_TOL = 2e-7;    // difference of a point of a curve, in units of the axis spans
 constexpr double LABEL_TOL = 1e-9;    // label positions and axis limits, in units of the axis spans
+constexpr double CYCLE_TOL = 5e-9;    // the states along the paths of a cycle (measured 4.3e-10), relative to the span
 
 struct FixtureResult {
     double domain = 0.0;      // largest difference of the domain
     double curve = 0.0;       // largest distance between curves
     double label = 0.0;       // largest difference of a text position
+    double cycle = 0.0;       // largest difference of a state along the paths of a cycle
     size_t curvesSameSize = 0, curvesCompared = 0;
 };
 
@@ -493,8 +498,47 @@ FixtureResult compareFixture(const std::string& name) {
         if (curve.x.size() == n) ++result.curvesSameSize;
     }
 
-    // 4. The scene of our compose record: CoolPlot's items, groups, roles, z order, styles and texts
-    json record = composeRecord(specRecord, spec, ours, curves, {}, std::nullopt, json());
+    // 4. The cycles: CoolPlot's states given by two properties become the solved values of a model, resolved as the
+    //    Diagrams tab resolves them; the paths between the states must be CoolPlot's
+    json definitions = json::array();
+    SolutionValues solved;
+    for (const json& c : specRecord.value("cycles", json::array())) {
+        json states = json::array();
+        for (const json& entry : c.at("states")) {
+            const int number = entry.at(0);
+            json vars = json::object();
+            for (const json& prop : entry.at(1).at("props")) {
+                const std::string key = prop.at(0), var = key + "_" + std::to_string(number);
+                vars[key] = var;
+                solved[var] = key == "T" ? prop.at(1).get<double>() - 273.15 : prop.at(1).get<double>();  // the model's units
+            }
+            states.push_back({{"number", number}, {"vars", vars}});
+        }
+        for (const json& label : c.value("labels", json::array()))
+            for (json& state : states)
+                if (state.at("number") == label.at(0)) state["label"] = label.at(1);
+        definitions.push_back({{"name", c.at("name")}, {"states", states}, {"loops", c.at("loops")}, {"paths", c.at("paths")},
+                               {"steps", c.at("steps")}, {"numbers", c.at("numbers")}});
+    }
+    const std::vector<ResolvedCycle> cycles = Engine::shared().withFluid(chart.fluid, [&](FluidModel& fluid) {
+        return resolveCycles(definitions, &solved, fluid, spec.diagram, warnings);
+    });
+    REQUIRE(cycles.size() == input.at("cycles").size());
+    for (size_t i = 0; i < cycles.size(); ++i) {
+        const json& chains = input.at("cycles")[i].at("chains");
+        REQUIRE(cycles[i].chains.size() == chains.size());
+        for (size_t c = 0; c < chains.size(); ++c) {
+            REQUIRE(cycles[i].chains[c].size() == chains[c].size());
+            for (size_t k = 0; k < chains[c].size(); ++k)
+                for (auto it = chains[c][k].begin(); it != chains[c][k].end(); ++it) {
+                    const double theirsValue = it.value(), oursValue = cycles[i].chains[c][k].at(it.key());
+                    result.cycle = std::max(result.cycle, spanDiff(oursValue, theirsValue, it.key() == "Q" ? 1.0 : span(it.key())));
+                }
+        }
+    }
+
+    // 5. The scene of our compose record: CoolPlot's items, groups, roles, z order, styles and texts
+    json record = composeRecord(specRecord, spec, ours, curves, cycles, std::nullopt, json());
     const json scene = coolplot::compose(record).to_json(true);
     const json& expected = fixture.at("scene");
     CHECK(scene.at("axes").at("x_label") == expected.at("axes").at("x_label"));
@@ -532,14 +576,15 @@ FixtureResult compareFixture(const std::string& name) {
 TEST_CASE("Diagram fixtures: the compose records and scenes of CoolPlot", "[diagram]") {
     const json header = readJson(fixtureDir() / "header.json");
     CHECK(header.at("coolplot_commit") == COOLSOLVE_COOLPLOT_COMMIT);
-    for (const char* name : {"r134a_ph_default", "water_ts", "r134a_th", "r290_ph_achp", "co2_ph_marked"}) {
+    for (const char* name : {"r134a_ph_default", "water_ts", "r134a_th", "r290_ph_achp", "r134a_ph_cycle", "co2_ph_marked"}) {
         const FixtureResult r = compareFixture(name);
         INFO(name << ": domain " << r.domain << ", curves " << r.curve << " (" << r.curvesSameSize << " of " << r.curvesCompared
-                  << " with the same points), labels " << r.label);
+                  << " with the same points), labels " << r.label << ", cycle " << r.cycle);
         CHECK(r.curvesSameSize == r.curvesCompared);
         CHECK(r.domain < DOMAIN_TOL);
         CHECK(r.curve < CURVE_TOL);
         CHECK(r.label < LABEL_TOL);
+        CHECK(r.cycle < CYCLE_TOL);
     }
 }
 
@@ -687,17 +732,19 @@ TEST_CASE("Diagram invariants: the dome, isolines through it, solved states on t
 }
 
 // ---------------------------------------------------------------------------
-// Cycles (phase 1: straight chains)
+// Cycles
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Diagram cycles: states from solved variables, straight chains", "[diagram]") {
+TEST_CASE("Diagram cycles: states from solved variables, chains", "[diagram]") {
     const SolutionValues values = heatPumpSolution();
     const coolplot::DiagramType ph = coolplot::DiagramType::parse("ph");
     FluidModel fluid(chartFluid("R134a"));
     std::vector<std::string> warnings;
 
     SECTION("explicit states: full states, the solved values kept, one closed loop") {
-        const std::vector<ResolvedCycle> cycles = resolveCycles(json::array({heatPumpCycle()}), &values, fluid, ph, warnings);
+        json definition = heatPumpCycle();
+        definition["paths"] = "straight";
+        const std::vector<ResolvedCycle> cycles = resolveCycles(json::array({definition}), &values, fluid, ph, warnings);
         CHECK(warnings.empty());
         REQUIRE(cycles.size() == 1);
         const ResolvedCycle& cycle = cycles[0];
@@ -719,22 +766,27 @@ TEST_CASE("Diagram cycles: states from solved variables, straight chains", "[dia
         CHECK(cycle.spec.at("states")[0][1].at("state").at("h") == values.at("h_1"));
         CHECK(cycle.vars.at(1).at("T") == "T_1");
     }
-    SECTION("arrays, given chains, markers alone, paths auto") {
+    SECTION("arrays, given chains with auto paths, markers alone") {
         json cycles = json::array();
         cycles.push_back({{"name", "Arrays"}, {"arrays", {{"P", "P"}, {"h", "h"}}}, {"loops", {{1, 2, 3}, {3, 4}}}});
-        cycles.push_back({{"name", "Points"}, {"arrays", {{"p", "p"}, {"h", "H"}}}, {"loops", json::array()}, {"paths", "auto"}});
+        cycles.push_back({{"name", "Points"}, {"arrays", {{"p", "p"}, {"h", "H"}}}, {"loops", json::array()}});
         cycles.push_back({{"name", "Empty"}, {"states", json::array()}});
         const std::vector<ResolvedCycle> resolved = resolveCycles(cycles, &values, fluid, ph, warnings);
         REQUIRE(resolved.size() == 2);
         CHECK(resolved[0].vars.at(3).at("p") == "P[3]");
         CHECK(resolved[0].chains.size() == 2);
-        CHECK(resolved[0].chains[1].size() == 2);
+        // 3 to 4 is a throttling: an isenthalp of 20 segments
+        REQUIRE(resolved[0].chains[1].size() == 21);
+        CHECK(resolved[0].chains[1].front() == resolved[0].states.at(3));
+        CHECK(resolved[0].chains[1].back() == resolved[0].states.at(4));
+        for (const State& state : resolved[0].chains[1]) CHECK_THAT(state.at("h"), WithinRel(values.at("h_3"), 1e-8));
+        CHECK(resolved[0].spec.at("paths") == json::array());  // all "auto": CoolPlot's default
         CHECK(resolved[1].index == 1);
         CHECK(resolved[1].states.size() == 4);
         CHECK(resolved[1].chains.empty());  // markers only
         CHECK(resolved[1].spec.at("loops") == json::parse("[[1,1],[2,2],[3,3],[4,4]]"));
-        REQUIRE(warnings.size() == 1);
-        CHECK_THAT(warnings[0], ContainsSubstring("phase 2"));
+        CHECK(resolved[1].spec.at("paths") == json::parse(R"([[[1,1],"straight"],[[2,2],"straight"],[[3,3],"straight"],[[4,4],"straight"]])"));
+        CHECK(warnings.empty());
     }
     SECTION("a missing variable, no solve: the cycle is left out with a warning") {
         json cycle = heatPumpCycle();
@@ -886,5 +938,266 @@ TEST_CASE("Diagram performance: the default charts of R134a and water, cold and 
         CHECK(coldMs < 1000.0);
         CHECK(warmMs < 100.0);
         CHECK(warm.at("svg") == cold.at("svg"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Paths between the states of a cycle (thermo/cycles/paths.py)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Diagram paths: CoolPlot's kinds between two states", "[diagram]") {
+    FluidModel fluid(chartFluid("R134a"));
+    // A refrigeration cycle: vapour at 2 bar, compressed to 10 bar, condensed, throttled
+    const State a = fluid.statePoint("p", 2e5, "h", 4.0e5), b = fluid.statePoint("p", 1e6, "h", 4.4e5);
+    const State c = fluid.statePoint("p", 1e6, "h", 2.4e5), d = fluid.statePoint("p", 2e5, "h", 2.4e5);
+    const State e = fluid.statePoint("p", 1e6, "s", a.at("s")), f = fluid.statePoint("T", a.at("T"), "p", 1.5e5);
+
+    SECTION("auto_kind: equal p, then h, s, T, else polytropic, within SAME_RTOL") {
+        CHECK(autoKind(b, c) == "isobaric");
+        CHECK(autoKind(c, d) == "isenthalpic");
+        CHECK(autoKind(a, e) == "isentropic");
+        CHECK(autoKind(a, f) == "isothermal");
+        CHECK(autoKind(a, b) == "polytropic");
+        State close = b;
+        close["p"] = c.at("p") * (1.0 + 0.5e-6);
+        CHECK(autoKind(close, c) == "isobaric");
+        close["p"] = c.at("p") * (1.0 + 2e-6);
+        CHECK(autoKind(close, c) == "polytropic");
+    }
+    SECTION("an isobar through the dome holds both saturation states") {
+        const std::vector<State> path = pathStates(fluid, b, c, "auto", DEFAULT_STEPS);
+        REQUIRE(path.size() == 2 + 19 + 2);  // the ends, the inner steps, the dew and bubble points
+        CHECK(path.front() == b);
+        CHECK(path.back() == c);
+        const State dew = fluid.statePoint("p", 1e6, "Q", 1.0), bubble = fluid.statePoint("p", 1e6, "Q", 0.0);
+        bool hasDew = false, hasBubble = false;
+        for (size_t i = 0; i < path.size(); ++i) {
+            CHECK_THAT(path[i].at("p"), WithinRel(1e6, 1e-12));
+            if (i > 0) CHECK(path[i].at("h") < path[i - 1].at("h"));
+            hasDew = hasDew || std::fabs(path[i].at("h") - dew.at("h")) < 1e-6;
+            hasBubble = hasBubble || std::fabs(path[i].at("h") - bubble.at("h")) < 1e-6;
+        }
+        CHECK(hasDew);
+        CHECK(hasBubble);
+        // An isobar above the critical pressure crosses no dome
+        FluidModel co2(chartFluid("CarbonDioxide"));
+        const State hot = co2.statePoint("p", 1e7, "h", 5e5), cold = co2.statePoint("p", 1e7, "h", 3e5);
+        CHECK(pathStates(co2, hot, cold, "isobaric", DEFAULT_STEPS).size() == 21);
+    }
+    SECTION("isenthalp, isentrope, isotherm, polytropic, straight") {
+        std::vector<State> path = pathStates(fluid, c, d, "isenthalpic", DEFAULT_STEPS);
+        REQUIRE(path.size() == 21);
+        for (const State& s : path) CHECK_THAT(s.at("h"), WithinRel(c.at("h"), 1e-8));  // CoolProp's p-h flash gives h back to 1e-9
+        CHECK_THAT(path[10].at("p"), WithinRel(std::sqrt(1e6 * 2e5), 1e-12));  // pressures spaced logarithmically
+        path = pathStates(fluid, a, e, "isentropic", DEFAULT_STEPS);
+        REQUIRE(path.size() == 21);
+        for (const State& s : path) CHECK_THAT(s.at("s"), WithinRel(a.at("s"), 1e-9));
+        path = pathStates(fluid, a, f, "isothermal", DEFAULT_STEPS);
+        REQUIRE(path.size() == 21);
+        for (const State& s : path) CHECK_THAT(s.at("T"), WithinRel(a.at("T"), 1e-9));
+        path = pathStates(fluid, a, b, "polytropic", DEFAULT_STEPS);
+        REQUIRE(path.size() == 21);
+        CHECK_THAT(path[10].at("p"), WithinRel(std::sqrt(2e5 * 1e6), 1e-12));
+        CHECK_THAT(path[10].at("s"), WithinRel(0.5 * (a.at("s") + b.at("s")), 1e-12));  // entropy even with the steps
+        CHECK(pathStates(fluid, a, b, "straight", DEFAULT_STEPS) == std::vector<State>{a, b});
+        CHECK(pathStates(fluid, a, b, "polytropic", 1) == std::vector<State>{a, b});
+        CHECK_THROWS_AS(pathStates(fluid, a, b, "zigzag", DEFAULT_STEPS), DiagramError);
+    }
+    SECTION("cycle definitions: a kind for every connection, CoolPlot's record, steps") {
+        const SolutionValues values = heatPumpSolution();
+        const coolplot::DiagramType ph = coolplot::DiagramType::parse("ph");
+        std::vector<std::string> warnings;
+        json definition = heatPumpCycle();
+        definition["paths"] = "isobaric";
+        definition["steps"] = 4;
+        std::vector<ResolvedCycle> cycles = resolveCycles(json::array({definition}), &values, fluid, ph, warnings);
+        REQUIRE(cycles.size() == 1);
+        CHECK(cycles[0].spec.at("steps") == 4);
+        CHECK(cycles[0].spec.at("paths") == json::parse(R"([[[1,2],"isobaric"],[[2,3],"isobaric"],[[3,4],"isobaric"],[[4,1],"isobaric"]])"));
+        definition["paths"] = json::parse(R"([[[1, 2], "isentropic"]])");
+        definition["steps"] = 10;
+        cycles = resolveCycles(json::array({definition}), &values, fluid, ph, warnings);
+        REQUIRE(cycles.size() == 1);
+        CHECK(cycles[0].spec.at("paths") == json::parse(R"([[[1,2],"isentropic"]])"));
+        // 1-2 isentropic (10 segments), 2-3 an isobar from the vapour to the saturated liquid (the dew point inserted),
+        // 3-4 an isenthalp, 4-1 an isobar to the saturated vapour (nothing to insert)
+        CHECK(cycles[0].chains[0].size() == 1 + 10 + (9 + 1 + 1) + 10 + (9 + 1));
+        CHECK_THAT(cycles[0].chains[0][5].at("s"), WithinRel(cycles[0].states.at(1).at("s"), 1e-9));
+        CHECK(warnings.empty());
+        definition["paths"] = "zigzag";
+        CHECK_THROWS_WITH(resolveCycles(json::array({definition}), &values, fluid, ph, warnings), ContainsSubstring("Unknown path 'zigzag'"));
+        definition["paths"] = json::parse(R"([[[1, 2], "spiral"]])");
+        CHECK_THROWS_WITH(resolveCycles(json::array({definition}), &values, fluid, ph, warnings), ContainsSubstring("from 1 to 2"));
+        definition["paths"] = "auto";
+        definition["steps"] = 0;
+        CHECK_THROWS_WITH(resolveCycles(json::array({definition}), &values, fluid, ph, warnings), ContainsSubstring("steps"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The state at a point of a chart (POST /api/v1/diagram/state)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Diagram state at a point of a chart", "[diagram]") {
+    SECTION("inside the dome, in the vapour, on other axes") {
+        const json wet = stateAt("R134a", "HEOS", "ph", 3e5, 2e5);
+        REQUIRE(wet.is_object());
+        CHECK(wet.at("h") == 3e5);  // the axis values come back
+        CHECK(wet.at("p") == 2e5);
+        CHECK(wet.at("Q").get<double>() > 0.0);
+        CHECK(wet.at("Q").get<double>() < 1.0);
+        CHECK_THAT(wet.at("v").get<double>(), WithinRel(1.0 / wet.at("rho").get<double>(), 1e-12));
+        for (const std::string& key : stateKeys()) CHECK(wet.at(key).is_number());
+        const json vapour = stateAt("R134a", "HEOS", "ph", 4.5e5, 2e5);
+        CHECK(vapour.at("Q") == -1.0);  // single phase, as CoolPlot reports it
+        const json ts = stateAt("Water", "HEOS", "Ts", 6000.0, 500.0);
+        REQUIRE(ts.is_object());
+        CHECK_THAT(ts.at("T").get<double>(), WithinRel(500.0, 1e-12));
+        CHECK_THAT(ts.at("s").get<double>(), WithinRel(6000.0, 1e-9));
+    }
+    SECTION("no state outside the fluid's range") {
+        CHECK(stateAt("R134a", "HEOS", "ph", 3e5, 1e12).is_null());  // above the highest pressure
+        CHECK(stateAt("R134a", "HEOS", "ph", -5e6, 2e5).is_null());
+        CHECK(stateAt("Water", "HEOS", "Ts", 6000.0, 5000.0).is_null());  // above the highest temperature
+    }
+    SECTION("requests that cannot be answered") {
+        CHECK_THROWS_WITH(stateAt("Unobtainium", "HEOS", "ph", 3e5, 2e5), ContainsSubstring("Unknown fluid"));
+        CHECK_THROWS_WITH(stateAt("R134a", "HEOS", "xy", 3e5, 2e5), ContainsSubstring("Unknown diagram type"));
+        CHECK_THROWS_WITH(stateAt("N2", "HEOS", "ph", 3e5, 2e5), ContainsSubstring("not drawable yet"));
+        CHECK_THROWS_AS(stateAt("R134a", "HEOS", "ph", NaN, 2e5), DiagramError);
+    }
+    SECTION("fast enough for the hover") {
+        stateAt("R134a", "HEOS", "ph", 3e5, 2e5);
+        const auto start = std::chrono::steady_clock::now();
+        const int n = 2000;
+        for (int i = 0; i < n; ++i) stateAt("R134a", "HEOS", "ph", 2e5 + 100.0 * i, 1e5 + 1000.0 * i);
+        const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / n;
+        INFO("state at a point: " << us << " us per call");
+        CHECK(us < 1000.0);  // measured 9 us in a Release build; the GUI debounces its calls
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The states of a model from its property calls (§4.2)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+IR irOf(const std::string& source) {
+    EESParser parser;
+    const ParseResult parsed = parser.parse(source);
+    REQUIRE(parsed.success);
+    return IR::fromAST(parsed.program);
+}
+
+const ModelState* stateWith(const std::vector<ModelState>& states, const std::string& var) {
+    for (const ModelState& state : states)
+        for (const auto& [_, name] : state.vars)
+            if (name == var) return &state;
+    return nullptr;
+}
+
+}  // namespace
+
+TEST_CASE("Diagram states of a model from its property calls", "[diagram]") {
+    SECTION("calls sharing two independent variables are one state; (T, p) alone or one variable is not") {
+        const IR ir = irOf(
+            "P_2 = 1e6\n"
+            "s_2 = 1700\n"
+            "h_2 = enthalpy(R134a, P=P_2, s=s_2)\n"
+            "T_2 = temperature(R134a, P=P_2, h=h_2)\n"  // shares P_2 and h_2 with the call above: one state
+            "P_cond = P_2\n"
+            "T_3 = 30\n"
+            "h_3 = enthalpy(R134a, P=P_cond, T=T_3)\n"
+            "T_sat = temperature(R134a, P=P_cond, x=1)\n"  // shares only P_cond: separate, and T, p fix no state
+            "T_1 = 5\n"
+            "P_1 = 2e5\n"
+            "h_1 = enthalpy(R134a, T=T_1, P=P_1)\n"
+            "s_1 = entropy(R134a, T=T_1, P=P_1)\n"     // shares T_1 and P_1 only: not merged
+            "h_su_cp = enthalpy(R134a, T=T_su_cp, P=P_su_cp)\n"
+            "T_su_cp = 10\n"
+            "P_su_cp = 3e5\n"
+            "rho_w = density(Water, T=T_w, P=P_w)\n"
+            "T_w = 20\n"
+            "P_w = 1e5\n");
+        const ModelStates states = groupStates(ir, nullptr, false);  // the strict rule: (T, p) never merges
+        REQUIRE(states.count("R134a") == 1);
+        const std::vector<ModelState>& r134a = states.at("R134a");
+        const ModelState* two = stateWith(r134a, "h_2");
+        REQUIRE(two != nullptr);
+        CHECK(two->vars == std::map<std::string, std::string>{{"p", "P_2"}, {"s", "s_2"}, {"h", "h_2"}, {"T", "T_2"}});
+        CHECK(two->number == 2);
+        CHECK(two->label.empty());
+        CHECK(stateWith(r134a, "T_sat") == nullptr);  // no state of its own, not in the condenser state
+        CHECK(stateWith(r134a, "h_3")->vars.count("T") == 1);
+        CHECK(stateWith(r134a, "h_1") != stateWith(r134a, "s_1"));  // (T, p) does not merge
+        CHECK(stateWith(r134a, "h_1")->number == 1);
+        CHECK(stateWith(r134a, "s_1")->label == "1");  // number 1 is taken: the next free number, labelled
+        const ModelState* named = stateWith(r134a, "h_su_cp");
+        CHECK(named->label == "su_cp");
+        CHECK(states.at("Water").size() == 1);
+        // Numbers are unique and the JSON has CoolPlot keys
+        std::set<int> numbers;
+        for (const ModelState& state : r134a) CHECK(numbers.insert(state.number).second);
+        const json j = statesToJson(states);
+        CHECK(j.at("fluids").at("R134a").size() == r134a.size());
+        CHECK(j.at("fluids").at("R134a")[0].contains("label"));
+        // The rule as used (the default, decided from the library validation) merges the two (T, p) calls
+        // without quality, never a saturation call
+        const ModelStates merged = groupStates(ir);
+        CHECK(stateWith(merged.at("R134a"), "h_1") == stateWith(merged.at("R134a"), "s_1"));
+        CHECK(stateWith(merged.at("R134a"), "T_sat") == nullptr);
+    }
+    SECTION("arrays give state i; variables without a solved value are left out") {
+        const IR ir = irOf(
+            "DUPLICATE i=1,2\n"
+            "  P[i] = 1e5 * i\n"
+            "  T[i] = 300 + 10 * i\n"
+            "  h[i] = enthalpy(Water, T=T[i], P=P[i])\n"
+            "  s[i] = entropy(Water, P=P[i], h=h[i])\n"
+            "END\n");
+        const ModelStates states = groupStates(ir);
+        REQUIRE(states.at("Water").size() == 2);
+        CHECK(states.at("Water")[0].number == 1);
+        CHECK(states.at("Water")[1].vars == std::map<std::string, std::string>{{"T", "T[2]"}, {"p", "P[2]"}, {"h", "h[2]"}, {"s", "s[2]"}});
+        SolutionValues solved = {{"P[1]", 1e5}, {"T[1]", 26.85}, {"h[1]", 1e5}};
+        const ModelStates partial = groupStates(ir, &solved);
+        REQUIRE(partial.at("Water").size() == 1);
+        CHECK(partial.at("Water")[0].vars.size() == 3);
+    }
+    SECTION("numbers from the names: the number most variables carry, claimed by the groups agreeing most") {
+        using Vars = std::map<std::string, std::string>;
+        const std::vector<ModelState> states = numberStates({
+            Vars{{"h", "h_2_s"}, {"p", "P_2"}, {"s", "s_1"}},              // no number agreed: next free
+            Vars{{"T", "T_2"}, {"h", "h_2"}, {"p", "P_2"}, {"s", "s[2]"}},  // 2, array index included
+            Vars{{"T", "T[1]"}, {"h", "h[1]"}, {"p", "p[1]"}, {"Q", "x_1"}},  // 1
+            Vars{{"T", "T_su_cp"}, {"p", "P_su_cp"}},                       // labelled su_cp
+            Vars{{"T", "T_3"}, {"p", "P_3"}, {"h", "h_x"}},                 // 3 (two of three)
+            Vars{{"T", "T_3b"}, {"p", "P_3"}, {"h", "h_3"}},                // 3 too, but agrees less: labelled 3
+        });
+        auto withVar = [&states](const std::string& var) -> const ModelState* {
+            for (const ModelState& s : states)
+                for (const auto& [_, v] : s.vars)
+                    if (v == var) return &s;
+            return nullptr;
+        };
+        CHECK(withVar("h_2")->number == 2);
+        CHECK(withVar("h[1]")->number == 1);
+        CHECK(withVar("h_x")->number == 3);
+        CHECK(withVar("T_3b")->label == "3");
+        CHECK(withVar("T_3b")->number > 3);
+        CHECK(withVar("h_2_s")->label.empty());
+        CHECK(withVar("h_2_s")->number > 3);
+        CHECK(withVar("T_su_cp")->label == "su_cp");
+        std::set<int> numbers;
+        for (const ModelState& s : states) CHECK(numbers.insert(s.number).second);
+    }
+    SECTION("the former name heuristic, for comparison") {
+        IR ir = irOf("h_1 = enthalpy(R134a, T=T_1, P=P_1)\nT_1 = 5\nP_1 = 2e5\nT_sat_1 = temperature(R134a, P=P_1, x=1)\n");
+        inferVariables(ir);
+        const ModelStates byName = nameHeuristicStates(ir);
+        REQUIRE(byName.at("R134a").size() == 1);  // "1" (T_1, P_1, h_1); "sat_1" has one property only
+        CHECK(byName.at("R134a")[0].number == 1);
+        CHECK(byName.at("R134a")[0].vars == std::map<std::string, std::string>{{"T", "T_1"}, {"p", "P_1"}, {"h", "h_1"}});
     }
 }

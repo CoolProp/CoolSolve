@@ -1,6 +1,6 @@
 // Computing what a plan asks for, keeping the results, and turning a chart request into a scene: the plot and
-// curve caches, the compose record, the plot size in two passes, the diagnostics, the cycles of a solved model
-// (straight chains in phase 1), the options of the Diagrams tab and the diagram definitions document.
+// curve caches, the compose record, the plot size in two passes, the diagnostics, the state at a point of a chart,
+// the options of the Diagrams tab and the diagram definitions document. The cycles are in cycles.h.
 //
 // Mirrors CoolPlot (github.com/CoolProp/CoolPlot) at commit 7338f48 (v1.5.0): engine/engine.py (Engine: domain,
 // curves, warnings), engine/cache.py (CurveCache), thermo/native.py (the plots of the port), corelib.py
@@ -9,8 +9,8 @@
 // See docs/coolplot_integration.md §3 for the REST contract this serves.
 #pragma once
 
+#include "coolsolve/diagram/cycles.h"
 #include "coolsolve/diagram/planning.h"
-#include "coolsolve/ir.h"  // CaseInsensitiveLess
 
 #include <map>
 #include <memory>
@@ -22,9 +22,6 @@
 
 namespace coolsolve {
 namespace diagram {
-
-/// Values of a solved model by variable name (case-insensitive), in CoolSolve's units (°C, Pa, J/kg, ...).
-using SolutionValues = std::map<std::string, double, CaseInsensitiveLess>;
 
 /**
  * @brief One computed line (the curve record of CoolPlot's contracts): x and y in SI units, NaN where a point
@@ -125,34 +122,6 @@ auto Engine::withFluid(const ChartFluid& fluid, Work&& work) -> decltype(work(st
 }
 
 /**
- * @brief A cycle of a diagram definition resolved against the solved model: the CoolPlot cycle record of the spec
- *        (CycleSpec.to_dict, full states, straight paths), the states by number and the chains through them.
- */
-struct ResolvedCycle {
-    size_t index = 0;                           ///< position in the request's cycle definitions
-    json spec;                                  ///< the entry of spec.cycles
-    std::map<int, State> states;                ///< full states in SI units
-    std::map<int, std::map<std::string, std::string>> vars;  ///< number -> {quantity key: variable name}
-    std::map<int, std::string> labels;          ///< number -> label
-    std::vector<std::vector<State>> chains;     ///< the states of each loop, in order (straight paths)
-};
-
-/**
- * @brief The cycles of diagram definitions (docs/coolplot_integration.md §4.1) from a solved model.
- *
- * A state is given by `vars` ({quantity key: variable name}) or, for `arrays` ({key: array name}), by the elements
- * `name[i]` of every array. The values (CoolSolve's units) are converted to SI and completed to full states from
- * two independent properties (the chart's axes when the model has both) with the chart fluid; the solved values
- * are kept. `loops` gives the chains of state numbers; without it, one loop through the states in ascending order
- * (closed unless `closed` is false); an empty list draws the state markers alone. Phase 1 joins the states with
- * straight lines ("paths": "auto" gets a warning). A cycle without states is skipped silently; one that cannot be
- * resolved (no solve, a variable without a value, a state CoolProp cannot compute) is left out with a warning.
- * @throws DiagramError for definitions that are not a list of objects, or two cycles of the same name
- */
-std::vector<ResolvedCycle> resolveCycles(const json& definitions, const SolutionValues* solution, FluidModel& fluid,
-                                         const coolplot::DiagramType& diagram, std::vector<std::string>& warnings);
-
-/**
  * @brief The compose record of coolplot-core (coolplot/compose.h; corelib.compose_record) for a chart.
  * @param specRecord the spec record with "fluid" and "cycles" written
  */
@@ -180,13 +149,22 @@ struct SceneRequest {
  */
 json scene(const SceneRequest& request);
 
+/**
+ * @brief The full state at a point of a chart (POST /api/v1/diagram/state, the hover of the Diagrams tab).
+ *
+ * The fluid's state at the axis values `x_SI`, `y_SI` of `diagram`: every key of stateKeys(), null for a value that
+ * cannot be computed, Q = -1 in single phase as CoolProp and CoolPlot report it. One flash with the chart fluid's
+ * model (the same as the cycles and the domain use), the caches of the engine kept.
+ * @return the state, or null when the point has none: CoolProp cannot compute it, or it lies outside the
+ *         temperature and pressure range of the equation of state
+ * @throws DiagramError for an unknown fluid or one not drawable yet, an unknown diagram type, a value that is not a
+ *         finite number
+ */
+json stateAt(const std::string& fluid, const std::string& backend, const std::string& diagram, double x_SI, double y_SI);
+
 /// The response of GET /api/v1/diagram/options: diagram types with their families, unit systems (the presets and
 /// `coolsolve`, CoolSolve's units as a custom unit record), region presets, themes, label modes and the versions.
 json options();
-
-/// CoolSolve's fixed units as a custom unit record of coolplot-core: {"name": "coolsolve", "units": {key: [label,
-/// scale, offset(, difference)]}} for every quantity of a fluid chart.
-json coolsolveUnitSystem();
 
 /// An empty diagram definitions document (§3.4).
 json emptyDefinitions();
