@@ -555,7 +555,7 @@ concern lives.
 | Diagrams: lines, domain, plan, compose record (CoolPlot glue) | `src/diagram/`, `include/coolsolve/diagram/` |
 | Diagram routes (`/api/v1/diagram/*`), `diagrams.json` in the bundle | `src/server.cpp`                      |
 | GUI Diagrams tab                         | `gui/src/components/diagram/`, `gui/src/utils/diagrams.ts` |
-| Diagram tests and CoolPlot fixtures      | `tests/test_diagram.cpp`, `tests/test_diagram_api.py`, `tests/test_gui_diagrams.py`, `tests/fixtures/coolplot/`, `tools/coolplot_fixtures.py` |
+| Diagram tests and CoolPlot fixtures      | `tests/test_diagram.cpp`, `tests/test_diagram_api.py`, `tests/test_gui_diagrams.py`, `tests/fixtures/coolplot/`, `tools/coolplot_fixtures.py`; the grouping of states on the library models: `tests/test_diagram_states_library.cpp` (hidden tag `[diagram-states-library]`) |
 | Comprehensive example tests              | `tests/test_examples.cpp` (`EXPECTED_SOLUTIONS`)     |
 | Solver robustness tests                  | `tests/test_solver_robustness.cpp`                   |
 | Configuration parsing tests              | `tests/test_config.cpp`                              |

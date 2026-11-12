@@ -202,6 +202,8 @@ computed by `CoolProp::Plot`, through the module `src/diagram/` (design and stat
 | `GET` | `/api/v1/coolprop/fluids` | List all registered fluids with `name`, `type` (`Real`, `IdealGas`, `HumidAir`, `Incompressible`, `Mixture`, `AmmoniaWater`), `hasDome`, and `modelFluids` from the current session |
 | `GET` | `/api/v1/diagram/options` | What a chart can be: `diagram_types` (name such as `ph`, `Ts`, `Th`; title; axes `x`, `y` and their log flags; `families` with `key`, `label`, `symbol`, `default_num`), `fluid_types` drawn (`Real`, `Mixture`), `unit_systems` (`SI`, `KSI`, `engineering`, `IP` and `coolsolve`, the model's units, each with the `record` to put in a spec), `default_unit_system`, `regions` (`DEF`, `ACHP`, `ORC`, `NONE` with their limits), `themes`, `label_modes`, `marked_points`, `coolplot` (`core_version`, `commit`) |
 | `POST` | `/api/v1/diagram/scene` | A chart of the session's model. Body: `fluid` (CoolSolve fluid name), `spec` (CoolPlot spec record without `fluid` and `cycles`), `cycles` (cycle definitions naming the model's variables), `figure_size_pt` `[w, h]`, `previous_labels` (optional). Returns `svg` (coolplot-core's document), `axes` (keys, labels, limits in display units, log flags, `x_unit`/`y_unit` with display = SI × `scale` + `offset`, `plot_size_pt`), `labels` (to send back as `previous_labels`), `states` (each cycle state: `cycle`, `number`, `label`, `vars`, `values_SI`), `spec` (as composed, readable by CoolPlot), `diagnostics` (`curves`, `warnings`), `timing_ms` (`curves`, `compose`, `svg`). The CoolProp backend is the model's `coolpropBackend`; the cycles use the last successful solve and are skipped without one. 400 for an unknown fluid, a fluid kind not drawable yet (ideal gases, humid air, incompressibles, `NH3H2O`), an unknown diagram or a spec value coolplot-core refuses; a line that cannot be computed is a diagnostic, not an error |
+| `POST` | `/api/v1/diagram/state` | The state under the cursor: `{fluid, diagram, x_SI, y_SI}` → `{"state": {T, p, h, s, rho, u, v, Q}}` in SI (Q = −1 in single phase) or `{"state": null}` |
+| `GET` | `/api/v1/diagram/states` | The states of the last solved model by fluid, grouped by the property calls they share: `{"fluids": {"R134a": [{"number", "label", "vars": {"T": "T_1", ...}}]}}`; computed at solve time, kept by *Back*, cleared by *New* |
 | `GET` | `/api/v1/diagram/definitions` | The diagram definitions of the session (`diagrams.json`: `{"format": "coolsolve-diagrams", "version": 1, "diagrams": [...]}`, empty list when none) |
 | `PUT` | `/api/v1/diagram/definitions` | Store the diagram definitions of the session; they go into the ZIP bundle, into the snapshot of *Back*, and are cleared by *New*, *Open*, a library model and an upload |
 
@@ -558,20 +560,36 @@ and after a solve; there is no *Generate* button. The status line shows the warn
 (lines that could not be computed, states left out) and the time of the lines, the composition and
 the SVG.
 
-#### Overlays (`DiagramOverlays.tsx`): cycles from the model
+#### Overlays (`DiagramOverlays.tsx`) and cycles (`CycleEditor.tsx`)
 
-Each overlay is a cycle definition that names the model's variables; the server reads their values
-from the last solve, converts them to SI and completes each state from two of its properties:
+Each overlay or cycle is a cycle definition that names the model's variables; the server reads
+their values from the last solve, converts them to SI, completes each state from two of its
+properties and draws the paths between them.
 
-- **Inferred states**: the variables of the fluid found by variable inference (§8.3), grouped into
-  states by name (`T_1`, `P_1`, `h_1` → state 1; `h_su_cp`, `P_su_cp` → a state labelled `su_cp`).
-  Drawn as numbered markers without lines.
+- **Inferred states**: the states of the solved model from `GET /api/v1/diagram/states`. The server
+  groups the variables of property calls that share two variables of independent properties
+  (`h_2 = enthalpy(R134a, P=P_2, s=s_2)` and `T_2 = temperature(R134a, P=P_2, h=h_2)`: one state;
+  two calls at the same T and p without quality: one state; a saturation temperature from
+  `P_cond` alone: no state) and numbers them from the names (the number most variables carry,
+  `T_2`, `h_2`, `s[2]` → 2; otherwise a label such as `su_cp` and the next free number). Drawn as
+  numbered markers without lines.
 - **Arrays**: two array variables (`h[i]`, `P[i]`) give state i; drawn as a chain in index order,
-  closed on request.
+  closed on request, with paths `auto` (the default) or straight.
+- **Cycles** (the collapsible editor): cycles of any variables. Each has a name, states (number,
+  optional label, property/variable pairs, the variables of the fluid suggested first), loops
+  typed as `1-2-3-4-1; 2-5` (empty: markers only), a path kind for the whole cycle (`auto`:
+  isobaric if the pressures are equal, else isenthalpic, isentropic, isothermal, otherwise
+  polytropic; or one of these, or straight) and optional per-connection overrides. *From inferred
+  states* copies the server's states into an editable cycle with one closed loop. Adding the first
+  cycle switches the inferred states off (their markers would sit on the same states); the
+  checkbox brings them back.
 
-Phase 1 draws straight segments between states; paths along the processes (isobars through the
-dome, isentropes, …), a state editor and the hover come next
-([CoolPlot integration](coolplot_integration.md) §5, phase 2).
+#### Hover (`useDiagramHover.ts`)
+
+Near a state marker, a tooltip names the cycle and the state and lists its variables with their
+values in the chart's units. Elsewhere in the plot area, the state under the cursor
+(`POST /api/v1/diagram/state`, debounced, stale requests cancelled): T, p, h, s, ρ, and the
+quality inside the dome. Nothing is asked while a zoom is dragged.
 
 #### Zoom and size (`DiagramView.tsx`)
 
@@ -939,6 +957,9 @@ gui/
         │   ├── DiagramTab.tsx     # Options, the definition edited, the request
         │   ├── DiagramControls.tsx # Fluid, diagram, units, region, lines, theme, labels
         │   ├── DiagramOverlays.tsx # Inferred states and arrays as cycle definitions
+        │   ├── CycleEditor.tsx    # The user's cycles: states, loops, paths
+        │   ├── useDiagramHover.ts # Tooltips: state markers, the state under the cursor
+        │   ├── options.ts         # Options loaded once, display units, value format
         │   ├── DiagramView.tsx    # Reusable view: fetch, inline SVG, zoom, resize
         │   ├── definition.ts      # Spec and cycle builders
         │   └── svgCoords.ts       # Pointer → display units → SI (log axes)
@@ -984,7 +1005,7 @@ All the following tests pass against the current codebase:
 | `GET /api/v1/coolprop/fluids` | ✅ 128 fluids; Water `hasDome:true`; Air `hasDome:false` |
 | `GET /api/v1/coolprop/fluids` (modelFluids, before parse) | ✅ `"modelFluids":[]` |
 | Diagram options, scenes (R134a p-h, errors), definitions round trip, `diagrams.json` in the ZIP bundle, New/Back, a solved model drawn with its states | ✅ `tests/test_diagram_api.py --auto` (53 checks) |
-| Diagrams tab in headless Chromium: the chart drawn on load at the container size, the default spec, the states of a solved R134a cycle as markers, zoom (`view_SI`, labels sent back) and reset, the report figure `thermo_diagrams.png` | ✅ `tests/test_gui_diagrams.py --auto` (17 checks) |
+| Diagrams tab in headless Chromium: the chart drawn on load at the container size, the default spec, the states of a solved R134a cycle as markers, zoom (`view_SI`, labels sent back) and reset, the report figure `thermo_diagrams.png`, a cycle from the editor drawn along its paths, the hover on a marker and elsewhere | ✅ `tests/test_gui_diagrams.py --auto` (25 checks) |
 | `GET /api/v1/variables/inferred` (before solve) | ✅ 0 variables |
 | `GET /api/v1/variables/inferred` (after solve) | ✅ 39 vars with T/P/H/S/Q for R134a |
 | `GET /api/v1/coolprop/fluids` (modelFluids after solve) | ✅ `"modelFluids":["R134a"]` |
@@ -1141,13 +1162,11 @@ sections below). Remaining enhancements:
 
 The Diagrams tab is built on CoolPlot (§6.8); its phases are in
 [CoolPlot integration](coolplot_integration.md) §5. Done in phase 1: units, isolines, region
-presets, themes, zoom, persistence in the ZIP bundle. Still to do:
+presets, themes, zoom, persistence in the ZIP bundle; in phase 2: cycle paths, the state
+editor, states grouped from the property calls, the hover. Still to do:
 
 | Item | Description |
 |------|-------------|
-| Cycle paths | Isobars through the dome, isentropes, isenthalps between the states of a cycle (phase 2) |
-| State editor | Pick, group and name the states of a cycle; grouping by property calls (phase 2) |
-| Interactive hover | Variable names and values of a state marker; the full state under the cursor (phase 2) |
 | More fluids | Ideal gases, incompressibles, humid air (psychrometric charts), tabular backends (phase 3) |
 | Outputs | SVG/PDF downloads, the report figure as PDF, *Export chart spec* for CoolPlot, `coolsolve --diagram`, the badge (phase 4) |
 | Multiple diagrams | Several definitions per model (the document holds a list; the tab edits the first) |

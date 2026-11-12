@@ -1,7 +1,7 @@
 # CoolPlot Integration Plan
 
 **Status:** in progress on branch `feat/coolplot-diagrams` (revised 2026-11-12; earlier
-versions 2026-10-20 and 2026-10-31). Phases 0 and 1 are done (§5).
+versions 2026-10-20 and 2026-10-31). Phases 0, 1 and 2 are done (§5).
 **References:** [CoolPlot](https://github.com/CoolProp/CoolPlot) `v1.5.0` = `7338f48`
 (2026-11-03), coolplot-core 1.5.0 from its `cpp/` folder; [CoolProp](https://github.com/CoolProp/CoolProp)
 `8eb3b778` (2026-10-31), the commit CoolSolve is pinned to, which has `CoolProp::Plot`
@@ -261,8 +261,17 @@ families with their default count) per fluid kind, unit systems (the presets and
 diagram definitions of the session (§3.4): stored with the model, written to and read
 from the ZIP bundle.
 
-**`POST /api/v1/diagram/state`** (phase 2) — the full state at a point of a chart
-(`PropertyPlot::value_at`), for the hover.
+**`POST /api/v1/diagram/state`** (phase 2) — the full state at a point of a chart, for the
+hover: `{fluid, diagram, x_SI, y_SI}` → `{"state": {T, p, h, s, rho, u, v, Q}}` in SI (Q = −1 in
+single phase, a key that cannot be computed is null) or `{"state": null}` where the point has no
+state. One flash of the two axis values on the cached fluid model (9 µs in process, 0.5 ms over
+HTTP), with the model's backend.
+
+**`GET /api/v1/diagram/states`** (phase 2) — the states of the solved model grouped by the
+property calls they share (§4.2): `{"fluids": {"R134a": [{"number": 1, "label": null, "vars":
+{"T": "T_1", "p": "P_1", "h": "h_1", "s": "s_1"}}, ...]}}`, empty without a successful solve.
+Computed at solve time next to the inferred variables (median 0.013 ms per library model), kept in
+the snapshot of *Back*.
 
 `GET /api/v1/coolprop/fluids` and `GET /api/v1/variables/inferred` stay.
 `POST /api/v1/coolprop/saturation` is removed with `ThermoDiagram.tsx`.
@@ -300,7 +309,8 @@ third column.
 | `diagram/domain.{h,cpp}` | the T-p box (presets, absolute and relative bounds), `ranges_SI`, the values of lines placed through saturation states, marked points, saturation scale, dome ends | `thermo/limits.py`, `thermo/provider.py` | 1 |
 | `diagram/planning.{h,cpp}` | the curve requests of a spec: values (rounding), points, labels, anchors, item ids, the saturation curve, single lines | `engine/planning.py` | 1 |
 | `diagram/engine.{h,cpp}` | the plot and curve caches, the compose record, the two-pass plot size, the diagnostics, the definitions document | `engine/engine.py`, `engine/cache.py`, `corelib.compose_record` | 1 |
-| `diagram/cycles.{h,cpp}` | the states of a solved model as full states, the paths between them as chains, the grouping of inferred variables into states | `thermo/cycles/paths.py`, `thermo/process.py`, `core/cycle.py` | 2 |
+| `diagram/cycles.{h,cpp}` | the states of a solved model as full states, the paths between them as chains | `thermo/cycles/paths.py`, `thermo/process.py`, `core/cycle.py` | 2 |
+| `diagram/states.{h,cpp}` | the grouping of the variables of property calls into states (§4.2) | (CoolSolve only) | 2 |
 | `diagram/humid_air.{h,cpp}` | the lines of the psychrometric and Mollier charts | `thermo/humid_air.py` | 3 |
 | `diagram/references.{h,cpp}` | the badge lines: references of the equation of state, CoolProp, CoolPlot and CoolSolve versions | `thermo/references.py` | 4 |
 | `server.cpp` | the endpoints of §3.1 (thin handlers), `diagrams.json` in the ZIP bundle | | 1 |
@@ -375,9 +385,18 @@ values from the session's last solve:
   "arrays": { "p": "P", "h": "h" },   // ...or arrays: state i from P[i], h[i]
   "loops": [[1, 2, 3, 4, 1]],         // chains of state numbers; default: the states in order
   "closed": true,                     // with no "loops": close the loop of the states (default)
-  "paths": "auto"                     // "auto" (phase 2) or "straight" (phase 1)
+  "paths": "auto",                    // one kind for every connection, or CoolPlot's record
+                                      // [[[1, 2], "isentropic"], ...] (unlisted connections: auto)
+  "steps": 20                         // points computed along each path
 }
 ```
+
+- `paths`: `auto` (the default: isobaric if the pressures are equal, else isenthalpic,
+  isentropic, isothermal, otherwise polytropic, as CoolPlot's `auto_kind` with its relative
+  tolerance 1e-6), `straight`, `isobaric` (through the dome, with both saturation states
+  inserted), `isenthalpic`, `isentropic`, `isothermal`, `polytropic`. An unknown kind is a 400.
+  Points that cannot be computed are left out, as CoolPlot does. The exported spec carries
+  CoolPlot's record (the connections that are not `auto`) and `steps`.
 
 - No `loops`: CoolPlot's default, the states in order, closed (unless `"closed": false`).
 - `"loops": []`: markers and numbers only, no lines (the inferred states). In the exported
@@ -389,8 +408,11 @@ values from the session's last solve:
   needs all its states; a cycle of markers only (`"loops": []`) draws the states that can be
   computed and names the others in a warning (the name heuristic groups a saturation T and p,
   `T_ev` and `P_ev`, which fix no state).
-- State keys are CoolPlot's (`T`, `p`, `h`, `s`, `rho`, `u`, `Q`); the GUI maps the codes of
-  the variable inference (`P` → `p`, `D` → `rho`, …).
+- State keys are CoolPlot's (`T`, `p`, `h`, `s`, `rho`, `u`, `v`, `Q`); the GUI maps the codes
+  of the variable inference (`P` → `p`, `D` → `rho`, `VOL` → `v`, …).
+- The Diagrams tab writes three kinds of cycles: the inferred states (markers only), the arrays
+  (a chain in index order), and the cycles of its editor. The first cycle of the editor switches
+  the inferred states off, since they would mark the same states.
 
 Sources of states:
 
@@ -413,8 +435,27 @@ independent properties** (state postulate for a pure fluid). `h_2 = enthalpy(R13
 P=P_2, s=s_2)` and `T_2 = temperature(R134a, P=P_2, h=h_2)` share `P_2` and `h_2`: one
 state. `T_sat = temperature(R134a, P=P_cond, x=1)` shares only `P_cond` with the
 condenser states: a separate state. T and P are not independent inside the dome, so a
-pair (T, P) alone does not merge two calls. Validated on the library models before it
-replaces the heuristic.
+pair (T, P) alone does not merge two calls — **except** when neither call involves a vapour
+quality nor is a saturation function (`T_sat`, `P_sat`): a call that takes no quality and has T
+and p among its variables fixes a single-phase state, where T and p are independent.
+`h_1 = enthalpy(R134a, T=T_1, P=P_1)` and `s_1 = entropy(R134a, T=T_1, P=P_1)` are one state.
+
+As implemented (`src/diagram/states.cpp`): the property functions `temperature`, `pressure`,
+`enthalpy`, `entropy`, `intenergy`, `volume`, `density`, `quality`, `T_sat`, `P_sat` (and their
+short names; `v(...)` is the viscosity) on a known fluid, with their named-argument variables
+and the variable of `var = call`; a fluid given as a string variable is resolved when the IR
+knows its value. A state needs two independent properties. Numbering as the former name
+heuristic: `X[i]` gives state i; a common suffix keeps its integer or becomes the label; the
+others take the next free numbers.
+
+**Validation** on the 287 runnable models of the library (hidden test
+`[diagram-states-library]`, table in `build/diagram_states_library.md`): the name heuristic
+finds 861 states, the strict rule 2836, the rule with the (T, p) exception 2468. The 368 states
+the exception removes are states evaluated property by property at (T, P), split by the strict
+rule. Where they differ, the rule completes states through shared variables the names miss
+(`P_atm`, `p_steam`, `p[2]`) and finds the states of arrays, which the heuristic ignored; the
+heuristic mixes states (a dead state `T_0`, `p_0` reused by several calls) and keeps pairs
+(T_sat, P_cd) that fix no state. The rule replaces the heuristic in the Diagrams tab.
 
 ### 4.3 Values
 
@@ -476,13 +517,23 @@ planned:
   rasterises the SVG of the diagram (`.thermo-diagram svg`) to `thermo_diagrams.png`.
 - Remove `POST /api/v1/coolprop/saturation` and `ThermoDiagram.tsx`.
 
-### Phase 2 — Cycles from the model
+### Phase 2 — Cycles from the model (done)
+
+Done on `feat/coolplot-diagrams`: `diagram/cycles` (the paths of CoolPlot's `paths.py`),
+`diagram/states` (§4.2, validated on the library), `POST /api/v1/diagram/state`,
+`GET /api/v1/diagram/states`, the state editor (`CycleEditor.tsx`), the hover
+(`useDiagramHover.ts`). Follow-ups: two calls of one state that share a single variable
+(`h_1 = enthalpy(P=P_1, x=x_1)`, `s_1 = entropy(T=T_1, x=x_1)`) stay two states, which the
+structure cannot resolve; models with many property calls give many small states (17 for an
+ORC of the library), which makes *From inferred states* noisy; CoolPlot's legend, placed
+automatically, can cover a cycle on a short chart. What the list below planned:
 
 - `diagram/cycles`: full states from the solved values (§4.3), paths as chains (isobars
   through the dome, isenthalps, isentropes, isotherms, polytropic paths), state numbers
   and labels, one legend entry; coolplot-core keeps the labels of the lines off the
   cycles.
-- The grouping rule of §4.2 and the state editor.
+- The grouping rule of §4.2 (`diagram/states`, `GET /api/v1/diagram/states`) and the state
+  editor.
 - Hover: the variable names and values of a state marker; elsewhere, the full state under
   the cursor from `POST /api/v1/diagram/state`, debounced.
 - Closes `CS-FEAT-OVERLAY-STATES`.
@@ -558,7 +609,9 @@ R290 p-h with `ACHP`, `engineering` and rounding, CO2 p-h with marked points and
 scale): the plans on CoolPlot's domain match bit for bit and every curve has the same number of
 points; the largest differences are 7.8e-14 of the span for the domain, 4.6e-8 of the axis span
 for the curves (the fixtures keep 8 digits and every third point) and 1.9e-10 for the labels.
-The comparison tolerances are set from these: 1e-12, 2e-7 and 1e-9. Scenes match in ids,
+The comparison tolerances are set from these: 1e-12, 2e-7 and 1e-9. A sixth fixture (phase 2),
+an R134a refrigeration cycle given by (p, h) with every path `auto`, checks the paths: its 84
+states match CoolPlot's to 4.3e-10 of the span (tolerance 5e-9). Scenes match in ids,
 drawing order, group, role, z order, legend, style and text. The ids of families spaced evenly
 over a range computed by CoolProp can differ in the twelfth digit, so ids on CoolSolve's own
 domain are compared to 1e-11.
@@ -586,7 +639,9 @@ Measured in a Release build, in process, 250 points per line:
 | R410A p-h | 129 ms | |
 | R32[0.7]&R125[0.3] p-h | 1.55 s | |
 
-Over HTTP, R134a p-h takes 47 ms cold and 10 ms warm. The `[diagram]` tests check a loose
+Over HTTP, R134a p-h takes 47 ms cold and 10 ms warm. The state under the cursor takes 9 µs
+in process (0.5 ms over HTTP); the grouping of states at solve time a median 0.013 ms per
+library model (95 %: 0.12 ms). The `[diagram]` tests check a loose
 budget (cold under 1 s, warm under 100 ms). A mixture chart is the slow case: computing its
 lines on several threads (one `PropertyPlot` each) is the phase 3 item.
 

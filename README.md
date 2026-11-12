@@ -475,7 +475,9 @@ CoolSolve/
 │   │   ├── fluid.cpp                      # Fluid string and fluid model of a chart (FluidRegistry name, backend)
 │   │   ├── domain.cpp                     # T-p box, ranges, saturation anchors, marked points, scale, dome ends
 │   │   ├── planning.cpp                   # Curve requests of a spec: values, rounding, item ids
-│   │   └── engine.cpp                     # Caches, cycles from the solution, compose record, scene, options
+│   │   ├── cycles.cpp                     # Cycles from the solved variables, paths between states (isobars through the dome, ...)
+│   │   ├── states.cpp                     # States of a model grouped by the property calls they share
+│   │   └── engine.cpp                     # Caches, compose record, scene, state under the cursor, options
 │   ├── integral/               # Equation-based dynamic solver (INTEGRAL / $IntegralTable)
 │   │   ├── integrator_euler_explicit.cpp  # Forward Euler (fixed step)
 │   │   ├── integrator_euler_implicit.cpp  # Backward Euler, A-stable (fixed step)
@@ -516,7 +518,8 @@ CoolSolve/
 │   ├── test_library_store.cpp  # Model library index/loader unit tests
 │   ├── test_library_regression.cpp # Library regression: every runnable library model vs its .sol (slow, hidden) + self-tests
 │   ├── test_includes.cpp       # `$INCLUDE`: resolution, imported routines, precedence, errors
-│   ├── test_diagram.cpp        # Diagrams: planning, domain, CoolPlot fixtures, invariants, cycles, errors
+│   ├── test_diagram.cpp        # Diagrams: planning, domain, CoolPlot fixtures, invariants, cycles, paths, states, errors
+│   ├── test_diagram_states_library.cpp # The grouping of states on every library model vs the name heuristic (hidden)
 │   ├── test_diagram_api.py     # Diagram routes, definitions, `diagrams.json` in the bundle (REST, needs the GUI build)
 │   ├── fixtures/coolplot/      # Compose records and scenes written by CoolPlot (tools/coolplot_fixtures.py)
 │   ├── test_library_api.py     # Library menu, open, per-tab sessions, /library/, `$INCLUDE` (REST, needs the GUI build)
