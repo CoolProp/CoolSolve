@@ -10,6 +10,7 @@
 
 #include "coolsolve/latex_report.h"
 #include "coolsolve/constants.h"
+#include "coolsolve/diagram/engine.h"  // the files of the diagrams (reportDiagramFile, REPORT_DIAGRAMS)
 #include <fstream>
 #include <sstream>
 #include <iomanip>
@@ -251,21 +252,45 @@ std::string generateLatexReport(
     tex << "\\end{longtable}\n\n";
 
     // ===== Section 4: Plots ================================================
-    // The GUI frontend exports Plotly charts as PNG images and uploads them
-    // to the compile endpoint.  Each image gets an \\IfFileExists guard so
-    // the .tex also compiles standalone (without images).
+    // The server draws the diagrams of the model as vector PDF files when it
+    // compiles the report (diagram::reportDiagrams: thermo_diagrams.pdf,
+    // thermo_diagram_2.pdf, ...); the GUI frontend exports Plotly charts and
+    // the diagram it shows as PNG images and uploads them to the compile
+    // endpoint, the PNG of the diagram being used only without the PDF.  Each
+    // image gets an \\IfFileExists guard so the .tex also compiles standalone
+    // (without images).
     tex << "\\section{Plots}\n\n";
     tex << "Thermodynamic diagrams and parametric study plots (if any) are generated\n";
     tex << "by the CoolSolve GUI and inserted below when the report is compiled.\n\n";
 
-    tex << "% --- Thermodynamic diagrams (inserted by GUI) ---\n";
-    tex << "\\IfFileExists{thermo_diagrams.png}{%\n";
+    tex << "% --- Thermodynamic diagrams (drawn by the server as PDF; else the PNG of the GUI) ---\n";
+    tex << "\\IfFileExists{thermo_diagrams.pdf}{%\n";
     tex << "  \\begin{figure}[h!]\n";
     tex << "  \\centering\n";
-    tex << "  \\includegraphics[width=0.92\\textwidth]{thermo_diagrams.png}\n";
-    tex << "  \\caption{Thermodynamic state-point diagram}\n";
+    tex << "  \\includegraphics[width=0.92\\textwidth]{thermo_diagrams.pdf}\n";
+    tex << "  \\caption{Thermodynamic diagram}\n";
     tex << "  \\end{figure}\n";
-    tex << "}{}\n\n";
+    tex << "}{%\n";
+    tex << "  \\IfFileExists{thermo_diagrams.png}{%\n";
+    tex << "    \\begin{figure}[h!]\n";
+    tex << "    \\centering\n";
+    tex << "    \\includegraphics[width=0.92\\textwidth]{thermo_diagrams.png}\n";
+    tex << "    \\caption{Thermodynamic diagram}\n";
+    tex << "    \\end{figure}\n";
+    tex << "  }{}%\n";
+    tex << "}\n";
+    tex << "% Further diagrams of the model: thermo_diagram_2.pdf ... thermo_diagram_" << diagram::REPORT_DIAGRAMS << ".pdf\n";
+    tex << "\\newcounter{thermodiagram}\n";
+    tex << "\\setcounter{thermodiagram}{1}\n";
+    tex << "\\loop\\stepcounter{thermodiagram}\n";
+    tex << "  \\IfFileExists{thermo_diagram_\\thethermodiagram.pdf}{%\n";
+    tex << "    \\begin{figure}[h!]\n";
+    tex << "    \\centering\n";
+    tex << "    \\includegraphics[width=0.92\\textwidth]{thermo_diagram_\\thethermodiagram.pdf}\n";
+    tex << "    \\caption{Thermodynamic diagram \\thethermodiagram}\n";
+    tex << "    \\end{figure}\n";
+    tex << "  }{}\n";
+    tex << "\\ifnum\\value{thermodiagram}<" << diagram::REPORT_DIAGRAMS << "\\repeat\n\n";
 
     tex << "% --- Parametric study plots (inserted by GUI) ---\n";
     tex << "% One figure per uploaded parametric plot image.\n";

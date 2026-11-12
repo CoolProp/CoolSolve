@@ -196,6 +196,11 @@ std::vector<std::string> writeDiagramFile(const json& document, const std::strin
 /// The most diagrams the LaTeX report includes (the loop of latex_report.cpp).
 constexpr size_t REPORT_DIAGRAMS = 20;
 
+/// The file of the report's figure of the diagram at `index` of a definitions document, as latex_report.cpp includes
+/// it: "thermo_diagrams.pdf" for the first (the name of the raster image the GUI sends too), then
+/// "thermo_diagram_2.pdf", "thermo_diagram_3.pdf", ...
+std::string reportDiagramFile(size_t index);
+
 /**
  * @brief The figures of the LaTeX report: every diagram of a definitions document (at most REPORT_DIAGRAMS) as a PDF
  *        in the "print" theme on the spec's page, named as latex_report.cpp includes them: "thermo_diagrams.pdf",

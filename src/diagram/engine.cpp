@@ -595,12 +595,6 @@ ComposedChart composeChart(const SceneRequest& request, bool pdf) {
     return out;
 }
 
-/// A file name of the report's figures: the first diagram is "thermo_diagrams.pdf" (the name of the raster image the
-/// GUI sends too), the others "thermo_diagram_<n>.pdf" from 2 on (latex_report.cpp includes these).
-std::string reportDiagramName(size_t index) {
-    return index == 0 ? "thermo_diagrams.pdf" : "thermo_diagram_" + std::to_string(index + 1) + ".pdf";
-}
-
 }  // namespace
 
 json scene(const SceneRequest& request) {
@@ -707,6 +701,10 @@ std::vector<std::string> writeDiagramFile(const json& document, const std::strin
     return warnings;
 }
 
+std::string reportDiagramFile(size_t index) {
+    return index == 0 ? "thermo_diagrams.pdf" : "thermo_diagram_" + std::to_string(index + 1) + ".pdf";
+}
+
 std::vector<std::pair<std::string, std::string>> reportDiagrams(const json& document, const SolutionValues* solution,
                                                                 const std::string& backend, std::vector<std::string>& warnings) {
     std::vector<std::pair<std::string, std::string>> files;
@@ -721,7 +719,7 @@ std::vector<std::pair<std::string, std::string>> reportDiagrams(const json& docu
             if (!request.spec.is_object()) request.spec = json::object();
             if (!request.spec["settings"].is_object()) request.spec["settings"] = json::object();
             request.spec["settings"]["look"] = "print";  // the report is printed
-            files.emplace_back(reportDiagramName(i), chartFile(request, "pdf", &warnings));
+            files.emplace_back(reportDiagramFile(i), chartFile(request, "pdf", &warnings));
         } catch (const std::exception& e) {
             warnings.push_back("The diagram '" + label + "' is left out of the report: " + e.what());
         }

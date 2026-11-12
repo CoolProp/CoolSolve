@@ -13,6 +13,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include "coolsolve/latex_report.h"
+#include "coolsolve/diagram/engine.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/runner.h"
 #include "coolsolve/solver.h"
@@ -115,6 +116,21 @@ TEST_CASE("LaTeX report from cpbar model", "[latex]") {
         REQUIRE(tex.find("\\end{document}") != std::string::npos);
         // Contains the model name
         REQUIRE(tex.find("cpbar") != std::string::npos);
+    }
+
+    SECTION("the diagrams: the server's PDF figures under \\IfFileExists, the GUI's PNG as a fallback") {
+        const std::string tex = generateLatexReport(runner.getIR(), runner.getAnalysisResult(), runner.getSolveResult(),
+                                                    runner.getTiming(), "cpbar", eesPath.string());
+        const size_t pdf = tex.find("\\IfFileExists{thermo_diagrams.pdf}{%");
+        const size_t png = tex.find("\\IfFileExists{thermo_diagrams.png}{%");
+        REQUIRE(pdf != std::string::npos);
+        REQUIRE(png != std::string::npos);
+        REQUIRE(pdf < png);  // the PNG is the else branch of the PDF
+        REQUIRE(tex.find("\\includegraphics[width=0.92\\textwidth]{thermo_diagrams.pdf}") != std::string::npos);
+        // The further diagrams, as diagram::reportDiagramFile names them, up to diagram::REPORT_DIAGRAMS
+        REQUIRE(diagram::reportDiagramFile(1) == "thermo_diagram_2.pdf");
+        REQUIRE(tex.find("\\IfFileExists{thermo_diagram_\\thethermodiagram.pdf}") != std::string::npos);
+        REQUIRE(tex.find("\\ifnum\\value{thermodiagram}<" + std::to_string(diagram::REPORT_DIAGRAMS) + "\\repeat") != std::string::npos);
     }
 
     SECTION("writeLatexReport writes to disk") {

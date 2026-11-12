@@ -2684,6 +2684,7 @@ int startServer(const ServerOptions& options) {
     // Diagrams (docs/coolplot_integration.md §3.1): charts of the model's fluid drawn by
     // coolplot-core, the lines computed by CoolProp::Plot (module src/diagram/).
     //   POST /api/v1/diagram/scene        {fluid, spec, cycles, figure_size_pt, previous_labels}
+    //   POST /api/v1/diagram/export       the same and "format" ("svg" or "pdf"): the chart as a file
     //   GET  /api/v1/diagram/options      what the Diagrams tab offers
     //   GET  /api/v1/diagram/definitions  the session's diagrams.json (§3.4)
     //   PUT  /api/v1/diagram/definitions
@@ -2695,37 +2696,67 @@ int startServer(const ServerOptions& options) {
         res.set_content(json{{"error", message}}.dump(), "application/json");
     };
 
+    // The values of the session's last solve, if it succeeded (the cycles are skipped without one)
+    auto lastSolution = [](Session& session) -> std::optional<diagram::SolutionValues> {
+        std::lock_guard<std::mutex> lock(session.resultMutex);
+        if (!session.hasResult || !session.lastResult.success) return std::nullopt;
+        return diagram::SolutionValues(session.lastResult.variables.begin(), session.lastResult.variables.end());
+    };
+
+    // A chart request of the body of /diagram/scene or /diagram/export; `solution` must outlive it
+    auto diagramRequest = [](const json& body, const Session& session, const std::optional<diagram::SolutionValues>& solution) {
+        if (!body.is_object() || !body.contains("fluid") || !body.at("fluid").is_string())
+            throw diagram::DiagramError("A chart request needs the name of its fluid (\"fluid\").");
+        diagram::SceneRequest request;
+        request.fluid = body.at("fluid").get<std::string>();
+        request.backend = sessionCoolPropBackend(session);
+        request.spec = body.value("spec", json::object());
+        request.cycles = body.value("cycles", json::array());
+        request.previousLabels = body.value("previous_labels", json());
+        if (body.contains("figure_size_pt") && !body.at("figure_size_pt").is_null()) {
+            const json& size = body.at("figure_size_pt");
+            if (!size.is_array() || size.size() != 2 || !size.at(0).is_number() || !size.at(1).is_number())
+                throw diagram::DiagramError("figure_size_pt is [width, height] in points.");
+            request.figureSizePt = std::make_pair(size.at(0).get<double>(), size.at(1).get<double>());
+        }
+        if (solution) request.solution = &*solution;
+        return request;
+    };
+
     svr.Post("/api/v1/diagram/scene", [&](const httplib::Request& req, httplib::Response& res) {
         auto sessionPtr = getSession(req, res);
         auto& session = *sessionPtr;
         try {
+            const std::optional<diagram::SolutionValues> solution = lastSolution(session);
+            res.set_content(diagram::scene(diagramRequest(json::parse(req.body), session, solution)).dump(), "application/json");
+        } catch (const diagram::DiagramError& e) {
+            diagramError(res, 400, e.what());
+        } catch (const json::exception& e) {
+            diagramError(res, 400, std::string("Invalid JSON: ") + e.what());
+        } catch (const std::exception& e) {
+            diagramError(res, 500, std::string("Server error: ") + e.what());
+        }
+    });
+
+    // The chart as a file to download: the body of /diagram/scene and "format" ("svg" or "pdf"); the PDF embeds the
+    // TrueType fonts the server finds (a server without fonts answers 500: install fonts-dejavu-core)
+    svr.Post("/api/v1/diagram/export", [&](const httplib::Request& req, httplib::Response& res) {
+        auto sessionPtr = getSession(req, res);
+        auto& session = *sessionPtr;
+        try {
             const json body = json::parse(req.body);
-            if (!body.is_object() || !body.contains("fluid") || !body.at("fluid").is_string())
-                throw diagram::DiagramError("A chart request needs the name of its fluid (\"fluid\").");
-            diagram::SceneRequest request;
-            request.fluid = body.at("fluid").get<std::string>();
-            request.backend = sessionCoolPropBackend(session);
-            request.spec = body.value("spec", json::object());
-            request.cycles = body.value("cycles", json::array());
-            request.previousLabels = body.value("previous_labels", json());
-            if (body.contains("figure_size_pt") && !body.at("figure_size_pt").is_null()) {
-                const json& size = body.at("figure_size_pt");
-                if (!size.is_array() || size.size() != 2 || !size.at(0).is_number() || !size.at(1).is_number())
-                    throw diagram::DiagramError("figure_size_pt is [width, height] in points.");
-                request.figureSizePt = std::make_pair(size.at(0).get<double>(), size.at(1).get<double>());
-            }
-            // The values of the last solve, if it succeeded (the cycles are skipped without one)
-            diagram::SolutionValues solution;
-            bool solved = false;
-            {
-                std::lock_guard<std::mutex> lock(session.resultMutex);
-                if (session.hasResult && session.lastResult.success) {
-                    solution.insert(session.lastResult.variables.begin(), session.lastResult.variables.end());
-                    solved = true;
-                }
-            }
-            if (solved) request.solution = &solution;
-            res.set_content(diagram::scene(request).dump(), "application/json");
+            const json format = body.is_object() ? body.value("format", json("svg")) : json();
+            if (!format.is_string()) throw diagram::DiagramError("\"format\" is \"svg\" or \"pdf\".");
+            const std::optional<diagram::SolutionValues> solution = lastSolution(session);
+            const diagram::SceneRequest request = diagramRequest(body, session, solution);
+            const std::string file = diagram::chartFile(request, format.get<std::string>());
+            // <model>_<diagram>.<format>, in characters a file name and the header can hold
+            std::string name = (session.modelName.empty() ? std::string("diagram") : session.modelName) + "_" +
+                               request.spec.value("diagram", std::string("chart"));
+            for (char& c : name)
+                if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-' && c != '.') c = '_';
+            res.set_header("Content-Disposition", "attachment; filename=\"" + name + "." + format.get<std::string>() + "\"");
+            res.set_content(file, format == "pdf" ? "application/pdf" : "image/svg+xml");
         } catch (const diagram::DiagramError& e) {
             diagramError(res, 400, e.what());
         } catch (const json::exception& e) {
@@ -3458,6 +3489,31 @@ int startServer(const ServerOptions& options) {
             std::ofstream f(buildDir / safeName, std::ios::binary);
             if (f.is_open()) {
                 f.write(data.data(), static_cast<std::streamsize>(data.size()));
+            }
+        }
+
+        // The diagrams of the model as vector figures (thermo_diagrams.pdf, thermo_diagram_2.pdf, ...), drawn from its
+        // diagram definitions and its last solve; the report prefers them to the raster image the GUI sends, which
+        // stays for a chart the tab shows without a stored definition, or a server without fonts
+        {
+            std::string definitions;
+            {
+                std::lock_guard<std::mutex> lock(session.diagramMutex);
+                definitions = session.diagramDefinitions;
+            }
+            // The figures of an earlier compile go: a diagram removed since must not come back
+            for (size_t i = 0; i < diagram::REPORT_DIAGRAMS; ++i) fs::remove(buildDir / diagram::reportDiagramFile(i), ec);
+            if (!definitions.empty()) {
+                const std::optional<diagram::SolutionValues> solution = lastSolution(session);
+                std::vector<std::string> warnings;
+                try {
+                    const auto figures = diagram::reportDiagrams(json::parse(definitions), solution ? &*solution : nullptr,
+                                                                 sessionCoolPropBackend(session), warnings);
+                    for (const auto& [name, pdf] : figures) writeStringToFile((buildDir / name).string(), pdf);
+                } catch (const std::exception& e) {
+                    warnings.push_back(e.what());
+                }
+                for (const std::string& warning : warnings) std::cerr << "[latex/compile] " << warning << std::endl;
             }
         }
         
