@@ -10,6 +10,7 @@ import { api } from '../api/client';
 import { useModelStore } from '../stores/modelStore';
 import { toErrMsg } from './errors';
 import { showSessionModel } from './sessionModel';
+import { flushDiagramsPut } from './diagrams';
 
 /** Address of the library dashboard (all models, blocked ones included). */
 export const LIBRARY_DASHBOARD_URL = '/library/';
@@ -25,6 +26,7 @@ export const libraryModelPageUrl = (id: string) => `/library/#${encodeURICompone
 export async function openLibraryModel(id: string, file?: string, allowBack = true): Promise<boolean> {
   const { addConsoleLine, setCanGoBack } = useModelStore.getState();
   try {
+    await flushDiagramsPut();  // the diagrams of the model left go into the Back snapshot
     const res = await api.openLibraryModel(id, file);
     await showSessionModel();
     setCanGoBack(allowBack);

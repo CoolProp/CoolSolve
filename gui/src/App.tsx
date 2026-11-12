@@ -5,7 +5,7 @@ import VariableTable from './components/VariableTable';
 import ArrayTable from './components/ArrayTable';
 import ConfigEditor from './components/ConfigEditor';
 import DebugViewer from './components/DebugViewer';
-import ThermoDiagram from './components/ThermoDiagram';
+import DiagramTab from './components/diagram/DiagramTab';
 import ParametricStudy from './components/ParametricStudy';
 import Console from './components/Console';
 import LookupTableEditor from './components/LookupTableEditor';
@@ -171,8 +171,9 @@ function MainApp() {
               {rightTab === 'arrays' && <ArrayTable />}
               {rightTab === 'config' && <ConfigEditor />}
               {rightTab === 'debug' && <DebugViewer />}
-              <div style={{ display: rightTab === 'diagrams' ? 'contents' : 'none' }}>
-                <ThermoDiagram />
+              {/* Always mounted: the chart is kept while another tab is shown (exportPlots.ts finds it here) */}
+              <div className="thermo-diagram" style={{ display: rightTab === 'diagrams' ? 'contents' : 'none' }}>
+                <DiagramTab />
               </div>
             </div>
           </div>

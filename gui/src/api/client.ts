@@ -13,7 +13,10 @@ import type {
   SSEEvent,
   InferredVariablesResponse,
   CoolPropFluidsResponse,
-  SaturationResponse,
+  DiagramOptionsResponse,
+  DiagramSceneRequest,
+  DiagramSceneResponse,
+  DiagramsDocument,
   ParametricStudyResult,
   SweepVariable,
   LatexReportResponse,
@@ -205,12 +208,33 @@ export const api = {
   getCoolPropFluids: () =>
     request<CoolPropFluidsResponse>('/coolprop/fluids'),
 
-  // Saturation dome
-  getSaturationDome: (fluid: string, nPoints?: number) =>
-    request<SaturationResponse>('/coolprop/saturation', {
+  // Property diagrams (CoolPlot): docs/coolplot_integration.md §3.1
+  /** Diagram types, unit systems, regions, themes and label modes the server draws. */
+  getDiagramOptions: () => request<DiagramOptionsResponse>('/diagram/options'),
+
+  /** The SVG of a chart of the session's model; `signal` cancels a request that a newer one replaces. */
+  getDiagramScene: (body: DiagramSceneRequest, signal?: AbortSignal) =>
+    request<DiagramSceneResponse>('/diagram/scene', {
       method: 'POST',
-      body: JSON.stringify({ fluid, nPoints: nPoints || 200 }),
+      body: JSON.stringify(body),
+      signal,
     }),
+
+  /** The diagram definitions of the session (`diagrams.json`). */
+  getDiagramDefinitions: () => request<DiagramsDocument>('/diagram/definitions'),
+
+  /** Store the diagram definitions in the session (saved in the ZIP bundle as `diagrams.json`). */
+  putDiagramDefinitions: async (doc: DiagramsDocument): Promise<void> => {
+    const res = await apiFetch('/diagram/definitions', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(doc),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(body.error || `HTTP ${res.status}`);
+    }
+  },
 
   // Parametric study (async — returns immediately, results come via SSE)
   runParametricStudy: (

@@ -12,6 +12,7 @@ import { exportAllPlots } from '../utils/exportPlots';
 import { toErrMsg } from '../utils/errors';
 import { openLibraryModel, libraryModelPageUrl } from '../utils/library';
 import { showSessionModel } from '../utils/sessionModel';
+import { flushDiagramsPut } from '../utils/diagrams';
 import LibraryMenu from './LibraryMenu';
 import type { SSEEvent, SolveResponse } from '../api/types';
 
@@ -229,6 +230,7 @@ export default function Toolbar() {
   // ================================================================
   const handleNew = useCallback(async () => {
     try {
+      await flushDiagramsPut();  // the diagrams of the model left go into the Back snapshot
       const res = await api.newModel();
       clearModel();
       setCanGoBack(res.hadContent);
@@ -252,6 +254,7 @@ export default function Toolbar() {
       const formData = new FormData();
       formData.append('file', file);
       try {
+        await flushDiagramsPut();
         const res = await api.uploadFiles(formData);
         if (res.success) {
           // Also restores the integral trajectory: its CSV round-trips through the bundle
@@ -281,6 +284,7 @@ export default function Toolbar() {
       // Sync current content to backend before downloading
       await api.putEescode(eescode);
       if (initials) await api.putInitials(initials);
+      await flushDiagramsPut();  // diagrams.json
 
       // If no model name, prompt for one
       let name = modelName;
@@ -315,6 +319,7 @@ export default function Toolbar() {
   // ================================================================
   const handleBack = useCallback(async () => {
     try {
+      await flushDiagramsPut();
       const res = await api.goBack();
       if (res.success) {
         // The previous model with its solve result and integral trajectory

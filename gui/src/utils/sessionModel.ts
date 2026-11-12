@@ -9,23 +9,26 @@
 
 import { api } from '../api/client';
 import { useModelStore } from '../stores/modelStore';
+import { emptyDiagramsDocument, normalizeDiagramsDocument } from './diagrams';
 
 /**
  * Load the session's model into the store: its files, name and library ID, its lookup tables
- * (the Lookup Tables panel does not fetch them by itself) and, when the model was solved, its
- * result and integral trajectory.
+ * (the Lookup Tables panel does not fetch them by itself), its diagram definitions and, when the
+ * model was solved, its result and integral trajectory.
  */
 export async function showSessionModel(): Promise<void> {
-  const [ees, init, sol, conf, tables] = await Promise.all([
+  const [ees, init, sol, conf, tables, diagrams] = await Promise.all([
     api.getEescode(),
     api.getInitials(),
     api.getSol(),
     api.getConf(),
     api.getTables(),
+    api.getDiagramDefinitions().catch(() => emptyDiagramsDocument()),
   ]);
   const store = useModelStore.getState();
   store.loadFile(ees.filePath, ees.content, init.content, sol.content, conf.content, ees.modelName, ees.libraryId);
   store.setLookupTables(tables.tables);
+  store.setDiagrams(normalizeDiagramsDocument(diagrams));
 
   const [result, integral, integralCSV] = await Promise.all([
     api.getSolveResult().catch(() => null),  // 404 when the model was not solved

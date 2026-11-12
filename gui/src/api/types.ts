@@ -252,31 +252,213 @@ export interface CoolPropFluidsResponse {
   modelFluids: string[];
 }
 
-// Saturation dome
-export interface SaturationData {
-  T: number[];
-  P: number[];
-  H: number[];
-  S: number[];
-  D: number[];
+// ============================================================================
+// Property diagrams (CoolPlot): docs/coolplot_integration.md §3.1, §3.4, §4.1
+// ============================================================================
+
+/** The fluid diagram types of coolplot-core: vertical axis first ("ph" is log(p)-h). */
+export type DiagramName = 'ph' | 'Ts' | 'hs' | 'ps' | 'prho' | 'Trho' | 'pT' | 'Th';
+
+/** A family of lines a diagram type can draw: its quantity key and default number of lines. */
+export interface DiagramFamilyOption {
+  key: string;
+  label: string;
+  symbol: string;
+  default_num: number;
 }
 
-export interface CriticalPoint {
-  T: number;
-  P: number;
-  H: number;
-  S: number;
-  D: number;
+/** A diagram type offered by the server: its name, title and axis quantity keys. */
+export interface DiagramTypeOption {
+  name: DiagramName;
+  title: string;
+  kind: string;
+  x: string;
+  y: string;
+  x_log: boolean;
+  y_log: boolean;
+  families: DiagramFamilyOption[];
 }
 
-export interface SaturationResponse {
+/**
+ * A custom unit system of CoolPlot: quantity key -> [label, scale, offset, difference label?],
+ * a display value being SI * scale + offset.
+ */
+export interface UnitSystemRecord {
+  name: string;
+  units: Record<string, [string, number, number] | [string, number, number, string]>;
+}
+
+/** The `units` of a CoolPlot spec: a preset name ("SI", "KSI", "engineering", "IP") or a unit record. */
+export type DiagramUnits = string | UnitSystemRecord;
+
+/** A unit system offered by the server: `record` is what goes into the spec's `units`. */
+export interface DiagramUnitSystemOption {
+  name: string;
+  record: DiagramUnits;
+  units: Record<string, unknown>;
+}
+
+/** A region preset (T-p box of the lines). */
+export interface DiagramRegionOption {
+  name: string;
+  limits: Record<string, unknown>;
+}
+
+/** Response of GET /api/v1/diagram/options */
+export interface DiagramOptionsResponse {
+  diagram_types: DiagramTypeOption[];
+  /** The presets, and "coolsolve" (the model's units) */
+  unit_systems: DiagramUnitSystemOption[];
+  default_unit_system: string;
+  regions: DiagramRegionOption[];
+  themes: string[];
+  label_modes: string[];
+  marked_points: string[];
+  /** Fluid types (GET /api/v1/coolprop/fluids) the server draws */
+  fluid_types: string[];
+  coolplot: { core_version: string; commit: string };
+}
+
+/** A family of lines of a CoolPlot spec (IsolineSet), as the GUI writes it. */
+export interface IsolineSpec {
+  key: string;
+  labels: boolean;
+  num: number;
+  rounding: boolean;
+  [field: string]: unknown;  // other IsolineSet fields of a spec written elsewhere are kept
+}
+
+/** Zoom window of a CoolPlot spec, in SI: [[x_min, x_max], [y_min, y_max]], null for the whole axis. */
+export type DiagramViewSI = [[number, number] | null, [number, number] | null];
+
+/** Settings of a CoolPlot spec, as far as the GUI writes them. */
+export interface DiagramSettingsSpec {
+  /** A theme name ("default", "dark", "print", "coolpack"); absent: the GUI's theme ("default" or "dark") */
+  look?: string;
+  labels?: { mode?: string; symbols?: 'unicode' | 'ascii'; [field: string]: unknown };
+  branding?: { references?: 'none' | 'short' | 'full'; versions?: boolean; [field: string]: unknown };
+  [field: string]: unknown;
+}
+
+/**
+ * A CoolPlot chart spec record (DiagramSpec.to_dict) without "fluid" and "cycles", which the
+ * server writes. Fields the GUI does not edit are kept as they are.
+ */
+export interface CoolPlotSpec {
+  diagram: DiagramName;
+  units: DiagramUnits;
+  /** A region preset ("DEF", "ACHP", "ORC"), or the bounds of a spec written elsewhere */
+  limits: string | Record<string, unknown>;
+  isolines: IsolineSpec[];
+  marked_points?: string[];
+  saturation_scale?: { Q: number; step_SI?: number | null };
+  view_SI?: DiagramViewSI;
+  settings: DiagramSettingsSpec;
+  [field: string]: unknown;
+}
+
+/** One state of a cycle definition: CoolPlot property keys ("p", "h", "T", ...) -> model variable names. */
+export interface CycleStateDefinition {
+  number: number;
+  label?: string;
+  vars: Record<string, string>;
+}
+
+/**
+ * A cycle of a diagram definition (§4.1): states as variable names, resolved by the server with
+ * the session's last solve. CoolPlot's CycleSpec fields ("numbers", styles) pass through.
+ */
+export interface CycleDefinition {
+  name: string;
+  numbers?: boolean;
+  /** Explicit states... */
+  states?: CycleStateDefinition[];
+  /** ...or arrays: property key -> array name, state i from X[i] */
+  arrays?: Record<string, string>;
+  /** Chains of state numbers; [] draws the states without lines; absent: one loop through the states
+   *  in ascending order, closed unless `closed` is false */
+  loops?: number[][];
+  closed?: boolean;
+  paths?: 'auto' | 'straight';
+  [field: string]: unknown;
+}
+
+/** One diagram of a model (`diagrams.json`, §3.4). */
+export interface DiagramDefinition {
+  name: string;
+  /** A CoolSolve fluid name (FluidRegistry) */
   fluid: string;
-  critical: CriticalPoint;
-  triplePoint: { T: number };
-  liquid: SaturationData;
-  vapor: SaturationData;
-  nPoints: number;
-  computeTime_ms: number;
+  spec: CoolPlotSpec;
+  cycles: CycleDefinition[];
+  [field: string]: unknown;
+}
+
+/** The diagrams of a model: `diagrams.json` in the ZIP bundle, GET/PUT /api/v1/diagram/definitions. */
+export interface DiagramsDocument {
+  format: 'coolsolve-diagrams';
+  version: 1;
+  diagrams: DiagramDefinition[];
+}
+
+/** What a diagram shows: the body of POST /api/v1/diagram/scene without the figure size and labels. */
+export interface DiagramSceneInput {
+  fluid: string;
+  spec: CoolPlotSpec;
+  cycles: CycleDefinition[];
+}
+
+/** Body of POST /api/v1/diagram/scene */
+export interface DiagramSceneRequest extends DiagramSceneInput {
+  /** The whole figure, in pt */
+  figure_size_pt: [number, number];
+  /** The `labels` of the previous response (same fluid and diagram), so that labels keep their places */
+  previous_labels?: Record<string, unknown>[];
+}
+
+/** A display unit of an axis: display = SI * scale + offset. */
+export interface DiagramAxisUnit {
+  label: string;
+  scale: number;
+  offset: number;
+}
+
+/** The axes of a scene; limits in display units. */
+export interface DiagramAxes {
+  x_key: string;
+  y_key: string;
+  x_label: string;
+  y_label: string;
+  x_limits: [number, number];
+  y_limits: [number, number];
+  x_log: boolean;
+  y_log: boolean;
+  x_unit: DiagramAxisUnit;
+  y_unit: DiagramAxisUnit;
+  /** Size of the plot area, pt */
+  plot_size_pt?: [number, number];
+}
+
+/** A state of a cycle as drawn: its variables and its full state in SI. */
+export interface DiagramSceneState {
+  cycle: number;
+  number: number;
+  label?: string;
+  vars: Record<string, string>;
+  values_SI: Record<string, number>;
+}
+
+/** Response of POST /api/v1/diagram/scene */
+export interface DiagramSceneResponse {
+  /** coolplot-core's SVG document */
+  svg: string;
+  axes: DiagramAxes;
+  /** Isoline labels, sent back as `previous_labels` */
+  labels: Record<string, unknown>[];
+  states: DiagramSceneState[];
+  /** The spec as composed (fluid and cycles filled in) */
+  spec: Record<string, unknown>;
+  diagnostics: { curves: Record<string, unknown>[]; warnings: string[] };
+  timing_ms: { curves: number; compose: number; svg: number };
 }
 
 // ============================================================================

@@ -1,5 +1,8 @@
 import { create } from 'zustand';
-import type { SolveResponse, ParseError, SolvedVariable, VariableInfo, SavedParametricStudy, UserUnitOverride, LookupTableInfo, IntegralTableData, IncludeInfo } from '../api/types';
+import type { SolveResponse, ParseError, SolvedVariable, VariableInfo, SavedParametricStudy, UserUnitOverride, LookupTableInfo, IntegralTableData, IncludeInfo, DiagramDefinition, DiagramsDocument } from '../api/types';
+
+/** The diagram definitions of a model that has none (utils/diagrams.ts). */
+const noDiagrams = (): DiagramsDocument => ({ format: 'coolsolve-diagrams', version: 1, diagrams: [] });
 
 interface ModelState {
   // File state
@@ -48,6 +51,12 @@ interface ModelState {
   // User unit overrides (GUI-specified units)
   userUnitOverrides: UserUnitOverride[];
 
+  // Property diagrams (`diagrams.json`, docs/coolplot_integration.md §3.4); the Diagrams tab edits the first
+  diagrams: DiagramsDocument;
+  /** Edits of `diagrams` made in the GUI since the model was loaded; 0: as read from the session. Each
+   *  change above 0 writes the document to the session (utils/diagrams.ts, `watchDiagramEdits`). */
+  diagramsEdits: number;
+
   // Console log
   consoleLines: string[];
 
@@ -81,6 +90,10 @@ interface ModelState {
   setLookupTables: (tables: LookupTableInfo[]) => void;
   setLookupTableCSV: (name: string, csv: string) => void;
   removeLookupTable: (name: string) => void;
+  /** The document as read from the session (not written back). */
+  setDiagrams: (doc: DiagramsDocument) => void;
+  /** An edit of the first diagram (created if the document has none), written to the session. */
+  setDiagramDefinition: (def: DiagramDefinition) => void;
 }
 
 export const useModelStore = create<ModelState>((set) => ({
@@ -113,6 +126,8 @@ export const useModelStore = create<ModelState>((set) => ({
   lookupTableCSVs: {},
   integralTable: null,
   integralCSV: '',
+  diagrams: noDiagrams(),
+  diagramsEdits: 0,
 
   consoleLines: [],
 
@@ -136,9 +151,9 @@ export const useModelStore = create<ModelState>((set) => ({
     set((state) => ({ consoleLines: [...state.consoleLines, line] })),
   clearConsole: () => set({ consoleLines: [] }),
   loadFile: (path, eescode, initials, sol, conf, modelName, libraryId) =>
-    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', libraryId: libraryId ?? '', parametricStudies: [], parsedVariables: [], includes: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
+    set({ filePath: path, eescode, initials, sol, conf, dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], modelName: modelName ?? '', libraryId: libraryId ?? '', parametricStudies: [], parsedVariables: [], includes: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', diagrams: noDiagrams(), diagramsEdits: 0, tryHarderAvailable: false, deepSearchRunning: false }),
   clearModel: () =>
-    set({ filePath: '', modelName: '', libraryId: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], includes: [], userUnitOverrides: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', tryHarderAvailable: false, deepSearchRunning: false }),
+    set({ filePath: '', modelName: '', libraryId: '', eescode: '', initials: '', sol: '', conf: '', dirty: false, lastResult: null, solvedVariables: [], consoleLines: [], parseErrors: [], equationCount: 0, variableCount: 0, isSquare: true, parametricStudies: [], parsedVariables: [], includes: [], userUnitOverrides: [], lookupTables: [], lookupTableCSVs: {}, integralTable: null, integralCSV: '', diagrams: noDiagrams(), diagramsEdits: 0, tryHarderAvailable: false, deepSearchRunning: false }),
   addParametricStudy: (study) =>
     set((state) => ({ parametricStudies: [...state.parametricStudies, study] })),
   removeParametricStudy: (id) =>
@@ -166,4 +181,10 @@ export const useModelStore = create<ModelState>((set) => ({
       const { [name]: _removed, ...rest } = state.lookupTableCSVs;
       return { lookupTableCSVs: rest, lookupTables: state.lookupTables.filter((t) => t.name !== name) };
     }),
+  setDiagrams: (doc) => set({ diagrams: doc, diagramsEdits: 0 }),
+  setDiagramDefinition: (def) =>
+    set((state) => ({
+      diagrams: { ...state.diagrams, diagrams: [def, ...state.diagrams.diagrams.slice(1)] },
+      diagramsEdits: state.diagramsEdits + 1,
+    })),
 }));

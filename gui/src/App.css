@@ -1148,6 +1148,175 @@ body {
 }
 
 /* ============================================================================
+   Diagrams tab (components/diagram/): controls, and the chart of DiagramView
+   ============================================================================ */
+.diagram-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  padding: 6px 8px;
+  min-height: 0;
+}
+.diagram-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.diagram-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.diagram-row-title {
+  font-weight: 600;
+}
+.diagram-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.diagram-field input[type="checkbox"] {
+  margin: 0;
+}
+.diagram-select {
+  padding: 2px 4px;
+  font-size: 11px;
+  max-width: 160px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+.diagram-num {
+  width: 42px;
+  padding: 1px 3px;
+  font-size: 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  text-align: right;
+}
+.diagram-family {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 5px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+}
+.diagram-family.on {
+  border-color: var(--accent-color);
+  color: var(--text-primary);
+}
+.diagram-retry {
+  padding: 1px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.diagram-error {
+  color: var(--error-color);
+  font-size: 11px;
+}
+.diagram-view {
+  flex: 1;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+}
+.diagram-canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  user-select: none;
+}
+.diagram-canvas.zoomable {
+  cursor: crosshair;
+}
+/* Absolute, so that the drawing never changes the size it is measured from */
+.diagram-svg-host {
+  position: absolute;
+  inset: 0;
+}
+.diagram-svg-host > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.diagram-band {
+  position: absolute;
+  border: 1px dashed var(--accent-color);
+  background: rgba(0, 102, 204, 0.08);
+  pointer-events: none;
+}
+.diagram-reset {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  padding: 3px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.diagram-reset:hover {
+  color: var(--accent-color);
+  border-color: var(--accent-color);
+}
+.diagram-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 12px;
+  pointer-events: none;
+}
+.diagram-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 16px;
+  font-size: 10px;
+  color: var(--text-muted);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.diagram-status .diagram-error {
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.diagram-spinner {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+}
+.diagram-warnings {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--warning-color);
+  cursor: help;
+}
+.diagram-hint {
+  margin-left: auto;
+}
+
+/* ============================================================================
    Integral Table (bottom-panel tab)
    ============================================================================ */
 .integral-table-panel {
