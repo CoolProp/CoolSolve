@@ -193,10 +193,17 @@ equations.tex, etc.) in a session-isolated temp directory.
 
 ### 4.7 Thermodynamic Diagrams
 
+The charts are drawn by [CoolPlot](https://github.com/CoolProp/CoolPlot)'s C++ core (coolplot-core) from lines
+computed by `CoolProp::Plot`, through the module `src/diagram/` (design and status:
+[CoolPlot integration](coolplot_integration.md)).
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/v1/coolprop/fluids` | List all registered fluids with `name`, `type`, `hasDome`, and `modelFluids` from the current session |
-| `POST` | `/api/v1/coolprop/saturation` | Compute saturation dome for a fluid; body: `{"fluid":"R134a","nPoints":200}`; returns liquid+vapor arrays for T, P, H, S, D and critical/triple-point data |
+| `GET` | `/api/v1/coolprop/fluids` | List all registered fluids with `name`, `type` (`Real`, `IdealGas`, `HumidAir`, `Incompressible`, `Mixture`, `AmmoniaWater`), `hasDome`, and `modelFluids` from the current session |
+| `GET` | `/api/v1/diagram/options` | What a chart can be: `diagram_types` (name such as `ph`, `Ts`, `Th`; title; axes `x`, `y` and their log flags; `families` with `key`, `label`, `symbol`, `default_num`), `fluid_types` drawn (`Real`, `Mixture`), `unit_systems` (`SI`, `KSI`, `engineering`, `IP` and `coolsolve`, the model's units, each with the `record` to put in a spec), `default_unit_system`, `regions` (`DEF`, `ACHP`, `ORC`, `NONE` with their limits), `themes`, `label_modes`, `marked_points`, `coolplot` (`core_version`, `commit`) |
+| `POST` | `/api/v1/diagram/scene` | A chart of the session's model. Body: `fluid` (CoolSolve fluid name), `spec` (CoolPlot spec record without `fluid` and `cycles`), `cycles` (cycle definitions naming the model's variables), `figure_size_pt` `[w, h]`, `previous_labels` (optional). Returns `svg` (coolplot-core's document), `axes` (keys, labels, limits in display units, log flags, `x_unit`/`y_unit` with display = SI × `scale` + `offset`, `plot_size_pt`), `labels` (to send back as `previous_labels`), `states` (each cycle state: `cycle`, `number`, `label`, `vars`, `values_SI`), `spec` (as composed, readable by CoolPlot), `diagnostics` (`curves`, `warnings`), `timing_ms` (`curves`, `compose`, `svg`). The CoolProp backend is the model's `coolpropBackend`; the cycles use the last successful solve and are skipped without one. 400 for an unknown fluid, a fluid kind not drawable yet (ideal gases, humid air, incompressibles, `NH3H2O`), an unknown diagram or a spec value coolplot-core refuses; a line that cannot be computed is a diagnostic, not an error |
+| `GET` | `/api/v1/diagram/definitions` | The diagram definitions of the session (`diagrams.json`: `{"format": "coolsolve-diagrams", "version": 1, "diagrams": [...]}`, empty list when none) |
+| `PUT` | `/api/v1/diagram/definitions` | Store the diagram definitions of the session; they go into the ZIP bundle, into the snapshot of *Back*, and are cleared by *New*, *Open*, a library model and an upload |
 
 ### 4.8 Parametric Study
 
@@ -521,54 +528,67 @@ Files typically generated (~15):
 `solver_trace.md`, `incidence.md`, `tearing.md`, `evaluator.md`,
 `residuals.txt`, `equations.tex`, and block-level debug files.
 
-### 6.8 Diagrams Tab — `ThermoDiagram.tsx`
+### 6.8 Diagrams Tab — `components/diagram/`
 
-Interactive thermodynamic property diagrams powered by Plotly.  The tab is
-located in the right panel alongside Variables, Arrays, Config, and Debug.
+Property diagrams of the model's fluid with its states, drawn by the server: the tab sends a
+diagram definition, the server computes the lines with `CoolProp::Plot` (the pinned CoolProp, the
+model's backend) and returns the SVG that CoolPlot's C++ core composes (§4.7,
+[CoolPlot integration](coolplot_integration.md)). The tab is located in the right panel alongside
+Variables, Arrays, Config, and Debug; it stays mounted (hidden) so that the chart is not redrawn
+when the tab comes back.
 
-#### Controls
+#### Controls (`DiagramControls.tsx`)
 
-- **Fluid dropdown**: populated from `GET /api/v1/coolprop/fluids`.  Model
-  fluids (detected via variable inference) appear first.  Only fluids with
-  `hasDome: true` (i.e. CoolProp `Real` type) are selectable; ideal gases and
-  humid air are shown greyed out.
-- **Diagram type**: T-s, P-h, h-s, T-h (P-h uses logarithmic y-axis)
-- **Generate button**: calls `POST /api/v1/coolprop/saturation`; shows spinner
-  during computation (~100–300 ms for 200 points)
+- **Fluid**: from `GET /api/v1/coolprop/fluids`, the model fluids first (variable inference).
+  Pure fluids and CoolProp mixtures are drawn; ideal gases, humid air, incompressibles and
+  `NH3H2O` are not yet (the server answers "not drawable yet").
+- **Diagram**: the fluid charts of coolplot-core: log(p)-h, T-s, h-s, p-s, p-ρ, T-ρ, p-T and T-h.
+- **Units**: `engineering` (°C, bar, kJ/kg; the default), `SI`, `KSI`, `IP`, and `coolsolve`, the
+  model's units (°C, Pa, J/kg).
+- **Region**: `DEF` (relative to the saturation range), `ACHP` (heat pumps), `ORC`.
+- **Lines**: each family of the chart (isotherms, isentropes, isochores, lines of constant
+  quality, …) on or off, with its count and rounded values.
+- **Critical point** marked with a dot; **saturation scale** next to the vertical axis (charts
+  with p or T vertical).
+- **Theme**: as the GUI (`default` or `dark`), `print`, `coolpack`; **labels**: `rails`, `edge`,
+  `margin`, `inline`.
 
-#### Saturation Dome
+The chart is redrawn automatically (debounced) when a control changes, when the panel is resized
+and after a solve; there is no *Generate* button. The status line shows the warnings of the server
+(lines that could not be computed, states left out) and the time of the lines, the composition and
+the SVG.
 
-The backend generates the dome using N logarithmically spaced temperature
-points between the triple point and critical point:
-1. For each T: compute Q=0 (liquid) and Q=1 (vapor) values of P, H, S, D
-   via `CoolProp::PropsSI()`
-2. Concatenate liquid branch + critical point + vapor branch
-3. Return arrays for T, P, H, S, D plus critical and triple-point data (all SI units)
+#### Overlays (`DiagramOverlays.tsx`): cycles from the model
 
-Each dome generation requires ~200 × 8 = 1,600 `PropsSI` calls, taking
-approximately **0.1–0.3 s** in practice — acceptable for a user-initiated action.
+Each overlay is a cycle definition that names the model's variables; the server reads their values
+from the last solve, converts them to SI and completes each state from two of its properties:
 
-#### State Point Overlay
+- **Inferred states**: the variables of the fluid found by variable inference (§8.3), grouped into
+  states by name (`T_1`, `P_1`, `h_1` → state 1; `h_su_cp`, `P_su_cp` → a state labelled `su_cp`).
+  Drawn as numbered markers without lines.
+- **Arrays**: two array variables (`h[i]`, `P[i]`) give state i; drawn as a chain in index order,
+  closed on request.
 
-After solving, checking "Overlay solved states" calls
-`GET /api/v1/variables/inferred` and:
-1. Filters variables matching the selected fluid (`inferredFluid == selectedFluid`)
-2. Groups by index `i` for array variables, or by name-pattern matching for scalars
-3. Plots each group as a labeled scatter marker on the diagram (where both
-   axis properties are directly available from inference)
+Phase 1 draws straight segments between states; paths along the processes (isobars through the
+dome, isentropes, …), a state editor and the hover come next
+([CoolPlot integration](coolplot_integration.md) §5, phase 2).
 
-#### Array Path Overlay
+#### Zoom and size (`DiagramView.tsx`)
 
-Checking "Overlay array path" lets the user select X and Y base variable names.
-The component:
-1. Extracts paired values `(X[i], Y[i])` for all matching indices
-2. Sorts by index order
-3. Plots as a connected scatter+line trace with index labels
-4. Optional "Close cycle" checkbox connects the last point back to the first
+`DiagramView` shows coolplot-core's SVG inline and asks for a figure the size of its container.
+Drag a rectangle on the plot area to zoom (a new `view_SI` in the spec: the server lays out the
+labels again for the window); double-click or the reset button returns to the whole chart. When only
+the size or the zoom changes, the labels of the scene on screen are sent back so that they keep their
+places, and no property is computed again. `DiagramView` does not depend on the tab's controls: it
+draws any definition.
 
-#### Export
+#### Persistence and export
 
-PNG and SVG export via Plotly's built-in `Plotly.downloadImage()`.
+The definition is stored in the session (`PUT /api/v1/diagram/definitions`, debounced) and travels
+in the ZIP bundle as `diagrams.json` (§7.2); opening a bundle, *Back* and the reload of a library
+tab restore it (`showSessionModel()`). The LaTeX report takes the chart as
+`thermo_diagrams.png`, rasterised in the browser from the SVG (`exportPlots.ts`), when the tab is
+visible.
 
 ### 6.9 Console (Bottom Panel) — `Console.tsx`
 
@@ -679,6 +699,8 @@ writer/reader in `server.cpp` — no external library):
 | `coolsolve.conf` | Solver configuration |
 | `<tablename>.csv` | One entry per lookup table in the session |
 | `<name>-integral.csv` | Integral trajectory (when an `INTEGRAL` model was solved) |
+| `parametric_studies.json` | Parametric study results (§4.8) |
+| `diagrams.json` | Diagram definitions of the Diagrams tab (§6.8): fluid, CoolPlot spec, cycles as variable names |
 | `<other>.eescode`, `<other>-<table>.csv` | Every file the model includes (`$INCLUDE`, nested includes too; library models as their `.eescode` file) with its lookup tables, and the other `.eescode` files of an uploaded project |
 | `debug/*` | Debug output files (if present) |
 
@@ -779,9 +801,9 @@ This extraction is the only new per-solve cost — negligible.
 
 The `FluidRegistry` (`src/fluids.cpp`) registers 90+ real fluids, the ideal
 gases, humid air, the incompressible solutions (glycols, brines, `LiBr`,
-`SeaWater`) and, built from their string, CoolProp mixtures.  Only fluids of type
-`FluidType::Real` have saturation curves and are enabled in the diagram fluid
-selector.
+`SeaWater`) and, built from their string, CoolProp mixtures.  The Diagrams tab
+draws fluids of type `FluidType::Real` and CoolProp mixtures (`FluidType::Mixture`);
+the other kinds come with phase 3 of [CoolPlot integration](coolplot_integration.md).
 
 ---
 
@@ -901,6 +923,7 @@ gui/
     ├── languages/
     │   └── ees.ts                 # Monaco Monarch language definition for CoolSolve syntax
     ├── utils/
+    │   ├── diagrams.ts            # Diagram definitions: empty document, debounced PUT to the session
     │   ├── library.ts             # openLibraryModel(): load a library model folder into the session; dashboard URLs
     │   └── sessionModel.ts        # showSessionModel(): editor state read back from the session (open, Back, upload, reload)
     └── components/
@@ -912,7 +935,13 @@ gui/
         ├── ConfigEditor.tsx       # Form-based coolsolve.conf editor (9 groups, 30+ fields)
         ├── DebugViewer.tsx        # Debug output file list + content viewer
         ├── Console.tsx            # Auto-scrolling console with color-coded log lines
-        ├── ThermoDiagram.tsx      # Plotly thermo diagrams (T-s, P-h, h-s, T-h) with overlays + export
+        ├── diagram/               # Diagrams tab (§6.8): coolplot-core's SVG drawn by the server
+        │   ├── DiagramTab.tsx     # Options, the definition edited, the request
+        │   ├── DiagramControls.tsx # Fluid, diagram, units, region, lines, theme, labels
+        │   ├── DiagramOverlays.tsx # Inferred states and arrays as cycle definitions
+        │   ├── DiagramView.tsx    # Reusable view: fetch, inline SVG, zoom, resize
+        │   ├── definition.ts      # Spec and cycle builders
+        │   └── svgCoords.ts       # Pointer → display units → SI (log axes)
         ├── ParametricStudy.tsx    # Parametric sweep: variable selector, range inputs, 1D/2D plots, results table
         ├── LookupTableEditor.tsx  # Lookup table manager: list view + inline editable grid + CSV import/export
         ├── IntegralTable.tsx      # Read-only trajectory viewer for INTEGRAL models: table + Plotly plot + CSV export
@@ -954,10 +983,8 @@ All the following tests pass against the current codebase:
 | Debug file content (`report.md`) | ✅ Full analysis content |
 | `GET /api/v1/coolprop/fluids` | ✅ 128 fluids; Water `hasDome:true`; Air `hasDome:false` |
 | `GET /api/v1/coolprop/fluids` (modelFluids, before parse) | ✅ `"modelFluids":[]` |
-| `POST /api/v1/coolprop/saturation` — Water, 50 pts | ✅ `critical.T≈647.1 K` (raw SI from CoolProp; converted to °C in the JSON response), `computeTime_ms≈67` |
-| `POST /api/v1/coolprop/saturation` — R134a, 100 pts | ✅ `critical.T≈374.2 K` (raw SI from CoolProp; converted to °C in the JSON response) |
-| `POST /api/v1/coolprop/saturation` — invalid fluid | ✅ HTTP 400 |
-| `POST /api/v1/coolprop/saturation` — Air (ideal gas) | ✅ HTTP 400 "no dome" |
+| Diagram options, scenes (R134a p-h, errors), definitions round trip, `diagrams.json` in the ZIP bundle, New/Back, a solved model drawn with its states | ✅ `tests/test_diagram_api.py --auto` (53 checks) |
+| Diagrams tab in headless Chromium: the chart drawn on load at the container size, the default spec, the states of a solved R134a cycle as markers, zoom (`view_SI`, labels sent back) and reset, the report figure `thermo_diagrams.png` | ✅ `tests/test_gui_diagrams.py --auto` (17 checks) |
 | `GET /api/v1/variables/inferred` (before solve) | ✅ 0 variables |
 | `GET /api/v1/variables/inferred` (after solve) | ✅ 39 vars with T/P/H/S/Q for R134a |
 | `GET /api/v1/coolprop/fluids` (modelFluids after solve) | ✅ `"modelFluids":["R134a"]` |
@@ -1112,16 +1139,18 @@ sections below). Remaining enhancements:
 
 ### 14.4 Thermodynamic Diagram Enhancements
 
-These are extensions to the already-implemented `ThermoDiagram.tsx`:
+The Diagrams tab is built on CoolPlot (§6.8); its phases are in
+[CoolPlot integration](coolplot_integration.md) §5. Done in phase 1: units, isolines, region
+presets, themes, zoom, persistence in the ZIP bundle. Still to do:
 
 | Item | Description |
 |------|-------------|
-| Unit conversion | Display properties in additional user-friendly units (kPa, kJ/kg, …) alongside the current °C/Pa/J defaults |
-| Isolines | Isotherms, isobars, iso-quality lines on the saturation dome |
-| Multiple fluids | Overlay domes for two fluids on the same chart for comparison |
-| CoolProp.js (WASM) | Compute missing state properties in the browser without backend calls |
-| Interactive hover | Show property values on hover over dome or state points |
-| Diagram state persistence | Save/restore diagram configuration in the ZIP bundle |
+| Cycle paths | Isobars through the dome, isentropes, isenthalps between the states of a cycle (phase 2) |
+| State editor | Pick, group and name the states of a cycle; grouping by property calls (phase 2) |
+| Interactive hover | Variable names and values of a state marker; the full state under the cursor (phase 2) |
+| More fluids | Ideal gases, incompressibles, humid air (psychrometric charts), tabular backends (phase 3) |
+| Outputs | SVG/PDF downloads, the report figure as PDF, *Export chart spec* for CoolPlot, `coolsolve --diagram`, the badge (phase 4) |
+| Multiple diagrams | Several definitions per model (the document holds a list; the tab edits the first) |
 
 ### 14.5 AG Grid Variable Table
 

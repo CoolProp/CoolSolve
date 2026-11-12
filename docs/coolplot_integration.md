@@ -1,7 +1,7 @@
 # CoolPlot Integration Plan
 
-**Status:** in progress on branch `feat/coolplot-diagrams` (revised 2026-11-11; earlier
-versions 2026-10-20 and 2026-10-31). Phase 0 is done (§5).
+**Status:** in progress on branch `feat/coolplot-diagrams` (revised 2026-11-12; earlier
+versions 2026-10-20 and 2026-10-31). Phases 0 and 1 are done (§5).
 **References:** [CoolPlot](https://github.com/CoolProp/CoolPlot) `v1.5.0` = `7338f48`
 (2026-11-03), coolplot-core 1.5.0 from its `cpp/` folder; [CoolProp](https://github.com/CoolProp/CoolProp)
 `8eb3b778` (2026-10-31), the commit CoolSolve is pinned to, which has `CoolProp::Plot`
@@ -235,12 +235,15 @@ SVG + interaction layer  <-- SVG, axes, labels, states, diagnostics <-----------
 // response
 {
   "svg": "<svg ...>",            // coolplot-core's document
-  "axes": { ... },               // the scene's axes record: keys, limits, log flags, plot area
+  "axes": { ... },               // x_key, y_key, x_label, y_label, x_limits, y_limits (display
+                                 // units), x_log, y_log, x_unit, y_unit ({label, scale, offset}:
+                                 // display = SI * scale + offset), plot_size_pt
   "labels": [ ... ],             // isoline label items, to send back as previous_labels
   "states": [ ... ],             // per cycle state: number, label, variables, values in SI
   "spec": { ... },               // the spec as composed (fluid and cycles filled in): CoolPlot
                                  // draws it (Export chart spec)
-  "diagnostics": { "curves": [ ... ], "warnings": [ ... ] },
+  "diagnostics": { "curves": [ ... ], "warnings": [ ... ] },   // per curve: item_id, drawn, the
+                                 // counts of the curve record, method, reason
   "timing_ms": { "curves": ..., "compose": ..., "svg": ... }
 }
 ```
@@ -371,9 +374,23 @@ values from the session's last solve:
   ],
   "arrays": { "p": "P", "h": "h" },   // ...or arrays: state i from P[i], h[i]
   "loops": [[1, 2, 3, 4, 1]],         // chains of state numbers; default: the states in order
+  "closed": true,                     // with no "loops": close the loop of the states (default)
   "paths": "auto"                     // "auto" (phase 2) or "straight" (phase 1)
 }
 ```
+
+- No `loops`: CoolPlot's default, the states in order, closed (unless `"closed": false`).
+- `"loops": []`: markers and numbers only, no lines (the inferred states). In the exported
+  spec this becomes chains of one state each, because an empty `loops` means the default loop
+  to CoolPlot.
+- `"states": []` (an overlay switched on before any solve) is stored and skipped when drawing.
+- A missing variable, a state that cannot be completed or no successful solve leaves the
+  state or the cycle out with a warning; it is never an error. A cycle drawn with lines
+  needs all its states; a cycle of markers only (`"loops": []`) draws the states that can be
+  computed and names the others in a warning (the name heuristic groups a saturation T and p,
+  `T_ev` and `P_ev`, which fix no state).
+- State keys are CoolPlot's (`T`, `p`, `h`, `s`, `rho`, `u`, `Q`); the GUI maps the codes of
+  the variable inference (`P` → `p`, `D` → `rho`, …).
 
 Sources of states:
 
@@ -428,7 +445,15 @@ Each phase ends with the Diagrams tab usable and the old code it replaces remove
 - Not verified: the MSVC build of coolplot-core (CoolPlot's CI builds it with GCC only).
   A fix goes upstream.
 
-### Phase 1 — Charts of pure fluids
+### Phase 1 — Charts of pure fluids (done)
+
+Done on `feat/coolplot-diagrams`: `src/diagram/` (`fluid`, `domain`, `planning`, `engine`),
+the endpoints but the state, the new tab (`gui/src/components/diagram/`), `diagrams.json` in
+the bundle, the report figure from the SVG, `ThermoDiagram.tsx` and the saturation route
+removed, `coolsolve --version` naming coolplot-core and its CoolPlot commit. CoolProp mixtures
+are drawn too (the fluid string is enough; pseudo-pure blends get a warning). Lines of constant
+quality of a tabular backend use the base backend (wired, not tested yet). What the list below
+planned:
 
 - `diagram/fluid`, `domain`, `planning`, `engine` (§3.3), with the marked points, the
   saturation scale and the dome ends of coolplot-core 1.5; the endpoints of §3.1 but the
@@ -527,6 +552,17 @@ scale; one cycle (phase 2).
   CoolSolve tests that it calls it right.
 - No renderer fixtures: the GUI shows coolplot-core's SVG.
 
+Measured with the first fixtures (CoolPlot 1.5.0 on the CoolProp 8.0.0 wheel, which has no
+port, so CoolPlot used its Python numerics; five cases: R134a p-h, water T-s, R134a T-h,
+R290 p-h with `ACHP`, `engineering` and rounding, CO2 p-h with marked points and a saturation
+scale): the plans on CoolPlot's domain match bit for bit and every curve has the same number of
+points; the largest differences are 7.8e-14 of the span for the domain, 4.6e-8 of the axis span
+for the curves (the fixtures keep 8 digits and every third point) and 1.9e-10 for the labels.
+The comparison tolerances are set from these: 1e-12, 2e-7 and 1e-9. Scenes match in ids,
+drawing order, group, role, z order, legend, style and text. The ids of families spaced evenly
+over a range computed by CoolProp can differ in the twelfth digit, so ids on CoolSolve's own
+domain are compared to 1e-11.
+
 ### 6.2 Invariants
 
 Independent of CoolPlot, on every fixture fluid:
@@ -540,9 +576,19 @@ Independent of CoolPlot, on every fixture fluid:
 
 ### 6.3 Performance
 
-Measure, in a Release build, the cold time of the default chart of each fixture fluid
-and the warm time of a new scene (compose only); set the budget from the measurements
-and add it to the test suite ([contributing.md §5](contributing.md)).
+Measured in a Release build, in process, 250 points per line:
+
+| Chart | Cold (lines computed) | Warm (compose and SVG) |
+|---|---|---|
+| R134a p-h | 28 ms | 3 ms |
+| Water T-s | 70 ms | 2.8 ms |
+| CO2 p-h | 145 ms | |
+| R410A p-h | 129 ms | |
+| R32[0.7]&R125[0.3] p-h | 1.55 s | |
+
+Over HTTP, R134a p-h takes 47 ms cold and 10 ms warm. The `[diagram]` tests check a loose
+budget (cold under 1 s, warm under 100 ms). A mixture chart is the slow case: computing its
+lines on several threads (one `PropertyPlot` each) is the phase 3 item.
 
 ### 6.4 Moving to newer versions
 

@@ -56,6 +56,8 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 - **GUI & REST API**: Embedded single-page app (React/TypeScript) with a code editor, variable table, parametric studies, thermodynamic diagrams, and ZIP bundle round-trip. See [GUI & REST API](docs/gui.md).
 
+- **Thermodynamic Diagrams**: log(p)-h, T-s, h-s, p-s, p-ρ, T-ρ, p-T and T-h charts of the model's fluid (pure fluids and CoolProp mixtures) with isolines, units, themes and zoom, and the solved states on top, drawn by the C++ core of [CoolPlot](https://github.com/CoolProp/CoolPlot) from lines computed by the pinned CoolProp (`CoolProp::Plot`) with the model's backend. The chart is saved with the model (`diagrams.json`). See [GUI §6.8](docs/gui.md) and [CoolPlot Integration](docs/coolplot_integration.md).
+
 - **Model Library**: The GUI binary embeds the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) — documented, verified EES models (cycles, components, heat transfer, HVAC, …). The toolbar **Library** button follows the library taxonomy and opens a whole model folder (code, initial values, lookup tables, configuration) in one click; the dashboard at `/library/` lists every model, blocked ones included, with an *Open in CoolSolve* link on each. The library is fetched at build time, always at its latest version. Any model imports the functions and procedures of a library model, or of another `.eescode` file of its folder, with **`$INCLUDE <name>`** — in the CLI and the GUI alike (a file of the folder takes precedence over a library model of the same name; the Library menu copies the line, an include bar opens each included file in its own window, the ZIP bundle carries them; e.g. `$INCLUDE hx_ees_function` for the EES `HX` function). See [Model Library Support](docs/model_library_support.md) and [Language Reference §7](docs/language_reference.md#include-functions-and-procedures-of-another-file).
 
 - **Usage Log**: In GUI mode, every solve or *Try Harder* attempt appends one CSV line to a local log file (timestamp, model name and size, outcome, duration, client IP, version). Written after the solve completes — no impact on solving. Aggregated statistics are available on a hidden `/stats` dashboard. See [GUI & REST API](docs/gui.md).
@@ -74,6 +76,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 | [Symbolic Block Reduction](docs/symbolic_redecomposition.md) | Symbolic block reduction algorithm |
 | [Solid Phases (design study)](docs/solid_phase_properties.md) | Proposal for ice, dry ice, PCM and brine freezing properties coherent with CoolProp (not implemented) |
 | [GUI & REST API](docs/gui.md) | Web interface, REST API, and parametric studies |
+| [CoolPlot Integration](docs/coolplot_integration.md) | The Diagrams tab on CoolPlot: architecture, REST contract, diagram definitions, phases and status |
 | [Deployment Guide](docs/deployment_ubuntu_apache.md) | Deploying CoolSolve on Ubuntu with Apache |
 | [Contributing Guide](docs/contributing.md) | Workflow and integration checklist for new features and bug fixes |
 | [Version History](docs/versions.md) | Release notes, download links, and CoolProp version per release |
@@ -304,7 +307,7 @@ The debug folder contains:
 | `-g, --guess` | Update .initials file with solution on success |
 | `--no-sol` | Do not write the .sol file (an existing one is left untouched) |
 | `--no-superancillary` | Disable CoolProp superancillary functions |
-| `--version` | Print the CoolSolve version, the CoolProp version and git revision, and (GUI builds) the embedded model library commit |
+| `--version` | Print the CoolSolve version, the CoolProp version and git revision, (GUI builds) the embedded model library commit, and the coolplot-core version with its CoolPlot commit |
 | `-h, --help` | Show help message |
 
 ### Performance Options
@@ -345,6 +348,12 @@ cd build
 # server, the Library menu, opening a model folder, per-tab sessions and /library/ pages
 ./coolsolve_tests "[library]"
 python3 ../tests/test_library_api.py --auto
+
+# Thermodynamic diagrams: the CoolPlot glue (unit tests and CoolPlot fixtures), the REST routes,
+# and the Diagrams tab in headless Chromium (CHROME=<path> when Chromium is not on the PATH)
+./coolsolve_tests "[diagram]"
+python3 ../tests/test_diagram_api.py --auto
+python3 ../tests/test_gui_diagrams.py --auto
 
 # GUI keyboard shortcuts (F2 = Solve) in headless Chromium, against the GUI server
 # (needs Chromium/Chrome and the Python package websockets; skipped without them)
@@ -449,6 +458,8 @@ CoolSolve/
 │   └── solver.h                # Solver pipeline, all SolverOptions declarations
 ├── include/coolsolve/integral/
 │   └── *.h                     # Equation-based dynamic solver (IntegralProblem, IntegralTable, Integrator, IntegralSolver)
+├── include/coolsolve/diagram/
+│   └── *.h                     # Thermodynamic diagrams: CoolPlot glue (fluid, domain, planning, engine)
 ├── src/
 │   ├── parser.cpp              # CoolSolve language parser
 │   ├── ir.cpp                  # IR building and LaTeX generation
@@ -460,6 +471,11 @@ CoolSolve/
 │   ├── nh3h2o.cpp              # Ammonia-water Helmholtz formulation (IAPWS G4-01)
 │   ├── nh3h2o_flash.cpp        # Ammonia-water saturation solver and the three-property flashes
 │   ├── evaluator_nh3h2o.cpp    # NH3H2O in the evaluator: fluid functions, CALL NH3H2O, units, derivatives
+│   ├── diagram/                # Thermodynamic diagrams: lines from CoolProp::Plot, compose record for coolplot-core
+│   │   ├── fluid.cpp                      # Fluid string and fluid model of a chart (FluidRegistry name, backend)
+│   │   ├── domain.cpp                     # T-p box, ranges, saturation anchors, marked points, scale, dome ends
+│   │   ├── planning.cpp                   # Curve requests of a spec: values, rounding, item ids
+│   │   └── engine.cpp                     # Caches, cycles from the solution, compose record, scene, options
 │   ├── integral/               # Equation-based dynamic solver (INTEGRAL / $IntegralTable)
 │   │   ├── integrator_euler_explicit.cpp  # Forward Euler (fixed step)
 │   │   ├── integrator_euler_implicit.cpp  # Backward Euler, A-stable (fixed step)
@@ -500,13 +516,18 @@ CoolSolve/
 │   ├── test_library_store.cpp  # Model library index/loader unit tests
 │   ├── test_library_regression.cpp # Library regression: every runnable library model vs its .sol (slow, hidden) + self-tests
 │   ├── test_includes.cpp       # `$INCLUDE`: resolution, imported routines, precedence, errors
+│   ├── test_diagram.cpp        # Diagrams: planning, domain, CoolPlot fixtures, invariants, cycles, errors
+│   ├── test_diagram_api.py     # Diagram routes, definitions, `diagrams.json` in the bundle (REST, needs the GUI build)
+│   ├── fixtures/coolplot/      # Compose records and scenes written by CoolPlot (tools/coolplot_fixtures.py)
 │   ├── test_library_api.py     # Library menu, open, per-tab sessions, /library/, `$INCLUDE` (REST, needs the GUI build)
 │   ├── test_gui_shortcuts.py   # GUI keyboard shortcuts (F2) in headless Chromium (needs the GUI build)
+│   ├── test_gui_diagrams.py    # Diagrams tab in headless Chromium: chart, cycle states, zoom, report figure (needs the GUI build)
 │   ├── test_ees_tools.py       # EES import tools (ees_extract.py, compare_solution.py) on synthetic files (plain Python, no build)
 │   └── test_kinsol.cpp         # KINSOL solver unit tests (3 modes + config)
 ├── cmake/                      # embed_assets / embed_library: GUI, docs and model library embedded in the binary
 ├── tools/                      # EES import helpers: ees_extract.py, compare_solution.py (see docs/ees_import.md);
 │                               # update_coolsolve.sh: server update, run as root (see docs/deployment_ubuntu_apache.md)
+│                               # coolplot_fixtures.py: CoolPlot fixtures of the [diagram] tests
 └── examples/                   # Example .eescode files for the CLI and the regression tests
 ```
 
@@ -543,7 +564,7 @@ For the full language syntax, built-in functions, and CoolProp integration detai
 
 ## Future Work
 
-The [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) is embedded, browsable and importable (`$INCLUDE <name>`); next steps are a command-line access (`coolsolve --library`), an *Export for EES* that writes the included routines into one file, editor completion of library functions, and improved plotting capabilities — see [Model Library Support](docs/model_library_support.md). 
+The [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) is embedded, browsable and importable (`$INCLUDE <name>`); next steps are a command-line access (`coolsolve --library`), an *Export for EES* that writes the included routines into one file, editor completion of library functions — see [Model Library Support](docs/model_library_support.md). The Diagrams tab continues on CoolPlot: cycle paths, a state editor and the hover, then ideal gases, incompressibles and psychrometric charts, and SVG/PDF outputs with a command-line `--diagram` — see [CoolPlot Integration](docs/coolplot_integration.md). 
 
 Planned improvements for the algebraic solver include a sparse factorization of the Jacobian of large blocks and pseudo-arclength continuation. See [docs/solver_roadmap.md](docs/solver_roadmap.md). What remains for the dynamic solver is in [Dynamic Solving](docs/integral_table.md).
 

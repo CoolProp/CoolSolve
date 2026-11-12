@@ -215,7 +215,7 @@ Beyond the config editor, several other GUI surfaces may need updates:
       functions, or fluid names so Monaco highlights them properly.
 - [ ] **`gui/src/components/VariableTable.tsx`**,
       **`ArrayTable.tsx`**, **`ParametricStudy.tsx`**,
-      **`ThermoDiagram.tsx`**, **`PlotlyChart.tsx`**,
+      **`diagram/`** (Diagrams tab), **`PlotlyChart.tsx`**,
       **`DebugViewer.tsx`**, **`Toolbar.tsx`**, **`Tooltip.tsx`** —
       update only the components that actually expose the feature.
 
@@ -232,9 +232,11 @@ If the feature has to be reachable from the GUI:
       semantics.
 - [ ] Add at least one targeted test (Python or C++) that hits the new
       route end-to-end. Existing examples: `tests/test_parametric_api.py`,
-      `tests/test_library_api.py` (`--auto` starts the server). A GUI
+      `tests/test_library_api.py`, `tests/test_diagram_api.py` (`--auto`
+      starts the server). A GUI
       behaviour that only a browser shows (keyboard shortcuts) is tested in
-      headless Chromium: `tests/test_gui_shortcuts.py`.
+      headless Chromium: `tests/test_gui_shortcuts.py`,
+      `tests/test_gui_diagrams.py`.
 - [ ] Anything that identifies the caller goes through `getSession()`
       (cookie, `X-CoolSolve-Session` header, `?sid=`); never read the cookie
       directly. A session ID names a temp folder: accept only
@@ -372,6 +374,12 @@ immediately visible to users.
       together. See [GUI §9.6](gui.md#96-library-embedding).
 - [ ] CoolProp is pinned to one commit, never `master` (see *Pinned CoolProp
       version* below).
+- [ ] coolplot-core (the Diagrams tab) is pinned the same way, to a commit of
+      the CoolPlot repository (`COOLSOLVE_COOLPLOT_PINNED_TAG`). Moving it means
+      regenerating the fixtures of `tests/fixtures/coolplot/` with
+      `tools/coolplot_fixtures.py` (the `[diagram]` tests refuse fixtures of
+      another commit) and adapting `src/diagram/` to what fails
+      ([CoolPlot integration](coolplot_integration.md) §6.4).
 - [ ] Verify the **Windows build path** still works: `build_installer.bat`
       and `coolsolve.nsi` should not need changes for normal feature
       additions, but should be regenerated and tested for installer-level
@@ -544,6 +552,10 @@ concern lives.
 | GUI state read back from the session     | `gui/src/utils/sessionModel.ts` (`showSessionModel()`) |
 | Model library tests                      | `tests/test_library_store.cpp`, `tests/test_includes.cpp`, `tests/test_library_api.py` |
 | Library regression (every library model vs its `.sol`) | `tests/test_library_regression.cpp`            |
+| Diagrams: lines, domain, plan, compose record (CoolPlot glue) | `src/diagram/`, `include/coolsolve/diagram/` |
+| Diagram routes (`/api/v1/diagram/*`), `diagrams.json` in the bundle | `src/server.cpp`                      |
+| GUI Diagrams tab                         | `gui/src/components/diagram/`, `gui/src/utils/diagrams.ts` |
+| Diagram tests and CoolPlot fixtures      | `tests/test_diagram.cpp`, `tests/test_diagram_api.py`, `tests/test_gui_diagrams.py`, `tests/fixtures/coolplot/`, `tools/coolplot_fixtures.py` |
 | Comprehensive example tests              | `tests/test_examples.cpp` (`EXPECTED_SOLUTIONS`)     |
 | Solver robustness tests                  | `tests/test_solver_robustness.cpp`                   |
 | Configuration parsing tests              | `tests/test_config.cpp`                              |
