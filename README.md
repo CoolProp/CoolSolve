@@ -301,12 +301,14 @@ The debug folder contains:
 
 | Option | Description |
 |--------|--------------|
-| `-o, --output <file>` | Output file (default: stdout) |
+| `-o, --output <file>` | Output file (default: stdout); with `--diagram`, the chart (`.svg` or `.pdf`) |
 | `-f, --format <fmt>` | Output format: `json`, `latex` (default: json) |
 | `-d, --debug [dir]` | Create debug output folder |
 | `-g, --guess` | Update .initials file with solution on success |
 | `--no-sol` | Do not write the .sol file (an existing one is left untouched) |
 | `--no-superancillary` | Disable CoolProp superancillary functions |
+| `--diagram <file>` | Solve the model, then draw a diagram of a diagram definitions document (the `diagrams.json` of a ZIP bundle, saved by the Diagrams tab) with the solution, to `-o chart.svg` or `-o chart.pdf` (the format from the extension; the spec's page size, 576 × 432 pt by default). The PDF embeds TrueType fonts found on the system (e.g. DejaVu Sans) |
+| `--diagram-name <name>` | The diagram of the document to draw (default: the first one) |
 | `--version` | Print the CoolSolve version, the CoolProp version and git revision, (GUI builds) the embedded model library commit, and the coolplot-core version with its CoolPlot commit |
 | `-h, --help` | Show help message |
 
