@@ -235,9 +235,11 @@ list(FILTER SOURCES EXCLUDE REGEX ".*server\\.cpp$")
 # --- CoolSolve Library ---
 add_library(coolsolve_lib ${SOURCES})
 
-# Propagate version string to all translation units
+# Propagate version string to all translation units; the CoolPlot commit of coolplot-core goes with it
+# (`coolsolve --version`, GET /api/v1/diagram/options)
 target_compile_definitions(coolsolve_lib PUBLIC
     COOLSOLVE_VERSION="${CMAKE_PROJECT_VERSION}"
+    COOLSOLVE_COOLPLOT_COMMIT="${COOLSOLVE_COOLPLOT_TAG}"
 )
 
 target_include_directories(coolsolve_lib PUBLIC 

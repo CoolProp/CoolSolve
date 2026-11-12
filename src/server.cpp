@@ -16,6 +16,7 @@
 #include "coolsolve/usage_log.h"
 #include "coolsolve/library_store.h"
 #include "coolsolve/include_resolver.h"
+#include "coolsolve/diagram/engine.h"
 
 #include <httplib.h>
 #include "CoolProp.h"
@@ -156,6 +157,7 @@ struct SessionSnapshot {
     std::vector<std::string> modelFluids;
     std::string latexReportContent;
     bool latexReportAvailable = false;
+    std::string diagramDefinitions;
 };
 
 // ============================================================================
@@ -221,6 +223,11 @@ struct Session {
     // LaTeX report content (generated after solve when enableLatexReport is true)
     std::string latexReportContent;
     bool latexReportAvailable = false;  // true when a LaTeX report was generated for the current solve
+
+    // The diagram definitions of the model (diagrams.json, docs/coolplot_integration.md §3.4): JSON text, empty
+    // when the model has none. Kept with the model: in the ZIP bundle and in the snapshot of Back.
+    std::mutex diagramMutex;
+    std::string diagramDefinitions;
     
     // Save current state as snapshot (for Back button)
     void saveSnapshot() {
@@ -239,6 +246,10 @@ struct Session {
         snap->latexReportAvailable = latexReportAvailable;
         snap->lookupTableCSVs = lookupTableCSVs;
         snap->projectFiles = projectFiles;
+        {
+            std::lock_guard<std::mutex> lock(diagramMutex);
+            snap->diagramDefinitions = diagramDefinitions;
+        }
         {
             std::lock_guard<std::mutex> lock(resultMutex);
             snap->hasResult = hasResult;
@@ -267,6 +278,10 @@ struct Session {
         latexReportAvailable = previousState->latexReportAvailable;
         lookupTableCSVs = previousState->lookupTableCSVs;
         projectFiles = previousState->projectFiles;
+        {
+            std::lock_guard<std::mutex> lock(diagramMutex);
+            diagramDefinitions = previousState->diagramDefinitions;
+        }
         {
             std::lock_guard<std::mutex> lock(resultMutex);
             hasResult = previousState->hasResult;
@@ -619,6 +634,10 @@ static void beginModel(Session& session) {
     session.projectFiles.clear();
     session.libraryId.clear();
     {
+        std::lock_guard<std::mutex> lock(session.diagramMutex);
+        session.diagramDefinitions.clear();
+    }
+    {
         std::lock_guard<std::mutex> lock(session.resultMutex);
         session.hasResult = false;
         session.lastResult = SolveResult{};
@@ -647,6 +666,20 @@ static std::shared_ptr<const IncludeResolver> includeResolverFor(const Session& 
         return IncludeResolver::forDirectory(path.parent_path().string(), path.filename().string(), &embeddedLibrary());
     }
     return IncludeResolver::forFiles(session.projectFiles, session.lookupTableCSVs, "", &embeddedLibrary());
+}
+
+/// The CoolProp backend of the session's model (`coolpropBackend` of its coolsolve.conf, "HEOS" without one): the
+/// Diagrams tab draws the fluid with the backend the solver uses (docs/coolplot_integration.md §2).
+static std::string sessionCoolPropBackend(const Session& session) {
+    if (session.confContent.empty()) return "HEOS";
+    static std::mutex confMutex;  // one file per session, read by loadSolverOptionsFromFile
+    std::lock_guard<std::mutex> lock(confMutex);
+    const fs::path conf = session.tempDir / "diagram_coolsolve.conf";
+    std::error_code ec;
+    fs::create_directories(session.tempDir, ec);
+    SolverOptions options;
+    if (writeStringToFile(conf.string(), session.confContent)) loadSolverOptionsFromFile(conf.string(), options);
+    return options.coolpropConfig.backend.empty() ? "HEOS" : options.coolpropConfig.backend;
 }
 
 /// The `$INCLUDE` directives of the model itself (not those of the included files), for the GUI.
@@ -1083,6 +1116,10 @@ int startServer(const ServerOptions& options) {
         // the table list is refreshed (e.g. after creating a new table).
         session.lookupTableCSVs.clear();
         session.projectFiles.clear();
+        {
+            std::lock_guard<std::mutex> lock(session.diagramMutex);
+            session.diagramDefinitions.clear();
+        }
 
         // Clear debug
         if (!session.debugDir.empty()) {
@@ -2606,7 +2643,8 @@ int startServer(const ServerOptions& options) {
                 case FluidType::HumidAir: typeStr = "HumidAir"; break;
                 case FluidType::Incompressible: typeStr = "Incompressible"; break;
                 case FluidType::Mixture: typeStr = "Mixture"; break;
-                case FluidType::AmmoniaWater: typeStr = "Mixture"; break;
+                // Not a CoolProp mixture: the Diagrams tab offers the "Mixture" fluids (diagram options, fluid_types)
+                case FluidType::AmmoniaWater: typeStr = "AmmoniaWater"; break;
                 default: typeStr = "Unknown"; break;
             }
             fluidsArr.push_back({
@@ -2624,160 +2662,93 @@ int startServer(const ServerOptions& options) {
     });
     
     // ================================================================
-    // CoolProp saturation dome endpoint
+    // Diagrams (docs/coolplot_integration.md §3.1): charts of the model's fluid drawn by
+    // coolplot-core, the lines computed by CoolProp::Plot (module src/diagram/).
+    //   POST /api/v1/diagram/scene        {fluid, spec, cycles, figure_size_pt, previous_labels}
+    //   GET  /api/v1/diagram/options      what the Diagrams tab offers
+    //   GET  /api/v1/diagram/definitions  the session's diagrams.json (§3.4)
+    //   PUT  /api/v1/diagram/definitions
     // ================================================================
-    svr.Post("/api/v1/coolprop/saturation", [&](const httplib::Request& req, httplib::Response& res) {
+    auto diagramError = [](httplib::Response& res, int status, const std::string& message) {
+        res.status = status;
+        res.set_content(json{{"error", message}}.dump(), "application/json");
+    };
+
+    svr.Post("/api/v1/diagram/scene", [&](const httplib::Request& req, httplib::Response& res) {
+        auto sessionPtr = getSession(req, res);
+        auto& session = *sessionPtr;
         try {
-            auto body = json::parse(req.body);
-            if (!body.contains("fluid")) {
-                res.status = 400;
-                json j = {{"error", "Missing 'fluid' parameter"}};
-                res.set_content(j.dump(), "application/json");
-                return;
+            const json body = json::parse(req.body);
+            if (!body.is_object() || !body.contains("fluid") || !body.at("fluid").is_string())
+                throw diagram::DiagramError("A chart request needs the name of its fluid (\"fluid\").");
+            diagram::SceneRequest request;
+            request.fluid = body.at("fluid").get<std::string>();
+            request.backend = sessionCoolPropBackend(session);
+            request.spec = body.value("spec", json::object());
+            request.cycles = body.value("cycles", json::array());
+            request.previousLabels = body.value("previous_labels", json());
+            if (body.contains("figure_size_pt") && !body.at("figure_size_pt").is_null()) {
+                const json& size = body.at("figure_size_pt");
+                if (!size.is_array() || size.size() != 2 || !size.at(0).is_number() || !size.at(1).is_number())
+                    throw diagram::DiagramError("figure_size_pt is [width, height] in points.");
+                request.figureSizePt = std::make_pair(size.at(0).get<double>(), size.at(1).get<double>());
             }
-            
-            std::string fluidName = body["fluid"].get<std::string>();
-            int nPoints = body.value("nPoints", 200);
-            
-            // Validate fluid
-            auto fluid = FluidRegistry::getFluid(fluidName);
-            if (!fluid) {
-                res.status = 400;
-                json j = {{"error", "Unknown fluid: " + fluidName}};
-                res.set_content(j.dump(), "application/json");
-                return;
-            }
-            if (fluid->getType() != FluidType::Real) {
-                res.status = 400;
-                std::string typeStr;
-                switch (fluid->getType()) {
-                    case FluidType::IdealGas: typeStr = "ideal gas"; break;
-                    case FluidType::HumidAir: typeStr = "humid air"; break;
-                    case FluidType::Incompressible: typeStr = "incompressible fluid"; break;
-                    case FluidType::Mixture: typeStr = "mixture"; break;
-                    case FluidType::AmmoniaWater: typeStr = "mixture (ammonia-water)"; break;
-                    default: typeStr = "unsupported fluid type"; break;
-                }
-                json j = {{"error", "No saturation curve for " + typeStr + ": " + fluidName}};
-                res.set_content(j.dump(), "application/json");
-                return;
-            }
-            
-            std::string cpFluid = fluid->getCoolPropName();
-            
-            auto t_start = std::chrono::high_resolution_clock::now();
-            
-            // Get critical and triple point temperatures
-            double Tcrit, Pcrit, Ttriple;
-            try {
-                Tcrit = CoolProp::PropsSI("Tcrit", "", 0, "", 0, cpFluid);
-                Pcrit = CoolProp::PropsSI("pcrit", "", 0, "", 0, cpFluid);
-                Ttriple = CoolProp::PropsSI("T_triple", "", 0, "", 0, cpFluid);
-            } catch (const std::exception& e) {
-                res.status = 500;
-                json j = {{"error", std::string("CoolProp error getting critical/triple point: ") + e.what()}};
-                res.set_content(j.dump(), "application/json");
-                return;
-            }
-            
-            // Get critical point properties
-            double Hcrit = 0, Scrit = 0, Dcrit = 0;
-            try {
-                Hcrit = CoolProp::PropsSI("H", "T", Tcrit - 0.01, "Q", 0, cpFluid);
-                Scrit = CoolProp::PropsSI("S", "T", Tcrit - 0.01, "Q", 0, cpFluid);
-                Dcrit = CoolProp::PropsSI("D", "T", Tcrit - 0.01, "Q", 0, cpFluid);
-            } catch (...) {
-                // Non-fatal: critical point properties may fail for some fluids
-            }
-            
-            // Generate temperature points from Ttriple+1 to Tcrit-0.1
-            double Tmin = Ttriple + 1.0;
-            double Tmax = Tcrit - 0.1;
-            if (Tmin >= Tmax) {
-                res.status = 400;
-                json j = {{"error", "Temperature range too narrow for saturation curve"}};
-                res.set_content(j.dump(), "application/json");
-                return;
-            }
-            
-            // Use logarithmic spacing in (Tcrit - T) for better resolution near critical point
-            std::vector<double> temps(nPoints);
-            double logMin = std::log(Tcrit - Tmax);  // small
-            double logMax = std::log(Tcrit - Tmin);   // large
-            for (int i = 0; i < nPoints; i++) {
-                double frac = static_cast<double>(i) / (nPoints - 1);
-                double logVal = logMax - frac * (logMax - logMin);  // from far to near critical
-                temps[i] = Tcrit - std::exp(logVal);
-            }
-            
-            // Compute saturation properties using PropsSImulti for efficiency
-            // CoolProp reuses the AbstractState object internally when given vectors
-            json liquid, vapor;
-            std::vector<double> lT, lP, lH, lS, lD;
-            std::vector<double> vT, vP, vH, vS, vD;
-            
-            for (int i = 0; i < nPoints; i++) {
-                double T = temps[i];
-                try {
-                    double pL = CoolProp::PropsSI("P", "T", T, "Q", 0, cpFluid);
-                    double hL = CoolProp::PropsSI("H", "T", T, "Q", 0, cpFluid);
-                    double sL = CoolProp::PropsSI("S", "T", T, "Q", 0, cpFluid);
-                    double dL = CoolProp::PropsSI("D", "T", T, "Q", 0, cpFluid);
-                    
-                    double pV = CoolProp::PropsSI("P", "T", T, "Q", 1, cpFluid);
-                    double hV = CoolProp::PropsSI("H", "T", T, "Q", 1, cpFluid);
-                    double sV = CoolProp::PropsSI("S", "T", T, "Q", 1, cpFluid);
-                    double dV = CoolProp::PropsSI("D", "T", T, "Q", 1, cpFluid);
-                    
-                    // Skip non-finite values
-                    if (!std::isfinite(pL) || !std::isfinite(hL) || !std::isfinite(sL) || !std::isfinite(dL) ||
-                        !std::isfinite(pV) || !std::isfinite(hV) || !std::isfinite(sV) || !std::isfinite(dV)) {
-                        continue;
-                    }
-                    
-                    lT.push_back(T); lP.push_back(pL); lH.push_back(hL); lS.push_back(sL); lD.push_back(dL);
-                    vT.push_back(T); vP.push_back(pV); vH.push_back(hV); vS.push_back(sV); vD.push_back(dV);
-                } catch (...) {
-                    // Skip points where CoolProp fails (near triple/critical point)
-                    continue;
+            // The values of the last solve, if it succeeded (the cycles are skipped without one)
+            diagram::SolutionValues solution;
+            bool solved = false;
+            {
+                std::lock_guard<std::mutex> lock(session.resultMutex);
+                if (session.hasResult && session.lastResult.success) {
+                    solution.insert(session.lastResult.variables.begin(), session.lastResult.variables.end());
+                    solved = true;
                 }
             }
-            
-            auto t_end = std::chrono::high_resolution_clock::now();
-            double computeTime = std::chrono::duration<double, std::milli>(t_end - t_start).count();
-            
-            // Convert temperatures from CoolProp SI (K) to CoolSolve units (°C)
-            UnitSystem defaultUnits;
-            for (auto& t : lT) t = UnitConverter::fromSI(t, UnitType::Temperature, defaultUnits.temperature);
-            for (auto& t : vT) t = UnitConverter::fromSI(t, UnitType::Temperature, defaultUnits.temperature);
-            double TcritCS = UnitConverter::fromSI(Tcrit, UnitType::Temperature, defaultUnits.temperature);
-            double TtripleCS = UnitConverter::fromSI(Ttriple, UnitType::Temperature, defaultUnits.temperature);
-            
-            liquid["T"] = lT; liquid["P"] = lP; liquid["H"] = lH; liquid["S"] = lS; liquid["D"] = lD;
-            vapor["T"] = vT; vapor["P"] = vP; vapor["H"] = vH; vapor["S"] = vS; vapor["D"] = vD;
-            
-            json j;
-            j["fluid"] = fluidName;
-            j["critical"] = {{"T", TcritCS}, {"P", Pcrit}, {"H", Hcrit}, {"S", Scrit}, {"D", Dcrit}};
-            j["triplePoint"] = {{"T", TtripleCS}};
-            j["liquid"] = liquid;
-            j["vapor"] = vapor;
-            j["nPoints"] = static_cast<int>(lT.size());
-            j["computeTime_ms"] = computeTime;
-            
-            res.set_content(j.dump(), "application/json");
-            
+            if (solved) request.solution = &solution;
+            res.set_content(diagram::scene(request).dump(), "application/json");
+        } catch (const diagram::DiagramError& e) {
+            diagramError(res, 400, e.what());
         } catch (const json::exception& e) {
-            res.status = 400;
-            json j = {{"error", std::string("Invalid JSON: ") + e.what()}};
-            res.set_content(j.dump(), "application/json");
+            diagramError(res, 400, std::string("Invalid JSON: ") + e.what());
         } catch (const std::exception& e) {
-            res.status = 500;
-            json j = {{"error", std::string("Server error: ") + e.what()}};
-            res.set_content(j.dump(), "application/json");
+            diagramError(res, 500, std::string("Server error: ") + e.what());
         }
     });
-    
+
+    svr.Get("/api/v1/diagram/options", [&](const httplib::Request&, httplib::Response& res) {
+        try {
+            res.set_content(diagram::options().dump(), "application/json");
+        } catch (const std::exception& e) {
+            diagramError(res, 500, std::string("Server error: ") + e.what());
+        }
+    });
+
+    svr.Get("/api/v1/diagram/definitions", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        std::string text;
+        {
+            std::lock_guard<std::mutex> lock(session.diagramMutex);
+            text = session.diagramDefinitions;
+        }
+        res.set_content(text.empty() ? diagram::emptyDefinitions().dump() : text, "application/json");
+    });
+
+    svr.Put("/api/v1/diagram/definitions", [&](const httplib::Request& req, httplib::Response& res) {
+        auto& session = *getSession(req, res);
+        try {
+            const json document = json::parse(req.body);
+            diagram::checkDefinitions(document);
+            {
+                std::lock_guard<std::mutex> lock(session.diagramMutex);
+                session.diagramDefinitions = document.dump(2);
+            }
+            res.set_content(json{{"success", true}}.dump(), "application/json");
+        } catch (const diagram::DiagramError& e) {
+            diagramError(res, 400, e.what());
+        } catch (const json::exception& e) {
+            diagramError(res, 400, std::string("Invalid JSON: ") + e.what());
+        }
+    });
+
     // ================================================================
     // Model library: the CoolSolve Library snapshot embedded in the binary.
     //   GET  /api/v1/library/menu  verified models by taxonomy (toolbar menu) + snapshot info
@@ -3084,6 +3055,12 @@ int startServer(const ServerOptions& options) {
             }
         }
 
+        // The diagram definitions (diagrams.json, docs/coolplot_integration.md §3.4)
+        {
+            std::lock_guard<std::mutex> lock(session.diagramMutex);
+            if (!session.diagramDefinitions.empty()) files.push_back({"diagrams.json", session.diagramDefinitions});
+        }
+
         // Include the integral trajectory CSV if present
         {
             std::lock_guard<std::mutex> lock(session.integralMutex);
@@ -3155,6 +3132,10 @@ int startServer(const ServerOptions& options) {
         session.modelName.clear();
         session.lookupTableCSVs.clear();
         session.projectFiles.clear();
+        {
+            std::lock_guard<std::mutex> lock(session.diagramMutex);
+            session.diagramDefinitions.clear();
+        }
         // Set model name from ZIP filename
         if (!zipFilename.empty()) {
             session.modelName = fs::path(zipFilename).stem().string();
@@ -3206,6 +3187,15 @@ int startServer(const ServerOptions& options) {
                 std::lock_guard<std::mutex> lock(session.parametricMutex);
                 session.lastParametricResult = zcontent;
                 fileList.push_back(zname);
+            } else if (zname == "diagrams.json") {
+                // The diagram definitions; a document that does not read as one is left out, not an error of the upload
+                try {
+                    diagram::checkDefinitions(json::parse(zcontent));
+                    std::lock_guard<std::mutex> lock(session.diagramMutex);
+                    session.diagramDefinitions = zcontent;
+                    fileList.push_back(zname);
+                } catch (const std::exception&) {
+                }
             } else if (endsWith(zname, "_report.tex")) {
                 session.latexReportContent = zcontent;
                 session.latexReportAvailable = true;

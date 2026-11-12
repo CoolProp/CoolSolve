@@ -30,3 +30,18 @@ TEST_CASE("versionText has the two-line format parsed by the library tools", "[v
             "CoolSolve 1.2.3\n"
             "CoolProp 8.1.0dev (git revision unknown)\n");
 }
+
+TEST_CASE("versionText names coolplot-core and the CoolPlot commit", "[version]") {
+    VersionInfo info{"1.2.3", "8.1.0dev", "75af78166fe6467e9e4ce53ffe083cdc96863363"};
+    info.coolplotCore = "1.5.0";
+    info.coolplotCommit = "7338f4822aea0dd8131402b96e8eddda8f9ff86f";
+    REQUIRE(versionText(info) ==
+            "CoolSolve 1.2.3\n"
+            "CoolProp 8.1.0dev (git revision 75af78166fe6467e9e4ce53ffe083cdc96863363)\n"
+            "coolplot-core 1.5.0 (CoolPlot 7338f4822aea0dd8131402b96e8eddda8f9ff86f)\n");
+
+    // The binary reports the core it is linked with and the pinned commit of CMakeLists.txt
+    const VersionInfo linked = getVersionInfo();
+    REQUIRE(linked.coolplotCore == "1.5.0");
+    REQUIRE(linked.coolplotCommit == COOLSOLVE_COOLPLOT_COMMIT);
+}

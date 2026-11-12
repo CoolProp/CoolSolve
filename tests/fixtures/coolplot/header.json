@@ -1,0 +1,10 @@
+{
+  "coolplot_commit": "7338f4822aea0dd8131402b96e8eddda8f9ff86f",
+  "coolplot_version": "1.5.0",
+  "coolprop_port_used": false,
+  "coolprop_revision": "ae81610e7d23efc57f9d051c8e70a4d66e87537f",
+  "coolprop_version": "8.0.0",
+  "date": "2026-11-12",
+  "generator": "tools/coolplot_fixtures.py",
+  "python": "3.11.5"
+}

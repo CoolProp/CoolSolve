@@ -10,6 +10,8 @@ struct VersionInfo {
     std::string coolprop;           ///< CoolProp version string, e.g. "8.1.0dev"
     std::string coolpropRevision;   ///< CoolProp git revision (full SHA-1), empty if unknown
     std::string library;            ///< embedded model library ("<commit>, snapshot <hash>"), empty if none
+    std::string coolplotCore;       ///< coolplot-core version (coolplot_version()), empty if unknown
+    std::string coolplotCommit;     ///< CoolPlot commit coolplot-core is built from (COOLSOLVE_COOLPLOT_TAG)
 };
 
 /**
@@ -25,6 +27,7 @@ VersionInfo getVersionInfo();
  *     CoolSolve 0.3.0
  *     CoolProp 8.1.0dev (git revision <40 hex digits>)
  *     CoolSolve Library <commit> (snapshot <hash>)        <- only when the library is embedded
+ *     coolplot-core 1.5.0 (CoolPlot <commit>)             <- the diagrams of the GUI
  *
  * Tools (e.g. the model library's `tools/test_models.py`) parse the second line.
  */

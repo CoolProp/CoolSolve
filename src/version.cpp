@@ -1,5 +1,6 @@
 #include "coolsolve/version.h"
 #include "CoolProp.h"
+#include <coolplot/capi.h>
 #ifdef COOLSOLVE_EMBEDDED_LIBRARY
 #include "embedded_library.h"
 #endif
@@ -14,6 +15,10 @@ VersionInfo getVersionInfo() {
 #ifdef COOLSOLVE_EMBEDDED_LIBRARY
     info.library = std::string(embeddedLibraryCommit()) + ", snapshot " + embeddedLibraryHash();
 #endif
+    info.coolplotCore = coolplot_version();
+#ifdef COOLSOLVE_COOLPLOT_COMMIT
+    info.coolplotCommit = COOLSOLVE_COOLPLOT_COMMIT;
+#endif
     return info;
 }
 
@@ -22,6 +27,9 @@ std::string versionText(const VersionInfo& info) {
     text += "CoolProp " + info.coolprop;
     text += " (git revision " + (info.coolpropRevision.empty() ? std::string("unknown") : info.coolpropRevision) + ")\n";
     if (!info.library.empty()) text += "CoolSolve Library " + info.library + "\n";
+    if (!info.coolplotCore.empty())
+        text += "coolplot-core " + info.coolplotCore + " (CoolPlot " +
+                (info.coolplotCommit.empty() ? std::string("unknown") : info.coolplotCommit) + ")\n";
     return text;
 }
 
