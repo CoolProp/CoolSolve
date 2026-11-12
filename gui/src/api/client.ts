@@ -14,7 +14,10 @@ import type {
   InferredVariablesResponse,
   CoolPropFluidsResponse,
   DiagramOptionsResponse,
+  DiagramPointRequest,
+  DiagramPointResponse,
   DiagramSceneRequest,
+  DiagramStatesResponse,
   DiagramSceneResponse,
   DiagramsDocument,
   ParametricStudyResult,
@@ -215,6 +218,17 @@ export const api = {
   /** The SVG of a chart of the session's model; `signal` cancels a request that a newer one replaces. */
   getDiagramScene: (body: DiagramSceneRequest, signal?: AbortSignal) =>
     request<DiagramSceneResponse>('/diagram/scene', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      signal,
+    }),
+
+  /** The states of the last solve, grouped per fluid by the property calls their variables share. */
+  getDiagramStates: () => request<DiagramStatesResponse>('/diagram/states'),
+
+  /** The full state at a point of a chart (hover); `signal` cancels a request that a newer one replaces. */
+  getDiagramPointState: (body: DiagramPointRequest, signal?: AbortSignal) =>
+    request<DiagramPointResponse>('/diagram/state', {
       method: 'POST',
       body: JSON.stringify(body),
       signal,

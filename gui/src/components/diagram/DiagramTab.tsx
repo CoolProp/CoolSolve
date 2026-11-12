@@ -1,6 +1,6 @@
 /**
  * DiagramTab — the Diagrams tab: a property diagram of the model drawn by CoolPlot on the server
- * (docs/coolplot_integration.md, phase 1).
+ * (docs/coolplot_integration.md, phases 1 and 2).
  *
  * It edits the first diagram of the model's diagram definitions (`diagrams` in the model store, saved in
  * the session and the ZIP bundle as `diagrams.json`). Until the user changes something, it shows a
@@ -13,6 +13,7 @@ import { api } from '../../api/client';
 import type {
   DiagramDefinition,
   DiagramOptionsResponse,
+  DiagramStatesResponse,
   DiagramViewSI,
   FluidInfo,
   InferredVariable,
@@ -22,17 +23,19 @@ import { useModelStore } from '../../stores/modelStore';
 import { useUIStore } from '../../stores/uiStore';
 import { watchDiagramEdits } from '../../utils/diagrams';
 import { toErrMsg } from '../../utils/errors';
+import CycleEditor, { type VariableChoice } from './CycleEditor';
 import DiagramControls from './DiagramControls';
 import DiagramOverlays from './DiagramOverlays';
 import DiagramView from './DiagramView';
+import { loadDiagramOptions } from './options';
 import {
   FALLBACK_FLUID,
   arrayIndices,
   arraysCycle,
   defaultDefinition,
-  inferredStates,
   isArraysCycle,
   isInferredCycle,
+  modelStates,
   newInferredCycle,
   overlayOfCycle,
   propertyKey,
@@ -42,6 +45,13 @@ import {
   withView,
   type ArraysOverlay,
 } from './definition';
+
+/** What the server knows of the last solve: its inferred variables and its states, with the solve they belong to. */
+interface SolveInfo {
+  result: SolveResponse | null;
+  vars: InferredVariable[];
+  states: DiagramStatesResponse | null;
+}
 
 export default function DiagramTab() {
   const lastResult = useModelStore((s) => s.lastResult);
@@ -54,16 +64,16 @@ export default function DiagramTab() {
   const [optionsAttempt, setOptionsAttempt] = useState(0);
   const [fluids, setFluids] = useState<FluidInfo[]>([]);
   const [modelFluids, setModelFluids] = useState<string[]>([]);
-  // The inferred variables and the solve they belong to
-  const [inferred, setInferred] = useState<{ result: SolveResponse | null; vars: InferredVariable[] }>({ result: null, vars: [] });
-  const [arraysDraft, setArraysDraft] = useState<ArraysOverlay>({ on: false, keys: ['h', 'p'], arrays: ['', ''], closed: false });
+  const [info, setInfo] = useState<SolveInfo>({ result: null, vars: [], states: null });
+  const [arraysDraft, setArraysDraft] = useState<ArraysOverlay>(
+    { on: false, keys: ['h', 'p'], arrays: ['', ''], closed: false, paths: 'auto' });
 
   // Edits of the definitions go to the session
   useEffect(() => watchDiagramEdits(), []);
 
   useEffect(() => {
     let cancelled = false;
-    api.getDiagramOptions()
+    loadDiagramOptions()
       .then((res) => {
         if (cancelled) return;
         setOptions(res);
@@ -86,28 +96,31 @@ export default function DiagramTab() {
     return () => { cancelled = true; };
   }, [lastResult]);
 
-  // The inferred variables of a successful solve
+  // The inferred variables and the states of a successful solve
   useEffect(() => {
     if (!lastResult?.success) return;
     let cancelled = false;
-    api.getInferredVariables()
-      .then((res) => { if (!cancelled) setInferred({ result: lastResult, vars: res.variables }); })
-      .catch(() => { if (!cancelled) setInferred({ result: lastResult, vars: [] }); });
+    Promise.all([
+      api.getInferredVariables().then((r) => r.variables).catch(() => [] as InferredVariable[]),
+      api.getDiagramStates().catch(() => null),
+    ]).then(([vars, states]) => {
+      if (!cancelled) setInfo({ result: lastResult, vars, states });
+    });
     return () => { cancelled = true; };
   }, [lastResult]);
 
   const solved = !!lastResult?.success;
-  const currentVars = solved && inferred.result === lastResult ? inferred.vars : null;
+  const current = solved && info.result === lastResult ? info : null;
   const indices = useMemo(() => arrayIndices(lastResult?.variables), [lastResult]);
   const arrayKeys = useMemo(() => {
     const keys = new Map<string, string>();
-    for (const v of currentVars ?? []) {
+    for (const v of current?.vars ?? []) {
       const match = v.name.match(/^(.+)\[\d+\]$/);
       const key = propertyKey(v.inferredProperty);
       if (match && key && !keys.has(match[1])) keys.set(match[1], key);
     }
     return keys;
-  }, [currentVars]);
+  }, [current]);
 
   // The fluids offered: pure fluids, and the model's fluids of the other types the server draws (its
   // CoolProp mixtures, which are not listed: they are made from their string); the server refuses the
@@ -131,20 +144,20 @@ export default function DiagramTab() {
   const def = useMemo<DiagramDefinition | null>(() => {
     if (stored) return stored;
     if (!options || !defaultFluid) return null;
-    const states = currentVars ? inferredStates(currentVars, defaultFluid) : [];
-    return defaultDefinition(defaultFluid, options, [newInferredCycle(states)]);
-  }, [stored, options, defaultFluid, currentVars]);
+    return defaultDefinition(defaultFluid, options, [newInferredCycle(modelStates(current?.states ?? null, defaultFluid))]);
+  }, [stored, options, defaultFluid, current]);
 
-  // After a solve (or a change of fluid), the stored overlays follow the model's variables
+  // After a solve (or a change of fluid), the stored overlays follow the model's variables; the user's
+  // cycles name their variables and are left as they are
   useEffect(() => {
-    if (!stored || !solved || currentVars === null) return;
+    if (!stored || !current) return;
     const cycles = stored.cycles.map((c) => {
-      if (isInferredCycle(c)) return { ...c, states: inferredStates(currentVars, stored.fluid) };
+      if (isInferredCycle(c)) return { ...c, states: modelStates(current.states, stored.fluid) };
       if (isArraysCycle(c)) return arraysCycle(overlayOfCycle(c), indices, c);
       return c;
     });
     if (!sameJson(cycles, stored.cycles)) setDiagramDefinition({ ...stored, cycles });
-  }, [stored, solved, currentVars, indices, setDiagramDefinition]);
+  }, [stored, current, indices, setDiagramDefinition]);
 
   const input = useMemo(() => (def ? sceneInput(def, theme) : null), [def, theme]);
 
@@ -154,9 +167,22 @@ export default function DiagramTab() {
   );
 
   const liveStates = useMemo(
-    () => (currentVars && def ? inferredStates(currentVars, def.fluid) : null),
-    [currentVars, def],
+    () => (current && def ? modelStates(current.states, def.fluid) : null),
+    [current, def],
   );
+
+  // The variables the editor offers: those the inference ties to the chart's fluid first (with their
+  // property), then the other solved variables
+  const variables = useMemo<VariableChoice[]>(() => {
+    if (!lastResult?.variables || !def) return [];
+    const inferred = new Map((current?.vars ?? []).map((v) => [v.name, v]));
+    const choices = Object.keys(lastResult.variables).map((name): VariableChoice => {
+      const v = inferred.get(name);
+      const ofFluid = !!v && sameFluid(v.inferredFluid, def.fluid);
+      return { name, key: ofFluid ? propertyKey(v.inferredProperty) : undefined, ofFluid };
+    });
+    return choices.sort((a, b) => Number(b.ofFluid) - Number(a.ofFluid) || a.name.localeCompare(b.name));
+  }, [lastResult, current, def]);
 
   return (
     <div className="diagram-tab">
@@ -184,6 +210,12 @@ export default function DiagramTab() {
             arrayKeys={arrayKeys}
             draft={arraysDraft}
             setDraft={setArraysDraft}
+          />
+          <CycleEditor
+            def={def}
+            onChange={setDiagramDefinition}
+            inferredStates={liveStates}
+            variables={variables}
           />
         </>
       )}

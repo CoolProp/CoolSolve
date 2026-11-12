@@ -379,9 +379,19 @@ export interface CycleDefinition {
    *  in ascending order, closed unless `closed` is false */
   loops?: number[][];
   closed?: boolean;
-  paths?: 'auto' | 'straight';
+  /** One kind for every connection, or CoolPlot's record [[[a, b], kind], ...] (connections not
+   *  listed: "auto"); absent: "auto" */
+  paths?: CyclePathKind | CyclePathEntry[];
+  /** Segments per drawn path */
+  steps?: number;
   [field: string]: unknown;
 }
+
+/** How the path between two states is drawn ("auto": CoolPlot chooses from the two states). */
+export type CyclePathKind = 'auto' | 'straight' | 'isobaric' | 'isenthalpic' | 'isentropic' | 'isothermal' | 'polytropic';
+
+/** The path of one connection of a cycle: [[from, to], kind]. */
+export type CyclePathEntry = [[number, number], CyclePathKind];
 
 /** One diagram of a model (`diagrams.json`, §3.4). */
 export interface DiagramDefinition {
@@ -445,6 +455,35 @@ export interface DiagramSceneState {
   label?: string;
   vars: Record<string, string>;
   values_SI: Record<string, number>;
+}
+
+/** A state of the solved model as the server groups it (the property calls its variables share). */
+export interface DiagramModelState {
+  number: number;
+  label: string | null;
+  /** CoolPlot property key -> variable name */
+  vars: Record<string, string>;
+}
+
+/** Response of GET /api/v1/diagram/states: the states of the last solve per fluid (empty without a solve). */
+export interface DiagramStatesResponse {
+  fluids: Record<string, DiagramModelState[]>;
+}
+
+/** Body of POST /api/v1/diagram/state: the point of a chart, in SI. */
+export interface DiagramPointRequest {
+  fluid: string;
+  diagram: string;
+  x_SI: number;
+  y_SI: number;
+}
+
+/** The full state at a point of a chart, SI (Q = -1 in a single phase); a property may be null. */
+export type DiagramPointState = Partial<Record<'T' | 'p' | 'h' | 's' | 'rho' | 'u' | 'v' | 'Q', number | null>>;
+
+/** Response of POST /api/v1/diagram/state (null: no state there). */
+export interface DiagramPointResponse {
+  state: DiagramPointState | null;
 }
 
 /** Response of POST /api/v1/diagram/scene */

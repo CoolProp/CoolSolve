@@ -3,9 +3,10 @@
  *
  * A definition is a fluid, a CoolPlot spec record (without "fluid" and "cycles") and cycle definitions
  * that name the model's variables. The GUI writes the fields below and keeps every other field of a
- * spec written elsewhere. Phase 1 has two cycles, the former overlays of the tab: the inferred states
- * (states grouped by the former name heuristic, drawn without lines) and the arrays (state i from X[i],
- * Y[i], joined in index order), both with straight paths.
+ * spec written elsewhere. Its cycles are of three kinds: the inferred states (the states of the solved
+ * model as the server groups them, `GET /api/v1/diagram/states`, drawn as markers without lines), the
+ * arrays (state i from X[i], Y[i], joined in index order) and the user's cycles of the state editor
+ * (states, loops and paths chosen by the user).
  */
 
 import type {
@@ -18,8 +19,11 @@ import type {
   DiagramSceneInput,
   DiagramTypeOption,
   DiagramUnits,
+  CyclePathEntry,
+  CyclePathKind,
+  DiagramModelState,
+  DiagramStatesResponse,
   DiagramViewSI,
-  InferredVariable,
   IsolineSpec,
 } from '../../api/types';
 
@@ -37,10 +41,10 @@ export const DEFAULT_LABEL_MODE = 'rails';
 export const FALLBACK_FLUID = 'Water';
 
 /** The fluid quantities a cycle state can name (CoolPlot keys). */
-export const STATE_KEYS = ['T', 'p', 'h', 's', 'rho', 'u', 'Q'];
+export const STATE_KEYS = ['T', 'p', 'h', 's', 'rho', 'u', 'v', 'Q'];
 
 /** Property codes of CoolSolve's variable inference (src/variable_inference.cpp) -> CoolPlot keys. */
-const PROPERTY_KEYS: Record<string, string> = { T: 'T', P: 'p', H: 'h', S: 's', D: 'rho', U: 'u', Q: 'Q' };
+const PROPERTY_KEYS: Record<string, string> = { T: 'T', P: 'p', H: 'h', S: 's', D: 'rho', U: 'u', VOL: 'v', Q: 'Q' };
 
 /** The CoolPlot key of an inferred property code, or undefined (viscosity, specific volume, ...). */
 export const propertyKey = (code: string): string | undefined => PROPERTY_KEYS[code];
@@ -163,44 +167,22 @@ function isDrawable(cycle: CycleDefinition): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// The inferred states (former "state points" overlay)
+// The inferred states: the server's grouping of the solved variables
 // ---------------------------------------------------------------------------
 
-/**
- * States of `fluid` from the inferred variables, grouped by the former name heuristic of
- * ThermoDiagram.tsx: the name without its leading letters and underscore (T_1, P_1, h_1 -> "1";
- * h_su_cp -> "su_cp"). A group needs two properties CoolPlot knows. Groups named by an integer keep
- * it as state number; the others take the next free numbers, with their name as label.
- */
-export function inferredStates(vars: InferredVariable[], fluid: string): CycleStateDefinition[] {
-  const groups = new Map<string, Record<string, string>>();
-  for (const v of vars) {
-    if (v.isArray || !sameFluid(v.inferredFluid, fluid)) continue;
-    const key = propertyKey(v.inferredProperty);
-    if (!key) continue;
-    const name = v.name.replace(/^[A-Za-z]+_?/, '') || v.name;
-    const group = groups.get(name) ?? {};
-    group[key] = v.name;
-    groups.set(name, group);
-  }
-  const usable = [...groups].filter(([, g]) => Object.keys(g).length >= 2);
-  const isNumber = (name: string) => /^\d+$/.test(name) && String(parseInt(name, 10)) === name;
-  const numbered = usable.filter(([n]) => isNumber(n));
-  const named = usable.filter(([n]) => !isNumber(n)).sort(([a], [b]) => a.localeCompare(b));
-  const states: CycleStateDefinition[] = numbered.map(([n, vars]) => ({ number: parseInt(n, 10), vars }));
-  const used = new Set(states.map((s) => s.number));
-  let next = 1;
-  for (const [label, vars] of named) {
-    while (used.has(next)) next++;
-    used.add(next);
-    states.push({ number: next, label, vars });
-  }
-  return states.sort((a, b) => a.number - b.number);
+/** The states of `fluid` in the server's grouping (`GET /api/v1/diagram/states`), as cycle states. */
+export function modelStates(response: DiagramStatesResponse | null, fluid: string): CycleStateDefinition[] {
+  const entry = Object.entries(response?.fluids ?? {}).find(([name]) => sameFluid(name, fluid));
+  return (entry?.[1] ?? []).map((s: DiagramModelState) => ({
+    number: s.number,
+    ...(s.label ? { label: s.label } : {}),
+    vars: { ...s.vars },
+  }));
 }
 
 /** A new cycle of the inferred states: markers and numbers, no lines (`loops: []`). */
 export function newInferredCycle(states: CycleStateDefinition[]): CycleDefinition {
-  return { name: INFERRED_CYCLE, numbers: true, states, loops: [], paths: 'straight' };
+  return { name: INFERRED_CYCLE, numbers: true, states, loops: [] };
 }
 
 export const isInferredCycle = (c: CycleDefinition) => c.name === INFERRED_CYCLE && !c.arrays;
@@ -232,6 +214,8 @@ export interface ArraysOverlay {
   arrays: [string, string];
   /** Join the last state to the first */
   closed: boolean;
+  /** Paths between the states: along the processes ("auto") or straight */
+  paths: 'auto' | 'straight';
 }
 
 export const isArraysCycle = (c: CycleDefinition) => c.name === ARRAYS_CYCLE && !!c.arrays;
@@ -245,6 +229,7 @@ export function overlayOfCycle(cycle: CycleDefinition): ArraysOverlay {
     keys: [entries[0]?.[0] ?? 'h', entries[1]?.[0] ?? 'p'],
     arrays: [entries[0]?.[1] ?? '', entries[1]?.[1] ?? ''],
     closed: chain ? chain.length > 2 && chain[0] === chain[chain.length - 1] : cycle.loops === undefined && cycle.closed !== false,
+    paths: cycle.paths === 'straight' ? 'straight' : 'auto',
   };
 }
 
@@ -281,8 +266,9 @@ export function arraysCycle(
   previous?: CycleDefinition,
 ): CycleDefinition {
   const cycle: CycleDefinition = {
-    ...(previous ?? { name: ARRAYS_CYCLE, numbers: true, paths: 'straight' }),
+    ...(previous ?? { name: ARRAYS_CYCLE, numbers: true }),
     arrays: { [o.keys[0]]: o.arrays[0], [o.keys[1]]: o.arrays[1] },
+    paths: o.paths,
   };
   // The indices known (a solve): the chain itself; else the server joins the states in index order
   const loops = arraysLoops(o, indices, previous?.loops);
@@ -291,6 +277,100 @@ export function arraysCycle(
   if (loops) cycle.loops = loops;
   else cycle.closed = o.closed;
   return cycle;
+}
+
+// ---------------------------------------------------------------------------
+// The user's cycles (state editor)
+// ---------------------------------------------------------------------------
+
+/** The kinds of path between two states; "auto" lets CoolPlot choose from the two states. */
+export const PATH_KINDS: CyclePathKind[] = ['auto', 'straight', 'isobaric', 'isenthalpic', 'isentropic', 'isothermal', 'polytropic'];
+
+/** A cycle of the state editor: neither the inferred states nor the arrays overlay. */
+export const isUserCycle = (c: CycleDefinition) => !isInferredCycle(c) && !isArraysCycle(c);
+
+/** A name not used by another cycle: `base`, else `base 2`, `base 3`, ... */
+export function freeCycleName(cycles: CycleDefinition[], base: string): string {
+  const used = new Set(cycles.map((c) => c.name));
+  if (!used.has(base)) return base;
+  let n = 2;
+  while (used.has(`${base} ${n}`)) n++;
+  return `${base} ${n}`;
+}
+
+/** A user cycle through `states`, one closed loop in the order given, paths along the processes. */
+export function newUserCycle(name: string, states: CycleStateDefinition[]): CycleDefinition {
+  const numbers = states.map((s) => s.number);
+  const loops = numbers.length >= 2 ? [[...numbers, ...(numbers.length > 2 ? [numbers[0]] : [])]] : [];
+  return { name, numbers: true, states, loops, paths: 'auto' };
+}
+
+/** Loops as the editor writes them: "1-2-3-4-1; 2-5". */
+export const formatLoops = (loops: number[][] | undefined) => (loops ?? []).map((chain) => chain.join('-')).join('; ');
+
+/** Loops from their text; an error names what is wrong (a chain of one state, an unknown state). */
+export function parseLoops(text: string, numbers: number[]): { loops: number[][] } | { error: string } {
+  const loops: number[][] = [];
+  for (const part of text.split(/[;\n]/).map((p) => p.trim()).filter(Boolean)) {
+    const chain = part.split(/[-,\s>]+/).filter(Boolean).map((n) => Number(n));
+    if (chain.some((n) => !Number.isInteger(n))) return { error: `"${part}" is not a chain of state numbers` };
+    if (chain.length < 2) return { error: `"${part}": a chain joins at least two states` };
+    const unknown = chain.filter((n) => !numbers.includes(n));
+    if (unknown.length > 0) return { error: `no state ${unknown[0]}` };
+    loops.push(chain);
+  }
+  return { loops };
+}
+
+/** The connections the loops draw, each once, in order: "a-b". */
+export function connectionsOf(loops: number[][] | undefined): [number, number][] {
+  const seen = new Set<string>();
+  const out: [number, number][] = [];
+  for (const chain of loops ?? []) {
+    for (let i = 0; i + 1 < chain.length; i++) {
+      const key = `${chain[i]}-${chain[i + 1]}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push([chain[i], chain[i + 1]]);
+      }
+    }
+  }
+  return out;
+}
+
+/** The paths of a cycle as the editor shows them: one kind for the cycle, and the connections that differ. */
+export function pathsOf(cycle: CycleDefinition): { kind: CyclePathKind; overrides: Record<string, CyclePathKind> } {
+  const paths = cycle.paths;
+  if (!Array.isArray(paths)) return { kind: paths ?? 'auto', overrides: {} };
+  const listed = new Map(paths.map(([[a, b], kind]) => [`${a}-${b}`, kind] as const));
+  const connections = connectionsOf(cycle.loops);
+  // The kind of the cycle: "auto" when a connection is not listed, else the most frequent one
+  let kind: CyclePathKind = 'auto';
+  if (connections.length > 0 && connections.every(([a, b]) => listed.has(`${a}-${b}`))) {
+    const counts = new Map<CyclePathKind, number>();
+    for (const k of listed.values()) counts.set(k, (counts.get(k) ?? 0) + 1);
+    kind = [...counts].sort((x, y) => y[1] - x[1])[0][0];
+  }
+  const overrides: Record<string, CyclePathKind> = {};
+  for (const [key, k] of listed) if (k !== kind) overrides[key] = k;
+  return { kind, overrides };
+}
+
+/**
+ * The `paths` of a cycle from a kind and the connections that differ: the kind alone without
+ * overrides; else CoolPlot's record, listing every connection of the loops unless the kind is "auto"
+ * (connections not listed are "auto").
+ */
+export function pathsValue(
+  kind: CyclePathKind,
+  overrides: Record<string, CyclePathKind>,
+  loops: number[][] | undefined,
+): CyclePathKind | CyclePathEntry[] {
+  const connections = connectionsOf(loops);
+  const differing = connections.filter(([a, b]) => overrides[`${a}-${b}`] && overrides[`${a}-${b}`] !== kind);
+  if (differing.length === 0) return kind;
+  const listed = kind === 'auto' ? differing : connections;
+  return listed.map(([a, b]): CyclePathEntry => [[a, b], overrides[`${a}-${b}`] ?? kind]);
 }
 
 /** JSON equality of two plain values (definitions are JSON). */

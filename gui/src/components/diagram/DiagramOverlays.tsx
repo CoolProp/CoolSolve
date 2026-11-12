@@ -1,8 +1,9 @@
 /**
- * DiagramOverlays — the cycles of a diagram definition in phase 1 (docs/coolplot_integration.md §4.1):
- * the inferred states (variables grouped into states by the former name heuristic, drawn as numbered
- * markers) and the arrays (state i from X[i] and Y[i], joined in index order, closed on request).
- * Both are cycle definitions with straight paths; the server reads their variables from the last solve.
+ * DiagramOverlays — the overlays of a diagram definition (docs/coolplot_integration.md §4.1): the
+ * inferred states (the states of the solved model as the server groups its variables, drawn as numbered
+ * markers) and the arrays (state i from X[i] and Y[i], joined in index order, closed on request, with
+ * paths along the processes or straight). Both are cycle definitions; the server reads their variables
+ * from the last solve.
  */
 
 import type { CycleDefinition, CycleStateDefinition, DiagramDefinition } from '../../api/types';
@@ -16,6 +17,7 @@ import {
   overlayOfCycle,
   type ArraysOverlay,
 } from './definition';
+import { symbolOf } from './options';
 
 interface Props {
   def: DiagramDefinition;
@@ -32,8 +34,6 @@ interface Props {
   draft: ArraysOverlay;
   setDraft: (draft: ArraysOverlay) => void;
 }
-
-const SYMBOLS: Record<string, string> = { rho: 'ρ', Q: 'x' };
 
 /** The cycles with `cycle` in place of the one `isIt` finds (appended if none; removed if `cycle` is null). */
 function replaceCycle(cycles: CycleDefinition[], isIt: (c: CycleDefinition) => boolean, cycle: CycleDefinition | null) {
@@ -89,7 +89,7 @@ export default function DiagramOverlays({
       <span className="diagram-row-title">Overlays</span>
       <label
         className="diagram-field"
-        title="States of the solved model: variables of the fluid grouped by name (T_1, P_1, h_1 -> state 1)"
+        title="States of the solved model: the variables of the fluid that the same property calls share"
       >
         <input
           type="checkbox"
@@ -117,7 +117,7 @@ export default function DiagramOverlays({
             title="Property held by the array"
             onChange={(e) => chooseKey(i, e.target.value)}
           >
-            {STATE_KEYS.map((k) => <option key={k} value={k}>{SYMBOLS[k] ?? k}</option>)}
+            {STATE_KEYS.map((k) => <option key={k} value={k}>{symbolOf(k)}</option>)}
           </select>
           <select
             className="diagram-select"
@@ -134,6 +134,17 @@ export default function DiagramOverlays({
           </select>
         </span>
       ))}
+      {overlay.on && (
+        <select
+          className="diagram-select"
+          value={overlay.paths}
+          title="Paths between the states: along the processes (auto) or straight"
+          onChange={(e) => setOverlay({ ...overlay, paths: e.target.value as 'auto' | 'straight' })}
+        >
+          <option value="auto">auto paths</option>
+          <option value="straight">straight</option>
+        </select>
+      )}
       {overlay.on && (
         <label className="diagram-field" title="Join the last state to the first">
           <input

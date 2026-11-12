@@ -1229,7 +1229,8 @@ body {
 }
 .diagram-view {
   flex: 1;
-  min-height: 200px;
+  /* The tab scrolls rather than squeeze the chart under the controls and the cycle editor */
+  min-height: 300px;
   display: flex;
   flex-direction: column;
 }
@@ -1314,6 +1315,112 @@ body {
 }
 .diagram-hint {
   margin-left: auto;
+}
+.diagram-tooltip {
+  position: absolute;
+  z-index: 5;
+  transform: translate(12px, 12px);
+  padding: 4px 7px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.diagram-tooltip.flip-x { transform: translate(calc(-100% - 12px), 12px); }
+.diagram-tooltip.flip-y { transform: translate(12px, calc(-100% - 12px)); }
+.diagram-tooltip.flip-x.flip-y { transform: translate(calc(-100% - 12px), calc(-100% - 12px)); }
+.diagram-tooltip-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+/* State editor (CycleEditor.tsx) */
+.diagram-cycles {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 35%;
+  overflow-y: auto;
+  flex-shrink: 0;
+}
+.diagram-cycle {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 11px;
+}
+.diagram-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px 6px;
+  padding-left: 2px;
+}
+.diagram-pairs {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px 8px;
+  min-width: 0;
+}
+.diagram-state.incomplete {
+  border-left: 2px solid var(--warning-color);
+}
+.diagram-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.diagram-pair.new .diagram-input {
+  border-style: dashed;
+}
+.diagram-pair .diagram-input { width: 76px; }
+.diagram-pair .diagram-select { padding: 1px 2px; }
+.diagram-input {
+  width: 92px;
+  padding: 1px 4px;
+  font-size: 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+.diagram-input.narrow { width: 36px; text-align: right; }
+.diagram-input.label { width: 64px; }
+.diagram-input.name { width: 120px; font-weight: 600; }
+.diagram-input.loops { width: 170px; }
+.diagram-input.invalid { border-color: var(--error-color); }
+.diagram-icon-btn {
+  display: inline-flex;
+  padding: 1px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.diagram-icon-btn:hover { color: var(--error-color); }
+.diagram-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent-color);
+  font-size: 11px;
+  cursor: pointer;
+}
+.diagram-link:disabled { color: var(--text-muted); cursor: default; }
+.diagram-link.title {
+  color: var(--text-secondary);
+  font-weight: 600;
 }
 
 /* ============================================================================

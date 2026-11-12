@@ -4,8 +4,10 @@ test_gui_diagrams.py — End-to-end test of the Diagrams tab in a real browser.
 
 Opens the GUI in headless Chromium (Chrome DevTools Protocol, as test_gui_shortcuts.py does) and checks
 that the tab draws coolplot-core's SVG served by POST /api/v1/diagram/scene: the default chart after
-load, the states of a solved model as cycle markers, a rubber-band zoom and its reset, and the export of
-the diagram for the LaTeX report (thermo_diagrams.png). See docs/coolplot_integration.md, phase 1.
+load, the states of a solved model as cycle markers (GET /api/v1/diagram/states), a cycle of the state
+editor drawn with paths along the processes, the hover (a state marker's variables; elsewhere the state
+under the cursor from POST /api/v1/diagram/state), a rubber-band zoom and its reset, and the export of
+the diagram for the LaTeX report (thermo_diagrams.png). See docs/coolplot_integration.md, phases 1 and 2.
 
 Usage:
     # Start CoolSolve with --gui, then:
@@ -44,11 +46,11 @@ WIDTH, HEIGHT = 1400, 900
 # The chart drawn by DiagramView (not the icons of its buttons)
 SVG = "document.querySelector('.thermo-diagram .diagram-svg-host > svg')"
 
-# A vapour-compression cycle whose variables the name heuristic groups into states 1 to 4
+# A vapour-compression cycle: four states, each the variables its property calls share
 CYCLE_MODEL = """P_1 = 3e5
 T_1 = 10
 h_1 = enthalpy(R134a, P=P_1, T=T_1)
-s_1 = entropy(R134a, P=P_1, T=T_1)
+s_1 = entropy(R134a, P=P_1, h=h_1)
 P_2 = 12e5
 s_2 = s_1
 h_2 = enthalpy(R134a, P=P_2, s=s_2)
@@ -93,6 +95,7 @@ class Page:
         self.next_id = 0
         self.pending: dict[int, asyncio.Future] = {}
         self.scene_requests: list[dict] = []   # bodies of POST /api/v1/diagram/scene
+        self.point_requests: list[dict] = []   # bodies of POST /api/v1/diagram/state
         self.report_plots: list | None = None   # the plots of POST /api/v1/latex/compile
         self.reader = asyncio.ensure_future(self._read())
 
@@ -108,6 +111,8 @@ class Page:
                     self.scene_requests.append(body)
                     if VERBOSE:
                         print(f"        POST /diagram/scene {body.get('fluid')} {body.get('figure_size_pt')}")
+                elif req["method"] == "POST" and req["url"].split("?")[0].endswith("/api/v1/diagram/state"):
+                    self.point_requests.append(json.loads(req.get("postData") or "{}"))
             elif msg.get("method") == "Fetch.requestPaused":
                 # The report: read the plots, then fail the request so that nothing is compiled or downloaded
                 params = msg["params"]
@@ -207,15 +212,65 @@ async def run_tests(page: Page):
           await page.wait_for(f"!!{SVG}?.querySelector('.cp-role-state_points')", 60))
     await page.idle()
     numbers = await page.eval(f"[...{SVG}.querySelectorAll('.cp-role-state_number')].map(g => g.textContent.trim())")
-    check("the states are numbered 1 to 4 (name heuristic: T_1, P_1, h_1 -> state 1)",
-          sorted(numbers or []) == ["1", "2", "3", "4"], f"{numbers}")
+    check("the four states of the model are numbered on the chart", len(numbers or []) >= 4, f"{numbers}")
     check("markers alone: no line through the inferred states",
           not await page.eval(f"!!{SVG}.querySelector('.cp-role-cycle')"))
     cycles = page.scene_requests[-1].get("cycles", []) if page.scene_requests else []
-    check("the request names the states by their variables, straight paths, loops []",
-          len(cycles) == 1 and cycles[0].get("loops") == [] and cycles[0].get("paths") == "straight"
-          and cycles[0]["states"][0]["vars"].get("p") == "P_1", json.dumps(cycles)[:300])
+    inferred = cycles[0] if cycles else {}
+    check("the request names the server's states by their variables, loops []",
+          len(cycles) == 1 and inferred.get("loops") == []
+          and any(st["vars"].get("p") == "P_1" for st in inferred.get("states", [])), json.dumps(cycles)[:300])
     await page.screenshot("diagram_cycle_states.png")
+
+    print("\n=== A cycle of the state editor ===")
+    await page.eval("[...document.querySelectorAll('.diagram-cycles button')]"
+                    ".find(b => b.textContent.includes('from inferred states')).click()")
+    end = time.time() + 20
+    while time.time() < end and not any(c.get("loops") for c in (page.scene_requests[-1].get("cycles", [])
+                                                                 if page.scene_requests else [])):
+        await asyncio.sleep(0.1)
+    cycles = page.scene_requests[-1].get("cycles", []) if page.scene_requests else []
+    user = cycles[0] if cycles else {}
+    check("'from inferred states' makes an editable cycle through the states, closed, paths auto; the overlay goes",
+          len(cycles) == 1 and user.get("name") == "Cycle" and user.get("paths") == "auto"
+          and len(user.get("loops", [[]])[0]) == len(user.get("states", [])) + 1
+          and user["loops"][0][0] == user["loops"][0][-1], json.dumps(cycles)[:400])
+    check("the editor shows the cycle with its states",
+          await page.wait_for("document.querySelectorAll('.diagram-cycle .diagram-state').length >= 4", 10))
+    check("the cycle is drawn with lines (cp-role-cycle)",
+          await page.wait_for(f"!!{SVG}?.querySelector('.cp-role-cycle path')", 60))
+    await page.idle()
+    points = await page.eval(f"[...{SVG}.querySelectorAll('.cp-role-cycle path')]"
+                             ".map(p => (p.getAttribute('d').match(/[ML]/g) || []).length).reduce((a, b) => a + b, 0)")
+    check("auto paths follow the processes (more points than straight segments)",
+          (points or 0) > len(user.get("states", [])) + 4, f"{points} points")
+    await page.screenshot("diagram_editor_cycle.png")
+
+    print("\n=== Hover ===")
+    marker = await page.eval(f"(() => {{ const g = {SVG}.querySelector('.cp-role-state_points');"
+                             " const m = g && g.firstElementChild; if (!m) return null;"
+                             " const r = m.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()")
+    if marker:
+        await page.mouse("mouseMoved", marker[0], marker[1], 0)
+    check("hovering a state marker shows the cycle, the state and its variables with their values",
+          await page.wait_for("(() => { const t = document.querySelector('.diagram-tooltip[data-kind=\"state\"]');"
+                              " return !!t && t.textContent.includes('Cycle: state') && /[PhTs]_\\d = /.test(t.textContent); })()", 10),
+          await page.eval("document.querySelector('.diagram-tooltip')?.textContent"))
+    box = await page.eval(f"(() => {{ const r = {SVG}.querySelector('rect.cp-background').getBoundingClientRect();"
+                          " return [r.left, r.top, r.width, r.height]; })()")
+    count = len(page.point_requests)
+    await page.mouse("mouseMoved", box[0] + 0.12 * box[2], box[1] + 0.55 * box[3], 0)
+    check("hovering elsewhere asks for the state under the cursor and shows T, p, h, s, rho",
+          await page.wait_for("(() => { const t = document.querySelector('.diagram-tooltip[data-kind=\"point\"]');"
+                              " return !!t && ['T = ', 'p = ', 'h = ', 's = ', 'ρ = '].every(k => t.textContent.includes(k)); })()", 15)
+          and len(page.point_requests) > count,
+          await page.eval("document.querySelector('.diagram-tooltip')?.textContent"))
+    body = page.point_requests[-1] if page.point_requests else {}
+    check("the state request names the fluid, the diagram and the point in SI",
+          body.get("fluid") == "R134a" and body.get("diagram") == "ph" and body.get("x_SI", 0) > 1000, json.dumps(body))
+    await page.screenshot("diagram_hover.png")
+    await page.mouse("mouseMoved", 5, 5, 0)
+    check("leaving the plot hides the tooltip", await page.wait_for("!document.querySelector('.diagram-tooltip')", 5))
 
     print("\n=== Zoom and reset ===")
     before = await page.eval(f"{SVG}.getAttribute('data-x-limits')")

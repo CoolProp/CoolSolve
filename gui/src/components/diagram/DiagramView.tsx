@@ -6,7 +6,9 @@
  * can find the items later), scaled to the container with its aspect kept. Requests are debounced, a
  * newer one cancels the older, and the labels of the scene on screen are sent back when only the size or
  * the zoom changed. Drag a rectangle on the plot area to zoom (a new `view_SI`); double-click or the
- * button resets it. Independent of the Diagrams tab's controls, so that diagrams can be shown elsewhere.
+ * button resets it. Hovering a state marker shows its variables, hovering elsewhere the state under the
+ * cursor (useDiagramHover). Independent of the Diagrams tab's controls, so that diagrams can be shown
+ * elsewhere.
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -16,6 +18,7 @@ import { api } from '../../api/client';
 import type { CoolPlotSpec, DiagramSceneInput, DiagramSceneResponse, DiagramViewSI } from '../../api/types';
 import { toErrMsg } from '../../utils/errors';
 import { clientToSvg, inPlot, readPlotFrame, viewFromRectangle } from './svgCoords';
+import { useDiagramHover, type DrawnScene } from './useDiagramHover';
 
 /** CSS px to pt */
 const PT_PER_PX = 0.75;
@@ -38,11 +41,6 @@ export interface DiagramViewProps {
   /** Called with every scene shown. */
   onScene?: (scene: DiagramSceneResponse) => void;
   className?: string;
-}
-
-interface Drawn {
-  scene: DiagramSceneResponse;
-  node: SVGSVGElement;
 }
 
 interface Shown {
@@ -112,7 +110,7 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
   const canvasRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<[number, number]>([0, 0]);
-  const [drawn, setDrawn] = useState<Drawn | null>(null);
+  const [drawn, setDrawn] = useState<DrawnScene | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [band, setBand] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
@@ -193,7 +191,7 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
           if (seq !== seqRef.current) return;
           const node = svgNode(scene.svg, suffix);
           shownRef.current = { contentKey, requestKey, revision, labels: scene.labels ?? [] };
-          setDrawn({ scene, node });
+          setDrawn({ scene, node, input: { fluid: input.fluid, spec, cycles: input.cycles } });
           setError('');
           onSceneRef.current?.(scene);
         })
@@ -230,6 +228,8 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
     else host.replaceChildren();
   }, [drawn]);
 
+  const hover = useDiagramHover(drawn, canvasRef);
+
   const applyView = (next: DiagramViewSI | null) => {
     if (onViewChange) onViewChange(next);
     else setLocalView({ chart, view: next });
@@ -245,6 +245,7 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
     const plot = svg.querySelector('rect.cp-background');
     if (!frame || !start || !plot || !inPlot(frame, start)) return;
     e.preventDefault();
+    hover.setDragging(true);
     const canvasBox = canvasRef.current.getBoundingClientRect();
     const plotBox = plot.getBoundingClientRect();
     const clampX = (x: number) => Math.min(Math.max(x, plotBox.left), plotBox.right);
@@ -265,6 +266,7 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
       window.removeEventListener('mousemove', move);
       window.removeEventListener('mouseup', up);
       setBand(null);
+      hover.setDragging(false);
       if (Math.abs(clampX(ev.clientX) - x0) < MIN_BAND_PX || Math.abs(clampY(ev.clientY) - y0) < MIN_BAND_PX) return;
       const end = clientToSvg(svg, ev.clientX, ev.clientY);
       const next = end ? viewFromRectangle(frame, axes, start, end) : null;
@@ -284,10 +286,22 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
         ref={canvasRef}
         className={`diagram-canvas${drawn ? ' zoomable' : ''}`}
         onMouseDown={onMouseDown}
+        onMouseMove={hover.onMouseMove}
+        onMouseLeave={hover.onMouseLeave}
         onDoubleClick={() => { if (view) applyView(null); }}
       >
         <div ref={hostRef} className="diagram-svg-host" />
         {band && <div className="diagram-band" style={band} />}
+        {hover.tip && !band && (
+          <div
+            className={`diagram-tooltip${hover.tip.flipX ? ' flip-x' : ''}${hover.tip.flipY ? ' flip-y' : ''}`}
+            data-kind={hover.tip.kind}
+            style={{ left: hover.tip.left, top: hover.tip.top }}
+          >
+            {hover.tip.title && <div className="diagram-tooltip-title">{hover.tip.title}</div>}
+            {hover.tip.lines.map((line, i) => <div key={i}>{line}</div>)}
+          </div>
+        )}
         {view && drawn && (
           <button
             className="diagram-reset"
@@ -318,7 +332,7 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
                 {Math.round(timing.curves)} + {Math.round(timing.compose)} + {Math.round(timing.svg)} ms
               </span>
             )}
-            <span className="diagram-hint">Drag to zoom{view ? ', double-click to reset' : ''}</span>
+            <span className="diagram-hint">Hover for values, drag to zoom{view ? ', double-click to reset' : ''}</span>
           </>
         ) : null}
       </div>
