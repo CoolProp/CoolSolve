@@ -40,7 +40,8 @@ from coolplot.thermo import native
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUT = os.path.join(HERE, "..", "tests", "fixtures", "coolplot")
 
-# The badge lines (references, versions) come in phase 4: the GUI sets this branding until then
+# The fixtures compare the lines and the cycles, so their charts have no badge: its lines name the CoolProp of the
+# wheel, not the pinned one (the badge lines are tested against CoolPlot's text in tests/test_diagram_outputs.cpp)
 NO_BADGE = {"references": "none", "versions": False}
 
 

@@ -13,6 +13,7 @@ import type {
   SSEEvent,
   InferredVariablesResponse,
   CoolPropFluidsResponse,
+  DiagramExportRequest,
   DiagramOptionsResponse,
   DiagramPointRequest,
   DiagramPointResponse,
@@ -222,6 +223,24 @@ export const api = {
       body: JSON.stringify(body),
       signal,
     }),
+
+  /**
+   * The chart as a file: coolplot-core's SVG, or its PDF with the fonts of the server. Returns the file and the
+   * name the server gives it (`<model>_<diagram>.svg`).
+   */
+  exportDiagram: async (body: DiagramExportRequest): Promise<{ blob: Blob; filename: string }> => {
+    const res = await apiFetch('/diagram/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+    const name = (res.headers.get('Content-Disposition') ?? '').match(/filename="([^"]+)"/)?.[1];
+    return { blob: await res.blob(), filename: name ?? `diagram.${body.format}` };
+  },
 
   /** The states of the last solve, grouped per fluid by the property calls their variables share. */
   getDiagramStates: () => request<DiagramStatesResponse>('/diagram/states'),

@@ -1321,6 +1321,29 @@ body {
 .diagram-hint {
   margin-left: auto;
 }
+.diagram-downloads {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.diagram-download {
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.diagram-download:hover:not(:disabled) {
+  color: var(--accent-color);
+  border-color: var(--accent-color);
+}
+.diagram-download:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
 .diagram-tooltip {
   position: absolute;
   z-index: 5;

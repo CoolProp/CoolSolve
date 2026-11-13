@@ -1,10 +1,12 @@
 // Computing what a plan asks for, keeping the results, and turning a chart request into a scene: the plot and
 // curve caches, the compose record, the plot size in two passes, the diagnostics, the state at a point of a chart,
-// the options of the Diagrams tab and the diagram definitions document. The cycles are in cycles.h.
+// the SVG and PDF files of a chart (downloads, coolsolve --diagram, the figures of the LaTeX report), the options
+// of the Diagrams tab and the diagram definitions document. The cycles are in cycles.h, the badge lines in references.h.
 //
 // Mirrors CoolPlot (github.com/CoolProp/CoolPlot) at commit 7338f48 (v1.5.0): engine/engine.py (Engine: domain,
 // curves, warnings), engine/cache.py (CurveCache), thermo/native.py (the plots of the port), corelib.py
-// (compose_record) and chart.py (the plot area measured again after drawing, Chart.draw).
+// (compose_record), chart.py (the plot area measured again after drawing, Chart.draw) and render/pdf.py (the PDF
+// writer's plot area).
 // CoolPlot is MIT licensed: Copyright 2014-2019 Jorrit Wronski and the other developers.
 // See docs/coolplot_integration.md §3 for the REST contract this serves.
 #pragma once
@@ -136,10 +138,11 @@ auto Engine::withFluid(const ChartFluid& fluid, Work&& work) -> decltype(work(st
 /**
  * @brief The compose record of coolplot-core (coolplot/compose.h; corelib.compose_record) for a chart.
  * @param specRecord the spec record with "fluid" and "cycles" written
+ * @param sources the badge lines (references.h: sourceLines), written only when there are some, as CoolPlot does
  */
 json composeRecord(const json& specRecord, const PlanSpec& spec, const Domain& domain, const std::vector<PlannedCurve>& curves,
                    const std::vector<ResolvedCycle>& cycles, const std::optional<std::pair<double, double>>& plotSizePt,
-                   const json& previousLabels);
+                   const json& previousLabels, const std::vector<std::string>& sources = {});
 
 /// A chart request of the Diagrams tab (POST /api/v1/diagram/scene).
 struct SceneRequest {
@@ -157,7 +160,8 @@ struct SceneRequest {
 /**
  * @brief The response of POST /api/v1/diagram/scene: svg, axes, labels, states, spec, diagnostics and timing_ms
  *        (docs/coolplot_integration.md §3.1). The plot area is measured on the SVG writer's layout and the chart
- *        composed again when it differs by more than 2 % from the size laid out for (Chart.draw).
+ *        composed again when it differs by more than 2 % from the size laid out for (Chart.draw). The badge holds
+ *        the lines settings.branding asks for (references.h: sourceLines).
  * For a fluid without saturation curve (an incompressible liquid, an ideal gas) the composed spec carries the
  * absolute T-p box of its lines as its limits, which CoolPlot needs for such a fluid.
  * @throws DiagramError for an unknown fluid, a fluid not drawable yet, a solution without its concentration or with
@@ -165,6 +169,74 @@ struct SceneRequest {
  *         or coolplot-core refuses
  */
 json scene(const SceneRequest& request);
+
+/**
+ * @brief The file of a chart (POST /api/v1/diagram/export, `coolsolve --diagram`, the figures of the LaTeX report):
+ *        the scene of `request` written by coolplot-core's SVG writer, or by its PDF writer with the TrueType fonts it
+ *        finds on the platform embedded as subsets. The page is the request's figure size, else the spec's page
+ *        (CoolPlot's settings.page, 576 x 432 pt); the plot area is measured on the writer's own layout, as scene()
+ *        does.
+ * @param format "svg" or "pdf"
+ * @param warnings receives the warnings of the chart (lines or states left out), when given
+ * @throws DiagramError as scene(), and for another format; std::runtime_error for a PDF when the platform has no
+ *         TrueType font of the theme's families (a server needs a font package, e.g. fonts-dejavu-core)
+ */
+std::string chartFile(const SceneRequest& request, const std::string& format, std::vector<std::string>* warnings = nullptr);
+
+/// The file format of a chart file name: "svg" or "pdf" from its extension (any case). @throws DiagramError otherwise
+std::string chartFormat(const std::string& path);
+
+/**
+ * @brief The diagram named `name` of a diagram definitions document (§3.4), or its first one when `name` is empty.
+ * @throws DiagramError for a document that is not one, one without diagrams, or a name it does not have
+ */
+const json& findDefinition(const json& document, const std::string& name);
+
+/**
+ * @brief The concentration of an incompressible solution in a chart request or a diagram definition: "fractions"
+ *        (mass fractions, as CoolPlot's fluid record) and "basis" ("mass"), both optional; appended to `fractions`
+ *        and written to `basis` when given. chartFluid() checks them against the fluid.
+ * @throws DiagramError when "fractions" is not a list of numbers or "basis" not a string
+ */
+void readConcentration(const json& record, std::vector<double>& fractions, std::string& basis);
+
+/**
+ * @brief The chart request of a diagram definition ({name, fluid, fractions, basis, spec, cycles}); the backend, the
+ *        solution and the figure size are left to the caller.
+ * @throws DiagramError for a definition without the name of its fluid, or with an invalid concentration
+ */
+SceneRequest definitionRequest(const json& definition);
+
+/**
+ * @brief `coolsolve --diagram`: the diagram `name` (the first one when empty) of a definitions document drawn with
+ *        a solved model and written to `path`, as SVG or PDF after its extension, on the spec's page.
+ * @param backend the model's coolpropBackend
+ * @return the warnings of the chart (lines or states left out)
+ * @throws DiagramError for a request the engine refuses (see chartFile, findDefinition); std::runtime_error when the
+ *         file cannot be written or no font is found for a PDF
+ */
+std::vector<std::string> writeDiagramFile(const json& document, const std::string& name, const SolutionValues& solution,
+                                          const std::string& backend, const std::string& path);
+
+/// The most diagrams the LaTeX report includes (the loop of latex_report.cpp).
+constexpr size_t REPORT_DIAGRAMS = 20;
+
+/// The file of the report's figure of the diagram at `index` of a definitions document, as latex_report.cpp includes
+/// it: "thermo_diagrams.pdf" for the first (the name of the raster image the GUI sends too), then
+/// "thermo_diagram_2.pdf", "thermo_diagram_3.pdf", ...
+std::string reportDiagramFile(size_t index);
+
+/**
+ * @brief The figures of the LaTeX report: every diagram of a definitions document (at most REPORT_DIAGRAMS) as a PDF
+ *        in the "print" theme on the spec's page, named as latex_report.cpp includes them: "thermo_diagrams.pdf",
+ *        then "thermo_diagram_2.pdf", "thermo_diagram_3.pdf", ...
+ *
+ * A diagram that cannot be drawn is left out with a warning naming it (the report then has no figure for it, or the
+ * raster image the GUI sent); so is every one when no TrueType font is found.
+ * @return (file name, PDF) pairs
+ */
+std::vector<std::pair<std::string, std::string>> reportDiagrams(const json& document, const SolutionValues* solution,
+                                                                const std::string& backend, std::vector<std::string>& warnings);
 
 /**
  * @brief The full state at a point of a chart (POST /api/v1/diagram/state, the hover of the Diagrams tab).

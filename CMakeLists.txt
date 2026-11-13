@@ -242,10 +242,27 @@ target_compile_definitions(coolsolve_lib PUBLIC
     COOLSOLVE_COOLPLOT_COMMIT="${COOLSOLVE_COOLPLOT_TAG}"
 )
 
-target_include_directories(coolsolve_lib PUBLIC 
+target_include_directories(coolsolve_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${peglib_SOURCE_DIR}
 )
+
+# CoolProp's bibliography, for the references of the equation of state on the badge of a chart
+# (src/diagram/references.cpp); empty with a system CoolProp, whose sources are not at hand
+set(COOLPROP_BIBTEX_CPP "${CMAKE_CURRENT_BINARY_DIR}/coolprop_bibtex.cpp")
+set(COOLPROP_BIBTEX_FILE "")
+if(DEFINED coolprop_SOURCE_DIR AND EXISTS "${coolprop_SOURCE_DIR}/CoolPropBibTeXLibrary.bib")
+    set(COOLPROP_BIBTEX_FILE "${coolprop_SOURCE_DIR}/CoolPropBibTeXLibrary.bib")
+endif()
+add_custom_command(
+    OUTPUT "${COOLPROP_BIBTEX_CPP}"
+    COMMAND ${CMAKE_COMMAND} "-DINPUT=${COOLPROP_BIBTEX_FILE}" "-DOUTPUT_CPP=${COOLPROP_BIBTEX_CPP}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_bibtex.cmake"
+    DEPENDS ${COOLPROP_BIBTEX_FILE} "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_bibtex.cmake"
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_common.cmake"
+    COMMENT "Embedding CoolProp's bibliography"
+)
+target_sources(coolsolve_lib PRIVATE "${COOLPROP_BIBTEX_CPP}")
 
 # --- GUI Server ---
 if(COOLSOLVE_BUILD_GUI)

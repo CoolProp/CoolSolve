@@ -449,6 +449,11 @@ export interface DiagramSceneRequest extends DiagramSceneInput {
   previous_labels?: Record<string, unknown>[];
 }
 
+/** Body of POST /api/v1/diagram/export: a chart request and the format of its file */
+export interface DiagramExportRequest extends DiagramSceneRequest {
+  format: 'svg' | 'pdf';
+}
+
 /** A display unit of an axis: display = SI * scale + offset. */
 export interface DiagramAxisUnit {
   label: string;

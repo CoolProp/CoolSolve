@@ -7,6 +7,7 @@
 #include "coolsolve/solution_checker.h"
 #include "coolsolve/latex_report.h"
 #include "coolsolve/version.h"
+#include "coolsolve/diagram/engine.h"
 #ifdef COOLSOLVE_GUI
 #include "coolsolve/server.h"
 #endif
@@ -28,13 +29,16 @@ void printUsage(const char* programName) {
     std::cerr << "CoolSolve v" COOLSOLVE_VERSION "\n\n";
     std::cerr << "Usage: " << programName << " [options] <input.eescode>\n\n";
     std::cerr << "Options:\n";
-    std::cerr << "  -o, --output <file>     Output file (default: stdout)\n";
+    std::cerr << "  -o, --output <file>     Output file (default: stdout); with --diagram, the chart (.svg or .pdf)\n";
     std::cerr << "  -f, --format <format>   Output format: json, latex (default: json)\n";
     std::cerr << "  -d, --debug [dir]       Debug mode: create output folder with all analysis files\n";
     std::cerr << "                          If dir not specified, creates <input_dir>/<input_name>_coolsolve/\n";
     std::cerr << "  --no-sol                Do not write the .sol file (an existing one is left untouched)\n";
     std::cerr << "  -g, --guess             Update .initials file with solution on success\n";
     std::cerr << "  --no-superancillary     Disable CoolProp superancillary functions\n";
+    std::cerr << "  --diagram <file>        Draw a diagram of a diagram definitions document (diagrams.json of a\n";
+    std::cerr << "                          ZIP bundle) with the solution: -o chart.svg or -o chart.pdf\n";
+    std::cerr << "  --diagram-name <name>   The diagram to draw (default: the first one of the document)\n";
 #ifdef COOLSOLVE_GUI
     std::cerr << "  --gui [port]            Start the GUI web server (default port: 8550)\n";
     std::cerr << "  --no-browser            Don't open browser automatically (with --gui)\n";
@@ -66,6 +70,8 @@ int main(int argc, char* argv[]) {
     bool writeSolFile = true;
     bool enableSuperancillary = true;
     bool updateGuessFile = false;
+    std::string diagramFile;   // --diagram: diagram definitions to draw with the solution
+    std::string diagramName;   // --diagram-name: the diagram of the document (default: the first)
 #ifdef COOLSOLVE_GUI
     bool guiMode = false;
     int guiPort = 8550;
@@ -88,6 +94,12 @@ int main(int argc, char* argv[]) {
             enableSuperancillary = false;
         } else if (arg == "-g" || arg == "--guess") {
             updateGuessFile = true;
+        } else if (arg == "--diagram" || arg == "--diagram-name") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: " << arg << " requires an argument\n";
+                return 1;
+            }
+            (arg == "--diagram" ? diagramFile : diagramName) = argv[++i];
 #ifdef COOLSOLVE_GUI
         } else if (arg == "--gui") {
             guiMode = true;
@@ -161,6 +173,23 @@ int main(int argc, char* argv[]) {
     }
 #endif
     
+    // --diagram: the document and the chart file are checked before the model is solved
+    nlohmann::json diagramDocument;
+    if (!diagramFile.empty() || !diagramName.empty()) {
+        try {
+            if (diagramFile.empty()) throw std::runtime_error("--diagram-name needs --diagram <diagrams.json>");
+            if (outputFile.empty()) throw std::runtime_error("--diagram needs the chart file: -o <chart.svg|chart.pdf>");
+            coolsolve::diagram::chartFormat(outputFile);
+            const auto text = readFileContent(diagramFile);
+            if (!text) throw std::runtime_error("cannot read " + diagramFile);
+            diagramDocument = nlohmann::json::parse(*text);
+            coolsolve::diagram::findDefinition(diagramDocument, diagramName);
+        } catch (const std::exception& e) {
+            std::cerr << "Error: " << e.what() << "\n";
+            return 1;
+        }
+    }
+
     // Configure solver options (defaults from solver.h)
     coolsolve::SolverOptions options;
     options.verbose = false; // Disable stdout/stderr verbosity
@@ -459,6 +488,26 @@ int main(int argc, char* argv[]) {
         }
     }
     
+    // --diagram: the chart of the solved model goes to -o instead of the analysis output
+    if (!diagramFile.empty()) {
+        printRunnerDiagnostics(runner);
+        if (!solutionValid) {
+            std::cerr << "Error: the diagram is not drawn: the model did not solve\n";
+            return 1;
+        }
+        try {
+            const coolsolve::diagram::SolutionValues solution(solveResult.variables.begin(), solveResult.variables.end());
+            for (const std::string& warning : coolsolve::diagram::writeDiagramFile(
+                     diagramDocument, diagramName, solution, options.coolpropConfig.backend, outputFile))
+                std::cerr << "\033[33mwarning\033[0m: " << warning << "\n";
+        } catch (const std::exception& e) {
+            std::cerr << "Error: the diagram is not drawn: " << e.what() << "\n";
+            return 1;
+        }
+        std::cout << "Diagram: " << fs::weakly_canonical(outputFile) << "\n";
+        return 0;
+    }
+
     // Generate output based on format
     std::string output;
     if (format == "json") {

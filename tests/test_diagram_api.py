@@ -2,8 +2,10 @@
 """
 test_diagram_api.py — Integration tests of the Diagrams endpoints of the GUI server (docs/coolplot_integration.md §3).
 
-Tests GET /api/v1/diagram/options, POST /api/v1/diagram/scene (a default p-h chart of R134a, a chart of a solved
-model with its cycle from the model's variables and the paths between its states, the errors), POST
+Tests GET /api/v1/diagram/options, POST /api/v1/diagram/scene (a default p-h chart of R134a, the badge naming the
+equation of state and the versions, a chart of a solved model with its cycle from the model's variables and the paths
+between its states, the errors), POST /api/v1/diagram/export (the chart as SVG and PDF), the diagrams of the LaTeX
+report as vector PDF figures (when pdflatex is installed), POST
 /api/v1/diagram/state (the state under the cursor), GET /api/v1/diagram/states (the states of the solved model),
 GET/PUT /api/v1/diagram/definitions, the definitions
 in the ZIP bundle (diagrams.json), their reset by New and their return by Back, and that the former route
@@ -23,6 +25,8 @@ Exit code 0 if all tests pass, 1 otherwise.
 import io
 import json
 import os
+import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -31,6 +35,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+import zlib
 from typing import Optional
 
 BASE_URL = "http://localhost:8550"
@@ -56,6 +61,19 @@ def raw(method: str, path: str, body=None, headers=None, data: Optional[bytes] =
         return resp.status, resp.headers.get("Content-Type", ""), resp.read()
     except urllib.error.HTTPError as e:
         return e.code, e.headers.get("Content-Type", ""), e.read()
+
+
+def raw_headers(method: str, path: str, body=None, headers=None):
+    """Send a JSON request; return (status, response headers, body bytes). HTTP errors are returned, not raised."""
+    hdrs = {"Content-Type": "application/json", **SESSION}
+    hdrs.update(headers or {})
+    req = urllib.request.Request(BASE_URL + path, data=json.dumps(body).encode() if body is not None else None,
+                                 headers=hdrs, method=method)
+    try:
+        resp = _opener.open(req, timeout=120)
+        return resp.status, resp.headers, resp.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, e.read()
 
 
 def api(method: str, path: str, body=None, data: Optional[bytes] = None):
@@ -142,6 +160,82 @@ def test_scene(options):
         check("isoline labels returned", len(zoomed["labels"]) > 0 and all(t["role"] == "isoline_label" for t in zoomed["labels"]))
         status, again = api("POST", "/diagram/scene", {"fluid": "R134a", "spec": spec, "previous_labels": zoomed["labels"]})
         check("the labels sent back keep their places", status == 200 and again["labels"] == zoomed["labels"])
+
+
+def test_badge():
+    print("\n── Badge: CoolPlot's defaults ──")
+    spec = default_spec()
+    del spec["settings"]["branding"]
+    status, scene = api("POST", "/diagram/scene", {"fluid": "R134a", "spec": spec, "figure_size_pt": [600, 420]})
+    check("a chart with CoolPlot's default badge", status == 200, str(scene)[:300])
+    if status != 200:
+        return
+    check("the badge names the equation of state (CoolPlot's short reference)",
+          "R134a: Tillner-Roth and Baehr (1994)" in scene["svg"], scene["svg"][-600:])
+    check("the badge names CoolProp and CoolPlot", "CoolProp 8." in scene["svg"] and "CoolPlot 1.5.0" in scene["svg"])
+    check("no warning about the badge", scene["diagnostics"]["warnings"] == [], str(scene["diagnostics"]["warnings"]))
+    spec["settings"]["branding"] = {"references": "full", "versions": False}
+    status, scene = api("POST", "/diagram/scene", {"fluid": "R134a", "spec": spec})
+    check("full references", status == 200 and "Tillner-Roth and Baehr, J. Phys. Chem. Ref. Data 23 (1994) 657-729" in scene["svg"]
+          and "CoolPlot 1.5.0" not in scene["svg"], str(status))
+    spec["settings"]["branding"] = {"references": "long"}
+    status, result = api("POST", "/diagram/scene", {"fluid": "R134a", "spec": spec})
+    check("an unknown references style: 400", status == 400 and "Unknown references style" in (result or {}).get("error", ""),
+          f"{status} {result}")
+
+
+def test_export():
+    print("\n── Export: SVG, PDF ──")
+    body = {"fluid": "R134a", "spec": default_spec(), "cycles": [], "figure_size_pt": [600, 420]}
+    status, content_type, svg = raw("POST", "/api/v1/diagram/export", {**body, "format": "svg"})
+    check("SVG export returns 200 with image/svg+xml", status == 200 and content_type.startswith("image/svg+xml"),
+          f"{status} {content_type} {svg[:200]!r}")
+    check("the SVG of the scene", svg.startswith(b"<svg") and b'data-item="iso/Q/0"' in svg and b'width="800"' in svg)
+    status, headers, pdf = raw_headers("POST", "/api/v1/diagram/export", {**body, "format": "pdf"})
+    check("PDF export returns 200 with application/pdf", status == 200 and headers.get("Content-Type", "").startswith("application/pdf"),
+          f"{status} {pdf[:300]!r}")
+    check("a PDF with an embedded TrueType font, the figure size as its page",
+          pdf.startswith(b"%PDF-") and b"/FontFile2" in pdf and b"/MediaBox [0 0 600 420]" in pdf, repr(pdf[:100]))
+    disposition = headers.get("Content-Disposition", "")
+    check("a file name for the download", disposition.startswith("attachment;") and disposition.endswith('_ph.pdf"'), disposition)
+    status, result = api("POST", "/diagram/export", {**body, "format": "png"})
+    check("an unknown format: 400", status == 400 and "svg" in (result or {}).get("error", ""), f"{status} {result}")
+    status, result = api("POST", "/diagram/export", {**body, "fluid": "Unobtainium", "format": "svg"})
+    check("an unknown fluid: 400", status == 400 and "Unknown fluid" in (result or {}).get("error", ""), f"{status} {result}")
+    # The session of the tab names the file: the model of this session, not of another one
+    api("PUT", "/model-name", {"modelName": "my model"})
+    _, headers_, _ = raw_headers("POST", "/api/v1/diagram/export", {**body, "format": "svg"})
+    check("the file is named after the model of the tab's session", 'filename="my_model_ph.svg"' in headers_.get("Content-Disposition", ""),
+          headers_.get("Content-Disposition", ""))
+    _, headers_, _ = raw_headers("POST", "/api/v1/diagram/export", {**body, "format": "svg"}, {"X-CoolSolve-Session": "f" * 32})
+    check("another session names it after its own model", 'filename="diagram_ph.svg"' in headers_.get("Content-Disposition", ""),
+          headers_.get("Content-Disposition", ""))
+
+
+def test_report_figures(definitions_with_cycle):
+    """The LaTeX report of a solved model takes its diagrams as vector PDF (needs pdflatex on the machine)."""
+    print("\n── Report: the diagrams as PDF figures ──")
+    if shutil.which("pdflatex") is None:
+        print("  (pdflatex not found: skipped)")
+        return
+    api("PUT", "/diagram/definitions", definitions_with_cycle)
+    status, report = api("GET", "/latex/report")
+    check("a LaTeX report of the solve", status == 200 and report.get("available") is True, str(report)[:200])
+    if not report.get("available"):
+        return
+    check("the report includes thermo_diagrams.pdf under \\IfFileExists",
+          "\\IfFileExists{thermo_diagrams.pdf}" in report["content"])
+    status, headers, pdf = raw_headers("POST", "/api/v1/latex/compile", {"plots": []})
+    check("the report compiles", status == 200 and pdf.startswith(b"%PDF-"), f"{status} {pdf[:300]!r}")
+    # The figures are coolplot-core's PDFs, with their fonts: pdfTeX copies their font subsets ("COOLPL+...") into
+    # its compressed object streams, once per figure
+    fonts = 0
+    for stream in re.findall(rb"stream\r?\n(.*?)\r?\nendstream", pdf, re.S):
+        try:
+            fonts += zlib.decompress(stream).count(b"/BaseFont /COOLPL+")
+        except zlib.error:
+            pass
+    check("both diagrams are the server's vector figures", fonts >= 2 * 2, f"{fonts} font dictionaries of coolplot-core")
 
 
 def test_errors():
@@ -305,6 +399,12 @@ def test_solved_cycle():
               str(by_number.get(2)))
         check("every state has two independent properties",
               all(len(set(s["vars"]) - {"T", "p"}) >= 1 for s in found), str(found)[:300])
+
+    spec = default_spec()
+    del spec["settings"]["branding"]
+    test_report_figures({"format": "coolsolve-diagrams", "version": 1, "diagrams": [
+        {"name": "Refrigeration", "fluid": "R134a", "spec": spec, "cycles": [{"name": "Cycle", "states": states}]},
+        {"name": "T-s", "fluid": "R134a", "spec": {**default_spec("Ts", ("p", "h", "Q"))}, "cycles": []}]})
 
 
 BRAYTON_MODEL = """T_1 = 25
@@ -512,6 +612,8 @@ def main():
     try:
         options = test_options()
         test_scene(options)
+        test_badge()
+        test_export()
         test_errors()
         definitions = test_definitions()
         test_bundle(definitions)
