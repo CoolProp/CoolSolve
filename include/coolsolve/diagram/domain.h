@@ -98,17 +98,20 @@ constexpr int MAX_ANCHORED_LINES = 200;
 /**
  * @brief Absolute (T_min_K, T_max_K, p_min_Pa, p_max_Pa) for one fluid (limits.resolve_tp_box): relative bounds
  *        refer to the saturation range (`margin` inside its ends), the box never leaves the equation of state.
- * @throws DiagramError for an empty region or a fluid without saturation curve given relative bounds
+ *
+ * CoolSolve's addition for a fluid without saturation curve (CoolPlot refuses its relative bounds): a relative bound,
+ * and a bound left to a model that has no limit there, take the fluid's default box (PropertyProvider::defaultBox).
+ * @throws DiagramError for an empty region
  */
-std::array<double, 4> resolveTpBox(FluidModel& fluid, const TpLimits& limits, double margin);
+std::array<double, 4> resolveTpBox(PropertyProvider& fluid, const TpLimits& limits, double margin);
 
 /// Smallest and largest value of a quantity on the corners of the T-p box (limits.property_range_SI).
 /// @throws DiagramError when fewer than two corners give a value
-Range propertyRangeSI(FluidModel& fluid, const std::string& key, const std::array<double, 4>& tp_box);
+Range propertyRangeSI(PropertyProvider& fluid, const std::string& key, const std::array<double, 4>& tp_box);
 
 /// The T-p box and the range of every state quantity over it (provider.chart_domain); quantities whose range
 /// cannot be found are left out. The saturation flag is set from the fluid's critical point.
-Domain chartDomain(FluidModel& fluid, const TpLimits& limits, double margin);
+Domain chartDomain(PropertyProvider& fluid, const TpLimits& limits, double margin);
 
 /**
  * @brief (saturation value, line value) of lines of constant `key` through saturation states at even steps
@@ -116,20 +119,20 @@ Domain chartDomain(FluidModel& fluid, const TpLimits& limits, double margin);
  * @param warnings receives the warning about saturation states CoolProp could not compute
  * @throws DiagramError for a fluid without saturation curve, or a step that would place too many lines
  */
-std::vector<Range> saturationAnchorValues(FluidModel& fluid, const std::string& key, const std::string& by, double step_SI,
+std::vector<Range> saturationAnchorValues(PropertyProvider& fluid, const std::string& key, const std::string& by, double step_SI,
                                           double Q, const std::optional<Range>& range_SI, const std::array<double, 4>& tp_box,
                                           double margin, const coolplot::Unit& unit, std::vector<std::string>& warnings);
 
 /// (saturation value, value of `key`) at the saturation states `by` = value, quality `Q` (provider.saturation_pairs).
-std::vector<Range> saturationPairs(FluidModel& fluid, const std::string& by, const std::string& key,
+std::vector<Range> saturationPairs(PropertyProvider& fluid, const std::string& by, const std::string& key,
                                    const std::vector<double>& values_SI, double Q, std::vector<std::string>& warnings);
 
 /// Where lines of constant `key` ("T" or "p") meet the bubble and the dew line (provider.dome_ends).
-std::vector<DomeEnd> domeEnds(FluidModel& fluid, const std::string& key, const std::vector<double>& values_SI, double margin);
+std::vector<DomeEnd> domeEnds(PropertyProvider& fluid, const std::string& key, const std::vector<double>& values_SI, double margin);
 
 /// The states of the critical and triple points named in `names` ("critical", "triple"), as
 /// (name, state) pairs with only finite values (provider.marked_point_states).
-std::vector<std::pair<std::string, State>> markedPointStates(FluidModel& fluid, const std::vector<std::string>& names,
+std::vector<std::pair<std::string, State>> markedPointStates(PropertyProvider& fluid, const std::vector<std::string>& names,
                                                              double margin);
 
 }  // namespace diagram

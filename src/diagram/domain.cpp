@@ -116,11 +116,22 @@ const std::vector<Range>& Domain::anchorPairs(const std::string& key) const {
 // thermo/limits.py
 // ---------------------------------------------------------------------------
 
-std::array<double, 4> resolveTpBox(FluidModel& fluid, const TpLimits& limits, double margin) {
+std::array<double, 4> resolveTpBox(PropertyProvider& fluid, const TpLimits& limits, double margin) {
+    // CoolSolve's: a fluid without saturation curve (an incompressible liquid, an ideal gas) has no saturation range
+    // for the relative bounds, CoolPlot refuses them; its default box stands in for them, and for the limits of a
+    // model that has none (docs/coolplot_integration.md §5)
+    const bool saturated = fluid.hasCriticalPoint();
+    std::optional<std::array<double, 4>> defaults;
+    auto defaultBound = [&](int index) {
+        if (!defaults) defaults = fluid.defaultBox();
+        return (*defaults)[index];
+    };
     std::optional<Range> saturationT, saturationP;  // looked up only when a bound needs it
     auto absolute = [&](const Bound& bound, const std::string& key, int end, double fallback) {
         double value = fallback;
-        if (bound.kind == Bound::Kind::Relative) {
+        if (bound.kind == Bound::Kind::Relative && !saturated) {
+            value = defaultBound((key == "T" ? 0 : 2) + end);
+        } else if (bound.kind == Bound::Kind::Relative) {
             std::optional<Range>& saturation = key == "T" ? saturationT : saturationP;
             if (!saturation) saturation = fluid.saturationRange(key, margin);
             value = bound.value * (end == 0 ? saturation->first : saturation->second);
@@ -141,13 +152,19 @@ std::array<double, 4> resolveTpBox(FluidModel& fluid, const TpLimits& limits, do
     if (std::isfinite(fluid.tMaxK())) T_hi = std::min(T_hi, fluid.tMaxK());
     if (std::isfinite(fluid.pMinPa())) p_lo = std::max(p_lo, fluid.pMinPa());
     if (std::isfinite(fluid.pMaxPa())) p_hi = std::min(p_hi, fluid.pMaxPa());
+    if (!saturated) {  // a model without a limit there: its default bound
+        if (!(T_lo > 0.0)) T_lo = defaultBound(0);
+        if (!std::isfinite(T_hi)) T_hi = defaultBound(1);
+        if (!(p_lo > 0.0)) p_lo = defaultBound(2);
+        if (!std::isfinite(p_hi)) p_hi = defaultBound(3);
+    }
     if (!(T_lo < T_hi && p_lo < p_hi))
         throw DiagramError("Empty plotting region T=[" + coolplot::repr_number(T_lo) + ", " + coolplot::repr_number(T_hi) +
                            "] K, p=[" + coolplot::repr_number(p_lo) + ", " + coolplot::repr_number(p_hi) + "] Pa.");
     return {T_lo, T_hi, p_lo, p_hi};
 }
 
-Range propertyRangeSI(FluidModel& fluid, const std::string& key, const std::array<double, 4>& tp_box) {
+Range propertyRangeSI(PropertyProvider& fluid, const std::string& key, const std::array<double, 4>& tp_box) {
     if (key == "T") return {tp_box[0], tp_box[1]};
     if (key == "p") return {tp_box[2], tp_box[3]};
     if (key == "Q") return {0.0, 1.0};
@@ -169,7 +186,7 @@ Range propertyRangeSI(FluidModel& fluid, const std::string& key, const std::arra
 // thermo/provider.py
 // ---------------------------------------------------------------------------
 
-Domain chartDomain(FluidModel& fluid, const TpLimits& limits, double margin) {
+Domain chartDomain(PropertyProvider& fluid, const TpLimits& limits, double margin) {
     Domain domain;
     domain.tp_box = resolveTpBox(fluid, limits, margin);
     for (const std::string& key : stateKeys()) {
@@ -182,7 +199,7 @@ Domain chartDomain(FluidModel& fluid, const TpLimits& limits, double margin) {
     return domain;
 }
 
-std::vector<Range> saturationAnchorValues(FluidModel& fluid, const std::string& key, const std::string& by, double step_SI,
+std::vector<Range> saturationAnchorValues(PropertyProvider& fluid, const std::string& key, const std::string& by, double step_SI,
                                           double Q, const std::optional<Range>& range_SI, const std::array<double, 4>& tp_box,
                                           double margin, const coolplot::Unit& unit, std::vector<std::string>& warnings) {
     if (!fluid.hasCriticalPoint())
@@ -232,7 +249,7 @@ std::vector<Range> saturationAnchorValues(FluidModel& fluid, const std::string& 
     return values;
 }
 
-std::vector<Range> saturationPairs(FluidModel& fluid, const std::string& by, const std::string& key,
+std::vector<Range> saturationPairs(PropertyProvider& fluid, const std::string& by, const std::string& key,
                                    const std::vector<double>& values_SI, double Q, std::vector<std::string>& warnings) {
     std::vector<Range> pairs;
     int failed = 0;
@@ -252,7 +269,7 @@ std::vector<Range> saturationPairs(FluidModel& fluid, const std::string& by, con
     return pairs;
 }
 
-std::vector<DomeEnd> domeEnds(FluidModel& fluid, const std::string& key, const std::vector<double>& values_SI, double margin) {
+std::vector<DomeEnd> domeEnds(PropertyProvider& fluid, const std::string& key, const std::vector<double>& values_SI, double margin) {
     if (!fluid.hasCriticalPoint()) return {};
     const auto [lo, hi] = fluid.saturationRange(key, margin);
     std::vector<DomeEnd> ends;
@@ -268,7 +285,7 @@ std::vector<DomeEnd> domeEnds(FluidModel& fluid, const std::string& key, const s
     return ends;
 }
 
-std::vector<std::pair<std::string, State>> markedPointStates(FluidModel& fluid, const std::vector<std::string>& names,
+std::vector<std::pair<std::string, State>> markedPointStates(PropertyProvider& fluid, const std::vector<std::string>& names,
                                                              double margin) {
     if (!fluid.hasCriticalPoint()) return {};
     auto marks = [&names](const char* name) { return std::find(names.begin(), names.end(), name) != names.end(); };

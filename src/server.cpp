@@ -1667,7 +1667,8 @@ int startServer(const ServerOptions& options) {
                         // The states of the model from its property calls (docs/coolplot_integration.md §4.2)
                         json states;
                         try {
-                            states = diagram::statesToJson(diagram::groupStates(ir, &runner.getSolveResult().variables));
+                            const auto& solved = runner.getSolveResult().variables;
+                            states = diagram::statesToJson(diagram::groupStates(ir, &solved), diagram::solutionFractions(ir, &solved));
                         } catch (const std::exception&) {  // the Diagrams tab falls back to no states
                         }
                         std::lock_guard<std::mutex> lock(session.diagramMutex);
@@ -2666,12 +2667,22 @@ int startServer(const ServerOptions& options) {
                 case FluidType::AmmoniaWater: typeStr = "AmmoniaWater"; break;
                 default: typeStr = "Unknown"; break;
             }
-            fluidsArr.push_back({
+            json entry = {
                 {"name", fluid->getName()},
                 {"coolpropName", fluid->getCoolPropName()},
                 {"type", typeStr},
                 {"hasDome", fluid->getType() == FluidType::Real}
-            });
+            };
+            // An incompressible solution: the mass fractions CoolProp has it for (the concentration of its charts)
+            const auto solution = std::dynamic_pointer_cast<IncompressibleFluid>(fluid);
+            if (solution && solution->isSolution()) {
+                try {
+                    const auto range = diagram::solutionFractionRange(solution->getCoolPropKey());
+                    entry["fractionRange"] = {range.first, range.second};
+                } catch (const std::exception&) {  // CoolProp without this fluid: no range
+                }
+            }
+            fluidsArr.push_back(entry);
         }
         
         json j;
@@ -2683,16 +2694,33 @@ int startServer(const ServerOptions& options) {
     // ================================================================
     // Diagrams (docs/coolplot_integration.md §3.1): charts of the model's fluid drawn by
     // coolplot-core, the lines computed by CoolProp::Plot (module src/diagram/).
-    //   POST /api/v1/diagram/scene        {fluid, spec, cycles, figure_size_pt, previous_labels}
+    //   POST /api/v1/diagram/scene        {fluid, fractions, basis, spec, cycles, figure_size_pt, previous_labels}
     //   GET  /api/v1/diagram/options      what the Diagrams tab offers
     //   GET  /api/v1/diagram/definitions  the session's diagrams.json (§3.4)
     //   PUT  /api/v1/diagram/definitions
-    //   POST /api/v1/diagram/state        {fluid, diagram, x_SI, y_SI}: the state under the cursor
+    //   POST /api/v1/diagram/state        {fluid, fractions, basis, diagram, x_SI, y_SI}: the state under the cursor
     //   GET  /api/v1/diagram/states       the states of the solved model by fluid (§4.2)
     // ================================================================
     auto diagramError = [](httplib::Response& res, int status, const std::string& message) {
         res.status = status;
         res.set_content(json{{"error", message}}.dump(), "application/json");
+    };
+    // The concentration of an incompressible solution in a chart request: "fractions" (mass fractions, CoolPlot's
+    // fluid record) and "basis" ("mass"), both optional
+    auto diagramFractions = [](const json& body, std::vector<double>& fractions, std::string& basis) {
+        const json given = body.value("fractions", json());
+        if (!given.is_null()) {
+            if (!given.is_array()) throw diagram::DiagramError("\"fractions\" is a list of numbers, e.g. [0.3].");
+            for (const json& f : given) {
+                if (!f.is_number()) throw diagram::DiagramError("\"fractions\" is a list of numbers, e.g. [0.3].");
+                fractions.push_back(f.get<double>());
+            }
+        }
+        const json b = body.value("basis", json());
+        if (!b.is_null()) {
+            if (!b.is_string()) throw diagram::DiagramError("\"basis\" is \"mass\" for the concentration of a solution.");
+            basis = b.get<std::string>();
+        }
     };
 
     svr.Post("/api/v1/diagram/scene", [&](const httplib::Request& req, httplib::Response& res) {
@@ -2705,6 +2733,7 @@ int startServer(const ServerOptions& options) {
             diagram::SceneRequest request;
             request.fluid = body.at("fluid").get<std::string>();
             request.backend = sessionCoolPropBackend(session);
+            diagramFractions(body, request.fractions, request.basis);
             request.spec = body.value("spec", json::object());
             request.cycles = body.value("cycles", json::array());
             request.previousLabels = body.value("previous_labels", json());
@@ -2752,8 +2781,12 @@ int startServer(const ServerOptions& options) {
             for (const char* key : {"x_SI", "y_SI"})
                 if (!body.contains(key) || !body.at(key).is_number())
                     throw diagram::DiagramError(std::string("A state request needs the axis value \"") + key + "\" (a number in SI units).");
-            const json state = diagram::stateAt(body.at("fluid").get<std::string>(), sessionCoolPropBackend(session),
-                                                body.value("diagram", std::string("ph")), body.at("x_SI").get<double>(),
+            std::vector<double> fractions;
+            std::string basis;
+            diagramFractions(body, fractions, basis);
+            const diagram::ChartFluid fluid =
+                diagram::chartFluid(body.at("fluid").get<std::string>(), sessionCoolPropBackend(session), fractions, basis);
+            const json state = diagram::stateAt(fluid, body.value("diagram", std::string("ph")), body.at("x_SI").get<double>(),
                                                 body.at("y_SI").get<double>());
             res.set_content(json{{"state", state}}.dump(), "application/json");
         } catch (const diagram::DiagramError& e) {

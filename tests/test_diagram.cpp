@@ -6,9 +6,11 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "coolsolve/diagram/engine.h"
+#include "coolsolve/diagram/ideal_gas.h"
 #include "coolsolve/diagram/states.h"
 #include "coolsolve/fluids.h"
 #include "coolsolve/parser.h"
+#include "coolsolve/runner.h"
 #include "coolsolve/variable_inference.h"
 
 #include "CoolProp/AbstractState.h"
@@ -520,7 +522,7 @@ FixtureResult compareFixture(const std::string& name) {
         definitions.push_back({{"name", c.at("name")}, {"states", states}, {"loops", c.at("loops")}, {"paths", c.at("paths")},
                                {"steps", c.at("steps")}, {"numbers", c.at("numbers")}});
     }
-    const std::vector<ResolvedCycle> cycles = Engine::shared().withFluid(chart.fluid, [&](FluidModel& fluid) {
+    const std::vector<ResolvedCycle> cycles = Engine::shared().withFluid(chart.fluid, [&](PropertyProvider& fluid) {
         return resolveCycles(definitions, &solved, fluid, spec.diagram, warnings);
     });
     REQUIRE(cycles.size() == input.at("cycles").size());
@@ -861,9 +863,6 @@ TEST_CASE("Diagram requests that cannot be drawn", "[diagram]") {
     request.spec = defaultSpec("ph");
     request.fluid = "Unobtainium";
     CHECK_THROWS_WITH(scene(request), ContainsSubstring("Unknown fluid 'Unobtainium'"));
-    REQUIRE(FluidRegistry::getFluid("N2")->getType() == FluidType::IdealGas);
-    request.fluid = "N2";
-    CHECK_THROWS_WITH(scene(request), ContainsSubstring("not drawable yet"));
     request.fluid = "AirH2O";
     CHECK_THROWS_WITH(scene(request), ContainsSubstring("not drawable yet"));
     request.fluid = "NH3H2O";
@@ -903,6 +902,20 @@ TEST_CASE("Diagram options and definitions", "[diagram]") {
     CHECK(o.at("themes") == json::array({"default", "dark", "print", "coolpack"}));
     CHECK(o.at("label_modes") == json::array({"rails", "edge", "margin", "inline"}));
     CHECK(o.at("regions").size() == 4);
+    CHECK(o.at("fluid_types") == json::array({"Real", "Mixture", "Incompressible", "IdealGas"}));
+    const json& kinds = o.at("fluid_kinds");
+    CHECK(kinds.at("Real").at("diagram_types").size() == 8);
+    CHECK(kinds.at("Mixture").at("saturation") == true);
+    CHECK(kinds.at("Real").at("default_region") == "DEF");
+    CHECK(kinds.at("Mixture").at("default_region") == "ACHP");  // DEF reaches the triple point of the lightest component
+    CHECK(kinds.at("IdealGas").at("default_region").is_null());
+    CHECK(kinds.at("Incompressible").at("diagram_types") == json::array({"ph", "ps", "prho", "pT"}));
+    CHECK(kinds.at("Incompressible").at("families") == json::array({"T", "p", "h", "s"}));
+    CHECK(kinds.at("Incompressible").at("fractions") == true);
+    CHECK(kinds.at("Incompressible").at("default_box") == json::array({nullptr, nullptr, 1e5, 1e7}));
+    CHECK(kinds.at("IdealGas").at("diagram_types") == json::array({"ph", "Ts", "hs", "ps", "prho", "Trho", "pT"}));
+    CHECK(kinds.at("IdealGas").at("saturation") == false);
+    CHECK(kinds.at("IdealGas").at("default_box") == json::array({200.0, 2000.0, 1e4, 1e7}));
     const json& custom = o.at("unit_systems").back();
     CHECK(custom.at("name") == "coolsolve");
     const coolplot::UnitSystem units = coolplot::UnitSystem::from_json(custom.at("record"));
@@ -1040,7 +1053,7 @@ TEST_CASE("Diagram paths: CoolPlot's kinds between two states", "[diagram]") {
 
 TEST_CASE("Diagram state at a point of a chart", "[diagram]") {
     SECTION("inside the dome, in the vapour, on other axes") {
-        const json wet = stateAt("R134a", "HEOS", "ph", 3e5, 2e5);
+        const json wet = stateAt(chartFluid("R134a"), "ph", 3e5, 2e5);
         REQUIRE(wet.is_object());
         CHECK(wet.at("h") == 3e5);  // the axis values come back
         CHECK(wet.at("p") == 2e5);
@@ -1048,29 +1061,30 @@ TEST_CASE("Diagram state at a point of a chart", "[diagram]") {
         CHECK(wet.at("Q").get<double>() < 1.0);
         CHECK_THAT(wet.at("v").get<double>(), WithinRel(1.0 / wet.at("rho").get<double>(), 1e-12));
         for (const std::string& key : stateKeys()) CHECK(wet.at(key).is_number());
-        const json vapour = stateAt("R134a", "HEOS", "ph", 4.5e5, 2e5);
+        const json vapour = stateAt(chartFluid("R134a"), "ph", 4.5e5, 2e5);
         CHECK(vapour.at("Q") == -1.0);  // single phase, as CoolPlot reports it
-        const json ts = stateAt("Water", "HEOS", "Ts", 6000.0, 500.0);
+        const json ts = stateAt(chartFluid("Water"), "Ts", 6000.0, 500.0);
         REQUIRE(ts.is_object());
         CHECK_THAT(ts.at("T").get<double>(), WithinRel(500.0, 1e-12));
         CHECK_THAT(ts.at("s").get<double>(), WithinRel(6000.0, 1e-9));
     }
     SECTION("no state outside the fluid's range") {
-        CHECK(stateAt("R134a", "HEOS", "ph", 3e5, 1e12).is_null());  // above the highest pressure
-        CHECK(stateAt("R134a", "HEOS", "ph", -5e6, 2e5).is_null());
-        CHECK(stateAt("Water", "HEOS", "Ts", 6000.0, 5000.0).is_null());  // above the highest temperature
+        CHECK(stateAt(chartFluid("R134a"), "ph", 3e5, 1e12).is_null());  // above the highest pressure
+        CHECK(stateAt(chartFluid("R134a"), "ph", -5e6, 2e5).is_null());
+        CHECK(stateAt(chartFluid("Water"), "Ts", 6000.0, 5000.0).is_null());  // above the highest temperature
     }
     SECTION("requests that cannot be answered") {
-        CHECK_THROWS_WITH(stateAt("Unobtainium", "HEOS", "ph", 3e5, 2e5), ContainsSubstring("Unknown fluid"));
-        CHECK_THROWS_WITH(stateAt("R134a", "HEOS", "xy", 3e5, 2e5), ContainsSubstring("Unknown diagram type"));
-        CHECK_THROWS_WITH(stateAt("N2", "HEOS", "ph", 3e5, 2e5), ContainsSubstring("not drawable yet"));
-        CHECK_THROWS_AS(stateAt("R134a", "HEOS", "ph", NaN, 2e5), DiagramError);
+        CHECK_THROWS_WITH(stateAt(chartFluid("Unobtainium"), "ph", 3e5, 2e5), ContainsSubstring("Unknown fluid"));
+        CHECK_THROWS_WITH(stateAt(chartFluid("R134a"), "xy", 3e5, 2e5), ContainsSubstring("Unknown diagram type"));
+        CHECK_THROWS_WITH(stateAt(chartFluid("AirH2O"), "ph", 3e5, 2e5), ContainsSubstring("not drawable yet"));
+        CHECK_THROWS_AS(stateAt(chartFluid("R134a"), "ph", NaN, 2e5), DiagramError);
     }
     SECTION("fast enough for the hover") {
-        stateAt("R134a", "HEOS", "ph", 3e5, 2e5);
+        stateAt(chartFluid("R134a"), "ph", 3e5, 2e5);
         const auto start = std::chrono::steady_clock::now();
         const int n = 2000;
-        for (int i = 0; i < n; ++i) stateAt("R134a", "HEOS", "ph", 2e5 + 100.0 * i, 1e5 + 1000.0 * i);
+        const ChartFluid r134a = chartFluid("R134a");
+        for (int i = 0; i < n; ++i) stateAt(r134a, "ph", 2e5 + 100.0 * i, 1e5 + 1000.0 * i);
         const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / n;
         INFO("state at a point: " << us << " us per call");
         CHECK(us < 1000.0);  // measured 9 us in a Release build; the GUI debounces its calls
@@ -1199,5 +1213,431 @@ TEST_CASE("Diagram states of a model from its property calls", "[diagram]") {
         REQUIRE(byName.at("R134a").size() == 1);  // "1" (T_1, P_1, h_1); "sat_1" has one property only
         CHECK(byName.at("R134a")[0].number == 1);
         CHECK(byName.at("R134a")[0].vars == std::map<std::string, std::string>{{"T", "T_1"}, {"p", "P_1"}, {"h", "h_1"}});
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: more fluids (blends on several threads, incompressibles, tabular backends, ideal gases)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// The curve of an item of a chart, computed by the shared engine (on several threads).
+std::vector<PlannedCurve> chartCurves(const Chart& chart, Domain& domain, std::vector<std::string>& warnings) {
+    json diagnostics;
+    domain = Engine::shared().domain(chart, warnings);
+    return Engine::shared().curves(chart, domain, plan(chart.spec, domain), diagnostics, warnings);
+}
+
+const Curve* curveWithId(const std::vector<PlannedCurve>& curves, const std::string& id) {
+    for (const auto& [request, curve] : curves)
+        if (request.item_id == id) return curve.get();
+    return nullptr;
+}
+
+/// The distance of a point (x, y) to a curve of a chart, in units of the axis spans (polylineDistance).
+double distanceToCurve(const Curve& curve, double x, double y, const Domain& domain, const coolplot::DiagramType& diagram) {
+    const Range xr = domain.rangeSI(diagram.x), yr = domain.rangeSI(diagram.y);
+    const bool xLog = diagram.x_log(), yLog = diagram.y_log();
+    const double xSpan = xLog ? std::log10(xr.second / xr.first) : xr.second - xr.first;
+    const double ySpan = yLog ? std::log10(yr.second / yr.first) : yr.second - yr.first;
+    return polylineDistance({x}, {y}, curve.x, curve.y, xLog, yLog, xSpan, ySpan);
+}
+
+/// Solve an EES model given as text (in a scratch folder: the runner writes its outputs next to the model).
+SolutionValues solveText(const std::string& name, const std::string& source, std::unique_ptr<CoolSolveRunner>& runner) {
+    const fs::path dir = fs::temp_directory_path() / ("coolsolve_diagram_" + name);
+    fs::create_directories(dir);
+    const fs::path file = dir / (name + ".eescode");
+    std::ofstream(file) << source;
+    runner = std::make_unique<CoolSolveRunner>(file.string());
+    REQUIRE(runner->run());
+    REQUIRE(runner->isSolveSuccess());
+    const auto& variables = runner->getSolveResult().variables;
+    return SolutionValues(variables.begin(), variables.end());
+}
+
+/// An air-standard Brayton cycle of the ideal gas `gas` (EES syntax, CoolSolve's units: °C, Pa, J/kg).
+std::string braytonModel(const std::string& gas) {
+    std::string text = R"("Air-standard Brayton cycle, ideal gas GAS"
+T_1 = 25
+P_1 = 1e5
+r_p = 10
+P_2 = r_p*P_1
+h_1 = enthalpy(GAS, T=T_1)
+s_1 = entropy(GAS, T=T_1, P=P_1)
+s_2 = s_1
+h_2 = enthalpy(GAS, P=P_2, s=s_2)
+T_2 = temperature(GAS, P=P_2, s=s_2)
+P_3 = P_2
+T_3 = 1100
+h_3 = enthalpy(GAS, T=T_3)
+s_3 = entropy(GAS, T=T_3, P=P_3)
+P_4 = P_1
+s_4 = s_3
+h_4 = enthalpy(GAS, P=P_4, s=s_4)
+T_4 = temperature(GAS, P=P_4, s=s_4)
+w_net = (h_3 - h_4) - (h_2 - h_1)
+)";
+    for (size_t at; (at = text.find("GAS")) != std::string::npos;) text.replace(at, 3, gas);
+    return text;
+}
+
+json braytonCycle() {
+    json states = json::array();
+    for (int i = 1; i <= 4; ++i) {
+        const std::string n = std::to_string(i);
+        states.push_back({{"number", i}, {"vars", {{"T", "T_" + n}, {"p", "P_" + n}, {"h", "h_" + n}, {"s", "s_" + n}}}});
+    }
+    return {{"name", "Brayton"}, {"states", states}};
+}
+
+}  // namespace
+
+TEST_CASE("Diagram blends: the lines of one chart on several threads", "[diagram]") {
+    // The lines of a chart are computed on up to MAX_CURVE_THREADS threads, one plot each: they are those of one
+    // plot computing them one after the other, bit for bit
+    CHECK(MAX_CURVE_THREADS == 4);
+    json spec = defaultSpec("ph");
+    spec["isolines"] = {{{"key", "T"}, {"num", 6}}, {{"key", "s"}, {"num", 6}}, {{"key", "Q"}, {"num", 5}}};
+    const Chart chart(chartFluid("R32[0.7]&R125[0.3]"), PlanSpec::fromJson(spec));
+    CHECK(chart.fluid.kind() == "Mixture");
+    Engine::shared().clear();
+    std::vector<std::string> warnings;
+    Domain domain;
+    const std::vector<PlannedCurve> parallel = chartCurves(chart, domain, warnings);
+    CHECK(warnings.empty());
+    REQUIRE(parallel.size() >= 15);
+    Engine serial;  // an engine of its own: every line computed again, by one plot
+    std::vector<std::string> serialWarnings;
+    const Domain serialDomain = serial.domain(chart, serialWarnings);
+    for (const auto& [request, curve] : parallel) {
+        INFO(request.item_id);
+        const std::shared_ptr<const Curve> one = serial.curve(chart, serialDomain, request);
+        REQUIRE(one->x.size() == curve->x.size());
+        CHECK(sameNumbers(one->x, curve->x));
+        CHECK(sameNumbers(one->y, curve->y));
+    }
+    // The default p-h chart of the blend, cold: 1.55 s on one thread, 0.6 s on four (Release, 2026-11-12); the
+    // budget is loose, so that only a real regression trips it on a slower machine
+    SceneRequest request;
+    request.fluid = "R32[0.7]&R125[0.3]";
+    request.spec = defaultSpec("ph");
+    Engine::shared().clear();
+    const auto start = std::chrono::steady_clock::now();
+    const json cold = scene(request);
+    const double coldMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    INFO("R32[0.7]&R125[0.3] p-h cold: " << coldMs << " ms");
+    CHECK(coldMs < 15000.0);
+    Engine::shared().clear();
+    CHECK(scene(request).at("svg") == cold.at("svg"));  // the same chart whichever thread computes which line
+}
+
+TEST_CASE("Diagram incompressibles: solutions at a mass fraction, absolute limits", "[diagram]") {
+    SECTION("the chart fluid: CoolProp's INCOMP backend, CoolPlot's fluid record") {
+        const ChartFluid meg = chartFluid("MEG", "TTSE&HEOS", {0.3});
+        CHECK(meg.backend == "INCOMP");  // whatever the model's backend
+        CHECK(meg.kind() == "Incompressible");
+        CHECK(meg.fluidString() == "INCOMP::MEG[0.3]");
+        CHECK(meg.name() == "MEG[0.3]");
+        // FluidSpec.parse("INCOMP::MEG[0.3]").to_dict()
+        CHECK(meg.record() == json::parse(R"({"backend": "INCOMP", "components": ["MEG"], "fractions": [0.3], "basis": "mass",
+                                              "interactions": []})"));
+        CHECK(ChartFluid::fromRecord(meg.record()).fluidString() == meg.fluidString());
+        CHECK(chartFluid("EthyleneGlycol", "HEOS", {0.3}, "mass").fluidString() == "INCOMP::MEG[0.3]");  // an EES name
+        CHECK(chartFluid("SeaWater", "HEOS", {0.035}).components == std::vector<std::string>{"MITSW"});
+        CHECK(solutionFractionRange("MEG") == std::pair<double, double>{0.0, 0.6});
+    }
+    SECTION("what cannot be drawn: an unknown solution, a concentration missing or out of range, fractions elsewhere") {
+        CHECK_THROWS_WITH(solutionFractionRange("NoSuchBrine"), ContainsSubstring("does not know the incompressible fluid"));
+        CHECK_THROWS_WITH(chartFluid("NoSuchBrine", "HEOS", {0.3}), ContainsSubstring("Unknown fluid"));
+        CHECK_THROWS_WITH(chartFluid("MEG"), ContainsSubstring("give its concentration as a mass fraction between 0 and 0.6"));
+        CHECK_THROWS_WITH(chartFluid("MEG", "HEOS", {0.9}), ContainsSubstring("between 0 and 0.6, not 0.9"));
+        CHECK_THROWS_WITH(chartFluid("MEG", "HEOS", {-0.1}), ContainsSubstring("not -0.1"));
+        CHECK_THROWS_WITH(chartFluid("MEG", "HEOS", {0.2, 0.1}), ContainsSubstring("give its concentration"));
+        CHECK_THROWS_WITH(chartFluid("MEG", "HEOS", {0.3}, "mole"), ContainsSubstring("mass fraction"));
+        CHECK_THROWS_WITH(chartFluid("R134a", "HEOS", {0.3}), ContainsSubstring("takes no fractions"));
+        CHECK_THROWS_WITH(chartFluid("N2", "HEOS", {0.3}), ContainsSubstring("takes no fractions"));
+        SceneRequest request;
+        request.fluid = "MEG";
+        request.spec = defaultSpec("ph");
+        request.fractions = {0.75};
+        CHECK_THROWS_WITH(scene(request), ContainsSubstring("not 0.75"));
+        CHECK_THROWS_AS(ChartFluid::fromRecord({{"backend", "INCOMP"}, {"components", {"MEG"}}, {"fractions", {0.3}}, {"basis", "mole"}}),
+                        DiagramError);
+    }
+    SECTION("the region: the fluid's temperatures from its freezing point, 1 to 100 bar, absolute in the composed spec") {
+        FluidModel meg(chartFluid("MEG", "HEOS", {0.3}));
+        CHECK_FALSE(meg.hasCriticalPoint());
+        std::unique_ptr<CoolProp::AbstractState> st(CoolProp::AbstractState::factory("INCOMP", "MEG"));
+        st->set_mass_fractions({0.3});
+        const double T_freeze = st->trivial_keyed_output(CoolProp::iT_freeze);
+        CHECK_THAT(meg.tMinK(), WithinRel(T_freeze, 2e-9));
+        CHECK(meg.tMinK() > T_freeze);
+        const std::array<double, 4> box = resolveTpBox(meg, tpLimitsPreset("DEF"), 1e-7);
+        CHECK(box == std::array<double, 4>{meg.tMinK(), meg.tMaxK(), 1e5, 1e7});
+        CHECK(resolveTpBox(meg, tpLimitsPreset("NONE"), 1e-7) == box);
+        // Absolute bounds are kept inside the fluid's temperatures
+        const std::array<double, 4> achp = resolveTpBox(meg, tpLimitsPreset("ACHP"), 1e-7);
+        CHECK(achp == std::array<double, 4>{meg.tMinK(), meg.tMaxK(), 0.25e5, 1e7});
+        CHECK(resolveTpBox(meg, TpLimits::fromJson({{"T_min", 280.0}, {"T_max", 330.0}, {"p_min", 2e5}, {"p_max", 6e5}}), 1e-7) ==
+              std::array<double, 4>{280.0, 330.0, 2e5, 6e5});
+
+        SceneRequest request;
+        request.fluid = "MEG";
+        request.fractions = {0.3};
+        request.spec = defaultSpec("ph");
+        request.spec["isolines"] = {{{"key", "T"}, {"num", 8}, {"rounding", true}}, {{"key", "s"}, {"num", 8}, {"rounding", true}}};
+        request.spec["marked_points"] = {"critical"};  // none to mark: no point, no error
+        const json response = scene(request);
+        CHECK(response.at("diagnostics").at("warnings").empty());
+        CHECK(response.at("spec").at("limits") == json({{"T_min", box[0]}, {"T_max", box[1]}, {"p_min", 1e5}, {"p_max", 1e7}}));
+        CHECK(response.at("spec").at("fluid").at("basis") == "mass");
+        const std::string svg = response.at("svg");
+        CHECK_THAT(svg, ContainsSubstring("data-item=\"iso/T/"));
+        CHECK_THAT(svg, !ContainsSubstring("data-item=\"iso/Q/"));
+        CHECK_THAT(svg, !ContainsSubstring("point/critical"));
+        // Lines of constant quality cannot be drawn: a diagnostic each, never an error (as for any fluid without dome)
+        request.spec = defaultSpec("ph");
+        const json withQuality = scene(request);
+        bool qualityWarned = false;
+        for (const json& w : withQuality.at("diagnostics").at("warnings"))
+            qualityWarned |= w.get<std::string>().find("has no two-phase region") != std::string::npos;
+        CHECK(qualityWarned);
+    }
+    SECTION("a solved state lies on its isotherm; a state given by T and h alone is at the pressure of the solver") {
+        // A state of a glycol loop as the solver evaluates `h = enthalpy(MEG, T=T, C=30)`: at 1 atm
+        std::unique_ptr<CoolProp::AbstractState> st(CoolProp::AbstractState::factory("INCOMP", "MEG"));
+        st->set_mass_fractions({0.3});
+        st->update(CoolProp::PT_INPUTS, IncompressibleFluid::kInternalPressureSI, 300.0);
+        SolutionValues values = {{"T_1", 300.0 - 273.15}, {"h_1", st->hmass()}};
+        json spec = defaultSpec("ph");
+        spec["isolines"] = json::array();
+        spec["lines"] = {{{"name", "T1"}, {"key", "T"}, {"value_SI", 300.0}}};
+        SceneRequest request;
+        request.fluid = "MEG";
+        request.fractions = {0.3};
+        request.spec = spec;
+        request.solution = &values;
+        request.cycles = {{{"name", "Loop"}, {"states", {{{"number", 1}, {"vars", {{"T", "T_1"}, {"h", "h_1"}}}}}}, {"loops", json::array()}}};
+        const json response = scene(request);
+        REQUIRE(response.at("states").size() == 1);
+        const json& state = response.at("states")[0].at("values_SI");
+        CHECK(state.at("p") == IncompressibleFluid::kInternalPressureSI);
+        CHECK(state.at("h") == values.at("h_1"));
+        const Chart chart(chartFluid("MEG", "HEOS", {0.3}), PlanSpec::fromJson(spec));
+        std::vector<std::string> warnings;
+        Domain domain;
+        const std::vector<PlannedCurve> curves = chartCurves(chart, domain, warnings);
+        const Curve* isotherm = curveWithId(curves, "line/T1");
+        REQUIRE(isotherm);
+        CHECK(distanceToCurve(*isotherm, values.at("h_1"), IncompressibleFluid::kInternalPressureSI, domain, chart.spec.diagram) < 1e-4);
+        // The state under the cursor of a chart of the solution
+        const json point = stateAt(chartFluid("MEG", "HEOS", {0.3}), "ph", values.at("h_1"), IncompressibleFluid::kInternalPressureSI);
+        REQUIRE(point.is_object());
+        CHECK_THAT(point.at("T").get<double>(), WithinRel(300.0, 1e-9));
+    }
+    SECTION("the concentration of a model's solutions, from its property calls") {
+        const IR ir = irOf("T_1 = 20\nc_glycol = 35\nh_1 = enthalpy(MEG, T=T_1, C=30)\ncp_1 = cp(MPG, T=T_1, C=c_glycol)\n"
+                           "rho_1 = density(SeaWater, 3.5, T=T_1)\nh_2 = enthalpy(R134a, T=T_1, x=1)\n");
+        std::map<std::string, double> fractions = solutionFractions(ir);
+        CHECK(fractions.size() == 2);  // the variable c_glycol has no value without a solve
+        CHECK_THAT(fractions.at("MEG"), WithinRel(0.3, 1e-12));
+        CHECK_THAT(fractions.at("SeaWater"), WithinRel(0.035, 1e-12));
+        const SolutionValues solved = {{"c_glycol", 35.0}};
+        fractions = solutionFractions(ir, &solved);
+        CHECK_THAT(fractions.at("MPG"), WithinRel(0.35, 1e-12));
+        const json document = statesToJson({}, fractions);
+        CHECK(document.at("fractions").at("MEG") == json::array({fractions.at("MEG")}));
+        CHECK(statesToJson({}).contains("fractions") == false);
+    }
+}
+
+TEST_CASE("Diagram tabular backends: the lines of constant quality from the equation of state", "[diagram]") {
+    // A model whose coolsolve.conf sets coolpropBackend = BICUBIC&HEOS (or TTSE&HEOS): the lines with the tables, the
+    // lines of constant quality with the equation of state behind them, as CoolPlot's native.port_fluid_string
+    for (const char* backend : {"BICUBIC&HEOS", "TTSE&HEOS"}) {
+        INFO(backend);
+        const ChartFluid water = chartFluid("Water", backend);
+        CHECK(water.kind() == "Real");
+        CHECK(water.fluidString() == std::string(backend) + "::Water");
+        CHECK(water.portFluidString("p") == water.fluidString());
+        CHECK(water.portFluidString("Q") == "HEOS::Water");
+        json spec = defaultSpec("Ts");
+        spec["isolines"] = {{{"key", "p"}, {"values_SI", {1e5, 1e6}}}, {{"key", "Q"}, {"values_SI", {0.5}}}};
+        const Chart chart(water, PlanSpec::fromJson(spec));
+        std::vector<std::string> warnings;
+        Domain domain;
+        const std::vector<PlannedCurve> curves = chartCurves(chart, domain, warnings);
+        CHECK(warnings.empty());
+        for (const char* id : {"iso/p/100000", "iso/p/1000000", "iso/Q/0.5", "iso/Q/0", "iso/Q/1"}) {
+            INFO(id);
+            const Curve* curve = curveWithId(curves, id);
+            REQUIRE(curve);
+            CHECK(curve->nValid() > 20);
+        }
+        // A state of the model's backend lies on its isobar
+        std::unique_ptr<CoolProp::AbstractState> st(CoolProp::AbstractState::factory(backend, "Water"));
+        st->update(CoolProp::PT_INPUTS, 1e6, 500.0);
+        CHECK(distanceToCurve(*curveWithId(curves, "iso/p/1000000"), st->smass(), 500.0, domain, chart.spec.diagram) < 1e-4);
+        // A whole chart, and the hover with the model's backend
+        SceneRequest request;
+        request.fluid = "Water";
+        request.backend = backend;
+        request.spec = defaultSpec("Ts");
+        const json response = scene(request);
+        CHECK_THAT(response.at("svg").get<std::string>(), ContainsSubstring("data-item=\"iso/Q/0.5\""));
+        CHECK(response.at("spec").at("fluid").at("backend") == backend);
+        const json point = stateAt(water, "Ts", st->smass(), 500.0);
+        REQUIRE(point.is_object());
+        CHECK_THAT(point.at("p").get<double>(), WithinRel(1e6, 1e-3));  // the (s, T) flash of the tables
+    }
+}
+
+TEST_CASE("Diagram ideal gases: CoolSolve's provider on the EES/JANAF basis", "[diagram]") {
+    SECTION("the provider: the solver's ideal-gas functions with the reference offsets") {
+        const ChartFluid co2 = chartFluid("CO2", "TTSE&HEOS");
+        CHECK(co2.isIdealGas());
+        CHECK(co2.kind() == "IdealGas");
+        CHECK(co2.name() == "CO2");
+        CHECK(co2.fluidString() == "IDEALGAS::CO2");
+        CHECK(co2.record().at("components") == json::array({"CarbonDioxide"}));
+        CHECK(co2.record().at("coolsolve") == json({{"model", "ideal_gas"}, {"fluid", "CO2"}}));
+        CHECK(ChartFluid::fromRecord(co2.record()).idealGas == "CO2");
+        IdealGasModel gas(co2);
+        // At 25 °C and 1 bar: the enthalpy of formation and the standard entropy of the NASA tables (fluids.cpp)
+        const double M = 44.0095;
+        const State standard = gas.statePoint("T", 298.15, "p", 1e5);
+        CHECK_THAT(standard.at("h"), WithinRel(-393510e3 / M, 1e-4));
+        CHECK_THAT(standard.at("s"), WithinRel(213786.2 / M, 1e-4));
+        CHECK_THAT(standard.at("rho") * standard.at("v"), WithinRel(1.0, 1e-14));
+        CHECK(std::isnan(standard.at("Q")));
+        // Any independent pair gives the same state back
+        for (const auto& [a, b] : {std::pair<const char*, const char*>{"p", "h"}, {"p", "s"}, {"T", "s"}, {"rho", "s"}, {"h", "rho"}, {"v", "u"}}) {
+            INFO(a << ", " << b);
+            const State again = gas.statePoint(a, standard.at(a), b, standard.at(b));
+            CHECK_THAT(again.at("T"), WithinRel(298.15, 1e-9));
+            CHECK_THAT(again.at("p"), WithinRel(1e5, 1e-9));
+        }
+        CHECK_THROWS(gas.update("T", 300.0, "h", standard.at("h")));  // both fix only the temperature
+        CHECK_THROWS(gas.update("p", 1e5, "Q", 0.5));
+        CHECK_FALSE(gas.hasCriticalPoint());
+        CHECK_THROWS_AS(gas.saturationRange("T", 1e-7), DiagramError);
+        CHECK(resolveTpBox(gas, tpLimitsPreset("DEF"), 1e-7) == IDEAL_GAS_BOX);
+        CHECK(resolveTpBox(gas, TpLimits::fromJson({{"T_max", 3000.0}}), 1e-7) == std::array<double, 4>{50.0, 3000.0, 1e4, 1e7});
+    }
+    SECTION("the charts it has, and those it has not") {
+        SceneRequest request;
+        request.fluid = "N2";
+        request.spec = defaultSpec("Ts");
+        request.spec["isolines"] = {{{"key", "p"}, {"num", 8}}, {{"key", "rho"}, {"num", 6}}, {{"key", "h"}, {"num", 6}}};
+        const json ts = scene(request);
+        CHECK(ts.at("diagnostics").at("warnings").empty());
+        CHECK(ts.at("spec").at("limits") == json({{"T_min", 200.0}, {"T_max", 2000.0}, {"p_min", 1e4}, {"p_max", 1e7}}));
+        CHECK(ts.at("spec").at("fluid").at("coolsolve").at("fluid") == "N2");
+        for (const json& c : ts.at("diagnostics").at("curves")) CHECK(c.at("method") == "ideal_gas");
+        const std::string svg = ts.at("svg");
+        CHECK_THAT(svg, ContainsSubstring("data-item=\"iso/p/10000\""));
+        CHECK_FALSE(std::regex_search(svg, std::regex("[^A-Za-z](nan|NaN|inf|Infinity)[^A-Za-z]")));
+        for (const char* diagram : {"ph", "hs", "ps", "prho", "Trho", "pT"}) {
+            INFO(diagram);
+            request.spec = defaultSpec(diagram);
+            json isolines = json::array();
+            for (const json& iso : request.spec.at("isolines"))
+                if (iso.at("key") != "Q") isolines.push_back(iso);
+            request.spec["isolines"] = isolines;
+            const json response = scene(request);
+            CHECK(response.at("diagnostics").at("warnings").empty());
+            size_t drawn = 0;
+            for (const json& c : response.at("diagnostics").at("curves")) drawn += c.at("drawn").get<bool>();
+            CHECK(drawn >= 20);
+        }
+        // Quality lines: a diagnostic, as for any fluid without dome
+        request.spec = defaultSpec("Ts");
+        CHECK_THAT(scene(request).at("diagnostics").at("warnings")[0].get<std::string>(), ContainsSubstring("no two-phase region"));
+        // T-h: every state on one line
+        request.spec = defaultSpec("Th");
+        CHECK_THROWS_WITH(scene(request), ContainsSubstring("An ideal gas has no T-h chart"));
+        CHECK_THROWS_WITH(stateAt(chartFluid("N2"), "Th", 3e5, 400.0), ContainsSubstring("no T-h chart"));
+        const json point = stateAt(chartFluid("N2"), "Ts", 7000.0, 400.0);
+        REQUIRE(point.is_object());
+        CHECK(point.at("Q").is_null());
+        CHECK_THAT(point.at("T").get<double>(), WithinRel(400.0, 1e-12));
+    }
+    SECTION("the states of an ideal-gas model: two of T, h, u fix no state") {
+        CHECK(independentKeys("T", "h"));
+        CHECK_FALSE(independentKeys("T", "h", true));
+        CHECK_FALSE(independentKeys("u", "h", true));
+        CHECK(independentKeys("p", "h", true));
+        const ModelStates states = groupStates(irOf(braytonModel("N2")));
+        REQUIRE(states.count("N2") == 1);
+        // h_1 = enthalpy(N2, T=T_1) shares T_1 alone with state 1, and (T_1, h_1) is no state of an ideal gas
+        const ModelState* first = stateWith(states.at("N2"), "s_1");
+        REQUIRE(first);
+        CHECK(first->vars == std::map<std::string, std::string>{{"T", "T_1"}, {"p", "P_1"}, {"s", "s_1"}});
+        CHECK(stateWith(states.at("N2"), "h_1") == nullptr);
+        CHECK(stateWith(states.at("N2"), "h_2") != nullptr);  // (p, s, h) of the compressor outlet
+    }
+    SECTION("a solved air-standard Brayton cycle lies on its isobars and isentropes") {
+        for (const char* gas : {"Air", "N2"}) {
+            INFO(gas);
+            std::unique_ptr<CoolSolveRunner> runner;
+            const SolutionValues values = solveText(std::string("brayton_") + gas, braytonModel(gas), runner);
+            CHECK(values.at("w_net") > 0.0);
+            const json limits = {{"T_min", 250.0}, {"T_max", 1500.0}, {"p_min", 5e4}, {"p_max", 2e6}};
+            // The isobars are curves of the T-s chart, the isentropes curves of the p-h chart
+            const json lines = {{"Ts", {{{"name", "p1"}, {"key", "p"}, {"value_SI", values.at("P_1")}},
+                                        {{"name", "p2"}, {"key", "p"}, {"value_SI", values.at("P_2")}}}},
+                                {"ph", {{{"name", "s1"}, {"key", "s"}, {"value_SI", values.at("s_1")}},
+                                        {{"name", "s3"}, {"key", "s"}, {"value_SI", values.at("s_3")}}}}};
+            const std::map<std::string, std::vector<std::string>> through = {{"Ts", {"line/p1", "line/p2", "line/p2", "line/p1"}},
+                                                                             {"ph", {"line/s1", "line/s1", "line/s3", "line/s3"}}};
+            for (const char* diagram : {"Ts", "ph"}) {
+                INFO(diagram);
+                json spec = defaultSpec(diagram);
+                spec["isolines"] = json::array();
+                spec["limits"] = limits;
+                spec["lines"] = lines.at(diagram);
+                SceneRequest request;
+                request.fluid = gas;
+                request.spec = spec;
+                request.cycles = json::array({braytonCycle()});
+                request.solution = &values;
+                const json response = scene(request);
+                CHECK(response.at("diagnostics").at("warnings").empty());
+                REQUIRE(response.at("states").size() == 4);
+                CHECK_THAT(response.at("svg").get<std::string>(), ContainsSubstring("data-item=\"cycle/Brayton/loop/0\""));
+                CHECK(response.at("spec").at("cycles")[0].at("paths") == json::array());  // auto: CoolPlot's isentropes, isobars
+                const Chart chart(chartFluid(gas), PlanSpec::fromJson(spec));
+                std::vector<std::string> warnings;
+                Domain domain;
+                const std::vector<PlannedCurve> curves = chartCurves(chart, domain, warnings);
+                const coolplot::DiagramType& type = chart.spec.diagram;
+                for (int i = 1; i <= 4; ++i) {
+                    const std::string n = std::to_string(i), id = through.at(diagram)[i - 1];
+                    INFO("state " << i << " on " << id);
+                    const json& drawn = response.at("states")[i - 1].at("values_SI");
+                    // The marker sits where the solver put it, and the provider agrees with the solver
+                    CHECK(drawn.at("s") == values.at("s_" + n));
+                    CHECK_THAT(drawn.at("h").get<double>(), WithinRel(values.at("h_" + n), 1e-9));
+                    const Curve* line = curveWithId(curves, id);
+                    REQUIRE(line);
+                    CHECK(distanceToCurve(*line, drawn.at(type.x).get<double>(), drawn.at(type.y).get<double>(), domain, type) < 1e-4);
+                }
+                // The path 2-3 is drawn along the isobar of state 2 (CoolPlot's auto kind)
+                if (std::string(diagram) == "Ts") {
+                    const Curve* isobar = curveWithId(curves, "line/p2");
+                    std::vector<std::string> unused;
+                    const std::vector<ResolvedCycle> resolved = Engine::shared().withFluid(chart.fluid, [&](PropertyProvider& model) {
+                        return resolveCycles(json::array({braytonCycle()}), &values, model, type, unused);
+                    });
+                    REQUIRE(resolved.size() == 1);
+                    const std::vector<State>& loop = resolved[0].chains.at(0);
+                    REQUIRE(loop.size() == 4 * DEFAULT_STEPS + 1);
+                    for (int k = DEFAULT_STEPS; k <= 2 * DEFAULT_STEPS; ++k)
+                        CHECK(distanceToCurve(*isobar, loop[k].at("s"), loop[k].at("T"), domain, type) < 1e-4);
+                }
+            }
+        }
     }
 }

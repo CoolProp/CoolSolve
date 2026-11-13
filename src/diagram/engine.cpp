@@ -7,6 +7,8 @@
 // CoolPlot is MIT licensed: Copyright 2014-2019 Jorrit Wronski and the other developers.
 #include "coolsolve/diagram/engine.h"
 
+#include "coolsolve/diagram/ideal_gas.h"
+
 #include "CoolProp/Configuration.h"
 #include "CoolProp/CoolProp.h"
 #include "CoolProp/plotting/CoolPropPlot.h"
@@ -16,12 +18,15 @@
 #include <coolplot/svg.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <exception>
 #include <functional>
 #include <limits>
 #include <list>
 #include <set>
+#include <thread>
 #include <unordered_map>
 
 #ifndef COOLSOLVE_COOLPLOT_COMMIT
@@ -184,10 +189,20 @@ Chart::Chart(ChartFluid fluid_, PlanSpec spec_) : fluid(std::move(fluid_)), spec
 // Engine (engine/engine.py, engine/cache.py, thermo/native.py)
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// The property provider of a chart fluid (provider.make_provider): CoolSolve's for an ideal gas, CoolProp's otherwise.
+std::unique_ptr<PropertyProvider> makeProvider(const ChartFluid& fluid) {
+    if (fluid.isIdealGas()) return std::make_unique<IdealGasModel>(fluid);
+    return std::make_unique<FluidModel>(fluid);
+}
+
+}  // namespace
+
 struct Engine::FluidEntry {
-    explicit FluidEntry(const ChartFluid& fluid) : model(fluid) {}
+    explicit FluidEntry(const ChartFluid& fluid) : model(makeProvider(fluid)) {}
     std::mutex mutex;
-    FluidModel model;
+    std::unique_ptr<PropertyProvider> model;
 };
 
 /// Values computed with a warning that is given again whenever they are used.
@@ -202,7 +217,7 @@ struct Engine::Impl {
     LruCache<std::shared_ptr<const WarnedPairs>> saturationValues{256};  // anchored families and scale ticks
     LruCache<std::vector<std::pair<std::string, State>>> markedPoints{64};
     LruCache<std::vector<DomeEnd>> domes{64};
-    LruCache<std::shared_ptr<CoolProp::Plot::PropertyPlot>> plots{16};  // thermo.native._PLOTS_KEPT is 8 per thread
+    LruCache<std::shared_ptr<CoolProp::Plot::PropertyPlot>> plots{32};  // thermo.native._PLOTS_KEPT is 8 per thread
     LruCache<std::shared_ptr<const Curve>> curves{2000};               // CurveCache.max_size
 };
 
@@ -225,7 +240,7 @@ std::shared_ptr<Engine::FluidEntry> Engine::fluidEntry(const ChartFluid& fluid) 
     });
 }
 
-FluidModel& Engine::model(FluidEntry& entry) { return entry.model; }
+PropertyProvider& Engine::model(FluidEntry& entry) { return *entry.model; }
 std::mutex& Engine::mutex(FluidEntry& entry) { return entry.mutex; }
 
 void Engine::clear() {
@@ -247,7 +262,7 @@ Domain Engine::domain(const Chart& chart, std::vector<std::string>& warnings) {
     const std::string region = spec.limits.toJson().dump() + "|" + keyNumber(margin);
     try {
         Domain domain = impl_->domains.getOrCompute(fluidKey + "|domain|" + region, [&] {
-            return withFluid(chart.fluid, [&](FluidModel& fluid) { return chartDomain(fluid, spec.limits, margin); });
+            return withFluid(chart.fluid, [&](PropertyProvider& fluid) { return chartDomain(fluid, spec.limits, margin); });
         });
         // The families placed by saturation states
         for (const IsolineSet& iso : spec.isolines) {
@@ -260,7 +275,7 @@ Domain Engine::domain(const Chart& chart, std::vector<std::string>& warnings) {
                                     "|" + keyUnit(unit);
             auto values = impl_->saturationValues.getOrCompute(key, [&] {
                 auto computed = std::make_shared<WarnedPairs>();
-                withFluid(chart.fluid, [&](FluidModel& fluid) {
+                withFluid(chart.fluid, [&](PropertyProvider& fluid) {
                     computed->pairs = saturationAnchorValues(fluid, iso.key, anchor.by, anchor.step_SI, anchor.Q, anchor.range_SI,
                                                              domain.tp_box, margin, unit, computed->warnings);
                 });
@@ -274,7 +289,7 @@ Domain Engine::domain(const Chart& chart, std::vector<std::string>& warnings) {
             std::string names;
             for (const std::string& name : spec.marked_points) names += name + ",";
             domain.points = impl_->markedPoints.getOrCompute(fluidKey + "|marked|" + keyNumber(margin) + "|" + names, [&] {
-                return withFluid(chart.fluid, [&](FluidModel& fluid) { return markedPointStates(fluid, spec.marked_points, margin); });
+                return withFluid(chart.fluid, [&](PropertyProvider& fluid) { return markedPointStates(fluid, spec.marked_points, margin); });
             });
         }
         // The ticks of the saturation scale (Engine._scale_ticks)
@@ -286,7 +301,7 @@ Domain Engine::domain(const Chart& chart, std::vector<std::string>& warnings) {
                                          "|" + keyNumber(scale.Q) + "|" + by + "|" + key + "|" + keyUnit(unit);
             auto ticks = impl_->saturationValues.getOrCompute(cacheKey, [&] {
                 auto computed = std::make_shared<WarnedPairs>();
-                withFluid(chart.fluid, [&](FluidModel& fluid) {
+                withFluid(chart.fluid, [&](PropertyProvider& fluid) {
                     if (!fluid.hasCriticalPoint()) return;  // no saturation curve, no scale
                     if (scale.step_SI) {
                         computed->pairs = saturationAnchorValues(fluid, key, by, *scale.step_SI, scale.Q, std::nullopt, domain.tp_box,
@@ -318,7 +333,7 @@ Domain Engine::domain(const Chart& chart, std::vector<std::string>& warnings) {
                 std::string key = fluidKey + "|dome|" + keyNumber(margin) + "|" + dome + "|";
                 for (double v : values) key += keyNumber(v) + ",";
                 domain.dome = impl_->domes.getOrCompute(key, [&] {
-                    return withFluid(chart.fluid, [&](FluidModel& fluid) { return domeEnds(fluid, dome, values, margin); });
+                    return withFluid(chart.fluid, [&](PropertyProvider& fluid) { return domeEnds(fluid, dome, values, margin); });
                 });
             }
         }
@@ -330,20 +345,37 @@ Domain Engine::domain(const Chart& chart, std::vector<std::string>& warnings) {
     }
 }
 
-std::shared_ptr<const Curve> Engine::curve(const Chart& chart, const Domain& domain, const CurveRequest& request) {
-    const PlanSpec& spec = chart.spec;
-    const CalcSettings& calc = spec.calc;
-    const std::string name = chart.fluid.portFluidString(request.key);
-    // Everything that determines one curve (Engine.cache_key): lines of constant quality do not depend on the
-    // T-p box but on the saturation settings; all other lines are swept through the box
-    std::string key = name + "|" + chart.fingerprint + "|" + spec.diagram.name() + "|" + request.key + "|" +
-                      keyNumber(request.value_SI) + "|" + std::to_string(request.points) + "|";
+namespace {
+
+/// Everything that determines one curve (Engine.cache_key): lines of constant quality do not depend on the T-p box
+/// but on the saturation settings; all other lines are swept through the box.
+std::string curveKey(const Chart& chart, const Domain& domain, const CurveRequest& request) {
+    const CalcSettings& calc = chart.spec.calc;
+    std::string key = chart.fluid.portFluidString(request.key) + "|" + chart.fingerprint + "|" + chart.spec.diagram.name() + "|" +
+                      request.key + "|" + keyNumber(request.value_SI) + "|" + std::to_string(request.points) + "|";
     if (request.key == "Q") key += keyNumber(calc.critical_margin) + "|" + calc.saturation_spacing;
     else key += keyBox(domain.tp_box) + "|" + calc.solver + "|" + keyNumber(calc.critical_margin);
+    return key;
+}
+
+}  // namespace
+
+std::shared_ptr<const Curve> Engine::curve(const Chart& chart, const Domain& domain, const CurveRequest& request, size_t slot) {
+    const PlanSpec& spec = chart.spec;
+    const CalcSettings& calc = spec.calc;
+    const std::string key = curveKey(chart, domain, request);
     if (std::optional<std::shared_ptr<const Curve>> found = impl_->curves.get(key)) return *found;
 
-    // The plot of the chart, made once for its lines (thermo.native._plot), always from the absolute box
-    const std::string plotKey = name + "|" + chart.fingerprint + "|" + spec.diagram.y + "|" + spec.diagram.x + "|" + keyBox(domain.tp_box);
+    if (chart.fluid.isIdealGas()) {  // CoolSolve's provider: no plot, a model of its own (cheap, per call)
+        IdealGasModel gas(chart.fluid);
+        auto computed = std::make_shared<Curve>(idealGasLine(gas, spec.diagram, request.key, request.value_SI, domain, request.points));
+        return impl_->curves.insert(key, std::shared_ptr<const Curve>(computed));
+    }
+
+    // The plot of the chart for this slot, made once for its lines (thermo.native._plot), always from the absolute box
+    const std::string name = chart.fluid.portFluidString(request.key);
+    const std::string plotKey = name + "|" + chart.fingerprint + "|" + spec.diagram.y + "|" + spec.diagram.x + "|" + keyBox(domain.tp_box) +
+                                "|" + std::to_string(slot);
     std::shared_ptr<CoolProp::Plot::PropertyPlot> plot = impl_->plots.getOrCompute(plotKey, [&] {
         try {
             const std::array<double, 4>& box = domain.tp_box;
@@ -382,13 +414,43 @@ std::shared_ptr<const Curve> Engine::curve(const Chart& chart, const Domain& dom
 
 std::vector<PlannedCurve> Engine::curves(const Chart& chart, const Domain& domain, const std::vector<CurveRequest>& requests,
                                          json& diagnostics, std::vector<std::string>& warnings) {
+    // The curves not kept yet, computed by up to MAX_CURVE_THREADS threads (this one included) that take the next
+    // request in turn, each with its own plot. A plot that cannot be made stops them all and is reported.
+    std::vector<std::shared_ptr<const Curve>> computed(requests.size());
+    std::vector<size_t> missing;
+    for (size_t i = 0; i < requests.size(); ++i) {
+        if (std::optional<std::shared_ptr<const Curve>> found = impl_->curves.get(curveKey(chart, domain, requests[i])))
+            computed[i] = *found;
+        else
+            missing.push_back(i);
+    }
+    const size_t cores = std::max(1u, std::thread::hardware_concurrency());
+    const size_t threads = std::min({static_cast<size_t>(MAX_CURVE_THREADS), cores, missing.size()});
+    std::atomic<size_t> next{0};
+    std::vector<std::exception_ptr> failures(threads);
+    auto work = [&](size_t slot) {
+        try {
+            for (size_t k; (k = next++) < missing.size();) computed[missing[k]] = curve(chart, domain, requests[missing[k]], slot);
+        } catch (...) {
+            failures[slot] = std::current_exception();
+            next = missing.size();
+        }
+    };
+    std::vector<std::thread> helpers;
+    for (size_t slot = 1; slot < threads; ++slot) helpers.emplace_back(work, slot);
+    if (threads > 0) work(0);
+    for (std::thread& helper : helpers) helper.join();
+    for (const std::exception_ptr& failure : failures)
+        if (failure) std::rethrow_exception(failure);
+
     std::vector<PlannedCurve> result;
     const std::string fluidName = chart.fluid.name();
     const double tolerance = chart.spec.calc.warn_failed_fraction;
     bool pseudoPureWarned = false;
     if (!diagnostics.is_array()) diagnostics = json::array();
-    for (const CurveRequest& request : requests) {
-        std::shared_ptr<const Curve> c = curve(chart, domain, request);
+    for (size_t i = 0; i < requests.size(); ++i) {
+        const CurveRequest& request = requests[i];
+        const std::shared_ptr<const Curve>& c = computed[i];
         const size_t total = c->x.size();
         const std::string line = request.key + "=" + coolplot::general_text(request.value_SI, 6) + " in " + fluidName;
         bool drawn = true;
@@ -396,7 +458,7 @@ std::vector<PlannedCurve> Engine::curves(const Chart& chart, const Domain& domai
             drawn = false;
             if (c->n_failed == 0 && c->n_outside > 0) {
                 // the line lies outside the calculation domain: nothing to draw, nothing wrong
-            } else if (request.key == "Q" && !withFluid(chart.fluid, [](FluidModel& f) { return f.pseudoPureBlend(); }).empty()) {
+            } else if (request.key == "Q" && !withFluid(chart.fluid, [](PropertyProvider& f) { return f.pseudoPureBlend(); }).empty()) {
                 if (!pseudoPureWarned) {  // one warning for the fluid explains every missing quality line
                     pseudoPureWarned = true;
                     warnings.push_back(fluidName + " is CoolProp's pseudo-pure model of a blend: it has no two-phase states, so "
@@ -514,7 +576,7 @@ json isolineLabels(const coolplot::Scene& scene) {
 
 json scene(const SceneRequest& request) {
     const auto start = std::chrono::steady_clock::now();
-    ChartFluid fluid = chartFluid(request.fluid, request.backend);
+    ChartFluid fluid = chartFluid(request.fluid, request.backend, request.fractions, request.basis);
     if (!request.spec.is_object()) throw DiagramError("The chart spec has to be a JSON object (CoolPlot's DiagramSpec record).");
     json specRecord = request.spec;
     specRecord.erase("fluid");  // the server writes them
@@ -530,6 +592,7 @@ json scene(const SceneRequest& request) {
         throw DiagramError(std::string("The chart spec is not a valid CoolPlot spec record: ") + e.what());
     }
     const Chart chart(fluid, PlanSpec::fromJson(specRecord));
+    if (fluid.isIdealGas()) checkIdealGasDiagram(chart.spec.diagram);
     std::pair<double, double> figure = {core.settings.page.width_pt, core.settings.page.height_pt};
     if (request.figureSizePt) figure = *request.figureSizePt;
     if (!(figure.first >= 50.0 && figure.first <= 10000.0 && figure.second >= 50.0 && figure.second <= 10000.0))
@@ -542,9 +605,12 @@ json scene(const SceneRequest& request) {
                            "version; the chart is drawn without them (set settings.branding to {\"references\": \"none\", "
                            "\"versions\": false}).");
     const Domain domain = engine.domain(chart, warnings);
+    if (!domain.saturation)  // CoolPlot draws a fluid without saturation curve from absolute limits only
+        specRecord["limits"] = {{"T_min", domain.tp_box[0]}, {"T_max", domain.tp_box[1]}, {"p_min", domain.tp_box[2]},
+                                {"p_max", domain.tp_box[3]}};
     json curveDiagnostics = json::array();
     const std::vector<PlannedCurve> curves = engine.curves(chart, domain, plan(chart.spec, domain), curveDiagnostics, warnings);
-    const std::vector<ResolvedCycle> cycles = engine.withFluid(fluid, [&](FluidModel& model) {
+    const std::vector<ResolvedCycle> cycles = engine.withFluid(fluid, [&](PropertyProvider& model) {
         return resolveCycles(request.cycles, request.solution, model, chart.spec.diagram, warnings);
     });
     specRecord["fluid"] = fluid.record();
@@ -614,8 +680,7 @@ json scene(const SceneRequest& request) {
 // The state at a point of a chart
 // ---------------------------------------------------------------------------
 
-json stateAt(const std::string& fluid, const std::string& backend, const std::string& diagram, double x_SI, double y_SI) {
-    const ChartFluid chart = chartFluid(fluid, backend);
+json stateAt(const ChartFluid& chart, const std::string& diagram, double x_SI, double y_SI) {
     coolplot::DiagramType type;
     try {
         type = coolplot::DiagramType::parse(diagram);
@@ -624,7 +689,8 @@ json stateAt(const std::string& fluid, const std::string& backend, const std::st
     }
     if (type.kind != "fluid") throw DiagramError("Charts of humid air ('" + type.name() + "') are not drawable yet.");
     if (!std::isfinite(x_SI) || !std::isfinite(y_SI)) throw DiagramError("The point of a chart is two finite numbers in SI units.");
-    return Engine::shared().withFluid(chart, [&](FluidModel& model) -> json {
+    if (chart.isIdealGas()) checkIdealGasDiagram(type);
+    return Engine::shared().withFluid(chart, [&](PropertyProvider& model) -> json {
         try {
             model.update(type.x, x_SI, type.y, y_SI);
         } catch (const std::exception&) {
@@ -638,7 +704,7 @@ json stateAt(const std::string& fluid, const std::string& backend, const std::st
                 state[key] = std::numeric_limits<double>::quiet_NaN();
             }
         }
-        // Outside the equation of state CoolProp may still answer, by extrapolation: no state there either
+        // Outside the model CoolProp may still answer, by extrapolation: no state there either
         const double T = state.at("T"), p = state.at("p");
         const double T_min = model.tMinK(), T_max = model.tMaxK(), p_min = model.pMinPa(), p_max = model.pMaxPa();
         if (!std::isfinite(T) || !std::isfinite(p) || (std::isfinite(T_min) && T < T_min) || (std::isfinite(T_max) && T > T_max) ||
@@ -654,9 +720,51 @@ json stateAt(const std::string& fluid, const std::string& backend, const std::st
 // Options, units, definitions
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// The diagram types the Diagrams tab offers, in its order.
+const std::vector<std::string>& offeredDiagramTypes() {
+    static const std::vector<std::string> names = {"ph", "Ts", "hs", "ps", "prho", "Trho", "pT", "Th"};
+    return names;
+}
+
+/**
+ * What each kind of fluid offers (options().fluid_kinds). Incompressible liquids: the charts with the pressure on the
+ * vertical axis, whose axes CoolProp's INCOMP backend has a flash for (in the others, T-s, h-s, T-rho, T-h, every
+ * state lies near one line: h, s and rho depend on T alone but for a small pressure term); the lines CoolProp::Plot
+ * computes for them (it has no (rho, T) nor (u, p) flash of INCOMP). Ideal gases: every chart but T-h, every family
+ * but the quality. `default_region`: the region preset of a new chart; ACHP for mixtures, whose DEF region reaches
+ * down to the triple point of the lightest component (0.4 Pa for propane/isobutane), where their lines are slow to
+ * compute (CSL-0324: 6.0 s with DEF, 2.8 s with ACHP); null for the fluids without saturation curve.
+ */
+json fluidKinds() {
+    const json all = offeredDiagramTypes();
+    json idealTypes = json::array();
+    for (const std::string& name : offeredDiagramTypes()) {
+        try {
+            checkIdealGasDiagram(coolplot::DiagramType::parse(name));
+            idealTypes.push_back(name);
+        } catch (const DiagramError&) {  // a chart an ideal gas does not have
+        }
+    }
+    json saturated = {{"diagram_types", all}, {"families", {"T", "p", "h", "s", "rho", "u", "Q"}}, {"saturation", true},
+                      {"fractions", false}, {"default_box", nullptr}, {"default_region", "DEF"}};
+    json mixture = saturated;
+    mixture["default_region"] = "ACHP";
+    return {{"Real", saturated},
+            {"Mixture", mixture},
+            {"Incompressible", {{"diagram_types", {"ph", "ps", "prho", "pT"}}, {"families", {"T", "p", "h", "s"}}, {"saturation", false},
+                                {"fractions", true}, {"default_box", {nullptr, nullptr, LIQUID_P_MIN_PA, LIQUID_P_MAX_PA}},
+                                {"default_region", nullptr}}},
+            {"IdealGas", {{"diagram_types", idealTypes}, {"families", {"T", "p", "h", "s", "rho", "u"}}, {"saturation", false},
+                          {"fractions", false}, {"default_box", IDEAL_GAS_BOX}, {"default_region", nullptr}}}};
+}
+
+}  // namespace
+
 json options() {
     json types = json::array();
-    for (const char* name : {"ph", "Ts", "hs", "ps", "prho", "Trho", "pT", "Th"}) {
+    for (const std::string& name : offeredDiagramTypes()) {
         const coolplot::DiagramType type = coolplot::DiagramType::parse(name);
         const coolplot::Quantity& y = coolplot::get_quantity(type.y);
         const coolplot::Quantity& x = coolplot::get_quantity(type.x);
@@ -685,7 +793,8 @@ json options() {
     json regions = json::array();
     for (const std::string& name : tpLimitsPresetNames()) regions.push_back({{"name", name}, {"limits", tpLimitsPreset(name).toJson()}});
     return {{"diagram_types", types},
-            {"fluid_types", {"Real", "Mixture"}},
+            {"fluid_types", {"Real", "Mixture", "Incompressible", "IdealGas"}},
+            {"fluid_kinds", fluidKinds()},
             {"unit_systems", units},
             {"default_unit_system", "engineering"},
             {"regions", regions},

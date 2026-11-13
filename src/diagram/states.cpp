@@ -4,10 +4,13 @@
 
 #include "coolsolve/ast.h"
 #include "coolsolve/fluids.h"
+#include "coolsolve/user_hints.h"  // isConcentrationArgName
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <functional>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <set>
@@ -130,11 +133,17 @@ struct UnionFind {
     }
 };
 
-bool hasIndependentPair(const std::map<std::string, std::string>& vars) {
+bool hasIndependentPair(const std::map<std::string, std::string>& vars, bool idealGas) {
     for (auto a = vars.begin(); a != vars.end(); ++a)
         for (auto b = std::next(a); b != vars.end(); ++b)
-            if (independentKeys(a->first, b->first)) return true;
+            if (independentKeys(a->first, b->first, idealGas)) return true;
     return false;
+}
+
+/// Whether CoolSolve's fluid of this name is an ideal gas.
+bool isIdealGas(const std::string& fluid) {
+    const std::shared_ptr<Fluid> found = FluidRegistry::getFluid(fluid);
+    return found && found->getType() == FluidType::IdealGas;
 }
 
 /// The name of a variable without its leading letters and one underscore, as the name heuristic groups it
@@ -171,24 +180,25 @@ std::vector<std::string> splitUnderscore(const std::string& text) {
 
 }  // namespace
 
-bool independentKeys(const std::string& a, const std::string& b) {
+bool independentKeys(const std::string& a, const std::string& b, bool idealGas) {
     if (a == b) return false;
     auto is = [&](const char* x, const char* y) { return (a == x && b == y) || (a == y && b == x); };
+    if (idealGas && (is("T", "h") || is("T", "u") || is("h", "u"))) return false;  // each fixes only the temperature
     return !is("T", "p") && !is("rho", "v");
 }
 
-std::vector<PropertyCall> propertyCalls(const IR& ir) {
-    std::vector<PropertyCall> calls;
+namespace {
+
+/// Every function call of the equations, with the output variable of the call that gives an equation its value
+/// (`h_2 = enthalpy(...)`, or the other way round) and null for the others; the inputs of a CALL too.
+void visitEquationCalls(const IR& ir, const std::function<void(const FunctionCall&, const Variable*)>& visit) {
     for (const EquationInfo& eq : ir.getEquations()) {
         if (!eq.lhs || !eq.rhs) {
             if (eq.procedureCall)  // the inputs of a CALL can hold property calls, without an output variable
                 for (const ExprPtr& arg : eq.procedureCall->inputArgs)
-                    visitCalls(arg, [&](const FunctionCall& call) {
-                        if (auto c = stateCall(call, nullptr, ir)) calls.push_back(*c);
-                    });
+                    visitCalls(arg, [&](const FunctionCall& call) { visit(call, nullptr); });
             continue;
         }
-        // The call that gives a variable its value: `h_2 = enthalpy(...)` (or the other way round)
         const FunctionCall* top = nullptr;
         const Variable* output = nullptr;
         if (eq.lhs->is<Variable>() && eq.rhs->is<FunctionCall>()) {
@@ -199,11 +209,42 @@ std::vector<PropertyCall> propertyCalls(const IR& ir) {
             top = &eq.lhs->as<FunctionCall>();
         }
         for (const ExprPtr& side : {eq.lhs, eq.rhs})
-            visitCalls(side, [&](const FunctionCall& call) {
-                if (auto c = stateCall(call, &call == top ? output : nullptr, ir)) calls.push_back(*c);
-            });
+            visitCalls(side, [&](const FunctionCall& call) { visit(call, &call == top ? output : nullptr); });
     }
+}
+
+}  // namespace
+
+std::vector<PropertyCall> propertyCalls(const IR& ir) {
+    std::vector<PropertyCall> calls;
+    visitEquationCalls(ir, [&](const FunctionCall& call, const Variable* output) {
+        if (auto c = stateCall(call, output, ir)) calls.push_back(*c);
+    });
     return calls;
+}
+
+std::map<std::string, double> solutionFractions(const IR& ir, const SolutionValues* solution) {
+    std::map<std::string, double> fractions;
+    visitEquationCalls(ir, [&](const FunctionCall& call, const Variable*) {
+        const std::string fluid = callFluid(call, ir);
+        if (fluid.empty() || fractions.count(fluid)) return;
+        const auto incompressible = std::dynamic_pointer_cast<IncompressibleFluid>(FluidRegistry::getFluid(fluid));
+        if (!incompressible || !incompressible->isSolution()) return;
+        // The concentration in mass %, as the evaluator reads it: C=..., or the second positional argument
+        const Expression* given = nullptr;
+        for (const auto& [name, arg] : call.namedArgs)
+            if (isConcentrationArgName(name) && arg) given = arg.get();
+        if (!given && call.args.size() >= 2 && call.args[1]) given = call.args[1].get();
+        double percent = std::numeric_limits<double>::quiet_NaN();
+        if (given && given->is<NumberLiteral>()) {
+            percent = given->as<NumberLiteral>().value;
+        } else if (given && given->is<Variable>() && solution) {
+            const auto found = solution->find(given->as<Variable>().flattenedName());
+            if (found != solution->end()) percent = found->second;
+        }
+        if (std::isfinite(percent)) fractions[fluid] = percent / 100.0;
+    });
+    return fractions;
 }
 
 ModelStates groupStates(const IR& ir, const SolutionValues* solution, bool mergeOnTp) {
@@ -219,6 +260,7 @@ ModelStates groupStates(const IR& ir, const SolutionValues* solution, bool merge
         for (const auto& [var, _] : calls[i].vars) callsOf[var].push_back(i);
     UnionFind groups(calls.size());
     for (size_t i = 0; i < calls.size(); ++i) {
+        const bool idealGas = isIdealGas(calls[i].fluid);
         std::set<size_t> others;
         for (const auto& [var, _] : calls[i].vars)
             for (size_t j : callsOf[var])
@@ -230,7 +272,7 @@ ModelStates groupStates(const IR& ir, const SolutionValues* solution, bool merge
                     if (!CaseInsensitiveLess{}(var, other) && !CaseInsensitiveLess{}(other, var)) sharedKeys.insert(key);
             bool same = false;
             for (auto a = sharedKeys.begin(); a != sharedKeys.end() && !same; ++a)
-                for (auto b = std::next(a); b != sharedKeys.end() && !same; ++b) same = independentKeys(*a, *b);
+                for (auto b = std::next(a); b != sharedKeys.end() && !same; ++b) same = independentKeys(*a, *b, idealGas);
             if (!same && mergeOnTp && sharedKeys.count("T") && sharedKeys.count("p") && !calls[i].quality && !calls[j].quality)
                 same = true;  // the refinement: two single-phase states at the same T and p
             if (same) groups.join(i, j);
@@ -253,7 +295,7 @@ ModelStates groupStates(const IR& ir, const SolutionValues* solution, bool merge
     for (auto& [fluid, groupsOfFluid] : byFluid) {
         std::vector<std::map<std::string, std::string>> kept;
         for (auto& vars : groupsOfFluid)
-            if (hasIndependentPair(vars)) kept.push_back(std::move(vars));
+            if (hasIndependentPair(vars, isIdealGas(fluid))) kept.push_back(std::move(vars));
         if (!kept.empty()) states[fluid] = numberStates(kept);
     }
     return states;
@@ -384,7 +426,7 @@ std::vector<ModelState> numberStates(const std::vector<std::map<std::string, std
     return states;
 }
 
-json statesToJson(const ModelStates& states) {
+json statesToJson(const ModelStates& states, const std::map<std::string, double>& fractions) {
     json fluids = json::object();
     for (const auto& [fluid, list] : states) {
         json entries = json::array();
@@ -392,7 +434,13 @@ json statesToJson(const ModelStates& states) {
             entries.push_back({{"number", state.number}, {"label", state.label.empty() ? json() : json(state.label)}, {"vars", state.vars}});
         fluids[fluid] = entries;
     }
-    return {{"fluids", fluids}};
+    json out = {{"fluids", fluids}};
+    if (!fractions.empty()) {
+        json given = json::object();
+        for (const auto& [fluid, fraction] : fractions) given[fluid] = json::array({fraction});
+        out["fractions"] = given;
+    }
+    return out;
 }
 
 }  // namespace diagram

@@ -7,7 +7,8 @@ model with its cycle from the model's variables and the paths between its states
 /api/v1/diagram/state (the state under the cursor), GET /api/v1/diagram/states (the states of the solved model),
 GET/PUT /api/v1/diagram/definitions, the definitions
 in the ZIP bundle (diagrams.json), their reset by New and their return by Back, and that the former route
-POST /api/v1/coolprop/saturation is gone.
+POST /api/v1/coolprop/saturation is gone. Phase 3: incompressible solutions at a mass fraction, ideal gases, a tabular
+backend set in coolsolve.conf, blends (docs/coolplot_integration.md §5).
 
 Usage:
     # Start CoolSolve with --gui, then:
@@ -148,7 +149,7 @@ def test_errors():
     cases = [
         ("unknown fluid", {"fluid": "Unobtainium", "spec": default_spec()}, "Unknown fluid"),
         ("no fluid", {"spec": default_spec()}, "fluid"),
-        ("ideal gas not drawable yet", {"fluid": "N2", "spec": default_spec()}, "not drawable yet"),
+        ("humid air not drawable yet", {"fluid": "AirH2O", "spec": default_spec()}, "not drawable yet"),
         ("unknown diagram", {"fluid": "R134a", "spec": {**default_spec(), "diagram": "xy"}}, "Unknown diagram type"),
         ("bad theme", {"fluid": "R134a", "spec": {**default_spec(), "settings": {"look": "neon"}}}, "Unknown theme"),
         ("bad figure size", {"fluid": "R134a", "spec": default_spec(), "figure_size_pt": [1, 2]}, "figure size"),
@@ -306,6 +307,144 @@ def test_solved_cycle():
               all(len(set(s["vars"]) - {"T", "p"}) >= 1 for s in found), str(found)[:300])
 
 
+BRAYTON_MODEL = """T_1 = 25
+P_1 = 1e5
+P_2 = 10*P_1
+h_1 = enthalpy(N2, T=T_1)
+s_1 = entropy(N2, T=T_1, P=P_1)
+s_2 = s_1
+h_2 = enthalpy(N2, P=P_2, s=s_2)
+T_2 = temperature(N2, P=P_2, s=s_2)
+P_3 = P_2
+T_3 = 1100
+h_3 = enthalpy(N2, T=T_3)
+s_3 = entropy(N2, T=T_3, P=P_3)
+P_4 = P_1
+s_4 = s_3
+h_4 = enthalpy(N2, P=P_4, s=s_4)
+T_4 = temperature(N2, P=P_4, s=s_4)
+"""
+
+GLYCOL_MODEL = """c = 30
+T_1 = 5
+T_2 = 15
+h_1 = enthalpy(MEG, T=T_1, C=c)
+h_2 = enthalpy(MEG, T=T_2, C=c)
+q = h_2 - h_1
+"""
+
+
+def solve(source: str):
+    """Solve `source` in the session; the result of GET /solve/result."""
+    api("POST", "/new")
+    api("PUT", "/files/eescode", {"content": source})
+    api("POST", "/solve", {})
+    result = None
+    for _ in range(240):
+        time.sleep(0.25)
+        status, result = api("GET", "/solve/result")
+        if status == 200 and result.get("status") not in (None, "", "Running"):
+            break
+    return result or {}
+
+
+def test_more_fluids(options):
+    """Phase 3: incompressible solutions, ideal gases, tabular backends, blends computed on several threads."""
+    print("\n── More fluids (phase 3) ──")
+    check("the fluid types drawn", options["fluid_types"] == ["Real", "Mixture", "Incompressible", "IdealGas"],
+          str(options["fluid_types"]))
+    kinds = options.get("fluid_kinds", {})
+    check("what each kind offers", kinds.get("Incompressible", {}).get("diagram_types") == ["ph", "ps", "prho", "pT"]
+          and kinds["Incompressible"]["fractions"] is True and kinds["IdealGas"]["saturation"] is False
+          and "Th" not in kinds["IdealGas"]["diagram_types"] and kinds["IdealGas"]["default_box"] == [200, 2000, 1e4, 1e7],
+          json.dumps(kinds)[:300])
+    check("the default region of a new chart: DEF for pure fluids, ACHP for mixtures",
+          kinds["Real"].get("default_region") == "DEF" and kinds["Mixture"].get("default_region") == "ACHP",
+          json.dumps(kinds)[:300])
+    _, fluids = api("GET", "/coolprop/fluids")
+    meg = next((f for f in fluids["fluids"] if f["name"] == "MEG"), {})
+    check("a solution lists its range of mass fractions", meg.get("fractionRange") == [0, 0.6], str(meg))
+
+    # An incompressible solution at a mass fraction
+    spec = default_spec("ph", ("T", "s"))
+    status, scene = api("POST", "/diagram/scene", {"fluid": "MEG", "fractions": [0.3], "basis": "mass", "spec": spec})
+    check("an incompressible chart", status == 200 and 'data-item="iso/T/' in scene.get("svg", ""), str(scene)[:300])
+    if status == 200:
+        check("its absolute limits and CoolPlot's fluid record in the spec",
+              scene["spec"]["fluid"] == {"backend": "INCOMP", "components": ["MEG"], "fractions": [0.3], "basis": "mass",
+                                         "interactions": []}
+              and scene["spec"]["limits"]["p_min"] == 1e5 and scene["spec"]["limits"]["p_max"] == 1e7,
+              json.dumps(scene["spec"]["fluid"]) + json.dumps(scene["spec"]["limits"]))
+    status, result = api("POST", "/diagram/state", {"fluid": "MEG", "fractions": [0.3], "diagram": "ph", "x_SI": 5e4, "y_SI": 2e5})
+    point = (result or {}).get("state") or {}
+    check("the state under the cursor of a solution", status == 200 and point.get("p") == 2e5 and point.get("T", 0) > 250
+          and point.get("Q") is None, str(result))
+    for name, body, message in (
+            ("a solution without its concentration", {"fluid": "MEG", "spec": spec}, "give its concentration"),
+            ("a concentration out of range", {"fluid": "MEG", "fractions": [0.9], "spec": spec}, "not 0.9"),
+            ("fractions that are no numbers", {"fluid": "MEG", "fractions": ["a"], "spec": spec}, "list of numbers"),
+            ("a basis other than mass", {"fluid": "MEG", "fractions": [0.3], "basis": "volu", "spec": spec}, "mass fraction"),
+            ("fractions of a pure fluid", {"fluid": "R134a", "fractions": [0.3], "spec": spec}, "takes no fractions"),
+            ("an unknown incompressible", {"fluid": "NoSuchBrine", "fractions": [0.3], "spec": spec}, "Unknown fluid"),
+            ("an ideal gas on a T-h chart", {"fluid": "N2", "spec": default_spec("Th", ("p", "s"))}, "no T-h chart")):
+        status, result = api("POST", "/diagram/scene", body)
+        check(f"{name}: 400 with an error", status == 400 and message in (result or {}).get("error", ""), f"{status} {result}")
+    status, result = api("POST", "/diagram/state", {"fluid": "MEG", "diagram": "ph", "x_SI": 5e4, "y_SI": 2e5})
+    check("the state of a solution without its concentration: 400", status == 400, f"{status} {result}")
+
+    # A glycol loop: the concentration of the model's calls, its states at the pressure of the solver
+    result = solve(GLYCOL_MODEL)
+    check("the glycol model solves", result.get("status") == "Success", str(result)[:200])
+    status, states = api("GET", "/diagram/states")
+    check("the concentration of the model's solution", status == 200 and states.get("fractions", {}).get("MEG") == [0.3],
+          str(states)[:300])
+    meg_states = states.get("fluids", {}).get("MEG", [])
+    cycles = [{"name": "Loop", "states": [{"number": s["number"], "vars": s["vars"]} for s in meg_states], "loops": []}]
+    status, scene = api("POST", "/diagram/scene", {"fluid": "MEG", "fractions": [0.3], "spec": spec, "cycles": cycles})
+    drawn = scene.get("states", []) if status == 200 else []
+    check("the states of the glycol loop, at 1 atm", len(drawn) == 2 and all(s["values_SI"]["p"] == 101325 for s in drawn),
+          str(scene)[:300])
+
+    # An ideal gas: a solved Brayton cycle of N2 on its T-s chart (EES/JANAF reference states)
+    result = solve(BRAYTON_MODEL)
+    check("the Brayton model solves", result.get("status") == "Success", str(result)[:200])
+    if result.get("status") == "Success":
+        states = [{"number": i, "vars": {"T": f"T_{i}", "p": f"P_{i}", "h": f"h_{i}", "s": f"s_{i}"}} for i in range(1, 5)]
+        spec = default_spec("Ts", ("p", "rho"))
+        status, scene = api("POST", "/diagram/scene", {"fluid": "N2", "spec": spec, "cycles": [{"name": "Brayton", "states": states}]})
+        check("an ideal-gas T-s chart with its cycle", status == 200 and 'data-item="cycle/Brayton/loop/0"' in scene.get("svg", "")
+              and scene["diagnostics"]["warnings"] == [], str(scene)[:300])
+        if status == 200:
+            h1 = result["variables"]["h_1"]
+            check("N2 on the JANAF basis: h(25 °C) is its enthalpy of formation, 0",
+                  abs(h1) < 1e-6 and scene["states"][0]["values_SI"]["h"] == h1, str(scene["states"][0]))
+            check("the lines of CoolSolve's provider", all(c["method"] == "ideal_gas" for c in scene["diagnostics"]["curves"]))
+        status, result = api("POST", "/diagram/state", {"fluid": "N2", "diagram": "Ts", "x_SI": 7000, "y_SI": 400})
+        check("the state under the cursor of an ideal gas", status == 200 and abs(result["state"]["T"] - 400) < 1e-9
+              and result["state"]["Q"] is None, str(result))
+
+    # A tabular backend set in coolsolve.conf: the lines of constant quality from the equation of state
+    api("POST", "/new")
+    api("PUT", "/files/conf", {"content": "coolpropBackend = BICUBIC&HEOS\n"})
+    status, scene = api("POST", "/diagram/scene", {"fluid": "Water", "spec": default_spec("Ts", ("p", "Q"))})
+    check("a chart with the model's tabular backend", status == 200 and scene["spec"]["fluid"]["backend"] == "BICUBIC&HEOS"
+          and 'data-item="iso/Q/0.5"' in scene["svg"], str(scene)[:300])
+    api("PUT", "/files/conf", {"content": ""})
+
+    # Blends: the lines of one chart on several threads
+    status, scene = api("POST", "/diagram/scene", {"fluid": "R32[0.7]&R125[0.3]", "spec": default_spec()})
+    check("a blend chart", status == 200 and 'data-item="iso/Q/0.5"' in scene.get("svg", ""), str(scene)[:200])
+    if status == 200:
+        print(f"  R32[0.7]&R125[0.3] p-h cold: {scene['timing_ms']['curves']:.0f} ms of lines")
+    status, opened = api("POST", "/library/open", {"id": "CSL-0324"})
+    if status == 200 and opened.get("success"):
+        start = time.time()
+        status, scene = api("POST", "/diagram/scene", {"fluid": "Propane[0.5]&IsoButane[0.5]", "spec": default_spec(),
+                                                       "figure_size_pt": [600, 420]})
+        check("the default p-h chart of CSL-0324 (propane/isobutane)", status == 200, str(scene)[:200])
+        print(f"  CSL-0324 Propane[0.5]&IsoButane[0.5] p-h cold: {(time.time() - start) * 1000:.0f} ms over HTTP")
+
+
 def test_state():
     print("\n── State under the cursor ──")
     status, result = api("POST", "/diagram/state", {"fluid": "R134a", "diagram": "ph", "x_SI": 3.0e5, "y_SI": 2.0e5})
@@ -380,6 +519,7 @@ def main():
         check("no states without a solve", status == 200 and empty == {"fluids": {}}, str(empty))
         test_state()
         test_solved_cycle()
+        test_more_fluids(options)
     except Exception as e:
         print(f"\nFATAL ERROR: {e!r}")
         check("no fatal error", False, repr(e))

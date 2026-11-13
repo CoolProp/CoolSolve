@@ -46,13 +46,13 @@ std::string autoKind(const State& a, const State& b);
  *        longer straight piece there), as are states without finite T, p, h and s.
  * @throws DiagramError for an unknown kind
  */
-std::vector<State> pathStates(FluidModel& fluid, const State& a, const State& b, const std::string& kind, int steps);
+std::vector<State> pathStates(PropertyProvider& fluid, const State& a, const State& b, const std::string& kind, int steps);
 
 /// Connections (from, to) and their kinds; a connection that is not listed is "auto".
 using PathKinds = std::map<std::pair<int, int>, std::string>;
 
 /// For every chain, the states along all its connections, in order (paths.cycle_paths).
-std::vector<std::vector<State>> cyclePaths(FluidModel& fluid, const std::map<int, State>& states,
+std::vector<std::vector<State>> cyclePaths(PropertyProvider& fluid, const std::map<int, State>& states,
                                            const std::vector<std::vector<int>>& loops, const PathKinds& paths, int steps);
 
 /// The values of a state as a JSON record, without the values that are not finite.
@@ -93,7 +93,7 @@ struct ResolvedCycle {
  * @throws DiagramError for definitions that are not a list of objects, two cycles of the same name, an unknown
  *         path kind or a bad `steps`
  */
-std::vector<ResolvedCycle> resolveCycles(const json& definitions, const SolutionValues* solution, FluidModel& fluid,
+std::vector<ResolvedCycle> resolveCycles(const json& definitions, const SolutionValues* solution, PropertyProvider& fluid,
                                          const coolplot::DiagramType& diagram, std::vector<std::string>& warnings);
 
 }  // namespace diagram

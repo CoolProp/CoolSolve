@@ -48,7 +48,7 @@ const std::vector<CoolSolveUnit>& coolsolveUnits() {
 
 /// The full state from the solved values (SI): two independent properties, the chart's axes first, (T, p) last
 /// (not independent inside the dome); the solved values are kept. Empty with `error` set when none works.
-std::optional<State> completeState(FluidModel& fluid, const State& given, const coolplot::DiagramType& diagram, std::string& error) {
+std::optional<State> completeState(PropertyProvider& fluid, const State& given, const coolplot::DiagramType& diagram, std::string& error) {
     std::vector<std::pair<std::string, std::string>> pairs;
     auto has = [&given](const std::string& key) { return given.count(key) > 0; };
     auto add = [&pairs](const std::string& a, const std::string& b) {
@@ -97,7 +97,7 @@ std::vector<double> logOrLinear(double lo, double hi, int n) {
 
 /// Enthalpies along an isobar from a to b, with the saturation states added so that the path bends exactly on the
 /// dome (paths._isobar_enthalpies).
-std::vector<double> isobarEnthalpies(FluidModel& fluid, const State& a, const State& b, const std::vector<double>& t) {
+std::vector<double> isobarEnthalpies(PropertyProvider& fluid, const State& a, const State& b, const std::vector<double>& t) {
     std::vector<double> h;
     for (double ti : t) h.push_back(a.at("h") + ti * (b.at("h") - a.at("h")));
     for (double q : {0.0, 1.0}) {
@@ -122,7 +122,7 @@ struct Inputs {
 };
 
 /// The inputs of the states between a and b along a path kind (paths._inner_inputs).
-std::vector<Inputs> innerInputs(FluidModel& fluid, const State& a, const State& b, const std::string& kind, int steps) {
+std::vector<Inputs> innerInputs(PropertyProvider& fluid, const State& a, const State& b, const std::string& kind, int steps) {
     const std::vector<double> t = inner(linearGrid(0.0, 1.0, steps + 1));
     std::vector<Inputs> out;
     if (kind == "isobaric") {
@@ -175,7 +175,7 @@ std::string autoKind(const State& a, const State& b) {
     return "polytropic";
 }
 
-std::vector<State> pathStates(FluidModel& fluid, const State& a, const State& b, const std::string& kind, int steps) {
+std::vector<State> pathStates(PropertyProvider& fluid, const State& a, const State& b, const std::string& kind, int steps) {
     const std::string resolved = kind == "auto" ? autoKind(a, b) : kind;
     if (resolved == "straight" || steps < 2) return {a, b};
     std::vector<State> out = {a};
@@ -193,7 +193,7 @@ std::vector<State> pathStates(FluidModel& fluid, const State& a, const State& b,
     return out;
 }
 
-std::vector<std::vector<State>> cyclePaths(FluidModel& fluid, const std::map<int, State>& states,
+std::vector<std::vector<State>> cyclePaths(PropertyProvider& fluid, const std::map<int, State>& states,
                                            const std::vector<std::vector<int>>& loops, const PathKinds& paths, int steps) {
     std::vector<std::vector<State>> out;
     for (const std::vector<int>& chain : loops) {
@@ -243,7 +243,7 @@ json coolsolveUnitSystem() {
 // Cycle definitions (§4.1)
 // ---------------------------------------------------------------------------
 
-std::vector<ResolvedCycle> resolveCycles(const json& definitions, const SolutionValues* solution, FluidModel& fluid,
+std::vector<ResolvedCycle> resolveCycles(const json& definitions, const SolutionValues* solution, PropertyProvider& fluid,
                                          const coolplot::DiagramType& diagram, std::vector<std::string>& warnings) {
     std::vector<ResolvedCycle> resolved;
     if (definitions.is_null()) return resolved;
@@ -365,6 +365,9 @@ std::vector<ResolvedCycle> resolveCycles(const json& definitions, const Solution
                     stateProblem = "state " + std::to_string(number) + " needs two properties, it has " + std::to_string(given.size()) + ".";
                 std::optional<State> state;
                 if (stateProblem.empty()) {
+                    // A state of an incompressible given without its pressure is where the solver evaluated it
+                    const double pressure = fluid.defaultPressure();
+                    if (!given.count("p") && std::isfinite(pressure)) given["p"] = pressure;
                     std::string error;
                     state = completeState(fluid, given, diagram, error);
                     if (!state) stateProblem = "state " + std::to_string(number) + " cannot be computed with " + fluid.name() + ": " + error;

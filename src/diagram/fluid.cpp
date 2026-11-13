@@ -1,7 +1,8 @@
 // The fluid of a chart (include/coolsolve/diagram/fluid.h).
 //
 // Mirrors CoolPlot (github.com/CoolProp/CoolPlot) at commit 7338f48 (v1.5.0): thermo/native.py
-// (fluid_string, port_fluid_string), spec/fluid.py (FluidSpec record) and thermo/fluid.py (Fluid).
+// (fluid_string, port_fluid_string), spec/fluid.py (FluidSpec record), thermo/provider.py (the provider
+// interface) and thermo/fluid.py (Fluid).
 // CoolPlot is MIT licensed: Copyright 2014-2019 Jorrit Wronski and the other developers.
 #include "coolsolve/diagram/fluid.h"
 
@@ -66,6 +67,7 @@ const std::vector<std::string>& stateKeys() {
 // ---------------------------------------------------------------------------
 
 std::string ChartFluid::name() const {
+    if (isIdealGas()) return idealGas;
     std::string names;
     for (size_t i = 0; i < components.size(); ++i) {
         if (i) names += "&";
@@ -76,7 +78,7 @@ std::string ChartFluid::name() const {
 }
 
 std::string ChartFluid::fluidString() const {
-    return backend + "::" + name();
+    return (isIdealGas() ? std::string("IDEALGAS") : backend) + "::" + name();
 }
 
 std::string ChartFluid::portFluidString(const std::string& key) const {
@@ -86,9 +88,17 @@ std::string ChartFluid::portFluidString(const std::string& key) const {
     return base.fluidString();
 }
 
+std::string ChartFluid::kind() const {
+    if (isIdealGas()) return "IdealGas";
+    if (backend.rfind("INCOMP", 0) == 0) return "Incompressible";
+    return components.size() > 1 ? "Mixture" : "Real";
+}
+
 json ChartFluid::record() const {
-    return {{"backend", backend}, {"components", components}, {"fractions", fractions}, {"basis", "mole"},
-            {"interactions", json::array()}};
+    json out = {{"backend", backend}, {"components", components}, {"fractions", fractions}, {"basis", basis},
+                {"interactions", json::array()}};
+    if (isIdealGas()) out["coolsolve"] = {{"model", "ideal_gas"}, {"fluid", idealGas}};
+    return out;
 }
 
 ChartFluid ChartFluid::fromRecord(const json& record) {
@@ -100,20 +110,40 @@ ChartFluid ChartFluid::fromRecord(const json& record) {
     if (fluid.backend.empty()) fluid.backend = "HEOS";
     fluid.components = record.at("components").get<std::vector<std::string>>();
     fluid.fractions = record.value("fractions", std::vector<double>());
+    fluid.basis = record.value("basis", "mole");
     if (fluid.components.empty()) throw DiagramError("A fluid record needs at least one component.");
     if (!fluid.fractions.empty() && fluid.fractions.size() != fluid.components.size())
         throw DiagramError("A fluid record needs one fraction per component, or none.");
-    if (record.value("basis", "mole") != "mole") throw DiagramError("Only mole fractions are drawable yet.");
+    // The basis the port reads (native.fluid_string): mass fractions for INCOMP, mole fractions otherwise
+    const std::string expected = fluid.backend.rfind("INCOMP", 0) == 0 ? "mass" : "mole";
+    if (!fluid.fractions.empty() && fluid.basis != expected)
+        throw DiagramError("The fractions of a " + fluid.backend + " fluid are drawable as " + expected + " fractions only, not as '" +
+                           fluid.basis + "'.");
     if (record.contains("interactions") && !record.at("interactions").empty())
         throw DiagramError("Fluids with changed binary interaction parameters are not drawable.");
-    if (fluid.backend.rfind("INCOMP", 0) == 0) throw DiagramError("Charts of incompressible fluids are not drawable yet.");
+    const json coolsolve = record.value("coolsolve", json::object());
+    if (coolsolve.is_object() && coolsolve.value("model", "") == "ideal_gas") fluid.idealGas = coolsolve.value("fluid", "");
     return fluid;
 }
 
-ChartFluid chartFluid(const std::string& name, const std::string& backend) {
+std::pair<double, double> solutionFractionRange(const std::string& coolpropKey) {
+    try {
+        std::unique_ptr<CoolProp::AbstractState> state(CoolProp::AbstractState::factory("INCOMP", coolpropKey));
+        return {state->trivial_keyed_output(CoolProp::ifraction_min), state->trivial_keyed_output(CoolProp::ifraction_max)};
+    } catch (const std::exception& e) {
+        throw DiagramError("CoolProp does not know the incompressible fluid '" + coolpropKey + "': " + e.what());
+    }
+}
+
+ChartFluid chartFluid(const std::string& name, const std::string& backend, const std::vector<double>& fractions,
+                      const std::string& basis) {
     std::string error;
     const std::shared_ptr<Fluid> fluid = FluidRegistry::getFluid(name, &error);
     if (!fluid) throw DiagramError("Unknown fluid '" + name + "'" + (error.empty() ? "" : ": " + error) + ".");
+    const auto solution = std::dynamic_pointer_cast<IncompressibleFluid>(fluid);
+    if ((!fractions.empty() || !basis.empty()) && !(solution && solution->isSolution()))
+        throw DiagramError("'" + name + "' takes no fractions: they are the concentration of an incompressible solution (a "
+                           "mixture carries its mole fractions in its name).");
     ChartFluid chart;
     chart.backend = backend.empty() ? "HEOS" : backend;
     auto notYet = [&name](const std::string& kind) {
@@ -131,9 +161,31 @@ ChartFluid chartFluid(const std::string& name, const std::string& backend) {
             chart.fractions = mixture->getMoleFractions();
             return chart;
         }
-        case FluidType::IdealGas: throw notYet("an ideal gas");
+        case FluidType::IdealGas:
+            chart.components = {fluid->getCoolPropName()};
+            chart.idealGas = fluid->getName();
+            return chart;
+        case FluidType::Incompressible: {
+            if (!solution) break;
+            // CoolProp's INCOMP backend whatever the model's backend, at a mass fraction (spec.fluid.FluidSpec.parse)
+            chart.backend = "INCOMP";
+            chart.components = {solution->getCoolPropKey()};
+            if (!solution->isSolution()) return chart;
+            chart.basis = "mass";
+            if (!basis.empty() && basis != "mass")
+                throw DiagramError("The concentration of '" + name + "' is a mass fraction (basis \"mass\"), not a " + basis + " fraction.");
+            const auto [lo, hi] = solutionFractionRange(chart.components[0]);
+            const std::string range = coolplot::general_text(lo, 6) + " and " + coolplot::general_text(hi, 6);
+            if (fractions.size() != 1)
+                throw DiagramError("'" + name + "' is a solution: give its concentration as a mass fraction between " + range +
+                                   ", e.g. \"fractions\": [" + coolplot::general_text(0.5 * (lo + hi), 6) + "].");
+            if (!(fractions[0] >= lo && fractions[0] <= hi))
+                throw DiagramError("The concentration of '" + name + "' is a mass fraction between " + range + ", not " +
+                                   coolplot::general_text(fractions[0], 6) + ".");
+            chart.fractions = fractions;
+            return chart;
+        }
         case FluidType::HumidAir: throw notYet("humid air");
-        case FluidType::Incompressible: throw notYet("an incompressible fluid");
         case FluidType::AmmoniaWater: throw notYet("the ammonia-water mixture of EES");
         default: break;
     }
@@ -141,11 +193,33 @@ ChartFluid chartFluid(const std::string& name, const std::string& backend) {
 }
 
 // ---------------------------------------------------------------------------
+// PropertyProvider (thermo/provider.py)
+// ---------------------------------------------------------------------------
+
+State PropertyProvider::statePoint(const std::string& key1, double value1, const std::string& key2, double value2) {
+    update(key1, value1, key2, value2);
+    State state;
+    for (const std::string& key : stateKeys()) state[key] = get(key);
+    return state;
+}
+
+const State& PropertyProvider::critical() {
+    throw std::runtime_error(name() + " has no critical point.");
+}
+
+std::pair<double, double> PropertyProvider::saturationRange(const std::string& key, double /*margin*/) {
+    const std::string k = coolplot::quantity_key(key);
+    if (k != "T" && k != "p") throw DiagramError("Saturation ranges are defined in T or p, not in '" + key + "'.");
+    throw DiagramError(name() + " has no saturation curve (CoolProp provides no critical point for it); give absolute "
+                                "temperature and pressure limits.");
+}
+
+// ---------------------------------------------------------------------------
 // FluidModel (thermo/fluid.py)
 // ---------------------------------------------------------------------------
 
 FluidModel::FluidModel(const ChartFluid& fluid)
-    : name_(fluid.name()), backend_(fluid.backend), components_(fluid.components), fractions_(fluid.fractions) {
+    : name_(fluid.name()), backend_(fluid.backend), components_(fluid.components), fractions_(fluid.fractions), basis_(fluid.basis) {
     state_ = makeState();
     current_ = state_;
 }
@@ -156,7 +230,10 @@ std::shared_ptr<CoolProp::AbstractState> FluidModel::makeState() const {
     std::string names;
     for (size_t i = 0; i < components_.size(); ++i) names += (i ? "&" : "") + components_[i];
     std::shared_ptr<CoolProp::AbstractState> state(CoolProp::AbstractState::factory(backend_, names));
-    if (!fractions_.empty()) state->set_mole_fractions(fractions_);
+    if (!fractions_.empty()) {
+        if (basis_ == "mass") state->set_mass_fractions(fractions_);  // an incompressible solution (thermo.fluid.build_state)
+        else state->set_mole_fractions(fractions_);
+    }
     return state;
 }
 
@@ -234,13 +311,6 @@ double FluidModel::get(const std::string& key) const {
     return current_->keyed_output(parameterIndex(k));
 }
 
-State FluidModel::statePoint(const std::string& key1, double value1, const std::string& key2, double value2) {
-    update(key1, value1, key2, value2);
-    State state;
-    for (const std::string& key : stateKeys()) state[key] = get(key);
-    return state;
-}
-
 double FluidModel::trivial(int key) const {
     try {
         const double value = state_->trivial_keyed_output(static_cast<CoolProp::parameters>(key));
@@ -268,7 +338,15 @@ double FluidModel::lowestTemperature(int key) {
 }
 
 double FluidModel::tTripleK() { return lowestTemperature(CoolProp::iT_triple); }
-double FluidModel::tMinK() { return lowestTemperature(CoolProp::iT_min); }
+
+double FluidModel::tMinK() {
+    const double T_min = lowestTemperature(CoolProp::iT_min);
+    // CoolSolve's: an incompressible solution has no state below its freezing point (CoolProp refuses them). A margin
+    // of 1e-9 keeps a line at the lowest temperature above it once its value is snapped to 12 digits (coolplot::snap)
+    const double T_freeze = backend_.rfind("INCOMP", 0) == 0 ? trivial(CoolProp::iT_freeze) * (1.0 + 1e-9) : NaN;
+    return std::isfinite(T_freeze) && !(T_freeze <= T_min) ? T_freeze : T_min;
+}
+
 double FluidModel::tMaxK() { return trivial(CoolProp::iT_max); }
 double FluidModel::pMinPa() { return trivial(CoolProp::iP_min); }
 double FluidModel::pMaxPa() { return trivial(CoolProp::iP_max); }
@@ -327,6 +405,14 @@ const State& FluidModel::critical() {
     if (!std::isfinite(p)) throw std::runtime_error("Could not evaluate the critical point of " + name_ + ".");
     critical_ = State{{"T", T}, {"p", p}, {"h", NaN}, {"s", NaN}, {"rho", NaN}, {"u", NaN}};
     return *critical_;
+}
+
+std::array<double, 4> FluidModel::defaultBox() {
+    return {tMinK(), tMaxK(), LIQUID_P_MIN_PA, LIQUID_P_MAX_PA};
+}
+
+double FluidModel::defaultPressure() const {
+    return backend_.rfind("INCOMP", 0) == 0 ? IncompressibleFluid::kInternalPressureSI : NaN;
 }
 
 std::string FluidModel::pseudoPureBlend() {
