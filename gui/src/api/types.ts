@@ -273,9 +273,10 @@ export interface DiagramFamilyOption {
   default_num: number;
 }
 
-/** A diagram type offered by the server: its name, title and axis quantity keys. */
+/** A diagram type offered by the server: its name, short title and axis quantity keys. */
 export interface DiagramTypeOption {
   name: DiagramName;
+  /** The short name shown: the axis symbols, vertical first ("p-h", "T-s", "p-ρ"); "psychrometric", "Mollier h-x" */
   title: string;
   kind: string;
   x: string;
@@ -297,10 +298,10 @@ export interface UnitSystemRecord {
 /** The `units` of a CoolPlot spec: a preset name ("SI", "KSI", "engineering", "IP") or a unit record. */
 export type DiagramUnits = string | UnitSystemRecord;
 
-/** A unit system offered by the server: `record` is what goes into the spec's `units`. */
-export interface DiagramUnitSystemOption {
-  name: string;
-  record: DiagramUnits;
+/** The unit system of the model, in which every chart is drawn: `record` goes into the spec's `units`. */
+export interface DiagramModelUnits {
+  record: UnitSystemRecord;
+  /** Its unit table: quantity key -> [label, scale, offset, difference label?] */
   units: Record<string, unknown>;
 }
 
@@ -338,9 +339,7 @@ export interface DiagramFluidKind {
 /** Response of GET /api/v1/diagram/options */
 export interface DiagramOptionsResponse {
   diagram_types: DiagramTypeOption[];
-  /** The presets, and "coolsolve" (the model's units) */
-  unit_systems: DiagramUnitSystemOption[];
-  default_unit_system: string;
+  model_units: DiagramModelUnits;
   regions: DiagramRegionOption[];
   themes: string[];
   label_modes: string[];

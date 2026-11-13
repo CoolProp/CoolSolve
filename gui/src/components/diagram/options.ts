@@ -1,10 +1,11 @@
 /**
  * options.ts — what the server draws (`GET /api/v1/diagram/options`), loaded once and shared by the
- * Diagrams tab and every DiagramView, and the display units of a spec (for the hover).
+ * Diagrams tab and every DiagramView, and the display units of the charts: the model's (for the hover and
+ * the range fields).
  */
 
 import { api } from '../../api/client';
-import type { DiagramAxisUnit, DiagramOptionsResponse, DiagramUnits } from '../../api/types';
+import type { DiagramAxisUnit, DiagramOptionsResponse } from '../../api/types';
 
 let cached: Promise<DiagramOptionsResponse> | null = null;
 
@@ -28,23 +29,16 @@ const UNICODE_UNITS: Record<string, string> = {
 /** Display units by quantity key: display = SI * scale + offset. */
 export type UnitTable = Record<string, DiagramAxisUnit>;
 
-function tableOf(raw: Record<string, unknown> | undefined): UnitTable {
+/** The display units of the model (`model_units`), those of every chart the GUI draws. */
+export function modelUnitTable(options: DiagramOptionsResponse): UnitTable {
   const table: UnitTable = {};
-  for (const [key, entry] of Object.entries(raw ?? {})) {
+  for (const [key, entry] of Object.entries(options.model_units.units)) {
     if (!Array.isArray(entry) || entry.length < 3) continue;
     const [label, scale, offset] = entry as [string, number, number];
     if (typeof scale !== 'number' || typeof offset !== 'number') continue;
     table[key] = { label: UNICODE_UNITS[label] ?? label, scale, offset };
   }
   return table;
-}
-
-/** The display units of a spec's `units` (a preset name, or a unit record). */
-export function unitTableOf(options: DiagramOptionsResponse | null, units: DiagramUnits): UnitTable {
-  const name = typeof units === 'string' ? units : units.name;
-  const offered = options?.unit_systems.find((u) => u.name === name);
-  if (offered) return tableOf(offered.units);
-  return typeof units === 'string' ? {} : tableOf(units.units);
 }
 
 /** An SI value in display units, or null when it has no unit in the table. */
@@ -63,3 +57,9 @@ export function formatValue(value: number): string {
 /** How a quantity key is written (as coolplot-core writes the symbols with "unicode"). */
 export const SYMBOLS: Record<string, string> = { rho: 'ρ', Q: 'x', RH: 'φ', Twb: 'T_wb', Tdp: 'T_dp' };
 export const symbolOf = (key: string) => SYMBOLS[key] ?? key;
+
+/** How a chart writes the quantity of one of its axes: the Mollier chart writes its humidity ratio x and its temperature scale T. */
+export function axisSymbol(type: { y: string } | undefined, key: string): string {
+  if (type?.y === 'Thx' && key === 'W') return 'x';
+  return symbolOf(key === 'Thx' ? 'T' : key);
+}

@@ -266,9 +266,12 @@ Humid air (`AirH2O`, charts `WT` and `ThxW`) takes the total pressure of the cha
 the request's, else the spec's page (576 × 432 pt). The PDF embeds the TrueType fonts the
 server finds (§5, phase 4); without any, the route answers 500 and SVG still works.
 
-**`GET /api/v1/diagram/options`** — what the GUI offers: diagram types (name, axes,
-families with their default count), unit systems (the presets and `coolsolve`, the model's
-units as a custom unit record), region presets (`DEF`, `ACHP`, `ORC`), themes, label modes,
+**`GET /api/v1/diagram/options`** — what the GUI offers: diagram types (name, short title
+from the axis symbols as the chart writes them, vertical first, `p-h`, `T-s`, `p-ρ`, and
+`psychrometric`, `Mollier h-x`; axes, families with their default count), the units of the
+model (`model_units`: `record`, the custom unit record of CoolSolve's units that goes into a
+spec's `units`, and `units`, its unit table; every chart of the GUI is in these units, D7),
+region presets (`DEF`, `ACHP`, `ORC`), themes, label modes,
 the coolplot-core version and CoolPlot commit, the fluid types drawn and, per type,
 `fluid_kinds`: the diagram types and families it offers, whether it has a saturation curve,
 whether it takes a concentration, its default T-p box, and the region of a new chart
@@ -335,7 +338,7 @@ third column.
 | `diagram/humid_air.{h,cpp}` | the lines of the psychrometric and Mollier charts | `thermo/humid_air.py` | 3 |
 | `diagram/references.{h,cpp}` | the badge lines: references of the equation of state (CoolProp's bibliography, embedded by `cmake/embed_bibtex.cmake`) and the versions line, as CoolPlot writes them; the SVG and PDF files of a chart (export, report, CLI) are in `engine` | `thermo/references.py`, `Engine.source_lines` | 4 |
 | `server.cpp` | the endpoints of §3.1 (thin handlers), `diagrams.json` in the ZIP bundle | | 1 |
-| `gui/src/components/diagram/` | the tab, the SVG and its interaction layer, the state editor | | 1, 2 |
+| `gui/src/components/diagram/` | the tab, the SVG and its interaction layer, the overlays | | 1, 2 |
 
 Used, not written: `CoolProp::Plot` (numerics) and coolplot-core (spec, units, themes,
 compose, layout, scene, SVG, PDF).
@@ -432,21 +435,28 @@ values from the session's last solve:
   `T_ev` and `P_ev`, which fix no state).
 - State keys are CoolPlot's (`T`, `p`, `h`, `s`, `rho`, `u`, `v`, `Q`); the GUI maps the codes
   of the variable inference (`P` → `p`, `D` → `rho`, `VOL` → `v`, …).
-- The Diagrams tab writes three kinds of cycles: the inferred states (markers only), the arrays
-  (a chain in index order), and the cycles of its editor. The first cycle of the editor switches
-  the inferred states off, since they would mark the same states.
+- The Diagrams tab writes two kinds of cycles: the inferred states, `{"name": "Inferred states",
+  "numbers": true, "states": [...], "loops": []}` (markers only), and any number of arrays
+  overlays, `{"name": "T, s", "numbers": true, "arrays": {"s": "s", "T": "T"}, "closed": false,
+  "paths": "auto"}`: the arrays of the chart's horizontal and vertical quantities (on the Mollier
+  chart a temperature array is keyed `T`), joined in index order by the server, named after their
+  arrays (unique in the definition). Other cycles of a stored definition (those of the former state
+  editor) are not drawn by the tab and are dropped at its next edit; the server, the report and
+  `coolsolve --diagram` still draw any cycle of this section.
 
 Sources of states:
 
 1. **Arrays** (the former array overlay): `P[i]`, `h[i]` give state `i`; the loop is the
-   index order, closed on request.
+   index order, closed on request. The tab's overlays pick the arrays of the chart's axis
+   quantities.
 2. **Inferred states**: variables used as arguments or results of the same property
    calls (`inferVariables`, `src/variable_inference.cpp`) are grouped into states (§4.2)
-   and offered as a starting definition.
-3. **Picked by the user** (`CS-FEAT-OVERLAY-STATES`): the state editor of the Diagrams
-   tab, where each state is a set of variables and the loops are chains of states. It
-   corrects the automatic grouping and names states (CoolPlot's state labels write the
-   name next to the number).
+   and drawn as markers.
+3. **Picked by the user** (`CS-FEAT-OVERLAY-STATES`): explicit states of any variables and
+   chains of states, as in the example above. The Diagrams tab had a state editor for them
+   (phase 2); it was removed on 2026-11-13 at the maintainer's request, to keep the tab simple:
+   the states come from the grouping and from arrays. Such cycles can still be written in
+   `diagrams.json` for the report and `coolsolve --diagram`.
 
 ### 4.2 Grouping inferred variables into states (decision D6)
 
@@ -552,8 +562,8 @@ planned:
 
 Done on `feat/coolplot-diagrams`: `diagram/cycles` (the paths of CoolPlot's `paths.py`),
 `diagram/states` (§4.2, validated on the library), `POST /api/v1/diagram/state`,
-`GET /api/v1/diagram/states`, the state editor (`CycleEditor.tsx`), the hover
-(`useDiagramHover.ts`). Follow-ups: two calls of one state that share a single variable
+`GET /api/v1/diagram/states`, the state editor (`CycleEditor.tsx`, removed on 2026-11-13: D6),
+the hover (`useDiagramHover.ts`). Follow-ups: two calls of one state that share a single variable
 (`h_1 = enthalpy(P=P_1, x=x_1)`, `s_1 = entropy(T=T_1, x=x_1)`) stay two states, which the
 structure cannot resolve; models with many property calls give many small states (17 for an
 ORC of the library), which makes *From inferred states* noisy; CoolPlot's legend, placed
@@ -760,8 +770,8 @@ of humid air under the cursor 0.7 to 0.85 ms over HTTP.
 | D3 | CoolProp pin | Settled: `8eb3b778` (`d9545e6`). |
 | D4 | nlohmann/json | Settled: CoolSolve uses 3.12.0, the vendored version of coolplot-core (`5993f9d`). An upstream option to use the caller's `nlohmann_json` target is still worth asking for. |
 | D5 | A TypeScript test runner | Not now: the interaction layer maps coordinates only; the GUI is tested in headless Chromium as `tests/test_gui_shortcuts.py` does. |
-| D6 | Grouping of states | Both: automatic by default (§4.2), the editor to correct and name. |
-| D7 | Default units of the Diagrams tab | `engineering` (°C, bar, kJ/kg), as printed charts; the model's units (°C, Pa, J/kg) as the custom unit record `coolsolve`. |
+| D6 | Grouping of states | Automatic (§4.2), and arrays. The state editor that corrected and named the states (phase 2) was removed on 2026-11-13 at the maintainer's request (the tab was too complex). |
+| D7 | Units of the Diagrams tab | The unit system of the model, always (2026-11-13, at the maintainer's request; before: a selector, `engineering` by default): today CoolSolve's fixed units (°C, Pa, J/kg), the custom unit record `model_units.record` of the options; a later unit system per model takes its place. A definition saved in other units is drawn in the model's. |
 | D8 | Default look of the lines (2026-11-13, after the first charts: the isolines of CoolPlot's themes, 0.75 pt and opaque, competed with the saturation curve, 1.5 pt, and the cycles, 2 pt) | New definitions carry CoolPlot `style_overrides` drawing every family of lines at 0.5 pt and 55 % opacity (*Line weight: light*; *as the theme* removes them). Compared on p-h and T-s charts of a solved R134a cycle, light and dark themes, against 0.4 pt at 45 % (the lines of constant quality fade out). A spec field of CoolPlot, so an exported spec draws the same; the report's print theme takes it too. |
 
 Settled in the first revision: compose and layout are in C++ (coolplot-core); the

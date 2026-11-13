@@ -1,11 +1,12 @@
 /**
  * DiagramTab — the Diagrams tab: a property diagram of the model drawn by CoolPlot on the server
- * (docs/coolplot_integration.md, phases 1 and 2).
+ * (docs/coolplot_integration.md).
  *
  * It edits the first diagram of the model's diagram definitions (`diagrams` in the model store, saved in
- * the session and the ZIP bundle as `diagrams.json`). Until the user changes something, it shows a
- * default chart of the model's first fluid that is not stored. The chart is redrawn by `DiagramView`
- * when the definition, the GUI theme or the solution changes.
+ * the session and the ZIP bundle as `diagrams.json`); every definition it shows or writes is in the
+ * model's units, with its overlays on the chart's axes (normalizeDefinition). Until the user changes
+ * something, it shows a default chart of the model's first fluid that is not stored. The chart is redrawn
+ * by `DiagramView` when the definition, the GUI theme or the solution changes.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -23,31 +24,26 @@ import { useModelStore } from '../../stores/modelStore';
 import { useUIStore } from '../../stores/uiStore';
 import { watchDiagramEdits } from '../../utils/diagrams';
 import { toErrMsg } from '../../utils/errors';
-import CycleEditor, { type VariableChoice } from './CycleEditor';
 import DiagramControls from './DiagramControls';
 import DiagramOverlays from './DiagramOverlays';
 import DiagramView from './DiagramView';
 import { loadDiagramOptions } from './options';
 import {
   FALLBACK_FLUID,
-  arrayIndices,
-  arraysCycle,
   defaultDefinition,
   defaultFractions,
   fluidKind,
-  isArraysCycle,
   isHumidAirKind,
   isInferredCycle,
   modelPressure,
   modelStates,
   newInferredCycle,
-  overlayOfCycle,
-  propertyKey,
+  normalizeDefinition,
   sameFluid,
   sameJson,
   sceneInput,
+  solvedArrays,
   withView,
-  type ArraysOverlay,
 } from './definition';
 
 /** What the server knows of the last solve: its inferred variables and its states, with the solve they belong to. */
@@ -69,8 +65,6 @@ export default function DiagramTab() {
   const [fluids, setFluids] = useState<FluidInfo[]>([]);
   const [modelFluids, setModelFluids] = useState<string[]>([]);
   const [info, setInfo] = useState<SolveInfo>({ result: null, vars: [], states: null });
-  const [arraysDraft, setArraysDraft] = useState<ArraysOverlay>(
-    { on: false, keys: ['h', 'p'], arrays: ['', ''], closed: false, paths: 'auto' });
 
   // Edits of the definitions go to the session
   useEffect(() => watchDiagramEdits(), []);
@@ -115,16 +109,11 @@ export default function DiagramTab() {
 
   const solved = !!lastResult?.success;
   const current = solved && info.result === lastResult ? info : null;
-  const indices = useMemo(() => arrayIndices(lastResult?.variables), [lastResult]);
-  const arrayKeys = useMemo(() => {
-    const keys = new Map<string, string>();
-    for (const v of current?.vars ?? []) {
-      const match = v.name.match(/^(.+)\[\d+\]$/);
-      const key = propertyKey(v.inferredProperty);
-      if (match && key && !keys.has(match[1])) keys.set(match[1], key);
-    }
-    return keys;
-  }, [current]);
+  // The arrays of the last successful solve, once its states and inferred variables are known
+  const arrays = useMemo(
+    () => solvedArrays(current ? lastResult?.variables : undefined, current?.states ?? null, current?.vars ?? []),
+    [current, lastResult],
+  );
 
   // The fluids of the model: those of the variable inference, and those whose states the server found in its
   // property calls (humid air is AirH2O there; the inference names it after its registered fluid, Air_ha)
@@ -162,6 +151,13 @@ export default function DiagramTab() {
     [humidAirFluid, current, lastResult],
   );
 
+  // Every definition the tab shows or writes: in the model's units, its overlays on the chart's axes
+  const normalize = useCallback(
+    (d: DiagramDefinition) => (options ? normalizeDefinition(d, options, arrays) : d),
+    [options, arrays],
+  );
+  const edit = useCallback((d: DiagramDefinition) => setDiagramDefinition(normalize(d)), [normalize, setDiagramDefinition]);
+
   const stored = diagrams.diagrams[0] ?? null;
   // The definition shown: the stored one, or a default chart (stored at its first change); a solution drawn
   // at the concentration of the model (or the middle of its range) until one is chosen, humid air at the
@@ -174,50 +170,33 @@ export default function DiagramTab() {
       if (!options) return stored;
       const info = drawableFluids.find((f) => sameFluid(f.name, stored.fluid));
       const given = stored.fractions ? undefined : defaultFractions(info, modelFractions);
-      return atModelPressure(given ? { ...stored, fractions: given } : stored, info?.type);
+      return normalize(atModelPressure(given ? { ...stored, fractions: given } : stored, info?.type));
     }
     if (!options || !defaultFluid) return null;
     const created = defaultDefinition(defaultFluid.name, options, [newInferredCycle(modelStates(current?.states ?? null, defaultFluid.name))],
       fluidKind(options, defaultFluid.type), defaultFractions(defaultFluid, modelFractions));
-    return created && atModelPressure(created, defaultFluid.type);
-  }, [stored, options, defaultFluid, drawableFluids, modelFractions, current, airPressure]);
+    return created && normalize(atModelPressure(created, defaultFluid.type));
+  }, [stored, options, defaultFluid, drawableFluids, modelFractions, current, airPressure, normalize]);
 
-  // After a solve (or a change of fluid), the stored overlays follow the model's variables; the user's
-  // cycles name their variables and are left as they are
+  // After a solve (or a change of fluid), the stored inferred states follow the model's states; the arrays
+  // overlays name their arrays and are drawn with the new solve as they are
   useEffect(() => {
     if (!stored || !current) return;
-    const cycles = stored.cycles.map((c) => {
-      if (isInferredCycle(c)) return { ...c, states: modelStates(current.states, stored.fluid) };
-      if (isArraysCycle(c)) return arraysCycle(overlayOfCycle(c), indices, c);
-      return c;
-    });
-    if (!sameJson(cycles, stored.cycles)) setDiagramDefinition({ ...stored, cycles });
-  }, [stored, current, indices, setDiagramDefinition]);
+    const cycles = stored.cycles.map((c) => (isInferredCycle(c) ? { ...c, states: modelStates(current.states, stored.fluid) } : c));
+    if (!sameJson(cycles, stored.cycles)) edit({ ...stored, cycles });
+  }, [stored, current, edit]);
 
   const input = useMemo(() => (def ? sceneInput(def, theme) : null), [def, theme]);
 
   const onViewChange = useCallback(
-    (view: DiagramViewSI | null) => { if (def) setDiagramDefinition({ ...def, spec: withView(def.spec, view) }); },
-    [def, setDiagramDefinition],
+    (view: DiagramViewSI | null) => { if (def) edit({ ...def, spec: withView(def.spec, view) }); },
+    [def, edit],
   );
 
   const liveStates = useMemo(
     () => (current && def ? modelStates(current.states, def.fluid) : null),
     [current, def],
   );
-
-  // The variables the editor offers: those the inference ties to the chart's fluid first (with their
-  // property), then the other solved variables
-  const variables = useMemo<VariableChoice[]>(() => {
-    if (!lastResult?.variables || !def) return [];
-    const inferred = new Map((current?.vars ?? []).map((v) => [v.name, v]));
-    const choices = Object.keys(lastResult.variables).map((name): VariableChoice => {
-      const v = inferred.get(name);
-      const ofFluid = !!v && sameFluid(v.inferredFluid, def.fluid);
-      return { name, key: ofFluid ? propertyKey(v.inferredProperty) : undefined, ofFluid };
-    });
-    return choices.sort((a, b) => Number(b.ofFluid) - Number(a.ofFluid) || a.name.localeCompare(b.name));
-  }, [lastResult, current, def]);
 
   return (
     <div className="diagram-tab">
@@ -236,23 +215,15 @@ export default function DiagramTab() {
             modelFluids={allModelFluids}
             modelFractions={modelFractions}
             modelPressure={airPressure}
-            onChange={setDiagramDefinition}
+            onChange={edit}
           />
           <DiagramOverlays
             def={def}
-            onChange={setDiagramDefinition}
+            options={options}
+            onChange={edit}
             solved={solved}
             inferredStates={liveStates}
-            arrays={indices}
-            arrayKeys={arrayKeys}
-            draft={arraysDraft}
-            setDraft={setArraysDraft}
-          />
-          <CycleEditor
-            def={def}
-            onChange={setDiagramDefinition}
-            inferredStates={liveStates}
-            variables={variables}
+            arrays={arrays}
           />
         </>
       )}

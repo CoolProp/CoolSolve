@@ -200,7 +200,7 @@ computed by `CoolProp::Plot`, through the module `src/diagram/` (design and stat
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/v1/coolprop/fluids` | List all registered fluids with `name`, `type` (`Real`, `IdealGas`, `HumidAir`, `Incompressible`, `Mixture`, `AmmoniaWater`), `hasDome`, `fractionRange` for the solutions (`[0, 0.6]` for `MEG`), and `modelFluids` from the current session |
-| `GET` | `/api/v1/diagram/options` | What a chart can be: `diagram_types` (name such as `ph`, `Ts`, `Th`; title; axes `x`, `y` and their log flags; `families` with `key`, `label`, `symbol`, `default_num`), `fluid_types` drawn (`Real`, `Mixture`, `Incompressible`, `IdealGas`, `HumidAir`) and `fluid_kinds` (per type: `diagram_types`, `families`, `saturation`, `fractions`, `default_box`, `default_region`), `unit_systems` (`SI`, `KSI`, `engineering`, `IP` and `coolsolve`, the model's units, each with the `record` to put in a spec), `default_unit_system`, `regions` (`DEF`, `ACHP`, `ORC`, `NONE` with their limits), `themes`, `label_modes`, `marked_points`, `coolplot` (`core_version`, `commit`) |
+| `GET` | `/api/v1/diagram/options` | What a chart can be: `diagram_types` (name such as `ph`, `Ts`, `Th`; `title`, the short name the GUI shows: the axis symbols, vertical first, `p-h`, `T-s`, `p-ρ`, …, and `psychrometric`, `Mollier h-x`; axes `x`, `y` and their log flags; `families` with `key`, `label`, `symbol`, `default_num`), `fluid_types` drawn (`Real`, `Mixture`, `Incompressible`, `IdealGas`, `HumidAir`) and `fluid_kinds` (per type: `diagram_types`, `families`, `saturation`, `fractions`, `default_box`, `default_region`), `model_units` (the unit system of the model, in which the GUI draws every chart: `record`, the custom unit record to put in a spec's `units`, CoolSolve's fixed units today, °C, Pa, J/kg; and `units`, its unit table `{key: [label, scale, offset(, difference)]}`), `regions` (`DEF`, `ACHP`, `ORC`, `NONE` with their limits), `themes`, `label_modes`, `marked_points`, `coolplot` (`core_version`, `commit`) |
 | `POST` | `/api/v1/diagram/scene` | A chart of the session's model. Body: `fluid` (CoolSolve fluid name), `fractions` and `basis` (the mass fraction of an incompressible solution, `[0.3]`, `"mass"`), `p_Pa` (the total pressure of a humid-air chart, default 101325), `spec` (CoolPlot spec record without `fluid` and `cycles`), `cycles` (cycle definitions naming the model's variables), `figure_size_pt` `[w, h]`, `previous_labels` (optional). Returns `svg` (coolplot-core's document), `axes` (keys, labels, limits in display units, log flags, `x_unit`/`y_unit` with display = SI × `scale` + `offset`, `plot_size_pt`), `labels` (to send back as `previous_labels`), `states` (each cycle state: `cycle`, `number`, `label`, `vars`, `values_SI`), `spec` (as composed, readable by CoolPlot), `diagnostics` (`curves`, `warnings`), `timing_ms` (`curves`, `compose`, `svg`). The CoolProp backend is the model's `coolpropBackend`; the cycles use the last successful solve and are skipped without one. 400 for an unknown fluid, a fluid kind not drawable yet (ideal gases, humid air, incompressibles, `NH3H2O`), an unknown diagram or a spec value coolplot-core refuses; a line that cannot be computed is a diagnostic, not an error |
 | `POST` | `/api/v1/diagram/export` | The chart as a file: the body of `/diagram/scene` and `"format"` (`"svg"` or `"pdf"`); returns the file with `Content-Disposition: attachment; filename="<model>_<diagram>.<format>"`. The PDF embeds the TrueType fonts the server finds (500 when there is none: install `fonts-dejavu-core`) |
 | `POST` | `/api/v1/diagram/state` | The state under the cursor: `{fluid, fractions, basis, diagram, x_SI, y_SI}` → `{"state": {T, p, h, s, rho, u, v, Q}}` in SI (Q = −1 in single phase) or `{"state": null}` |
@@ -548,11 +548,14 @@ when the tab comes back.
   basis) and humid air (`AirH2O`: the psychrometric and Mollier h,x charts, with a **total
   pressure** field, the model's by default, and T and W range fields) are drawn; `NH3H2O` is
   not yet (the server answers "not drawable yet").
-- **Diagram**: the fluid charts of coolplot-core: log(p)-h, T-s, h-s, p-s, p-ρ, T-ρ, p-T and T-h;
-  incompressibles: p-h, p-s, p-ρ, p-T; ideal gases: all but T-h. The families offered follow the
-  fluid's kind (no lines of constant quality without a saturation curve).
-- **Units**: `engineering` (°C, bar, kJ/kg; the default), `SI`, `KSI`, `IP`, and `coolsolve`, the
-  model's units (°C, Pa, J/kg).
+- **Diagram**: the fluid charts of coolplot-core, by their short names (the `title` of the options): p-h
+  (log p), T-s, h-s, p-s, p-ρ, T-ρ, p-T and T-h; incompressibles: p-h, p-s, p-ρ, p-T; ideal gases: all but
+  T-h; humid air: psychrometric and Mollier h-x. The families offered follow the fluid's kind (no lines of
+  constant quality without a saturation curve).
+- **Units**: none to choose. Every chart is in the unit system of the model (`model_units` of the options:
+  CoolSolve's fixed units, °C, Pa, J/kg, J/(kg·K), kg/m³, kg/kg for the humidity ratio), and so are the
+  range fields, the total pressure of humid air and the hover. A definition saved in other units is drawn in
+  the model's.
 - **Region**: `DEF` (relative to the saturation range; the default), `ACHP` (heat pumps; the
   default of mixtures), `ORC`. A fluid without saturation curve shows **T** and **p** range
   fields instead (its default box: 200-2000 K and 0.1-100 bar for an ideal gas, the fluid's
@@ -573,11 +576,11 @@ and after a solve; there is no *Generate* button. The status line shows the warn
 (lines that could not be computed, states left out) and the time of the lines, the composition and
 the SVG.
 
-#### Overlays (`DiagramOverlays.tsx`) and cycles (`CycleEditor.tsx`)
+#### Overlays (`DiagramOverlays.tsx`)
 
-Each overlay or cycle is a cycle definition that names the model's variables; the server reads
-their values from the last solve, converts them to SI, completes each state from two of its
-properties and draws the paths between them.
+Each overlay is a cycle definition that names the model's variables; the server reads their values from
+the last solve, converts them to SI, completes each state from two of its properties and draws the paths
+between them.
 
 - **Inferred states**: the states of the solved model from `GET /api/v1/diagram/states`. The server
   groups the variables of property calls that share two variables of independent properties
@@ -586,21 +589,28 @@ properties and draws the paths between them.
   `P_cond` alone: no state) and numbers them from the names (the number most variables carry,
   `T_2`, `h_2`, `s[2]` → 2; otherwise a label such as `su_cp` and the next free number). Drawn as
   numbered markers without lines.
-- **Arrays**: two array variables (`h[i]`, `P[i]`) give state i; drawn as a chain in index order,
-  closed on request, with paths `auto` (the default) or straight.
-- **Cycles** (the collapsible editor): cycles of any variables. Each has a name, states (number,
-  optional label, property/variable pairs, the variables of the fluid suggested first), loops
-  typed as `1-2-3-4-1; 2-5` (empty: markers only), a path kind for the whole cycle (`auto`:
-  isobaric if the pressures are equal, else isenthalpic, isentropic, isothermal, otherwise
-  polytropic; or one of these, or straight) and optional per-connection overrides. *From inferred
-  states* copies the server's states into an editable cycle with one closed loop. Adding the first
-  cycle switches the inferred states off (their markers would sit on the same states); the
-  checkbox brings them back.
+- **Arrays** (*+ arrays*, any number): one row per overlay, an array for the horizontal and one for
+  the vertical quantity of the chart, labelled with the axis symbols (`s:` and `T:` on a T-s chart,
+  `h:` and `p:` on p-h; `x:` and `T:` on the Mollier chart, whose temperature arrays are dry-bulb
+  temperatures), *close loop*, and ✕ to remove it. State i is drawn from the elements i of the two
+  arrays, one chain in index order with paths along the processes (`auto`: isobaric if the pressures
+  are equal, else isenthalpic, isentropic, isothermal, otherwise polytropic). A new overlay takes, for
+  each axis, an array of that quantity: one whose elements the server's states or the variable
+  inference tie to it, else one named after it (`P`, `h`, `T`, `s`, `rho`: the arrays a model fills
+  for its diagrams, `P[1] = P_1`, are in no property call), one not taken by the overlays above if
+  there is one; none found leaves the field to choose. When the diagram type changes, each overlay
+  keeps the arrays of the quantities still on an axis and takes the default array of the others. The
+  legend names an overlay after its arrays (`T, s`; `T, s 2` for a second overlay of the same arrays).
+  The first arrays overlay switches the inferred states off, which would number the same states a
+  second time; their checkbox brings them back.
+- There is no state editor (removed on 2026-11-13 to keep the tab simple): states come from the
+  grouping of the property calls and from arrays. Cycles of the former editor in a saved definition
+  are not drawn and are dropped when the definition is next edited.
 
 #### Hover (`useDiagramHover.ts`)
 
 Near a state marker, a tooltip names the cycle and the state and lists its variables with their
-values in the chart's units. Elsewhere in the plot area, the state under the cursor
+values in the model's units. Elsewhere in the plot area, the state under the cursor
 (`POST /api/v1/diagram/state`, debounced, stale requests cancelled): T, p, h, s, ρ, and the
 quality inside the dome. Nothing is asked while a zoom is dragged.
 
@@ -982,13 +992,12 @@ gui/
         ├── Console.tsx            # Auto-scrolling console with color-coded log lines
         ├── diagram/               # Diagrams tab (§6.8): coolplot-core's SVG drawn by the server
         │   ├── DiagramTab.tsx     # Options, the definition edited, the request
-        │   ├── DiagramControls.tsx # Fluid, diagram, units, region, lines, theme, labels
-        │   ├── DiagramOverlays.tsx # Inferred states and arrays as cycle definitions
-        │   ├── CycleEditor.tsx    # The user's cycles: states, loops, paths
+        │   ├── DiagramControls.tsx # Fluid, diagram, region, lines, theme, labels
+        │   ├── DiagramOverlays.tsx # Inferred states and arrays overlays as cycle definitions
         │   ├── useDiagramHover.ts # Tooltips: state markers, the state under the cursor
-        │   ├── options.ts         # Options loaded once, display units, value format
+        │   ├── options.ts         # Options loaded once, the model's units, value format
         │   ├── DiagramView.tsx    # Reusable view: fetch, inline SVG, zoom, resize
-        │   ├── definition.ts      # Spec and cycle builders
+        │   ├── definition.ts      # Spec and cycle builders, the definition as the tab writes it
         │   └── svgCoords.ts       # Pointer → display units → SI (log axes)
         ├── ParametricStudy.tsx    # Parametric sweep: variable selector, range inputs, 1D/2D plots, results table
         ├── LookupTableEditor.tsx  # Lookup table manager: list view + inline editable grid + CSV import/export
@@ -1032,7 +1041,7 @@ All the following tests pass against the current codebase:
 | `GET /api/v1/coolprop/fluids` | ✅ 128 fluids; Water `hasDome:true`; Air `hasDome:false` |
 | `GET /api/v1/coolprop/fluids` (modelFluids, before parse) | ✅ `"modelFluids":[]` |
 | Diagram options, scenes (R134a p-h, errors), definitions round trip, `diagrams.json` in the ZIP bundle, New/Back, a solved model drawn with its states, paths, the state under the cursor and the states of the model, incompressibles, ideal gases, a tabular backend, blends, the badge, the export route and the report's PDF figures | ✅ `tests/test_diagram_api.py --auto` (120 checks) |
-| Diagrams tab in headless Chromium: the chart drawn on load at the container size, the default spec, the states of a solved R134a cycle as markers, zoom (`view_SI`, labels sent back) and reset, the report figure `thermo_diagrams.png`, a cycle from the editor drawn along its paths, the hover on a marker and elsewhere, an ideal gas with its cycle, a solution at two concentrations, a blend, the badge and the SVG/PDF/Spec downloads | ✅ `tests/test_gui_diagrams.py --auto` (52 checks) |
+| Diagrams tab in headless Chromium: the chart drawn on load at the container size, the default spec (the model's units, short diagram names, no unit selector), the states of a solved R134a cycle as markers, zoom (`view_SI`, labels sent back) and reset, the report figure `thermo_diagrams.png`, two arrays overlays drawn along their paths (default arrays from the names and from the property calls, mapped to the axes of T-s and back to p-h, an array chosen by hand), the hover on a marker and elsewhere, an ideal gas with its cycle, a solution at two concentrations, a blend, humid air (psychrometric and Mollier charts), the badge and the SVG/PDF/Spec downloads | ✅ `tests/test_gui_diagrams.py --auto` (80 checks) |
 | `GET /api/v1/variables/inferred` (before solve) | ✅ 0 variables |
 | `GET /api/v1/variables/inferred` (after solve) | ✅ 39 vars with T/P/H/S/Q for R134a |
 | `GET /api/v1/coolprop/fluids` (modelFluids after solve) | ✅ `"modelFluids":["R134a"]` |

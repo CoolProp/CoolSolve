@@ -4,15 +4,16 @@ test_gui_diagrams.py — End-to-end test of the Diagrams tab in a real browser.
 
 Opens the GUI in headless Chromium (Chrome DevTools Protocol, as test_gui_shortcuts.py does) and checks
 that the tab draws coolplot-core's SVG served by POST /api/v1/diagram/scene: the default chart after
-load, the states of a solved model as cycle markers (GET /api/v1/diagram/states), a cycle of the state
-editor drawn with paths along the processes, the hover (a state marker's variables; elsewhere the state
-under the cursor from POST /api/v1/diagram/state), a rubber-band zoom and its reset, the downloads of the
-chart (SVG and PDF from POST /api/v1/diagram/export, the chart spec for CoolPlot), the export of the
-diagram for the LaTeX report (thermo_diagrams.png, the fallback of the server's PDF figure), and the
-other kinds of fluids: an ideal gas with its solved cycle, an incompressible solution at a
-concentration, a blend of the model, humid air (a solved air-conditioning process on the psychrometric
-chart at the model's total pressure, the hover, the Mollier chart). See docs/coolplot_integration.md,
-phases 1 to 4.
+load (in the model's units, short diagram names, no unit selector), the states of a solved model as
+cycle markers (GET /api/v1/diagram/states), the hover (a state marker's variables; elsewhere the state
+under the cursor from POST /api/v1/diagram/state), a rubber-band zoom and its reset, two arrays overlays
+drawn with paths along the processes (their default arrays those of the axis quantities, mapped to the
+axes of another diagram type), the downloads of the chart (SVG and PDF from POST /api/v1/diagram/export,
+the chart spec for CoolPlot), the export of the diagram for the LaTeX report (thermo_diagrams.png, the
+fallback of the server's PDF figure), and the other kinds of fluids: an ideal gas with its solved cycle,
+an incompressible solution at a concentration, a blend of the model, humid air (a solved
+air-conditioning process on the psychrometric chart at the model's total pressure, the hover, the
+Mollier chart). See docs/coolplot_integration.md, phases 1 to 4, and docs/gui.md §6.8.
 
 Usage:
     # Start CoolSolve with --gui, then:
@@ -69,21 +70,44 @@ h_4 = h_3
 T_4 = temperature(R134a, P=P_4, h=h_4)
 """
 
-# Phase 3: an air-standard Brayton cycle of the ideal gas N2, and a blend of the model
-BRAYTON_MODEL = """T_1 = 25
-P_1 = 1e5
-P_2 = 8*P_1
-s_1 = entropy(N2, T=T_1, P=P_1)
-s_2 = s_1
-h_2 = enthalpy(N2, P=P_2, s=s_2)
-T_2 = temperature(N2, P=P_2, s=s_2)
-P_3 = P_2
-T_3 = 1000
-s_3 = entropy(N2, T=T_3, P=P_3)
-P_4 = P_1
-s_4 = s_3
-h_4 = enthalpy(N2, P=P_4, s=s_4)
-T_4 = temperature(N2, P=P_4, s=s_4)
+# Two vapour-compression cycles of R134a in arrays. P, h, T and s are filled from the scalars of the cycle above, as
+# the library models do (the tab knows their quantities from their names); Pb, hb, Tb and sb are arguments and results
+# of property calls (the variable inference gives their quantities)
+ARRAYS_MODEL = CYCLE_MODEL + """s_3 = entropy(R134a, P=P_3, x=x_3)
+s_4 = entropy(R134a, P=P_4, h=h_4)
+""" + "".join(f"P[{i}] = P_{i}\nh[{i}] = h_{i}\nT[{i}] = T_{i}\ns[{i}] = s_{i}\n" for i in range(1, 5)) + "".join(f"""P{b}[1] = {p_ev}
+T{b}[1] = 10
+h{b}[1] = enthalpy(R134a, P=P{b}[1], T=T{b}[1])
+s{b}[1] = entropy(R134a, P=P{b}[1], h=h{b}[1])
+P{b}[2] = {p_cd}
+s{b}[2] = s{b}[1]
+h{b}[2] = enthalpy(R134a, P=P{b}[2], s=s{b}[2])
+T{b}[2] = temperature(R134a, P=P{b}[2], h=h{b}[2])
+P{b}[3] = P{b}[2]
+h{b}[3] = enthalpy(R134a, P=P{b}[3], x=0)
+T{b}[3] = temperature(R134a, P=P{b}[3], x=0)
+s{b}[3] = entropy(R134a, P=P{b}[3], x=0)
+P{b}[4] = P{b}[1]
+h{b}[4] = h{b}[3]
+T{b}[4] = temperature(R134a, P=P{b}[4], h=h{b}[4])
+s{b}[4] = entropy(R134a, P=P{b}[4], h=h{b}[4])
+""" for b, p_ev, p_cd in (("b", "2e5", "9e5"),))
+
+# Phase 3: an air-standard Brayton cycle of the ideal gas N2 in arrays, and a blend of the model
+BRAYTON_MODEL = """T[1] = 25
+P[1] = 1e5
+P[2] = 8*P[1]
+s[1] = entropy(N2, T=T[1], P=P[1])
+s[2] = s[1]
+h[2] = enthalpy(N2, P=P[2], s=s[2])
+T[2] = temperature(N2, P=P[2], s=s[2])
+P[3] = P[2]
+T[3] = 1000
+s[3] = entropy(N2, T=T[3], P=P[3])
+P[4] = P[1]
+s[4] = s[3]
+h[4] = enthalpy(N2, P=P[4], s=s[4])
+T[4] = temperature(N2, P=P[4], s=s[4])
 """
 BLEND_MODEL = "T_b = temperature('R32[0.7]&R125[0.3]', P=10e5, x=0)\n"
 
@@ -236,9 +260,15 @@ async def run_tests(page: Page):
           size and abs(fig[0] - size[0] * 0.75) < 2 and abs(fig[1] - size[1] * 0.75) < 2
           and abs(size[2] - size[0]) < 3 and abs(size[3] - size[1]) < 3, f"canvas/svg {size}, figure {fig}")
     spec = req.get("spec", {})
-    check("the spec is CoolPlot's: ph, engineering units, DEF, CoolPlot's default badge (no branding written)",
-          spec.get("diagram") == "ph" and spec.get("units") == "engineering" and spec.get("limits") == "DEF"
+    units = spec.get("units") if isinstance(spec.get("units"), dict) else {}
+    check("the spec is CoolPlot's: ph, the model's units (°C, Pa, J/kg), DEF, CoolPlot's default badge (no branding written)",
+          spec.get("diagram") == "ph" and units.get("name") == "coolsolve" and units.get("units", {}).get("p") == ["Pa", 1.0, 0.0]
+          and units["units"].get("h") == ["J/kg", 1.0, 0.0] and spec.get("limits") == "DEF"
           and "branding" not in spec.get("settings", {}), json.dumps(spec)[:300])
+    check("no unit selector", not await page.eval(
+        "[...document.querySelectorAll('.diagram-controls .diagram-field > span')].some(s => s.textContent === 'Units')"))
+    titles = await page.eval("[...document.querySelectorAll('.diagram-controls select')[1].options].map(o => o.textContent)")
+    check("the diagram types have short names", titles == ["p-h", "T-s", "h-s", "p-s", "p-ρ", "T-ρ", "p-T", "T-h"], str(titles))
     overrides = spec.get("style_overrides", {})
     check("light lines by default: every family 0.5 pt at 55 % (CoolPlot's style_overrides)",
           {"T", "s", "rho", "Q"} <= set(overrides)
@@ -274,30 +304,6 @@ async def run_tests(page: Page):
           and any(st["vars"].get("p") == "P_1" for st in inferred.get("states", [])), json.dumps(cycles)[:300])
     await page.screenshot("diagram_cycle_states.png")
 
-    print("\n=== A cycle of the state editor ===")
-    await page.eval("[...document.querySelectorAll('.diagram-cycles button')]"
-                    ".find(b => b.textContent.includes('from inferred states')).click()")
-    end = time.time() + 20
-    while time.time() < end and not any(c.get("loops") for c in (page.scene_requests[-1].get("cycles", [])
-                                                                 if page.scene_requests else [])):
-        await asyncio.sleep(0.1)
-    cycles = page.scene_requests[-1].get("cycles", []) if page.scene_requests else []
-    user = cycles[0] if cycles else {}
-    check("'from inferred states' makes an editable cycle through the states, closed, paths auto; the overlay goes",
-          len(cycles) == 1 and user.get("name") == "Cycle" and user.get("paths") == "auto"
-          and len(user.get("loops", [[]])[0]) == len(user.get("states", [])) + 1
-          and user["loops"][0][0] == user["loops"][0][-1], json.dumps(cycles)[:400])
-    check("the editor shows the cycle with its states",
-          await page.wait_for("document.querySelectorAll('.diagram-cycle .diagram-state').length >= 4", 10))
-    check("the cycle is drawn with lines (cp-role-cycle)",
-          await page.wait_for(f"!!{SVG}?.querySelector('.cp-role-cycle path')", 60))
-    await page.idle()
-    points = await page.eval(f"[...{SVG}.querySelectorAll('.cp-role-cycle path')]"
-                             ".map(p => (p.getAttribute('d').match(/[ML]/g) || []).length).reduce((a, b) => a + b, 0)")
-    check("auto paths follow the processes (more points than straight segments)",
-          (points or 0) > len(user.get("states", [])) + 4, f"{points} points")
-    await page.screenshot("diagram_editor_cycle.png")
-
     print("\n=== Hover ===")
     marker = await page.eval(f"(() => {{ const g = {SVG}.querySelector('.cp-role-state_points');"
                              " const m = g && g.firstElementChild; if (!m) return null;"
@@ -306,7 +312,7 @@ async def run_tests(page: Page):
         await page.mouse("mouseMoved", marker[0], marker[1], 0)
     check("hovering a state marker shows the cycle, the state and its variables with their values",
           await page.wait_for("(() => { const t = document.querySelector('.diagram-tooltip[data-kind=\"state\"]');"
-                              " return !!t && t.textContent.includes('Cycle: state') && /[PhTs]_\\d = /.test(t.textContent); })()", 10),
+                              " return !!t && t.textContent.includes('Inferred states: state') && /[PhTs]_\\d = /.test(t.textContent); })()", 10),
           await page.eval("document.querySelector('.diagram-tooltip')?.textContent"))
     box = await page.eval(f"(() => {{ const r = {SVG}.querySelector('rect.cp-background').getBoundingClientRect();"
                           " return [r.left, r.top, r.width, r.height]; })()")
@@ -346,15 +352,17 @@ async def run_tests(page: Page):
     after = await page.eval(f"{SVG}.getAttribute('data-x-limits')")
     view = page.scene_requests[-1]["spec"].get("view_SI") if page.scene_requests else None
     lo, hi = (float(v) for v in after.split())
-    # h in kJ/kg on the chart, J/kg in view_SI
+    # h in J/kg on the chart (the model's units) and in view_SI
     check("the chart shows the zoom window", after != before and view is not None
-          and abs(lo - view[0][0] / 1000) < 1e-6 * max(1, abs(lo)) and abs(hi - view[0][1] / 1000) < 1e-6 * max(1, abs(hi)),
+          and abs(lo - view[0][0]) < 1e-6 * max(1, abs(lo)) and abs(hi - view[0][1]) < 1e-6 * max(1, abs(hi)),
           f"{before} -> {after}, view {view}")
     check("the labels of the scene on screen are sent back", bool(page.scene_requests[-1].get("previous_labels")))
     await page.eval("document.querySelector('.diagram-reset').click()")
     check("reset: the whole chart again",
           await page.wait_for(f"{SVG}?.getAttribute('data-x-limits') === {json.dumps(before)}", 30))
     await page.idle()
+
+    await arrays_overlays(page)
 
     print("\n=== Downloads: SVG, PDF, chart spec ===")
     downloads = tempfile.mkdtemp(prefix="coolsolve_diagram_downloads_")
@@ -386,11 +394,12 @@ async def run_tests(page: Page):
                 pdf = f.read()
             with open(os.path.join(downloads, "diagram_ph.json"), encoding="utf-8") as f:
                 spec = json.load(f)
-            check("the SVG is coolplot-core's, with the cycle", svg.startswith(b"<svg") and b'data-item="cycle/Cycle/loop/0"' in svg)
+            check("the SVG is coolplot-core's, with the arrays", svg.startswith(b"<svg") and b'data-item="cycle/P, h/loop/0"' in svg)
             check("the PDF is coolplot-core's, with its fonts", pdf.startswith(b"%PDF-") and b"/FontFile2" in pdf)
-            check("the spec is the one composed: fluid and cycles written, as CoolPlot reads it",
+            arrays = next((c for c in spec.get("cycles", []) if c.get("name") == "P, h"), {})
+            check("the spec is the one composed: fluid and cycles written (their states), as CoolPlot reads it",
                   spec.get("diagram") == "ph" and spec.get("fluid", {}).get("components") == ["R134a"]
-                  and spec.get("cycles", [{}])[0].get("name") == "Cycle" and "states" in spec["cycles"][0], json.dumps(spec)[:300])
+                  and len(arrays.get("states", [])) == 4, json.dumps(spec)[:300])
         check("no download error shown", not await page.eval("!!document.querySelector('.diagram-status .diagram-error')"),
               await page.eval("document.querySelector('.diagram-status')?.textContent"))
     finally:
@@ -454,6 +463,89 @@ async def last_scene(page: Page, fluid: str, timeout: float = 30.0) -> dict:
     return {}
 
 
+def row_select_js(row: int, index: int, value: str) -> str:
+    """Choose `value` in the index-th select of the row-th arrays overlay, as a user does."""
+    return ("(() => { const s = document.querySelectorAll('.diagram-arrays')[" + str(row) + "].querySelectorAll('select')["
+            + str(index) + "]; Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, "
+            + json.dumps(value) + "); s.dispatchEvent(new Event('change', {bubbles: true})); })()")
+
+
+# The labels of the arrays overlays' fields (the axis symbols) and the arrays chosen, row by row
+ROWS_JS = ("[...document.querySelectorAll('.diagram-arrays')].map(r => [...r.querySelectorAll('select')]"
+           ".map(s => s.parentElement.textContent.split(':')[0] + '=' + s.value).join(' '))")
+ADD_ARRAYS_JS = "[...document.querySelectorAll('.diagram-overlays button')].find(b => b.textContent.trim() === 'arrays').click()"
+REMOVE_ARRAYS_JS = "document.querySelector('.diagram-arrays button[title=\"Remove these arrays\"]').click()"
+
+
+async def arrays_cycles(page: Page, test, timeout: float = 20.0) -> list:
+    """The arrays cycles of the last scene request, once `test` holds for them (or the timeout ends)."""
+    end = time.time() + timeout
+    while True:
+        cycles = [c for c in (page.scene_requests[-1].get("cycles", []) if page.scene_requests else []) if "arrays" in c]
+        if test(cycles) or time.time() > end:
+            return cycles
+        await asyncio.sleep(0.1)
+
+
+async def arrays_overlays(page: Page):
+    """Two arrays overlays: default arrays of the axis quantities, paths along the processes, another diagram type."""
+    print("\n=== Arrays overlays: two cycles of R134a in arrays ===")
+    await page.set_model(ARRAYS_MODEL)
+    await page.eval("[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Solve').click()")
+    check("the arrays model solves: '+ arrays' is offered",
+          await page.wait_for("[...document.querySelectorAll('.diagram-overlays button')].some(b => b.textContent.trim() === 'arrays' && !b.disabled)", 60))
+    for _ in range(2):
+        await page.eval(ADD_ARRAYS_JS)
+        await asyncio.sleep(0.3)
+    cycles = await arrays_cycles(page, lambda c: len(c) == 2)
+    check("two overlays, each with arrays of the axis quantities by default (h and p: from their names, from the property"
+          " calls), the second ones not taken by the first",
+          [c.get("arrays") for c in cycles] == [{"h": "h", "p": "P"}, {"h": "hb", "p": "Pb"}], json.dumps(cycles)[:400])
+    others = [c for c in page.scene_requests[-1].get("cycles", []) if "arrays" not in c]
+    check("the first arrays overlay switched the inferred states off (they would number the same states twice)",
+          others == [], json.dumps(others)[:300])
+    check("named after their arrays, paths along the processes, an open chain, no loops written",
+          [c.get("name") for c in cycles] == ["P, h", "Pb, hb"] and all(c.get("paths") == "auto" and c.get("closed") is False
+                                                                     and "loops" not in c for c in cycles), json.dumps(cycles)[:400])
+    rows = await page.eval(ROWS_JS)
+    check("one row per overlay: the horizontal then the vertical axis symbol", rows == ["h=h p=P", "h=hb p=Pb"], str(rows))
+    await page.eval("document.querySelectorAll('.diagram-arrays input[type=\"checkbox\"]').forEach(c => c.click())")
+    cycles = await arrays_cycles(page, lambda c: len(c) == 2 and all(x.get("closed") for x in c))
+    check("close loop", len(cycles) == 2 and all(c.get("closed") is True for c in cycles), json.dumps(cycles)[:300])
+    check("both cycles are drawn", await page.wait_for(
+        f"(() => {{ const items = [...{SVG}?.querySelectorAll('[data-item]') ?? []].map(e => e.dataset.item);"
+        " return items.includes('cycle/P, h/loop/0') && items.includes('cycle/Pb, hb/loop/0'); })()", 60))
+    await page.idle()
+    points = await page.eval(f"[...{SVG}.querySelectorAll('.cp-role-cycle path')]"
+                             ".map(p => (p.getAttribute('d').match(/[ML]/g) || []).length).reduce((a, b) => a + b, 0)")
+    check("auto paths follow the processes (more points than two closed loops of straight segments)", (points or 0) > 2 * 5,
+          f"{points} points")
+    await page.screenshot("diagram_arrays_ph.png")
+
+    print("\n=== Another diagram type: the overlays follow the axes ===")
+    await page.eval(select_js(1, "Ts"))
+    cycles = await arrays_cycles(page, lambda c: [x.get("name") for x in c] == ["T, s", "Tb, sb"])
+    check("on T-s the overlays take the arrays of s and T", [c.get("arrays") for c in cycles] == [{"s": "s", "T": "T"}, {"s": "sb", "T": "Tb"}]
+          and all(c.get("closed") is True for c in cycles), json.dumps(cycles)[:400])
+    rows = await page.eval(ROWS_JS)
+    check("the rows name s and T", rows == ["s=s T=T", "s=sb T=Tb"], str(rows))
+    await page.idle(1.0)
+    await page.screenshot("diagram_arrays_ts.png")
+    await page.eval(select_js(1, "ph"))
+    cycles = await arrays_cycles(page, lambda c: [x.get("name") for x in c] == ["P, h", "Pb, hb"])
+    check("back on p-h: the arrays of h and p again", [c.get("arrays") for c in cycles] == [{"h": "h", "p": "P"}, {"h": "hb", "p": "Pb"}],
+          json.dumps(cycles)[:400])
+    # An array chosen by hand
+    await page.eval(row_select_js(1, 1, "P"))
+    cycles = await arrays_cycles(page, lambda c: len(c) == 2 and c[1].get("arrays", {}).get("p") == "P")
+    check("an array chosen by hand; the names stay unique", [c.get("name") for c in cycles] == ["P, h", "P, hb"], json.dumps(cycles)[:300])
+    await page.eval(row_select_js(1, 1, "Pb"))
+    await arrays_cycles(page, lambda c: len(c) == 2 and c[1].get("arrays", {}).get("p") == "Pb")
+    check("no error shown", not await page.eval("!!document.querySelector('.diagram-status .diagram-error')"),
+          await page.eval("document.querySelector('.diagram-status')?.textContent"))
+    await page.idle(1.0)
+
+
 async def more_fluids(page: Page):
     """Phase 3: an ideal gas with its solved cycle, an incompressible solution at a concentration, a blend."""
     print("\n=== An ideal gas: a solved Brayton cycle of N2 ===")
@@ -471,18 +563,17 @@ async def more_fluids(page: Page):
     check("no lines of constant quality", not any(f.startswith("x") for f in families or []), str(families))
     check("no quality family in the spec", all(i["key"] != "Q" for i in req.get("spec", {}).get("isolines", [])),
           json.dumps(req.get("spec", {}).get("isolines")))
-    # A cycle through the states of the model, along the processes, on a T-s chart
-    await page.eval("[...document.querySelectorAll('.diagram-cycles button[title=\"Delete this cycle\"]')].forEach(b => b.click())")
+    # The cycle of the model's arrays on a T-s chart: one overlay (the other removed), mapped to the arrays of s and T
+    await page.eval(REMOVE_ARRAYS_JS)
     await asyncio.sleep(0.3)
-    await page.eval("[...document.querySelectorAll('.diagram-cycles button')]"
-                    ".find(b => b.textContent.includes('from inferred states')).click()")
+    check("an overlay removed", await page.wait_for("document.querySelectorAll('.diagram-arrays').length === 1", 10))
     await page.eval(select_js(1, "Ts"))
+    cycles = await arrays_cycles(page, lambda c: [x.get("arrays") for x in c] == [{"s": "s", "T": "T"}])
+    check("on the T-s chart of N2 the overlay takes the arrays of s and T", [c.get("arrays") for c in cycles] == [{"s": "s", "T": "T"}]
+          and page.scene_requests[-1].get("fluid") == "N2", json.dumps(cycles)[:300])
     check("the Brayton cycle is drawn on the T-s chart of N2",
-          await page.wait_for(f"!!{SVG}?.querySelector('.cp-role-cycle path') && {SVG}.getAttribute('data-x-limits') !== null", 60))
+          await page.wait_for(f"!!{SVG}?.querySelector('[data-item=\"cycle/T, s/loop/0\"]')", 60))
     await page.idle(1.0)
-    req = await last_scene(page, "N2")
-    check("the T-s chart has the cycle and its four states", req.get("spec", {}).get("diagram") == "Ts"
-          and len((req.get("cycles") or [{}])[0].get("states", [])) == 4, json.dumps(req.get("cycles"))[:300])
     check("no error shown", not await page.eval("!!document.querySelector('.diagram-status .diagram-error')"),
           await page.eval("document.querySelector('.diagram-status')?.textContent"))
     # A T range set by hand: absolute limits in the spec
@@ -548,38 +639,28 @@ async def humid_air(page: Page):
     names = await page.eval("[...document.querySelectorAll('.diagram-controls select')[1].options].map(o => o.value)")
     check("its diagram types: the psychrometric and Mollier charts", names == ["WT", "ThxW"], str(names))
     labels = await page.eval("document.querySelector('.diagram-controls').textContent")
-    check("no critical point, saturation scale or region preset; the total pressure in bar instead",
+    check("no critical point, saturation scale or region preset; the total pressure in Pa (the model's units) instead",
           "critical point" not in labels and "saturation scale" not in labels and "Region" not in labels
-          and await page.eval("document.querySelector('.diagram-pressure')?.value") == "1", labels[:300])
+          and await page.eval("document.querySelector('.diagram-pressure')?.value") == "100000", labels[:300])
     check("its lines: φ, Twb, h, v, round and labelled", sorted(i["key"] for i in spec.get("isolines", [])) == ["RH", "Twb", "h", "v"]
           and all(i.get("rounding") and i.get("labels") for i in spec["isolines"]), json.dumps(spec.get("isolines")))
     check("the chart shows the saturation line (iso/RH/1)", await page.wait_for(f"!!{SVG}?.querySelector('[data-item=\"iso/RH/1\"]')", 60))
-    # The process as an open chain of the inferred states, drawn straight (air processes)
-    await page.eval("[...document.querySelectorAll('.diagram-cycles button[title=\"Delete this cycle\"]')].forEach(b => b.click())")
-    await asyncio.sleep(0.3)
-    await page.eval("[...document.querySelectorAll('.diagram-cycles button')]"
-                    ".find(b => b.textContent.includes('from inferred states')).click()")
-    await page.wait_for("[...document.querySelectorAll('.diagram-cycles input')].some(i => i.value === '1-2-3-1')", 10)
-    await page.eval("(() => { const i = [...document.querySelectorAll('.diagram-cycles input')].find(i => i.value === '1-2-3-1');"
-                    " i.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, '1-2-3');"
-                    " i.dispatchEvent(new Event('input', {bubbles: true})); i.blur(); })()")
+    # The process through the elements of the arrays: a new overlay takes those of T and W (w, from the states
+    # of humid air), an open chain
+    while await page.eval("!!document.querySelector('.diagram-arrays')"):
+        await page.eval(REMOVE_ARRAYS_JS)
+        await asyncio.sleep(0.3)
+    await page.eval(ADD_ARRAYS_JS)
+    cycles = await arrays_cycles(page, lambda c: len(c) == 1 and len(c[0].get("arrays", {})) == 2)
+    check("a new overlay of the psychrometric chart takes the arrays of T and of the humidity ratio, an open chain",
+          [c.get("arrays") for c in cycles] == [{"T": "T", "W": "w"}] and cycles[0].get("closed") is False
+          and page.scene_requests[-1].get("fluid") == "AirH2O", json.dumps(cycles)[:300])
     check("the process is drawn through its three states",
           await page.wait_for(f"!!{SVG}?.querySelector('.cp-role-cycle path') && "
                               f"{SVG}.querySelectorAll('.cp-role-state_number').length >= 3", 60))
-    end = time.time() + 15
-    while time.time() < end and (page.scene_requests[-1].get("cycles") or [{}])[0].get("loops") != [[1, 2, 3]]:
-        await asyncio.sleep(0.1)
     await page.idle(1.0)
-    req = await last_scene(page, "AirH2O")
-    cycle = (req.get("cycles") or [{}])[0]
-    check("the cycle names the humid-air variables of the states, as an open chain", cycle.get("loops") == [[1, 2, 3]]
-          and any(st["vars"].get("W") == "w[1]" for st in cycle.get("states", [])),
-          json.dumps(cycle.get("loops")) + json.dumps(cycle)[:200])
     check("no error shown", not await page.eval("!!document.querySelector('.diagram-status .diagram-error')"),
           await page.eval("document.querySelector('.diagram-status')?.textContent"))
-    # The editor folded: the chart takes the height of the tab
-    await page.eval("document.querySelector('.diagram-cycles .diagram-link.title').click()")
-    await page.idle(1.0)
     await page.screenshot("diagram_psychrometric.png")
     # The hover: the state of humid air under the cursor
     box = await page.eval(f"(() => {{ const r = {SVG}.querySelector('rect.cp-background').getBoundingClientRect();"
@@ -603,6 +684,8 @@ async def humid_air(page: Page):
     check("the Mollier chart is bounded in Thx and W", set(req.get("spec", {}).get("limits", {}).get("bounds", {})) == {"Thx", "W"}
           and any(i["key"] == "T" for i in req["spec"].get("isolines", [])), json.dumps(req.get("spec", {}))[:300])
     check("the process is drawn on the Mollier chart", await page.wait_for(f"!!{SVG}?.querySelector('.cp-role-cycle path')", 30))
+    rows = await page.eval(ROWS_JS)
+    check("the overlay keeps its arrays, named as the Mollier chart writes them (x, T)", rows == ["x=w T=T"], str(rows))
     await page.screenshot("diagram_mollier.png")
 
 

@@ -118,12 +118,17 @@ def test_options():
           names == ["ph", "Ts", "hs", "ps", "prho", "Trho", "pT", "Th", "WT", "ThxW"], str(names))
     check("each type lists its families with a default count",
           all(f["default_num"] > 0 for t in options["diagram_types"] for f in t["families"]))
-    units = {u["name"]: u for u in options["unit_systems"]}
-    check("unit systems: the presets and coolsolve", list(units) == ["SI", "KSI", "engineering", "IP", "coolsolve"], str(list(units)))
-    record = units["coolsolve"]["record"]
-    check("the coolsolve record is a custom unit record (°C, Pa, J/kg)",
+    titles = [t["title"] for t in options["diagram_types"]]
+    check("short titles: the axis symbols, vertical first",
+          titles == ["p-h", "T-s", "h-s", "p-s", "p-ρ", "T-ρ", "p-T", "T-h", "psychrometric", "Mollier h-x"], str(titles))
+    check("no unit systems to choose from", "unit_systems" not in options and "default_unit_system" not in options)
+    record = options["model_units"]["record"]
+    check("the model's units: a custom unit record (°C, Pa, J/kg)",
           record["name"] == "coolsolve" and record["units"]["T"] == ["deg C", 1.0, -273.15, "K"]
           and record["units"]["p"] == ["Pa", 1.0, 0.0] and record["units"]["h"] == ["J/kg", 1.0, 0.0], json.dumps(record))
+    table = options["model_units"]["units"]
+    check("and its unit table, humid air included", table["h"] == ["J/kg", 1.0, 0.0] and table["W"][0] == "kg/kg"
+          and table["Twb"] == ["deg C", 1.0, -273.15, "K"], json.dumps(table))
     check("region presets", [r["name"] for r in options["regions"]] == ["DEF", "ACHP", "ORC", "NONE"])
     check("themes and label modes", options["themes"] == ["default", "dark", "print", "coolpack"]
           and options["label_modes"] == ["rails", "edge", "margin", "inline"])
@@ -153,7 +158,7 @@ def test_scene(options):
     # Labels, units of the model, a zoom window, the labels sent back
     spec = default_spec()
     spec["isolines"][0]["labels"] = True
-    spec["units"] = next(u for u in options["unit_systems"] if u["name"] == "coolsolve")["record"]
+    spec["units"] = options["model_units"]["record"]
     spec["view_SI"] = [[2.0e5, 4.5e5], [1.0e5, 3.0e6]]
     status, zoomed = api("POST", "/diagram/scene", {"fluid": "R134a", "spec": spec})
     check("a zoomed chart in the model's units", status == 200 and zoomed["axes"]["x_unit"]["label"] == "J/kg"

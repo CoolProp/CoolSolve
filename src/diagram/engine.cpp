@@ -969,12 +969,9 @@ json options() {
     offered.insert(offered.end(), humidAirDiagramTypes().begin(), humidAirDiagramTypes().end());
     for (const std::string& name : offered) {
         const coolplot::DiagramType type = coolplot::DiagramType::parse(name);
-        const coolplot::Quantity& y = coolplot::get_quantity(type.y);
-        const coolplot::Quantity& x = coolplot::get_quantity(type.x);
-        std::string xLabel = x.label;
-        xLabel[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(xLabel[0])));
-        std::string title = y.label + "-" + xLabel;
-        if (type.kind == "humid_air") title = type.y == "Thx" ? "Mollier h,x chart" : "Psychrometric chart";
+        // The short name: the axis symbols, vertical first, as the chart writes them ("p-h", "T-ρ")
+        std::string title = coolplot::symbol_text(type.symbol(type.y), "unicode") + "-" + coolplot::symbol_text(type.symbol(type.x), "unicode");
+        if (type.kind == "humid_air") title = type.y == "Thx" ? "Mollier h-x" : "psychrometric";
         json families = json::array();
         for (const coolplot::Family& family : type.families())
             families.push_back({{"key", family.key},
@@ -990,18 +987,13 @@ json options() {
                          {"y_log", type.y_log()},
                          {"families", families}});
     }
-    json units = json::array();
-    for (const char* name : {"SI", "KSI", "engineering", "IP"})
-        units.push_back({{"name", name}, {"record", name}, {"units", unitTable(coolplot::get_unit_system(name))}});
-    const json custom = coolsolveUnitSystem();
-    units.push_back({{"name", "coolsolve"}, {"record", custom}, {"units", unitTable(coolplot::UnitSystem::from_json(custom))}});
+    const json modelUnits = coolsolveUnitSystem();
     json regions = json::array();
     for (const std::string& name : tpLimitsPresetNames()) regions.push_back({{"name", name}, {"limits", tpLimitsPreset(name).toJson()}});
     return {{"diagram_types", types},
             {"fluid_types", {"Real", "Mixture", "Incompressible", "IdealGas", "HumidAir"}},
             {"fluid_kinds", fluidKinds()},
-            {"unit_systems", units},
-            {"default_unit_system", "engineering"},
+            {"model_units", {{"record", modelUnits}, {"units", unitTable(coolplot::UnitSystem::from_json(modelUnits))}}},
             {"regions", regions},
             {"themes", {"default", "dark", "print", "coolpack"}},
             {"label_modes", {"rails", "edge", "margin", "inline"}},

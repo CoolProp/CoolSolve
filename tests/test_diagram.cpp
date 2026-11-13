@@ -932,17 +932,25 @@ TEST_CASE("Diagram options and definitions", "[diagram]") {
     CHECK(kinds.at("Real").at("chart_kind") == "fluid");
     CHECK(kinds.at("HumidAir").at("total_pressure") == 101325.0);
     CHECK(kinds.at("HumidAir").at("default_region") == json{{"bounds", {{"T", {263.15, 323.15}}, {"W", {0.0, 0.03}}}}});
+    // Short titles: the axis symbols, vertical first, as the charts write them
+    std::vector<std::string> titles;
+    for (const json& type : o.at("diagram_types")) titles.push_back(type.at("title"));
+    CHECK(titles == std::vector<std::string>{"p-h", "T-s", "h-s", "p-s", "p-\xcf\x81", "T-\xcf\x81", "p-T", "T-h", "psychrometric",
+                                             "Mollier h-x"});
     const json& psychro = o.at("diagram_types")[8];
-    CHECK(psychro.at("title") == "Psychrometric chart");
     CHECK(psychro.at("kind") == "humid_air");
     CHECK(psychro.at("families").size() == 4);  // RH, Twb, h, v
     const json& mollier = o.at("diagram_types")[9];
     CHECK(mollier.at("families").size() == 5);  // the isotherms too
     CHECK(mollier.at("families")[1].at("symbol") == "phi");  // the Mollier chart writes phi
     CHECK(mollier.at("families")[0].at("label") == "Dry-bulb temperature");
-    const json& custom = o.at("unit_systems").back();
-    CHECK(custom.at("name") == "coolsolve");
-    const coolplot::UnitSystem units = coolplot::UnitSystem::from_json(custom.at("record"));
+    // The units of the model: CoolSolve's, as a custom unit record and its table
+    CHECK_FALSE(o.contains("unit_systems"));
+    const json& model = o.at("model_units");
+    CHECK(model.at("record") == coolsolveUnitSystem());
+    CHECK(model.at("units").at("p") == json::array({"Pa", 1.0, 0.0}));
+    CHECK(model.at("units").at("T") == json::array({"deg C", 1.0, -273.15, "K"}));
+    const coolplot::UnitSystem units = coolplot::UnitSystem::from_json(model.at("record"));
     for (const std::string& key : stateKeys()) CHECK(units.units.count(key) == 1);
     for (const std::string& key : airStateKeys()) CHECK(units.units.count(key) == 1);
     CHECK(units.at("W").label == "kg/kg");

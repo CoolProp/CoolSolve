@@ -3,10 +3,10 @@
  *
  * A definition is a fluid, a CoolPlot spec record (without "fluid" and "cycles") and cycle definitions
  * that name the model's variables. The GUI writes the fields below and keeps every other field of a
- * spec written elsewhere. Its cycles are of three kinds: the inferred states (the states of the solved
- * model as the server groups them, `GET /api/v1/diagram/states`, drawn as markers without lines), the
- * arrays (state i from X[i], Y[i], joined in index order) and the user's cycles of the state editor
- * (states, loops and paths chosen by the user).
+ * spec written elsewhere; the chart is always in the model's units (`model_units` of the options). Its
+ * cycles are of two kinds: the inferred states (the states of the solved model as the server groups them,
+ * `GET /api/v1/diagram/states`, drawn as markers without lines) and the arrays overlays (state i from the
+ * elements X[i] and Y[i] of the arrays of the chart's two axis quantities, joined in index order).
  */
 
 import type {
@@ -20,65 +20,34 @@ import type {
   DiagramOptionsResponse,
   DiagramSceneInput,
   DiagramTypeOption,
-  DiagramUnits,
-  CyclePathEntry,
-  CyclePathKind,
   DiagramModelState,
   DiagramStatesResponse,
   DiagramViewSI,
   FluidInfo,
+  InferredVariable,
   IsolineSpec,
 } from '../../api/types';
 
 /** Name of the cycle of the inferred states (the former "state points" overlay). */
 export const INFERRED_CYCLE = 'Inferred states';
-/** Name of the cycle of the arrays (the former "array path" overlay). */
-export const ARRAYS_CYCLE = 'Arrays';
 
 export const DEFAULT_DIAGRAM: DiagramName = 'ph';
-/** Decision D7: printed charts' units (deg C, bar, kJ/kg) */
-export const DEFAULT_UNITS = 'engineering';
 export const DEFAULT_REGION = 'DEF';
 export const DEFAULT_LABEL_MODE = 'rails';
 /** The fluid drawn when the model has none */
 export const FALLBACK_FLUID = 'Water';
 
-/** The fluid quantities a cycle state can name (CoolPlot keys). */
-export const STATE_KEYS = ['T', 'p', 'h', 's', 'rho', 'u', 'v', 'Q'];
-/**
- * The quantities of a state of humid air (per kg of dry air) a cycle state can name; its pressure, when named, is
- * checked against the chart's total pressure.
- */
-export const AIR_STATE_KEYS = ['T', 'W', 'RH', 'Twb', 'Tdp', 'h', 'v', 'p'];
-
-/** The names coolplot-core reads as the charts of humid air (DiagramType::parse). */
-const HUMID_AIR_DIAGRAMS = ['WT', 'PSYCHROMETRIC', 'THXW', 'MOLLIER', 'HX'];
-
-/** Whether a diagram type is a chart of humid air: the psychrometric "WT" or the Mollier h,x chart "ThxW". */
-export const isHumidAirDiagram = (diagram: string) => HUMID_AIR_DIAGRAMS.includes(diagram.toUpperCase());
-
-/** The quantities the states of a definition's cycles can name: those of humid air on its charts. */
-export const stateKeysOf = (def: DiagramDefinition) => (isHumidAirDiagram(def.spec.diagram) ? AIR_STATE_KEYS : STATE_KEYS);
-
 /** Property codes of CoolSolve's variable inference (src/variable_inference.cpp) -> CoolPlot keys. */
 const PROPERTY_KEYS: Record<string, string> = { T: 'T', P: 'p', H: 'h', S: 's', D: 'rho', U: 'u', VOL: 'v', Q: 'Q' };
 
-/** The CoolPlot key of an inferred property code, or undefined (viscosity, specific volume, ...). */
-export const propertyKey = (code: string): string | undefined => PROPERTY_KEYS[code];
-
-/** The name of a `units` value: a preset name, or the name of a unit record. */
-export const unitsName = (units: DiagramUnits): string => (typeof units === 'string' ? units : units.name);
+/** The CoolPlot key of an inferred property code, or undefined (viscosity, conductivity, ...). */
+const propertyKey = (code: string): string | undefined => PROPERTY_KEYS[code];
 
 export const sameFluid = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** The option of a diagram type, or undefined. */
 export function diagramOption(options: DiagramOptionsResponse, name: string): DiagramTypeOption | undefined {
   return options.diagram_types.find((d) => d.name === name);
-}
-
-/** The `units` value of a unit system offered by the server (a preset name, or the "coolsolve" record). */
-export function unitsRecord(options: DiagramOptionsResponse, name: string): DiagramUnits | undefined {
-  return options.unit_systems.find((u) => u.name === name)?.record;
 }
 
 /** Whether coolplot-core draws a saturation scale in this chart: p or T vertical, neither horizontal. */
@@ -220,8 +189,7 @@ export function defaultSpec(type: DiagramTypeOption, options: DiagramOptionsResp
   const regions = options.regions.map((r) => r.name);
   return {
     diagram: type.name,
-    units: unitsRecord(options, options.default_unit_system || DEFAULT_UNITS)
-      ?? unitsRecord(options, DEFAULT_UNITS) ?? options.unit_systems[0]?.record ?? DEFAULT_UNITS,
+    units: options.model_units.record,
     limits: regions.includes(DEFAULT_REGION) || regions.length === 0 ? DEFAULT_REGION : regions[0],
     isolines: defaultIsolines(type),
     marked_points: ['critical'],
@@ -301,7 +269,10 @@ export function withFamily(
   return { ...spec, isolines: spec.isolines.map((s) => (s.key === key ? updated : s)) };
 }
 
-/** The request of a definition: the theme follows the GUI when the spec names none; cycles without states are left out. */
+/**
+ * The request of a definition: the theme follows the GUI when the spec names none; cycles with nothing to draw (no
+ * states, an overlay without its two arrays) are left out.
+ */
 export function sceneInput(def: DiagramDefinition, guiTheme: 'light' | 'dark'): DiagramSceneInput {
   const settings = def.spec.settings ?? {};
   const look = settings.look || (guiTheme === 'dark' ? 'dark' : 'default');
@@ -358,189 +329,139 @@ export function newInferredCycle(states: CycleStateDefinition[]): CycleDefinitio
 export const isInferredCycle = (c: CycleDefinition) => c.name === INFERRED_CYCLE && !c.arrays;
 
 // ---------------------------------------------------------------------------
-// The arrays (former "array path" overlay)
+// The arrays overlays: state i from the elements i of two arrays, those of the chart's axis quantities
 // ---------------------------------------------------------------------------
 
-/** The arrays of a solve (`X[i]` variables): name -> indices in ascending order. */
-export function arrayIndices(variables: Record<string, number> | undefined): Map<string, number[]> {
-  const out = new Map<string, number[]>();
-  for (const name of Object.keys(variables ?? {})) {
-    const match = name.match(/^(.+)\[(\d+)\]$/);
-    if (!match) continue;
-    const list = out.get(match[1]) ?? [];
-    list.push(parseInt(match[2], 10));
-    out.set(match[1], list);
-  }
-  for (const list of out.values()) list.sort((a, b) => a - b);
-  return out;
+/** The arrays of a solve: their number of elements, and the quantity (CoolPlot key) of those the model ties to one. */
+export interface SolvedArrays {
+  /** Array name -> number of elements, by name */
+  sizes: Map<string, number>;
+  /** Array name -> CoolPlot key of its elements */
+  quantities: Map<string, string>;
 }
 
-/** The arrays overlay as the controls show it. */
+/** The array of an element variable (`h[2]` -> `h`), or undefined. */
+const arrayOf = (name: string) => name.match(/^(.+)\[\d+\]$/)?.[1];
+
+/** The axis quantities of the fluid charts, which an array can be named after (`P[i]`, `h[i]`, `T[i]`, `s[i]`). */
+const NAMED_QUANTITIES = ['T', 'p', 'h', 's', 'rho'];
+
+/**
+ * The arrays of a solve. The quantity of an array is that of the first of its elements found in the server's states
+ * (`GET /api/v1/diagram/states`: CoolPlot keys, those of humid air included), else in the variable inference
+ * (`GET /api/v1/variables/inferred`), else the quantity it is named after: the arrays a model fills for its
+ * diagrams (`P[1] = P_1`, as the library models do) are in no property call.
+ */
+export function solvedArrays(
+  variables: Record<string, number> | undefined,
+  states: DiagramStatesResponse | null,
+  inferred: InferredVariable[],
+): SolvedArrays {
+  const sizes = new Map<string, number>();
+  for (const name of Object.keys(variables ?? {}).sort((a, b) => a.localeCompare(b))) {
+    const array = arrayOf(name);
+    if (array) sizes.set(array, (sizes.get(array) ?? 0) + 1);
+  }
+  const quantities = new Map<string, string>();
+  const add = (name: string, key: string | undefined) => {
+    const array = arrayOf(name);
+    if (array && key && !quantities.has(array)) quantities.set(array, key);
+  };
+  for (const list of Object.values(states?.fluids ?? {}))
+    for (const state of list) for (const [key, name] of Object.entries(state.vars)) add(name, key);
+  for (const v of inferred) add(v.name, propertyKey(v.inferredProperty));
+  for (const array of sizes.keys())
+    if (!quantities.has(array)) {
+      const named = NAMED_QUANTITIES.find((key) => key.toLowerCase() === array.toLowerCase());
+      if (named) quantities.set(array, named);
+    }
+  return { sizes: new Map([...sizes].sort(([a], [b]) => a.localeCompare(b))), quantities };
+}
+
+/**
+ * The quantities a state of an overlay gives on a chart, [horizontal, vertical]: the axis keys, but for the temperature
+ * scale of the Mollier chart (Thx), which no model computes: its arrays are dry-bulb temperatures (T).
+ */
+export function axisKeys(type: DiagramTypeOption): [string, string] {
+  const stateKey = (key: string) => (key === 'Thx' ? 'T' : key);
+  return [stateKey(type.x), stateKey(type.y)];
+}
+
+/** An arrays overlay as its row shows it: the arrays of the horizontal and vertical quantities ('' until chosen). */
 export interface ArraysOverlay {
-  on: boolean;
-  /** CoolPlot property keys of the two arrays */
-  keys: [string, string];
-  /** Array names ('' until chosen) */
-  arrays: [string, string];
+  x: string;
+  y: string;
   /** Join the last state to the first */
   closed: boolean;
-  /** Paths between the states: along the processes ("auto") or straight */
-  paths: 'auto' | 'straight';
 }
 
-export const isArraysCycle = (c: CycleDefinition) => c.name === ARRAYS_CYCLE && !!c.arrays;
+export const isArraysCycle = (c: CycleDefinition) => !!c.arrays;
 
-/** The overlay of a stored arrays cycle. */
-export function overlayOfCycle(cycle: CycleDefinition): ArraysOverlay {
-  const entries = Object.entries(cycle.arrays ?? {});
-  const chain = cycle.loops?.[0];
-  return {
-    on: true,
-    keys: [entries[0]?.[0] ?? 'h', entries[1]?.[0] ?? 'p'],
-    arrays: [entries[0]?.[1] ?? '', entries[1]?.[1] ?? ''],
-    closed: chain ? chain.length > 2 && chain[0] === chain[chain.length - 1] : cycle.loops === undefined && cycle.closed !== false,
-    paths: cycle.paths === 'straight' ? 'straight' : 'auto',
-  };
+/** The overlay of an arrays cycle on a chart whose states give the quantities `keys` (axisKeys). */
+export function overlayOf(cycle: CycleDefinition, keys: [string, string]): ArraysOverlay {
+  return { x: cycle.arrays?.[keys[0]] ?? '', y: cycle.arrays?.[keys[1]] ?? '', closed: cycle.closed !== false };
 }
-
-/** Whether the overlay names two arrays of two different quantities. */
-export const overlayComplete = (o: ArraysOverlay) =>
-  o.on && !!o.arrays[0] && !!o.arrays[1] && o.keys[0] !== o.keys[1];
 
 /**
- * The chain of the arrays' common indices, closed on request; undefined when the indices are not known
- * (no solve): `previous` (the stored chain) is then kept.
+ * The cycle of an overlay: its arrays by quantity, one chain through the common elements in index order (closed on
+ * request), paths along the processes. The CoolPlot fields of `previous` (styles) are kept; normalizeDefinition names it.
  */
-export function arraysLoops(
-  o: ArraysOverlay,
-  indices: Map<string, number[]>,
-  previous?: number[][],
-): number[][] | undefined {
-  const a = indices.get(o.arrays[0]);
-  const b = indices.get(o.arrays[1]);
-  let common: number[] | undefined;
-  if (a && b) common = a.filter((i) => b.includes(i));
-  else if (previous?.[0]) {
-    const chain = previous[0];
-    common = chain.length > 2 && chain[0] === chain[chain.length - 1] ? chain.slice(0, -1) : chain;
-  }
-  if (!common) return undefined;
-  if (common.length < 2) return [];
-  return [o.closed && common.length > 2 ? [...common, common[0]] : common];
+export function arraysCycle(o: ArraysOverlay, keys: [string, string], previous?: CycleDefinition): CycleDefinition {
+  const { loops: _loops, ...kept } = previous ?? { name: '', numbers: true };
+  const arrays: Record<string, string> = {};
+  if (o.x) arrays[keys[0]] = o.x;
+  if (o.y) arrays[keys[1]] = o.y;
+  return { ...kept, arrays, closed: o.closed, paths: 'auto' };
 }
 
-/** The arrays cycle of a complete overlay; `previous` keeps the CoolPlot fields of the stored cycle. */
-export function arraysCycle(
-  o: ArraysOverlay,
-  indices: Map<string, number[]>,
-  previous?: CycleDefinition,
-): CycleDefinition {
-  const cycle: CycleDefinition = {
-    ...(previous ?? { name: ARRAYS_CYCLE, numbers: true }),
-    arrays: { [o.keys[0]]: o.arrays[0], [o.keys[1]]: o.arrays[1] },
-    paths: o.paths,
-  };
-  // The indices known (a solve): the chain itself; else the server joins the states in index order
-  const loops = arraysLoops(o, indices, previous?.loops);
-  delete cycle.loops;
-  delete cycle.closed;
-  if (loops) cycle.loops = loops;
-  else cycle.closed = o.closed;
-  return cycle;
+/** A new overlay, its arrays to be chosen (normalizeDefinition gives it the default ones). */
+export const newArraysCycle = (): CycleDefinition => ({ name: '', numbers: true, arrays: {}, closed: false, paths: 'auto' });
+
+/**
+ * The default array of a quantity: the first array of that quantity not in `taken` (the arrays of the overlays
+ * before), else the first one, else ''.
+ */
+function defaultArray(arrays: SolvedArrays, key: string, taken: string[]): string {
+  const candidates = [...arrays.sizes.keys()].filter((name) => arrays.quantities.get(name) === key);
+  return candidates.find((name) => !taken.includes(name)) ?? candidates[0] ?? '';
 }
 
-// ---------------------------------------------------------------------------
-// The user's cycles (state editor)
-// ---------------------------------------------------------------------------
-
-/** The kinds of path between two states; "auto" lets CoolPlot choose from the two states. */
-export const PATH_KINDS: CyclePathKind[] = ['auto', 'straight', 'isobaric', 'isenthalpic', 'isentropic', 'isothermal', 'polytropic'];
-
-/** A cycle of the state editor: neither the inferred states nor the arrays overlay. */
-export const isUserCycle = (c: CycleDefinition) => !isInferredCycle(c) && !isArraysCycle(c);
-
-/** A name not used by another cycle: `base`, else `base 2`, `base 3`, ... */
-export function freeCycleName(cycles: CycleDefinition[], base: string): string {
-  const used = new Set(cycles.map((c) => c.name));
-  if (!used.has(base)) return base;
-  let n = 2;
-  while (used.has(`${base} ${n}`)) n++;
-  return `${base} ${n}`;
+/** `base`, else `base 2`, `base 3`, ...: the first name not in `used`. */
+function freeName(base: string, used: Set<string>): string {
+  let name = base;
+  for (let n = 2; used.has(name); n++) name = `${base} ${n}`;
+  return name;
 }
 
-/** A user cycle through `states`, one closed loop in the order given, paths along the processes. */
-export function newUserCycle(name: string, states: CycleStateDefinition[]): CycleDefinition {
-  const numbers = states.map((s) => s.number);
-  const loops = numbers.length >= 2 ? [[...numbers, ...(numbers.length > 2 ? [numbers[0]] : [])]] : [];
-  return { name, numbers: true, states, loops, paths: 'auto' };
-}
-
-/** Loops as the editor writes them: "1-2-3-4-1; 2-5". */
-export const formatLoops = (loops: number[][] | undefined) => (loops ?? []).map((chain) => chain.join('-')).join('; ');
-
-/** Loops from their text; an error names what is wrong (a chain of one state, an unknown state). */
-export function parseLoops(text: string, numbers: number[]): { loops: number[][] } | { error: string } {
-  const loops: number[][] = [];
-  for (const part of text.split(/[;\n]/).map((p) => p.trim()).filter(Boolean)) {
-    const chain = part.split(/[-,\s>]+/).filter(Boolean).map((n) => Number(n));
-    if (chain.some((n) => !Number.isInteger(n))) return { error: `"${part}" is not a chain of state numbers` };
-    if (chain.length < 2) return { error: `"${part}": a chain joins at least two states` };
-    const unknown = chain.filter((n) => !numbers.includes(n));
-    if (unknown.length > 0) return { error: `no state ${unknown[0]}` };
-    loops.push(chain);
-  }
-  return { loops };
-}
-
-/** The connections the loops draw, each once, in order: "a-b". */
-export function connectionsOf(loops: number[][] | undefined): [number, number][] {
-  const seen = new Set<string>();
-  const out: [number, number][] = [];
-  for (const chain of loops ?? []) {
-    for (let i = 0; i + 1 < chain.length; i++) {
-      const key = `${chain[i]}-${chain[i + 1]}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push([chain[i], chain[i + 1]]);
-      }
+/**
+ * The definition as the Diagrams tab shows and writes it: in the model's units; with the cycles the tab shows, the
+ * inferred states and the arrays overlays (others, the cycles of the former state editor, are dropped); each overlay on
+ * the axes of the chart, an axis quantity it has no array for taking the default one (an array of that quantity, so
+ * that a change of diagram type maps the overlays to the new axes), and named after its arrays ("T, s"), uniquely.
+ */
+export function normalizeDefinition(def: DiagramDefinition, options: DiagramOptionsResponse, arrays: SolvedArrays): DiagramDefinition {
+  const type = diagramOption(options, def.spec.diagram);
+  const keys = type ? axisKeys(type) : null;
+  const names = new Set([INFERRED_CYCLE]);
+  const taken: [string[], string[]] = [[], []];
+  const cycles: CycleDefinition[] = [];
+  for (const cycle of def.cycles) {
+    if (isInferredCycle(cycle)) cycles.push(cycle);
+    if (!isArraysCycle(cycle)) continue;
+    if (!keys) {  // a diagram type the server does not offer: the overlay is left as it is
+      cycles.push(cycle);
+      continue;
     }
+    const o = overlayOf(cycle, keys);
+    o.x = o.x || defaultArray(arrays, keys[0], taken[0]);
+    o.y = o.y || defaultArray(arrays, keys[1], taken[1]);
+    taken[0].push(o.x);
+    taken[1].push(o.y);
+    const name = freeName(`${o.y || '?'}, ${o.x || '?'}`, names);
+    names.add(name);
+    cycles.push({ ...arraysCycle(o, keys, cycle), name });
   }
-  return out;
-}
-
-/** The paths of a cycle as the editor shows them: one kind for the cycle, and the connections that differ. */
-export function pathsOf(cycle: CycleDefinition): { kind: CyclePathKind; overrides: Record<string, CyclePathKind> } {
-  const paths = cycle.paths;
-  if (!Array.isArray(paths)) return { kind: paths ?? 'auto', overrides: {} };
-  const listed = new Map(paths.map(([[a, b], kind]) => [`${a}-${b}`, kind] as const));
-  const connections = connectionsOf(cycle.loops);
-  // The kind of the cycle: "auto" when a connection is not listed, else the most frequent one
-  let kind: CyclePathKind = 'auto';
-  if (connections.length > 0 && connections.every(([a, b]) => listed.has(`${a}-${b}`))) {
-    const counts = new Map<CyclePathKind, number>();
-    for (const k of listed.values()) counts.set(k, (counts.get(k) ?? 0) + 1);
-    kind = [...counts].sort((x, y) => y[1] - x[1])[0][0];
-  }
-  const overrides: Record<string, CyclePathKind> = {};
-  for (const [key, k] of listed) if (k !== kind) overrides[key] = k;
-  return { kind, overrides };
-}
-
-/**
- * The `paths` of a cycle from a kind and the connections that differ: the kind alone without
- * overrides; else CoolPlot's record, listing every connection of the loops unless the kind is "auto"
- * (connections not listed are "auto").
- */
-export function pathsValue(
-  kind: CyclePathKind,
-  overrides: Record<string, CyclePathKind>,
-  loops: number[][] | undefined,
-): CyclePathKind | CyclePathEntry[] {
-  const connections = connectionsOf(loops);
-  const differing = connections.filter(([a, b]) => overrides[`${a}-${b}`] && overrides[`${a}-${b}`] !== kind);
-  if (differing.length === 0) return kind;
-  const listed = kind === 'auto' ? differing : connections;
-  return listed.map(([a, b]): CyclePathEntry => [[a, b], overrides[`${a}-${b}`] ?? kind]);
+  return { ...def, spec: { ...def.spec, units: options.model_units.record }, cycles };
 }
 
 /** JSON equality of two plain values (definitions are JSON). */

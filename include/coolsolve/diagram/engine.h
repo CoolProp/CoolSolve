@@ -265,9 +265,13 @@ std::vector<std::pair<std::string, std::string>> reportDiagrams(const json& docu
 json stateAt(const ChartFluid& fluid, const std::string& diagram, double x_SI, double y_SI);
 
 /**
- * @brief The response of GET /api/v1/diagram/options: diagram types with their families, the fluid types drawn and
- *        what each kind of fluid offers (`fluid_kinds`), unit systems (the presets and `coolsolve`, CoolSolve's units
- *        as a custom unit record), region presets, themes, label modes and the versions.
+ * @brief The response of GET /api/v1/diagram/options: diagram types with their families and short titles ("p-h",
+ *        "T-s", "psychrometric"), the fluid types drawn and what each kind of fluid offers (`fluid_kinds`), the units
+ *        of the model (`model_units`), region presets, themes, label modes and the versions.
+ *
+ * `model_units` is the unit system of the model, in which the GUI draws every chart: {"record": the custom unit record
+ * to put in a spec's "units" (coolsolveUnitSystem(): CoolSolve's fixed units today), "units": its unit table {key:
+ * [label, scale, offset(, difference)]} for every quantity of the charts}.
  *
  * `fluid_kinds` maps "Real", "Mixture", "Incompressible", "IdealGas" and "HumidAir" to {"diagram_types": names
  * offered, "families": the keys of the families its lines can have, "saturation": whether it has a saturation curve

@@ -6,14 +6,15 @@
  * (log axes included), so nothing depends on how coolplot-core draws a marker. Elsewhere in the plot
  * area: the full state under the cursor, from `POST /api/v1/diagram/state`, debounced; a newer request
  * cancels the older (of humid air: T, W, φ, T_wb, h and v at the chart's total pressure; nothing above
- * saturation). Values are shown in the chart's display units (`GET /api/v1/diagram/options`).
+ * saturation). Values are shown in the model's units (`model_units` of `GET /api/v1/diagram/options`), those of every
+ * chart the GUI draws.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent, RefObject } from 'react';
 import { api } from '../../api/client';
 import type { DiagramOptionsResponse, DiagramPointState, DiagramSceneInput, DiagramSceneResponse } from '../../api/types';
-import { formatValue, loadDiagramOptions, symbolOf, toDisplay, unitTableOf, type UnitTable } from './options';
+import { formatValue, loadDiagramOptions, modelUnitTable, symbolOf, toDisplay, type UnitTable } from './options';
 import { clientToSvg, displayToSI, inPlot, readPlotFrame, svgToDisplay, type PlotFrame } from './svgCoords';
 
 /** Wait this long after the pointer stops before asking for the state under it */
@@ -78,7 +79,7 @@ export function useDiagramHover(drawn: DrawnScene | null, canvasRef: RefObject<H
     return () => { cancelled = true; };
   }, []);
 
-  const units = useMemo(() => (drawn ? unitTableOf(options, drawn.input.spec.units) : {}), [options, drawn]);
+  const units = useMemo(() => (options ? modelUnitTable(options) : {}), [options]);
 
   const cancel = () => {
     if (timerRef.current !== undefined) clearTimeout(timerRef.current);
@@ -88,7 +89,7 @@ export function useDiagramHover(drawn: DrawnScene | null, canvasRef: RefObject<H
     seqRef.current++;
   };
 
-  // A new scene: positions and units change
+  // A new scene: the markers move
   useEffect(() => {
     setTip(null);
     if (timerRef.current !== undefined) clearTimeout(timerRef.current);
