@@ -1,11 +1,12 @@
 // The fluid of a chart (include/coolsolve/diagram/fluid.h).
 //
 // Mirrors CoolPlot (github.com/CoolProp/CoolPlot) at commit 7338f48 (v1.5.0): thermo/native.py
-// (fluid_string, port_fluid_string), spec/fluid.py (FluidSpec record), thermo/provider.py (the provider
-// interface) and thermo/fluid.py (Fluid).
+// (fluid_string, port_fluid_string), spec/fluid.py (FluidSpec and HumidAirSpec records), thermo/provider.py (the
+// provider interface) and thermo/fluid.py (Fluid).
 // CoolPlot is MIT licensed: Copyright 2014-2019 Jorrit Wronski and the other developers.
 #include "coolsolve/diagram/fluid.h"
 
+#include "coolsolve/diagram/humid_air.h"
 #include "coolsolve/fluids.h"
 
 #include "CoolProp/AbstractState.h"
@@ -67,6 +68,7 @@ const std::vector<std::string>& stateKeys() {
 // ---------------------------------------------------------------------------
 
 std::string ChartFluid::name() const {
+    if (isHumidAir()) return humidAirName(p_Pa);
     if (isIdealGas()) return idealGas;
     std::string names;
     for (size_t i = 0; i < components.size(); ++i) {
@@ -78,6 +80,7 @@ std::string ChartFluid::name() const {
 }
 
 std::string ChartFluid::fluidString() const {
+    if (isHumidAir()) return "HUMIDAIR::" + coolplot::general_text(p_Pa, 17);
     return (isIdealGas() ? std::string("IDEALGAS") : backend) + "::" + name();
 }
 
@@ -89,12 +92,14 @@ std::string ChartFluid::portFluidString(const std::string& key) const {
 }
 
 std::string ChartFluid::kind() const {
+    if (isHumidAir()) return "HumidAir";
     if (isIdealGas()) return "IdealGas";
     if (backend.rfind("INCOMP", 0) == 0) return "Incompressible";
     return components.size() > 1 ? "Mixture" : "Real";
 }
 
 json ChartFluid::record() const {
+    if (isHumidAir()) return {{"model", "humid_air"}, {"p_Pa", p_Pa}};
     json out = {{"backend", backend}, {"components", components}, {"fractions", fractions}, {"basis", basis},
                 {"interactions", json::array()}};
     if (isIdealGas()) out["coolsolve"] = {{"model", "ideal_gas"}, {"fluid", idealGas}};
@@ -102,9 +107,17 @@ json ChartFluid::record() const {
 }
 
 ChartFluid ChartFluid::fromRecord(const json& record) {
+    if (record.is_object() && record.value("model", "") == "humid_air") {  // HumidAirSpec.from_dict
+        const json p = record.value("p_Pa", json(DEFAULT_HUMID_AIR_P_PA));
+        if (!p.is_number()) throw DiagramError("The total pressure of humid air (\"p_Pa\") is a number of Pa, not " + p.dump() + ".");
+        ChartFluid fluid;
+        fluid.backend.clear();
+        fluid.basis.clear();
+        fluid.p_Pa = checkedHumidAirPressure(p.get<double>());
+        return fluid;
+    }
     if (!record.is_object() || !record.contains("components"))
         throw DiagramError("A fluid record needs its components, as CoolPlot writes it (FluidSpec.to_dict).");
-    if (record.value("model", "") == "humid_air") throw DiagramError("Charts of humid air are not drawable yet.");
     ChartFluid fluid;
     fluid.backend = record.value("backend", "HEOS");
     if (fluid.backend.empty()) fluid.backend = "HEOS";
@@ -126,6 +139,10 @@ ChartFluid ChartFluid::fromRecord(const json& record) {
     return fluid;
 }
 
+std::string diagramFluidName(const Fluid& fluid) {
+    return fluid.getType() == FluidType::HumidAir ? HUMID_AIR_FLUID : fluid.getName();
+}
+
 std::pair<double, double> solutionFractionRange(const std::string& coolpropKey) {
     try {
         std::unique_ptr<CoolProp::AbstractState> state(CoolProp::AbstractState::factory("INCOMP", coolpropKey));
@@ -136,10 +153,12 @@ std::pair<double, double> solutionFractionRange(const std::string& coolpropKey) 
 }
 
 ChartFluid chartFluid(const std::string& name, const std::string& backend, const std::vector<double>& fractions,
-                      const std::string& basis) {
+                      const std::string& basis, std::optional<double> p_Pa) {
     std::string error;
     const std::shared_ptr<Fluid> fluid = FluidRegistry::getFluid(name, &error);
     if (!fluid) throw DiagramError("Unknown fluid '" + name + "'" + (error.empty() ? "" : ": " + error) + ".");
+    if (p_Pa && fluid->getType() != FluidType::HumidAir)
+        throw DiagramError("'" + name + "' takes no total pressure (\"p_Pa\"): it is the pressure of a chart of humid air.");
     const auto solution = std::dynamic_pointer_cast<IncompressibleFluid>(fluid);
     if ((!fractions.empty() || !basis.empty()) && !(solution && solution->isSolution()))
         throw DiagramError("'" + name + "' takes no fractions: they are the concentration of an incompressible solution (a "
@@ -185,7 +204,11 @@ ChartFluid chartFluid(const std::string& name, const std::string& backend, const
             chart.fractions = fractions;
             return chart;
         }
-        case FluidType::HumidAir: throw notYet("humid air");
+        case FluidType::HumidAir:  // HumidAirSpec: no components, the total pressure of the chart
+            chart.backend.clear();
+            chart.basis.clear();
+            chart.p_Pa = checkedHumidAirPressure(p_Pa.value_or(DEFAULT_HUMID_AIR_P_PA));
+            return chart;
         case FluidType::AmmoniaWater: throw notYet("the ammonia-water mixture of EES");
         default: break;
     }
@@ -199,8 +222,16 @@ ChartFluid chartFluid(const std::string& name, const std::string& backend, const
 State PropertyProvider::statePoint(const std::string& key1, double value1, const std::string& key2, double value2) {
     update(key1, value1, key2, value2);
     State state;
-    for (const std::string& key : stateKeys()) state[key] = get(key);
+    for (const std::string& key : quantities()) state[key] = get(key);
     return state;
+}
+
+std::string PropertyProvider::pathKind(const State& /*a*/, const State& /*b*/, const std::string& kind) const {
+    return kind;
+}
+
+std::string PropertyProvider::stateProblem(const State& /*state*/) const {
+    return "";
 }
 
 const State& PropertyProvider::critical() {

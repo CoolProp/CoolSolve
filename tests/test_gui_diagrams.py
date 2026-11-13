@@ -10,7 +10,9 @@ under the cursor from POST /api/v1/diagram/state), a rubber-band zoom and its re
 chart (SVG and PDF from POST /api/v1/diagram/export, the chart spec for CoolPlot), the export of the
 diagram for the LaTeX report (thermo_diagrams.png, the fallback of the server's PDF figure), and the
 other kinds of fluids: an ideal gas with its solved cycle, an incompressible solution at a
-concentration, a blend of the model. See docs/coolplot_integration.md, phases 1 to 4.
+concentration, a blend of the model, humid air (a solved air-conditioning process on the psychrometric
+chart at the model's total pressure, the hover, the Mollier chart). See docs/coolplot_integration.md,
+phases 1 to 4.
 
 Usage:
     # Start CoolSolve with --gui, then:
@@ -84,6 +86,22 @@ h_4 = enthalpy(N2, P=P_4, s=s_4)
 T_4 = temperature(N2, P=P_4, s=s_4)
 """
 BLEND_MODEL = "T_b = temperature('R32[0.7]&R125[0.3]', P=10e5, x=0)\n"
+
+# Humid air at 1 bar: outdoor air cooled and dehumidified, then reheated at constant humidity ratio
+AIR_CONDITIONING_MODEL = """P = 1e5
+T[1] = 32
+RH[1] = 0.5
+w[1] = humrat(AirH2O, T=T[1], P=P, R=RH[1])
+h[1] = enthalpy(AirH2O, T=T[1], P=P, w=w[1])
+T[2] = 13
+RH[2] = 0.95
+w[2] = humrat(AirH2O, T=T[2], P=P, R=RH[2])
+h[2] = enthalpy(AirH2O, T=T[2], P=P, R=RH[2])
+w[3] = w[2]
+T[3] = 20
+h[3] = enthalpy(AirH2O, T=T[3], P=P, w=w[3])
+RH[3] = relhum(AirH2O, T=T[3], P=P, w=w[3])
+"""
 
 passed = 0
 failed = 0
@@ -221,6 +239,13 @@ async def run_tests(page: Page):
     check("the spec is CoolPlot's: ph, engineering units, DEF, CoolPlot's default badge (no branding written)",
           spec.get("diagram") == "ph" and spec.get("units") == "engineering" and spec.get("limits") == "DEF"
           and "branding" not in spec.get("settings", {}), json.dumps(spec)[:300])
+    overrides = spec.get("style_overrides", {})
+    check("light lines by default: every family 0.5 pt at 55 % (CoolPlot's style_overrides)",
+          {"T", "s", "rho", "Q"} <= set(overrides)
+          and all(o == {"width_pt": 0.5, "alpha": 0.55} for o in overrides.values()), json.dumps(overrides)[:300])
+    check("the isolines are drawn light (stroke-opacity 0.55)",
+          await page.wait_for(f"(() => {{ const p = {SVG}?.querySelector('g.cp-role-isoline path'); "
+                              "return !!p && p.getAttribute('stroke-opacity') === '0.55'; })()", 10))
     check("the badge names the equation of state and the versions",
           await page.wait_for(f"(() => {{ const t = {SVG}?.textContent || ''; return t.includes('Wagner and Pru') "
                               "&& t.includes('CoolPlot 1.5.0'); })()", 10))
@@ -386,6 +411,7 @@ async def run_tests(page: Page):
     await page.send("Fetch.disable")
 
     await more_fluids(page)
+    await humid_air(page)
 
     if SCREENSHOTS:
         print("\n=== Screenshots: dark theme, T-s chart ===")
@@ -508,6 +534,76 @@ async def more_fluids(page: Page):
           and await page.wait_for(f"!!{SVG}?.querySelector('[data-item=\"iso/Q/0.5\"]')", 60), json.dumps(req)[:300])
     await page.idle(1.0)
     await page.screenshot("diagram_blend.png")
+
+
+async def humid_air(page: Page):
+    """Humid air: a solved air-conditioning process on the psychrometric chart, the hover, the Mollier chart."""
+    print("\n=== Humid air: a solved air-conditioning process ===")
+    check("the air-conditioning model solves and AirH2O is a model fluid", await solve_model(page, AIR_CONDITIONING_MODEL, "AirH2O"))
+    await page.eval(select_js(0, "AirH2O"))
+    req = await last_scene(page, "AirH2O")
+    spec = req.get("spec", {})
+    check("a psychrometric chart of humid air at the model's total pressure (1 bar)", spec.get("diagram") == "WT"
+          and req.get("p_Pa") == 1e5 and set(spec.get("limits", {}).get("bounds", {})) == {"T", "W"}, json.dumps(req)[:300])
+    names = await page.eval("[...document.querySelectorAll('.diagram-controls select')[1].options].map(o => o.value)")
+    check("its diagram types: the psychrometric and Mollier charts", names == ["WT", "ThxW"], str(names))
+    labels = await page.eval("document.querySelector('.diagram-controls').textContent")
+    check("no critical point, saturation scale or region preset; the total pressure in bar instead",
+          "critical point" not in labels and "saturation scale" not in labels and "Region" not in labels
+          and await page.eval("document.querySelector('.diagram-pressure')?.value") == "1", labels[:300])
+    check("its lines: φ, Twb, h, v, round and labelled", sorted(i["key"] for i in spec.get("isolines", [])) == ["RH", "Twb", "h", "v"]
+          and all(i.get("rounding") and i.get("labels") for i in spec["isolines"]), json.dumps(spec.get("isolines")))
+    check("the chart shows the saturation line (iso/RH/1)", await page.wait_for(f"!!{SVG}?.querySelector('[data-item=\"iso/RH/1\"]')", 60))
+    # The process as an open chain of the inferred states, drawn straight (air processes)
+    await page.eval("[...document.querySelectorAll('.diagram-cycles button[title=\"Delete this cycle\"]')].forEach(b => b.click())")
+    await asyncio.sleep(0.3)
+    await page.eval("[...document.querySelectorAll('.diagram-cycles button')]"
+                    ".find(b => b.textContent.includes('from inferred states')).click()")
+    await page.wait_for("[...document.querySelectorAll('.diagram-cycles input')].some(i => i.value === '1-2-3-1')", 10)
+    await page.eval("(() => { const i = [...document.querySelectorAll('.diagram-cycles input')].find(i => i.value === '1-2-3-1');"
+                    " i.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, '1-2-3');"
+                    " i.dispatchEvent(new Event('input', {bubbles: true})); i.blur(); })()")
+    check("the process is drawn through its three states",
+          await page.wait_for(f"!!{SVG}?.querySelector('.cp-role-cycle path') && "
+                              f"{SVG}.querySelectorAll('.cp-role-state_number').length >= 3", 60))
+    end = time.time() + 15
+    while time.time() < end and (page.scene_requests[-1].get("cycles") or [{}])[0].get("loops") != [[1, 2, 3]]:
+        await asyncio.sleep(0.1)
+    await page.idle(1.0)
+    req = await last_scene(page, "AirH2O")
+    cycle = (req.get("cycles") or [{}])[0]
+    check("the cycle names the humid-air variables of the states, as an open chain", cycle.get("loops") == [[1, 2, 3]]
+          and any(st["vars"].get("W") == "w[1]" for st in cycle.get("states", [])),
+          json.dumps(cycle.get("loops")) + json.dumps(cycle)[:200])
+    check("no error shown", not await page.eval("!!document.querySelector('.diagram-status .diagram-error')"),
+          await page.eval("document.querySelector('.diagram-status')?.textContent"))
+    # The editor folded: the chart takes the height of the tab
+    await page.eval("document.querySelector('.diagram-cycles .diagram-link.title').click()")
+    await page.idle(1.0)
+    await page.screenshot("diagram_psychrometric.png")
+    # The hover: the state of humid air under the cursor
+    box = await page.eval(f"(() => {{ const r = {SVG}.querySelector('rect.cp-background').getBoundingClientRect();"
+                          " return [r.left, r.top, r.width, r.height]; })()")
+    count = len(page.point_requests)
+    await page.mouse("mouseMoved", box[0] + 0.6 * box[2], box[1] + 0.85 * box[3], 0)
+    check("hovering the chart shows T, W, φ, T_wb, h and v",
+          await page.wait_for("(() => { const t = document.querySelector('.diagram-tooltip[data-kind=\"point\"]');"
+                              " return !!t && ['T = ', 'W = ', 'φ = ', 'T_wb = ', 'h = ', 'v = '].every(k => t.textContent.includes(k)); })()", 15)
+          and len(page.point_requests) > count, await page.eval("document.querySelector('.diagram-tooltip')?.textContent"))
+    body = page.point_requests[-1] if page.point_requests else {}
+    check("the state request names humid air at its total pressure", body.get("fluid") == "AirH2O" and body.get("p_Pa") == 1e5
+          and body.get("diagram") == "WT", json.dumps(body))
+    await page.screenshot("diagram_psychrometric_hover.png")
+    await page.mouse("mouseMoved", 5, 5, 0)
+    # The Mollier h,x chart: the same region in its temperature scale, isotherms
+    await page.eval(select_js(1, "ThxW"))
+    check("the Mollier chart shows its isotherms", await page.wait_for(f"!!{SVG}?.querySelector('[data-item^=\"iso/T/\"]')", 60))
+    await page.idle(1.0)
+    req = await last_scene(page, "AirH2O")
+    check("the Mollier chart is bounded in Thx and W", set(req.get("spec", {}).get("limits", {}).get("bounds", {})) == {"Thx", "W"}
+          and any(i["key"] == "T" for i in req["spec"].get("isolines", [])), json.dumps(req.get("spec", {}))[:300])
+    check("the process is drawn on the Mollier chart", await page.wait_for(f"!!{SVG}?.querySelector('.cp-role-cycle path')", 30))
+    await page.screenshot("diagram_mollier.png")
 
 
 async def run_browser(browser: str):

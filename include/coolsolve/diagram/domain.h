@@ -52,6 +52,29 @@ TpLimits tpLimitsPreset(const std::string& name);
 const std::vector<std::string>& tpLimitsPresetNames();
 
 /**
+ * @brief Absolute bounds on quantities in SI units, for the charts that no T-p box describes: the psychrometric
+ *        chart, bounded in dry-bulb temperature T and humidity ratio W, and the Mollier h,x chart, bounded in its
+ *        temperature scale Thx and W (coolplot.core.limits.Region).
+ */
+struct Region {
+    std::vector<std::pair<std::string, Range>> bounds;  ///< (quantity key, (low, high)), sorted by key
+
+    /// Whether the region bounds quantity `key`.
+    bool has(const std::string& key) const;
+    /// The (low, high) bounds of quantity `key`. @throws DiagramError when the region has none
+    Range rangeSI(const std::string& key) const;
+    /// The record of a spec: {"bounds": {key: [low, high], ...}} (Region.to_dict).
+    json toJson() const;
+    /// From a spec's "limits" record (Region.from_dict, with Region's checks: two different finite values per
+    /// quantity, each quantity bounded once). @throws DiagramError
+    static Region fromJson(const json& data);
+};
+
+/// The region of a humid-air chart where the spec gives none: `temperature` ("T", or "Thx" for the Mollier chart)
+/// from -10 to 50 °C and humidity ratios from 0 to 30 g/kg (the defaults of CoolPlot's PsychrometricChart).
+Region defaultHumidAirRegion(const std::string& temperature);
+
+/**
  * @brief How a family of lines is placed through saturation states (coolplot.spec.SaturationAnchor).
  */
 struct SaturationAnchor {

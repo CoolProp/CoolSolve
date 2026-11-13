@@ -6,6 +6,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "coolsolve/diagram/engine.h"
+#include "coolsolve/diagram/humid_air.h"
 #include "coolsolve/diagram/ideal_gas.h"
 #include "coolsolve/diagram/states.h"
 #include "coolsolve/fluids.h"
@@ -15,6 +16,7 @@
 
 #include "CoolProp/AbstractState.h"
 #include "CoolProp/CoolProp.h"
+#include "HumidAirProp.h"
 
 #include <coolplot/compose.h>
 #include <coolplot/svg.h>
@@ -418,9 +420,13 @@ FixtureResult compareFixture(const std::string& name) {
     // 2. The domain computed with the pinned CoolProp
     std::vector<std::string> warnings;
     const Domain ours = Engine::shared().domain(chart, warnings);
+    // The span a difference of a quantity is measured in: its range, the temperature range for the temperatures of
+    // humid air that have none (Tdp, and Thx on the psychrometric chart), the value of the one pressure of humid air
     auto span = [&theirs](const std::string& key) {
-        const Range r = theirs.rangeSI(key);
-        return coolplot::get_quantity(key).log_scale ? std::fabs(r.second) : r.second - r.first;
+        const bool ranged = std::any_of(theirs.ranges_SI.begin(), theirs.ranges_SI.end(), [&key](const auto& r) { return r.first == key; });
+        const std::string k = ranged ? key : (key == "Tdp" || key == "Thx" ? "T" : key);
+        const Range r = theirs.rangeSI(k);
+        return coolplot::get_quantity(k).log_scale || !(r.second > r.first) ? std::fabs(r.second) : r.second - r.first;
     };
     for (int i = 0; i < 4; ++i)
         result.domain = std::max(result.domain, std::fabs(ours.tp_box[i] - theirs.tp_box[i]) / std::fabs(theirs.tp_box[i]));
@@ -512,7 +518,8 @@ FixtureResult compareFixture(const std::string& name) {
             for (const json& prop : entry.at(1).at("props")) {
                 const std::string key = prop.at(0), var = key + "_" + std::to_string(number);
                 vars[key] = var;
-                solved[var] = key == "T" ? prop.at(1).get<double>() - 273.15 : prop.at(1).get<double>();  // the model's units
+                const bool temperature = key == "T" || key == "Twb" || key == "Tdp";
+                solved[var] = temperature ? prop.at(1).get<double>() - 273.15 : prop.at(1).get<double>();  // the model's units
             }
             states.push_back({{"number", number}, {"vars", vars}});
         }
@@ -578,7 +585,8 @@ FixtureResult compareFixture(const std::string& name) {
 TEST_CASE("Diagram fixtures: the compose records and scenes of CoolPlot", "[diagram]") {
     const json header = readJson(fixtureDir() / "header.json");
     CHECK(header.at("coolplot_commit") == COOLSOLVE_COOLPLOT_COMMIT);
-    for (const char* name : {"r134a_ph_default", "water_ts", "r134a_th", "r290_ph_achp", "r134a_ph_cycle", "co2_ph_marked"}) {
+    for (const char* name : {"r134a_ph_default", "water_ts", "r134a_th", "r290_ph_achp", "r134a_ph_cycle", "co2_ph_marked",
+                             "psychrometric_ac", "mollier_heating"}) {
         const FixtureResult r = compareFixture(name);
         INFO(name << ": domain " << r.domain << ", curves " << r.curve << " (" << r.curvesSameSize << " of " << r.curvesCompared
                   << " with the same points), labels " << r.label << ", cycle " << r.cycle);
@@ -863,16 +871,17 @@ TEST_CASE("Diagram requests that cannot be drawn", "[diagram]") {
     request.spec = defaultSpec("ph");
     request.fluid = "Unobtainium";
     CHECK_THROWS_WITH(scene(request), ContainsSubstring("Unknown fluid 'Unobtainium'"));
-    request.fluid = "AirH2O";
-    CHECK_THROWS_WITH(scene(request), ContainsSubstring("not drawable yet"));
+    request.fluid = "AirH2O";  // a fluid's chart of humid air
+    CHECK_THROWS_WITH(scene(request), ContainsSubstring("A ph diagram cannot show humid air"));
     request.fluid = "NH3H2O";
     CHECK_THROWS_WITH(scene(request), ContainsSubstring("not drawable yet"));
     request.fluid = "R134a";
     request.spec["diagram"] = "xy";
     CHECK_THROWS_WITH(scene(request), ContainsSubstring("Unknown diagram type 'xy'"));
-    request.spec["diagram"] = "psychrometric";
+    request.spec["diagram"] = "psychrometric";  // a psychrometric chart of a fluid
     request.spec["isolines"] = json::array();
-    CHECK_THROWS_WITH(scene(request), ContainsSubstring("not drawable yet"));
+    request.spec["limits"] = nullptr;
+    CHECK_THROWS_WITH(scene(request), ContainsSubstring("A WT diagram cannot show R134a"));
     request.spec = defaultSpec("ph");
     request.spec["settings"]["look"] = "neon";
     CHECK_THROWS_WITH(scene(request), ContainsSubstring("Unknown theme 'neon'"));
@@ -891,7 +900,7 @@ TEST_CASE("Diagram options and definitions", "[diagram]") {
     const json o = options();
     std::vector<std::string> names;
     for (const json& type : o.at("diagram_types")) names.push_back(type.at("name"));
-    CHECK(names == std::vector<std::string>{"ph", "Ts", "hs", "ps", "prho", "Trho", "pT", "Th"});
+    CHECK(names == std::vector<std::string>{"ph", "Ts", "hs", "ps", "prho", "Trho", "pT", "Th", "WT", "ThxW"});
     const json& th = o.at("diagram_types")[7];
     CHECK(th.at("x") == "h");
     CHECK(th.at("y") == "T");
@@ -902,7 +911,7 @@ TEST_CASE("Diagram options and definitions", "[diagram]") {
     CHECK(o.at("themes") == json::array({"default", "dark", "print", "coolpack"}));
     CHECK(o.at("label_modes") == json::array({"rails", "edge", "margin", "inline"}));
     CHECK(o.at("regions").size() == 4);
-    CHECK(o.at("fluid_types") == json::array({"Real", "Mixture", "Incompressible", "IdealGas"}));
+    CHECK(o.at("fluid_types") == json::array({"Real", "Mixture", "Incompressible", "IdealGas", "HumidAir"}));
     const json& kinds = o.at("fluid_kinds");
     CHECK(kinds.at("Real").at("diagram_types").size() == 8);
     CHECK(kinds.at("Mixture").at("saturation") == true);
@@ -916,10 +925,29 @@ TEST_CASE("Diagram options and definitions", "[diagram]") {
     CHECK(kinds.at("IdealGas").at("diagram_types") == json::array({"ph", "Ts", "hs", "ps", "prho", "Trho", "pT"}));
     CHECK(kinds.at("IdealGas").at("saturation") == false);
     CHECK(kinds.at("IdealGas").at("default_box") == json::array({200.0, 2000.0, 1e4, 1e7}));
+    // Humid air: the psychrometric and Mollier charts, their families, the region and the pressure of a new chart
+    CHECK(kinds.at("HumidAir").at("diagram_types") == json::array({"WT", "ThxW"}));
+    CHECK(kinds.at("HumidAir").at("families") == json::array({"T", "RH", "Twb", "h", "v"}));
+    CHECK(kinds.at("HumidAir").at("chart_kind") == "humid_air");
+    CHECK(kinds.at("Real").at("chart_kind") == "fluid");
+    CHECK(kinds.at("HumidAir").at("total_pressure") == 101325.0);
+    CHECK(kinds.at("HumidAir").at("default_region") == json{{"bounds", {{"T", {263.15, 323.15}}, {"W", {0.0, 0.03}}}}});
+    const json& psychro = o.at("diagram_types")[8];
+    CHECK(psychro.at("title") == "Psychrometric chart");
+    CHECK(psychro.at("kind") == "humid_air");
+    CHECK(psychro.at("families").size() == 4);  // RH, Twb, h, v
+    const json& mollier = o.at("diagram_types")[9];
+    CHECK(mollier.at("families").size() == 5);  // the isotherms too
+    CHECK(mollier.at("families")[1].at("symbol") == "phi");  // the Mollier chart writes phi
+    CHECK(mollier.at("families")[0].at("label") == "Dry-bulb temperature");
     const json& custom = o.at("unit_systems").back();
     CHECK(custom.at("name") == "coolsolve");
     const coolplot::UnitSystem units = coolplot::UnitSystem::from_json(custom.at("record"));
     for (const std::string& key : stateKeys()) CHECK(units.units.count(key) == 1);
+    for (const std::string& key : airStateKeys()) CHECK(units.units.count(key) == 1);
+    CHECK(units.at("W").label == "kg/kg");
+    CHECK(units.at("RH").scale == 1.0);  // a fraction, as the model's relhum
+    CHECK(units.at("Twb").offset == -273.15);
     CHECK(units.at("T").offset == -273.15);
     CHECK(units.at("T").difference_label == "K");
     CHECK(units.at("p").scale == 1.0);
@@ -1076,7 +1104,7 @@ TEST_CASE("Diagram state at a point of a chart", "[diagram]") {
     SECTION("requests that cannot be answered") {
         CHECK_THROWS_WITH(stateAt(chartFluid("Unobtainium"), "ph", 3e5, 2e5), ContainsSubstring("Unknown fluid"));
         CHECK_THROWS_WITH(stateAt(chartFluid("R134a"), "xy", 3e5, 2e5), ContainsSubstring("Unknown diagram type"));
-        CHECK_THROWS_WITH(stateAt(chartFluid("AirH2O"), "ph", 3e5, 2e5), ContainsSubstring("not drawable yet"));
+        CHECK_THROWS_WITH(stateAt(chartFluid("AirH2O"), "ph", 3e5, 2e5), ContainsSubstring("cannot show humid air"));
         CHECK_THROWS_AS(stateAt(chartFluid("R134a"), "ph", NaN, 2e5), DiagramError);
     }
     SECTION("fast enough for the hover") {
@@ -1638,6 +1666,351 @@ TEST_CASE("Diagram ideal gases: CoolSolve's provider on the EES/JANAF basis", "[
                         CHECK(distanceToCurve(*isobar, loop[k].at("s"), loop[k].at("T"), domain, type) < 1e-4);
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Humid air: the psychrometric and Mollier charts (CS-FEAT-PSYCHRO)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// A chart of humid air as the Diagrams tab writes it: every family, round values, labelled (CoolPlot's defaults for
+/// humid air), PsychrometricChart's region (no limits), no badge.
+json humidAirSpec(const std::string& diagram) {
+    const coolplot::DiagramType type = coolplot::DiagramType::parse(diagram);
+    json isolines = json::array();
+    for (const coolplot::Family& family : type.families())
+        isolines.push_back({{"key", family.key}, {"num", family.default_num}, {"rounding", true}, {"labels", true}});
+    return {{"diagram", diagram},
+            {"units", "engineering"},
+            {"isolines", isolines},
+            {"show_saturation", true},
+            {"settings", {{"branding", {{"references", "none"}, {"versions", false}}}}}};
+}
+
+/// Air conditioning: outdoor air cooled and dehumidified on a coil, then reheated at constant humidity ratio (EES
+/// syntax, CoolSolve's units: °C, Pa, J/kg, kg/kg and a fraction for the relative humidity).
+const char* const AIR_CONDITIONING = R"("Air conditioning: cooling and dehumidification, then reheating"
+P = 101325
+T[1] = 32
+RH[1] = 0.5
+w[1] = humrat(AirH2O, T=T[1], P=P, R=RH[1])
+h[1] = enthalpy(AirH2O, T=T[1], P=P, w=w[1])
+T_wb[1] = wetbulb(AirH2O, T=T[1], P=P, w=w[1])
+T[2] = 13
+RH[2] = 0.95
+w[2] = humrat(AirH2O, T=T[2], P=P, R=RH[2])
+h[2] = enthalpy(AirH2O, T=T[2], P=P, R=RH[2])
+w[3] = w[2]
+T[3] = 20
+h[3] = enthalpy(AirH2O, T=T[3], P=P, w=w[3])
+RH[3] = relhum(AirH2O, T=T[3], P=P, w=w[3])
+v[3] = volume(AirH2O, T=T[3], P=P, w=w[3])
+q_cool = h[1] - h[2]
+q_reheat = h[3] - h[2]
+)";
+
+}  // namespace
+
+TEST_CASE("Diagram humid air: the provider, the region, the lines", "[diagram]") {
+    SECTION("states of humid air from two properties at the chart's total pressure (air_state)") {
+        const State s = airState("T", 298.15, "RH", 0.5, 101325.0);
+        for (const std::string& key : airStateKeys()) CHECK(std::isfinite(s.at(key)));
+        CHECK(s.at("T") == 298.15);  // HAPropsSI hands the inputs back
+        CHECK(s.at("RH") == 0.5);
+        CHECK(s.at("p") == 101325.0);
+        CHECK_THAT(s.at("W"), WithinRel(HumidAir::HAPropsSI("W", "T", 298.15, "P", 101325.0, "R", 0.5), 1e-15));
+        CHECK_THAT(s.at("Thx"), WithinRel(273.15 + (s.at("h") - 2500e3 * s.at("W")) / 1006.0, 1e-15));
+        // The same state from W and the Mollier temperature scale, and from T and h
+        const State m = airState("Thx", s.at("Thx"), "W", s.at("W"), 101325.0);
+        CHECK_THAT(m.at("T"), WithinRel(298.15, 1e-9));
+        CHECK_THAT(airState("T", 298.15, "h", s.at("h"), 101325.0).at("W"), WithinRel(s.at("W"), 1e-9));
+        CHECK_THROWS_WITH(airState("T", 298.15, "T", 300.0, 101325.0), ContainsSubstring("two different properties"));
+        CHECK_THROWS_WITH(airState("T", 298.15, "p", 1e5, 101325.0), ContainsSubstring("total pressure of the chart"));
+        CHECK_THROWS_WITH(airState("Thx", 298.15, "T", 300.0, 101325.0), ContainsSubstring("together with the humidity ratio"));
+        CHECK_THROWS_AS(airState("T", 298.15, "s", 100.0, 101325.0), DiagramError);
+        CHECK(std::isnan(saturationW(500.0, 101325.0)));  // above the boiling point: no saturation
+    }
+    SECTION("the chart fluid: AirH2O at a total pressure, CoolPlot's HumidAirSpec record") {
+        const ChartFluid air = chartFluid("AirH2O");
+        CHECK(air.isHumidAir());
+        CHECK(air.p_Pa == 101325.0);
+        CHECK(air.kind() == "HumidAir");
+        CHECK(air.name() == "humid air at 101325 Pa");
+        CHECK(air.record() == json{{"model", "humid_air"}, {"p_Pa", 101325.0}});
+        const ChartFluid low = chartFluid("AirH2O", "HEOS", {}, "", 9e4);
+        CHECK(low.fluidString() != air.fluidString());  // separate caches
+        CHECK(ChartFluid::fromRecord(low.record()).p_Pa == 9e4);
+        CHECK_THROWS_WITH(chartFluid("AirH2O", "HEOS", {}, "", 5e3), ContainsSubstring("between 10000.0 and 10000000.0 Pa"));
+        CHECK_THROWS_WITH(chartFluid("R134a", "HEOS", {}, "", 1e5), ContainsSubstring("takes no total pressure"));
+        CHECK_THROWS_AS(ChartFluid::fromRecord({{"model", "humid_air"}, {"p_Pa", "sea level"}}), DiagramError);
+    }
+    SECTION("the region: PsychrometricChart's default, the dry-bulb span of the Mollier chart, CoolPlot's checks") {
+        const PlanSpec psychro = PlanSpec::fromJson(humidAirSpec("WT"));
+        CHECK(psychro.region.toJson() == json{{"bounds", {{"T", {263.15, 323.15}}, {"W", {0.0, 0.03}}}}});
+        const HumidAirModel air(101325.0);
+        const Domain d = air.domain(psychro.region);
+        CHECK(d.saturation);
+        CHECK(d.tp_box == std::array<double, 4>{263.15, 323.15, 101325.0, 101325.0});
+        CHECK(d.rangeSI("RH") == Range{0.0, 1.0});
+        for (const char* key : {"Twb", "h", "v"}) CHECK(d.rangeSI(key).second > d.rangeSI(key).first);
+        // The Mollier chart is bounded by its temperature scale; the dry-bulb temperatures behind it reach further
+        const PlanSpec mollier = PlanSpec::fromJson(humidAirSpec("ThxW"));
+        CHECK(mollier.region.has("Thx"));
+        const Domain dm = air.domain(mollier.region);
+        CHECK(dm.rangeSI("Thx") == Range{263.15, 323.15});
+        CHECK(dm.tp_box[0] < 263.15);
+        CHECK(dm.tp_box[1] > 323.15);
+        CHECK_THROWS_WITH(air.domain(Region::fromJson({{"bounds", {{"T", {100.0, 300.0}}, {"W", {0.0, 0.03}}}}})),
+                          ContainsSubstring("between 173.15 and 623.15 K"));
+        CHECK_THROWS_WITH(air.domain(Region::fromJson({{"bounds", {{"T", {280.0, 300.0}}, {"W", {-0.01, 0.03}}}}})),
+                          ContainsSubstring("at least 0"));
+        CHECK_THROWS_WITH(air.domain(Region::fromJson({{"bounds", {{"T", {263.15, 273.15}}, {"W", {0.02, 0.03}}}}})),
+                          ContainsSubstring("entirely above saturation (fog)"));
+        CHECK_THROWS_WITH(Region::fromJson({{"bounds", {{"T", {300.0, 300.0}}, {"W", {0.0, 0.03}}}}}), ContainsSubstring("two different"));
+        json spec = humidAirSpec("WT");
+        spec["limits"] = "DEF";
+        CHECK_THROWS_WITH(PlanSpec::fromJson(spec), ContainsSubstring("needs a Region with bounds on 'T' and 'W'"));
+        spec["limits"] = {{"bounds", {{"T", {263.15, 323.15}}}}};
+        CHECK_THROWS_WITH(PlanSpec::fromJson(spec), ContainsSubstring("needs a Region"));
+        spec = humidAirSpec("WT");
+        spec["marked_points"] = {"critical"};
+        CHECK_THROWS_WITH(PlanSpec::fromJson(spec), ContainsSubstring("only in charts of a fluid"));
+        spec = humidAirSpec("WT");
+        spec["isolines"][0]["anchor"] = {{"by", "T"}, {"step_SI", 10.0}};
+        CHECK_THROWS_WITH(PlanSpec::fromJson(spec), ContainsSubstring("only in charts of a fluid"));
+        spec = humidAirSpec("WT");
+        spec["saturation_scale"] = {{"Q", 1.0}};
+        CHECK_THROWS_AS(PlanSpec::fromJson(spec), DiagramError);
+    }
+    SECTION("the lines: on their own value, never above saturation, starting on it; isotherms of the Mollier chart") {
+        const Chart chart(chartFluid("AirH2O"), PlanSpec::fromJson(humidAirSpec("WT")));
+        std::vector<std::string> warnings;
+        Domain domain;
+        const std::vector<PlannedCurve> curves = chartCurves(chart, domain, warnings);
+        CHECK(warnings.empty());
+        REQUIRE(curveWithId(curves, "iso/RH/1"));  // the saturation curve
+        CHECK_FALSE(curveWithId(curves, "iso/RH/0"));  // the dry-air axis is no line
+        const double p = 101325.0;
+        for (const auto& [request, curve] : curves) {
+            INFO(request.item_id);
+            CHECK(curve->nGaps() == 0);
+            for (size_t i = 0; i < curve->x.size(); ++i) {
+                const double T = curve->x[i], W = curve->y[i];
+                CHECK(W >= 0.0);
+                CHECK(W <= saturationW(T, p) * (1.0 + 1e-6));
+                // A line of constant RH, h or v holds its value (relative to the range of its family); the saturation
+                // line is the humidity ratio of saturated air
+                if (request.item_id == "iso/RH/1") {
+                    CHECK_THAT(W, WithinRel(saturationW(T, p), 1e-12));
+                } else if (W > 1e-6 && request.key != "Twb") {
+                    const Range range = domain.rangeSI(request.key);
+                    CHECK(std::fabs(humidAir(request.key, "T", T, "W", W, p) - request.value_SI) <= 1e-6 * (range.second - range.first));
+                }
+            }
+        }
+        // A wet-bulb line starts on saturation at its own temperature
+        const Curve* wetBulb = curveWithId(curves, "iso/Twb/293.15");
+        REQUIRE(wetBulb);
+        CHECK(wetBulb->x.front() == 293.15);
+        CHECK_THAT(wetBulb->y.front(), WithinRel(saturationW(293.15, p), 1e-12));
+
+        const Chart mollier(chartFluid("AirH2O"), PlanSpec::fromJson(humidAirSpec("ThxW")));
+        const std::vector<PlannedCurve> mollierCurves = chartCurves(mollier, domain, warnings);
+        CHECK(warnings.empty());
+        const Curve* isotherm = curveWithId(mollierCurves, "iso/T/293.15");
+        REQUIRE(isotherm);
+        CHECK(isotherm->x.front() == 0.0);  // from dry air (at Thx = T, but for the real enthalpy of dry air) to saturation
+        CHECK_THAT(isotherm->y.front(), Catch::Matchers::WithinAbs(293.15, 0.01));
+        CHECK_THAT(isotherm->x.back(), WithinRel(saturationW(293.15, p), 1e-12));
+        for (size_t i = 0; i < isotherm->x.size(); ++i)
+            CHECK_THAT(humidAir("T", "h", enthalpyFromMollier(isotherm->y[i], isotherm->x[i]), "W", isotherm->x[i], p), WithinRel(293.15, 1e-7));
+    }
+}
+
+TEST_CASE("Diagram humid air: the states of a model's humid-air calls", "[diagram]") {
+    CHECK(independentAirKeys("T", "W"));
+    CHECK(independentAirKeys("h", "RH"));
+    CHECK_FALSE(independentAirKeys("T", "p"));  // the pressure is the chart's
+    CHECK_FALSE(independentAirKeys("W", "Tdp"));  // at one pressure, the dew point is the humidity ratio
+    CHECK_FALSE(independentAirKeys("RH", "RH"));
+    // Two calls at the same T and P do not describe the same humid air; two that share T and w do
+    const ModelStates states = groupStates(irOf(R"(P = 101325
+T_1 = 30
+h_a = enthalpy(AirH2O, T=T_1, P=P, w=w_a)
+h_b = enthalpy(AirH2O, T=T_1, P=P, R=RH_b)
+RH_a = relhum(AirH2O, T=T_1, P=P, w=w_a)
+T_dp = dewpoint(AirH2O, T=T_d, P=P, w=w_a)
+)"));
+    REQUIRE(states.count("AirH2O") == 1);
+    const ModelState* a = stateWith(states.at("AirH2O"), "h_a");
+    REQUIRE(a);
+    CHECK(a->vars == std::map<std::string, std::string>{{"T", "T_1"}, {"p", "P"}, {"W", "w_a"}, {"h", "h_a"}, {"RH", "RH_a"}});
+    const ModelState* b = stateWith(states.at("AirH2O"), "h_b");
+    REQUIRE(b);
+    CHECK(b != a);
+    CHECK(b->vars.count("W") == 0);
+    // The dew-point call shares w_a alone with state a (and P): a state of its own, (T_d, w_a)
+    const ModelState* d = stateWith(states.at("AirH2O"), "T_dp");
+    REQUIRE(d);
+    CHECK(d != a);
+}
+
+TEST_CASE("Diagram humid air: charts, a solved process, the state under the cursor", "[diagram]") {
+    SECTION("the psychrometric and Mollier charts end to end; the region and the fluid in the spec CoolPlot reads") {
+        for (const char* diagram : {"WT", "ThxW"}) {
+            INFO(diagram);
+            SceneRequest request;
+            request.fluid = "AirH2O";
+            request.spec = humidAirSpec(diagram);
+            request.figureSizePt = std::make_pair(600.0, 420.0);
+            const json response = scene(request);
+            const std::string svg = response.at("svg");
+            for (const char* id : {"iso/RH/1", "iso/RH/0.5", "iso/h/50000"})
+                CHECK_THAT(svg, ContainsSubstring(std::string("data-item=\"") + id + "\""));
+            CHECK_FALSE(std::regex_search(svg, std::regex("[^A-Za-z](nan|NaN|inf|Infinity)[^A-Za-z]")));
+            CHECK(response.at("diagnostics").at("warnings").empty());
+            CHECK(response.at("spec").at("fluid") == json{{"model", "humid_air"}, {"p_Pa", 101325.0}});
+            CHECK(response.at("spec").at("limits").at("bounds").contains(std::string(diagram) == "WT" ? "T" : "Thx"));
+            const json& axes = response.at("axes");
+            CHECK(axes.at("x_key") == (std::string(diagram) == "WT" ? "T" : "W"));
+            CHECK(axes.at("y_unit").at("scale") == (std::string(diagram) == "WT" ? 1e3 : 1.0));  // g/kg, °C
+        }
+        // The badge names the humid-air model, as CoolPlot's does
+        SceneRequest request;
+        request.fluid = "AirH2O";
+        request.spec = humidAirSpec("WT");
+        request.spec["settings"].erase("branding");
+        CHECK_THAT(scene(request).at("svg").get<std::string>(), ContainsSubstring("Herrmann"));
+        // The model's units hold the quantities of humid air
+        request.spec["units"] = coolsolveUnitSystem();
+        CHECK(scene(request).at("axes").at("y_unit").at("label") == "kg/kg");
+    }
+    SECTION("a solved air-conditioning process: its states grouped, on the lines of their properties, straight paths") {
+        std::unique_ptr<CoolSolveRunner> runner;
+        const SolutionValues values = solveText("air_conditioning", AIR_CONDITIONING, runner);
+        // The states of the model: calls sharing two independent humid-air variables, the pressure aside
+        const ModelStates states = groupStates(runner->getIR(), &values);
+        REQUIRE(states.count("AirH2O") == 1);
+        const std::vector<ModelState>& air = states.at("AirH2O");
+        REQUIRE(air.size() == 3);
+        CHECK(air[0].vars == std::map<std::string, std::string>{{"T", "T[1]"}, {"p", "P"}, {"RH", "RH[1]"}, {"W", "w[1]"},
+                                                                {"h", "h[1]"}, {"Twb", "T_wb[1]"}});
+        CHECK(air[1].vars == std::map<std::string, std::string>{{"T", "T[2]"}, {"p", "P"}, {"RH", "RH[2]"}, {"W", "w[2]"}, {"h", "h[2]"}});
+        CHECK(air[2].vars == std::map<std::string, std::string>{{"T", "T[3]"}, {"p", "P"}, {"W", "w[3]"}, {"h", "h[3]"},
+                                                                {"RH", "RH[3]"}, {"v", "v[3]"}});
+        json cycleStates = json::array();
+        for (const ModelState& state : air) cycleStates.push_back({{"number", state.number}, {"vars", state.vars}});
+        const json cycle = {{"name", "Air conditioning"}, {"states", cycleStates}, {"loops", {{1, 2, 3}}}};
+        // The lines of the states' own properties
+        const json lines = {{{"name", "RH2"}, {"key", "RH"}, {"value_SI", values.at("RH[2]")}},
+                            {{"name", "RH3"}, {"key", "RH"}, {"value_SI", values.at("RH[3]")}},
+                            {{"name", "h1"}, {"key", "h"}, {"value_SI", values.at("h[1]")}},
+                            {{"name", "Twb1"}, {"key", "Twb"}, {"value_SI", values.at("T_wb[1]") + 273.15}},
+                            {{"name", "v3"}, {"key", "v"}, {"value_SI", values.at("v[3]")}}};
+        const std::map<int, std::vector<std::string>> through = {{1, {"iso/RH/0.5", "line/h1", "line/Twb1"}}, {2, {"line/RH2"}},
+                                                                 {3, {"line/RH3", "line/v3"}}};
+        for (const char* diagram : {"WT", "ThxW"}) {
+            INFO(diagram);
+            json spec = humidAirSpec(diagram);
+            spec["lines"] = lines;
+            SceneRequest request;
+            request.fluid = "AirH2O";
+            request.spec = spec;
+            request.cycles = json::array({cycle});
+            request.solution = &values;
+            const json response = scene(request);
+            CHECK(response.at("diagnostics").at("warnings").empty());
+            REQUIRE(response.at("states").size() == 3);
+            CHECK_THAT(response.at("svg").get<std::string>(), ContainsSubstring("data-item=\"cycle/Air conditioning/loop/0\""));
+            const Chart chart(chartFluid("AirH2O"), PlanSpec::fromJson(spec));
+            std::vector<std::string> warnings;
+            Domain domain;
+            const std::vector<PlannedCurve> curves = chartCurves(chart, domain, warnings);
+            const coolplot::DiagramType& type = chart.spec.diagram;
+            for (const auto& [number, ids] : through) {
+                const std::string n = "[" + std::to_string(number) + "]";
+                const json& drawn = response.at("states")[number - 1].at("values_SI");
+                // The marker sits where the solver put it
+                CHECK(drawn.at("W") == values.at("w" + n));
+                CHECK(drawn.at("T") == values.at("T" + n) + 273.15);
+                CHECK_THAT(drawn.at("h").get<double>(), WithinRel(values.at("h" + n), 1e-9));
+                CHECK_THAT(drawn.at("Thx").get<double>(), WithinRel(mollierTemperature(drawn.at("h"), drawn.at("W")), 1e-6));
+                for (const std::string& id : ids) {
+                    INFO("state " << number << " on " << id);
+                    const Curve* line = curveWithId(curves, id);
+                    REQUIRE(line);
+                    CHECK(distanceToCurve(*line, drawn.at(type.x).get<double>(), drawn.at(type.y).get<double>(), domain, type) < 1e-4);
+                }
+            }
+            // Air processes are straight lines between their states (HumidAir.path_kind)
+            std::vector<std::string> unused;
+            const std::vector<ResolvedCycle> resolved = Engine::shared().withFluid(chart.fluid, [&](PropertyProvider& model) {
+                return resolveCycles(json::array({cycle}), &values, model, type, unused);
+            });
+            REQUIRE(resolved.size() == 1);
+            CHECK(resolved[0].chains.at(0).size() == 3);
+        }
+        // A chart at another total pressure does not draw the states of the model
+        SceneRequest request;
+        request.fluid = "AirH2O";
+        request.p_Pa = 1e5;
+        request.spec = humidAirSpec("WT");
+        request.cycles = json::array({cycle});
+        request.solution = &values;
+        const json response = scene(request);
+        CHECK(response.at("states").empty());
+        REQUIRE(response.at("diagnostics").at("warnings").size() == 1);
+        CHECK_THAT(response.at("diagnostics").at("warnings")[0].get<std::string>(),
+                   ContainsSubstring("is at 101325 Pa, but the chart shows humid air at 100000 Pa"));
+        CHECK(response.at("spec").at("fluid").at("p_Pa") == 1e5);
+    }
+    SECTION("the state under the cursor") {
+        const ChartFluid air = chartFluid("AirH2O");
+        const json s = stateAt(air, "WT", 298.15, 0.01);
+        REQUIRE(s.is_object());
+        for (const std::string& key : airStateKeys()) CHECK(s.at(key).is_number());
+        CHECK(s.at("T") == 298.15);
+        CHECK(s.at("W") == 0.01);
+        CHECK(s.at("RH").get<double>() > 0.0);
+        CHECK(s.at("RH").get<double>() < 1.0);
+        const json m = stateAt(air, "ThxW", 0.01, 300.0);
+        REQUIRE(m.is_object());
+        CHECK_THAT(m.at("Thx").get<double>(), WithinRel(300.0, 1e-9));
+        CHECK(stateAt(air, "WT", 298.15, 0.05).is_null());  // above saturation: fog
+        // The total pressure decides where saturation lies: 21 g/kg at 25 °C is fog at sea level, not at 0.9 bar
+        CHECK(stateAt(air, "WT", 298.15, 0.021).is_null());
+        CHECK(stateAt(chartFluid("AirH2O", "HEOS", {}, "", 9e4), "WT", 298.15, 0.021).is_object());
+        CHECK_THROWS_WITH(stateAt(air, "ph", 3e5, 2e5), ContainsSubstring("cannot show humid air"));
+        CHECK_THROWS_WITH(stateAt(chartFluid("R134a"), "WT", 300.0, 0.01), ContainsSubstring("cannot show R134a"));
+        const auto start = std::chrono::steady_clock::now();
+        const int n = 200;
+        for (int i = 0; i < n; ++i) stateAt(air, "WT", 280.0 + 0.1 * i, 0.002 + 1e-5 * i);
+        const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / n;
+        INFO("state of humid air at a point: " << us << " us per call");
+        CHECK(us < 5000.0);
+    }
+    SECTION("the default psychrometric and Mollier charts, cold and warm") {
+        // Measured in the Release build of 2026-11-13 (Linux, GCC, 250 points per line, the lines on 4 threads): a cold
+        // psychrometric chart 140 ms, a cold Mollier chart 130 ms, warm 2.4 and 3.7 ms. The budget is that of the
+        // other charts (Diagram performance)
+        for (const char* diagram : {"WT", "ThxW"}) {
+            SceneRequest request;
+            request.fluid = "AirH2O";
+            request.spec = humidAirSpec(diagram);
+            Engine::shared().clear();
+            auto start = std::chrono::steady_clock::now();
+            const json cold = scene(request);
+            const double coldMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            start = std::chrono::steady_clock::now();
+            const json warm = scene(request);
+            const double warmMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            INFO(diagram << ": cold " << coldMs << " ms, warm " << warmMs << " ms, timing " << cold.at("timing_ms").dump());
+            CHECK(coldMs < 1000.0);
+            CHECK(warmMs < 100.0);
+            CHECK(warm.at("svg") == cold.at("svg"));
         }
     }
 }

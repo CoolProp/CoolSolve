@@ -3,12 +3,13 @@
 // (critical point, triple point, limits of the equation of state, saturation range).
 //
 // Mirrors CoolPlot (github.com/CoolProp/CoolPlot) at commit 7338f48 (v1.5.0): thermo/native.py
-// (fluid_string, port_fluid_string), spec/fluid.py (FluidSpec record), thermo/provider.py (the provider
-// interface) and thermo/fluid.py (Fluid).
+// (fluid_string, port_fluid_string), spec/fluid.py (FluidSpec and HumidAirSpec records), thermo/provider.py (the
+// provider interface) and thermo/fluid.py (Fluid).
 // CoolPlot is MIT licensed: Copyright 2014-2019 Jorrit Wronski and the other developers.
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <limits>
 #include <map>
 #include <memory>
@@ -25,6 +26,8 @@ class AbstractState;
 }
 
 namespace coolsolve {
+class Fluid;
+
 namespace diagram {
 
 using json = nlohmann::json;
@@ -36,7 +39,8 @@ public:
     explicit DiagramError(const std::string& message) : std::runtime_error(message) {}
 };
 
-/// A state in SI units by CoolPlot quantity key ("T", "p", "h", "s", "rho", "v", "u", "Q").
+/// A state in SI units by CoolPlot quantity key: "T", "p", "h", "s", "rho", "v", "u", "Q" of a fluid; "T", "W",
+/// "RH", "Twb", "Tdp", "h", "v", "Thx", "p" of humid air (per kg of dry air).
 using State = std::map<std::string, double>;
 
 /// The keys of a fluid state, in CoolPlot's order (coolplot.core.state.STATE_KEYS).
@@ -48,10 +52,12 @@ int coolpropParameter(const std::string& key);
 
 /**
  * @brief The fluid of a chart as CoolPlot describes it (coolplot.spec.FluidSpec): mole fractions of a mixture, mass
- *        fractions of an incompressible solution (CoolProp's INCOMP backend reads them so).
+ *        fractions of an incompressible solution (CoolProp's INCOMP backend reads them so); or humid air at one total
+ *        pressure (coolplot.spec.HumidAirSpec), whose charts are the psychrometric and Mollier charts.
  *
  * CoolSolve's ideal gases are drawn by CoolSolve's own provider (diagram/ideal_gas.h): `idealGas` names them, the
- * components hold the CoolProp fluid of their ideal-gas functions.
+ * components hold the CoolProp fluid of their ideal-gas functions. Humid air (diagram/humid_air.h) has no
+ * components: `p_Pa` is its total pressure.
  */
 struct ChartFluid {
     std::string backend = "HEOS";            ///< CoolProp backend: "HEOS", "BICUBIC&HEOS", "TTSE&HEOS", "INCOMP", ...
@@ -59,25 +65,41 @@ struct ChartFluid {
     std::vector<double> fractions;           ///< one per component, or empty for a pure fluid
     std::string basis = "mole";              ///< what the fractions are: "mole", or "mass" for the INCOMP backend
     std::string idealGas;                    ///< CoolSolve's name of an ideal gas (FluidRegistry), empty for CoolProp's fluids
+    double p_Pa = std::numeric_limits<double>::quiet_NaN();  ///< humid air: the total pressure; NaN for the other fluids
 
     /// The CoolProp fluid string, e.g. "HEOS::R134a", "HEOS::R32[0.7]&R125[0.3]", "INCOMP::MEG[0.3]"
-    /// (FluidSpec.__str__); "IDEALGAS::N2" for an ideal gas, which CoolProp never sees (a key of the caches).
+    /// (FluidSpec.__str__); "IDEALGAS::N2" for an ideal gas and "HUMIDAIR::101325" for humid air, which CoolProp
+    /// never sees (keys of the caches).
     std::string fluidString() const;
-    /// The short name for messages and titles, e.g. "R134a", "MEG[0.3]" (FluidSpec.name); "N2" for an ideal gas.
+    /// The short name for messages and titles, e.g. "R134a", "MEG[0.3]" (FluidSpec.name); "N2" for an ideal gas,
+    /// "humid air at 101325 Pa" (HumidAirSpec.name).
     std::string name() const;
     /// The fluid string the port gets for a line of constant `key`: the lines of constant quality of a tabular
     /// backend (BICUBIC&HEOS, TTSE&HEOS) come from the equation of state behind the tables (native.port_fluid_string).
     std::string portFluidString(const std::string& key) const;
     /// Whether CoolSolve's ideal-gas provider draws it.
     bool isIdealGas() const { return !idealGas.empty(); }
-    /// The kind of fluid, as GET /api/v1/coolprop/fluids names it: "Real", "Mixture", "Incompressible", "IdealGas".
+    /// Whether it is humid air (drawn by the humid-air provider in psychrometric charts).
+    bool isHumidAir() const { return !std::isnan(p_Pa); }
+    /// The kind of fluid, as GET /api/v1/coolprop/fluids names it: "Real", "Mixture", "Incompressible", "IdealGas",
+    /// "HumidAir".
     std::string kind() const;
-    /// The fluid record of a CoolPlot spec (FluidSpec.to_dict). An ideal gas adds CoolSolve's namespaced
-    /// {"coolsolve": {"model": "ideal_gas", "fluid": name}}: CoolPlot ignores it and would draw the real fluid.
+    /// The fluid record of a CoolPlot spec (FluidSpec.to_dict; HumidAirSpec.to_dict: {"model": "humid_air", "p_Pa"}).
+    /// An ideal gas adds CoolSolve's namespaced {"coolsolve": {"model": "ideal_gas", "fluid": name}}: CoolPlot ignores
+    /// it and would draw the real fluid.
     json record() const;
-    /// A chart fluid from a fluid record (FluidSpec.from_dict); throws DiagramError for a record it cannot use.
+    /// A chart fluid from a fluid record (FluidSpec.from_dict, fluid_spec_from_dict); throws DiagramError for a record
+    /// it cannot use.
     static ChartFluid fromRecord(const json& record);
 };
+
+/// The name of humid air on charts and in the states of a model: EES's substance name. FluidRegistry's humid-air fluid
+/// calls itself "Air_ha" (HumidAirFluid::getName), which is the name of the real gas Air_ha.
+constexpr const char* HUMID_AIR_FLUID = "AirH2O";
+
+/// The name of a CoolSolve fluid in the Diagrams tab (the fluids listed, the states of a model): FluidRegistry's name,
+/// HUMID_AIR_FLUID for humid air.
+std::string diagramFluidName(const Fluid& fluid);
 
 /// The mass fractions an incompressible solution of CoolProp can have (its fraction_min, fraction_max), e.g.
 /// (0, 0.6) for "MEG". @throws DiagramError for a fluid CoolProp's INCOMP backend does not know
@@ -88,13 +110,14 @@ std::pair<double, double> solutionFractionRange(const std::string& coolpropKey);
  *
  * `Real` fluids and CoolProp mixtures take the backend; an incompressible solution is drawn with CoolProp's INCOMP
  * backend at the mass fraction `fractions` (one value, `basis` "mass" or empty); an ideal gas by CoolSolve's
- * ideal-gas provider (EES/JANAF reference states, diagram/ideal_gas.h).
+ * ideal-gas provider (EES/JANAF reference states, diagram/ideal_gas.h); humid air (AirH2O) by the humid-air provider
+ * (diagram/humid_air.h) at the total pressure `p_Pa`, 101325 Pa when it is not given.
  * @throws DiagramError for an unknown name, a solution without its fraction or with one outside its range, fractions
- *         given to another fluid, and for humid air and NH3H2O, which are "not drawable yet"
- *         (docs/coolplot_integration.md §5, phase 3)
+ *         or a total pressure given to another fluid, a total pressure outside the range of HAPropsSI, and for
+ *         NH3H2O, which is "not drawable yet" (docs/coolplot_integration.md §5)
  */
 ChartFluid chartFluid(const std::string& name, const std::string& backend = "HEOS", const std::vector<double>& fractions = {},
-                      const std::string& basis = "");
+                      const std::string& basis = "", std::optional<double> p_Pa = std::nullopt);
 
 /// The T-p box of the lines of an incompressible liquid where the spec gives no absolute pressure (CoolSolve's
 /// default: CoolPlot asks for absolute limits): 1 bar to 100 bar. Its temperatures are those of the fluid.
@@ -105,8 +128,9 @@ constexpr double LIQUID_P_MAX_PA = 1e7;
  * @brief What the engine asks of the fluid of a chart (CoolPlot's property provider, thermo/provider.py): full states
  *        from two quantities, the limits of the model, its critical point and its saturation range.
  *
- * Two providers exist: FluidModel (CoolProp, CoolPlot's thermo.fluid.Fluid) and IdealGasModel (CoolSolve's ideal
- * gases, diagram/ideal_gas.h). The defaults below are those of a fluid without a saturation curve. Not thread safe:
+ * Three providers exist: FluidModel (CoolProp, CoolPlot's thermo.fluid.Fluid), IdealGasModel (CoolSolve's ideal
+ * gases, diagram/ideal_gas.h) and HumidAirModel (HAPropsSI, CoolPlot's thermo.humid_air.HumidAir,
+ * diagram/humid_air.h). The defaults below are those of a fluid without a saturation curve. Not thread safe:
  * every calculation updates the state. Values that are not known are NaN (Python: None).
  */
 class PropertyProvider {
@@ -118,6 +142,17 @@ public:
     /// Whether the fluid has one component (a predefined blend counts by its components).
     virtual bool isPure() const = 0;
 
+    /// The keys of a state of this provider (provider.quantities): stateKeys() for a fluid.
+    virtual const std::vector<std::string>& quantities() const { return stateKeys(); }
+    /// The keys a state may be given by (provider.inputs): those of a state of a fluid; humid air not its pressure.
+    virtual const std::vector<std::string>& inputs() const { return stateKeys(); }
+    /// How the path between two states of a cycle is drawn (provider.path_kind): `kind` for a fluid ("auto" is
+    /// resolved from the states later), "straight" for humid air.
+    virtual std::string pathKind(const State& a, const State& b, const std::string& kind) const;
+    /// Why a state computed from a solved model does not belong to this provider's chart (chart.check_state: humid
+    /// air at another total pressure); empty when it does.
+    virtual std::string stateProblem(const State& state) const;
+
     /**
      * @brief Set the working state from two quantities (Fluid.update); a specific volume is given as a density.
      * @throws std::exception when the state cannot be computed
@@ -125,7 +160,7 @@ public:
     virtual void update(const std::string& key1, double value1, const std::string& key2, double value2) = 0;
     /// One quantity of the state of the last update(), in SI units ("v" is 1/rho).
     virtual double get(const std::string& key) const = 0;
-    /// The full state from two quantities (Fluid.state_point): every key of stateKeys().
+    /// The full state from two quantities (Fluid.state_point): every key of quantities().
     State statePoint(const std::string& key1, double value1, const std::string& key2, double value2);
 
     virtual double tTripleK() = 0;   ///< triple-point temperature; for a mixture the highest one of its components

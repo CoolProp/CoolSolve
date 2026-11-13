@@ -60,6 +60,6 @@ export function formatValue(value: number): string {
   return String(parseFloat(value.toPrecision(4)));
 }
 
-/** How a quantity key is written. */
-export const SYMBOLS: Record<string, string> = { rho: 'ρ', Q: 'x' };
+/** How a quantity key is written (as coolplot-core writes the symbols with "unicode"). */
+export const SYMBOLS: Record<string, string> = { rho: 'ρ', Q: 'x', RH: 'φ', Twb: 'T_wb', Tdp: 'T_dp' };
 export const symbolOf = (key: string) => SYMBOLS[key] ?? key;

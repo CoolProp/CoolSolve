@@ -258,8 +258,12 @@ export interface CoolPropFluidsResponse {
 // Property diagrams (CoolPlot): docs/coolplot_integration.md §3.1, §3.4, §4.1
 // ============================================================================
 
-/** The fluid diagram types of coolplot-core: vertical axis first ("ph" is log(p)-h). */
-export type DiagramName = 'ph' | 'Ts' | 'hs' | 'ps' | 'prho' | 'Trho' | 'pT' | 'Th';
+/**
+ * The diagram types of coolplot-core, vertical axis first ("ph" is log(p)-h): those of a fluid, and the charts of
+ * humid air, the psychrometric chart "WT" (humidity ratio over dry-bulb temperature) and the Mollier h,x chart "ThxW"
+ * (its temperature scale over the humidity ratio).
+ */
+export type DiagramName = 'ph' | 'Ts' | 'hs' | 'ps' | 'prho' | 'Trho' | 'pT' | 'Th' | 'WT' | 'ThxW';
 
 /** A family of lines a diagram type can draw: its quantity key and default number of lines. */
 export interface DiagramFamilyOption {
@@ -306,7 +310,7 @@ export interface DiagramRegionOption {
   limits: Record<string, unknown>;
 }
 
-/** What a kind of fluid ("Real", "Mixture", "Incompressible", "IdealGas") offers (`fluid_kinds` of the options). */
+/** What a kind of fluid ("Real", "Mixture", "Incompressible", "IdealGas", "HumidAir") offers (`fluid_kinds` of the options). */
 export interface DiagramFluidKind {
   /** The diagram types offered */
   diagram_types: DiagramName[];
@@ -318,8 +322,17 @@ export interface DiagramFluidKind {
   fractions: boolean;
   /** The T-p box of a fluid without saturation curve where the spec gives no absolute limit (null: the fluid's own) */
   default_box: (number | null)[] | null;
-  /** The region preset of a new chart (ACHP for mixtures, DEF for pure fluids); null without saturation curve */
-  default_region?: string | null;
+  /** The region of a new chart: a preset (ACHP for mixtures, DEF for pure fluids); null without saturation curve;
+   *  for humid air a region record {"bounds": {"T": [lo, hi], "W": [lo, hi]}} in SI */
+  default_region?: string | Record<string, unknown> | null;
+  /** CoolPlot's kind of the charts: "fluid", or "humid_air" (psychrometric and Mollier charts) */
+  chart_kind?: 'fluid' | 'humid_air';
+  /** Humid air: the total pressure of a new chart, Pa */
+  total_pressure?: number;
+  /** Humid air: the total pressures HAPropsSI covers, Pa */
+  total_pressure_range?: [number, number];
+  /** Humid air: the temperatures HAPropsSI covers, K */
+  temperature_range?: [number, number];
 }
 
 /** Response of GET /api/v1/diagram/options */
@@ -420,6 +433,8 @@ export interface DiagramDefinition {
   fluid: string;
   /** The concentration of an incompressible solution: one mass fraction (CoolPlot's fluid record) */
   fractions?: number[];
+  /** Humid air: the total pressure of the chart in Pa (CoolPlot's HumidAirSpec); absent: 101325 Pa */
+  p_Pa?: number;
   spec: CoolPlotSpec;
   cycles: CycleDefinition[];
   [field: string]: unknown;
@@ -437,6 +452,8 @@ export interface DiagramSceneInput {
   fluid: string;
   /** The mass fraction of an incompressible solution */
   fractions?: number[];
+  /** Humid air: the total pressure of the chart, Pa */
+  p_Pa?: number;
   spec: CoolPlotSpec;
   cycles: CycleDefinition[];
 }
@@ -505,13 +522,18 @@ export interface DiagramStatesResponse {
 export interface DiagramPointRequest {
   fluid: string;
   fractions?: number[];
+  p_Pa?: number;
   diagram: string;
   x_SI: number;
   y_SI: number;
 }
 
-/** The full state at a point of a chart, SI (Q = -1 in a single phase); a property may be null. */
-export type DiagramPointState = Partial<Record<'T' | 'p' | 'h' | 's' | 'rho' | 'u' | 'v' | 'Q', number | null>>;
+/**
+ * The full state at a point of a chart, SI (Q = -1 in a single phase); a property may be null. Humid air: T, W, RH,
+ * Twb, Tdp, h, v (per kg of dry air), Thx and p.
+ */
+export type DiagramPointState = Partial<Record<
+  'T' | 'p' | 'h' | 's' | 'rho' | 'u' | 'v' | 'Q' | 'W' | 'RH' | 'Twb' | 'Tdp' | 'Thx', number | null>>;
 
 /** Response of POST /api/v1/diagram/state (null: no state there). */
 export interface DiagramPointResponse {

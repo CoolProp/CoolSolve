@@ -10,7 +10,8 @@ report as vector PDF figures (when pdflatex is installed), POST
 GET/PUT /api/v1/diagram/definitions, the definitions
 in the ZIP bundle (diagrams.json), their reset by New and their return by Back, and that the former route
 POST /api/v1/coolprop/saturation is gone. Phase 3: incompressible solutions at a mass fraction, ideal gases, a tabular
-backend set in coolsolve.conf, blends (docs/coolplot_integration.md §5).
+backend set in coolsolve.conf, blends, humid air (psychrometric and Mollier charts at a total pressure, a solved
+air-conditioning process, the state under the cursor; docs/coolplot_integration.md §5).
 
 Usage:
     # Start CoolSolve with --gui, then:
@@ -113,7 +114,8 @@ def test_options():
     status, options = api("GET", "/diagram/options")
     check("options return 200", status == 200, str(status))
     names = [t["name"] for t in options["diagram_types"]]
-    check("the fluid diagram types, T-h included", names == ["ph", "Ts", "hs", "ps", "prho", "Trho", "pT", "Th"], str(names))
+    check("the fluid diagram types, T-h included, and the charts of humid air",
+          names == ["ph", "Ts", "hs", "ps", "prho", "Trho", "pT", "Th", "WT", "ThxW"], str(names))
     check("each type lists its families with a default count",
           all(f["default_num"] > 0 for t in options["diagram_types"] for f in t["families"]))
     units = {u["name"]: u for u in options["unit_systems"]}
@@ -243,7 +245,7 @@ def test_errors():
     cases = [
         ("unknown fluid", {"fluid": "Unobtainium", "spec": default_spec()}, "Unknown fluid"),
         ("no fluid", {"spec": default_spec()}, "fluid"),
-        ("humid air not drawable yet", {"fluid": "AirH2O", "spec": default_spec()}, "not drawable yet"),
+        ("a p-h chart of humid air", {"fluid": "AirH2O", "spec": default_spec()}, "cannot show humid air"),
         ("unknown diagram", {"fluid": "R134a", "spec": {**default_spec(), "diagram": "xy"}}, "Unknown diagram type"),
         ("bad theme", {"fluid": "R134a", "spec": {**default_spec(), "settings": {"look": "neon"}}}, "Unknown theme"),
         ("bad figure size", {"fluid": "R134a", "spec": default_spec(), "figure_size_pt": [1, 2]}, "figure size"),
@@ -399,6 +401,11 @@ def test_solved_cycle():
               str(by_number.get(2)))
         check("every state has two independent properties",
               all(len(set(s["vars"]) - {"T", "p"}) >= 1 for s in found), str(found)[:300])
+        # The states as GET /diagram/states writes them (label null) are a valid cycle definition
+        status, drawn = api("POST", "/diagram/scene", {"fluid": "R134a", "spec": default_spec(),
+                                                       "cycles": [{"name": "Model states", "states": found, "loops": []}]})
+        check("the states of the model, labels null included, draw as a cycle",
+              status == 200 and len([s for s in drawn.get("states", []) if s["cycle"] == 0]) == len(found), str(drawn)[:300])
 
     spec = default_spec()
     del spec["settings"]["branding"]
@@ -451,7 +458,7 @@ def solve(source: str):
 def test_more_fluids(options):
     """Phase 3: incompressible solutions, ideal gases, tabular backends, blends computed on several threads."""
     print("\n── More fluids (phase 3) ──")
-    check("the fluid types drawn", options["fluid_types"] == ["Real", "Mixture", "Incompressible", "IdealGas"],
+    check("the fluid types drawn", options["fluid_types"] == ["Real", "Mixture", "Incompressible", "IdealGas", "HumidAir"],
           str(options["fluid_types"]))
     kinds = options.get("fluid_kinds", {})
     check("what each kind offers", kinds.get("Incompressible", {}).get("diagram_types") == ["ph", "ps", "prho", "pT"]
@@ -545,6 +552,101 @@ def test_more_fluids(options):
         print(f"  CSL-0324 Propane[0.5]&IsoButane[0.5] p-h cold: {(time.time() - start) * 1000:.0f} ms over HTTP")
 
 
+AIR_CONDITIONING_MODEL = """P = 101325
+T[1] = 32
+RH[1] = 0.5
+w[1] = humrat(AirH2O, T=T[1], P=P, R=RH[1])
+h[1] = enthalpy(AirH2O, T=T[1], P=P, w=w[1])
+T[2] = 13
+RH[2] = 0.95
+w[2] = humrat(AirH2O, T=T[2], P=P, R=RH[2])
+h[2] = enthalpy(AirH2O, T=T[2], P=P, R=RH[2])
+w[3] = w[2]
+T[3] = 20
+h[3] = enthalpy(AirH2O, T=T[3], P=P, w=w[3])
+RH[3] = relhum(AirH2O, T=T[3], P=P, w=w[3])
+"""
+
+
+def humid_air_spec(diagram="WT"):
+    families = ("T", "RH", "Twb", "h", "v") if diagram == "ThxW" else ("RH", "Twb", "h", "v")
+    return {"diagram": diagram, "units": "engineering", "show_saturation": True,
+            "limits": {"bounds": {"Thx" if diagram == "ThxW" else "T": [263.15, 323.15], "W": [0, 0.03]}},
+            "isolines": [{"key": k, "num": 10, "rounding": True, "labels": True} for k in families],
+            "settings": {"look": "default", "branding": {"references": "none", "versions": False}}}
+
+
+def test_humid_air(options):
+    """Humid air (CS-FEAT-PSYCHRO): the psychrometric and Mollier charts at a total pressure, a solved process."""
+    print("\n── Humid air ──")
+    kind = options.get("fluid_kinds", {}).get("HumidAir", {})
+    check("what humid air offers", kind.get("diagram_types") == ["WT", "ThxW"] and kind.get("chart_kind") == "humid_air"
+          and kind.get("total_pressure") == 101325 and kind.get("saturation") is False, json.dumps(kind))
+    _, fluids = api("GET", "/coolprop/fluids")
+    listed = [f for f in fluids["fluids"] if f["type"] == "HumidAir"]
+    check("humid air is listed as AirH2O, once", [f["name"] for f in listed] == ["AirH2O"], str(listed))
+    names = [f["name"] for f in fluids["fluids"]]
+    check("every fluid is listed once", len(names) == len(set(names)), str([n for n in names if names.count(n) > 1]))
+    for diagram, x_key in (("WT", "T"), ("ThxW", "W")):
+        status, scene = api("POST", "/diagram/scene", {"fluid": "AirH2O", "spec": humid_air_spec(diagram)})
+        check(f"a {diagram} chart of humid air", status == 200 and 'data-item="iso/RH/1"' in scene.get("svg", "")
+              and scene["axes"]["x_key"] == x_key and scene["diagnostics"]["warnings"] == [], str(scene)[:300])
+        if status == 200:
+            check(f"{diagram}: CoolPlot's humid-air record in the spec", scene["spec"]["fluid"] == {"model": "humid_air", "p_Pa": 101325}
+                  and "W" in scene["spec"]["limits"]["bounds"], json.dumps(scene["spec"]["fluid"]))
+            print(f"  {diagram} cold: {scene['timing_ms']['curves']:.0f} ms of lines")
+    status, scene = api("POST", "/diagram/scene", {"fluid": "AirH2O", "p_Pa": 9e4, "spec": humid_air_spec()})
+    check("a chart at another total pressure", status == 200 and scene["spec"]["fluid"]["p_Pa"] == 9e4, str(scene)[:200])
+    for name, body, message in (
+            ("a total pressure out of range", {"fluid": "AirH2O", "p_Pa": 1e3, "spec": humid_air_spec()}, "between 10000.0"),
+            ("a total pressure that is no number", {"fluid": "AirH2O", "p_Pa": "1 atm", "spec": humid_air_spec()}, "p_Pa"),
+            ("a total pressure of R134a", {"fluid": "R134a", "p_Pa": 1e5, "spec": default_spec()}, "takes no total pressure"),
+            ("a psychrometric chart of R134a", {"fluid": "R134a", "spec": humid_air_spec()}, "cannot show R134a"),
+            ("a region preset on a psychrometric chart", {"fluid": "AirH2O", "spec": {**humid_air_spec(), "limits": "DEF"}},
+             "needs a Region"),
+            ("a region in the fog", {"fluid": "AirH2O", "spec": {**humid_air_spec(), "limits": {"bounds": {"T": [263.15, 273.15],
+                                                                                                         "W": [0.02, 0.03]}}}},
+             "above saturation")):
+        status, result = api("POST", "/diagram/scene", body)
+        check(f"{name}: 400 with an error", status == 400 and message in (result or {}).get("error", ""), f"{status} {result}")
+
+    # The state under the cursor: T, W, RH, Twb, Tdp, h, v, Thx, p; nothing above saturation
+    status, result = api("POST", "/diagram/state", {"fluid": "AirH2O", "diagram": "WT", "x_SI": 298.15, "y_SI": 0.01})
+    point = (result or {}).get("state") or {}
+    check("the state of humid air under the cursor", status == 200 and set(point) == {"T", "W", "RH", "Twb", "Tdp", "h", "v", "Thx", "p"}
+          and point["T"] == 298.15 and point["W"] == 0.01 and 0 < point["RH"] < 1, str(result))
+    status, result = api("POST", "/diagram/state", {"fluid": "AirH2O", "diagram": "WT", "x_SI": 298.15, "y_SI": 0.021})
+    check("fog has no state", status == 200 and result == {"state": None}, str(result))
+    status, result = api("POST", "/diagram/state", {"fluid": "AirH2O", "p_Pa": 9e4, "diagram": "WT", "x_SI": 298.15, "y_SI": 0.021})
+    check("at 0.9 bar the same point is humid air", status == 200 and (result.get("state") or {}).get("p") == 9e4, str(result))
+    status, result = api("POST", "/diagram/state", {"fluid": "AirH2O", "diagram": "ThxW", "x_SI": 0.01, "y_SI": 300.0})
+    check("a point of the Mollier chart", status == 200 and abs(((result or {}).get("state") or {}).get("Thx", 0) - 300) < 1e-6, str(result))
+    start = time.time()
+    for i in range(20):
+        api("POST", "/diagram/state", {"fluid": "AirH2O", "diagram": "WT", "x_SI": 290 + i, "y_SI": 0.005})
+    print(f"  state of humid air under the cursor: {(time.time() - start) / 20 * 1000:.2f} ms per request (HTTP)")
+
+    # A solved air-conditioning process: its states grouped from the humid-air calls, drawn with straight paths
+    result = solve(AIR_CONDITIONING_MODEL)
+    check("the air-conditioning model solves", result.get("status") == "Success", str(result)[:200])
+    status, states = api("GET", "/diagram/states")
+    air = states.get("fluids", {}).get("AirH2O", [])
+    check("its three states, by the humid-air calls they share",
+          [s["number"] for s in air] == [1, 2, 3] and air[0]["vars"] == {"T": "T[1]", "p": "P", "RH": "RH[1]", "W": "w[1]", "h": "h[1]"},
+          str(states)[:400])
+    cycle = {"name": "Air conditioning", "states": [{"number": s["number"], "vars": s["vars"]} for s in air], "loops": [[1, 2, 3]]}
+    status, scene = api("POST", "/diagram/scene", {"fluid": "AirH2O", "spec": humid_air_spec(), "cycles": [cycle]})
+    drawn = scene.get("states", []) if status == 200 else []
+    check("the process on the psychrometric chart", len(drawn) == 3 and 'data-item="cycle/Air conditioning/loop/0"' in scene.get("svg", "")
+          and scene["diagnostics"]["warnings"] == [], str(scene)[:300])
+    if len(drawn) == 3:
+        check("the states where the solver put them", drawn[0]["values_SI"]["W"] == result["variables"]["w[1]"]
+              and drawn[2]["values_SI"]["W"] == drawn[1]["values_SI"]["W"], str(drawn[0]))
+    status, scene = api("POST", "/diagram/scene", {"fluid": "AirH2O", "p_Pa": 1e5, "spec": humid_air_spec(), "cycles": [cycle]})
+    check("at another total pressure the states are left out with a warning",
+          status == 200 and scene["states"] == [] and any("101325 Pa" in w for w in scene["diagnostics"]["warnings"]), str(scene)[:300])
+
+
 def test_state():
     print("\n── State under the cursor ──")
     status, result = api("POST", "/diagram/state", {"fluid": "R134a", "diagram": "ph", "x_SI": 3.0e5, "y_SI": 2.0e5})
@@ -622,6 +724,7 @@ def main():
         test_state()
         test_solved_cycle()
         test_more_fluids(options)
+        test_humid_air(options)
     except Exception as e:
         print(f"\nFATAL ERROR: {e!r}")
         check("no fatal error", False, repr(e))

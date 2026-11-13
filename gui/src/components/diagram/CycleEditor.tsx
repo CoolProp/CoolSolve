@@ -14,7 +14,6 @@ import {
   ARRAYS_CYCLE,
   INFERRED_CYCLE,
   PATH_KINDS,
-  STATE_KEYS,
   connectionsOf,
   formatLoops,
   freeCycleName,
@@ -24,6 +23,7 @@ import {
   parseLoops,
   pathsOf,
   pathsValue,
+  stateKeysOf,
 } from './definition';
 import { symbolOf } from './options';
 
@@ -43,8 +43,8 @@ interface Props {
 }
 
 const listId = (key: string) => `cs-cycle-vars-${key}`;
-/** Properties in the order of STATE_KEYS (T, p, h, s, ...), unknown ones last. */
-const keyRank = (key: string) => (STATE_KEYS.includes(key) ? STATE_KEYS.indexOf(key) : STATE_KEYS.length);
+/** Properties in the order of the chart's state keys (T, p, h, s, ...; humid air T, W, RH, ...), unknown ones last. */
+const keyRank = (keys: string[], key: string) => (keys.includes(key) ? keys.indexOf(key) : keys.length);
 
 /**
  * A text field applied on Enter or blur. `onCommit` returns an error to show (the text is kept), or
@@ -94,15 +94,17 @@ function renumber(cycle: CycleDefinition, from: number, to: number): CycleDefini
   return { ...cycle, loops, paths: pathsValue(kind, moved, loops) };
 }
 
-function StateRow({ state, onChange, onRemove, numbers, variables }: {
+function StateRow({ state, onChange, onRemove, numbers, variables, keys }: {
   state: CycleStateDefinition;
   onChange: (state: CycleStateDefinition) => string | null;
   onRemove: () => void;
   numbers: number[];
   variables: VariableChoice[];
+  /** The quantities a state of the chart can name */
+  keys: string[];
 }) {
   const used = Object.keys(state.vars);
-  const free = STATE_KEYS.filter((k) => !used.includes(k));
+  const free = keys.filter((k) => !used.includes(k));
   const [slotKey, setSlotKey] = useState('');
   const newKey = free.includes(slotKey) ? slotKey : free[0];
 
@@ -153,7 +155,7 @@ function StateRow({ state, onChange, onRemove, numbers, variables }: {
         }}
       />
       <div className="diagram-pairs">
-        {Object.entries(state.vars).sort(([a], [b]) => keyRank(a) - keyRank(b)).map(([key, name]) => (
+        {Object.entries(state.vars).sort(([a], [b]) => keyRank(keys, a) - keyRank(keys, b)).map(([key, name]) => (
           <span key={key} className="diagram-pair">
             <select className="diagram-select" value={key} title="Property" onChange={(e) => renameKey(key, e.target.value)}>
               {[key, ...free].map((k) => <option key={k} value={k}>{symbolOf(k)}</option>)}
@@ -180,12 +182,13 @@ function StateRow({ state, onChange, onRemove, numbers, variables }: {
   );
 }
 
-function CycleBlock({ cycle, others, onChange, onRemove, variables }: {
+function CycleBlock({ cycle, others, onChange, onRemove, variables, keys }: {
   cycle: CycleDefinition;
   others: string[];
   onChange: (cycle: CycleDefinition) => void;
   onRemove: () => void;
   variables: VariableChoice[];
+  keys: string[];
 }) {
   const [perConnection, setPerConnection] = useState(false);
   const states = cycle.states ?? [];
@@ -294,6 +297,7 @@ function CycleBlock({ cycle, others, onChange, onRemove, variables }: {
           state={state}
           numbers={numbers}
           variables={variables}
+          keys={keys}
           onChange={(next) => setState(i, next)}
           onRemove={() => removeState(i)}
         />
@@ -319,7 +323,8 @@ export default function CycleEditor({ def, onChange, inferredStates, variables }
   const removeCycle = (index: number) => onChange({ ...def, cycles: def.cycles.filter((_, i) => i !== index) });
 
   // Per property: the variables the inference found for it first, then the fluid's, then the others
-  const lists = open ? STATE_KEYS.map((key) => {
+  const keys = stateKeysOf(def);
+  const lists = open ? keys.map((key) => {
     const rank = (v: VariableChoice) => (v.key === key ? 0 : v.ofFluid ? 1 : 2);
     return { key, names: [...variables].sort((a, b) => rank(a) - rank(b)).map((v) => v.name) };
   }) : [];
@@ -357,6 +362,7 @@ export default function CycleEditor({ def, onChange, inferredStates, variables }
               cycle={cycle}
               others={def.cycles.filter((_, i) => i !== index).map((c) => c.name)}
               variables={variables}
+              keys={keys}
               onChange={(next) => setCycle(index, next)}
               onRemove={() => removeCycle(index)}
             />

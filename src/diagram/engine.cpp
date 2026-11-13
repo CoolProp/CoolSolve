@@ -8,6 +8,7 @@
 // CoolPlot is MIT licensed: Copyright 2014-2019 Jorrit Wronski and the other developers.
 #include "coolsolve/diagram/engine.h"
 
+#include "coolsolve/diagram/humid_air.h"
 #include "coolsolve/diagram/ideal_gas.h"
 #include "coolsolve/diagram/references.h"
 
@@ -134,10 +135,21 @@ json finiteOrNull(double value) {
     return std::isfinite(value) ? json(value) : json();
 }
 
-/// The units of a unit system as {key: [label, scale, offset(, difference)]} for the fluid quantities.
+/// The quantities of the charts: those of a fluid state and those of humid air.
+const std::vector<std::string>& chartKeys() {
+    static const std::vector<std::string> keys = [] {
+        std::vector<std::string> out = stateKeys();
+        for (const std::string& key : airStateKeys())
+            if (std::find(out.begin(), out.end(), key) == out.end()) out.push_back(key);
+        return out;
+    }();
+    return keys;
+}
+
+/// The units of a unit system as {key: [label, scale, offset(, difference)]} for the quantities of the charts.
 json unitTable(const coolplot::UnitSystem& units) {
     json table = json::object();
-    for (const std::string& key : stateKeys()) {
+    for (const std::string& key : chartKeys()) {
         const coolplot::Unit& unit = units.at(key);
         json entry = json::array({unit.label, unit.scale, unit.offset});
         if (!unit.difference_label.empty()) entry.push_back(unit.difference_label);
@@ -196,8 +208,19 @@ Chart::Chart(ChartFluid fluid_, PlanSpec spec_) : fluid(std::move(fluid_)), spec
 
 namespace {
 
-/// The property provider of a chart fluid (provider.make_provider): CoolSolve's for an ideal gas, CoolProp's otherwise.
+/// Whether a diagram type draws the fluid: a chart of humid air shows humid air, a chart of a fluid a fluid (the
+/// check of DiagramSpec). @throws DiagramError otherwise
+void checkChartKind(const ChartFluid& fluid, const coolplot::DiagramType& diagram) {
+    if ((diagram.kind == "humid_air") != fluid.isHumidAir())
+        throw DiagramError("A " + diagram.name() + " diagram cannot show " + fluid.name() + "." +
+                           (fluid.isHumidAir() ? " Humid air is drawn in the psychrometric (WT) and Mollier (ThxW) charts."
+                                               : " The psychrometric and Mollier charts are those of humid air (AirH2O)."));
+}
+
+/// The property provider of a chart fluid (provider.make_provider): HAPropsSI's for humid air, CoolSolve's for an ideal
+/// gas, CoolProp's otherwise.
 std::unique_ptr<PropertyProvider> makeProvider(const ChartFluid& fluid) {
+    if (fluid.isHumidAir()) return std::make_unique<HumidAirModel>(fluid.p_Pa);
     if (fluid.isIdealGas()) return std::make_unique<IdealGasModel>(fluid);
     return std::make_unique<FluidModel>(fluid);
 }
@@ -264,8 +287,15 @@ Domain Engine::domain(const Chart& chart, std::vector<std::string>& warnings) {
     const PlanSpec& spec = chart.spec;
     const std::string fluidKey = chart.fluid.fluidString() + "|" + chart.fingerprint;
     const double margin = spec.calc.critical_margin;
-    const std::string region = spec.limits.toJson().dump() + "|" + keyNumber(margin);
+    const std::string region = spec.limitsJson().dump() + "|" + keyNumber(margin);
+    checkChartKind(chart.fluid, spec.diagram);
     try {
+        if (chart.fluid.isHumidAir()) {
+            // A region of T (or Thx) and W at one total pressure, without saturation states (HumidAir.domain); the
+            // labels inside the dome are those of a fluid's chart (Engine._dome_ends)
+            return impl_->domains.getOrCompute(fluidKey + "|domain|" + region,
+                                               [&] { return HumidAirModel(chart.fluid.p_Pa).domain(spec.region); });
+        }
         Domain domain = impl_->domains.getOrCompute(fluidKey + "|domain|" + region, [&] {
             return withFluid(chart.fluid, [&](PropertyProvider& fluid) { return chartDomain(fluid, spec.limits, margin); });
         });
@@ -360,6 +390,11 @@ std::string curveKey(const Chart& chart, const Domain& domain, const CurveReques
                       request.key + "|" + keyNumber(request.value_SI) + "|" + std::to_string(request.points) + "|";
     if (request.key == "Q") key += keyNumber(calc.critical_margin) + "|" + calc.saturation_spacing;
     else key += keyBox(domain.tp_box) + "|" + calc.solver + "|" + keyNumber(calc.critical_margin);
+    // An isotherm of the Mollier chart ends a little beyond the top of the humidity ratio range, which the T-p box
+    // does not hold
+    if (request.key == "T" && chart.fluid.isHumidAir())
+        for (const auto& [k, range] : domain.ranges_SI)
+            if (k == "W") key += "|" + keyNumber(range.first) + "," + keyNumber(range.second);
     return key;
 }
 
@@ -371,6 +406,11 @@ std::shared_ptr<const Curve> Engine::curve(const Chart& chart, const Domain& dom
     const std::string key = curveKey(chart, domain, request);
     if (std::optional<std::shared_ptr<const Curve>> found = impl_->curves.get(key)) return *found;
 
+    if (chart.fluid.isHumidAir()) {  // HAPropsSI, per thread in CoolProp: a provider of its own (cheap, per call)
+        const HumidAirModel air(chart.fluid.p_Pa);
+        auto computed = std::make_shared<Curve>(air.line(request.key, request.value_SI, domain, request.points, spec.diagram));
+        return impl_->curves.insert(key, std::shared_ptr<const Curve>(computed));
+    }
     if (chart.fluid.isIdealGas()) {  // CoolSolve's provider: no plot, a model of its own (cheap, per call)
         IdealGasModel gas(chart.fluid);
         auto computed = std::make_shared<Curve>(idealGasLine(gas, spec.diagram, request.key, request.value_SI, domain, request.points));
@@ -604,7 +644,7 @@ struct ComposedChart {
 ComposedChart composeChart(const SceneRequest& request, bool pdf) {
     const auto start = std::chrono::steady_clock::now();
     ComposedChart out;
-    ChartFluid fluid = chartFluid(request.fluid, request.backend, request.fractions, request.basis);
+    ChartFluid fluid = chartFluid(request.fluid, request.backend, request.fractions, request.basis, request.p_Pa);
     if (!request.spec.is_object()) throw DiagramError("The chart spec has to be a JSON object (CoolPlot's DiagramSpec record).");
     out.specRecord = request.spec;
     out.specRecord.erase("fluid");  // the server writes them
@@ -619,6 +659,7 @@ ComposedChart composeChart(const SceneRequest& request, bool pdf) {
         throw DiagramError(std::string("The chart spec is not a valid CoolPlot spec record: ") + e.what());
     }
     const Chart chart(fluid, PlanSpec::fromJson(out.specRecord));
+    checkChartKind(fluid, chart.spec.diagram);
     if (fluid.isIdealGas()) checkIdealGasDiagram(chart.spec.diagram);
     out.xKey = chart.spec.diagram.x;
     out.yKey = chart.spec.diagram.y;
@@ -631,7 +672,9 @@ ComposedChart composeChart(const SceneRequest& request, bool pdf) {
 
     Engine& engine = Engine::shared();
     const Domain domain = engine.domain(chart, out.warnings);
-    if (!domain.saturation)  // CoolPlot draws a fluid without saturation curve from absolute limits only
+    if (chart.spec.humidAir())  // the region drawn, PsychrometricChart's default included
+        out.specRecord["limits"] = chart.spec.region.toJson();
+    else if (!domain.saturation)  // CoolPlot draws a fluid without saturation curve from absolute limits only
         out.specRecord["limits"] = {{"T_min", domain.tp_box[0]}, {"T_max", domain.tp_box[1]}, {"p_min", domain.tp_box[2]},
                                     {"p_max", domain.tp_box[3]}};
     const std::vector<PlannedCurve> curves = engine.curves(chart, domain, plan(chart.spec, domain), out.curveDiagnostics, out.warnings);
@@ -758,12 +801,20 @@ void readConcentration(const json& record, std::vector<double>& fractions, std::
     }
 }
 
+std::optional<double> readTotalPressure(const json& record) {
+    const json given = record.is_object() ? record.value("p_Pa", json()) : json();
+    if (given.is_null()) return std::nullopt;
+    if (!given.is_number()) throw DiagramError("\"p_Pa\" is the total pressure of a chart of humid air, a number of Pa.");
+    return given.get<double>();
+}
+
 SceneRequest definitionRequest(const json& definition) {
     if (!definition.is_object() || !definition.contains("fluid") || !definition.at("fluid").is_string())
         throw DiagramError("A diagram definition needs the name of its fluid (\"fluid\").");
     SceneRequest request;
     request.fluid = definition.at("fluid").get<std::string>();
     readConcentration(definition, request.fractions, request.basis);
+    request.p_Pa = readTotalPressure(definition);
     request.spec = definition.value("spec", json::object());
     request.cycles = definition.value("cycles", json::array());
     return request;
@@ -820,7 +871,7 @@ json stateAt(const ChartFluid& chart, const std::string& diagram, double x_SI, d
     } catch (const coolplot::Error& e) {
         throw DiagramError(e.what());
     }
-    if (type.kind != "fluid") throw DiagramError("Charts of humid air ('" + type.name() + "') are not drawable yet.");
+    checkChartKind(chart, type);
     if (!std::isfinite(x_SI) || !std::isfinite(y_SI)) throw DiagramError("The point of a chart is two finite numbers in SI units.");
     if (chart.isIdealGas()) checkIdealGasDiagram(type);
     return Engine::shared().withFluid(chart, [&](PropertyProvider& model) -> json {
@@ -830,7 +881,7 @@ json stateAt(const ChartFluid& chart, const std::string& diagram, double x_SI, d
             return nullptr;  // no state there
         }
         State state;
-        for (const std::string& key : stateKeys()) {
+        for (const std::string& key : model.quantities()) {
             try {
                 state[key] = model.get(key);
             } catch (const std::exception&) {
@@ -843,8 +894,10 @@ json stateAt(const ChartFluid& chart, const std::string& diagram, double x_SI, d
         if (!std::isfinite(T) || !std::isfinite(p) || (std::isfinite(T_min) && T < T_min) || (std::isfinite(T_max) && T > T_max) ||
             (std::isfinite(p_min) && p < p_min) || (std::isfinite(p_max) && p > p_max))
             return nullptr;
+        // Humid air is no state above saturation (fog) nor below dry air
+        if (chart.isHumidAir() && !(state.at("RH") >= 0.0 && state.at("RH") <= 1.0 + 1e-9 && state.at("W") >= 0.0)) return nullptr;
         json out = json::object();
-        for (const std::string& key : stateKeys()) out[key] = finiteOrNull(state.at(key));
+        for (const std::string& key : model.quantities()) out[key] = finiteOrNull(state.at(key));
         return out;
     });
 }
@@ -855,9 +908,15 @@ json stateAt(const ChartFluid& chart, const std::string& diagram, double x_SI, d
 
 namespace {
 
-/// The diagram types the Diagrams tab offers, in its order.
-const std::vector<std::string>& offeredDiagramTypes() {
+/// The diagram types of a fluid the Diagrams tab offers, in its order.
+const std::vector<std::string>& fluidDiagramTypes() {
     static const std::vector<std::string> names = {"ph", "Ts", "hs", "ps", "prho", "Trho", "pT", "Th"};
+    return names;
+}
+
+/// The charts of humid air: the psychrometric chart (W over T) and the Mollier h,x chart (Thx over W).
+const std::vector<std::string>& humidAirDiagramTypes() {
+    static const std::vector<std::string> names = {"WT", "ThxW"};
     return names;
 }
 
@@ -866,14 +925,18 @@ const std::vector<std::string>& offeredDiagramTypes() {
  * vertical axis, whose axes CoolProp's INCOMP backend has a flash for (in the others, T-s, h-s, T-rho, T-h, every
  * state lies near one line: h, s and rho depend on T alone but for a small pressure term); the lines CoolProp::Plot
  * computes for them (it has no (rho, T) nor (u, p) flash of INCOMP). Ideal gases: every chart but T-h, every family
- * but the quality. `default_region`: the region preset of a new chart; ACHP for mixtures, whose DEF region reaches
- * down to the triple point of the lightest component (0.4 Pa for propane/isobutane), where their lines are slow to
- * compute (CSL-0324: 6.0 s with DEF, 2.8 s with ACHP); null for the fluids without saturation curve.
+ * but the quality. Humid air: the psychrometric and Mollier charts at a total pressure (`total_pressure`, the
+ * default, within `total_pressure_range`), with no dome, critical point nor saturation scale (`saturation` false: its
+ * saturation line, RH = 1, comes with the chart). `default_region`: the region of a new chart; ACHP for mixtures,
+ * whose DEF region reaches down to the triple point of the lightest component (0.4 Pa for propane/isobutane), where
+ * their lines are slow to compute (CSL-0324: 6.0 s with DEF, 2.8 s with ACHP); null for the fluids without saturation
+ * curve; for humid air the Region record of a psychrometric chart (T and W; the Mollier chart bounds Thx instead of
+ * T, within `temperature_range`). `chart_kind`: CoolPlot's kind of the charts, "fluid" or "humid_air".
  */
 json fluidKinds() {
-    const json all = offeredDiagramTypes();
+    const json all = fluidDiagramTypes();
     json idealTypes = json::array();
-    for (const std::string& name : offeredDiagramTypes()) {
+    for (const std::string& name : fluidDiagramTypes()) {
         try {
             checkIdealGasDiagram(coolplot::DiagramType::parse(name));
             idealTypes.push_back(name);
@@ -881,36 +944,45 @@ json fluidKinds() {
         }
     }
     json saturated = {{"diagram_types", all}, {"families", {"T", "p", "h", "s", "rho", "u", "Q"}}, {"saturation", true},
-                      {"fractions", false}, {"default_box", nullptr}, {"default_region", "DEF"}};
+                      {"fractions", false}, {"default_box", nullptr}, {"default_region", "DEF"}, {"chart_kind", "fluid"}};
     json mixture = saturated;
     mixture["default_region"] = "ACHP";
     return {{"Real", saturated},
             {"Mixture", mixture},
             {"Incompressible", {{"diagram_types", {"ph", "ps", "prho", "pT"}}, {"families", {"T", "p", "h", "s"}}, {"saturation", false},
                                 {"fractions", true}, {"default_box", {nullptr, nullptr, LIQUID_P_MIN_PA, LIQUID_P_MAX_PA}},
-                                {"default_region", nullptr}}},
+                                {"default_region", nullptr}, {"chart_kind", "fluid"}}},
             {"IdealGas", {{"diagram_types", idealTypes}, {"families", {"T", "p", "h", "s", "rho", "u"}}, {"saturation", false},
-                          {"fractions", false}, {"default_box", IDEAL_GAS_BOX}, {"default_region", nullptr}}}};
+                          {"fractions", false}, {"default_box", IDEAL_GAS_BOX}, {"default_region", nullptr}, {"chart_kind", "fluid"}}},
+            {"HumidAir", {{"diagram_types", humidAirDiagramTypes()}, {"families", {"T", "RH", "Twb", "h", "v"}}, {"saturation", false},
+                          {"fractions", false}, {"default_box", nullptr}, {"default_region", defaultHumidAirRegion("T").toJson()},
+                          {"chart_kind", "humid_air"}, {"total_pressure", DEFAULT_HUMID_AIR_P_PA},
+                          {"total_pressure_range", {HUMID_AIR_P_MIN_PA, HUMID_AIR_P_MAX_PA}},
+                          {"temperature_range", {HUMID_AIR_T_MIN_K, HUMID_AIR_T_MAX_K}}}}};
 }
 
 }  // namespace
 
 json options() {
     json types = json::array();
-    for (const std::string& name : offeredDiagramTypes()) {
+    std::vector<std::string> offered = fluidDiagramTypes();
+    offered.insert(offered.end(), humidAirDiagramTypes().begin(), humidAirDiagramTypes().end());
+    for (const std::string& name : offered) {
         const coolplot::DiagramType type = coolplot::DiagramType::parse(name);
         const coolplot::Quantity& y = coolplot::get_quantity(type.y);
         const coolplot::Quantity& x = coolplot::get_quantity(type.x);
         std::string xLabel = x.label;
         xLabel[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(xLabel[0])));
+        std::string title = y.label + "-" + xLabel;
+        if (type.kind == "humid_air") title = type.y == "Thx" ? "Mollier h,x chart" : "Psychrometric chart";
         json families = json::array();
         for (const coolplot::Family& family : type.families())
             families.push_back({{"key", family.key},
-                                {"label", coolplot::get_quantity(family.key).label},
-                                {"symbol", coolplot::get_quantity(family.key).symbol},
+                                {"label", type.quantity_label(family.key)},
+                                {"symbol", type.symbol(family.key)},
                                 {"default_num", family.default_num}});
         types.push_back({{"name", type.name()},
-                         {"title", y.label + "-" + xLabel},
+                         {"title", title},
                          {"kind", type.kind},
                          {"x", type.x},
                          {"y", type.y},
@@ -926,7 +998,7 @@ json options() {
     json regions = json::array();
     for (const std::string& name : tpLimitsPresetNames()) regions.push_back({{"name", name}, {"limits", tpLimitsPreset(name).toJson()}});
     return {{"diagram_types", types},
-            {"fluid_types", {"Real", "Mixture", "Incompressible", "IdealGas"}},
+            {"fluid_types", {"Real", "Mixture", "Incompressible", "IdealGas", "HumidAir"}},
             {"fluid_kinds", fluidKinds()},
             {"unit_systems", units},
             {"default_unit_system", "engineering"},

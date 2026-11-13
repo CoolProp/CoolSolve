@@ -4,7 +4,7 @@
   "coolprop_port_used": false,
   "coolprop_revision": "ae81610e7d23efc57f9d051c8e70a4d66e87537f",
   "coolprop_version": "8.0.0",
-  "date": "2026-11-12",
+  "date": "2026-11-13",
   "generator": "tools/coolplot_fixtures.py",
   "python": "3.11.5"
 }

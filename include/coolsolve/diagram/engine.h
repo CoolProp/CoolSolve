@@ -150,6 +150,7 @@ struct SceneRequest {
     std::string backend = "HEOS";            ///< the model's coolpropBackend
     std::vector<double> fractions;           ///< the mass fraction of an incompressible solution (chartFluid)
     std::string basis;                       ///< what the fractions are: "mass" (the default) for a solution
+    std::optional<double> p_Pa;              ///< humid air: the total pressure of the chart (default 101325 Pa)
     json spec = json::object();              ///< CoolPlot spec record, without "fluid" and "cycles"
     json cycles = json::array();             ///< cycle definitions (§4.1)
     std::optional<std::pair<double, double>> figureSizePt;  ///< the whole figure; default: settings.page
@@ -164,9 +165,12 @@ struct SceneRequest {
  *        the lines settings.branding asks for (references.h: sourceLines).
  * For a fluid without saturation curve (an incompressible liquid, an ideal gas) the composed spec carries the
  * absolute T-p box of its lines as its limits, which CoolPlot needs for such a fluid.
+ * A chart of humid air (the psychrometric "WT" and Mollier "ThxW" charts) is at the request's total pressure, over the
+ * spec's Region (or PsychrometricChart's default), which the composed spec carries.
  * @throws DiagramError for an unknown fluid, a fluid not drawable yet, a solution without its concentration or with
- *         one outside its range, an unknown diagram type, a chart an ideal gas does not have, or a spec value CoolPlot
- *         or coolplot-core refuses
+ *         one outside its range, an unknown diagram type, one that cannot show the fluid (a fluid's chart of humid air,
+ *         a psychrometric chart of a fluid), a chart an ideal gas does not have, or a spec value CoolPlot or
+ *         coolplot-core refuses
  */
 json scene(const SceneRequest& request);
 
@@ -201,8 +205,15 @@ const json& findDefinition(const json& document, const std::string& name);
 void readConcentration(const json& record, std::vector<double>& fractions, std::string& basis);
 
 /**
- * @brief The chart request of a diagram definition ({name, fluid, fractions, basis, spec, cycles}); the backend, the
- *        solution and the figure size are left to the caller.
+ * @brief The total pressure of a chart of humid air in a chart request or a diagram definition: "p_Pa" (HumidAirSpec's
+ *        field), a number of Pa; none when absent or null. chartFluid() checks it against the fluid and its range.
+ * @throws DiagramError when it is not a number
+ */
+std::optional<double> readTotalPressure(const json& record);
+
+/**
+ * @brief The chart request of a diagram definition ({name, fluid, fractions, basis, p_Pa, spec, cycles}); the backend,
+ *        the solution and the figure size are left to the caller.
  * @throws DiagramError for a definition without the name of its fluid, or with an invalid concentration
  */
 SceneRequest definitionRequest(const json& definition);
@@ -242,12 +253,14 @@ std::vector<std::pair<std::string, std::string>> reportDiagrams(const json& docu
  * @brief The full state at a point of a chart (POST /api/v1/diagram/state, the hover of the Diagrams tab).
  *
  * The fluid's state at the axis values `x_SI`, `y_SI` of `diagram`: every key of stateKeys(), null for a value that
- * cannot be computed, Q = -1 in single phase as CoolProp and CoolPlot report it. One flash with the chart fluid's
- * model (the same as the cycles and the domain use), the caches of the engine kept.
- * @param fluid the chart fluid (chartFluid: the model's backend, the concentration of a solution)
- * @return the state, or null when the point has none: the model cannot compute it, or it lies outside the
- *         temperature and pressure range of the model
- * @throws DiagramError for an unknown diagram type, a value that is not a finite number
+ * cannot be computed, Q = -1 in single phase as CoolProp and CoolPlot report it; for humid air every key of
+ * airStateKeys() (T, W, RH, Twb, Tdp, h, v, Thx, p). One flash with the chart fluid's model (the same as the cycles
+ * and the domain use), the caches of the engine kept.
+ * @param fluid the chart fluid (chartFluid: the model's backend, the concentration of a solution, the total pressure
+ *        of humid air)
+ * @return the state, or null when the point has none: the model cannot compute it, it lies outside the temperature
+ *         and pressure range of the model, or (humid air) above saturation or below dry air
+ * @throws DiagramError for an unknown diagram type, one that cannot show the fluid, a value that is not a finite number
  */
 json stateAt(const ChartFluid& fluid, const std::string& diagram, double x_SI, double y_SI);
 
@@ -256,11 +269,13 @@ json stateAt(const ChartFluid& fluid, const std::string& diagram, double x_SI, d
  *        what each kind of fluid offers (`fluid_kinds`), unit systems (the presets and `coolsolve`, CoolSolve's units
  *        as a custom unit record), region presets, themes, label modes and the versions.
  *
- * `fluid_kinds` maps "Real", "Mixture", "Incompressible" and "IdealGas" to {"diagram_types": names offered,
- * "families": the keys of the families its lines can have, "saturation": whether it has a saturation curve (dome,
- * lines of constant quality, critical point, saturation scale), "fractions": whether it takes a concentration (a
- * mass fraction), "default_box": [T_min_K, T_max_K, p_min_Pa, p_max_Pa] of a fluid without saturation curve where
- * the spec gives no absolute limit (null: the fluid's own temperatures)}.
+ * `fluid_kinds` maps "Real", "Mixture", "Incompressible", "IdealGas" and "HumidAir" to {"diagram_types": names
+ * offered, "families": the keys of the families its lines can have, "saturation": whether it has a saturation curve
+ * (dome, lines of constant quality, critical point, saturation scale), "fractions": whether it takes a concentration
+ * (a mass fraction), "default_box": [T_min_K, T_max_K, p_min_Pa, p_max_Pa] of a fluid without saturation curve where
+ * the spec gives no absolute limit (null: the fluid's own temperatures), "default_region": the limits of a new chart,
+ * "chart_kind": "fluid" or "humid_air"}; humid air adds "total_pressure" (the default, Pa), "total_pressure_range" and
+ * "temperature_range" (those of HAPropsSI, Pa and K).
  */
 json options();
 

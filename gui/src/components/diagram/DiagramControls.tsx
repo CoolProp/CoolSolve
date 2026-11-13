@@ -1,8 +1,9 @@
 /**
  * DiagramControls — the chart settings of a diagram definition: fluid (and the concentration of a
  * solution), diagram type, units, region (or the temperature and pressure range of a fluid without
- * saturation curve), theme, label mode, line families (on/off, count, rounding), critical point and
- * saturation scale. What can be chosen comes from `GET /api/v1/diagram/options`, per kind of fluid.
+ * saturation curve; for humid air the total pressure and the temperature and humidity ratio range), theme,
+ * label mode, line families (on/off, count, rounding), critical point and saturation scale. What can be
+ * chosen comes from `GET /api/v1/diagram/options`, per kind of fluid.
  */
 
 import { useEffect, useState } from 'react';
@@ -16,12 +17,17 @@ import {
   fitToKind,
   fluidKind,
   hasSaturationScale,
+  humidAirRegion,
+  isHumidAirKind,
+  lineWeight,
+  regionBounds,
   sameFluid,
   sameJson,
   unitsName,
   unitsRecord,
   withDiagramType,
   withFamily,
+  withLineWeight,
   withView,
 } from './definition';
 import { formatValue, unitTableOf } from './options';
@@ -35,6 +41,8 @@ interface Props {
   modelFluids: string[];
   /** The concentration of the model's solutions (mass fractions), the default of their charts */
   modelFractions?: Record<string, number[]>;
+  /** The total pressure of the model's humid air (Pa), the default of its charts */
+  modelPressure?: number;
   onChange: (def: DiagramDefinition) => void;
 }
 
@@ -92,15 +100,15 @@ function NumberField({ value, onCommit, min, max, step, optional, lazy, placehol
 /** The bounds of a region record, in the order they are shown. */
 const BOUNDS = ['T_min', 'T_max', 'p_min', 'p_max'] as const;
 
-/** How a quantity key is written in the controls. */
-const SYMBOLS: Record<string, string> = { rho: 'ρ', Q: 'x' };
+/** How a quantity key (or a family's symbol) is written in the controls. */
+const SYMBOLS: Record<string, string> = { rho: 'ρ', Q: 'x', RH: 'φ', phi: 'φ' };
 const symbol = (key: string) => SYMBOLS[key] ?? key;
 
 const UNIT_LABELS: Record<string, string> = { coolsolve: 'model (°C, Pa, J/kg)' };
 const THEME_AUTO = '';
 const MAX_LINES = 60;
 
-export default function DiagramControls({ def, options, fluids, modelFluids, modelFractions, onChange }: Props) {
+export default function DiagramControls({ def, options, fluids, modelFluids, modelFractions, modelPressure, onChange }: Props) {
   const spec = def.spec;
   const type = diagramOption(options, spec.diagram);
   const setSpec = (next: typeof spec) => onChange({ ...def, spec: next });
@@ -112,17 +120,21 @@ export default function DiagramControls({ def, options, fluids, modelFluids, mod
   const diagramTypes = diagramTypesOf(options, kind);
   const fractions = def.fractions ?? defaultFractions(fluidInfo, modelFractions);
   const fractionRange = fluidInfo?.fractionRange;
+  const humidAir = isHumidAirKind(kind);
 
   const setFluid = (name: string) => {
     const info = fluids.find((f) => f.name === name);
     const next = fluidKind(options, info?.type);
     const unzoomed = withView(spec, null);
-    const { fractions: _fractions, ...rest } = def;
+    const { fractions: _fractions, p_Pa: _pressure, ...rest } = def;
     const given = defaultFractions(info, modelFractions);
+    // Humid air at the model's total pressure, else at the kind's default (the server's when absent)
+    const pressure = isHumidAirKind(next) ? modelPressure : undefined;
     onChange({
       ...rest,
       fluid: name,
       ...(given ? { fractions: given } : {}),
+      ...(pressure !== undefined ? { p_Pa: pressure } : {}),
       spec: sameJson(next, kind) ? unzoomed : fitToKind(unzoomed, next, options),
     });
   };
@@ -147,6 +159,30 @@ export default function DiagramControls({ def, options, fluids, modelFluids, mod
     setSpec({ ...withView(spec, null), limits: asPreset ? DEFAULT_REGION : next });
   };
 
+  // Humid air: the total pressure and the region of the chart (bounds on T, or Thx on the Mollier chart, and W) in the
+  // chart's units
+  const temperatureKey = type?.y === 'Thx' ? 'Thx' : 'T';
+  const airBounds = regionBounds(spec.limits) ?? regionBounds(humidAirRegion(kind?.default_region, type ?? { x: 'T', y: 'W' })) ?? {};
+  const pressure = def.p_Pa ?? modelPressure ?? kind?.total_pressure ?? 101325;
+  const pressureRange = kind?.total_pressure_range;
+  const inUnits = (key: string, value: number | undefined) => {
+    const unit = units[key];
+    return value !== undefined && unit ? value * unit.scale + unit.offset : value;
+  };
+  const toSI = (key: string, value: number) => {
+    const unit = units[key];
+    return unit ? (value - unit.offset) / unit.scale : value;
+  };
+  const setAirBound = (key: string, end: 0 | 1, value: number | undefined) => {
+    if (value === undefined || !type) return;
+    const bounds = { ...airBounds };
+    const pair: [number, number] = [...(bounds[key] ?? [0, 0])] as [number, number];
+    pair[end] = toSI(key, value);
+    if (!(pair[1] > pair[0])) return;  // the region needs two different values, low then high
+    bounds[key] = pair;
+    setSpec({ ...withView(spec, null), limits: humidAirRegion({ bounds }, type) });
+  };
+
   const inModel = (name: string) => modelFluids.some((m) => sameFluid(m, name));
   const modelList = fluids.filter((f) => inModel(f.name));
   const otherList = fluids.filter((f) => !inModel(f.name));
@@ -157,6 +193,7 @@ export default function DiagramControls({ def, options, fluids, modelFluids, mod
   const currentUnits = unitsName(spec.units);
   const regionName = typeof spec.limits === 'string' ? spec.limits : '';
   const look = spec.settings?.look ?? THEME_AUTO;
+  const weight = lineWeight(spec);
   const labelMode = spec.settings?.labels?.mode ?? 'rails';
   const marksCritical = spec.marked_points?.includes('critical') ?? false;
   const scaleAllowed = type ? hasSaturationScale(type) : false;
@@ -251,7 +288,38 @@ export default function DiagramControls({ def, options, fluids, modelFluids, mod
           </select>
         </label>
 
-        {saturation ? (
+        {humidAir ? (
+          <span className="diagram-field diagram-range" title="Total pressure of the humid air, and the region of the chart">
+            <span className="diagram-field" title="Total pressure of the humid air (the model's when it has one)">
+              <span>p [{units.p?.label ?? 'Pa'}]</span>
+              <NumberField
+                className="diagram-num diagram-pressure"
+                value={inUnits('p', pressure)}
+                lazy
+                min={pressureRange ? inUnits('p', pressureRange[0]) : undefined}
+                max={pressureRange ? inUnits('p', pressureRange[1]) : undefined}
+                title="Total pressure of the humid air"
+                onCommit={(v) => { if (v !== undefined) onChange({ ...def, p_Pa: toSI('p', v) }); }}
+              />
+            </span>
+            {[temperatureKey, 'W'].map((key) => (
+              <span key={key} className="diagram-field">
+                <span>{key === 'W' ? (type?.y === 'Thx' ? 'x' : 'W') : 'T'} [{units[key]?.label ?? (key === 'W' ? 'kg/kg' : 'K')}]</span>
+                {([0, 1] as const).map((end) => (
+                  <NumberField
+                    key={end}
+                    className="diagram-num diagram-bound"
+                    value={inUnits(key, airBounds[key]?.[end])}
+                    lazy
+                    placeholder={end === 0 ? 'min' : 'max'}
+                    title={`${end === 0 ? 'Lowest' : 'Highest'} ${key === 'W' ? 'humidity ratio' : 'temperature'} of the chart`}
+                    onCommit={(v) => setAirBound(key, end, v)}
+                  />
+                ))}
+              </span>
+            ))}
+          </span>
+        ) : saturation ? (
           <label className="diagram-field" title="Temperature and pressure range of the lines (CoolPlot region preset)">
             <span>Region</span>
             <select
@@ -298,6 +366,19 @@ export default function DiagramControls({ def, options, fluids, modelFluids, mod
           </select>
         </label>
 
+        <label className="diagram-field" title="Light: thin, partly transparent isolines, so that the saturation curve and the cycles stand out. As the theme: CoolPlot's line widths">
+          <span>Line weight</span>
+          <select
+            className="diagram-select"
+            value={weight}
+            onChange={(e) => setSpec(withLineWeight(spec, e.target.value as 'light' | 'theme', options))}
+          >
+            <option value="light">light</option>
+            <option value="theme">as the theme</option>
+            {weight === 'custom' && <option value="custom" disabled>custom</option>}
+          </select>
+        </label>
+
         <label className="diagram-field" title="Where the lines are labelled">
           <span>Labels</span>
           <select
@@ -314,7 +395,7 @@ export default function DiagramControls({ def, options, fluids, modelFluids, mod
       <div className="diagram-row">
         <span className="diagram-row-title">Lines</span>
         {familiesOf(type, kind).map((family) => {
-          const name = family.key === 'rho' ? 'ρ' : family.symbol || symbol(family.key);
+          const name = symbol(family.symbol || family.key);
           const set = spec.isolines.find((s) => s.key === family.key);
           return (
             <span key={family.key} className={`diagram-family${set ? ' on' : ''}`}>

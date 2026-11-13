@@ -8,13 +8,13 @@
 
 import type { CycleDefinition, CycleStateDefinition, DiagramDefinition } from '../../api/types';
 import {
-  STATE_KEYS,
   arraysCycle,
   isArraysCycle,
   isInferredCycle,
   newInferredCycle,
   overlayComplete,
   overlayOfCycle,
+  stateKeysOf,
   type ArraysOverlay,
 } from './definition';
 import { symbolOf } from './options';
@@ -117,7 +117,7 @@ export default function DiagramOverlays({
             title="Property held by the array"
             onChange={(e) => chooseKey(i, e.target.value)}
           >
-            {STATE_KEYS.map((k) => <option key={k} value={k}>{symbolOf(k)}</option>)}
+            {stateKeysOf(def).map((k) => <option key={k} value={k}>{symbolOf(k)}</option>)}
           </select>
           <select
             className="diagram-select"

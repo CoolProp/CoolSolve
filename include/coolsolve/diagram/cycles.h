@@ -42,8 +42,9 @@ std::string autoKind(const State& a, const State& b);
 
 /**
  * @brief The states along the process from `a` to `b`, both included (paths.path_states): `steps` segments; an
- *        isobar gets the saturation states it crosses. States CoolProp cannot compute are left out (the path has a
- *        longer straight piece there), as are states without finite T, p, h and s.
+ *        isobar gets the saturation states it crosses. The provider may replace the kind (PropertyProvider::pathKind:
+ *        humid air draws every path straight). States CoolProp cannot compute are left out (the path has a longer
+ *        straight piece there), as are states without finite T, p, h and s.
  * @throws DiagramError for an unknown kind
  */
 std::vector<State> pathStates(PropertyProvider& fluid, const State& a, const State& b, const std::string& kind, int steps);
@@ -62,7 +63,8 @@ json stateRecord(const State& state);
 double solvedToSI(const std::string& key, double value);
 
 /// CoolSolve's fixed units as a custom unit record of coolplot-core: {"name": "coolsolve", "units": {key: [label,
-/// scale, offset(, difference)]}} for every quantity of a fluid chart.
+/// scale, offset(, difference)]}} for every quantity of a fluid chart and of a chart of humid air (W in kg/kg, RH as a
+/// fraction, Twb and Tdp in °C; Thx is shown as T).
 json coolsolveUnitSystem();
 
 /**
@@ -84,7 +86,8 @@ struct ResolvedCycle {
  * A state is given by `vars` ({quantity key: variable name}) or, for `arrays` ({key: array name}), by the elements
  * `name[i]` of every array. The values (CoolSolve's units) are converted to SI and completed to full states from
  * two independent properties (the chart's axes when the model has both) with the chart fluid; the solved values
- * are kept. `loops` gives the chains of state numbers; without it, one loop through the states in ascending order
+ * are kept. A state of humid air is at the chart's total pressure: one whose `p` variable has another value is not
+ * drawn. `loops` gives the chains of state numbers; without it, one loop through the states in ascending order
  * (closed unless `closed` is false); an empty list draws the state markers alone (states that cannot be computed
  * are then left out with a warning). `paths` is a kind applied to every connection, or CoolPlot's record
  * [[[a, b], kind], ...] whose unlisted connections are "auto" (the default); `steps` the segments of a path.

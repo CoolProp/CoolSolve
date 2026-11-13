@@ -107,6 +107,13 @@ const round1 = (v: number) => Math.round(v * 10) / 10;
 /** The figure in pt of a drawing area in px. */
 const figureOf = (size: [number, number]): [number, number] => [round1(size[0] * PT_PER_PX), round1(size[1] * PT_PER_PX)];
 
+/** The fluid of a request: its name, the concentration of a solution, the total pressure of humid air. */
+const fluidOf = (input: DiagramSceneInput) => ({
+  fluid: input.fluid,
+  ...(input.fractions ? { fractions: input.fractions } : {}),
+  ...(input.p_Pa !== undefined ? { p_Pa: input.p_Pa } : {}),
+});
+
 function specWithView(spec: CoolPlotSpec, view: DiagramViewSI | null): CoolPlotSpec {
   const { view_SI: _view, ...rest } = spec;
   return view ? { ...rest, view_SI: view } : rest;
@@ -135,7 +142,9 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
     onSceneRef.current = onScene;
   });
 
-  const chart = input ? `${input.fluid}\n${JSON.stringify(input.fractions ?? null)}\n${input.spec.diagram}` : '';
+  const chart = input
+    ? `${input.fluid}\n${JSON.stringify(input.fractions ?? null)}\n${input.p_Pa ?? ''}\n${input.spec.diagram}`
+    : '';
   const view: DiagramViewSI | null = onViewChange || !localView || localView.chart !== chart
     ? input?.spec.view_SI ?? null
     : localView.view;
@@ -144,7 +153,7 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
   // Everything but the zoom and the size: the labels of the scene shown are reused while it stays the same
   const contentKey = useMemo(
     () => (input
-      ? JSON.stringify({ fluid: input.fluid, fractions: input.fractions, spec: specWithView(input.spec, null), cycles: input.cycles })
+      ? JSON.stringify({ ...fluidOf(input), spec: specWithView(input.spec, null), cycles: input.cycles })
       : ''),
     [input],
   );
@@ -191,8 +200,7 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
       setLoading(true);
       api.getDiagramScene(
         {
-          fluid: input.fluid,
-          ...(input.fractions ? { fractions: input.fractions } : {}),
+          ...fluidOf(input),
           spec,
           cycles: input.cycles,
           figure_size_pt: figure,
@@ -204,7 +212,7 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
           if (seq !== seqRef.current) return;
           const node = svgNode(scene.svg, suffix);
           shownRef.current = { contentKey, requestKey, revision, labels: scene.labels ?? [] };
-          setDrawn({ scene, node, input: { fluid: input.fluid, fractions: input.fractions, spec, cycles: input.cycles } });
+          setDrawn({ scene, node, input: { ...fluidOf(input), spec, cycles: input.cycles } });
           setError('');
           onSceneRef.current?.(scene);
         })

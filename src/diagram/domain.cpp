@@ -95,6 +95,59 @@ TpLimits tpLimitsPreset(const std::string& name) {
 }
 
 // ---------------------------------------------------------------------------
+// Region (core/limits.py)
+// ---------------------------------------------------------------------------
+
+bool Region::has(const std::string& key) const {
+    return std::any_of(bounds.begin(), bounds.end(), [&key](const auto& b) { return b.first == key; });
+}
+
+Range Region::rangeSI(const std::string& key) const {
+    for (const auto& [k, range] : bounds)
+        if (k == key) return range;
+    throw DiagramError("The region has no bounds on '" + key + "'.");
+}
+
+json Region::toJson() const {
+    json out = json::object();
+    for (const auto& [key, range] : bounds) out[key] = json::array({range.first, range.second});
+    return {{"bounds", out}};
+}
+
+Region Region::fromJson(const json& data) {
+    if (!data.is_object() || !data.contains("bounds") || !data.at("bounds").is_object())
+        throw DiagramError("A region is {\"bounds\": {quantity: [low, high], ...}}, not " + data.dump() + ".");
+    Region region;
+    for (auto it = data.at("bounds").begin(); it != data.at("bounds").end(); ++it) {
+        const json& pair = it.value();
+        if (!pair.is_array() || pair.size() != 2 || !pair.at(0).is_number() || !pair.at(1).is_number())
+            throw DiagramError("The bounds of '" + it.key() + "' are two numbers [low, high], not " + pair.dump() + ".");
+        const double a = pair.at(0).get<double>(), b = pair.at(1).get<double>();
+        const double low = std::min(a, b), high = std::max(a, b);
+        if (!(std::isfinite(low) && std::isfinite(high)) || !(high > low))
+            throw DiagramError("The bounds of '" + it.key() + "' have to be two different finite values, not " + pair.dump() + ".");
+        std::string key;
+        try {
+            key = coolplot::quantity_key(it.key());
+        } catch (const coolplot::Error& e) {
+            throw DiagramError(e.what());
+        }
+        if (region.has(key)) throw DiagramError("A quantity is bounded twice in " + data.dump() + ".");
+        region.bounds.push_back({key, {low, high}});
+    }
+    // Sorted by key, as CoolPlot keeps them: equal regions are equal records (and cache keys)
+    std::sort(region.bounds.begin(), region.bounds.end());
+    return region;
+}
+
+Region defaultHumidAirRegion(const std::string& temperature) {
+    Region region;
+    region.bounds = {{temperature, {263.15, 323.15}}, {"W", {0.0, 0.03}}};
+    std::sort(region.bounds.begin(), region.bounds.end());
+    return region;
+}
+
+// ---------------------------------------------------------------------------
 // Domain (engine/planning.py)
 // ---------------------------------------------------------------------------
 

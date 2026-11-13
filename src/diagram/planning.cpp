@@ -195,10 +195,18 @@ PlanSpec PlanSpec::fromJson(const json& spec) {
     try {
         PlanSpec out;
         out.diagram = coolplot::DiagramType::parse(spec.value("diagram", std::string("ph")));
-        if (out.diagram.kind != "fluid")
-            throw DiagramError("Charts of humid air ('" + out.diagram.name() + "') are not drawable yet.");
         out.units = coolplot::UnitSystem::from_json(spec.contains("units") ? spec.at("units") : json("engineering"));
-        out.limits = TpLimits::fromJson(spec.value("limits", json("DEF")));
+        if (out.humidAir()) {
+            // A Region on the two axes (spec.diagram._checked_limits); without limits, PsychrometricChart's defaults
+            const json limits = spec.value("limits", json());
+            out.region = limits.is_null() ? defaultHumidAirRegion(out.diagram.x == "W" ? out.diagram.y : out.diagram.x)
+                                          : limits.is_object() ? Region::fromJson(limits) : Region();
+            if (!out.region.has(out.diagram.x) || !out.region.has(out.diagram.y))
+                throw DiagramError("A " + out.diagram.name() + " chart needs a Region with bounds on '" + out.diagram.x + "' and '" +
+                                   out.diagram.y + "', not " + limits.dump() + ".");
+        } else {
+            out.limits = TpLimits::fromJson(spec.value("limits", json("DEF")));
+        }
         const json settings = spec.value("settings", json::object());
         out.calc = calcFrom(settings.is_object() ? settings.value("calc", json()) : json());
         if (settings.is_object() && settings.contains("labels") && settings.at("labels").is_object())
@@ -208,6 +216,8 @@ PlanSpec PlanSpec::fromJson(const json& spec) {
             out.isolines.push_back(isolineSetFrom(iso, out.diagram));
             if (!keys.insert(out.isolines.back().key).second)
                 throw DiagramError("Each isoline quantity may appear only once, got '" + out.isolines.back().key + "' twice.");
+            if (out.isolines.back().anchor && out.humidAir())
+                throw DiagramError("Lines are placed by saturation states only in charts of a fluid, not of humid air.");
         }
         std::set<std::string> names;
         for (const json& line : spec.value("lines", json::array())) {
@@ -226,6 +236,8 @@ PlanSpec PlanSpec::fromJson(const json& spec) {
             std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return std::tolower(c); });
             if (name != "critical" && name != "triple")
                 throw DiagramError("A chart marks the points 'critical', 'triple', not '" + name + "'.");
+            if (out.humidAir())
+                throw DiagramError("Critical and triple points are marked only in charts of a fluid, not of humid air.");
             marked.push_back(name);
         }
         for (const char* name : {"critical", "triple"})

@@ -2653,7 +2653,7 @@ int startServer(const ServerOptions& options) {
         auto allFluids = FluidRegistry::getAllFluids();
         // Sort by name for consistent output
         std::sort(allFluids.begin(), allFluids.end(),
-            [](const auto& a, const auto& b) { return a->getName() < b->getName(); });
+            [](const auto& a, const auto& b) { return diagram::diagramFluidName(*a) < diagram::diagramFluidName(*b); });
         
         for (const auto& fluid : allFluids) {
             std::string typeStr;
@@ -2668,7 +2668,7 @@ int startServer(const ServerOptions& options) {
                 default: typeStr = "Unknown"; break;
             }
             json entry = {
-                {"name", fluid->getName()},
+                {"name", diagram::diagramFluidName(*fluid)},  // humid air: "AirH2O" (its registered name is Air_ha's)
                 {"coolpropName", fluid->getCoolPropName()},
                 {"type", typeStr},
                 {"hasDome", fluid->getType() == FluidType::Real}
@@ -2694,12 +2694,12 @@ int startServer(const ServerOptions& options) {
     // ================================================================
     // Diagrams (docs/coolplot_integration.md §3.1): charts of the model's fluid drawn by
     // coolplot-core, the lines computed by CoolProp::Plot (module src/diagram/).
-    //   POST /api/v1/diagram/scene        {fluid, fractions, basis, spec, cycles, figure_size_pt, previous_labels}
+    //   POST /api/v1/diagram/scene        {fluid, fractions, basis, p_Pa, spec, cycles, figure_size_pt, previous_labels}
     //   POST /api/v1/diagram/export       the same and "format" ("svg" or "pdf"): the chart as a file
     //   GET  /api/v1/diagram/options      what the Diagrams tab offers
     //   GET  /api/v1/diagram/definitions  the session's diagrams.json (§3.4)
     //   PUT  /api/v1/diagram/definitions
-    //   POST /api/v1/diagram/state        {fluid, fractions, basis, diagram, x_SI, y_SI}: the state under the cursor
+    //   POST /api/v1/diagram/state        {fluid, fractions, basis, p_Pa, diagram, x_SI, y_SI}: the state under the cursor
     //   GET  /api/v1/diagram/states       the states of the solved model by fluid (§4.2)
     // ================================================================
     auto diagramError = [](httplib::Response& res, int status, const std::string& message) {
@@ -2721,6 +2721,7 @@ int startServer(const ServerOptions& options) {
         request.fluid = body.at("fluid").get<std::string>();
         request.backend = sessionCoolPropBackend(session);
         diagram::readConcentration(body, request.fractions, request.basis);
+        request.p_Pa = diagram::readTotalPressure(body);  // humid air
         request.spec = body.value("spec", json::object());
         request.cycles = body.value("cycles", json::array());
         request.previousLabels = body.value("previous_labels", json());
@@ -2797,8 +2798,8 @@ int startServer(const ServerOptions& options) {
             std::vector<double> fractions;
             std::string basis;
             diagram::readConcentration(body, fractions, basis);
-            const diagram::ChartFluid fluid =
-                diagram::chartFluid(body.at("fluid").get<std::string>(), sessionCoolPropBackend(session), fractions, basis);
+            const diagram::ChartFluid fluid = diagram::chartFluid(body.at("fluid").get<std::string>(), sessionCoolPropBackend(session),
+                                                                  fractions, basis, diagram::readTotalPressure(body));
             const json state = diagram::stateAt(fluid, body.value("diagram", std::string("ph")), body.at("x_SI").get<double>(),
                                                 body.at("y_SI").get<double>());
             res.set_content(json{{"state", state}}.dump(), "application/json");

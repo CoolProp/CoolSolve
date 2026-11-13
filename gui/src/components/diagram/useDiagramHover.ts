@@ -5,7 +5,8 @@
  * come from the scene's `states` (values in SI) through the axes' units and the plot area of the SVG
  * (log axes included), so nothing depends on how coolplot-core draws a marker. Elsewhere in the plot
  * area: the full state under the cursor, from `POST /api/v1/diagram/state`, debounced; a newer request
- * cancels the older. Values are shown in the chart's display units (`GET /api/v1/diagram/options`).
+ * cancels the older (of humid air: T, W, φ, T_wb, h and v at the chart's total pressure; nothing above
+ * saturation). Values are shown in the chart's display units (`GET /api/v1/diagram/options`).
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -19,10 +20,11 @@ import { clientToSvg, displayToSI, inPlot, readPlotFrame, svgToDisplay, type Plo
 const POINT_DEBOUNCE_MS = 80;
 /** A marker is hovered within this distance (CSS px) */
 const MARKER_RADIUS_PX = 9;
-/** The quantities of the state under the cursor */
+/** The quantities of the state under the cursor: of a fluid, of humid air (per kg of dry air) */
 const POINT_KEYS = ['T', 'p', 'h', 's', 'rho'] as const;
+const AIR_POINT_KEYS = ['T', 'W', 'RH', 'Twb', 'h', 'v'] as const;
 /** The order of a state's variables in its tooltip */
-const KEY_ORDER = ['T', 'p', 'h', 's', 'rho', 'u', 'v', 'Q'];
+const KEY_ORDER = ['T', 'W', 'RH', 'Twb', 'Tdp', 'p', 'h', 's', 'rho', 'u', 'v', 'Q'];
 
 /** A tooltip, positioned in the drawing area (CSS px); `flipX`/`flipY` put it left of / above the pointer. */
 export interface HoverTip {
@@ -115,7 +117,8 @@ export function useDiagramHover(drawn: DrawnScene | null, canvasRef: RefObject<H
   };
 
   const pointTip = (base: Omit<HoverTip, 'kind' | 'lines' | 'title'>, state: DiagramPointState): HoverTip => {
-    const lines = POINT_KEYS.map((key) => `${symbolOf(key)} = ${withUnit(state[key], key, units)}`);
+    const humidAir = state.W !== undefined;  // the state of humid air: its own quantities, no quality
+    const lines = (humidAir ? AIR_POINT_KEYS : POINT_KEYS).map((key) => `${symbolOf(key)} = ${withUnit(state[key], key, units)}`);
     const Q = state.Q;
     if (Q !== null && Q !== undefined && Q >= 0 && Q <= 1) lines.push(`x = ${formatValue(Q)}`);
     return { ...base, kind: 'point', lines };
@@ -165,6 +168,7 @@ export function useDiagramHover(drawn: DrawnScene | null, canvasRef: RefObject<H
     const body = {
       fluid: drawn.input.fluid,
       ...(drawn.input.fractions ? { fractions: drawn.input.fractions } : {}),
+      ...(drawn.input.p_Pa !== undefined ? { p_Pa: drawn.input.p_Pa } : {}),
       diagram: drawn.input.spec.diagram,
       x_SI: displayToSI(xd, drawn.scene.axes.x_unit),
       y_SI: displayToSI(yd, drawn.scene.axes.y_unit),

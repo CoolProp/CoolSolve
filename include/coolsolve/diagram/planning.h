@@ -64,12 +64,14 @@ constexpr int SCALE_TICKS = 10;
  * @brief The parts of a CoolPlot chart spec that the domain and the plan read (coolplot.spec.DiagramSpec).
  *
  * `show_saturation` is true, false or unset (a record without the field: the values of the quality family
- * decide, as in CoolPlot before 1.2).
+ * decide, as in CoolPlot before 1.2). The limits of a chart of a fluid are a TpLimits, those of a humid-air chart
+ * (kind "humid_air") a Region with bounds on its two axes.
  */
 struct PlanSpec {
     coolplot::DiagramType diagram;
     coolplot::UnitSystem units;
-    TpLimits limits;
+    TpLimits limits;                         ///< a chart of a fluid
+    Region region;                           ///< a humid-air chart: bounds on its axes (defaultHumidAirRegion without limits)
     CalcSettings calc;
     std::vector<IsolineSet> isolines;
     std::vector<LineSpec> lines;
@@ -84,6 +86,11 @@ struct PlanSpec {
      * @throws DiagramError for a value CoolPlot refuses
      */
     static PlanSpec fromJson(const json& spec);
+
+    /// Whether the chart is a psychrometric or Mollier chart of humid air (the kind of its diagram type).
+    bool humidAir() const { return diagram.kind == "humid_air"; }
+    /// The limits as a record: the Region of a humid-air chart, else the TpLimits.
+    json limitsJson() const { return humidAir() ? region.toJson() : limits.toJson(); }
 };
 
 /// The family whose lines are labelled inside the dome: "T", or "p" where T is an axis; empty for p-T (spec.diagram.dome_key).

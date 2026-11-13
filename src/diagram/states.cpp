@@ -60,6 +60,27 @@ std::optional<std::string> argumentKey(const std::string& name) {
     return std::nullopt;
 }
 
+/// The quantity of a humid-air property function or of one of its arguments: the AirH2O names of the evaluator
+/// (getHAParam, getHAOutputParam) that are CoolPlot quantities of humid air; entropy, density and the transport
+/// properties are none.
+std::optional<std::string> airKey(const std::string& name) {
+    const std::string n = lowerCase(name);
+    if (n == "temperature" || n == "t") return "T";
+    if (n == "pressure" || n == "p") return "p";
+    if (n == "humrat" || n == "w") return "W";
+    if (n == "relhum" || n == "r") return "RH";
+    if (n == "wetbulb" || n == "b") return "Twb";
+    if (n == "dewpoint" || n == "d") return "Tdp";
+    if (n == "enthalpy" || n == "h") return "h";
+    if (n == "volume" || n == "v") return "v";
+    return std::nullopt;
+}
+
+/// Whether the fluid of a property call (callFluid: diagramFluidName) is humid air.
+bool isHumidAir(const std::string& fluid) {
+    return fluid == HUMID_AIR_FLUID;
+}
+
 /// The CoolSolve name of the fluid of a property call: its first argument, a string or a fluid name (a string
 /// variable with a literal value gives that value). Empty when it is not a known fluid.
 std::string callFluid(const FunctionCall& call, const IR& ir) {
@@ -76,7 +97,7 @@ std::string callFluid(const FunctionCall& call, const IR& ir) {
         return "";
     }
     const std::shared_ptr<Fluid> fluid = FluidRegistry::getFluid(name);
-    return fluid ? fluid->getName() : "";
+    return fluid ? diagramFluidName(*fluid) : "";
 }
 
 void visitCalls(const ExprPtr& expr, const std::function<void(const FunctionCall&)>& visit) {
@@ -100,12 +121,13 @@ void visitCalls(const ExprPtr& expr, const std::function<void(const FunctionCall
 
 /// The call as a set of state variables, `output` the variable the equation gives it to (null for none).
 std::optional<PropertyCall> stateCall(const FunctionCall& call, const Variable* output, const IR& ir) {
-    bool saturation = false;
-    const std::optional<std::string> key = functionKey(call.name, saturation);
-    if (!key) return std::nullopt;
     PropertyCall out;
     out.fluid = callFluid(call, ir);
     if (out.fluid.empty()) return std::nullopt;  // a FUNCTION of the model with the name of a property, or a fluid unknown
+    const bool air = isHumidAir(out.fluid);
+    bool saturation = false;
+    const std::optional<std::string> key = air ? airKey(call.name) : functionKey(call.name, saturation);
+    if (!key) return std::nullopt;
     out.quality = saturation || *key == "Q";
     auto add = [&out](const std::string& variable, const std::string& k) {
         for (const auto& [v, _] : out.vars)
@@ -113,7 +135,7 @@ std::optional<PropertyCall> stateCall(const FunctionCall& call, const Variable* 
         out.vars.push_back({variable, k});
     };
     for (const auto& [name, arg] : call.namedArgs) {
-        const std::optional<std::string> argKey = argumentKey(name);
+        const std::optional<std::string> argKey = air ? airKey(name) : argumentKey(name);
         if (!argKey || !arg) continue;
         if (*argKey == "Q") out.quality = true;
         if (arg->is<Variable>()) add(arg->as<Variable>().flattenedName(), *argKey);
@@ -133,17 +155,28 @@ struct UnionFind {
     }
 };
 
-bool hasIndependentPair(const std::map<std::string, std::string>& vars, bool idealGas) {
-    for (auto a = vars.begin(); a != vars.end(); ++a)
-        for (auto b = std::next(a); b != vars.end(); ++b)
-            if (independentKeys(a->first, b->first, idealGas)) return true;
-    return false;
-}
-
 /// Whether CoolSolve's fluid of this name is an ideal gas.
 bool isIdealGas(const std::string& fluid) {
     const std::shared_ptr<Fluid> found = FluidRegistry::getFluid(fluid);
     return found && found->getType() == FluidType::IdealGas;
+}
+
+/// What decides which quantities fix a state of a fluid together (independentKeys, independentAirKeys).
+struct FluidClass {
+    bool idealGas = false;
+    bool humidAir = false;
+
+    explicit FluidClass(const std::string& fluid) : idealGas(isIdealGas(fluid)), humidAir(isHumidAir(fluid)) {}
+    bool independent(const std::string& a, const std::string& b) const {
+        return humidAir ? independentAirKeys(a, b) : independentKeys(a, b, idealGas);
+    }
+};
+
+bool hasIndependentPair(const std::map<std::string, std::string>& vars, const FluidClass& fluid) {
+    for (auto a = vars.begin(); a != vars.end(); ++a)
+        for (auto b = std::next(a); b != vars.end(); ++b)
+            if (fluid.independent(a->first, b->first)) return true;
+    return false;
 }
 
 /// The name of a variable without its leading letters and one underscore, as the name heuristic groups it
@@ -185,6 +218,10 @@ bool independentKeys(const std::string& a, const std::string& b, bool idealGas) 
     auto is = [&](const char* x, const char* y) { return (a == x && b == y) || (a == y && b == x); };
     if (idealGas && (is("T", "h") || is("T", "u") || is("h", "u"))) return false;  // each fixes only the temperature
     return !is("T", "p") && !is("rho", "v");
+}
+
+bool independentAirKeys(const std::string& a, const std::string& b) {
+    return a != b && a != "p" && b != "p" && !((a == "W" && b == "Tdp") || (a == "Tdp" && b == "W"));
 }
 
 namespace {
@@ -260,7 +297,8 @@ ModelStates groupStates(const IR& ir, const SolutionValues* solution, bool merge
         for (const auto& [var, _] : calls[i].vars) callsOf[var].push_back(i);
     UnionFind groups(calls.size());
     for (size_t i = 0; i < calls.size(); ++i) {
-        const bool idealGas = isIdealGas(calls[i].fluid);
+        const FluidClass fluid(calls[i].fluid);
+        const bool singlePhaseAtTp = mergeOnTp && !fluid.humidAir;  // T and p fix no state of humid air
         std::set<size_t> others;
         for (const auto& [var, _] : calls[i].vars)
             for (size_t j : callsOf[var])
@@ -272,8 +310,8 @@ ModelStates groupStates(const IR& ir, const SolutionValues* solution, bool merge
                     if (!CaseInsensitiveLess{}(var, other) && !CaseInsensitiveLess{}(other, var)) sharedKeys.insert(key);
             bool same = false;
             for (auto a = sharedKeys.begin(); a != sharedKeys.end() && !same; ++a)
-                for (auto b = std::next(a); b != sharedKeys.end() && !same; ++b) same = independentKeys(*a, *b, idealGas);
-            if (!same && mergeOnTp && sharedKeys.count("T") && sharedKeys.count("p") && !calls[i].quality && !calls[j].quality)
+                for (auto b = std::next(a); b != sharedKeys.end() && !same; ++b) same = fluid.independent(*a, *b);
+            if (!same && singlePhaseAtTp && sharedKeys.count("T") && sharedKeys.count("p") && !calls[i].quality && !calls[j].quality)
                 same = true;  // the refinement: two single-phase states at the same T and p
             if (same) groups.join(i, j);
         }
@@ -294,8 +332,9 @@ ModelStates groupStates(const IR& ir, const SolutionValues* solution, bool merge
     ModelStates states;
     for (auto& [fluid, groupsOfFluid] : byFluid) {
         std::vector<std::map<std::string, std::string>> kept;
+        const FluidClass kind(fluid);
         for (auto& vars : groupsOfFluid)
-            if (hasIndependentPair(vars, isIdealGas(fluid))) kept.push_back(std::move(vars));
+            if (hasIndependentPair(vars, kind)) kept.push_back(std::move(vars));
         if (!kept.empty()) states[fluid] = numberStates(kept);
     }
     return states;

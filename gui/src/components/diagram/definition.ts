@@ -45,6 +45,20 @@ export const FALLBACK_FLUID = 'Water';
 
 /** The fluid quantities a cycle state can name (CoolPlot keys). */
 export const STATE_KEYS = ['T', 'p', 'h', 's', 'rho', 'u', 'v', 'Q'];
+/**
+ * The quantities of a state of humid air (per kg of dry air) a cycle state can name; its pressure, when named, is
+ * checked against the chart's total pressure.
+ */
+export const AIR_STATE_KEYS = ['T', 'W', 'RH', 'Twb', 'Tdp', 'h', 'v', 'p'];
+
+/** The names coolplot-core reads as the charts of humid air (DiagramType::parse). */
+const HUMID_AIR_DIAGRAMS = ['WT', 'PSYCHROMETRIC', 'THXW', 'MOLLIER', 'HX'];
+
+/** Whether a diagram type is a chart of humid air: the psychrometric "WT" or the Mollier h,x chart "ThxW". */
+export const isHumidAirDiagram = (diagram: string) => HUMID_AIR_DIAGRAMS.includes(diagram.toUpperCase());
+
+/** The quantities the states of a definition's cycles can name: those of humid air on its charts. */
+export const stateKeysOf = (def: DiagramDefinition) => (isHumidAirDiagram(def.spec.diagram) ? AIR_STATE_KEYS : STATE_KEYS);
 
 /** Property codes of CoolSolve's variable inference (src/variable_inference.cpp) -> CoolPlot keys. */
 const PROPERTY_KEYS: Record<string, string> = { T: 'T', P: 'p', H: 'h', S: 's', D: 'rho', U: 'u', VOL: 'v', Q: 'Q' };
@@ -92,6 +106,36 @@ export function fluidKind(options: DiagramOptionsResponse, type: string | undefi
   return type ? options.fluid_kinds?.[type] : undefined;
 }
 
+/** Whether a kind of fluid is humid air, drawn in the psychrometric and Mollier charts at a total pressure. */
+export const isHumidAirKind = (kind: DiagramFluidKind | undefined) => kind?.chart_kind === 'humid_air';
+
+/** PsychrometricChart's region: -10 to 50 °C, 0 to 30 g/kg (SI). */
+const DEFAULT_AIR_REGION: Record<string, [number, number]> = { T: [263.15, 323.15], W: [0, 0.03] };
+
+/** The bounds of a region record ({"bounds": {key: [lo, hi]}}), or undefined for a preset name. */
+export function regionBounds(limits: CoolPlotSpec['limits'] | null | undefined): Record<string, [number, number]> | undefined {
+  if (!limits || typeof limits === 'string') return undefined;
+  const bounds = (limits as { bounds?: unknown }).bounds;
+  return bounds && typeof bounds === 'object' ? bounds as Record<string, [number, number]> : undefined;
+}
+
+/**
+ * The region of a chart of humid air: bounds on its temperature (the dry-bulb temperature T, or the temperature scale
+ * Thx of the Mollier chart) and on the humidity ratio W, taken from `limits` (either temperature), else from `fallback`
+ * (the kind's default region), else PsychrometricChart's.
+ */
+export function humidAirRegion(
+  limits: CoolPlotSpec['limits'] | null | undefined,
+  type: { x: string; y: string },
+  fallback?: CoolPlotSpec['limits'] | null,
+): Record<string, unknown> {
+  const temperature = type.y === 'Thx' ? 'Thx' : 'T';
+  const given = regionBounds(limits) ?? regionBounds(fallback) ?? DEFAULT_AIR_REGION;
+  const T = given.T ?? given.Thx ?? DEFAULT_AIR_REGION.T;
+  const W = given.W ?? DEFAULT_AIR_REGION.W;
+  return { bounds: { [temperature]: [...T], W: [...W] } };
+}
+
 /** The diagram types a kind of fluid offers. */
 export function diagramTypesOf(options: DiagramOptionsResponse, kind: DiagramFluidKind | undefined): DiagramTypeOption[] {
   return kind ? options.diagram_types.filter((d) => kind.diagram_types.includes(d.name)) : options.diagram_types;
@@ -118,7 +162,8 @@ export function fitToKind(spec: CoolPlotSpec, kind: DiagramFluidKind | undefined
     .filter((f) => before.has(f.key) || f.key !== 'u')
     .map((f) => before.get(f.key) ?? familyLine(f.key, f.default_num, !kind.saturation));
   const { view_SI: _view, saturation_scale, marked_points, ...rest } = spec;
-  const next: CoolPlotSpec = { ...rest, diagram: type.name, isolines, limits: kind.default_region || DEFAULT_REGION };
+  const limits = isHumidAirKind(kind) ? humidAirRegion(kind.default_region, type) : kind.default_region || DEFAULT_REGION;
+  const next: CoolPlotSpec = { ...rest, diagram: type.name, isolines, limits };
   if (kind.saturation && saturation_scale && hasSaturationScale(type)) next.saturation_scale = saturation_scale;
   if (kind.saturation) next.marked_points = marked_points ?? ['critical'];
   return next;
@@ -136,6 +181,40 @@ export function defaultFractions(fluid: FluidInfo | undefined, modelFractions?: 
   return [Math.round(500 * (lo + hi)) / 1000];
 }
 
+/**
+ * The light lines of the Diagrams tab: every family of lines thinner and partly transparent, so that the saturation
+ * curve (1.5 pt) and the cycles (2 pt) of CoolPlot's themes stand out. CoolPlot's themes draw isolines at 0.75 pt
+ * and lines of constant quality at 0.5 pt, fully opaque.
+ */
+export const LIGHT_LINE = { width_pt: 0.5, alpha: 0.55 };
+
+/**
+ * CoolPlot's `style_overrides` of the light lines: LIGHT_LINE for every family a chart of the options can draw
+ * (the saturation curve keeps the theme's style). A CoolPlot spec field, so that an exported spec draws the same.
+ */
+export function lightLineOverrides(options: DiagramOptionsResponse): Record<string, typeof LIGHT_LINE> {
+  const keys = new Set<string>();
+  for (const type of options.diagram_types) for (const f of type.families) keys.add(f.key);
+  return Object.fromEntries([...keys].sort().map((k) => [k, { ...LIGHT_LINE }]));
+}
+
+/** The line weight of a spec: "light" (the overrides of lightLineOverrides), "theme" (none), or "custom". */
+export function lineWeight(spec: CoolPlotSpec): 'light' | 'theme' | 'custom' {
+  const overrides = spec.style_overrides as Record<string, Record<string, unknown>> | undefined;
+  if (!overrides || Object.keys(overrides).length === 0) return 'theme';
+  // Field by field: the server keeps JSON objects with their keys sorted
+  const light = Object.values(overrides).every(
+    (o) => Object.keys(o).length === 2 && o.width_pt === LIGHT_LINE.width_pt && o.alpha === LIGHT_LINE.alpha,
+  );
+  return light ? 'light' : 'custom';
+}
+
+/** The spec with the light lines ("light") or the theme's ("theme"). */
+export function withLineWeight(spec: CoolPlotSpec, weight: 'light' | 'theme', options: DiagramOptionsResponse): CoolPlotSpec {
+  const { style_overrides: _overrides, ...rest } = spec;
+  return weight === 'light' ? { ...rest, style_overrides: lightLineOverrides(options) } : rest;
+}
+
 /** A new spec for a diagram type. */
 export function defaultSpec(type: DiagramTypeOption, options: DiagramOptionsResponse): CoolPlotSpec {
   const regions = options.regions.map((r) => r.name);
@@ -146,6 +225,7 @@ export function defaultSpec(type: DiagramTypeOption, options: DiagramOptionsResp
     limits: regions.includes(DEFAULT_REGION) || regions.length === 0 ? DEFAULT_REGION : regions[0],
     isolines: defaultIsolines(type),
     marked_points: ['critical'],
+    style_overrides: lightLineOverrides(options),
     settings: {
       // No "look": the GUI's theme (sceneInput). No "branding": CoolPlot's badge, the references of the
       // equation of state and the versions (definitions saved before keep the branding they have)
@@ -190,6 +270,8 @@ export function withDiagramType(
   const { view_SI: _view, saturation_scale, ...rest } = spec;
   const next: CoolPlotSpec = { ...rest, diagram: to.name, isolines };
   if (saturation_scale && hasSaturationScale(to)) next.saturation_scale = saturation_scale;
+  // The psychrometric chart is bounded in T, the Mollier chart in its temperature scale Thx: the same values
+  if (to.kind === 'humid_air') next.limits = humidAirRegion(spec.limits, to, kind?.default_region);
   return next;
 }
 
@@ -226,6 +308,7 @@ export function sceneInput(def: DiagramDefinition, guiTheme: 'light' | 'dark'): 
   return {
     fluid: def.fluid,
     ...(def.fractions ? { fractions: def.fractions } : {}),
+    ...(def.p_Pa !== undefined ? { p_Pa: def.p_Pa } : {}),
     spec: { ...def.spec, settings: { ...settings, look } },
     cycles: def.cycles.filter(isDrawable),
   };
@@ -239,6 +322,23 @@ function isDrawable(cycle: CycleDefinition): boolean {
 // ---------------------------------------------------------------------------
 // The inferred states: the server's grouping of the solved variables
 // ---------------------------------------------------------------------------
+
+/**
+ * The total pressure (Pa) of the model's humid air: that of the first state of `fluid` in the server's grouping whose
+ * pressure is a solved variable (CoolSolve's pressures are in Pa); undefined when none is.
+ */
+export function modelPressure(
+  response: DiagramStatesResponse | null,
+  fluid: string,
+  variables: Record<string, number> | undefined,
+): number | undefined {
+  const entry = Object.entries(response?.fluids ?? {}).find(([name]) => sameFluid(name, fluid));
+  for (const state of entry?.[1] ?? []) {
+    const value = state.vars.p !== undefined ? variables?.[state.vars.p] : undefined;
+    if (value !== undefined && Number.isFinite(value) && value > 0) return value;
+  }
+  return undefined;
+}
 
 /** The states of `fluid` in the server's grouping (`GET /api/v1/diagram/states`), as cycle states. */
 export function modelStates(response: DiagramStatesResponse | null, fluid: string): CycleStateDefinition[] {

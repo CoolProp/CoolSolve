@@ -31,7 +31,7 @@ import subprocess
 import sys
 
 import CoolProp
-from coolplot import PropertyDiagram, __version__ as coolplot_version
+from coolplot import PropertyDiagram, PsychrometricChart, __version__ as coolplot_version
 from coolplot.compose.builder import compose
 from coolplot.engine import plan
 from coolplot.scene import Scene
@@ -156,6 +156,20 @@ def cases(out):
     chart.saturation_scale = True
     chart.settings = chart.settings.with_(labels={"dome": True})
     compose_case(out, "co2_ph_marked", chart)
+
+    # The psychrometric chart (ASHRAE) at sea level with CoolPlot's default lines, and an air-conditioning process:
+    # cooling and dehumidification, then reheating (states by T and RH, the last by T and W; straight paths)
+    chart = PsychrometricChart(T_range=(-10, 45), W_range=(0, 25), settings="interactive")
+    chart.set_default_lines()
+    chart.add_cycle("Air conditioning", [{"T": 32, "RH": 50}, {"T": 13, "RH": 95}, {"T": 20, "W": 8.9}], closed=False)
+    compose_case(out, "psychrometric_ac", chart)
+
+    # The Mollier h,x chart at 0.9 bar (isotherms over the temperature scale Thx), with a heating and humidification
+    chart = PsychrometricChart(p=0.9, T_range=(-15, 40), W_range=(0, 20), style="mollier", settings="interactive")
+    chart.set_default_lines()
+    chart.add_cycle("Heating and humidification", [{"T": 5, "RH": 80}, {"T": 25, "W": 4.7}, {"T": 22, "RH": 50}],
+                    closed=False)
+    compose_case(out, "mollier_heating", chart)
 
 
 def coolplot_commit():

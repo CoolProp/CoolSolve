@@ -42,12 +42,18 @@ const std::vector<CoolSolveUnit>& coolsolveUnits() {
         {"v", UnitType::SpecificVolume, units.specific_volume, "m3/kg", ""},
         {"u", UnitType::SpecificEnergy, units.specific_energy, "J/kg", ""},
         {"Q", UnitType::Dimensionless, "", "-", ""},
+        // Humid air (AirH2O): the humidity ratio in kg/kg and the relative humidity as a fraction, as EES gives them
+        {"W", UnitType::Dimensionless, "", "kg/kg", ""},
+        {"RH", UnitType::Dimensionless, "", "-", ""},
+        {"Twb", UnitType::Temperature, units.temperature, "deg C", "K"},
+        {"Tdp", UnitType::Temperature, units.temperature, "deg C", "K"},
     };
     return table;
 }
 
-/// The full state from the solved values (SI): two independent properties, the chart's axes first, (T, p) last
-/// (not independent inside the dome); the solved values are kept. Empty with `error` set when none works.
+/// The full state from the solved values (SI): two independent properties the provider takes (PropertyProvider::
+/// inputs), the chart's axes first, (T, p) last (not independent inside the dome); the solved values are kept. Empty
+/// with `error` set when none works, or when the state does not belong to the chart (PropertyProvider::stateProblem).
 std::optional<State> completeState(PropertyProvider& fluid, const State& given, const coolplot::DiagramType& diagram, std::string& error) {
     std::vector<std::pair<std::string, std::string>> pairs;
     auto has = [&given](const std::string& key) { return given.count(key) > 0; };
@@ -58,12 +64,12 @@ std::optional<State> completeState(PropertyProvider& fluid, const State& given, 
     };
     auto isTp = [](const std::string& a, const std::string& b) { return (a == "T" && b == "p") || (a == "p" && b == "T"); };
     if (has(diagram.x) && has(diagram.y) && !isTp(diagram.x, diagram.y)) add(diagram.x, diagram.y);
-    const std::vector<std::string>& keys = stateKeys();
+    const std::vector<std::string>& keys = fluid.inputs();
     for (size_t i = 0; i < keys.size(); ++i)
         for (size_t j = i + 1; j < keys.size(); ++j)
             if (has(keys[i]) && has(keys[j]) && !isTp(keys[i], keys[j]) && !(keys[i] == "rho" && keys[j] == "v"))
                 add(keys[i], keys[j]);
-    if (has("T") && has("p")) add("T", "p");
+    if (has("T") && has("p") && std::find(keys.begin(), keys.end(), "p") != keys.end()) add("T", "p");
     for (const auto& [a, b] : pairs) {
         try {
             State state = fluid.statePoint(a, given.at(a), b, given.at(b));
@@ -71,6 +77,8 @@ std::optional<State> completeState(PropertyProvider& fluid, const State& given, 
             State finite;
             for (const auto& [key, value] : state)
                 if (std::isfinite(value)) finite[key] = value;
+            error = fluid.stateProblem(finite);
+            if (!error.empty()) return std::nullopt;
             return finite;
         } catch (const std::exception& e) {
             error = e.what();
@@ -176,7 +184,8 @@ std::string autoKind(const State& a, const State& b) {
 }
 
 std::vector<State> pathStates(PropertyProvider& fluid, const State& a, const State& b, const std::string& kind, int steps) {
-    const std::string resolved = kind == "auto" ? autoKind(a, b) : kind;
+    const std::string chosen = fluid.pathKind(a, b, kind);  // humid air draws every path straight
+    const std::string resolved = chosen == "auto" ? autoKind(a, b) : chosen;
     if (resolved == "straight" || steps < 2) return {a, b};
     std::vector<State> out = {a};
     for (const Inputs& in : innerInputs(fluid, a, b, resolved, steps)) {
@@ -298,7 +307,9 @@ std::vector<ResolvedCycle> resolveCycles(const json& definitions, const Solution
                     const json given = s.value("vars", json::object());
                     for (auto it = given.begin(); it != given.end(); ++it)
                         vars[coolplot::quantity_key(it.key())] = it.value().get<std::string>();
-                    const std::string label = s.value("label", std::string());
+                    // No label: absent or null (GET /api/v1/diagram/states writes null)
+                    const json labelGiven = s.value("label", json());
+                    const std::string label = labelGiven.is_null() ? std::string() : labelGiven.get<std::string>();
                     if (label.find_first_not_of(" \t") != std::string::npos) cycle.labels[number] = label;
                 }
             } else if (!arrays.empty()) {

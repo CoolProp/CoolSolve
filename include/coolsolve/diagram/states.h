@@ -26,18 +26,25 @@ struct PropertyCall {
 
 /// The property calls of a model's equations, in the order of the equations: functions of a state (temperature,
 /// pressure, enthalpy, entropy, intenergy, volume, density, quality, T_sat, P_sat and their short names) whose
-/// first argument is a known fluid. Arguments that are not plain variables are not state variables.
+/// first argument is a known fluid; of humid air (AirH2O) the functions and arguments of CoolPlot's humid-air
+/// quantities (temperature, pressure, humrat, relhum, wetbulb, dewpoint, enthalpy, volume and their one-letter
+/// names T, P, W, R, B, D, H, V; keys T, p, W, RH, Twb, Tdp, h, v). Arguments that are not plain variables are not
+/// state variables.
 std::vector<PropertyCall> propertyCalls(const IR& ir);
 
 /// Whether two quantity keys fix a state of a pure fluid together: different, and neither (T, p) nor (rho, v); for
 /// an ideal gas (`idealGas`) neither two of T, h and u, which each fix the temperature alone.
 bool independentKeys(const std::string& a, const std::string& b, bool idealGas = false);
 
+/// Whether two quantity keys fix a state of humid air at a total pressure together: different, neither the pressure,
+/// and not the humidity ratio with the dew point (at one pressure each fixes the other).
+bool independentAirKeys(const std::string& a, const std::string& b);
+
 /// One state of the model: its number, its label (empty for none) and its variables by quantity key.
 struct ModelState {
     int number = 0;
     std::string label;
-    std::map<std::string, std::string> vars;  ///< CoolPlot key (T p h s rho u v Q) -> variable name
+    std::map<std::string, std::string> vars;  ///< CoolPlot key (T p h s rho u v Q; humid air T p W RH Twb Tdp h v) -> variable name
 };
 
 /// The states of a model by fluid.
@@ -46,12 +53,13 @@ using ModelStates = std::map<std::string, std::vector<ModelState>>;
 /**
  * @brief The states of a model by fluid from its property calls (§4.2): calls on the same fluid that share two
  *        variables of independent properties are one state. Only states with two independent properties are kept
- *        (of an ideal gas: not two of T, h, u).
+ *        (of an ideal gas: not two of T, h, u). Humid air is at the total pressure of its chart: its calls are one state
+ *        when they share two variables of independent properties other than the pressure (independentAirKeys).
  * @param solution when given, variables without a value in it are left out (the solved model)
  * @param mergeOnTp also merge two calls sharing T and p when neither involves a vapour quality (nor is a saturation
  *        function): T and p are independent in a call that takes no quality, since such a call fixes a single-phase
  *        state. On by default (decided from the library validation, docs/coolplot_integration.md §4.2); false gives
- *        the strict rule, for comparison only.
+ *        the strict rule, for comparison only. Not for humid air, whose T and p fix no state.
  */
 ModelStates groupStates(const IR& ir, const SolutionValues* solution = nullptr, bool mergeOnTp = true);
 
