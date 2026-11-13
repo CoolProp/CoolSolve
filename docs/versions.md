@@ -40,7 +40,8 @@ Model results can move: re-check models that use the items below.
   [CoolPlot](https://github.com/CoolProp/CoolPlot) (coolplot-core 1.5.0, CoolPlot `7338f48`) and on
   `CoolProp::Plot` of the pinned CoolProp (`8eb3b778`): isolines, units, themes, zoom; the solved
   cycle with paths along its processes, a state editor and the hover; pure fluids, mixtures,
-  incompressible solutions and ideal gases; SVG/PDF downloads, vector figures in the LaTeX report,
+  incompressible solutions, ideal gases and psychrometric and Mollier charts of humid air; light
+  isolines by default; SVG/PDF downloads, vector figures in the LaTeX report,
   `coolsolve --diagram`. The charts are saved in the ZIP bundle (`diagrams.json`); the former
   `POST /api/v1/coolprop/saturation` is removed ([CoolPlot integration](coolplot_integration.md)).
 - **Dependencies**: coolplot-core is pinned like CoolProp (`COOLSOLVE_COOLPLOT_PINNED_TAG`);

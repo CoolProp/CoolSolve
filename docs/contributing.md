@@ -558,7 +558,7 @@ concern lives.
 | GUI state read back from the session     | `gui/src/utils/sessionModel.ts` (`showSessionModel()`) |
 | Model library tests                      | `tests/test_library_store.cpp`, `tests/test_includes.cpp`, `tests/test_library_api.py` |
 | Library regression (every library model vs its `.sol`) | `tests/test_library_regression.cpp`            |
-| Diagrams: lines, domain, plan, compose record (CoolPlot glue) | `src/diagram/`, `include/coolsolve/diagram/`; ideal gases: `diagram/ideal_gas`; badge: `diagram/references`; SVG/PDF files of a chart and `coolsolve --diagram`: `writeDiagramFile()` in `diagram/engine` |
+| Diagrams: lines, domain, plan, compose record (CoolPlot glue) | `src/diagram/`, `include/coolsolve/diagram/`; ideal gases: `diagram/ideal_gas`; humid air: `diagram/humid_air`; badge: `diagram/references`; SVG/PDF files of a chart and `coolsolve --diagram`: `writeDiagramFile()` in `diagram/engine` |
 | Diagram routes (`/api/v1/diagram/*`), `diagrams.json` in the bundle | `src/server.cpp`                      |
 | GUI Diagrams tab                         | `gui/src/components/diagram/`, `gui/src/utils/diagrams.ts` |
 | Diagram tests and CoolPlot fixtures      | `tests/test_diagram.cpp`, `tests/test_diagram_outputs.cpp` (badge, files, report, CLI), `tests/test_diagram_api.py`, `tests/test_gui_diagrams.py`, `tests/fixtures/coolplot/`, `tools/coolplot_fixtures.py`; the grouping of states on the library models: `tests/test_diagram_states_library.cpp` (hidden tag `[diagram-states-library]`) |

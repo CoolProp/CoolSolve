@@ -200,8 +200,8 @@ computed by `CoolProp::Plot`, through the module `src/diagram/` (design and stat
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/api/v1/coolprop/fluids` | List all registered fluids with `name`, `type` (`Real`, `IdealGas`, `HumidAir`, `Incompressible`, `Mixture`, `AmmoniaWater`), `hasDome`, `fractionRange` for the solutions (`[0, 0.6]` for `MEG`), and `modelFluids` from the current session |
-| `GET` | `/api/v1/diagram/options` | What a chart can be: `diagram_types` (name such as `ph`, `Ts`, `Th`; title; axes `x`, `y` and their log flags; `families` with `key`, `label`, `symbol`, `default_num`), `fluid_types` drawn (`Real`, `Mixture`, `Incompressible`, `IdealGas`) and `fluid_kinds` (per type: `diagram_types`, `families`, `saturation`, `fractions`, `default_box`, `default_region`), `unit_systems` (`SI`, `KSI`, `engineering`, `IP` and `coolsolve`, the model's units, each with the `record` to put in a spec), `default_unit_system`, `regions` (`DEF`, `ACHP`, `ORC`, `NONE` with their limits), `themes`, `label_modes`, `marked_points`, `coolplot` (`core_version`, `commit`) |
-| `POST` | `/api/v1/diagram/scene` | A chart of the session's model. Body: `fluid` (CoolSolve fluid name), `fractions` and `basis` (the mass fraction of an incompressible solution, `[0.3]`, `"mass"`), `spec` (CoolPlot spec record without `fluid` and `cycles`), `cycles` (cycle definitions naming the model's variables), `figure_size_pt` `[w, h]`, `previous_labels` (optional). Returns `svg` (coolplot-core's document), `axes` (keys, labels, limits in display units, log flags, `x_unit`/`y_unit` with display = SI × `scale` + `offset`, `plot_size_pt`), `labels` (to send back as `previous_labels`), `states` (each cycle state: `cycle`, `number`, `label`, `vars`, `values_SI`), `spec` (as composed, readable by CoolPlot), `diagnostics` (`curves`, `warnings`), `timing_ms` (`curves`, `compose`, `svg`). The CoolProp backend is the model's `coolpropBackend`; the cycles use the last successful solve and are skipped without one. 400 for an unknown fluid, a fluid kind not drawable yet (ideal gases, humid air, incompressibles, `NH3H2O`), an unknown diagram or a spec value coolplot-core refuses; a line that cannot be computed is a diagnostic, not an error |
+| `GET` | `/api/v1/diagram/options` | What a chart can be: `diagram_types` (name such as `ph`, `Ts`, `Th`; title; axes `x`, `y` and their log flags; `families` with `key`, `label`, `symbol`, `default_num`), `fluid_types` drawn (`Real`, `Mixture`, `Incompressible`, `IdealGas`, `HumidAir`) and `fluid_kinds` (per type: `diagram_types`, `families`, `saturation`, `fractions`, `default_box`, `default_region`), `unit_systems` (`SI`, `KSI`, `engineering`, `IP` and `coolsolve`, the model's units, each with the `record` to put in a spec), `default_unit_system`, `regions` (`DEF`, `ACHP`, `ORC`, `NONE` with their limits), `themes`, `label_modes`, `marked_points`, `coolplot` (`core_version`, `commit`) |
+| `POST` | `/api/v1/diagram/scene` | A chart of the session's model. Body: `fluid` (CoolSolve fluid name), `fractions` and `basis` (the mass fraction of an incompressible solution, `[0.3]`, `"mass"`), `p_Pa` (the total pressure of a humid-air chart, default 101325), `spec` (CoolPlot spec record without `fluid` and `cycles`), `cycles` (cycle definitions naming the model's variables), `figure_size_pt` `[w, h]`, `previous_labels` (optional). Returns `svg` (coolplot-core's document), `axes` (keys, labels, limits in display units, log flags, `x_unit`/`y_unit` with display = SI × `scale` + `offset`, `plot_size_pt`), `labels` (to send back as `previous_labels`), `states` (each cycle state: `cycle`, `number`, `label`, `vars`, `values_SI`), `spec` (as composed, readable by CoolPlot), `diagnostics` (`curves`, `warnings`), `timing_ms` (`curves`, `compose`, `svg`). The CoolProp backend is the model's `coolpropBackend`; the cycles use the last successful solve and are skipped without one. 400 for an unknown fluid, a fluid kind not drawable yet (ideal gases, humid air, incompressibles, `NH3H2O`), an unknown diagram or a spec value coolplot-core refuses; a line that cannot be computed is a diagnostic, not an error |
 | `POST` | `/api/v1/diagram/export` | The chart as a file: the body of `/diagram/scene` and `"format"` (`"svg"` or `"pdf"`); returns the file with `Content-Disposition: attachment; filename="<model>_<diagram>.<format>"`. The PDF embeds the TrueType fonts the server finds (500 when there is none: install `fonts-dejavu-core`) |
 | `POST` | `/api/v1/diagram/state` | The state under the cursor: `{fluid, fractions, basis, diagram, x_SI, y_SI}` → `{"state": {T, p, h, s, rho, u, v, Q}}` in SI (Q = −1 in single phase) or `{"state": null}` |
 | `GET` | `/api/v1/diagram/states` | The states of the last solved model by fluid, grouped by the property calls they share: `{"fluids": {"R134a": [{"number", "label", "vars": {"T": "T_1", ...}}]}}`; computed at solve time, kept by *Back*, cleared by *New* |
@@ -545,7 +545,9 @@ when the tab comes back.
 - **Fluid**: from `GET /api/v1/coolprop/fluids`, the model fluids first (variable inference).
   Pure fluids, CoolProp mixtures, incompressibles (with a **Mass fraction** field for the
   solutions, from the model's calls by default) and ideal gases (CoolSolve's, on the EES/JANAF
-  basis) are drawn; humid air and `NH3H2O` are not yet (the server answers "not drawable yet").
+  basis) and humid air (`AirH2O`: the psychrometric and Mollier h,x charts, with a **total
+  pressure** field, the model's by default, and T and W range fields) are drawn; `NH3H2O` is
+  not yet (the server answers "not drawable yet").
 - **Diagram**: the fluid charts of coolplot-core: log(p)-h, T-s, h-s, p-s, p-ρ, T-ρ, p-T and T-h;
   incompressibles: p-h, p-s, p-ρ, p-T; ideal gases: all but T-h. The families offered follow the
   fluid's kind (no lines of constant quality without a saturation curve).
@@ -559,8 +561,12 @@ when the tab comes back.
   quality, …) on or off, with its count and rounded values.
 - **Critical point** marked with a dot; **saturation scale** next to the vertical axis (charts
   with p or T vertical); both only for fluids with a saturation curve.
-- **Theme**: as the GUI (`default` or `dark`), `print`, `coolpack`; **labels**: `rails`, `edge`,
-  `margin`, `inline`.
+- **Theme**: as the GUI (`default` or `dark`), `print` (black and white, families told apart by
+  dash patterns; the report's figures), `coolpack` (the look of CoolPack's log(p)-h charts).
+- **Line weight**: *light* (the default: every family of lines at 0.5 pt and 55 % opacity, so
+  that the saturation curve and the cycles stand out) or *as the theme* (CoolPlot's 0.75 pt,
+  opaque). Stored as CoolPlot's `style_overrides` in the spec.
+- **Labels**: `rails`, `edge`, `margin`, `inline`.
 
 The chart is redrawn automatically (debounced) when a control changes, when the panel is resized
 and after a solve; there is no *Generate* button. The status line shows the warnings of the server
@@ -839,7 +845,8 @@ The `FluidRegistry` (`src/fluids.cpp`) registers 90+ real fluids, the ideal
 gases, humid air, the incompressible solutions (glycols, brines, `LiBr`,
 `SeaWater`) and, built from their string, CoolProp mixtures.  The Diagrams tab
 draws fluids of type `FluidType::Real`, CoolProp mixtures (`FluidType::Mixture`),
-incompressibles and ideal gases; humid air and `NH3H2O` are not drawn yet
+incompressibles, ideal gases and humid air (`AirH2O`; the variable inference still names it
+`Air_ha`, `CS-BUG-HUMIDAIR-NAME`); `NH3H2O` is not drawn yet
 ([CoolPlot integration](coolplot_integration.md) §5).
 
 ---
@@ -1184,12 +1191,11 @@ The Diagrams tab is built on CoolPlot (§6.8); its phases are in
 [CoolPlot integration](coolplot_integration.md) §5. Done in phase 1: units, isolines, region
 presets, themes, zoom, persistence in the ZIP bundle; in phase 2: cycle paths, the state
 editor, states grouped from the property calls, the hover; in phase 3: blends on several
-threads, incompressibles, tabular backends, ideal gases; in phase 4: the badge, SVG/PDF
+threads, incompressibles, tabular backends, ideal gases, humid air; in phase 4: the badge, SVG/PDF
 downloads, the report's vector figures, *Export chart spec*, `coolsolve --diagram`. Still to do:
 
 | Item | Description |
 |------|-------------|
-| Humid air | Psychrometric and Mollier charts with the air processes of the model (phase 3) |
 | Badge control | Choose the references (none, short, full) and the versions line in the tab |
 | Multiple diagrams | Several definitions per model (the document holds a list; the tab edits the first) |
 

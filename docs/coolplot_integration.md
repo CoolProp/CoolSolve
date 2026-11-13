@@ -1,8 +1,8 @@
 # CoolPlot Integration Plan
 
 **Status:** implemented on branch `feat/coolplot-diagrams` (revised 2026-11-13; earlier
-versions 2026-10-20 and 2026-10-31), to be reviewed before merging. Phases 0, 1, 2 and 4
-are done; phase 3 is done but for the humid-air charts (§5).
+versions 2026-10-20 and 2026-10-31), to be reviewed before merging. Phases 0 to 4 are done
+(§5); what remains is in §9.
 **References:** [CoolPlot](https://github.com/CoolProp/CoolPlot) `v1.5.0` = `7338f48`
 (2026-11-03), coolplot-core 1.5.0 from its `cpp/` folder; [CoolProp](https://github.com/CoolProp/CoolProp)
 `8eb3b778` (2026-10-31), the commit CoolSolve is pinned to, which has `CoolProp::Plot`
@@ -256,6 +256,9 @@ concentration as CoolPlot's fluid record does: `"fractions": [0.3]` (mass fracti
 `"basis": "mass"` next to `fluid` (400 when it is missing, out of the fluid's range, or given
 to a fluid that takes none). For a fluid without saturation curve (incompressibles, ideal
 gases) the composed `spec.limits` is the absolute T-p box of its lines, as CoolPlot needs.
+Humid air (`AirH2O`, charts `WT` and `ThxW`) takes the total pressure of the chart as
+`"p_Pa"` (default 101325 Pa) and a CoolPlot `Region` as limits (`{"bounds": {"T": [...],
+"W": [...]}}`, by default PsychrometricChart's −10 to 50 °C and 0 to 30 g/kg).
 
 **`POST /api/v1/diagram/export`** (phase 4) — the chart as a file: the body of
 `/diagram/scene` and `"format": "svg"` or `"pdf"`; the file with
@@ -270,14 +273,16 @@ the coolplot-core version and CoolPlot commit, the fluid types drawn and, per ty
 `fluid_kinds`: the diagram types and families it offers, whether it has a saturation curve,
 whether it takes a concentration, its default T-p box, and the region of a new chart
 (`DEF`; `ACHP` for mixtures, whose `DEF` reaches the triple point of their lightest
-component, where their lines are slow to compute).
+component, where their lines are slow to compute; the default `Region` of humid air, with
+its total pressure and the temperature range of `HAPropsSI`).
 
 **`GET /api/v1/diagram/definitions`**, **`PUT /api/v1/diagram/definitions`** — the
 diagram definitions of the session (§3.4): stored with the model, written to and read
 from the ZIP bundle.
 
 **`POST /api/v1/diagram/state`** (phase 2) — the full state at a point of a chart, for the
-hover: `{fluid, diagram, x_SI, y_SI}` → `{"state": {T, p, h, s, rho, u, v, Q}}` in SI (Q = −1 in
+hover: `{fluid, diagram, x_SI, y_SI}` (and `p_Pa` for humid air, whose state is
+`{T, W, RH, Twb, Tdp, h, v, Thx, p}`) → `{"state": {T, p, h, s, rho, u, v, Q}}` in SI (Q = −1 in
 single phase, a key that cannot be computed is null) or `{"state": null}` where the point has no
 state. One flash of the two axis values on the cached fluid model (9 µs in process, 0.5 ms over
 HTTP), with the model's backend.
@@ -356,7 +361,8 @@ The diagrams of a model are one JSON document, `diagrams.json`:
   "diagrams": [
     {
       "name": "Cycle on log(p)-h",    // unique in the document: how a page refers to it
-      "fluid": "R134a",               // with "fractions" and "basis" for a solution (§3.1)
+      "fluid": "R134a",               // with "fractions" and "basis" for a solution, "p_Pa"
+                                      // for humid air (§3.1)
       "spec": { ... },                // CoolPlot spec record (no "fluid", no "cycles")
       "cycles": [ ... ]               // §4.1
     }
@@ -467,6 +473,10 @@ the states whose names agree most claiming their number first; the others are la
 their common suffix (`su_cp`) or by their number when it is taken, and take the next free
 numbers.
 
+Humid air: calls on `AirH2O` are one state when they share two independent humid-air
+variables other than the total pressure (the humidity ratio and the dew point are not
+independent); two calls at the same T and p never merge.
+
 **Validation** on the 287 runnable models of the library (hidden test
 `[diagram-states-library]`, table in `build/diagram_states_library.md`): the name heuristic
 finds 861 states, the strict rule 2683, the rule with the (T, p) exception 2315 (2836 and 2468
@@ -559,7 +569,7 @@ automatically, can cover a cycle on a short chart. What the list below planned:
   the cursor from `POST /api/v1/diagram/state`, debounced.
 - Closes `CS-FEAT-OVERLAY-STATES`.
 
-### Phase 3 — More fluids (done, but humid air)
+### Phase 3 — More fluids (done)
 
 Done on `feat/coolplot-diagrams`:
 
@@ -581,6 +591,12 @@ Done on `feat/coolplot-diagrams`:
   air-standard cycles lie on their isobars and isentropes. p-ρ stands for the register's P-v.
   The exported spec marks the fluid as CoolSolve's ideal gas (`fluid.coolsolve`): CoolPlot
   would draw the real fluid from it.
+- **Humid air** (`CS-FEAT-PSYCHRO`): `diagram/humid_air`, a port of CoolPlot's
+  `thermo/humid_air.py` (`HAPropsSI`, lines on up to 4 threads), the psychrometric (`WT`) and
+  Mollier h,x (`ThxW`) charts at the total pressure of the model; air processes from the solved
+  states, drawn straight as CoolPlot does; a state solved at another total pressure is left
+  out with a warning. `/api/v1/coolprop/fluids` names humid air `AirH2O` (it listed `Air_ha`,
+  the name of the real fluid, twice).
 
 What the list below planned:
 
@@ -673,7 +689,9 @@ R290 p-h with `ACHP`, `engineering` and rounding, CO2 p-h with marked points and
 scale): the plans on CoolPlot's domain match bit for bit and every curve has the same number of
 points; the largest differences are 7.8e-14 of the span for the domain, 4.6e-8 of the axis span
 for the curves (the fixtures keep 8 digits and every third point) and 1.9e-10 for the labels.
-The comparison tolerances are set from these: 1e-12, 2e-7 and 1e-9. A sixth fixture (phase 2),
+The comparison tolerances are set from these: 1e-12, 2e-7 and 1e-9. Two humid-air fixtures
+(phase 3: `psychrometric_ac`, a cooling and reheating process at sea level; `mollier_heating`
+at 0.9 bar) match to 9.1e-8 of the axis span, with the same number of points per curve. A sixth fixture (phase 2),
 an R134a refrigeration cycle given by (p, h) with every path `auto`, checks the paths: its 84
 states match CoolPlot's to 4.3e-10 of the span (tolerance 5e-9). Scenes match in ids,
 drawing order, group, role, z order, legend, style and text. The ids of families spaced evenly
@@ -719,6 +737,9 @@ With the lines on up to 4 threads (phase 3; cold, in process):
 | Propane[0.5]&IsoButane[0.5] (CSL-0324) p-h, `DEF` | 19.7 s | 6.0 s |
 | Propane[0.5]&IsoButane[0.5] (CSL-0324) p-h, `ACHP` | 10.3 s | 2.8 s |
 
+The psychrometric and Mollier charts take 138 and 133 ms cold, 2.4 and 3.7 ms warm; the state
+of humid air under the cursor 0.7 to 0.85 ms over HTTP.
+
 ### 6.4 Moving to newer versions
 
 - **CoolPlot**: bump `COOLSOLVE_COOLPLOT_PINNED_TAG`, regenerate the fixtures, adapt the
@@ -741,6 +762,7 @@ With the lines on up to 4 threads (phase 3; cold, in process):
 | D5 | A TypeScript test runner | Not now: the interaction layer maps coordinates only; the GUI is tested in headless Chromium as `tests/test_gui_shortcuts.py` does. |
 | D6 | Grouping of states | Both: automatic by default (§4.2), the editor to correct and name. |
 | D7 | Default units of the Diagrams tab | `engineering` (°C, bar, kJ/kg), as printed charts; the model's units (°C, Pa, J/kg) as the custom unit record `coolsolve`. |
+| D8 | Default look of the lines (2026-11-13, after the first charts: the isolines of CoolPlot's themes, 0.75 pt and opaque, competed with the saturation curve, 1.5 pt, and the cycles, 2 pt) | New definitions carry CoolPlot `style_overrides` drawing every family of lines at 0.5 pt and 55 % opacity (*Line weight: light*; *as the theme* removes them). Compared on p-h and T-s charts of a solved R134a cycle, light and dark themes, against 0.4 pt at 45 % (the lines of constant quality fade out). A spec field of CoolPlot, so an exported spec draws the same; the report's print theme takes it too. |
 
 Settled in the first revision: compose and layout are in C++ (coolplot-core); the
 numerics are shared through CoolProp; T-h charts are upstream (`Th`); `EUR` was renamed
@@ -752,13 +774,18 @@ numerics are shared through CoolProp; T-h charts are upstream (`Th`); `EUR` was 
 
 Updated with each phase: [gui.md](gui.md) (§4.7, §6.8, §7.2, §8.4, §10, §11, §14.1, §14.4),
 [model_library_support.md §3](model_library_support.md) (`CS-FEAT-OVERLAY-STATES`,
-`CS-FEAT-DIAGRAM-IDEAL`, `CS-FEAT-PLOT-CLI`; `CS-FEAT-PSYCHRO` with the humid-air charts),
+`CS-FEAT-DIAGRAM-IDEAL`, `CS-FEAT-PSYCHRO`, `CS-FEAT-PLOT-CLI`; `CS-BUG-HUMIDAIR-NAME` in §5),
 [contributing.md](contributing.md) (file map, the CoolPlot pin, fonts),
 [versions.md](versions.md) (next release: CoolProp `8eb3b778`, CoolPlot `7338f48`),
 [deployment_ubuntu_apache.md](deployment_ubuntu_apache.md) (`fonts-dejavu-core`), README.
 
 ## 9. Open points
 
+- **CoolSolve**: `CS-BUG-HUMIDAIR-NAME` ([model_library_support.md](model_library_support.md)
+  §5): the variable inference names humid air `Air_ha`, the real fluid, so humid-air variables
+  get the initial guesses of real air; the Diagrams module names it `AirH2O` itself. A solver
+  change, left for review. The total pressure of a humid-air chart is not found when the model
+  writes it as a literal inside the call; `CALL psychprops` outputs are not grouped into states.
 - **Upstream (CoolPlot, CoolProp)**: the stalled quality lines of the propane/isobutane blend
   (§5, phase 3); the regular face chosen among the DejaVu files (§5, phase 4); documenting the
   compose record and the 1.5 scene ids in `contracts.md`; an option of coolplot-core to use the
@@ -768,6 +795,7 @@ Updated with each phase: [gui.md](gui.md) (§4.7, §6.8, §7.2, §8.4, §10, §1
   itself instead of including an internal header).
 - **GUI**: no control of the badge (an old definition keeps none); one diagram per model in the
   tab (the document holds a list); the legend placed by CoolPlot can cover a cycle on a short
-  chart; models with many property calls give many small states.
+  chart, and its entries are cut ("Wet-bulb temperature T_…"); models with many property calls
+  give many small states.
 - **Later**: `NH3H2O` and LiBr-H2O charts (proposed upstream first); diagrams kept in library
   model folders and shown by their HTML pages (§3.4).
