@@ -19,13 +19,12 @@ import {
   hasSaturationScale,
   humidAirRegion,
   isHumidAirKind,
-  lineWeight,
   regionBounds,
   sameFluid,
   sameJson,
   withDiagramType,
   withFamily,
-  withLineWeight,
+  withLook,
   withView,
 } from './definition';
 import { axisSymbol, formatValue, modelUnitTable } from './options';
@@ -103,6 +102,8 @@ const SYMBOLS: Record<string, string> = { rho: 'ρ', Q: 'x', RH: 'φ', phi: 'φ'
 const symbol = (key: string) => SYMBOLS[key] ?? key;
 
 const THEME_AUTO = '';
+/** How CoolPlot's themes are named in the menu, next to the tab's own look ("as the GUI") */
+const THEME_NAMES: Record<string, string> = { default: 'CoolPlot', dark: 'CoolPlot dark', print: 'print', coolpack: 'CoolPack' };
 const MAX_LINES = 60;
 
 export default function DiagramControls({ def, options, fluids, modelFluids, modelFractions, modelPressure, onChange }: Props) {
@@ -188,7 +189,6 @@ export default function DiagramControls({ def, options, fluids, modelFluids, mod
   const regionNames = options.regions.map((r) => r.name);
   const regionName = typeof spec.limits === 'string' ? spec.limits : '';
   const look = spec.settings?.look ?? THEME_AUTO;
-  const weight = lineWeight(spec);
   const labelMode = spec.settings?.labels?.mode ?? 'rails';
   const marksCritical = spec.marked_points?.includes('critical') ?? false;
   const scaleAllowed = type ? hasSaturationScale(type) : false;
@@ -196,10 +196,7 @@ export default function DiagramControls({ def, options, fluids, modelFluids, mod
   const setSettings = (change: Record<string, unknown>) =>
     setSpec({ ...spec, settings: { ...spec.settings, ...change } });
 
-  const setLook = (value: string) => {
-    const { look: _look, ...rest } = spec.settings ?? {};
-    setSpec({ ...spec, settings: value === THEME_AUTO ? rest : { ...rest, look: value } });
-  };
+  const setLook = (value: string) => setSpec(withLook(spec, value, options));
 
   const setCritical = (on: boolean) => {
     const others = (spec.marked_points ?? []).filter((p) => p !== 'critical');
@@ -337,25 +334,16 @@ export default function DiagramControls({ def, options, fluids, modelFluids, mod
           </span>
         )}
 
-        <label className="diagram-field" title="Colours and fonts of the chart">
+        <label
+          className="diagram-field"
+          title={'As the GUI: light or dark like the GUI, with thin, light isolines so that the saturation curve and the '
+            + 'cycles stand out. The others are CoolPlot\'s themes, with their own, thicker lines.'}
+        >
           <span>Theme</span>
           <select className="diagram-select" value={look} onChange={(e) => setLook(e.target.value)}>
             <option value={THEME_AUTO}>as the GUI</option>
             {look !== THEME_AUTO && !options.themes.includes(look) && <option value={look}>{look}</option>}
-            {options.themes.map((t) => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </label>
-
-        <label className="diagram-field" title="Light: thin, partly transparent isolines, so that the saturation curve and the cycles stand out. As the theme: CoolPlot's line widths">
-          <span>Line weight</span>
-          <select
-            className="diagram-select"
-            value={weight}
-            onChange={(e) => setSpec(withLineWeight(spec, e.target.value as 'light' | 'theme', options))}
-          >
-            <option value="light">light</option>
-            <option value="theme">as the theme</option>
-            {weight === 'custom' && <option value="custom" disabled>custom</option>}
+            {options.themes.map((t) => <option key={t} value={t}>{THEME_NAMES[t] ?? t}</option>)}
           </select>
         </label>
 

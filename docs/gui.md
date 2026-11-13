@@ -564,11 +564,12 @@ when the tab comes back.
   quality, …) on or off, with its count and rounded values.
 - **Critical point** marked with a dot; **saturation scale** next to the vertical axis (charts
   with p or T vertical); both only for fluids with a saturation curve.
-- **Theme**: as the GUI (`default` or `dark`), `print` (black and white, families told apart by
-  dash patterns; the report's figures), `coolpack` (the look of CoolPack's log(p)-h charts).
-- **Line weight**: *light* (the default: every family of lines at 0.5 pt and 55 % opacity, so
-  that the saturation curve and the cycles stand out) or *as the theme* (CoolPlot's 0.75 pt,
-  opaque). Stored as CoolPlot's `style_overrides` in the spec.
+- **Theme**: *as the GUI* (the default: CoolPlot's `default` or `dark` theme following the GUI,
+  with light lines — every family at 0.5 pt and 55 % opacity, stored as CoolPlot's
+  `style_overrides` in the spec — so that the saturation curve and the cycles stand out), or one
+  of CoolPlot's themes with its own, thicker lines (0.75 pt, opaque): *CoolPlot*, *CoolPlot dark*,
+  *print* (black and white, families told apart by dash patterns; the report's figures),
+  *CoolPack* (the look of CoolPack's log(p)-h charts).
 - **Labels**: `rails`, `edge`, `margin`, `inline`.
 
 The chart is redrawn automatically (debounced) when a control changes, when the panel is resized

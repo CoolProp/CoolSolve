@@ -151,11 +151,11 @@ export function defaultFractions(fluid: FluidInfo | undefined, modelFractions?: 
 }
 
 /**
- * The light lines of the Diagrams tab: every family of lines thinner and partly transparent, so that the saturation
- * curve (1.5 pt) and the cycles (2 pt) of CoolPlot's themes stand out. CoolPlot's themes draw isolines at 0.75 pt
- * and lines of constant quality at 0.5 pt, fully opaque.
+ * The light lines of the tab's own look ("as the GUI"): every family of lines thinner and partly transparent, so that
+ * the saturation curve (1.5 pt) and the cycles (2 pt) stand out. CoolPlot's themes, chosen by name, keep their own
+ * lines: isolines at 0.75 pt and lines of constant quality at 0.5 pt, fully opaque.
  */
-export const LIGHT_LINE = { width_pt: 0.5, alpha: 0.55 };
+const LIGHT_LINE = { width_pt: 0.5, alpha: 0.55 };
 
 /**
  * CoolPlot's `style_overrides` of the light lines: LIGHT_LINE for every family a chart of the options can draw
@@ -167,21 +167,16 @@ export function lightLineOverrides(options: DiagramOptionsResponse): Record<stri
   return Object.fromEntries([...keys].sort().map((k) => [k, { ...LIGHT_LINE }]));
 }
 
-/** The line weight of a spec: "light" (the overrides of lightLineOverrides), "theme" (none), or "custom". */
-export function lineWeight(spec: CoolPlotSpec): 'light' | 'theme' | 'custom' {
-  const overrides = spec.style_overrides as Record<string, Record<string, unknown>> | undefined;
-  if (!overrides || Object.keys(overrides).length === 0) return 'theme';
-  // Field by field: the server keeps JSON objects with their keys sorted
-  const light = Object.values(overrides).every(
-    (o) => Object.keys(o).length === 2 && o.width_pt === LIGHT_LINE.width_pt && o.alpha === LIGHT_LINE.alpha,
-  );
-  return light ? 'light' : 'custom';
-}
-
-/** The spec with the light lines ("light") or the theme's ("theme"). */
-export function withLineWeight(spec: CoolPlotSpec, weight: 'light' | 'theme', options: DiagramOptionsResponse): CoolPlotSpec {
+/**
+ * The spec with the look `look`: '' for the tab's own (no `settings.look`: CoolPlot's default or dark theme as the
+ * GUI, with the light lines), else a CoolPlot theme by name, drawn with its own lines (no style overrides).
+ */
+export function withLook(spec: CoolPlotSpec, look: string, options: DiagramOptionsResponse): CoolPlotSpec {
+  const { look: _look, ...settings } = spec.settings ?? {};
   const { style_overrides: _overrides, ...rest } = spec;
-  return weight === 'light' ? { ...rest, style_overrides: lightLineOverrides(options) } : rest;
+  return look
+    ? { ...rest, settings: { ...settings, look } }
+    : { ...rest, settings, style_overrides: lightLineOverrides(options) };
 }
 
 /** A new spec for a diagram type. */
@@ -193,7 +188,7 @@ export function defaultSpec(type: DiagramTypeOption, options: DiagramOptionsResp
     limits: regions.includes(DEFAULT_REGION) || regions.length === 0 ? DEFAULT_REGION : regions[0],
     isolines: defaultIsolines(type),
     marked_points: ['critical'],
-    style_overrides: lightLineOverrides(options),
+    style_overrides: lightLineOverrides(options),  // the look of the tab (withLook)
     settings: {
       // No "look": the GUI's theme (sceneInput). No "branding": CoolPlot's badge, the references of the
       // equation of state and the versions (definitions saved before keep the branding they have)
@@ -434,7 +429,8 @@ function freeName(base: string, used: Set<string>): string {
 }
 
 /**
- * The definition as the Diagrams tab shows and writes it: in the model's units; with the cycles the tab shows, the
+ * The definition as the Diagrams tab shows and writes it: in the model's units; with the lines of its look (withLook);
+ * with the cycles the tab shows, the
  * inferred states and the arrays overlays (others, the cycles of the former state editor, are dropped); each overlay on
  * the axes of the chart, an axis quantity it has no array for taking the default one (an array of that quantity, so
  * that a change of diagram type maps the overlays to the new axes), and named after its arrays ("T, s"), uniquely.
@@ -461,7 +457,8 @@ export function normalizeDefinition(def: DiagramDefinition, options: DiagramOpti
     names.add(name);
     cycles.push({ ...arraysCycle(o, keys, cycle), name });
   }
-  return { ...def, spec: { ...def.spec, units: options.model_units.record }, cycles };
+  const spec = withLook({ ...def.spec, units: options.model_units.record }, def.spec.settings?.look ?? '', options);
+  return { ...def, spec, cycles };
 }
 
 /** JSON equality of two plain values (definitions are JSON). */

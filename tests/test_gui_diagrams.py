@@ -421,6 +421,7 @@ async def run_tests(page: Page):
 
     await more_fluids(page)
     await humid_air(page)
+    await theme_lines(page)
 
     if SCREENSHOTS:
         print("\n=== Screenshots: dark theme, T-s chart ===")
@@ -442,6 +443,43 @@ def select_js(index: int, value: str) -> str:
     return ("(() => { const s = document.querySelectorAll('.diagram-controls select')[" + str(index) + "];"
             " Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, " + json.dumps(value) + ");"
             " s.dispatchEvent(new Event('change', {bubbles: true})); })()")
+
+
+def theme_js(value: str) -> str:
+    """Choose `value` ('' for "as the GUI", or a CoolPlot theme) in the Theme select of the controls."""
+    return ("(() => { const s = [...document.querySelectorAll('.diagram-controls label')]"
+            ".find(l => l.querySelector('span')?.textContent === 'Theme')?.querySelector('select');"
+            " Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, " + json.dumps(value) + ");"
+            " s.dispatchEvent(new Event('change', {bubbles: true})); })()")
+
+
+async def theme_lines(page: Page):
+    """The light lines belong to the tab's own look ("as the GUI"); CoolPlot's themes keep their own lines."""
+    print("\n=== Themes and lines ===")
+    check("no Line weight control: the light lines belong to the look of the tab",
+          not await page.eval("[...document.querySelectorAll('.diagram-controls span')].some(e => e.textContent === 'Line weight')"))
+    count = len(page.scene_requests)
+    await page.eval(theme_js("default"))
+    end = time.time() + 20
+    while time.time() < end and not (len(page.scene_requests) > count
+                                     and page.scene_requests[-1].get("spec", {}).get("settings", {}).get("look") == "default"):
+        await asyncio.sleep(0.1)
+    spec = page.scene_requests[-1].get("spec", {})
+    check("CoolPlot's own theme draws its own, thicker lines: no style overrides",
+          spec.get("settings", {}).get("look") == "default" and "style_overrides" not in spec, json.dumps(spec)[:300])
+    check("the isolines of CoolPlot's theme are opaque",
+          await page.wait_for(f"(() => {{ const p = {SVG}?.querySelector('g.cp-role-isoline path'); "
+                              "return !!p && p.getAttribute('stroke-opacity') === '1'; })()", 20))
+    count = len(page.scene_requests)
+    await page.eval(theme_js(""))
+    end = time.time() + 20
+    while time.time() < end and not (len(page.scene_requests) > count
+                                     and "style_overrides" in page.scene_requests[-1].get("spec", {})):
+        await asyncio.sleep(0.1)
+    spec = page.scene_requests[-1].get("spec", {})
+    check("back to the look of the tab: the light lines again",
+          all(o == {"width_pt": 0.5, "alpha": 0.55} for o in spec.get("style_overrides", {}).values())
+          and spec.get("style_overrides"), json.dumps(spec)[:300])
 
 
 async def solve_model(page: Page, code: str, fluid: str):
