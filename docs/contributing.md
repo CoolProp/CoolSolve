@@ -311,6 +311,11 @@ The comprehensive LaTeX report is generated after a successful solve.
       `\IfFileExists`).
 - [ ] **`tests/test_latex_report.cpp`** — add a regression test that the
       generated `.tex` contains the new section/macro and is well-formed.
+- [ ] Figures the server can draw itself go in as vector PDFs: the thermodynamic
+      diagrams are written by coolplot-core's PDF writer at `/api/v1/latex/compile`
+      (`thermo_diagrams.pdf`, …), with the PNG of the browser as fallback. The PDF
+      writer embeds TrueType fonts found on the platform (a Linux server needs
+      `fonts-dejavu-core`).
 - [ ] When working on the report locally, compile with:
       `pdflatex -synctex=1 -interaction=nonstopmode <file>.tex`.
 
@@ -547,15 +552,16 @@ concern lives.
 | `$INCLUDE` resolution (project folder, library) | `include/coolsolve/include_resolver.h`, `src/include_resolver.cpp`; import of the routines: `handleInclude()` in `src/parser.cpp`; the session's project: `includeResolverFor()` in `src/server.cpp` |
 | Model library routes (`/library/`, `/api/v1/library/*`) | `src/server.cpp`                  |
 | Model library embedding (build)          | `cmake/embed_library.cmake`, `CMakeLists.txt`        |
+| CoolProp bibliography of the diagram badge (build) | `cmake/embed_bibtex.cmake`                    |
 | GUI *Library* menu / opening a library model | `gui/src/components/LibraryMenu.tsx`, `gui/src/utils/library.ts` |
 | Per-tab session ID                       | `gui/src/api/session.ts`, `getSession()` in `src/server.cpp` |
 | GUI state read back from the session     | `gui/src/utils/sessionModel.ts` (`showSessionModel()`) |
 | Model library tests                      | `tests/test_library_store.cpp`, `tests/test_includes.cpp`, `tests/test_library_api.py` |
 | Library regression (every library model vs its `.sol`) | `tests/test_library_regression.cpp`            |
-| Diagrams: lines, domain, plan, compose record (CoolPlot glue) | `src/diagram/`, `include/coolsolve/diagram/` |
+| Diagrams: lines, domain, plan, compose record (CoolPlot glue) | `src/diagram/`, `include/coolsolve/diagram/`; ideal gases: `diagram/ideal_gas`; badge: `diagram/references`; SVG/PDF files of a chart and `coolsolve --diagram`: `writeDiagramFile()` in `diagram/engine` |
 | Diagram routes (`/api/v1/diagram/*`), `diagrams.json` in the bundle | `src/server.cpp`                      |
 | GUI Diagrams tab                         | `gui/src/components/diagram/`, `gui/src/utils/diagrams.ts` |
-| Diagram tests and CoolPlot fixtures      | `tests/test_diagram.cpp`, `tests/test_diagram_api.py`, `tests/test_gui_diagrams.py`, `tests/fixtures/coolplot/`, `tools/coolplot_fixtures.py`; the grouping of states on the library models: `tests/test_diagram_states_library.cpp` (hidden tag `[diagram-states-library]`) |
+| Diagram tests and CoolPlot fixtures      | `tests/test_diagram.cpp`, `tests/test_diagram_outputs.cpp` (badge, files, report, CLI), `tests/test_diagram_api.py`, `tests/test_gui_diagrams.py`, `tests/fixtures/coolplot/`, `tools/coolplot_fixtures.py`; the grouping of states on the library models: `tests/test_diagram_states_library.cpp` (hidden tag `[diagram-states-library]`) |
 | Comprehensive example tests              | `tests/test_examples.cpp` (`EXPECTED_SOLUTIONS`)     |
 | Solver robustness tests                  | `tests/test_solver_robustness.cpp`                   |
 | Configuration parsing tests              | `tests/test_config.cpp`                              |

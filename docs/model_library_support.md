@@ -162,11 +162,11 @@ editor auto-completion and quick-fix from the `functions` of `library.json` (*un
 | `CS-FEAT-LIB-CLI` | `coolsolve --library list / show / get` | §2.2 | P2 |
 | `CS-FEAT-EXPORT-EES` | *Export for EES*: flatten `$INCLUDE`s into a self-contained file (the ZIP bundle already carries the included files) | §2.3 | P2 |
 | `CS-FEAT-PARAM-FILE` | Parametric-table file in the model folder (e.g. `<model>-parametric.csv`: one column per variable, one row per run), with **string columns** (fluid names) — needed to import EES parametric tables natively (`CS-GAP-PARAMETRIC`) | – | P2 |
-| `CS-FEAT-DIAGRAM-IDEAL` | T-s / P-v / h-s diagrams without dome for ideal gases (`Air`, `N2`, `CO2`…) with the solved states — README figures of air-standard cycles, gas turbines and engines (meanwhile the library uses parametric sweep plots) | – | P2 |
+| `CS-FEAT-DIAGRAM-IDEAL` | T-s / P-v / h-s diagrams without dome for ideal gases (`Air`, `N2`, `CO2`…) with the solved states — README figures of air-standard cycles, gas turbines and engines (meanwhile the library uses parametric sweep plots) — **done** on `feat/coolplot-diagrams`: p-h, T-s, h-s, p-s, p-ρ (for P-v), T-ρ, p-T charts of CoolSolve's ideal gases (EES/JANAF basis) with the solved cycle ([CoolPlot integration](coolplot_integration.md) §5, phase 3) | – | P2 |
 | `CS-FEAT-PSYCHRO` | Psychrometric chart with the solved states of `AirH2O` models and PNG/SVG export — figures of the HVAC models (meanwhile parametric sweep plots) | – | P2 |
 | `CS-FEAT-OVERLAY-STATES` | Let the user pick the variables of each state point in the Diagram tab (today: arrays or name suffixes), so that names such as `T_su_cp`, `h_ex_ev` can be drawn without adding equations — **done** on `feat/coolplot-diagrams`: the state editor of the Diagrams tab (cycles of any variables, loops, paths through the dome), states grouped from the property calls (`GET /api/v1/diagram/states`), the hover ([CoolPlot integration](coolplot_integration.md) §4, phase 2) | – | P2 |
 | `CS-FEAT-METADATA` | "Save as library model": create the folder skeleton (README and `model.json` templates) from the current session | – | P3 |
-| `CS-FEAT-PLOT-CLI` | Generate a diagram or a parametric plot from the CLI, to regenerate README figures when a model changes | – | P3 |
+| `CS-FEAT-PLOT-CLI` | Generate a diagram or a parametric plot from the CLI, to regenerate README figures when a model changes — diagrams **done** on `feat/coolplot-diagrams`: `coolsolve --diagram diagrams.json [--diagram-name <name>] -o chart.svg\|chart.pdf model.eescode`; parametric plots not yet | – | P3 |
 
 Suggested order of implementation:
 

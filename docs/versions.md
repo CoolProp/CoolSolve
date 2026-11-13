@@ -34,6 +34,19 @@ Model results can move: re-check models that use the items below.
 - **`VOLUME` is labelled `m^3/kg`**, and `$IntegralTable` rows are at multiples of the output interval
   (`integralOutputInterval` is now applied).
 
+### New
+
+- **Thermodynamic diagrams on CoolPlot**: the Diagrams tab is rebuilt on the C++ core of
+  [CoolPlot](https://github.com/CoolProp/CoolPlot) (coolplot-core 1.5.0, CoolPlot `7338f48`) and on
+  `CoolProp::Plot` of the pinned CoolProp (`8eb3b778`): isolines, units, themes, zoom; the solved
+  cycle with paths along its processes, a state editor and the hover; pure fluids, mixtures,
+  incompressible solutions and ideal gases; SVG/PDF downloads, vector figures in the LaTeX report,
+  `coolsolve --diagram`. The charts are saved in the ZIP bundle (`diagrams.json`); the former
+  `POST /api/v1/coolprop/saturation` is removed ([CoolPlot integration](coolplot_integration.md)).
+- **Dependencies**: coolplot-core is pinned like CoolProp (`COOLSOLVE_COOLPLOT_PINNED_TAG`);
+  nlohmann/json 3.12.0; CMake 3.16. A server drawing PDF diagrams needs a TrueType font
+  (`fonts-dejavu-core`).
+
 ---
 
 ## v0.4 — October 2026 (current)

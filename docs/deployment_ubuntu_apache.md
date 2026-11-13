@@ -21,6 +21,10 @@ sudo apt update && sudo apt upgrade -y
 # Install Apache and required modules
 sudo apt install -y apache2 apache2-utils
 
+# Fonts for the PDF diagrams (downloads of the Diagrams tab, figures of the LaTeX report):
+# coolplot-core embeds the TrueType fonts it finds; without any, PDF diagrams fail (SVG works)
+sudo apt install -y fonts-dejavu-core
+
 # Enable required Apache modules
 sudo a2enmod proxy proxy_http proxy_wstunnel headers rewrite ssl auth_basic
 sudo systemctl restart apache2

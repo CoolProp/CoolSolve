@@ -1,7 +1,8 @@
 # CoolPlot Integration Plan
 
-**Status:** in progress on branch `feat/coolplot-diagrams` (revised 2026-11-12; earlier
-versions 2026-10-20 and 2026-10-31). Phases 0, 1 and 2 are done (§5).
+**Status:** implemented on branch `feat/coolplot-diagrams` (revised 2026-11-13; earlier
+versions 2026-10-20 and 2026-10-31), to be reviewed before merging. Phases 0, 1, 2 and 4
+are done; phase 3 is done but for the humid-air charts (§5).
 **References:** [CoolPlot](https://github.com/CoolProp/CoolPlot) `v1.5.0` = `7338f48`
 (2026-11-03), coolplot-core 1.5.0 from its `cpp/` folder; [CoolProp](https://github.com/CoolProp/CoolProp)
 `8eb3b778` (2026-10-31), the commit CoolSolve is pinned to, which has `CoolProp::Plot`
@@ -250,12 +251,26 @@ SVG + interaction layer  <-- SVG, axes, labels, states, diagnostics <-----------
 
 An unknown fluid, a fluid kind the server cannot draw yet, an unknown diagram type or a
 spec value coolplot-core refuses is a 400 with `{"error": ...}`; a line that cannot be
-computed is not an error but a diagnostic.
+computed is not an error but a diagnostic. An incompressible solution takes its
+concentration as CoolPlot's fluid record does: `"fractions": [0.3]` (mass fractions) and
+`"basis": "mass"` next to `fluid` (400 when it is missing, out of the fluid's range, or given
+to a fluid that takes none). For a fluid without saturation curve (incompressibles, ideal
+gases) the composed `spec.limits` is the absolute T-p box of its lines, as CoolPlot needs.
+
+**`POST /api/v1/diagram/export`** (phase 4) — the chart as a file: the body of
+`/diagram/scene` and `"format": "svg"` or `"pdf"`; the file with
+`Content-Disposition: attachment; filename="<model>_<diagram>.<format>"`. The figure size is
+the request's, else the spec's page (576 × 432 pt). The PDF embeds the TrueType fonts the
+server finds (§5, phase 4); without any, the route answers 500 and SVG still works.
 
 **`GET /api/v1/diagram/options`** — what the GUI offers: diagram types (name, axes,
-families with their default count) per fluid kind, unit systems (the presets and
-`coolsolve`, the model's units as a custom unit record), region presets (`DEF`, `ACHP`,
-`ORC`), themes, label modes, the coolplot-core version and CoolPlot commit.
+families with their default count), unit systems (the presets and `coolsolve`, the model's
+units as a custom unit record), region presets (`DEF`, `ACHP`, `ORC`), themes, label modes,
+the coolplot-core version and CoolPlot commit, the fluid types drawn and, per type,
+`fluid_kinds`: the diagram types and families it offers, whether it has a saturation curve,
+whether it takes a concentration, its default T-p box, and the region of a new chart
+(`DEF`; `ACHP` for mixtures, whose `DEF` reaches the triple point of their lightest
+component, where their lines are slow to compute).
 
 **`GET /api/v1/diagram/definitions`**, **`PUT /api/v1/diagram/definitions`** — the
 diagram definitions of the session (§3.4): stored with the model, written to and read
@@ -311,8 +326,9 @@ third column.
 | `diagram/engine.{h,cpp}` | the plot and curve caches, the compose record, the two-pass plot size, the diagnostics, the definitions document | `engine/engine.py`, `engine/cache.py`, `corelib.compose_record` | 1 |
 | `diagram/cycles.{h,cpp}` | the states of a solved model as full states, the paths between them as chains | `thermo/cycles/paths.py`, `thermo/process.py`, `core/cycle.py` | 2 |
 | `diagram/states.{h,cpp}` | the grouping of the variables of property calls into states (§4.2) | (CoolSolve only) | 2 |
+| `diagram/ideal_gas.{h,cpp}` | ideal gases as a `PropertyProvider` (`fluid.h`, the interface of CoolPlot's providers) on the solver's ideal-gas functions with the EES/JANAF offsets, and their lines | `thermo/provider.py` (interface); the lines are CoolSolve only | 3 |
 | `diagram/humid_air.{h,cpp}` | the lines of the psychrometric and Mollier charts | `thermo/humid_air.py` | 3 |
-| `diagram/references.{h,cpp}` | the badge lines: references of the equation of state, CoolProp, CoolPlot and CoolSolve versions | `thermo/references.py` | 4 |
+| `diagram/references.{h,cpp}` | the badge lines: references of the equation of state (CoolProp's bibliography, embedded by `cmake/embed_bibtex.cmake`) and the versions line, as CoolPlot writes them; the SVG and PDF files of a chart (export, report, CLI) are in `engine` | `thermo/references.py`, `Engine.source_lines` | 4 |
 | `server.cpp` | the endpoints of §3.1 (thin handlers), `diagrams.json` in the ZIP bundle | | 1 |
 | `gui/src/components/diagram/` | the tab, the SVG and its interaction layer, the state editor | | 1, 2 |
 
@@ -323,7 +339,7 @@ Not used:
 
 | CoolPlot part | Why |
 |---|---|
-| `engine/background.py`, `engine/store.py` | Threads and processes around Python's interpreter lock, and a disk cache. The server computes a scene in the request; the lines of a blend chart can be computed on several threads (one `PropertyPlot` each) if they are measured to be slow (phase 3). |
+| `engine/background.py`, `engine/store.py` | Threads and processes around Python's interpreter lock, and a disk cache. The server computes a scene in the request; the lines not yet cached are computed on up to 4 threads (`MAX_CURVE_THREADS`, never more than the machine has), one cached `PropertyPlot` each, which gives the same lines bit for bit. |
 | `core/events.py`, `interaction.py` | Dragging cycle states edits a CoolPlot cycle; in CoolSolve the states come from the solve. Zoom, resize and hover are the GUI's (§3.2). |
 | `render/` (matplotlib, plotly, SVG, web, PDF) | coolplot-core writes SVG and PDF. |
 | `thermo/cycles/models.py`, `resolve_states` | CoolPlot's cycle models compute a cycle; in CoolSolve the model is the cycle and its states are solved. |
@@ -340,7 +356,7 @@ The diagrams of a model are one JSON document, `diagrams.json`:
   "diagrams": [
     {
       "name": "Cycle on log(p)-h",    // unique in the document: how a page refers to it
-      "fluid": "R134a",
+      "fluid": "R134a",               // with "fractions" and "basis" for a solution (§3.1)
       "spec": { ... },                // CoolPlot spec record (no "fluid", no "cycles")
       "cycles": [ ... ]               // §4.1
     }
@@ -444,15 +460,18 @@ As implemented (`src/diagram/states.cpp`): the property functions `temperature`,
 `enthalpy`, `entropy`, `intenergy`, `volume`, `density`, `quality`, `T_sat`, `P_sat` (and their
 short names; `v(...)` is the viscosity) on a known fluid, with their named-argument variables
 and the variable of `var = call`; a fluid given as a string variable is resolved when the IR
-knows its value. A state needs two independent properties. Numbering as the former name
-heuristic: `X[i]` gives state i; a common suffix keeps its integer or becomes the label; the
-others take the next free numbers.
+knows its value. A state needs two independent properties; for an ideal gas, two of T, h
+and u are not independent. Numbering from the names: the number that more than half of the
+variables of a state carry (`X[i]`, or the integer ending the name: `T_2`, `h_2`, `s[2]` → 2),
+the states whose names agree most claiming their number first; the others are labelled by
+their common suffix (`su_cp`) or by their number when it is taken, and take the next free
+numbers.
 
 **Validation** on the 287 runnable models of the library (hidden test
 `[diagram-states-library]`, table in `build/diagram_states_library.md`): the name heuristic
-finds 861 states, the strict rule 2836, the rule with the (T, p) exception 2468. The 368 states
-the exception removes are states evaluated property by property at (T, P), split by the strict
-rule. Where they differ, the rule completes states through shared variables the names miss
+finds 861 states, the strict rule 2683, the rule with the (T, p) exception 2315 (2836 and 2468
+before ideal gases counted T, h and u as dependent). The 368 states the exception removes are
+states evaluated property by property at (T, P), split by the strict rule. Where they differ, the rule completes states through shared variables the names miss
 (`P_atm`, `p_steam`, `p[2]`) and finds the states of arrays, which the heuristic ignored; the
 heuristic mixes states (a dead state `T_0`, `p_0` reused by several calls) and keeps pairs
 (T_sat, P_cd) that fix no state. The rule replaces the heuristic in the Diagrams tab.
@@ -463,9 +482,11 @@ The variables hold the model's units (°C, Pa, J/kg, J/(kg·K), kg/m³); the ser
 converts them to SI with CoolSolve's `UnitConverter`. The compose record needs full
 states (T, p, h, s, ρ, v, u, Q): `diagram/cycles` keeps the solved values and completes
 the others from two of them (the axes of the chart when the model has both, else an
-independent pair) with CoolSolve's fluid layer, so the marker sits where the solver put
-it. One chart belongs to one fluid; a model with several fluids gets one diagram per
-fluid.
+independent pair) with CoolSolve's fluid layer (CoolProp with the model's backend, the
+ideal-gas provider for ideal gases), so the marker sits where the solver put it. A state of
+an incompressible given without a pressure is placed at 101325 Pa, the pressure the solver
+uses for its T-only calls. One chart belongs to one fluid; a model with several fluids gets
+one diagram per fluid.
 
 ---
 
@@ -538,7 +559,30 @@ automatically, can cover a cycle on a short chart. What the list below planned:
   the cursor from `POST /api/v1/diagram/state`, debounced.
 - Closes `CS-FEAT-OVERLAY-STATES`.
 
-### Phase 3 — More fluids
+### Phase 3 — More fluids (done, but humid air)
+
+Done on `feat/coolplot-diagrams`:
+
+- **Blends**: the lines not yet cached are computed on up to 4 threads; CSL-0324
+  (propane/isobutane, `DEF`) went from 19.7 s to 6.0 s, `R32[0.7]&R125[0.3]` p-h from 1.54 s
+  to 0.60 s; new charts of mixtures use `ACHP` (2.8 s for CSL-0324). The lines of constant
+  quality of that blend stall near 150 K and 19 Pa in `CoolProp::Plot`'s mixture stepper
+  ("evaluation budget used up"): an upstream issue, reproduced by
+  `PropertyPlot("HEOS::Propane[0.5]&IsoButane[0.5]", iP, iHmass, 114.87, 612.5, 0.4019, 9.429e6)
+  .calc_isolines(iQ, {0.5}, {})`.
+- **Incompressibles**: p-h, p-s, p-ρ and p-T charts (in T-s, h-s, T-ρ and T-h every state lies
+  near one line), with the concentration in the definition; CoolPlot refuses relative bounds
+  for them, so CoolSolve gives a default box: the fluid's temperatures from its freezing point,
+  1 to 100 bar, overridden by the spec's absolute limits. The concentration of a new chart is
+  that of the model's calls, else the middle of the fluid's range.
+- **Tabular backends**: tested; lines of constant quality with the base backend.
+- **Ideal gases** (`CS-FEAT-DIAGRAM-IDEAL`): `diagram/ideal_gas`, p-h, T-s, h-s, p-s, p-ρ, T-ρ
+  and p-T (T-h is refused: an isotherm is an isenthalp) over 200-2000 K and 0.1-100 bar; solved
+  air-standard cycles lie on their isobars and isentropes. p-ρ stands for the register's P-v.
+  The exported spec marks the fluid as CoolSolve's ideal gas (`fluid.coolsolve`): CoolPlot
+  would draw the real fluid from it.
+
+What the list below planned:
 
 - **Blends and CoolProp mixtures**: the port traces them and draws the dome from the
   phase envelope; the fluid string is enough. Measure the time of a blend chart (CoolPlot
@@ -558,7 +602,27 @@ automatically, can cover a cycle on a short chart. What the list below planned:
 - Later, through the same provider interface: `NH3H2O` and LiBr-H2O charts (Dühring,
   h-x), proposed upstream as new chart kinds first.
 
-### Phase 4 — Outputs
+### Phase 4 — Outputs (done)
+
+Done on `feat/coolplot-diagrams`: `diagram/references` (checked against CoolPlot's Python on
+its 335 BibTeX keys and 137 fluids, in both styles), `POST /api/v1/diagram/export`, the *SVG*,
+*PDF* and *Spec* buttons of the tab, the report's figures (`/api/v1/latex/compile` draws every
+stored definition with the last solve, in the print theme, as `thermo_diagrams.pdf`,
+`thermo_diagram_2.pdf`, …; the `.tex` takes them with `\IfFileExists` and falls back to the PNG
+of the browser, kept because the tab's default chart is not stored until it is edited and a
+server without fonts writes no PDF), and `coolsolve --diagram`. The versions line is
+CoolPlot's (`CoolProp 8.1.0dev (8eb3b77), CoolPlot 1.5.0`, the core's version): it does not
+name CoolSolve, so that an exported spec draws the same badge in CoolPlot. New definitions
+write no `branding`, i.e. CoolPlot's defaults; definitions saved in phases 1 to 3 keep
+`{"references": "none", "versions": false}`.
+
+**Fonts.** The PDF writer embeds TrueType fonts it finds on the platform (the themes ask for
+Inter, Helvetica Neue, Arial, DejaVu Sans). A Linux server needs `fonts-dejavu-core`. Where
+`fonts-dejavu-extra` is installed too, coolplot-core picks `DejaVuSans-ExtraLight.ttf` for the
+regular face (the first file whose bold and italic flags match): thin text, a coolplot-core
+issue to fix upstream.
+
+What the list below planned:
 
 - The LaTeX report takes `thermo_diagrams.pdf` from coolplot-core's PDF writer instead
   of a PNG. It embeds TrueType fonts found on the platform; the online server needs a
@@ -642,8 +706,18 @@ Measured in a Release build, in process, 250 points per line:
 Over HTTP, R134a p-h takes 47 ms cold and 10 ms warm. The state under the cursor takes 9 µs
 in process (0.5 ms over HTTP); the grouping of states at solve time a median 0.013 ms per
 library model (95 %: 0.12 ms). The `[diagram]` tests check a loose
-budget (cold under 1 s, warm under 100 ms). A mixture chart is the slow case: computing its
-lines on several threads (one `PropertyPlot` each) is the phase 3 item.
+budget (cold under 1 s, warm under 100 ms).
+
+With the lines on up to 4 threads (phase 3; cold, in process):
+
+| Chart | One thread | Four threads |
+|---|---|---|
+| R134a p-h | 31.5 ms | 17.2 ms |
+| Water T-s | 72 ms | 31 ms |
+| R410A p-h | 87 ms | 36 ms |
+| R32[0.7]&R125[0.3] p-h | 1.54 s | 0.60 s |
+| Propane[0.5]&IsoButane[0.5] (CSL-0324) p-h, `DEF` | 19.7 s | 6.0 s |
+| Propane[0.5]&IsoButane[0.5] (CSL-0324) p-h, `ACHP` | 10.3 s | 2.8 s |
 
 ### 6.4 Moving to newer versions
 
@@ -674,15 +748,26 @@ numerics are shared through CoolProp; T-h charts are upstream (`Th`); `EUR` was 
 
 ---
 
-## 8. Documentation to update when the work lands
+## 8. Documentation
 
-- [gui.md](gui.md): §4.7 (endpoints), §6.8 (Diagrams tab), §8.3 (variable inference for
-  diagrams), §14.4 (items done); the ZIP bundle (`diagrams.json`).
-- [model_library_support.md §3](model_library_support.md): `CS-FEAT-OVERLAY-STATES`,
-  `CS-FEAT-DIAGRAM-IDEAL`, `CS-FEAT-PSYCHRO`, `CS-FEAT-PLOT-CLI`.
-- [contributing.md](contributing.md): file map, and the CoolPlot pin next to the pinned
-  CoolProp (§3.13).
-- [versions.md](versions.md): the CoolPlot commit of each release (next: CoolProp
-  `8eb3b778`, CoolPlot `7338f48`).
-- README: features, documentation table, future work (the dependencies table has
-  coolplot-core since `5993f9d`).
+Updated with each phase: [gui.md](gui.md) (§4.7, §6.8, §7.2, §8.4, §10, §11, §14.1, §14.4),
+[model_library_support.md §3](model_library_support.md) (`CS-FEAT-OVERLAY-STATES`,
+`CS-FEAT-DIAGRAM-IDEAL`, `CS-FEAT-PLOT-CLI`; `CS-FEAT-PSYCHRO` with the humid-air charts),
+[contributing.md](contributing.md) (file map, the CoolPlot pin, fonts),
+[versions.md](versions.md) (next release: CoolProp `8eb3b778`, CoolPlot `7338f48`),
+[deployment_ubuntu_apache.md](deployment_ubuntu_apache.md) (`fonts-dejavu-core`), README.
+
+## 9. Open points
+
+- **Upstream (CoolPlot, CoolProp)**: the stalled quality lines of the propane/isobutane blend
+  (§5, phase 3); the regular face chosen among the DejaVu files (§5, phase 4); documenting the
+  compose record and the 1.5 scene ids in `contracts.md`; an option of coolplot-core to use the
+  caller's `nlohmann_json` (D4); `plan()`, cycle paths and humid-air lines upstream (D2).
+- **Not verified**: the MSVC build of coolplot-core and of `src/diagram/` (CoolPlot's CI builds
+  the core with GCC only; `references.cpp` declares CoolProp's `get_mixture_binary_pair_data`
+  itself instead of including an internal header).
+- **GUI**: no control of the badge (an old definition keeps none); one diagram per model in the
+  tab (the document holds a list); the legend placed by CoolPlot can cover a cycle on a short
+  chart; models with many property calls give many small states.
+- **Later**: `NH3H2O` and LiBr-H2O charts (proposed upstream first); diagrams kept in library
+  model folders and shown by their HTML pages (§3.4).
