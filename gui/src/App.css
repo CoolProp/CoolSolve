@@ -1202,6 +1202,11 @@ body {
   color: var(--text-primary);
   text-align: right;
 }
+/* The concentration of a solution and the T and p range of a fluid without saturation curve */
+.diagram-fraction .diagram-num,
+.diagram-num.diagram-bound {
+  width: 58px;
+}
 .diagram-family {
   display: inline-flex;
   align-items: center;

@@ -6,8 +6,10 @@ Opens the GUI in headless Chromium (Chrome DevTools Protocol, as test_gui_shortc
 that the tab draws coolplot-core's SVG served by POST /api/v1/diagram/scene: the default chart after
 load, the states of a solved model as cycle markers (GET /api/v1/diagram/states), a cycle of the state
 editor drawn with paths along the processes, the hover (a state marker's variables; elsewhere the state
-under the cursor from POST /api/v1/diagram/state), a rubber-band zoom and its reset, and the export of
-the diagram for the LaTeX report (thermo_diagrams.png). See docs/coolplot_integration.md, phases 1 and 2.
+under the cursor from POST /api/v1/diagram/state), a rubber-band zoom and its reset, the export of
+the diagram for the LaTeX report (thermo_diagrams.png), and the other kinds of fluids: an ideal gas with
+its solved cycle, an incompressible solution at a concentration, a blend of the model. See
+docs/coolplot_integration.md, phases 1 to 3.
 
 Usage:
     # Start CoolSolve with --gui, then:
@@ -63,6 +65,24 @@ P_4 = P_1
 h_4 = h_3
 T_4 = temperature(R134a, P=P_4, h=h_4)
 """
+
+# Phase 3: an air-standard Brayton cycle of the ideal gas N2, and a blend of the model
+BRAYTON_MODEL = """T_1 = 25
+P_1 = 1e5
+P_2 = 8*P_1
+s_1 = entropy(N2, T=T_1, P=P_1)
+s_2 = s_1
+h_2 = enthalpy(N2, P=P_2, s=s_2)
+T_2 = temperature(N2, P=P_2, s=s_2)
+P_3 = P_2
+T_3 = 1000
+s_3 = entropy(N2, T=T_3, P=P_3)
+P_4 = P_1
+s_4 = s_3
+h_4 = enthalpy(N2, P=P_4, s=s_4)
+T_4 = temperature(N2, P=P_4, s=s_4)
+"""
+BLEND_MODEL = "T_b = temperature('R32[0.7]&R125[0.3]', P=10e5, x=0)\n"
 
 passed = 0
 failed = 0
@@ -318,6 +338,8 @@ async def run_tests(page: Page):
     await asyncio.sleep(1.0)
     await page.send("Fetch.disable")
 
+    await more_fluids(page)
+
     if SCREENSHOTS:
         print("\n=== Screenshots: dark theme, T-s chart ===")
         await page.eval("document.querySelector('button[title=\"Toggle theme\"]').click()")
@@ -331,6 +353,114 @@ async def run_tests(page: Page):
         await page.wait_for(f"{SVG}?.getAttribute('data-x-limits') !== {json.dumps(before)}", 30)
         await page.idle(1.0)
         await page.screenshot("diagram_ts.png")
+
+
+def select_js(index: int, value: str) -> str:
+    """Choose `value` in the index-th select of the controls, as a user does (React sees the change)."""
+    return ("(() => { const s = document.querySelectorAll('.diagram-controls select')[" + str(index) + "];"
+            " Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(s, " + json.dumps(value) + ");"
+            " s.dispatchEvent(new Event('change', {bubbles: true})); })()")
+
+
+async def solve_model(page: Page, code: str, fluid: str):
+    """Solve `code` in the editor; wait until `fluid` is offered among the model's fluids."""
+    await page.set_model(code)
+    await page.eval("[...document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Solve').click()")
+    return await page.wait_for("[...document.querySelectorAll('.diagram-controls select optgroup[label=\"Model fluids\"] option')]"
+                               f".some(o => o.value === {json.dumps(fluid)})", 60)
+
+
+async def last_scene(page: Page, fluid: str, timeout: float = 30.0) -> dict:
+    """The last scene request for `fluid`, once one has gone."""
+    end = time.time() + timeout
+    while time.time() < end:
+        found = [r for r in page.scene_requests if r.get("fluid") == fluid]
+        if found:
+            return found[-1]
+        await asyncio.sleep(0.1)
+    return {}
+
+
+async def more_fluids(page: Page):
+    """Phase 3: an ideal gas with its solved cycle, an incompressible solution at a concentration, a blend."""
+    print("\n=== An ideal gas: a solved Brayton cycle of N2 ===")
+    check("the Brayton model solves and N2 is a model fluid", await solve_model(page, BRAYTON_MODEL, "N2"))
+    await page.eval(select_js(0, "N2"))
+    req = await last_scene(page, "N2")
+    check("a chart of the ideal gas is asked for", req.get("fluid") == "N2" and "fractions" not in req, json.dumps(req)[:200])
+    names = await page.eval("[...document.querySelectorAll('.diagram-controls select')[1].options].map(o => o.value)")
+    check("its diagram types: all but T-h", names == ["ph", "Ts", "hs", "ps", "prho", "Trho", "pT"], str(names))
+    labels = await page.eval("document.querySelector('.diagram-controls').textContent")
+    check("no critical point, saturation scale or region preset; a T and p range instead",
+          "critical point" not in labels and "saturation scale" not in labels and "Region" not in labels
+          and await page.eval("!!document.querySelector('.diagram-range')"), labels[:300])
+    families = await page.eval("[...document.querySelectorAll('.diagram-family')].map(f => f.textContent.trim())")
+    check("no lines of constant quality", not any(f.startswith("x") for f in families or []), str(families))
+    check("no quality family in the spec", all(i["key"] != "Q" for i in req.get("spec", {}).get("isolines", [])),
+          json.dumps(req.get("spec", {}).get("isolines")))
+    # A cycle through the states of the model, along the processes, on a T-s chart
+    await page.eval("[...document.querySelectorAll('.diagram-cycles button[title=\"Delete this cycle\"]')].forEach(b => b.click())")
+    await asyncio.sleep(0.3)
+    await page.eval("[...document.querySelectorAll('.diagram-cycles button')]"
+                    ".find(b => b.textContent.includes('from inferred states')).click()")
+    await page.eval(select_js(1, "Ts"))
+    check("the Brayton cycle is drawn on the T-s chart of N2",
+          await page.wait_for(f"!!{SVG}?.querySelector('.cp-role-cycle path') && {SVG}.getAttribute('data-x-limits') !== null", 60))
+    await page.idle(1.0)
+    req = await last_scene(page, "N2")
+    check("the T-s chart has the cycle and its four states", req.get("spec", {}).get("diagram") == "Ts"
+          and len((req.get("cycles") or [{}])[0].get("states", [])) == 4, json.dumps(req.get("cycles"))[:300])
+    check("no error shown", not await page.eval("!!document.querySelector('.diagram-status .diagram-error')"),
+          await page.eval("document.querySelector('.diagram-status')?.textContent"))
+    # A T range set by hand: absolute limits in the spec
+    count = len(page.scene_requests)
+    await page.eval("(() => { const i = document.querySelectorAll('.diagram-range input')[1]; i.focus();"
+                    " Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, '1200');"
+                    " i.dispatchEvent(new Event('input', {bubbles: true})); i.blur(); })()")
+    end = time.time() + 15
+    while time.time() < end and not (len(page.scene_requests) > count and isinstance(page.scene_requests[-1]["spec"].get("limits"), dict)):
+        await asyncio.sleep(0.1)
+    limits = page.scene_requests[-1]["spec"].get("limits") if page.scene_requests else None
+    check("the highest temperature typed gives absolute limits (°C to K)", isinstance(limits, dict)
+          and abs(limits.get("T_max", 0) - 1473.15) < 1e-6 and limits.get("p_min") == {"relative": 1.01}, json.dumps(limits))
+    await page.idle(1.0)
+    await page.screenshot("diagram_ideal_gas_ts.png")
+
+    print("\n=== An incompressible solution at a concentration ===")
+    await page.eval(select_js(0, "MEG"))
+    req = await last_scene(page, "MEG")
+    check("the solution is drawn at a mass fraction (the middle of its range: 0.3)", req.get("fractions") == [0.3],
+          json.dumps(req)[:200])
+    check("a concentration field shows it", await page.wait_for("document.querySelector('.diagram-fraction input')?.value === '0.3'", 10))
+    names = await page.eval("[...document.querySelectorAll('.diagram-controls select')[1].options].map(o => o.value)")
+    check("its diagram types: the pressure charts", names == ["ph", "ps", "prho", "pT"], str(names))
+    check("its lines: T, s (no density, no quality), rounded", sorted(i["key"] for i in req.get("spec", {}).get("isolines", []))
+          == ["T", "s"] and all(i.get("rounding") for i in req["spec"]["isolines"]), json.dumps(req.get("spec", {}).get("isolines")))
+    check("the chart shows its isotherms", await page.wait_for(f"!!{SVG}?.querySelector('[data-item^=\"iso/T/\"]')", 60))
+    count = len(page.scene_requests)
+    await page.eval("(() => { const i = document.querySelector('.diagram-fraction input');"
+                    " Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(i, '0.4');"
+                    " i.dispatchEvent(new Event('input', {bubbles: true})); })()")
+    end = time.time() + 15
+    while time.time() < end and not (len(page.scene_requests) > count and page.scene_requests[-1].get("fractions") == [0.4]):
+        await asyncio.sleep(0.1)
+    check("another concentration asks for another chart", page.scene_requests[-1].get("fractions") == [0.4])
+    await page.idle(1.0)
+    check("no error shown", not await page.eval("!!document.querySelector('.diagram-status .diagram-error')"),
+          await page.eval("document.querySelector('.diagram-status')?.textContent"))
+    await page.screenshot("diagram_incompressible.png")
+
+    print("\n=== A blend of the model ===")
+    check("the blend model solves", await solve_model(page, BLEND_MODEL, "R32[0.7]&R125[0.3]"))
+    await page.eval(select_js(0, "R32[0.7]&R125[0.3]"))
+    req = await last_scene(page, "R32[0.7]&R125[0.3]")
+    # A mixture opens on the ACHP region (its kind's default_region): DEF reaches the triple point of the lightest
+    # component, where the lines of a blend are slow to compute
+    check("the blend is drawn with its dome, on the ACHP region", req.get("spec", {}).get("limits") == "ACHP"
+          and any(i["key"] == "Q" for i in req.get("spec", {}).get("isolines", []))
+          and await page.wait_for(f"!!{SVG}?.querySelector('[data-item=\"iso/Q/0.5\"]')", 60), json.dumps(req)[:300])
+    await page.idle(1.0)
+    await page.screenshot("diagram_blend.png")
 
 
 async def run_browser(browser: str):

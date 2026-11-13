@@ -1,20 +1,30 @@
 /**
- * DiagramControls — the chart settings of a diagram definition: fluid, diagram type, units, region,
- * theme, label mode, line families (on/off, count, rounding), critical point and saturation scale.
- * What can be chosen comes from `GET /api/v1/diagram/options`.
+ * DiagramControls — the chart settings of a diagram definition: fluid (and the concentration of a
+ * solution), diagram type, units, region (or the temperature and pressure range of a fluid without
+ * saturation curve), theme, label mode, line families (on/off, count, rounding), critical point and
+ * saturation scale. What can be chosen comes from `GET /api/v1/diagram/options`, per kind of fluid.
  */
 
+import { useEffect, useState } from 'react';
 import type { DiagramDefinition, DiagramOptionsResponse, FluidInfo } from '../../api/types';
 import {
+  DEFAULT_REGION,
+  defaultFractions,
   diagramOption,
+  diagramTypesOf,
+  familiesOf,
+  fitToKind,
+  fluidKind,
   hasSaturationScale,
   sameFluid,
+  sameJson,
   unitsName,
   unitsRecord,
   withDiagramType,
   withFamily,
   withView,
 } from './definition';
+import { formatValue, unitTableOf } from './options';
 
 interface Props {
   def: DiagramDefinition;
@@ -23,8 +33,64 @@ interface Props {
   fluids: FluidInfo[];
   /** Fluids of the model, offered first */
   modelFluids: string[];
+  /** The concentration of the model's solutions (mass fractions), the default of their charts */
+  modelFractions?: Record<string, number[]>;
   onChange: (def: DiagramDefinition) => void;
 }
+
+/**
+ * A number typed in a field, committed when valid (inside [min, max] when given): as it is typed, or when
+ * `lazy` once the field is left (or Enter pressed); the field then shows the value committed. An empty
+ * field commits undefined when `optional`.
+ */
+function NumberField({ value, onCommit, min, max, step, optional, lazy, placeholder, title, className }: {
+  value: number | undefined;
+  onCommit: (v: number | undefined) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  optional?: boolean;
+  lazy?: boolean;
+  placeholder?: string;
+  title?: string;
+  className?: string;
+}) {
+  const shown = value === undefined ? '' : formatValue(value);
+  const [text, setText] = useState(shown);
+  useEffect(() => setText(shown), [shown]);
+  const commit = (t: string) => {
+    if (t.trim() === '') {
+      if (optional && value !== undefined) onCommit(undefined);
+      return;
+    }
+    const v = Number(t);
+    if (Number.isFinite(v) && v !== value && (min === undefined || v >= min) && (max === undefined || v <= max)) onCommit(v);
+  };
+  return (
+    <input
+      type="number"
+      className={className ?? 'diagram-num'}
+      value={text}
+      min={min}
+      max={max}
+      step={step}
+      placeholder={placeholder}
+      title={title}
+      onChange={(e) => {
+        setText(e.target.value);
+        if (!lazy) commit(e.target.value);
+      }}
+      onBlur={() => {
+        if (lazy) commit(text);
+        setText(shown);
+      }}
+      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+    />
+  );
+}
+
+/** The bounds of a region record, in the order they are shown. */
+const BOUNDS = ['T_min', 'T_max', 'p_min', 'p_max'] as const;
 
 /** How a quantity key is written in the controls. */
 const SYMBOLS: Record<string, string> = { rho: 'ρ', Q: 'x' };
@@ -34,10 +100,52 @@ const UNIT_LABELS: Record<string, string> = { coolsolve: 'model (°C, Pa, J/kg)'
 const THEME_AUTO = '';
 const MAX_LINES = 60;
 
-export default function DiagramControls({ def, options, fluids, modelFluids, onChange }: Props) {
+export default function DiagramControls({ def, options, fluids, modelFluids, modelFractions, onChange }: Props) {
   const spec = def.spec;
   const type = diagramOption(options, spec.diagram);
   const setSpec = (next: typeof spec) => onChange({ ...def, spec: next });
+
+  // What the kind of the fluid offers (a pure fluid, a mixture, an incompressible solution, an ideal gas)
+  const fluidInfo = fluids.find((f) => sameFluid(f.name, def.fluid));
+  const kind = fluidKind(options, fluidInfo?.type);
+  const saturation = kind?.saturation ?? true;
+  const diagramTypes = diagramTypesOf(options, kind);
+  const fractions = def.fractions ?? defaultFractions(fluidInfo, modelFractions);
+  const fractionRange = fluidInfo?.fractionRange;
+
+  const setFluid = (name: string) => {
+    const info = fluids.find((f) => f.name === name);
+    const next = fluidKind(options, info?.type);
+    const unzoomed = withView(spec, null);
+    const { fractions: _fractions, ...rest } = def;
+    const given = defaultFractions(info, modelFractions);
+    onChange({
+      ...rest,
+      fluid: name,
+      ...(given ? { fractions: given } : {}),
+      spec: sameJson(next, kind) ? unzoomed : fitToKind(unzoomed, next, options),
+    });
+  };
+
+  // The temperature and pressure range of a fluid without saturation curve: absolute bounds in the chart's
+  // units, the others those of the preset DEF (the fluid's default box)
+  const units = unitTableOf(options, spec.units);
+  const presetLimits = options.regions.find((r) => r.name === DEFAULT_REGION)?.limits ?? {};
+  const limits: Record<string, unknown> = typeof spec.limits === 'string' ? presetLimits : spec.limits;
+  const boundShown = (name: string): number | undefined => {
+    const v = limits[name];
+    const unit = units[name[0] === 'T' ? 'T' : 'p'];
+    return typeof v === 'number' && unit ? v * unit.scale + unit.offset : undefined;
+  };
+  const setBound = (name: string, shown: number | undefined) => {
+    const unit = units[name[0] === 'T' ? 'T' : 'p'];
+    if (!unit) return;
+    const next: Record<string, unknown> = {};
+    for (const b of BOUNDS) next[b] = typeof limits[b] === 'number' ? limits[b] : presetLimits[b] ?? null;
+    next[name] = shown === undefined ? presetLimits[name] ?? null : (shown - unit.offset) / unit.scale;
+    const asPreset = BOUNDS.every((b) => sameJson(next[b], presetLimits[b] ?? null));
+    setSpec({ ...withView(spec, null), limits: asPreset ? DEFAULT_REGION : next });
+  };
 
   const inModel = (name: string) => modelFluids.some((m) => sameFluid(m, name));
   const modelList = fluids.filter((f) => inModel(f.name));
@@ -86,7 +194,7 @@ export default function DiagramControls({ def, options, fluids, modelFluids, onC
           <select
             className="diagram-select"
             value={def.fluid}
-            onChange={(e) => onChange({ ...def, fluid: e.target.value, spec: withView(spec, null) })}
+            onChange={(e) => setFluid(e.target.value)}
           >
             {!fluidListed && <option value={def.fluid}>{def.fluid}</option>}
             {modelList.length > 0 && (
@@ -100,6 +208,22 @@ export default function DiagramControls({ def, options, fluids, modelFluids, onC
           </select>
         </label>
 
+        {kind?.fractions && fractions && (
+          <label
+            className="diagram-field diagram-fraction"
+            title={`Concentration of the solution: mass fraction${fractionRange ? ` between ${fractionRange[0]} and ${fractionRange[1]}` : ''}`}
+          >
+            <span>Mass fraction</span>
+            <NumberField
+              value={fractions[0]}
+              min={fractionRange?.[0]}
+              max={fractionRange?.[1]}
+              step={0.01}
+              onCommit={(v) => { if (v !== undefined) onChange({ ...def, fractions: [v] }); }}
+            />
+          </label>
+        )}
+
         <label className="diagram-field" title="Diagram type">
           <span>Diagram</span>
           <select
@@ -107,11 +231,11 @@ export default function DiagramControls({ def, options, fluids, modelFluids, onC
             value={spec.diagram}
             onChange={(e) => {
               const to = diagramOption(options, e.target.value);
-              if (to) setSpec(withDiagramType(spec, type, to));
+              if (to) setSpec(withDiagramType(spec, type, to, kind));
             }}
           >
-            {!type && <option value={spec.diagram}>{spec.diagram}</option>}
-            {options.diagram_types.map((d) => (
+            {!diagramTypes.some((d) => d.name === spec.diagram) && <option value={spec.diagram}>{type?.title || spec.diagram}</option>}
+            {diagramTypes.map((d) => (
               <option key={d.name} value={d.name}>{d.title || d.name}</option>
             ))}
           </select>
@@ -127,18 +251,43 @@ export default function DiagramControls({ def, options, fluids, modelFluids, onC
           </select>
         </label>
 
-        <label className="diagram-field" title="Temperature and pressure range of the lines (CoolPlot region preset)">
-          <span>Region</span>
-          <select
-            className="diagram-select"
-            value={regionName}
-            onChange={(e) => setSpec({ ...withView(spec, null), limits: e.target.value })}
+        {saturation ? (
+          <label className="diagram-field" title="Temperature and pressure range of the lines (CoolPlot region preset)">
+            <span>Region</span>
+            <select
+              className="diagram-select"
+              value={regionName}
+              onChange={(e) => setSpec({ ...withView(spec, null), limits: e.target.value })}
+            >
+              {regionName === '' && <option value="" disabled>custom</option>}
+              {regionName !== '' && !regionNames.includes(regionName) && <option value={regionName}>{regionName}</option>}
+              {regionNames.map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </label>
+        ) : (
+          <span
+            className="diagram-field diagram-range"
+            title="Temperature and pressure range of the lines; an empty field takes the default of the fluid"
           >
-            {regionName === '' && <option value="" disabled>custom</option>}
-            {regionName !== '' && !regionNames.includes(regionName) && <option value={regionName}>{regionName}</option>}
-            {regionNames.map((r) => <option key={r} value={r}>{r}</option>)}
-          </select>
-        </label>
+            {(['T', 'p'] as const).map((key) => (
+              <span key={key} className="diagram-field">
+                <span>{key} [{units[key]?.label ?? (key === 'T' ? 'K' : 'Pa')}]</span>
+                {(['min', 'max'] as const).map((end) => (
+                  <NumberField
+                    key={end}
+                    className="diagram-num diagram-bound"
+                    value={boundShown(`${key}_${end}`)}
+                    optional
+                    lazy
+                    placeholder={end === 'min' ? 'min' : 'max'}
+                    title={`${end === 'min' ? 'Lowest' : 'Highest'} ${key === 'T' ? 'temperature' : 'pressure'} of the lines`}
+                    onCommit={(v) => setBound(`${key}_${end}`, v)}
+                  />
+                ))}
+              </span>
+            ))}
+          </span>
+        )}
 
         <label className="diagram-field" title="Colours and fonts of the chart">
           <span>Theme</span>
@@ -164,7 +313,7 @@ export default function DiagramControls({ def, options, fluids, modelFluids, onC
 
       <div className="diagram-row">
         <span className="diagram-row-title">Lines</span>
-        {(type?.families ?? []).map((family) => {
+        {familiesOf(type, kind).map((family) => {
           const name = family.key === 'rho' ? 'ρ' : family.symbol || symbol(family.key);
           const set = spec.isolines.find((s) => s.key === family.key);
           return (
@@ -173,7 +322,7 @@ export default function DiagramControls({ def, options, fluids, modelFluids, onC
                 <input
                   type="checkbox"
                   checked={!!set}
-                  onChange={(e) => setSpec(withFamily(spec, family.key, { on: e.target.checked }, family.default_num))}
+                  onChange={(e) => setSpec(withFamily(spec, family.key, { on: e.target.checked }, family.default_num, !saturation))}
                 />
                 {name}
               </label>
@@ -204,24 +353,28 @@ export default function DiagramControls({ def, options, fluids, modelFluids, onC
             </span>
           );
         })}
-        <label className="diagram-field" title="Mark the critical point">
-          <input type="checkbox" checked={marksCritical} onChange={(e) => setCritical(e.target.checked)} />
-          critical point
-        </label>
-        <label
-          className="diagram-field"
-          title={scaleAllowed
-            ? 'Saturation temperatures (or pressures) next to the vertical axis'
-            : 'Only with pressure or temperature on the vertical axis and neither on the horizontal one'}
-        >
-          <input
-            type="checkbox"
-            checked={!!spec.saturation_scale && scaleAllowed}
-            disabled={!scaleAllowed}
-            onChange={(e) => setScale(e.target.checked)}
-          />
-          saturation scale
-        </label>
+        {saturation && (
+          <>
+            <label className="diagram-field" title="Mark the critical point">
+              <input type="checkbox" checked={marksCritical} onChange={(e) => setCritical(e.target.checked)} />
+              critical point
+            </label>
+            <label
+              className="diagram-field"
+              title={scaleAllowed
+                ? 'Saturation temperatures (or pressures) next to the vertical axis'
+                : 'Only with pressure or temperature on the vertical axis and neither on the horizontal one'}
+            >
+              <input
+                type="checkbox"
+                checked={!!spec.saturation_scale && scaleAllowed}
+                disabled={!scaleAllowed}
+                onChange={(e) => setScale(e.target.checked)}
+              />
+              saturation scale
+            </label>
+          </>
+        )}
       </div>
     </div>
   );

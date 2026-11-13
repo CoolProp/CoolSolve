@@ -245,6 +245,8 @@ export interface FluidInfo {
   coolpropName: string;
   type: string;
   hasDome: boolean;
+  /** An incompressible solution: the mass fractions CoolProp has it for (the concentration of its charts) */
+  fractionRange?: [number, number];
 }
 
 export interface CoolPropFluidsResponse {
@@ -304,6 +306,22 @@ export interface DiagramRegionOption {
   limits: Record<string, unknown>;
 }
 
+/** What a kind of fluid ("Real", "Mixture", "Incompressible", "IdealGas") offers (`fluid_kinds` of the options). */
+export interface DiagramFluidKind {
+  /** The diagram types offered */
+  diagram_types: DiagramName[];
+  /** The keys of the families its lines can have */
+  families: string[];
+  /** A saturation curve: dome, lines of constant quality, critical point, saturation scale, region presets */
+  saturation: boolean;
+  /** A concentration (mass fraction) is part of the fluid: an incompressible solution */
+  fractions: boolean;
+  /** The T-p box of a fluid without saturation curve where the spec gives no absolute limit (null: the fluid's own) */
+  default_box: (number | null)[] | null;
+  /** The region preset of a new chart (ACHP for mixtures, DEF for pure fluids); null without saturation curve */
+  default_region?: string | null;
+}
+
 /** Response of GET /api/v1/diagram/options */
 export interface DiagramOptionsResponse {
   diagram_types: DiagramTypeOption[];
@@ -316,6 +334,8 @@ export interface DiagramOptionsResponse {
   marked_points: string[];
   /** Fluid types (GET /api/v1/coolprop/fluids) the server draws */
   fluid_types: string[];
+  /** What each fluid type offers */
+  fluid_kinds?: Record<string, DiagramFluidKind>;
   coolplot: { core_version: string; commit: string };
 }
 
@@ -398,6 +418,8 @@ export interface DiagramDefinition {
   name: string;
   /** A CoolSolve fluid name (FluidRegistry) */
   fluid: string;
+  /** The concentration of an incompressible solution: one mass fraction (CoolPlot's fluid record) */
+  fractions?: number[];
   spec: CoolPlotSpec;
   cycles: CycleDefinition[];
   [field: string]: unknown;
@@ -413,6 +435,8 @@ export interface DiagramsDocument {
 /** What a diagram shows: the body of POST /api/v1/diagram/scene without the figure size and labels. */
 export interface DiagramSceneInput {
   fluid: string;
+  /** The mass fraction of an incompressible solution */
+  fractions?: number[];
   spec: CoolPlotSpec;
   cycles: CycleDefinition[];
 }
@@ -468,11 +492,14 @@ export interface DiagramModelState {
 /** Response of GET /api/v1/diagram/states: the states of the last solve per fluid (empty without a solve). */
 export interface DiagramStatesResponse {
   fluids: Record<string, DiagramModelState[]>;
+  /** The concentration (mass fraction) of the model's incompressible solutions, from its property calls */
+  fractions?: Record<string, number[]>;
 }
 
 /** Body of POST /api/v1/diagram/state: the point of a chart, in SI. */
 export interface DiagramPointRequest {
   fluid: string;
+  fractions?: number[];
   diagram: string;
   x_SI: number;
   y_SI: number;

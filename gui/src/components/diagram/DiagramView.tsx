@@ -125,7 +125,7 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
     onSceneRef.current = onScene;
   });
 
-  const chart = input ? `${input.fluid}\n${input.spec.diagram}` : '';
+  const chart = input ? `${input.fluid}\n${JSON.stringify(input.fractions ?? null)}\n${input.spec.diagram}` : '';
   const view: DiagramViewSI | null = onViewChange || !localView || localView.chart !== chart
     ? input?.spec.view_SI ?? null
     : localView.view;
@@ -133,7 +133,9 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
   const spec = useMemo(() => (input ? specWithView(input.spec, view) : null), [input, view]);
   // Everything but the zoom and the size: the labels of the scene shown are reused while it stays the same
   const contentKey = useMemo(
-    () => (input ? JSON.stringify({ fluid: input.fluid, spec: specWithView(input.spec, null), cycles: input.cycles }) : ''),
+    () => (input
+      ? JSON.stringify({ fluid: input.fluid, fractions: input.fractions, spec: specWithView(input.spec, null), cycles: input.cycles })
+      : ''),
     [input],
   );
 
@@ -180,6 +182,7 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
       api.getDiagramScene(
         {
           fluid: input.fluid,
+          ...(input.fractions ? { fractions: input.fractions } : {}),
           spec,
           cycles: input.cycles,
           figure_size_pt: figure,
@@ -191,7 +194,7 @@ export default function DiagramView({ input, revision, onViewChange, onScene, cl
           if (seq !== seqRef.current) return;
           const node = svgNode(scene.svg, suffix);
           shownRef.current = { contentKey, requestKey, revision, labels: scene.labels ?? [] };
-          setDrawn({ scene, node, input: { fluid: input.fluid, spec, cycles: input.cycles } });
+          setDrawn({ scene, node, input: { fluid: input.fluid, fractions: input.fractions, spec, cycles: input.cycles } });
           setError('');
           onSceneRef.current?.(scene);
         })

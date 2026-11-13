@@ -164,6 +164,7 @@ export function useDiagramHover(drawn: DrawnScene | null, canvasRef: RefObject<H
     const [xd, yd] = svgToDisplay(frame, p);
     const body = {
       fluid: drawn.input.fluid,
+      ...(drawn.input.fractions ? { fractions: drawn.input.fractions } : {}),
       diagram: drawn.input.spec.diagram,
       x_SI: displayToSI(xd, drawn.scene.axes.x_unit),
       y_SI: displayToSI(yd, drawn.scene.axes.y_unit),

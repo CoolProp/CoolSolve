@@ -33,6 +33,8 @@ import {
   arrayIndices,
   arraysCycle,
   defaultDefinition,
+  defaultFractions,
+  fluidKind,
   isArraysCycle,
   isInferredCycle,
   modelStates,
@@ -122,13 +124,12 @@ export default function DiagramTab() {
     return keys;
   }, [current]);
 
-  // The fluids offered: pure fluids, and the model's fluids of the other types the server draws (its
-  // CoolProp mixtures, which are not listed: they are made from their string); the server refuses the
-  // others (ideal gases, humid air, ...) for now
+  // The fluids offered: those of the types the server draws (pure fluids, incompressible solutions, ideal
+  // gases), and the model's CoolProp mixtures, which are not listed: they are made from their string; the
+  // server refuses the others (humid air, NH3H2O) for now
   const drawableFluids = useMemo(() => {
-    const inModel = (name: string) => modelFluids.some((m) => sameFluid(m, name));
     const types = options?.fluid_types ?? ['Real'];
-    const listed = fluids.filter((f) => f.type === 'Real' || (types.includes(f.type) && inModel(f.name)));
+    const listed = fluids.filter((f) => types.includes(f.type));
     const unlisted: FluidInfo[] = modelFluids
       .filter((m) => !fluids.some((f) => sameFluid(f.name, m)))
       .map((name) => ({ name, coolpropName: name, type: 'Mixture', hasDome: false }));
@@ -136,16 +137,24 @@ export default function DiagramTab() {
   }, [fluids, modelFluids, options]);
   const defaultFluid = useMemo(() => {
     const model = drawableFluids.find((f) => modelFluids.some((m) => sameFluid(m, f.name)));
-    return (model ?? drawableFluids.find((f) => f.name === FALLBACK_FLUID) ?? drawableFluids[0])?.name ?? '';
+    return model ?? drawableFluids.find((f) => f.name === FALLBACK_FLUID) ?? drawableFluids[0];
   }, [drawableFluids, modelFluids]);
+  // The concentration of the model's solutions, from its property calls
+  const modelFractions = current?.states?.fractions;
 
   const stored = diagrams.diagrams[0] ?? null;
-  // The definition shown: the stored one, or a default chart (stored at its first change)
+  // The definition shown: the stored one, or a default chart (stored at its first change); a solution drawn
+  // at the concentration of the model (or the middle of its range) until one is chosen
   const def = useMemo<DiagramDefinition | null>(() => {
-    if (stored) return stored;
+    if (stored) {
+      if (stored.fractions || !options) return stored;
+      const given = defaultFractions(drawableFluids.find((f) => sameFluid(f.name, stored.fluid)), modelFractions);
+      return given ? { ...stored, fractions: given } : stored;
+    }
     if (!options || !defaultFluid) return null;
-    return defaultDefinition(defaultFluid, options, [newInferredCycle(modelStates(current?.states ?? null, defaultFluid))]);
-  }, [stored, options, defaultFluid, current]);
+    return defaultDefinition(defaultFluid.name, options, [newInferredCycle(modelStates(current?.states ?? null, defaultFluid.name))],
+      fluidKind(options, defaultFluid.type), defaultFractions(defaultFluid, modelFractions));
+  }, [stored, options, defaultFluid, drawableFluids, modelFractions, current]);
 
   // After a solve (or a change of fluid), the stored overlays follow the model's variables; the user's
   // cycles name their variables and are left as they are
@@ -199,6 +208,7 @@ export default function DiagramTab() {
             options={options}
             fluids={drawableFluids}
             modelFluids={modelFluids}
+            modelFractions={modelFractions}
             onChange={setDiagramDefinition}
           />
           <DiagramOverlays

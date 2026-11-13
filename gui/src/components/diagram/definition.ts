@@ -14,6 +14,8 @@ import type {
   CycleDefinition,
   CycleStateDefinition,
   DiagramDefinition,
+  DiagramFamilyOption,
+  DiagramFluidKind,
   DiagramName,
   DiagramOptionsResponse,
   DiagramSceneInput,
@@ -24,6 +26,7 @@ import type {
   DiagramModelState,
   DiagramStatesResponse,
   DiagramViewSI,
+  FluidInfo,
   IsolineSpec,
 } from '../../api/types';
 
@@ -69,11 +72,68 @@ export function hasSaturationScale(type: { x: string; y: string }): boolean {
   return (type.y === 'p' || type.y === 'T') && type.x !== 'p' && type.x !== 'T';
 }
 
-const familyLine = (key: string, num: number): IsolineSpec => ({ key, labels: true, num, rounding: false });
+/**
+ * A family of lines as the GUI adds it. A fluid without saturation curve gets round values: the families spaced
+ * evenly over the region of an incompressible liquid begin and end at its corners, where a line is a single point.
+ */
+const familyLine = (key: string, num: number, round = false): IsolineSpec => ({ key, labels: true, num, rounding: round });
 
 /** The lines of a new chart: every family but the internal energy (CoolPlot's `set_default_lines`). */
 function defaultIsolines(type: DiagramTypeOption): IsolineSpec[] {
   return type.families.filter((f) => f.key !== 'u').map((f) => familyLine(f.key, f.default_num));
+}
+
+// ---------------------------------------------------------------------------
+// Kinds of fluids (phase 3): what a pure fluid, a mixture, an incompressible solution or an ideal gas offers
+// ---------------------------------------------------------------------------
+
+/** What a type of fluid (`FluidInfo.type`) offers; undefined when the server does not say (everything then). */
+export function fluidKind(options: DiagramOptionsResponse, type: string | undefined): DiagramFluidKind | undefined {
+  return type ? options.fluid_kinds?.[type] : undefined;
+}
+
+/** The diagram types a kind of fluid offers. */
+export function diagramTypesOf(options: DiagramOptionsResponse, kind: DiagramFluidKind | undefined): DiagramTypeOption[] {
+  return kind ? options.diagram_types.filter((d) => kind.diagram_types.includes(d.name)) : options.diagram_types;
+}
+
+/** The families of a diagram type a kind of fluid can draw. */
+export function familiesOf(type: DiagramTypeOption | undefined, kind: DiagramFluidKind | undefined): DiagramFamilyOption[] {
+  const all = type?.families ?? [];
+  return kind ? all.filter((f) => kind.families.includes(f.key)) : all;
+}
+
+/**
+ * The spec for a fluid of another kind: a diagram type the kind offers, its families (those set kept, the others
+ * on but the internal energy), the kind's default region preset (`DEF`, `ACHP` for mixtures; a fluid without
+ * saturation curve is drawn over its default box), and without saturation curve no critical point nor saturation
+ * scale.
+ */
+export function fitToKind(spec: CoolPlotSpec, kind: DiagramFluidKind | undefined, options: DiagramOptionsResponse): CoolPlotSpec {
+  if (!kind) return spec;
+  const type = diagramOption(options, kind.diagram_types.includes(spec.diagram) ? spec.diagram : kind.diagram_types[0]);
+  if (!type) return spec;
+  const before = new Map(spec.isolines.map((s) => [s.key, s]));
+  const isolines = familiesOf(type, kind)
+    .filter((f) => before.has(f.key) || f.key !== 'u')
+    .map((f) => before.get(f.key) ?? familyLine(f.key, f.default_num, !kind.saturation));
+  const { view_SI: _view, saturation_scale, marked_points, ...rest } = spec;
+  const next: CoolPlotSpec = { ...rest, diagram: type.name, isolines, limits: kind.default_region || DEFAULT_REGION };
+  if (kind.saturation && saturation_scale && hasSaturationScale(type)) next.saturation_scale = saturation_scale;
+  if (kind.saturation) next.marked_points = marked_points ?? ['critical'];
+  return next;
+}
+
+/**
+ * The concentration of a solution's charts: that of the model's calls, else the middle of the fluid's range;
+ * undefined for a fluid that takes none.
+ */
+export function defaultFractions(fluid: FluidInfo | undefined, modelFractions?: Record<string, number[]>): number[] | undefined {
+  if (!fluid?.fractionRange) return undefined;
+  const fromModel = Object.entries(modelFractions ?? {}).find(([name]) => sameFluid(name, fluid.name))?.[1];
+  if (fromModel?.length === 1) return fromModel;
+  const [lo, hi] = fluid.fractionRange;
+  return [Math.round(500 * (lo + hi)) / 1000];
 }
 
 /** A new spec for a diagram type. */
@@ -95,29 +155,38 @@ export function defaultSpec(type: DiagramTypeOption, options: DiagramOptionsResp
   };
 }
 
-/** A new definition: the default chart of `fluid`, with the cycles given. */
+/** A new definition: the default chart of `fluid` (of the kind given, at the concentration given), with the cycles given. */
 export function defaultDefinition(
   fluid: string,
   options: DiagramOptionsResponse,
   cycles: CycleDefinition[],
+  kind?: DiagramFluidKind,
+  fractions?: number[],
 ): DiagramDefinition | null {
   const type = diagramOption(options, DEFAULT_DIAGRAM) ?? options.diagram_types[0];
   if (!type) return null;
-  return { name: 'Diagram 1', fluid, spec: defaultSpec(type, options), cycles };
+  const spec = kind ? fitToKind(defaultSpec(type, options), kind, options) : defaultSpec(type, options);
+  return { name: 'Diagram 1', fluid, ...(fractions ? { fractions } : {}), spec, cycles };
 }
 
 /**
  * The spec for another diagram type: the families of both keep their settings, the new ones are on
- * (but the internal energy), the zoom is dropped and the saturation scale kept where the chart has one.
+ * (but the internal energy, and those the kind of fluid cannot draw), the zoom is dropped and the
+ * saturation scale kept where the chart has one.
  */
-export function withDiagramType(spec: CoolPlotSpec, from: DiagramTypeOption | undefined, to: DiagramTypeOption): CoolPlotSpec {
+export function withDiagramType(
+  spec: CoolPlotSpec,
+  from: DiagramTypeOption | undefined,
+  to: DiagramTypeOption,
+  kind?: DiagramFluidKind,
+): CoolPlotSpec {
   const before = new Map(spec.isolines.map((s) => [s.key, s]));
   const oldFamilies = new Set(from?.families.map((f) => f.key) ?? []);
   const isolines: IsolineSpec[] = [];
-  for (const f of to.families) {
+  for (const f of familiesOf(to, kind)) {
     const kept = before.get(f.key);
     if (kept) isolines.push(kept);
-    else if (!oldFamilies.has(f.key) && f.key !== 'u') isolines.push(familyLine(f.key, f.default_num));
+    else if (!oldFamilies.has(f.key) && f.key !== 'u') isolines.push(familyLine(f.key, f.default_num, kind ? !kind.saturation : false));
   }
   const { view_SI: _view, saturation_scale, ...rest } = spec;
   const next: CoolPlotSpec = { ...rest, diagram: to.name, isolines };
@@ -137,12 +206,13 @@ export function withFamily(
   key: string,
   change: { on?: boolean; num?: number; rounding?: boolean },
   defaultNum: number,
+  round = false,
 ): CoolPlotSpec {
   const existing = spec.isolines.find((s) => s.key === key);
   if (change.on === false) return { ...spec, isolines: spec.isolines.filter((s) => s.key !== key) };
   if (!existing) {
     if (change.on !== true) return spec;
-    return { ...spec, isolines: [...spec.isolines, familyLine(key, defaultNum)] };
+    return { ...spec, isolines: [...spec.isolines, familyLine(key, defaultNum, round)] };
   }
   const updated: IsolineSpec = { ...existing };
   if (change.num !== undefined) updated.num = change.num;
@@ -156,6 +226,7 @@ export function sceneInput(def: DiagramDefinition, guiTheme: 'light' | 'dark'): 
   const look = settings.look || (guiTheme === 'dark' ? 'dark' : 'default');
   return {
     fluid: def.fluid,
+    ...(def.fractions ? { fractions: def.fractions } : {}),
     spec: { ...def.spec, settings: { ...settings, look } },
     cycles: def.cycles.filter(isDrawable),
   };
