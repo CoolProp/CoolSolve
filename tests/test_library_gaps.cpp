@@ -15,8 +15,10 @@
 #include "coolsolve/ees_string.h"
 #include "coolsolve/evaluator.h"
 #include "coolsolve/fluids.h"
+#include "coolsolve/ideal_gas.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/lookup_table.h"
+#include "coolsolve/nasa_glenn.h"
 #include "coolsolve/parser.h"
 #include "coolsolve/runner.h"
 #include "coolsolve/solution_checker.h"
@@ -872,7 +874,9 @@ namespace {
 
 /// Standard molar entropy at 298.15 K and 1 bar [kJ/kmol-K], NASA-Glenn thermodynamic data
 /// (McBride, Zehe, Gordon, NASA/TP-2002-211556; github.com/nasa/cea data/thermo.inp, R = 8.314462618).
-/// NIST-JANAF differs by at most 0.12 (CH4); EES is built on the same NASA data.
+/// NIST-JANAF differs by at most 0.12 (CH4); EES is built on the same NASA data. The values are those of the table
+/// rounded to 0.1 J/kmol-K (the literal constants src/fluids.cpp used before nasa_glenn.cpp computed them: the registry
+/// is within 0.05 J/kmol-K = 5e-5 of them, CS-GAP-FLUIDS-NASA-SPECIES).
 struct StandardEntropy {
     const char* ees;        ///< EES name of the ideal gas
     const char* coolProp;   ///< CoolProp fluid behind it
@@ -928,7 +932,9 @@ TEST_CASE("CS-GAP-IDEAL-ENTROPY: at 1 bar the entropy is the standard entropy, f
     CHECK(run.verified);
     for (const auto& e : kStandardEntropies) {
         INFO("species " << e.ees);
-        CHECK_THAT(run[std::string("s_") + e.ees], WithinAbs(e.s0, 1e-6));
+        CHECK_THAT(run[std::string("s_") + e.ees], WithinAbs(e.s0, 5e-5));   // the table rounded to 0.1 J/kmol-K
+        // exactly the polynomial of the NASA-Glenn table at 298.15 K
+        CHECK_THAT(run[std::string("s_") + e.ees], WithinRel(nasa_glenn::find(e.ees)->standardEntropy, 1e-12));   // kJ/kmol-K = J/mol-K
     }
 }
 
@@ -995,7 +1001,7 @@ TEST_CASE("CS-GAP-IDEAL-ENTROPY: a literal absolute entropy as input", "[library
          << "s_100 = molarmass(He)*entropy(He,T=100,P=1E5)/1000\n";
     auto run = runModel(code.str());
     REQUIRE(run.solveOk);
-    CHECK_THAT(run["T_25"], WithinAbs(25.0, 1e-6));   // exactly: no real-gas residual
+    CHECK_THAT(run["T_25"], WithinAbs(25.0, 1e-3));   // no real-gas residual; the table s of the literal is 0.02 J/kmol-K above the polynomial's
     // cp = 5/2 R: s(373.15 K) = s(298.15 K) + 5/2 R ln(373.15/298.15)
     CHECK_THAT(run["s_100"], WithinAbs(126.1530 + 2.5 * kGasConstant * std::log(373.15 / 298.15), 1e-4));
 }
@@ -7122,13 +7128,14 @@ H_react = H_prod
     CHECK_THAT(run["T_adiab"], WithinAbs(1787.85, 2.0));   // CoolProp's specific heats: +0.8 K
 }
 
-TEST_CASE("CS-GAP-NASA: the species of the NASA database that CoolProp lacks are unknown fluids", "[library-gaps][nasa]") {
-    // CS-GAP-FLUIDS-NASA-SPECIES: EES evaluates enthalpy(OH, T=2000) from its NASA database
+TEST_CASE("CS-GAP-NASA: the species of the NASA database that CoolProp lacks are fluids (CS-GAP-FLUIDS-NASA-SPECIES)", "[library-gaps][nasa]") {
+    // EES evaluates enthalpy(OH, T=2000) from its NASA database: they were unknown fluids before the NASA-Glenn species
     for (const std::string species : {"OH", "H", "O", "N", "NO", "NO2"}) {
         auto run = runModel("h = enthalpy(" + species + ", T=2000)\n");
         INFO(species);
-        CHECK_FALSE(run.solveOk);
-        CHECK(run.message.find("Unknown fluid: '" + species + "'") != std::string::npos);
+        INFO(run.message);
+        CHECK(run.solveOk);
+        CHECK(run.verified);
     }
 }
 
@@ -18192,7 +18199,8 @@ TEST_CASE("CS-GAP-ISIDEALGAS: the answer comes from the fluid registry, for ever
         if (fluid->getType() == FluidType::IdealGas) idealNames.insert(fluid->getName());
     }
     CHECK(idealNames == std::set<std::string>{"Air", "N2", "O2", "H2", "He", "Ar", "CO2", "CO", "CH4", "C2H6", "C3H8",
-                                              "C4H10", "C5H12", "C6H14", "C7H16", "C8H18", "H2O"});   // + the alkanes of CS-GAP-FLUIDS-C8H18
+                                              "C4H10", "C5H12", "C6H14", "C7H16", "C8H18", "H2O",   // + the alkanes of CS-GAP-FLUIDS-C8H18
+                                              "OH", "H", "O", "N", "NO", "NO2"});   // + the NASA-Glenn species of CS-GAP-FLUIDS-NASA-SPECIES
 
     std::vector<std::string> ordered(names.begin(), names.end());
     std::string code;
@@ -20153,8 +20161,9 @@ TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: an unknown symbol is still the unknown-flui
 
 TEST_CASE("CS-GAP-MOLARMASS-ELEMENT: only MOLARMASS accepts an element, the other property functions do not",
           "[library-gaps][molarmass-element]") {
-    for (const std::string call : {"enthalpy(C, T=25)", "enthalpy(H, T=25, P=1E5)", "cp(C, T=25)", "entropy(O, T=25, P=1E5)",
-                                   "density(N, T=25, P=1E5)", "viscosity(S, T=25)", "t_crit(C)", "p_sat(Fe, T=25)",
+    // (H, O and N are fluids, the atoms of the NASA-Glenn species: enthalpy(H, T=25) is the enthalpy of the atom)
+    for (const std::string call : {"enthalpy(C, T=25)", "enthalpy(Cl, T=25, P=1E5)", "cp(C, T=25)", "entropy(Na, T=25, P=1E5)",
+                                   "density(Si, T=25, P=1E5)", "viscosity(S, T=25)", "t_crit(C)", "p_sat(Fe, T=25)",
                                    "conductivity(Cu, T=25)", "intenergy(C, T=25, P=1E5)", "molarmass(C, T=25)"}) {
         INFO(call);
         auto run = runModel("x = " + call + "\n");
@@ -24882,3 +24891,916 @@ h(x) = 0
     }
 }
 
+
+// ============================================================================
+// CS-GAP-FLUIDS-NASA-SPECIES: OH, H, O, N, NO and NO2 are ideal gases of the registry whose properties are the
+// NASA-Glenn 9-coefficient polynomials (src/nasa_glenn.cpp), CoolProp having no equation of state for them; the
+// enthalpies of formation and the standard entropies of every ideal gas of the registry come from the same table
+// ============================================================================
+
+namespace {
+
+const std::vector<std::string> kNasaSpecies = {"OH", "H", "O", "N", "NO", "NO2"};
+
+/// cp [J/mol-K], anchored h [J/mol] and s at 1 bar [J/mol-K] of the NASA-Glenn polynomials of thermo.inp (the
+/// 2021 revision of NASA CEA), evaluated by a script written independently of src/nasa_glenn.cpp: the six species at
+/// 250, 500, 1000, 2000, 3000 and 5000 K, the 16 others at 250, 1500 and 4000 K. At 250 K the species whose first
+/// interval starts at 300 K (NO2, He and the hydrocarbons) are the first interval extrapolated.
+struct NasaReference {
+    const char* species;
+    double T, cp, h, s;
+};
+
+const NasaReference kNasaReference[] = {
+    {"OH", 250, 30.1253569007, 35833.8200665, 178.454331448},
+    {"OH", 500, 29.4948204367, 43259.571833, 199.067756407},
+    {"OH", 1000, 30.681851185, 58199.2997984, 219.732166075},
+    {"OH", 2000, 34.76452122, 91071.0130256, 242.350071963},
+    {"OH", 3000, 37.0373735121, 127076.059828, 256.91788628},
+    {"OH", 5000, 39.6749147335, 204034.574676, 276.516643145},
+    {"H", 250, 20.786156545, 216997.974562, 111.056023112},
+    {"H", 500, 20.786156545, 222194.513699, 125.463888916},
+    {"H", 1000, 20.7861565455, 232587.591949, 139.87175472},
+    {"H", 2000, 20.7861566537, 253373.74859, 154.279620502},
+    {"H", 3000, 20.7861564174, 274159.904573, 162.707681488},
+    {"H", 5000, 20.7861564963, 315732.217904, 173.325782967},
+    {"O", 250, 22.2446873651, 248112.398601, 157.171603472},
+    {"O", 500, 21.2571111784, 253518.343745, 172.19878594},
+    {"O", 1000, 20.9151830041, 264035.015577, 186.791098111},
+    {"O", 2000, 20.8256108925, 284888.293869, 201.248706945},
+    {"O", 3000, 20.9384706881, 305748.308604, 209.70523784},
+    {"O", 5000, 21.7988586553, 348396.846215, 220.579343602},
+    {"N", 250, 20.786156545, 471679.146562, 149.640017641},
+    {"N", 500, 20.786156545, 476875.685699, 164.047883445},
+    {"N", 1000, 20.7861565461, 487268.763707, 178.455749229},
+    {"N", 2000, 20.7905875792, 508056.15938, 192.86390877},
+    {"N", 3000, 20.9637366571, 528895.91191, 201.311557372},
+    {"N", 5000, 23.4587712623, 572789.441227, 212.469315679},
+    {"NO", 250, 30.0585454251, 89829.4292375, 205.471757124},
+    {"NO", 500, 30.4940828264, 97332.4190711, 226.25733993},
+    {"NO", 1000, 33.9909341717, 113504.534633, 248.532985602},
+    {"NO", 2000, 36.6737602308, 149147.239551, 273.133332128},
+    {"NO", 3000, 37.5401761653, 186309.578136, 288.189633859},
+    {"NO", 5000, 38.6069717333, 262442.637273, 307.612691697},
+    {"NO2", 250, 35.7501456469, 32438.0342213, 233.753491802},
+    {"NO2", 500, 43.6585362106, 42359.6242195, 260.941893391},
+    {"NO2", 1000, 52.9817754352, 66926.6510257, 294.62553743},
+    {"NO2", 2000, 58.1260928285, 123046.247361, 333.325742846},
+    {"NO2", 3000, 60.9910715575, 182587.847315, 357.42901022},
+    {"NO2", 5000, 67.738051188, 311207.789835, 390.132971101},
+    {"H2", 250, 28.3563586523, -1378.16003149, 125.64010939},
+    {"H2", 1500, 32.3044109716, 36287.1174846, 178.843775635},
+    {"H2", 4000, 39.0865211062, 126847.420045, 213.838537791},
+    {"O2", 250, 29.2079604151, -1409.93743502, 199.991093742},
+    {"O2", 1500, 36.5525989652, 40613.0537722, 258.084083287},
+    {"O2", 4000, 41.7068222581, 139000.545585, 296.268959724},
+    {"H2O", 250, 33.4355294291, -243439.111425, 182.92756402},
+    {"H2O", 1500, 47.3182161898, -193619.788212, 250.657384618},
+    {"H2O", 4000, 59.3244977398, -55975.5203604, 303.715955425},
+    {"CO", 250, 29.1191894758, -111937.705331, 192.528279097},
+    {"CO", 1500, 35.2131556645, -71689.763388, 248.425793378},
+    {"CO", 4000, 37.697595569, 20463.5054426, 284.39346618},
+    {"CO2", 250, 34.8277727098, -395243.24009, 207.451848116},
+    {"CO2", 1500, 58.3735404056, -331801.120328, 292.196943645},
+    {"CO2", 4000, 63.2031809525, -178003.619954, 352.178061809},
+    {"N2", 250, 29.1099971506, -1401.94394999, 186.480254155},
+    {"N2", 1500, 34.8417309083, 38404.3773526, 241.878949875},
+    {"N2", 4000, 37.5477662698, 130021.593216, 277.619056251},
+    {"CH4", 250, 34.2670493154, -76281.2390164, 180.223602756},
+    {"CH4", 1500, 90.8652734382, 5586.4114032, 281.749200949},
+    {"CH4", 4000, 124.804091645, 282187.268714, 387.670553015},
+    {"Ar", 250, 20.786156545, -1000.85343764, 151.184594314},
+    {"Ar", 1500, 20.7861567862, 24981.8421583, 188.428387093},
+    {"Ar", 4000, 20.7861567811, 76947.2336731, 208.816057546},
+    {"He", 250, 20.786156545, -1000.85343764, 122.49179176},
+    {"He", 1500, 20.786156545, 24981.8422436, 159.735584578},
+    {"He", 4000, 20.786156545, 76947.2336061, 180.123254975},
+    {"C2H6", 250, 47.0157467917, -86244.298065, 220.481137545},
+    {"C2H6", 1500, 145.900613012, 48346.5485131, 386.306616176},
+    {"C2H6", 4000, 172.875999691, 459905.842748, 545.738932725},
+    {"C3H8", 250, 64.3961498806, -107998.70378, 258.19706003},
+    {"C3H8", 1500, 205.886406696, 83799.9508176, 494.768847873},
+    {"C3H8", 4000, 241.65897989, 660631.787771, 718.380774429},
+    {"C4H10", 250, 86.8760128443, -130252.130752, 293.587176867},
+    {"C4H10", 1500, 266.457063766, 120295.068973, 604.028055175},
+    {"C4H10", 4000, 310.318163713, 862974.279306, 892.098582485},
+    {"C5H12", 250, 105.779515202, -152189.946005, 329.731797603},
+    {"C5H12", 1500, 330.253474764, 157146.71723, 712.198692204},
+    {"C5H12", 4000, 465.324923294, 1166087.14019, 1097.32556275},
+    {"C6H14", 250, 125.508974766, -173366.434523, 365.31048244},
+    {"C6H14", 1500, 387.13754102, 191404.023621, 817.385849152},
+    {"C6H14", 4000, 533.046290496, 1362671.8268, 1265.31054336},
+    {"C7H16", 250, 145.06467278, -195239.839536, 400.850458275},
+    {"C7H16", 1500, 444.166568028, 225280.495451, 922.897745597},
+    {"C7H16", 4000, 558.900757662, 1512867.05055, 1419.05448407},
+    {"C8H18", 250, 164.807619795, -217228.235797, 436.39281795},
+    {"C8H18", 1500, 498.735700022, 258534.447363, 1027.94742616},
+    {"C8H18", 4000, 555.933696962, 1625511.25689, 1559.91583924},
+};
+
+/// NIST-JANAF Thermochemical Tables (Chase 1998), J/mol-K and kJ/mol: cp, S and H(T) - H(298.15 K). H, O, NO and
+/// NO2 are the tables of janaf.nist.gov (H-001, O-001, N-005, N-007); OH and N are the Shomate fits of the NIST
+/// Chemistry WebBook to the JANAF tables of those species.
+struct JanafPoint {
+    const char* species;
+    double T, cp, S, dH;
+};
+
+const JanafPoint kJanaf[] = {
+    {"OH", 500, 29.511, 199.067, 5.992},    {"OH", 1000, 30.672, 219.737, 20.935},
+    {"OH", 2000, 34.668, 242.332, 53.771},  {"OH", 3000, 36.731, 256.821, 89.576},
+    {"H", 500, 20.786, 125.463, 4.196},     {"H", 1000, 20.786, 139.871, 14.589},
+    {"H", 2000, 20.786, 154.278, 35.375},   {"H", 3000, 20.786, 162.706, 56.161},
+    {"O", 500, 21.257, 172.197, 4.343},     {"O", 1000, 20.915, 186.790, 14.860},
+    {"O", 2000, 20.826, 201.247, 35.713},   {"O", 3000, 20.937, 209.704, 56.574},
+    {"N", 500, 20.853, 164.039, 4.201},     {"N", 1000, 20.790, 178.480, 14.616},
+    {"N", 2000, 20.723, 192.855, 35.349},   {"N", 3000, 21.025, 201.299, 56.186},
+    {"NO", 500, 30.486, 226.263, 6.059},    {"NO", 1000, 33.987, 248.536, 22.229},
+    {"NO", 2000, 36.647, 273.128, 57.859},  {"NO", 3000, 37.466, 288.165, 94.973},
+    {"NO2", 500, 43.206, 260.638, 8.099},   {"NO2", 1000, 52.166, 293.889, 32.344},
+    {"NO2", 2000, 56.441, 331.788, 87.259}, {"NO2", 3000, 57.394, 354.889, 144.267},
+};
+
+/// The tolerances of the comparison with JANAF: relative on cp, absolute on S [J/mol-K] and on H(T) - H(298.15 K) [kJ/mol].
+/// They are the known differences of the data sets: the NASA-Glenn OH rests on Ruscic (2002) and Gurvich, JANAF on 1977;
+/// NO2 is Gurvich (1989) against JANAF of 1964, which differ by 1.6 % in cp at 1000 K, 3 % at 2000 K and 6 % at 3000 K
+/// (the molecule is not stable above 1500 K); the fits of OH and N to JANAF are 0.8 % and 0.3 % off in cp themselves.
+struct JanafTolerance {
+    double cp, S, dH;
+};
+
+JanafTolerance janafTolerance(const std::string& species) {
+    if (species == "NO2") return {0.07, 2.6, 4.2};
+    if (species == "OH") return {0.01, 0.12, 0.25};
+    if (species == "NO") return {0.003, 0.04, 0.1};
+    if (species == "N") return {0.01, 0.05, 0.05};
+    return {1e-3, 0.01, 0.01};   // H and O: the same tables
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: the register reproducers", "[library-gaps][nasa-species]") {
+    // before: Unknown fluid: 'OH' (and H, O, N, NO, NO2), and molarmass(NO2) failed (CSL-0278)
+    auto run = runModel(R"(
+h = enthalpy(OH, T=2000)
+MM = molarmass(NO2)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["MM"], WithinAbs(46.0055, 1e-12));
+    // J/kg of the polynomials, anchored on the formation enthalpy: h(2273.15 K) / M
+    const nasa_glenn::Species& oh = *nasa_glenn::find("OH");
+    CHECK_THAT(run["h"], WithinRel(nasa_glenn::evaluate(oh, 2273.15).h / oh.molarMass, 1e-12));
+    for (const std::string& species : kNasaSpecies) {
+        INFO(species);
+        auto each = runModel("h = enthalpy(" + species + ", T=2000)\nM = molarmass(" + species + ")\n");
+        REQUIRE(each.solveOk);
+        CHECK(each.verified);
+        CHECK(std::isfinite(each["h"]));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: the module nasa_glenn, its table", "[library-gaps][nasa-species]") {
+    const auto& table = nasa_glenn::allSpecies();
+    REQUIRE(table.size() == 22);
+    // the 14 species of the equilibrium of CHEM_EQUIL, then He, C2H6, C3H8 and the alkanes C4H10 ... C8H18
+    std::vector<std::string> names;
+    for (const auto& species : table) names.push_back(species.name);
+    CHECK(names == std::vector<std::string>{"H2", "O2", "H2O", "CO", "CO2", "OH", "H", "O", "N2", "N", "NO", "NO2", "CH4", "Ar",
+                                            "He", "C2H6", "C3H8", "C4H10", "C5H12", "C6H14", "C7H16", "C8H18"});
+
+    SECTION("lookup by name, without regard to case") {
+        CHECK(nasa_glenn::find("OH") == &table[5]);
+        CHECK(nasa_glenn::find("oh") == nasa_glenn::find("OH"));
+        CHECK(nasa_glenn::find("No2") == nasa_glenn::find("NO2"));
+        CHECK(nasa_glenn::find("NO") != nasa_glenn::find("NO2"));
+        CHECK(nasa_glenn::find("NO3") == nullptr);
+        CHECK(nasa_glenn::find("") == nullptr);
+        CHECK(nasa_glenn::find("C4H10,n-butane") == nullptr);   // the name of the registry, not the record of the file
+    }
+
+    SECTION("the composition and the molar mass of the header agree, to the atomic weights of the file") {
+        for (const auto& species : table) {
+            INFO(species.name);
+            const auto& c = species.composition;
+            const double weight = c.C * *elementAtomicWeight("C") + c.H * *elementAtomicWeight("H") +
+                                  c.O * *elementAtomicWeight("O") + c.N * *elementAtomicWeight("N") +
+                                  c.Ar * *elementAtomicWeight("Ar") + c.He * *elementAtomicWeight("He");
+            CHECK_THAT(1000.0 * species.molarMass, WithinAbs(weight, 1e-6));   // kg/mol -> g/mol
+        }
+        CHECK(nasa_glenn::find("CO2")->composition.C == 1);
+        CHECK(nasa_glenn::find("CO2")->composition.O == 2);
+        CHECK(nasa_glenn::find("C8H18")->composition.C == 8);
+        CHECK(nasa_glenn::find("C8H18")->composition.H == 18);
+        CHECK(nasa_glenn::find("NO2")->composition.N == 1);
+        CHECK(nasa_glenn::find("Ar")->composition.Ar == 1);
+        CHECK(nasa_glenn::find("He")->composition.He == 1);
+    }
+
+    SECTION("the ranges: 200 K to the end of the data; the polynomials that start at 300 K are extrapolated") {
+        for (const auto& species : table) {
+            INFO(species.name);
+            CHECK(species.tMin() == 200.0);
+            CHECK(species.intervals[0].tLow >= 200.0);
+        }
+        CHECK(nasa_glenn::find("OH")->tMax() == 20000.0);
+        CHECK(nasa_glenn::find("NO")->tMax() == 20000.0);
+        CHECK(nasa_glenn::find("N2")->tMax() == 20000.0);
+        CHECK(nasa_glenn::find("NO2")->tMax() == 6000.0);
+        CHECK(nasa_glenn::find("NO2")->intervals[0].tLow == 300.0);
+        CHECK(nasa_glenn::find("C8H18")->tMax() == 6000.0);
+        CHECK(nasa_glenn::find("H2O")->tMax() == 6000.0);
+    }
+
+    SECTION("the enthalpy is anchored on the heat of formation of the header, the entropy is the polynomial's") {
+        for (const auto& species : table) {
+            INFO(species.name);
+            const nasa_glenn::Point p = nasa_glenn::evaluate(species, nasa_glenn::kReferenceTemperature);
+            CHECK_THAT(p.h, WithinAbs(species.formationEnthalpy, 1e-9 * std::max(1.0, std::abs(species.formationEnthalpy))));
+            CHECK(p.s == species.standardEntropy);
+        }
+        // the heats of formation of the headers of thermo.inp [J/mol]: OH is 1.7 kJ/mol below JANAF (38.99), which
+        // keeps the older value, NO 1.0 kJ/mol above (90.29)
+        CHECK(nasa_glenn::find("OH")->formationEnthalpy == 37278.206);
+        CHECK(nasa_glenn::find("H")->formationEnthalpy == 217998.828);
+        CHECK(nasa_glenn::find("O")->formationEnthalpy == 249175.003);
+        CHECK(nasa_glenn::find("N")->formationEnthalpy == 472680.0);
+        CHECK(nasa_glenn::find("NO")->formationEnthalpy == 91271.31);
+        CHECK(nasa_glenn::find("NO2")->formationEnthalpy == 34193.019);
+        // the polynomial's own H(298.15 K) differs from the header by 2.7 J/mol at most (N; CO2 2.2 J/mol), the rounding of
+        // the fit: the anchor removes that difference
+        for (const auto& species : table) {
+            INFO(species.name);
+            CHECK(std::abs(species.polynomialH298 - species.formationEnthalpy) < 3.0);
+        }
+        CHECK(std::abs(nasa_glenn::find("N")->polynomialH298 - 472680.0) > 2.6);
+    }
+
+    SECTION("cp, h and s are those of the polynomials of thermo.inp, evaluated independently") {
+        for (const NasaReference& ref : kNasaReference) {
+            INFO(ref.species << " at " << ref.T << " K");
+            const nasa_glenn::Point p = nasa_glenn::evaluate(*nasa_glenn::find(ref.species), ref.T);
+            CHECK_THAT(p.cp, WithinRel(ref.cp, 1e-10));
+            CHECK_THAT(p.h, WithinRel(ref.h, 1e-9));
+            CHECK_THAT(p.s, WithinRel(ref.s, 1e-10));
+        }
+    }
+
+    SECTION("dcp/dT is the derivative of cp, h and s are consistent with it") {
+        for (const auto& species : table) {
+            for (double T : {250.0, 500.0, 1500.0, 3000.0, 5500.0}) {
+                INFO(species.name << " at " << T << " K");
+                const double step = 1e-4 * T;
+                const nasa_glenn::Point up = nasa_glenn::evaluate(species, T + step), down = nasa_glenn::evaluate(species, T - step);
+                const nasa_glenn::Point p = nasa_glenn::evaluate(species, T);
+                CHECK_THAT(p.dcp_dT, WithinAbs((up.cp - down.cp) / (2.0 * step), 1e-6 * std::max(1.0, std::abs(p.dcp_dT))));
+                CHECK_THAT(p.cp, WithinRel((up.h - down.h) / (2.0 * step), 1e-6));          // dh/dT = cp
+                CHECK_THAT(p.cp / T, WithinRel((up.s - down.s) / (2.0 * step), 1e-6));      // ds/dT = cp/T
+            }
+        }
+    }
+
+    SECTION("the polynomials are continuous at the boundary of two intervals; the boundary is the upper interval's") {
+        for (const auto& species : table) {
+            for (int i = 0; i + 1 < species.intervalCount; ++i) {
+                const double boundary = species.intervals[i].tHigh;
+                INFO(species.name << " at " << boundary << " K");
+                const nasa_glenn::Point below = nasa_glenn::evaluate(species, std::nextafter(boundary, 0.0));
+                const nasa_glenn::Point at = nasa_glenn::evaluate(species, boundary);
+                CHECK_THAT(at.cp, WithinRel(below.cp, 1e-6));
+                CHECK(std::abs(at.h - below.h) < 0.1);   // J/mol (the largest jump of the fit: 0.043 J/mol)
+                CHECK_THAT(at.s, WithinAbs(below.s, 1e-4));
+            }
+        }
+    }
+
+    SECTION("outside the range: an error naming the species and its range, also for NaN") {
+        const nasa_glenn::Species& no2 = *nasa_glenn::find("NO2");
+        CHECK_NOTHROW(nasa_glenn::evaluate(no2, 200.0));
+        CHECK_NOTHROW(nasa_glenn::evaluate(no2, 6000.0));
+        CHECK_THROWS_WITH(nasa_glenn::evaluate(no2, 199.0),
+                          "NASA-Glenn data of NO2: T = 199 K is outside the range 200 K to 6000 K");
+        CHECK_THROWS_WITH(nasa_glenn::evaluate(no2, 6001.5),
+                          "NASA-Glenn data of NO2: T = 6001.5 K is outside the range 200 K to 6000 K");
+        CHECK_THROWS_AS(nasa_glenn::evaluate(no2, std::nan("")), std::out_of_range);
+        CHECK_THROWS_AS(nasa_glenn::evaluate(no2, -5.0), std::out_of_range);
+        CHECK_THROWS_WITH(nasa_glenn::evaluate(*nasa_glenn::find("OH"), 20001.0),
+                          "NASA-Glenn data of OH: T = 20001 K is outside the range 200 K to 20000 K");
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: the formation enthalpies and standard entropies come from the table, unchanged",
+          "[library-gaps][nasa-species][formation-enthalpy]") {
+    // the literal constants of src/fluids.cpp that the table replaces: [J/kmol] and [J/kmol-K]
+    struct Old { const char* name; double hf, s0; };
+    const Old old[] = {
+        {"N2", 0.0, 191608.6},          {"O2", 0.0, 205148.3},          {"H2", 0.0, 130680.3},         {"He", 0.0, 126153.0},
+        {"Ar", 0.0, 154845.8},          {"CO2", -393510e3, 213786.2},   {"CO", -110535.196e3, 197658.7},
+        {"CH4", -74600e3, 186370.0},    {"C2H6", -83851.544e3, 229219.8}, {"C3H8", -104680e3, 270313.3},
+        {"C4H10", -125790e3, 309879.5}, {"C5H12", -146760e3, 349558.0}, {"C6H14", -166920e3, 388847.8},
+        {"C7H16", -187780e3, 428087.0}, {"C8H18", -208750e3, 467347.3}, {"H2O", -241826e3, 188828.0},
+    };
+    for (const Old& o : old) {
+        INFO(o.name);
+        const auto fluid = std::dynamic_pointer_cast<IdealGasFluid>(FluidRegistry::getFluid(o.name));
+        REQUIRE(fluid);
+        REQUIRE(fluid->getFormationEnthalpy().has_value());
+        REQUIRE(fluid->getStandardEntropy().has_value());
+        CHECK(*fluid->getFormationEnthalpy() == o.hf);                       // the header of the record, exactly
+        CHECK_THAT(*fluid->getStandardEntropy(), WithinAbs(o.s0, 0.05));     // the constants were rounded to 0.1
+        CHECK(fluid->hasCoolPropFluid());
+        CHECK(fluid->getLowestTemperature() == 0.0);
+    }
+    // Air is not a NASA-Glenn species: it keeps CoolProp's references
+    const auto air = std::dynamic_pointer_cast<IdealGasFluid>(FluidRegistry::getFluid("Air"));
+    REQUIRE(air);
+    CHECK_FALSE(air->getFormationEnthalpy().has_value());
+    CHECK_FALSE(air->getStandardEntropy().has_value());
+    CHECK(nasa_glenn::find("Air") == nullptr);
+    // the six new species are registered with the table's values, in J/kmol
+    for (const std::string& name : kNasaSpecies) {
+        INFO(name);
+        const auto fluid = std::dynamic_pointer_cast<IdealGasFluid>(FluidRegistry::getFluid(name));
+        REQUIRE(fluid);
+        const nasa_glenn::Species& species = *nasa_glenn::find(name);
+        CHECK(*fluid->getFormationEnthalpy() == species.formationEnthalpy * 1000.0);
+        CHECK(*fluid->getStandardEntropy() == species.standardEntropy * 1000.0);
+        CHECK(fluid->getType() == FluidType::IdealGas);
+        CHECK_FALSE(fluid->hasCoolPropFluid());
+        CHECK(fluid->getLowestTemperature() == 200.0);
+        CHECK(fluid->getCoolPropName() == "NASA::" + name);
+        CHECK(fluid->getRealFluidName().empty());
+        // the lower-case name is the same fluid
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        CHECK(FluidRegistry::getFluid(lower) == fluid);
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: against NIST-JANAF (cp, S, H - H(298 K)) at 500, 1000, 2000 and 3000 K",
+          "[library-gaps][nasa-species]") {
+    // the tolerances are the known differences between the data sets (see janafTolerance)
+    for (const JanafPoint& j : kJanaf) {
+        INFO(j.species << " at " << j.T << " K");
+        const JanafTolerance tol = janafTolerance(j.species);
+        // the enthalpy rise through the model: M h(T) - M h(298.15 K) [J/kmol]
+        const double TC = j.T - 273.15;
+        auto run = runModel("M = molarmass(" + std::string(j.species) + ")\n"
+                            "cp_ = M*cp(" + j.species + ", T=" + numText(TC) + ")\n"
+                            "dH = M*(enthalpy(" + j.species + ", T=" + numText(TC) + ") - enthalpy(" + j.species + ", T=25))\n"
+                            "S = M*entropy(" + j.species + ", T=" + numText(TC) + ", P=1E5)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["cp_"] / 1000.0, WithinRel(j.cp, tol.cp));              // J/kmol-K -> J/mol-K
+        CHECK_THAT(run["S"] / 1000.0, WithinAbs(j.S, tol.S));
+        CHECK_THAT(run["dH"] / 1e6, WithinAbs(j.dH, tol.dH));               // J/kmol -> kJ/mol
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: the reference state, h(25 C) is the heat of formation, s(25 C, 1 bar) the standard entropy",
+          "[library-gaps][nasa-species]") {
+    for (const std::string& name : kNasaSpecies) {
+        INFO(name);
+        const nasa_glenn::Species& species = *nasa_glenn::find(name);
+        auto run = runModel("hf = enthalpy(" + name + ", T=25)*molarmass(" + name + ")\n"
+                            "s0 = entropy(" + name + ", T=25, P=1E5)*molarmass(" + name + ")\n"
+                            "s2 = entropy(" + name + ", T=25, P=2E5)*molarmass(" + name + ")\n"
+                            "u = intenergy(" + name + ", T=25)*molarmass(" + name + ")\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["hf"], WithinRel(species.formationEnthalpy * 1000.0, 1e-12));          // J/kmol
+        CHECK_THAT(run["s0"], WithinRel(species.standardEntropy * 1000.0, 1e-12));            // J/kmol-K
+        CHECK_THAT(run["s2"], WithinAbs(species.standardEntropy * 1000.0 - nasa_glenn::kGasConstant * 1000.0 * std::log(2.0), 1e-6));
+        CHECK_THAT(run["hf"] - run["u"], WithinRel(nasa_glenn::kGasConstant * 1000.0 * 298.15, 1e-12));   // h - u = R T
+        // the offsets of the reference state are zero: the data of the species are on that basis already
+        const ReferenceState reference = FluidRegistry::getFluid(name)->getReferenceState();
+        CHECK(std::abs(reference.h_offset) < 1e-6);   // J/kg
+        CHECK(std::abs(reference.s_offset) < 1e-9);   // J/kg-K
+    }
+    // the standard entropies [J/mol-K] against NIST-JANAF (298.15 K): OH 183.71, H 114.72, O 161.06, N 153.28, NO 210.76, NO2 240.03
+    const std::map<std::string, double> janaf = {{"OH", 183.71}, {"H", 114.72}, {"O", 161.06}, {"N", 153.28}, {"NO", 210.76}, {"NO2", 240.03}};
+    for (const auto& [name, s0] : janaf) {
+        INFO(name);
+        CHECK_THAT(nasa_glenn::find(name)->standardEntropy, WithinAbs(s0, name == "NO2" ? 0.2 : 0.05));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: the Gibbs energy of NO at 1850 K and 1 bar is that of Klein's ChemEq example",
+          "[library-gaps][nasa-species]") {
+    // EES stores g|o_NO = -356 360.3152 kJ/kmol = h - T s from Enthalpy('NO',T=T) and Entropy('NO',T=T,P=1) at 1850 K
+    // (its R is 8.314, ours 8.314462618: 0.4 J/mol of the 356 kJ/mol)
+    auto run = runModel(R"(
+T_K = 1850
+T = T_K - 273.15
+g_NO = molarmass(NO)*(enthalpy(NO, T=T) - T_K*entropy(NO, T=T, P=1E5))/1000   "kJ/kmol"
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["g_NO"], WithinAbs(-356360.3152, 10.0));
+    CHECK_THAT(run["g_NO"], WithinAbs(-356360.679, 0.01));   // the polynomials of thermo.inp, evaluated in python
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: exact ideal gases, pv = RT, u = h - RT, cp - cv = R, against the polynomials",
+          "[library-gaps][nasa-species]") {
+    for (const std::string& name : kNasaSpecies) {
+        const nasa_glenn::Species& species = *nasa_glenn::find(name);
+        const double R = nasa_glenn::kGasConstant / species.molarMass;   // J/kg-K
+        for (const auto& [TC, P] : std::vector<std::pair<double, double>>{{-50.0, 1e5}, {25.0, 101325.0}, {500.0, 3e6}, {1500.0, 2e5},
+                                                                         {3000.0, 1e5}, {5000.0, 5e7}}) {
+            INFO(name << " at " << TC << " C, " << P << " Pa");
+            const double TK = TC + 273.15;
+            const std::string state = "T=" + numText(TC) + ", P=" + numText(P);
+            auto run = runModel("h = enthalpy(" + name + ", " + state + ")\n"
+                                "u = intenergy(" + name + ", " + state + ")\n"
+                                "s = entropy(" + name + ", " + state + ")\n"
+                                "cp_ = cp(" + name + ", " + state + ")\n"
+                                "cv_ = cv(" + name + ", " + state + ")\n"
+                                "rho = density(" + name + ", " + state + ")\n"
+                                "v = volume(" + name + ", " + state + ")\n"
+                                "Z = compressibilityfactor(" + name + ", " + state + ")\n"
+                                "gam = isentropicexponent(" + name + ", " + state + ")\n"
+                                "a = soundspeed(" + name + ", " + state + ")\n");
+            INFO(run.message);
+            REQUIRE(run.solveOk);
+            CHECK(run.verified);
+            const nasa_glenn::Point p = nasa_glenn::evaluate(species, TK);
+            const double scale = std::max(std::abs(run["h"]), 1e3);
+            CHECK(std::abs(run["h"] - run["u"] - R * TK) <= 1e-9 * scale);
+            CHECK_THAT(run["cp_"] - run["cv_"], WithinRel(R, 1e-9));
+            CHECK_THAT(run["cp_"], WithinRel(p.cp / species.molarMass, 1e-12));
+            CHECK_THAT(run["h"], WithinRel(p.h / species.molarMass, 1e-12));
+            CHECK_THAT(run["s"], WithinRel((p.s - nasa_glenn::kGasConstant * std::log(P / 1e5)) / species.molarMass, 1e-12));
+            CHECK_THAT(run["rho"], WithinRel(P / (R * TK), 1e-12));
+            CHECK_THAT(run["v"] * run["rho"], WithinRel(1.0, 1e-12));
+            CHECK_THAT(run["Z"], WithinAbs(1.0, 1e-15));
+            CHECK_THAT(run["gam"], WithinRel(run["cp_"] / run["cv_"], 1e-12));
+            CHECK_THAT(run["a"], WithinRel(std::sqrt(run["cp_"] / run["cv_"] * R * TK), 1e-12));
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: every pair of inputs, value and exact derivatives (implicit function theorem)",
+          "[library-gaps][nasa-species]") {
+    for (const IdealState& st : std::vector<IdealState>{{"OH", 500.0, 2e5}, {"H", 1500.0, 3e5}, {"O", 800.0, 1e5}, {"N", 2500.0, 1e6},
+                                                         {"NO", 300.0, 1e5}, {"NO2", 100.0, 5e5}, {"NO2", 2000.0, 1e5}}) {
+        INFO(st.fluid << " at " << st.TC << " C, " << st.P << " Pa");
+        checkPairsWithDerivatives(st);
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: the temperature from h, u or s round-trips over the range of the data",
+          "[library-gaps][nasa-species]") {
+    for (const std::string& name : kNasaSpecies) {
+        for (double TC : {-50.0, 25.0, 300.0, 1500.0, 3000.0, 5000.0}) {   // NO2: up to 6000 K = 5726.85 C
+            INFO(name << " at " << TC << " C");
+            const std::string T = numText(TC);
+            auto run = runModel("h = enthalpy(" + name + ", T=" + T + ")\n"
+                                "u = intenergy(" + name + ", T=" + T + ")\n"
+                                "s = entropy(" + name + ", T=" + T + ", P=3E5)\n"
+                                "d = density(" + name + ", T=" + T + ", P=3E5)\n"
+                                "T_h = temperature(" + name + ", h=h)\n"
+                                "T_u = temperature(" + name + ", u=u, P=1E5)\n"
+                                "T_s = temperature(" + name + ", s=s, P=3E5)\n"
+                                "T_ds = temperature(" + name + ", d=d, s=s)\n"
+                                "T_hs = temperature(" + name + ", h=h, s=s)\n");
+            INFO(run.message);
+            REQUIRE(run.solveOk);
+            CHECK(run.verified);
+            for (const char* key : {"T_h", "T_u", "T_s", "T_ds", "T_hs"}) {
+                INFO(key);
+                CHECK_THAT(run[key], WithinAbs(TC, 1e-9 * std::max(1.0, std::abs(TC) + 273.15)));
+            }
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: T alone, h or u alone, as for the other ideal gases; the name in any case",
+          "[library-gaps][nasa-species]") {
+    auto run = runModel(R"(
+h_OH = enthalpy(OH, T=2000)
+u_OH = intenergy(oh, T=2000)
+cp_OH = cp(Oh, T=2000)
+cv_OH = cv(OH, T=2000)
+T_back = temperature(OH, h=h_OH)
+cp_h = cp(OH, h=h_OH)
+T_u = temperature(OH, u=u_OH)
+h_NO = enthalpy(no, T=2000, P=1E6)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const nasa_glenn::Species& oh = *nasa_glenn::find("OH");
+    const double R = nasa_glenn::kGasConstant / oh.molarMass;
+    CHECK_THAT(run["cp_OH"], WithinRel(nasa_glenn::evaluate(oh, 2273.15).cp / oh.molarMass, 1e-12));
+    CHECK_THAT(run["cp_OH"] - run["cv_OH"], WithinRel(R, 1e-9));
+    CHECK_THAT(run["h_OH"] - run["u_OH"], WithinRel(R * 2273.15, 1e-9));
+    CHECK_THAT(run["T_back"], WithinAbs(2000.0, 1e-9));
+    CHECK_THAT(run["T_u"], WithinAbs(2000.0, 1e-9));
+    CHECK(run["cp_h"] == run["cp_OH"]);
+    CHECK_THAT(run["h_NO"], WithinRel(nasa_glenn::evaluate(*nasa_glenn::find("NO"), 2273.15).h / nasa_glenn::find("NO")->molarMass, 1e-12));
+    // what needs the pressure still needs it, and a single input that does not fix the temperature is refused
+    CHECK(idealCallError("density(OH, T=25)") == "Ideal gas property 'density' requires pressure input");
+    CHECK(idealCallError("entropy(NO2, T=25)") == "Ideal gas property 'entropy' requires pressure input");
+    CHECK(idealCallError("cp(NO, s=7000)") == idealSecondInputMessage("cp", "NO", "s"));
+    CHECK(idealCallError("enthalpy(H, T=25, h=100000)").find("each fix its temperature") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: molarmass, isidealgas and PHASE$", "[library-gaps][nasa-species]") {
+    auto run = runModel(R"(
+m_OH = molarmass(OH)
+m_NO2 = molarmass(NO2)
+m_NO = molarmass(NO)
+m_H = molarmass(H)
+m_O = molarmass(O)
+m_N = molarmass(N)
+m_mm = mm('NO2')
+i_OH = isidealgas(OH)
+i_NO = isidealgas(NO)
+i_NO2 = isidealgas('NO2')
+i_Water = isidealgas(Water)
+ph_OH$ = PHASE$(OH, T=2000, P=1E5)
+ph_NO2$ = PHASE$('NO2', T=25, P=1E5)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["m_OH"], WithinAbs(17.00734, 1e-12));
+    CHECK_THAT(run["m_NO2"], WithinAbs(46.0055, 1e-12));
+    CHECK_THAT(run["m_NO"], WithinAbs(30.0061, 1e-12));
+    CHECK(run["m_mm"] == run["m_NO2"]);
+    // H, O and N are fluids now, and still the atomic weights (the NASA headers have the IUPAC 2005 values)
+    CHECK(run["m_H"] == *elementAtomicWeight("H"));
+    CHECK(run["m_O"] == *elementAtomicWeight("O"));
+    CHECK(run["m_N"] == *elementAtomicWeight("N"));
+    CHECK(run["m_H"] == 1.00794);
+    CHECK(run["m_O"] == 15.9994);
+    CHECK(run["m_N"] == 14.0067);
+    CHECK(run["i_OH"] == 1.0);
+    CHECK(run["i_NO"] == 1.0);
+    CHECK(run["i_NO2"] == 1.0);
+    CHECK(run["i_Water"] == 0.0);
+    CHECK(run.strings.at("ph_OH$") == "gas");
+    CHECK(run.strings.at("ph_NO2$") == "gas");
+    // every species is registered under the name of its table
+    for (const auto& species : nasa_glenn::allSpecies()) {
+        INFO(species.name);
+        CHECK(FluidRegistry::getFluid(species.name));
+        CHECK(FluidRegistry::getFluid(species.name)->getType() == FluidType::IdealGas);
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: molarmass of the CoolProp ideal gases is CoolProp's, bit for bit",
+          "[library-gaps][nasa-species][molarmass]") {
+    // molarmass(X) asks the ideal-gas layer (the molar mass of the state of the equation of state) instead of PropsSI("M"):
+    // the same number
+    const std::vector<std::pair<std::string, std::string>> gases = {
+        {"Air", "Air"},        {"N2", "Nitrogen"},    {"O2", "Oxygen"},     {"H2", "Hydrogen"},   {"He", "Helium"},
+        {"Ar", "Argon"},       {"CO2", "CarbonDioxide"}, {"CO", "CarbonMonoxide"}, {"CH4", "Methane"}, {"C2H6", "Ethane"},
+        {"C3H8", "Propane"},   {"C4H10", "n-Butane"}, {"C5H12", "n-Pentane"}, {"C6H14", "n-Hexane"}, {"C7H16", "n-Heptane"},
+        {"C8H18", "n-Octane"}, {"H2O", "Water"}};
+    std::string code;
+    for (const auto& [ees, coolProp] : gases) code += "m_" + ees + " = molarmass(" + ees + ")\n";
+    auto run = runModel(code);
+    REQUIRE(run.solveOk);
+    for (const auto& [ees, coolProp] : gases) {
+        INFO(ees);
+        CHECK(run["m_" + ees] == molarMassKgPerKmol(coolProp));
+        CHECK(idealGasMolarMass(FluidRegistry::getFluid(ees)->getCoolPropName()) * 1000.0 == run["m_" + ees]);
+    }
+    // the real fluids and the other kinds are untouched
+    auto others = runModel("m_w = molarmass(Water)\nm_o = molarmass('n-Octane')\nm_mix = molarmass('R245fa[0.5]&R134a[0.5]')\n"
+                           "m_ha = molarmass(AirH2O)\n");
+    REQUIRE(others.solveOk);
+    CHECK(others["m_w"] == molarMassKgPerKmol("Water"));
+    CHECK(others["m_o"] == molarMassKgPerKmol("n-Octane"));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: negative tests, what is not defined for a NASA-Glenn species", "[library-gaps][nasa-species]") {
+    auto neverNasaPrefix = [](const ModelRun& run) {
+        CHECK(run.message.find("NASA::") == std::string::npos);
+        for (const auto& m : run.checkErrors) CHECK(m.find("NASA::") == std::string::npos);
+        for (const auto& m : run.warnings) CHECK(m.find("NASA::") == std::string::npos);
+    };
+    SECTION("no transport properties: the data hold the thermodynamic properties only") {
+        for (const std::string call : {"viscosity(OH, T=500)", "conductivity(NO2, T=500)", "prandtl(NO, T=500)",
+                                       "viscosity(H, T=500, P=1E5)", "mu('O', T=500)", "k('N', T=300)",
+                                       "kinematicviscosity(OH, T=500, P=1E5)", "thermaldiffusivity(NO, T=500, P=1E5)"}) {
+            INFO(call);
+            auto run = runModel("y = " + call + "\n");
+            CHECK_FALSE((run.solveOk && run.verified));
+            CHECK(anyContains(run.checkErrors, "no transport properties: the NASA-Glenn data hold the thermodynamic properties only"));
+            neverNasaPrefix(run);
+        }
+        auto run = runModel("y = viscosity(OH, T=500)\n");
+        CHECK(anyContains(run.checkErrors, "ideal gas OH: no transport properties"));   // the name of the user, not NASA::OH
+        // the CoolProp species keep their transport model
+        auto n2 = runModel("y = viscosity(N2, T=25)\n");
+        REQUIRE(n2.solveOk);
+        CHECK(n2.verified);
+    }
+    SECTION("a temperature outside the data, below or above, is an error naming the species and its range in K") {
+        auto below = runModel("h = enthalpy(NO2, T=-150)\n");   // 123.15 K
+        CHECK_FALSE(below.verified);
+        CHECK(anyContains(below.checkErrors, "NASA-Glenn data of NO2: T = 123.15 K is outside the range 200 K to 6000 K"));
+        neverNasaPrefix(below);
+        auto above = runModel("h = enthalpy(NO2, T=6000)\n");   // 6273.15 K
+        CHECK_FALSE(above.verified);
+        CHECK(anyContains(above.checkErrors, "NASA-Glenn data of NO2: T = 6273.15 K is outside the range 200 K to 6000 K"));
+        auto oh = runModel("s = entropy(OH, T=20000, P=1E5)\n");   // 20273.15 K
+        CHECK_FALSE(oh.verified);
+        CHECK(anyContains(oh.checkErrors, "NASA-Glenn data of OH: T = 20273.15 K is outside the range 200 K to 20000 K"));
+        auto cold = runModel("cp = cp(H, T=-100)\n");   // 173.15 K
+        CHECK_FALSE(cold.verified);
+        CHECK(anyContains(cold.checkErrors, "NASA-Glenn data of H: T = 173.15 K is outside the range 200 K to 20000 K"));
+        auto negative = runModel("h = enthalpy(OH, T=-300)\n");   // -26.85 K
+        CHECK_FALSE(negative.verified);
+        CHECK(anyContains(negative.checkErrors, "ideal gas OH: the temperature -26.85 K is not positive"));
+        // the ends of the range are in it
+        auto edges = runModel("h1 = enthalpy(NO2, T=-73.1)\nh2 = enthalpy(NO2, T=5726.8)\nh3 = enthalpy(OH, T=19726.8)\n");   // 200.05 K, 5999.95 K, 19999.95 K
+        INFO(edges.message);
+        REQUIRE(edges.solveOk);
+        CHECK(edges.verified);
+    }
+    SECTION("a temperature solved from h, u or s is searched in the range of the data") {
+        auto run = runModel("T = temperature(NO2, h=1E12)\n");
+        CHECK_FALSE(run.verified);
+        CHECK(anyContains(run.checkErrors, "ideal gas NO2: the enthalpy 1e+12 is not reached between 200 K and 6000 K"));
+        auto low = runModel("T = temperature(NO2, h=-1E12)\n");
+        CHECK_FALSE(low.verified);
+        CHECK(anyContains(low.checkErrors, " is not reached between 200 K and 6000 K"));
+        auto entropy = runModel("T = temperature(OH, s=1E6, P=1E5)\n");
+        CHECK_FALSE(entropy.verified);
+        CHECK(anyContains(entropy.checkErrors, "ideal gas OH: the entropy 1000000 is not reached between 200 K and 20000 K"));
+        // the CoolProp species keep the range of 50 K to 20000 K
+        auto n2 = runModel("T = temperature(N2, h=1E12)\n");
+        CHECK(anyContains(n2.checkErrors, "is not reached between 50 K and 20000 K"));
+    }
+    SECTION("the fluid constants do not exist: no critical point, triple point or acentric factor in the data") {
+        for (const std::string species : {"OH", "H", "O", "N", "NO", "NO2"}) {
+            for (const std::string fn : {"t_crit", "p_crit", "v_crit", "t_triple", "p_triple", "acentricfactor"}) {
+                INFO(fn << "(" << species << ")");
+                CHECK(idealCallError(fn + "(" + species + ")") ==
+                      "Fluid constant '" + fn + "' is not available for fluid '" + species + "': it is an ideal gas of the NASA-Glenn "
+                      "data, which hold its thermodynamic properties only (no critical point, triple point or acentric factor)");
+            }
+        }
+        CHECK(idealCallError("T_crit(OH)").find("Fluid constant 'T_crit' is not available for fluid 'OH'") == 0);
+        // the CoolProp species keep theirs
+        CHECK(idealCallError("t_crit(N2)").empty());
+        CHECK(idealCallError("acentricfactor(CO2)").empty());
+        auto run = runModel("Tc = t_crit(N2)\n");
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["Tc"], WithinAbs(CoolProp::Props1SI("Nitrogen", "Tcrit") - 273.15, 1e-9));
+    }
+    SECTION("no phase change: no suggestion of a real fluid, there is none") {
+        CHECK(idealCallError("quality(NO, T=25, P=1E5)") == "quality(NO, ...): an ideal gas has no phase change");
+        CHECK(idealCallError("t_sat(OH, P=1E5)") == "t_sat(OH, ...): an ideal gas has no phase change");
+        CHECK(idealCallError("p_sat(NO2, T=25)") == "p_sat(NO2, ...): an ideal gas has no phase change");
+        CHECK(idealCallError("x(H, T=25, P=1E5)") == "x(H, ...): an ideal gas has no phase change");
+        CHECK(idealCallError("surfacetension(O, T=25, P=1E5)") == "surfacetension(O, ...): an ideal gas has no phase change");
+        CHECK(idealCallError("enthalpy(N, P=1E5, x=0.5)") == "enthalpy(N, ...): an ideal gas has no phase change");
+        auto run = runModel("x = quality(NO, T=25, P=1E5)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("quality(NO, ...): an ideal gas has no phase change") != std::string::npos);
+        neverNasaPrefix(run);
+    }
+    SECTION("an unknown species keeps its error, a mixture of ideal gases is not a CoolProp mixture") {
+        auto run = runModel("h = enthalpy(NO3, T=2000)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(run.message.find("Unknown fluid: 'NO3'") != std::string::npos);
+        auto hydroxyl = runModel("h = enthalpy(HO, T=2000)\n");   // the name of the table is OH
+        CHECK_FALSE(hydroxyl.solveOk);
+        CHECK(hydroxyl.message.find("Unknown fluid: 'HO'") != std::string::npos);
+        auto mixture = runModel("h = enthalpy('OH[0.5]&NO[0.5]', T=25, P=1E5)\n");
+        CHECK_FALSE(mixture.solveOk);
+        CHECK(mixture.message.find("unknown component 'OH', not a CoolProp fluid name") != std::string::npos);
+        // the species that the NASA table has and the registry does not (condensed phases, ions, radicals) stay unknown
+        auto ion = runModel("h = enthalpy('NO+', T=2000)\n");
+        CHECK_FALSE(ion.solveOk);
+        CHECK(ion.message.find("Unknown fluid: 'NO+'") != std::string::npos);
+    }
+    SECTION("the pairs that do not fix the state are refused as for the other ideal gases") {
+        CHECK(idealCallError("enthalpy(OH, T=25, u=100000)").find("each fix its temperature") != std::string::npos);
+        CHECK(idealCallError("cp(NO, d=1, v=1)").find("the same property") != std::string::npos);
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: a trial point below the range is limited to the lowest temperature of the data",
+          "[library-gaps][nasa-species][input-clamp]") {
+    // a property call whose temperature depends on the unknowns of its block (an AD gradient): the Newton trial point
+    // below 200 K is limited there, with its gradient, as the trial points below 50 K are for the CoolProp fluids
+    auto call = [&](bool clamping, double TK, InputClampLog* log) {
+        EESParser parser;
+        auto parsed = parser.parse("y = enthalpy(NO2, T=Tv)\n");
+        REQUIRE(parsed.success);
+        IR ir = IR::fromAST(parsed.program);
+        ExpressionEvaluator ev(1);
+        ev.setDisableClamping(!clamping);
+        if (log) ev.setInputClampLog(log);
+        DiagnosticCollector diagnostics;
+        ev.setDiagnostics(&diagnostics);
+        ev.setVariable("Tv", ADValue::independent(TK - 273.15, 0, 1));
+        const ADValue r = ev.evaluate(ir.getEquations()[0].rhs);
+        return std::make_pair(r.value, r.gradient[0]);
+    };
+    const nasa_glenn::Species& no2 = *nasa_glenn::find("NO2");
+    const double h200 = nasa_glenn::evaluate(no2, 200.0).h / no2.molarMass;
+    const double cp200 = nasa_glenn::evaluate(no2, 200.0).cp / no2.molarMass;
+    SECTION("the value and the gradient are those of the lowest temperature") {
+        std::vector<std::string> report;
+        InputClampLog log;
+        log.report = &report;
+        const auto limited = call(true, 150.0, &log);
+        CHECK_THAT(limited.first, WithinRel(h200, 1e-12));
+        CHECK_THAT(limited.second, WithinRel(cp200, 1e-9));   // dh/dT: the solver keeps a direction back into the range
+        CHECK(log.fired);
+        REQUIRE(report.size() == 1);
+        CHECK(report[0].find("enthalpy(NO2, T)") == 0);
+        CHECK(report[0].find("temperature 150 K is below the lowest temperature of the NASA-Glenn data of NO2 (200 K)") != std::string::npos);
+        CHECK(report[0].find("NASA::") == std::string::npos);
+    }
+    SECTION("without the limit (the verification of a solution) the trial point is an error: a penalty without gradient") {
+        InputClampLog log;
+        const auto unlimited = call(false, 150.0, &log);
+        CHECK(unlimited.first == 1e4);
+        CHECK(unlimited.second == 0.0);
+        CHECK_FALSE(log.fired);
+    }
+    SECTION("inside the range nothing is limited") {
+        InputClampLog log;
+        const auto inside = call(true, 250.0, &log);
+        CHECK_FALSE(log.fired);
+        CHECK_THAT(inside.first, WithinRel(nasa_glenn::evaluate(no2, 250.0).h / no2.molarMass, 1e-12));
+    }
+    SECTION("the CoolProp ideal gases are limited at 50 K as before, and a trial point between 50 K and 200 K is not") {
+        auto limitN2 = [&](double TK) {
+            EESParser parser;
+            auto parsed = parser.parse("y = enthalpy(N2, T=Tv)\n");
+            REQUIRE(parsed.success);
+            IR ir = IR::fromAST(parsed.program);
+            ExpressionEvaluator ev(1);
+            InputClampLog log;
+            ev.setInputClampLog(&log);
+            ev.setVariable("Tv", ADValue::independent(TK - 273.15, 0, 1));
+            ev.evaluate(ir.getEquations()[0].rhs);
+            return log.fired;
+        };
+        CHECK(limitN2(40.0));
+        CHECK_FALSE(limitN2(100.0));
+    }
+    SECTION("a solve that starts below the range reaches its solution inside it") {
+        // the start 123 K is below the data of NO2: without the limit the first evaluation is the penalty without gradient
+        auto run = runModel("h_target = enthalpy(NO2, T=1000)\nenthalpy(NO2, T=T_x) = h_target\n", {}, "T_x = -150\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["T_x"], WithinAbs(1000.0, 1e-6));
+        // the same for a species with its range up to 20000 K, from the start 50 K, and an unknown pressure
+        auto h = runModel("h_target = enthalpy(OH, T=2500)\nenthalpy(OH, T=T_x) = h_target\n", {}, "T_x = -223\n");
+        INFO(h.message);
+        REQUIRE(h.solveOk);
+        CHECK_THAT(h["T_x"], WithinAbs(2500.0, 1e-6));
+        auto s = runModel("s_target = entropy(NO, T=1200, P=2E5)\nentropy(NO, T=T_x, P=2E5) = s_target\n", {}, "T_x = -200\n");
+        INFO(s.message);
+        REQUIRE(s.solveOk);
+        CHECK_THAT(s["T_x"], WithinAbs(1200.0, 1e-6));
+    }
+    SECTION("a converged solution outside the range is not accepted") {
+        // an enthalpy 20 kJ/kg below that of NO2 at 200 K: the solution would be below the data
+        const double hLow = h200 - 20000.0;
+        auto run = runModel("enthalpy(NO2, T=T_x) = " + numText(hLow) + "\n", {}, "T_x = 100\n");
+        CHECK_FALSE((run.solveOk && run.verified));
+        CHECK_FALSE(run.solveOk);
+        // the unknown is fixed by the equation below the range and the call does not weigh on the residual: the iteration
+        // converges at the limit, and the solution is refused with the call and the limit (as for CoolProp's fluids)
+        auto fixed = runModel("T1 = -150 + 0*enthalpy(NO2, T=T1)\n");   // 123.15 K
+        CHECK_FALSE(fixed.solveOk);
+        CHECK(anyContains({fixed.message}, "enthalpy(NO2, T)"));
+        CHECK(anyContains({fixed.message}, "temperature 123.15 K is below the lowest temperature of the NASA-Glenn data of NO2 (200 K)"));
+        CHECK(anyContains({fixed.message}, "solution would not satisfy this equation"));
+        CHECK(fixed.message.find("NASA::") == std::string::npos);
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: variables named H, O, N, NO and OH are variables, as before", "[library-gaps][nasa-species]") {
+    // H, O, N and NO are fluids now: only the first argument of a property call is read as a fluid
+    auto run = runModel(R"(
+N = 5
+O = 2*N
+H = enthalpy(Water, T=20, P=1E5)
+NO = N*O
+h_NO = enthalpy(NO, T=500)
+x = N + O
+A + B = 15
+A - B = 3
+OH = 2*A
+M_O = molarmass(O)
+M_h = molarmass(H)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run["N"] == 5.0);
+    CHECK(run["O"] == 10.0);
+    CHECK(run["NO"] == 50.0);
+    CHECK(run["x"] == 15.0);
+    CHECK_THAT(run["A"], WithinAbs(9.0, 1e-9));
+    CHECK_THAT(run["OH"], WithinAbs(18.0, 1e-9));
+    CHECK_THAT(run["H"], WithinRel(CoolProp::PropsSI("H", "T", 293.15, "P", 1e5, "Water"), 1e-9));
+    CHECK_THAT(run["h_NO"], WithinRel(nasa_glenn::evaluate(*nasa_glenn::find("NO"), 773.15).h / nasa_glenn::find("NO")->molarMass, 1e-12));
+    CHECK(run["M_O"] == 15.9994);   // the fluid of the call is not the variable
+    CHECK(run["M_h"] == 1.00794);
+    // no hint of the parser or of the evaluator takes them for a misspelt fluid
+    CHECK(run.warnings.empty());
+    for (const auto& w : run.warnings) {
+        INFO(w);
+        CHECK(w.find("Did you mean") == std::string::npos);
+        CHECK(w.find("fluid") == std::string::npos);
+    }
+    // the symbols as unknowns of a block, with a property call of the species of the same name in it
+    auto implicit = runModel(R"(
+N*O = 40
+N + O = 14
+h_N = enthalpy(N, T=N*100)
+h_O = enthalpy(O, T=1000)
+)");
+    INFO(implicit.message);
+    REQUIRE(implicit.solveOk);
+    CHECK(implicit.verified);
+    CHECK_THAT(std::min(implicit["N"], implicit["O"]), WithinAbs(4.0, 1e-6));   // x^2 - 14x + 40 = 0: 4 and 10
+    CHECK(implicit.warnings.empty());
+    // the first argument of a property call is a fluid wherever it is written
+    auto strings = runModel("sp$ = 'NO'\nh = enthalpy(sp$, T=500)\nNO = 3\ny = NO + 1\n");
+    REQUIRE(strings.solveOk);
+    CHECK(strings["y"] == 4.0);
+    CHECK_THAT(strings["h"], WithinRel(nasa_glenn::evaluate(*nasa_glenn::find("NO"), 773.15).h / nasa_glenn::find("NO")->molarMass, 1e-12));
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: the guess of a variable of a property of a NASA-Glenn species", "[library-gaps][nasa-species]") {
+    // the values the solver starts from (variable inference): through the ideal-gas layer, as for the other ideal gases
+    const nasa_glenn::Species& oh = *nasa_glenn::find("OH");
+    const auto h = computeThermoGuessAt("OH", "H", 293.15, 101325.0, "J/kg");
+    REQUIRE(h.has_value());
+    CHECK_THAT(*h, WithinRel(nasa_glenn::evaluate(oh, 293.15).h / oh.molarMass, 1e-12));
+    const nasa_glenn::Species& no2 = *nasa_glenn::find("NO2");
+    const auto s = computeThermoGuessAt("NO2", "S", 293.15, 101325.0, "J/kg-K");
+    REQUIRE(s.has_value());
+    CHECK_THAT(*s, WithinRel((nasa_glenn::evaluate(no2, 293.15).s - nasa_glenn::kGasConstant * std::log(1.01325)) / no2.molarMass, 1e-9));
+    // a property the NASA-Glenn data do not have has no guess, without asking CoolProp for a fluid it does not know
+    CHECK_FALSE(computeThermoGuessAt("OH", "V", 293.15, 101325.0, "Pa-s").has_value());
+    CHECK_FALSE(computeThermoGuessAt("OH", "L", 293.15, 101325.0, "W/m-K").has_value());
+    // the guess of the unknown that is a cp (variable inference, at 20 C and 1 atm): the ideal-gas value, in J/kg-K
+    EESParser parser;
+    auto parsed = parser.parse("cp_OH = cp(OH, T=T_g)\nT_g = 1000\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    inferVariables(ir);
+    initializeVariables(ir);
+    REQUIRE(ir.getVariable("cp_OH")->guessValue.has_value());
+    CHECK_THAT(*ir.getVariable("cp_OH")->guessValue, WithinRel(nasa_glenn::evaluate(oh, 293.15).cp / oh.molarMass, 1e-12));
+    // a viscosity has none: the initialization names the species of the user, not NASA::OH
+    auto transport = parser.parse("mu_OH = viscosity(OH, T=500)\n");
+    REQUIRE(transport.success);
+    IR transportIr = IR::fromAST(transport.program);
+    inferVariables(transportIr);
+    try {
+        initializeVariables(transportIr);
+        FAIL("the initialization of a viscosity of OH must report that it has no value");
+    } catch (const std::exception& e) {
+        const std::string message = e.what();
+        CHECK(message.find("could not compute V for OH at any reference condition") != std::string::npos);
+        CHECK(message.find("NASA::") == std::string::npos);
+    }
+    // the solve itself is unaffected by the guess: explicit equations of the species
+    auto run = runModel("cp_OH = cp(OH, T=T_g)\nT_g = 1000\nh_OH = enthalpy(OH, T=T_g)\ns_OH = entropy(OH, T=T_g, P=P_g)\nP_g = 2E5\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+}
+
+TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: the law of mass action of octane with 120 % air, examples/chemical_equilibrium_octane.eescode",
+          "[library-gaps][nasa-species]") {
+    // the physics of Klein's ChemEq example (EES X8.868): stored y_NO 0.001861939532, y_CO 0.0001996774977,
+    // K_1 0.0003401144912, K_2 0.0001455214979; the species Gibbs energies of EES are the NASA-Glenn data, ours too for
+    // NO (and CoolProp's ideal-gas part for CO2, CO, N2 and O2)
+    const fs::path example = fs::path("..") / "examples" / "chemical_equilibrium_octane.eescode";
+    if (!fs::exists(example)) SKIP("examples/chemical_equilibrium_octane.eescode not found (run from the build folder)");
+    std::ifstream in(example);
+    const std::string code((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::ifstream initialsIn(fs::path("..") / "examples" / "chemical_equilibrium_octane.initials");
+    const std::string initials((std::istreambuf_iterator<char>(initialsIn)), std::istreambuf_iterator<char>());
+
+    auto run = runModel(code, {}, initials);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    INFO("y_NO " << run["y_NO"] << ", y_CO " << run["y_CO"]);
+    CHECK_THAT(run["y_NO"], WithinRel(0.001861939532, 1e-2));
+    CHECK_THAT(run["y_CO"], WithinRel(0.0001996774977, 1e-2));
+    CHECK_THAT(run["y_CO2"], WithinRel(0.1051916438, 1e-2));
+    CHECK_THAT(run["y_N2"], WithinRel(0.7420778457, 1e-2));
+    CHECK_THAT(run["K_1"], WithinRel(0.0003401144912, 1e-2));
+    CHECK_THAT(run["K_2"], WithinRel(0.0001455214979, 1e-2));
+    CHECK_THAT(run["g_NO"] / 1000.0, WithinAbs(-356360.3152, 10.0));   // kJ/kmol
+    // the atom balances and the sum of the mole fractions
+    CHECK_THAT(run["y_CO2"] + run["y_CO"] + run["y_H2O"] + run["y_N2"] + run["y_O2"] + run["y_NO"], WithinAbs(1.0, 1e-12));
+}

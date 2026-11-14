@@ -20,14 +20,31 @@ namespace coolsolve {
  * The CoolProp state is a separate per-thread HEOS state with its phase imposed to gas (no flash, no phase
  * determination, no limit of the equation of state: it is evaluated at its density `P0/(R T)`), never shared with the
  * real-fluid path (an imposed phase would leak into it). The configured CoolProp backend does not apply.
+ *
+ * There are two sources of data behind these functions, one ideal-gas layer: the ideal-gas part of a CoolProp equation
+ * of state (above), and the NASA-Glenn polynomials (nasa_glenn.h) for the species CoolProp has no equation of state
+ * for (OH, H, O, N, NO, NO2). The name of such a species is `NASA::<name>` (the convention of CoolProp's `INCOMP::`):
+ * `idealGasProperty("NASA::OH", ...)` has the same inputs, outputs and exact derivatives; the temperature is searched
+ * in the range of the data, the dilute-gas transport properties are an error (the data hold the thermodynamic
+ * properties only), and the messages show the name of the species (`OH`), not `NASA::OH`. The CoolProp species are
+ * evaluated by the same code as before.
  */
 
 /// Pressure of the standard state of the entropy [Pa] (the 1 bar of the NASA/JANAF tables)
 constexpr double kIdealGasStandardPressureSI = 1.0e5;
 
-/// Range of the temperature searched when it is solved from h, u or s (at fixed P or d) [K]
+/// Range of the temperature searched when it is solved from h, u or s (at fixed P or d) [K], for the ideal gases of a
+/// CoolProp equation of state; a NASA-Glenn species searches the range of its data
 constexpr double kIdealGasSolveTMinSI = 50.0;
 constexpr double kIdealGasSolveTMaxSI = 20000.0;
+
+/// Prefix of the name of an ideal gas that is not a CoolProp fluid but a species of the NASA-Glenn data: `NASA::OH`
+constexpr char kNasaGlennGasPrefix[] = "NASA::";
+
+/// True for the name of a species of the NASA-Glenn data (`NASA::OH`): CoolProp has no fluid of that name.
+inline bool isNasaGlennGas(const std::string& coolPropName) {
+    return coolPropName.compare(0, sizeof(kNasaGlennGasPrefix) - 1, kNasaGlennGasPrefix) == 0;
+}
 
 /// The temperature-only ideal-gas properties of a substance at T, per kg, SI (CoolProp basis).
 struct IdealGasPoint {
@@ -39,9 +56,14 @@ struct IdealGasPoint {
     double M;        ///< molar mass of the equation of state [kg/mol]
 };
 
-/// The ideal-gas properties of the CoolProp fluid `coolPropName` at T [K]. Throws std::runtime_error naming the fluid
-/// and T when the equation of state has no finite ideal-gas part there (T <= 0, Air below 33 K).
+/// The ideal-gas properties of the CoolProp fluid `coolPropName` (or the NASA-Glenn species `NASA::<name>`) at T [K].
+/// Throws std::runtime_error naming the fluid and T when the equation of state has no finite ideal-gas part there
+/// (T <= 0, Air below 33 K), or when T is outside the range of the data of a NASA-Glenn species.
 IdealGasPoint idealGasAt(const std::string& coolPropName, double T);
+
+/// The molar mass of the ideal gas `coolPropName` [kg/mol]: that of its CoolProp equation of state, or the header of
+/// the NASA-Glenn record. A constant of the fluid, with no state to evaluate.
+double idealGasMolarMass(const std::string& coolPropName);
 
 /// One property of an ideal gas with its two partial derivatives.
 struct IdealGasValue {
@@ -59,8 +81,9 @@ struct IdealGasValue {
  * T only: the pressure is ignored).
  * The state comes from the inputs in closed form, or by a safeguarded Newton iteration on T for h, u (monotone: cp0
  * and cp0 - R are positive) and for s with P or d given, searched between kIdealGasSolveTMinSI and
- * kIdealGasSolveTMaxSI. Throws std::runtime_error with a message naming the fluid when the state or the property is
- * not defined.
+ * kIdealGasSolveTMaxSI (the range of the data for a NASA-Glenn species). Throws std::runtime_error with a message
+ * naming the fluid when the state or the property is not defined (the dilute-gas transport properties of a
+ * NASA-Glenn species are not).
  * @param derivatives  false: the derivatives are not computed (zero), for a residual-only evaluation
  */
 IdealGasValue idealGasProperty(const std::string& coolPropName, CoolProp::parameters output,

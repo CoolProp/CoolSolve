@@ -97,6 +97,7 @@ struct AbstractStateCache {
         auto it = limits.find(key);
         if (it != limits.end()) return it->second;
         FluidLimits found;
+        if (isNasaGlennGas(fluidName)) return limits[key] = found;   // no CoolProp fluid: no CoolProp limits
         try {
             auto state = getOrCreate(backend, fluidName);
             try { found.Tmin = state->Tmin(); } catch (...) {}
@@ -1625,6 +1626,9 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             // For pure fluids or incompressible, molar mass is constant
             if (inputs.empty()) {
                 std::string cpFluidName = fluid->getCoolPropName();
+                // An ideal gas: the molar mass of the ideal-gas layer, CoolProp's equation of state or the NASA-Glenn record
+                if (fluid->getType() == FluidType::IdealGas)
+                    return ADValue::constant(idealGasMolarMass(cpFluidName) * KG_PER_KMOL, numVariables_);
                 try {
                     if (fluid->getType() == FluidType::Mixture) {   // mole-weighted, no state needed
                         auto state = g_abstractStateCache.getOrCreate(coolpropConfig_.getBackendString(), cpFluidName);
@@ -1665,6 +1669,13 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 fluid->getType() == FluidType::Mixture) {
                 throw std::runtime_error("Fluid constant '" + func.name +
                     "' is not available for fluid '" + eesFluidName + "'");
+            }
+            // A species of the NASA-Glenn data has no CoolProp fluid to ask: no critical or triple point in the data
+            if (fluid->getType() == FluidType::IdealGas &&
+                !static_cast<const IdealGasFluid&>(*fluid).hasCoolPropFluid()) {
+                throw std::runtime_error("Fluid constant '" + func.name +
+                    "' is not available for fluid '" + eesFluidName + "': it is an ideal gas of the NASA-Glenn data, "
+                    "which hold its thermodynamic properties only (no critical point, triple point or acentric factor)");
             }
             
             std::string cpFluidName = fluid->getCoolPropName();
@@ -2137,11 +2148,16 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
     constexpr double P_MIN_SI  = 1000.0;   // 1000 Pa (0.01 bar) — low but CoolProp-safe
     constexpr double T_MIN_SI  = 50.0;     // 50 K   — below triple point of most fluids
     constexpr double RHO_MIN_SI = 1e-4;    // near-vacuum density floor
+    // A species of the NASA-Glenn data has no state below the start of its data (200 K): that is the floor of its trial
+    // points, so that a Newton step below it leaves the solver a finite value and a gradient to come back by
+    const double dataTMin = fluid->getType() == FluidType::IdealGas
+                                ? static_cast<const IdealGasFluid&>(*fluid).getLowestTemperature() : 0.0;
+    const double T_FLOOR_SI = std::max(T_MIN_SI, dataTMin);
 
     auto clampInput = [&](size_t index, CoolProp::parameters param, double& v) {
         double bound;
         if (param == CoolProp::iP && v < P_MIN_SI) bound = P_MIN_SI;
-        else if (param == CoolProp::iT && v < T_MIN_SI) bound = T_MIN_SI;
+        else if (param == CoolProp::iT && v < T_FLOOR_SI) bound = T_FLOOR_SI;
         else if (param == CoolProp::iDmass && v < RHO_MIN_SI) bound = RHO_MIN_SI;
         else return;   // every evaluation of a value above the bounds ends here
         // Below a bound: the rare case, the one that is worth looking at the gradient and the fluid.
@@ -2150,7 +2166,9 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         const char* quantity = param == CoolProp::iP ? "pressure" : param == CoolProp::iT ? "temperature" : "density";
         const char* unit = param == CoolProp::iP ? " Pa" : param == CoolProp::iT ? " K" : " kg/m³";
         std::string source = std::string("the lowest ") + quantity + " the solver evaluates";
-        if (param != CoolProp::iDmass) {
+        if (param == CoolProp::iT && dataTMin > T_MIN_SI) {
+            source = "the lowest temperature of the NASA-Glenn data of " + eesFluidName;
+        } else if (param != CoolProp::iDmass) {
             const FluidLimits limits = g_abstractStateCache.fluidLimits(coolpropConfig_.getBackendString(), cpFluidName);
             const double fluidLimit = (param == CoolProp::iP) ? limits.pMin : limits.Tmin;
             if (fluidLimit > 0.0 && fluidLimit < bound) {

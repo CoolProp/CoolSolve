@@ -2606,9 +2606,13 @@ int startServer(const ServerOptions& options) {
                 case FluidType::AmmoniaWater: typeStr = "Mixture"; break;
                 default: typeStr = "Unknown"; break;
             }
+            // a species of the NASA-Glenn data (OH, NO2, ...) has no CoolProp fluid: no CoolProp name, as for the other
+            // fluids that are not evaluated by CoolProp (NH3H2O)
+            const auto* idealGas = dynamic_cast<const IdealGasFluid*>(fluid.get());
+            const bool coolPropFluid = !idealGas || idealGas->hasCoolPropFluid();
             fluidsArr.push_back({
                 {"name", fluid->getName()},
-                {"coolpropName", fluid->getCoolPropName()},
+                {"coolpropName", coolPropFluid ? fluid->getCoolPropName() : std::string()},
                 {"type", typeStr},
                 {"hasDome", fluid->getType() == FluidType::Real}
             });

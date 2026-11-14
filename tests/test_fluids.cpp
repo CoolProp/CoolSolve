@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "coolsolve/fluids.h"
+#include "coolsolve/ideal_gas.h"
 #include "CoolProp.h"
 #include "HumidAirProp.h"
 #include <iostream>
@@ -16,7 +17,12 @@ TEST_CASE("Test all registered fluids with CoolProp", "[fluids]") {
         FluidType type = fluid->getType();
         
         SECTION("Testing fluid: " + name) {
-            if (type == FluidType::Real || type == FluidType::IdealGas) {
+            auto idealGas = std::dynamic_pointer_cast<IdealGasFluid>(fluid);
+            if (idealGas && !idealGas->hasCoolPropFluid()) {
+                // A species of the NASA-Glenn data has no CoolProp fluid: its properties come from the ideal-gas layer
+                const double h = idealGasAt(cpName, 300.0).h;
+                REQUIRE(std::isfinite(h));
+            } else if (type == FluidType::Real || type == FluidType::IdealGas) {
                 // Try to get enthalpy at 300K and 101325Pa
                 // For IdealGas, we know it only needs T for enthalpy, 
                 // but CoolProp always wants 2 inputs.

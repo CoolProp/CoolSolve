@@ -1,5 +1,6 @@
 #include "coolsolve/fluids.h"
 #include "coolsolve/ideal_gas.h"
+#include "coolsolve/nasa_glenn.h"
 #include "AbstractState.h"
 #include "DataStructures.h"
 #include <algorithm>
@@ -161,20 +162,18 @@ void FluidRegistry::initialize() {
     addUnsupported("IsoHexane", "Isohexane is not in CoolProp standard fluids");
     
     // --- Ideal Gases ---
-    // Standard enthalpies of formation of the gas at 298.15 K [J/kmol] (EES/JANAF convention: the elements
-    // in their reference state, N2 O2 H2 He Ar, are 0) and standard molar entropies of the ideal gas at
-    // 298.15 K and 1 bar [J/kmol-K] (third law). Both come from one source, the NASA-Glenn thermodynamic
-    // data (McBride, Zehe, Gordon, NASA/TP-2002-211556; github.com/nasa/cea, data/thermo.inp): the heat of
-    // formation is the field of the species header (J/mol, x 1000), the entropy the 9-coefficient polynomial
-    // evaluated at 298.15 K with R = 8.314462618 J/mol-K (the polynomials' own H(298.15 K) differs from the
-    // header by at most 2.2 J/mol, the R of the fit). It is the data family of the EES ideal gases, which
-    // use it with R = 8.314 (EES help: CO2 -393 486, H2O -241 811, CH4 -74 595 kJ/kmol). The rounded JANAF
-    // values of Cengel & Boles (table A-26) used before differed by 5 to 830 kJ/kmol (CO2 -393 520, CO
-    // -110 530, CH4 -74 850, C2H6 -84 680, C3H8 -103 850, H2O -241 820); NIST-JANAF entropies differ from the
-    // NASA ones by at most 120 J/kmol-K (CH4). The lower heating value of CO is 282 974.8 kJ/kmol.
-    // `Air` has neither: EES's Air is not a JANAF species, it keeps CoolProp's enthalpy and entropy references.
-    // The properties are those of the ideal-gas part of the CoolProp equation of state of the substance
-    // (src/ideal_gas.cpp), at any temperature and pressure: no phase, so no liquid at 25 °C and 1 bar for C8H18 or H2O.
+    // The heat of formation of the gas at 298.15 K (EES/JANAF convention: the elements in their reference state, N2 O2
+    // H2 He Ar, are 0) and the standard entropy of the ideal gas at 298.15 K and 1 bar (third law) of every species of
+    // the NASA-Glenn data (McBride, Zehe, Gordon, NASA/TP-2002-211556; thermo.inp of github.com/nasa/cea) come from
+    // that table (src/nasa_glenn.cpp): the field of the species header and the 9-coefficient polynomial at 298.15 K, with
+    // R = 8.314462618 J/mol-K (EES applies 8.314 to the same data: its values are 6e-5 lower, e.g. CO2 -393 486, H2O
+    // -241 811, CH4 -74 595 kJ/kmol). The rounded JANAF values of Cengel & Boles (table A-26) used before differed by
+    // 5 to 830 kJ/kmol (CO2 -393 520, CO -110 530, CH4 -74 850, C2H6 -84 680, C3H8 -103 850, H2O -241 820); NIST-JANAF
+    // entropies differ from the NASA ones by at most 120 J/kmol-K (CH4). The lower heating value of CO is 282 974.8
+    // kJ/kmol. `Air` has neither: EES's Air is not a JANAF species, it keeps CoolProp's enthalpy and entropy references.
+    // The temperature dependence is the ideal-gas part of the CoolProp equation of state of the substance, at any
+    // temperature and pressure (src/ideal_gas.cpp: no phase, so no liquid at 25 C and 1 bar for C8H18 or H2O), or, for
+    // OH, H, O, N, NO and NO2, which CoolProp lacks, the NASA-Glenn polynomials themselves (CoolProp name `NASA::<name>`).
     auto addIdeal = [](const std::string& name, const std::string& cpName,
                        std::optional<double> formationEnthalpy = std::nullopt,
                        std::optional<double> standardEntropy = std::nullopt) {
@@ -184,30 +183,41 @@ void FluidRegistry::initialize() {
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
         if (lower != name) registry_[lower] = fluid;
     };
-    
-    addIdeal("Air", "Air");
-    addIdeal("N2", "Nitrogen", 0.0, 191608.6);
-    addIdeal("O2", "Oxygen", 0.0, 205148.3);
-    addIdeal("H2", "Hydrogen", 0.0, 130680.3);
-    addIdeal("He", "Helium", 0.0, 126153.0);
-    addIdeal("Ar", "Argon", 0.0, 154845.8);
-    addIdeal("CO2", "CarbonDioxide", -393510e3, 213786.2);
-    addIdeal("CO", "CarbonMonoxide", -110535.196e3, 197658.7);
-    addIdeal("CH4", "Methane", -74600e3, 186370.0);
-    addIdeal("C2H6", "Ethane", -83851.544e3, 229219.8);
-    addIdeal("C3H8", "Propane", -104680e3, 270313.3);
+    // A species of the NASA-Glenn table [J/mol -> J/kmol]; `cpName`: the CoolProp fluid of its temperature dependence,
+    // none (NASA::<name>) for a species CoolProp has no equation of state for
+    auto addNasaIdeal = [&](const std::string& name, const std::string& cpName = "") {
+        const nasa_glenn::Species* species = nasa_glenn::find(name);
+        if (!species) throw std::logic_error("ideal gas " + name + " is not in the NASA-Glenn table");
+        addIdeal(name, cpName.empty() ? std::string(kNasaGlennGasPrefix) + species->name : cpName,
+                 species->formationEnthalpy * 1000.0, species->standardEntropy * 1000.0);
+    };
 
-    // The normal alkanes n-butane to n-octane, from the same NASA-Glenn data (species "C4H10,n-butane" ...
-    // "C8H18,n-octane" of thermo.inp: heat of formation of the header, s0 from the polynomial at 298.15 K; their first
+    addIdeal("Air", "Air");
+    addNasaIdeal("N2", "Nitrogen");
+    addNasaIdeal("O2", "Oxygen");
+    addNasaIdeal("H2", "Hydrogen");
+    addNasaIdeal("He", "Helium");
+    addNasaIdeal("Ar", "Argon");
+    addNasaIdeal("CO2", "CarbonDioxide");
+    addNasaIdeal("CO", "CarbonMonoxide");
+    addNasaIdeal("CH4", "Methane");
+    addNasaIdeal("C2H6", "Ethane");
+    addNasaIdeal("C3H8", "Propane");
+
+    // The normal alkanes n-butane to n-octane (species "C4H10,n-butane" ... "C8H18,n-octane" of thermo.inp; their first
     // interval starts at 300 K, so s0 is extrapolated by 1.85 K as for C2H6 and C3H8).
-    addIdeal("C4H10", "n-Butane",  -125790e3, 309879.5);
-    addIdeal("C5H12", "n-Pentane", -146760e3, 349558.0);
-    addIdeal("C6H14", "n-Hexane",  -166920e3, 388847.8);
-    addIdeal("C7H16", "n-Heptane", -187780e3, 428087.0);
-    addIdeal("C8H18", "n-Octane",  -208750e3, 467347.3);
-    
+    addNasaIdeal("C4H10", "n-Butane");
+    addNasaIdeal("C5H12", "n-Pentane");
+    addNasaIdeal("C6H14", "n-Hexane");
+    addNasaIdeal("C7H16", "n-Heptane");
+    addNasaIdeal("C8H18", "n-Octane");
+
     // H2O as ideal gas (water vapor for combustion/chemistry): formation enthalpy and entropy of the vapor.
-    addIdeal("H2O", "Water", -241826e3, 188828.0);
+    addNasaIdeal("H2O", "Water");
+
+    // The other species of the equilibrium of combustion gases: CoolProp has no fluid for them, their properties are the
+    // NASA-Glenn polynomials (range 200 K to 20000 K; NO2 to 6000 K), as in the EES database
+    for (const char* species : {"OH", "H", "O", "N", "NO", "NO2"}) addNasaIdeal(species);
     
     // --- Real Fluid Air_ha (EES real gas) ---
     addReal("Air_ha", "Air");
@@ -494,6 +504,16 @@ std::vector<std::shared_ptr<Fluid>> FluidRegistry::getAllFluids() {
         fluids.push_back(fluid);
     }
     return fluids;
+}
+
+IdealGasFluid::IdealGasFluid(const std::string& name, const std::string& cpName,
+                             std::optional<double> formationEnthalpy, std::optional<double> standardEntropy)
+    : name_(name), cpName_(cpName), formationEnthalpy_(formationEnthalpy), standardEntropy_(standardEntropy) {
+    if (!isNasaGlennGas(cpName_)) return;
+    const nasa_glenn::Species* species = nasa_glenn::find(cpName_.substr(sizeof(kNasaGlennGasPrefix) - 1));
+    if (!species) throw std::invalid_argument("ideal gas " + name_ + ": " + cpName_ + " is not in the NASA-Glenn table");
+    hasCoolPropFluid_ = false;
+    lowestTemperature_ = species->tMin();
 }
 
 ReferenceState IdealGasFluid::getReferenceState(const std::string& /*backend*/) const {

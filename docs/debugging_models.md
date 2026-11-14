@@ -186,6 +186,21 @@ usually a temperature or an enthalpy that is not where the model expects it (a c
 subcooled, a compressor suction that is superheated), or a quality that should have been an input. Test the phase
 with `PHASE$(...)` or compare the enthalpy with the saturation values instead of comparing the quality with 0 or 1.
 
+### A temperature outside the range of a NASA-Glenn species
+
+`OH`, `H`, `O`, `N`, `NO` and `NO2` are evaluated from the NASA-Glenn polynomials, which are defined from 200 K to 20000 K
+(`NO2`: 6000 K; [Language Reference §5](language_reference.md#ideal-gases)). Two messages say that a state is outside:
+
+- *CoolProp evaluation failed in final solution: … NASA-Glenn data of NO2: T = 6273.15 K is outside the range 200 K to 6000 K*
+  (the range is in K, the model's temperatures are in °C): the temperature of the solution, or a constant, is out of the
+  data. The same range applies to the temperature solved from `h`, `u` or `s` (*… is not reached between 200 K and 6000 K*).
+- *… temperature 150 K is below the lowest temperature of the NASA-Glenn data of NO2 (200 K); an input that depends on the
+  unknowns of its block is limited there during the iterations, so the solution would not satisfy this equation*: the solver
+  converged on the limit, the solution is below 200 K. Check the equation that gives the temperature (a heat balance with a
+  wrong sign, a temperature in K written where °C is expected).
+
+Between those, a Newton trial point below 200 K is limited to 200 K without a message: the solve is not lost.
+
 ### Procedure Fixes
 
 - Procedures are a common source of issues. Check:

@@ -719,9 +719,12 @@ elements that have none, Tc, Pm, Po, At, Rn, Fr, Ra and Ac, and Th, Pa and U), t
 the result is a constant. A name that is a
 **registered fluid** is the fluid, not the element: `molarmass(N2)`, `H2`, `O2`, `CO` (so the symbol `Co` of
 cobalt is `CO`, carbon monoxide), `He` and `Ar` (the same value as the element) keep the molar mass of the molecule
-or of the fluid. A symbol that is neither a fluid nor an element is the *Unknown fluid* error, and so is an element
-in any other property function (`enthalpy(C, T=25)`) or with state inputs (`molarmass(C, T=25)`): CoolSolve has no
-thermodynamic data for the elements as substances (`C`, `H`, `O`, `N` atoms).
+or of the fluid. `H`, `O` and `N` are fluids too, the atoms of the NASA-Glenn species of §5 (`enthalpy(H, T=2000)`), and
+`molarmass(H)`, `molarmass(O)`, `molarmass(N)` are the molar masses of those species, which are the IUPAC 2005 atomic weights
+(1.00794, 15.9994, 14.0067) to the last digit: the result does not change. A symbol that is neither a fluid nor an element is the
+*Unknown fluid* error, and so is an element in any other property function (`enthalpy(C, T=25)`) or with state inputs
+(`molarmass(C, T=25)`): CoolSolve has no thermodynamic data for the elements as substances, except the atoms `H`, `O`
+and `N`. A variable named `H`, `O`, `N`, `NO` or `OH` is a variable as before: only the first argument of a property call is read as a fluid.
 
 ### Saturation properties
 
@@ -802,8 +805,8 @@ CALL gam('Nitrogen', 20, 1E5 : g_real)       "Nitrogen is the real fluid"
 ```
 
 - The ideal gases are the substances of the ideal-gas group of §5 (`Air`, `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`,
-  `CO`, `CH4`, `C2H6`, `C3H8`, `C4H10`, `C5H12`, `C6H14`, `C7H16`, `C8H18`, `H2O`); the answer is read from the
-  fluid registry. Every other known fluid gives
+  `CO`, `CH4`, `C2H6`, `C3H8`, `C4H10`, `C5H12`, `C6H14`, `C7H16`, `C8H18`, `H2O`, and the NASA-Glenn species `OH`, `H`,
+  `O`, `N`, `NO`, `NO2`); the answer is read from the fluid registry. Every other known fluid gives
   0: the real fluids (`Water`, `R134a`, `Nitrogen`, `CarbonDioxide`, `Air_ha`, …), the incompressible substances, the
   CoolProp mixtures and the humid air `AirH2O` (not an ideal-gas substance; the answer 0 is to be confirmed against EES).
 - The fluid is written as in a property call: a quoted name, an unquoted name (`isidealgas(Air)`), a string variable
@@ -942,7 +945,8 @@ SulfurDioxide, SulfurHexafluoride, Xenon, Air_ha (real dry air).
 ### Ideal gases
 
 `Air`, `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`, `C2H6`, `C3H8`,
-`C4H10`, `C5H12`, `C6H14`, `C7H16`, `C8H18` (the normal alkanes n-butane to n-octane), `H2O` (water vapor).
+`C4H10`, `C5H12`, `C6H14`, `C7H16`, `C8H18` (the normal alkanes n-butane to n-octane), `H2O` (water vapor), and the
+species that CoolProp has no fluid for, `OH`, `H`, `O`, `N`, `NO`, `NO2` (the **NASA-Glenn species**, below).
 
 **The model.** As in EES, these substances are **exactly ideal gases**: `P·v = R·T`, the enthalpy and the
 internal energy are functions of `T` only, `u = h − R·T`, `cp − cv = R`, the compressibility factor is 1 and
@@ -954,7 +958,32 @@ J/mol-K, up to 1.5e-5 from the CODATA value). There is no phase: no liquid, no s
 `enthalpy('n-Octane', T=25, P=1E5)`), `enthalpy(H2O, T=0, P=101325)` the vapor, and
 `volume(He, T=20, P=14E6)` is `R·T/P`, not the real-gas value (Z = 1.067). The real fluid of the same equation
 of state is the fluid of the same name in the real-fluid list above (`Nitrogen`, `Water`, `n-Octane`, `Air_ha`
-for `Air`; `CO` has none).
+for `Air`; `CO` has none, nor have the six NASA-Glenn species).
+
+**The NASA-Glenn species `OH`, `H`, `O`, `N`, `NO` and `NO2`** (the hydroxyl radical, the atoms H, O and N, nitric oxide and
+nitrogen dioxide) are the other substances of the combustion equilibrium (Klein's `ChemEq` example of EES). CoolProp
+has no equation of state for them, so their functions of `T` are the 9-coefficient polynomials of the NASA-Glenn
+data themselves (McBride, Zehe and Gordon, NASA/TP-2002-211556; `thermo.inp` of NASA CEA, `github.com/nasa/cea`), as in the
+EES database: `cp`, `h` and `s` at 1 bar from the polynomial of the interval of `T`, with `h(298.15 K)` anchored on the
+heat of formation of the header, so that the formation enthalpy and the standard entropy of the table below are exact.
+Everything above holds for them: any two independent inputs among `T`, `P`, `h`, `u`, `d` (`v`), `s`, the properties of `T`
+alone (`enthalpy(OH, T=2000)`, `cp(NO, T=T_1)`), exact derivatives, `PHASE$` = `gas`, `ISIDEALGAS` = 1. What differs:
+
+- The range is that of the data, **200 K to 20000 K** (`NO2`: 200 K to 6000 K). A temperature outside is an error that names
+  the species and its range, in K: *NASA-Glenn data of NO2: T = 123.15 K is outside the range 200 K to 6000 K*; the
+  temperature solved from `h`, `u` or `s` is searched in it (*ideal gas NO2: the enthalpy … is not reached between 200 K and
+  6000 K*). A Newton trial point of the unknowns of a block below 200 K is limited to 200 K, as the CoolProp gases are at 50 K,
+  so that a solve that starts or steps below the range finds its solution inside it; a solution below 200 K is not accepted.
+  The polynomial of `NO2` starts at 300 K and is extrapolated down to 200 K.
+- No transport properties: `viscosity`, `conductivity`, `prandtl`, `kinematicviscosity` and `thermaldiffusivity` are errors
+  (*ideal gas OH: no transport properties: the NASA-Glenn data hold the thermodynamic properties only*).
+- No fluid constants: `t_crit`, `p_crit`, `v_crit`, `t_triple`, `p_triple` and `acentricfactor` are errors (*Fluid constant
+  't_crit' is not available for fluid 'OH': it is an ideal gas of the NASA-Glenn data …*). `quality`, `t_sat`, `p_sat` are
+  errors as for the other ideal gases, without a real fluid to suggest.
+- A CoolProp mixture cannot contain them (`'OH[0.5]&NO[0.5]'`: *unknown component 'OH', not a CoolProp fluid name*).
+- `molarmass` is the header of the record: `OH` 17.00734, `H` 1.00794, `O` 15.9994, `N` 14.0067, `NO` 30.0061, `NO2` 46.0055 kg/kmol.
+
+The names `H`, `O`, `N`, `NO` and `OH` stay available as variables: the fluid is only the first argument of a property call.
 
 The derivatives are **analytical** (`dh/dT = cp`, `ds/dT = cp/T`, `ds/dP = −R/P`, `v = R·T/P`, …, and through the
 implicit-function theorem for the inputs that are not `T` and `P`), the evaluation is 3 to 8 times faster than a
@@ -967,7 +996,7 @@ always evaluated from the HEOS equation of state with analytical derivatives).
 internal energy of an ideal gas each fix its temperature: give one of them and …*) and `d` with `v` (*the two inputs
 are the same property*). The temperature is solved from `h`, `u` or `s` (with `P` or `d`) by a safeguarded Newton
 iteration between 50 K and 20000 K (a value outside is an error: *ideal gas Nitrogen: the enthalpy … is not reached between
-50 K and 20000 K*). The pairs `(h,s)`, `(u,s)`, `(h,d)`, `(u,d)`, `(d,s)`, `(h,v)`, … are all accepted.
+50 K and 20000 K*; the NASA-Glenn species search the range of their data, 200 K to 20000 K). The pairs `(h,s)`, `(u,s)`, `(h,d)`, `(u,d)`, `(d,s)`, `(h,v)`, … are all accepted.
 
 The properties that depend on temperature only (`enthalpy`, `intenergy`,
 `cp`, `cv`) can be called with `T` alone, as in EES — typically for mean
@@ -1018,12 +1047,13 @@ CoolProp equation of state (its limits are those of its real-fluid part). The id
 below 33 K (*ideal gas Air: the ideal-gas part of its CoolProp equation of state is not defined at T = … K*) and for
 `T ≤ 0` (*the temperature … K is not positive*). Its accuracy outside the fit is that of the Planck-Einstein
 and power terms of the equation of state; the table at the end of this section compares it with the NASA-Glenn
-polynomials over 200–3000 K.
+polynomials over 200–3000 K. The NASA-Glenn species are defined between 200 K and the end of their data (20000 K, `NO2` 6000 K).
 
 **Reference states of the enthalpy and of the entropy.** As in EES (JANAF convention), the
 ideal gases `N2`, `O2`, `H2`, `He`, `Ar`, `CO2`, `CO`, `CH4`, `C2H6`, `C3H8`, `C4H10`, `C5H12`, `C6H14`,
-`C7H16`, `C8H18` and `H2O` (vapor) have absolute properties from **one source**, the NASA-Glenn thermodynamic
-data (McBride, Zehe and Gordon, NASA/TP-2002-211556; `thermo.inp` of NASA CEA), the
+`C7H16`, `C8H18`, `H2O` (vapor) and the six NASA-Glenn species `OH`, `H`, `O`, `N`, `NO`, `NO2` have absolute properties
+from **one source**, the NASA-Glenn thermodynamic data (McBride, Zehe and Gordon, NASA/TP-2002-211556; `thermo.inp` of
+NASA CEA; one table in `src/nasa_glenn.cpp`, which gives the heats of formation and the entropies of all 22 species), the
 data family of the EES ideal gases: `h(25 °C)` is the standard **enthalpy of formation**
 (the elements `N2`, `O2`, `H2`, `He`, `Ar` are 0) and `s(25 °C, 1 bar)` the standard
 **third-law entropy** `s°`. The offsets from CoolProp's references are computed once from the ideal-gas part of the
@@ -1039,12 +1069,17 @@ equation of state, at 25 °C: pure reference constants, with no real-gas residua
 | `CO2` | −393 510 | 213.786 | `C4H10` | −125 790 | 309.880 |
 | `C5H12` | −146 760 | 349.558 | `C6H14` | −166 920 | 388.848 |
 | `C7H16` | −187 780 | 428.087 | `C8H18` | −208 750 | 467.347 |
+| `OH` | 37 278.2 | 183.739 | `H` | 217 998.8 | 114.717 |
+| `O` | 249 175.0 | 161.060 | `N` | 472 680 | 153.301 |
+| `NO` | 91 271.3 | 210.747 | `NO2` | 34 193.0 | 240.170 |
 
 The enthalpies of formation are the values of the species headers of `thermo.inp`; `s°` is
 the 9-coefficient polynomial of the same file at 298.15 K (R = 8.314462618 J/mol-K). EES uses the
 same data with R = 8.314, which puts its values 6e-5 lower (EES help: `CO2` −393 486,
 `H2O` −241 811, `CH4` −74 595 kJ/kmol); NIST-JANAF entropies differ from NASA's by at most
-0.12 kJ/kmol-K (`CH4`). `Air` is not in the table: it keeps the references of CoolProp's equation of state (see below).
+0.12 kJ/kmol-K (`CH4`). The heat of formation of `OH` of the NASA-Glenn data, 37.28 kJ/mol (Ruscic 2002), is 1.7 kJ/mol below the
+older JANAF value (38.99), that of `NO` 1.0 kJ/mol above (91.27 against 90.29): enthalpy rises and entropies agree with JANAF
+(next paragraph). `Air` is not in the table: it keeps the references of CoolProp's equation of state (see below).
 Earlier CoolSolve versions used the rounded JANAF values of Çengel & Boles (Table A-26),
 5 to 830 kJ/kmol away (`C2H6` and `C3H8` the most), and `He` and `Ar` kept CoolProp's
 enthalpy reference.
@@ -1119,8 +1154,18 @@ For comparison, `Δh` at 3000 K of the other gases is at most 0.12 % of the rise
 kJ/kmol). The deviations are those of CoolProp's equations of state outside their range (their `Tmax`: 625 K for `CH4`,
 2000 K for `H2O`), the same as with the real-gas calls of earlier versions; the enthalpy rise of the combustion
 products at the flame temperature is within 0.1 % (JANAF at 2400 K: `N2` +0.004 %, `O2` +0.04 %, `CO2` −0.03 %,
-`H2O` −0.014 %, `CO` −0.05 %, `H2` +0.10 %). The NASA-Glenn polynomials are a planned follow-up (register entry
-`CS-GAP-FLUIDS-NASA-SPECIES`).
+`H2O` −0.014 %, `CO` −0.05 %, `H2` +0.10 %).
+
+**The NASA-Glenn species against NIST-JANAF.** `cp`, `S` and `H(T) − H(298.15 K)` at 500, 1000, 2000 and 3000 K agree with the
+JANAF tables within: `H` and `O` 0.1 % (the same data); `NO` 0.2 % on `cp`, 0.07 kJ/mol on the enthalpy rise and 0.03 J/mol-K on `S`; `N` and
+`OH` against the NIST Shomate fits of the JANAF tables 0.3 % and 0.8 % on `cp` (the fits are that far from the tables), 0.03 and
+0.22 kJ/mol on the enthalpy rise; `NO2` (Gurvich 1989, against JANAF 1964) 1.6 % on `cp` at 1000 K, 3 % at 2000 K and 6 % at 3000 K, where the
+molecule does not exist. The Gibbs energy of `NO` at 1850 K and 1 bar, `h − T·s`, is −356 360.7 kJ/kmol, EES's −356 360.3
+(`ChemEq.EES`; EES applies 8.314 to the same data). The 17 gases of CoolProp keep the ideal-gas part of their equation of state:
+a mixture of both families has the deviations of the table above in the Gibbs energies of the CoolProp species. The law of mass
+action of octane with 120 % air at 1850 K and 1 bar (`examples/chemical_equilibrium_octane.eescode`: `CO2`, `CO`, `N2`, `O2` from
+CoolProp, `NO` from the NASA-Glenn polynomials) gives `y_NO` 0.0018606 and `y_CO` 0.00019925, against the 0.0018619 and 0.00019968
+of the EES example: −0.07 % and −0.22 %.
 
 ### Humid air
 
