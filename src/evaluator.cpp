@@ -3,6 +3,7 @@
 #include "coolsolve/ees_string.h"
 #include "coolsolve/libr_ashrae.h"
 #include "coolsolve/lookup_table.h"
+#include "coolsolve/nasa_glenn.h"
 #include "coolsolve/psychprops.h"
 #include "coolsolve/units.h"
 #include "coolsolve/fluids.h"
@@ -740,6 +741,12 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
                 throw std::runtime_error("CALL Colebrook takes 2 inputs (Re, RR) and 1 output (f)");
             setVariable(resolveVariableName(call.outputVars[0]),
                         colebrookFrictionFactor(evaluate(call.inputArgs[0]), evaluate(call.inputArgs[1])));
+            return;
+        }
+        // Built-in CALL NASA(Species$, T : cp, h, s) (EES): the NASA-Glenn properties of a species; a PROCEDURE NASA of
+        // the model, found above, replaces it, as for Colebrook
+        if (lowerName == "nasa") {
+            evaluateNasaCall(call);
             return;
         }
         // Built-in CALL NH3H2O(Code, In1, In2, In3 : T, P, x, h, s, u, v, q): the EES ammonia-water procedure
@@ -1524,19 +1531,11 @@ void ExpressionEvaluator::evaluatePsychpropsCall(const ProcedureCall& call) {
             "psychprops expects 3 inputs (T, P, R), got " +
             std::to_string(call.inputArgs.size()));
     }
-    if (call.outputVars.size() < 1 || call.outputVars.size() > psychprops::kOutputCount) {
-        throw std::runtime_error(
-            "psychprops expects 1 to 9 outputs (T, v, h, s, u, W, R, Twb, Tdp), got " +
-            std::to_string(call.outputVars.size()));
-    }
     if (!call.inputNames.empty() && call.inputNames.size() != call.inputArgs.size()) {
         throw std::runtime_error("psychprops: " + std::to_string(call.inputNames.size()) + " input names for " +
                                  std::to_string(call.inputArgs.size()) + " inputs");
     }
-    if (!call.outputSlots.empty() && call.outputSlots.size() != call.outputVars.size()) {
-        throw std::runtime_error("psychprops: " + std::to_string(call.outputSlots.size()) + " output positions for " +
-                                 std::to_string(call.outputVars.size()) + " outputs");
-    }
+    checkPositionedOutputs(call, kPsychpropsOutputs);
 
     std::map<std::string, ADValue> inputs;   // by lower-case identifier, as the property functions take them
     for (size_t i = 0; i < call.inputArgs.size(); ++i) {
@@ -1547,15 +1546,100 @@ void ExpressionEvaluator::evaluatePsychpropsCall(const ProcedureCall& call) {
     requireHumidAirInputs(inputs);
 
     for (size_t i = 0; i < call.outputVars.size(); ++i) {
-        const int slot = call.outputSlots.empty() ? static_cast<int>(i) : call.outputSlots[i];
-        if (slot < 0 || slot >= psychprops::kOutputCount)
-            throw std::runtime_error("psychprops has " + std::to_string(psychprops::kOutputCount) + " outputs, got a position " +
-                                     std::to_string(slot + 1));
-        const psychprops::Output& output = psychprops::kOutputs[slot];
+        const psychprops::Output& output = psychprops::kOutputs[outputSlotOf(call, i)];
         const auto given = inputs.find(output.input);
         setVariable(resolveVariableName(call.outputVars[i]),
                     given != inputs.end() ? given->second
                                           : evaluateHumidAirProperty(output.function, "psychprops", "AirH2O", inputs));
+    }
+}
+
+void ExpressionEvaluator::checkPositionedOutputs(const ProcedureCall& call, const PositionedOutputs& proc) {
+    const std::string name = proc.procedure;
+    if (call.outputVars.empty() || call.outputVars.size() > static_cast<size_t>(proc.count))
+        throw std::runtime_error(name + " expects 1 to " + std::to_string(proc.count) + " outputs (" + proc.list + "), got " +
+                                 std::to_string(call.outputVars.size()));
+    if (!call.outputSlots.empty() && call.outputSlots.size() != call.outputVars.size())
+        throw std::runtime_error(name + ": " + std::to_string(call.outputSlots.size()) + " output positions for " +
+                                 std::to_string(call.outputVars.size()) + " outputs");
+    for (size_t i = 0; i < call.outputVars.size(); ++i) {
+        const int slot = outputSlotOf(call, i);
+        if (slot < 0 || slot >= proc.count)
+            throw std::runtime_error(name + " has " + std::to_string(proc.count) + " outputs (" + proc.list +
+                                     "), got a position " + std::to_string(slot + 1));
+    }
+}
+
+/// CALL NASA(Species$, T : cp, h, s), the EES procedure of the NASA-Glenn data: the molar specific heat, enthalpy and
+/// entropy of a species of the table of nasa_glenn.h at T, in the units of the model (EES: K and kJ/kmol).
+/// `Species$` is any string expression, the name of one of the 22 species without regard to case; T is in the temperature
+/// unit of the model. The outputs are cp [J/kmol-K], h [J/kmol] and s [J/kmol-K] at 1 bar, the energy and entropy units
+/// being those of the specific energy and entropy of the model with the kmol for the mass: exactly
+/// `MolarMass(X$)*cp(X$, T=T)`, `MolarMass(X$)*enthalpy(X$, T=T)` and `MolarMass(X$)*entropy(X$, T=T, P=1E5)` for a species
+/// that CoolProp has no fluid for. h is the anchored enthalpy (the formation enthalpy at 25 C). The derivatives with respect
+/// to T are exact: dcp/dT, cp and cp/T. Outputs that are not written (`outputSlots`) are not computed. T outside the range
+/// of the data of the species is an error; a T that depends on the unknowns of its block is limited to the range, as the
+/// trial points of the property calls are, since an error would stop the iteration (input clamping, InputClampLog).
+void ExpressionEvaluator::evaluateNasaCall(const ProcedureCall& call) {
+    if (call.inputArgs.size() != 2)   // the parser refuses these calls
+        throw std::runtime_error("CALL NASA takes 2 inputs (Species$, T) and 1 to 3 outputs (cp, h, s), got " +
+                                 std::to_string(call.inputArgs.size()) + " input(s) and " + std::to_string(call.outputVars.size()) +
+                                 " output(s)");
+    checkPositionedOutputs(call, kNasaOutputs);
+    if (!isStringExpression(call.inputArgs[0]))
+        throw std::runtime_error("CALL NASA: the first input is the species, a string ('CO2', a string variable ending in $ or a "
+                                 "string function such as LOOKUP$), not a number or a name without quotes");
+    const std::string name = evaluateString(call.inputArgs[0]);
+    const nasa_glenn::Species* species = nasa_glenn::find(name);
+    if (!species) {
+        std::string known;
+        for (const auto& s : nasa_glenn::allSpecies()) known += (known.empty() ? "" : ", ") + std::string(s.name);
+        throw std::runtime_error("CALL NASA: unknown species '" + name + "'; the species of the NASA-Glenn table are " + known);
+    }
+
+    const ADValue T = evaluate(call.inputArgs[1]);
+    const UnitSystem& units = coolpropConfig_.units;
+    double TK = UnitConverter::toSI(T.value, UnitType::Temperature, units.temperature);
+    if (!disableClamping_ && (TK < species->tMin() || TK > species->tMax()) &&
+        std::any_of(T.gradient.begin(), T.gradient.end(), [](double g) { return g != 0.0; })) {
+        const bool below = TK < species->tMin();
+        const double bound = below ? species->tMin() : species->tMax();
+        if (clampLog_) {
+            clampLog_->fired = true;
+            if (clampLog_->report) {
+                std::ostringstream oss;
+                oss << "CALL NASA(" << species->name << ", T)" << (routine_.empty() ? "" : " in " + routine_) << ": temperature "
+                    << TK << " K is " << (below ? "below the lowest" : "above the highest") << " temperature of the NASA-Glenn data of "
+                    << species->name << " (" << bound << " K); an input that depends on the unknowns of its block is limited there "
+                    << "during the iterations, so the solution would not satisfy this equation";
+                clampLog_->report->push_back(oss.str());
+            }
+        }
+        TK = bound;   // the gradient is kept: the solver still has a direction back into the range
+    }
+    nasa_glenn::Point point;
+    try {
+        point = nasa_glenn::evaluate(*species, TK);
+    } catch (const std::out_of_range& e) {
+        throw std::runtime_error(std::string("CALL NASA: ") + e.what());
+    }
+
+    // molar J/mol -> J/kmol, then the units of the model: the energy unit of its specific energy, the entropy and heat units
+    const double dTK_dT = UnitConverter::scaleToSI(UnitType::Temperature, units.temperature);
+    const double energy = 1000.0 * UnitConverter::scaleFromSI(UnitType::SpecificEnergy, units.specific_energy);
+    const double heat = 1000.0 * UnitConverter::scaleFromSI(UnitType::SpecificHeat, units.specific_heat);
+    const double entropy = 1000.0 * UnitConverter::scaleFromSI(UnitType::SpecificEntropy, units.specific_entropy);
+    for (size_t i = 0; i < call.outputVars.size(); ++i) {
+        double value, derivative;   // the output and its derivative with respect to T [K], in the units of the model
+        switch (outputSlotOf(call, i)) {
+            case 0: value = heat * point.cp; derivative = heat * point.dcp_dT; break;
+            case 1: value = energy * point.h; derivative = energy * point.cp; break;
+            default: value = entropy * point.s; derivative = entropy * point.cp / TK; break;
+        }
+        ADValue output(value, numVariables_);
+        if (!residualOnly_)
+            for (size_t k = 0; k < numVariables_; ++k) output.gradient[k] = derivative * dTK_dT * T.gradient[k];
+        setVariable(resolveVariableName(call.outputVars[i]), output);
     }
 }
 

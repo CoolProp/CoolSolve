@@ -201,6 +201,13 @@ with `PHASE$(...)` or compare the enthalpy with the saturation values instead of
 
 Between those, a Newton trial point below 200 K is limited to 200 K without a message: the solve is not lost.
 
+`CALL NASA(Species$, T : cp, h, s)` ([Language Reference §7](language_reference.md#call-nasa-nasa-glenn-species-properties)) has
+the same range and says so: *CALL NASA: NASA-Glenn data of NO2: T = 6273.15 K is outside the range 200 K to 6000 K* (T in K in the
+message, in °C in the model; an EES file written for K needs `T - 273.15`). A trial temperature outside is limited on both sides,
+and a solution at the limit is refused (*CALL NASA(NO2, T): temperature … K is below the lowest temperature of the NASA-Glenn
+data …*). *CALL NASA: unknown species 'XYZ'; the species of the NASA-Glenn table are …* lists the 22 names the table holds. Outputs
+that are 1000 times too small or too large are the kJ of EES: the procedure gives J/kmol.
+
 ### Procedure Fixes
 
 - Procedures are a common source of issues. Check:

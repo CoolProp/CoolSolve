@@ -7005,9 +7005,9 @@ TEST_CASE("CS-BUG-COMMON-PROC: a $COMMON line outside a FUNCTION or PROCEDURE is
 }
 
 // ============================================================================
-// CS-GAP-NASA: the EES `CALL NASA(X$, T : cp, h, s)` is not a CoolSolve procedure; models use the
-// ideal-gas species as fluids (h = MolarMass(X$)*enthalpy(X$,T=T), J/kmol). These tests pin the
-// values of that rewrite against the JANAF tables.
+// CS-GAP-NASA: the EES `CALL NASA(X$, T : cp, h, s)` is a built-in procedure since the NASA-Glenn module (tests
+// `[call-nasa]`, at the end of the file); models can also use the ideal-gas species as fluids
+// (h = MolarMass(X$)*enthalpy(X$,T=T), J/kmol). These tests pin the values of that rewrite against the JANAF tables.
 //
 // Reference: NIST-JANAF Thermochemical Tables, 4th ed. (M. W. Chase, J. Phys. Chem. Ref. Data,
 // Monograph 9, 1998), as reproduced by the Shomate fits of the NIST Chemistry WebBook:
@@ -7139,14 +7139,21 @@ TEST_CASE("CS-GAP-NASA: the species of the NASA database that CoolProp lacks are
     }
 }
 
-TEST_CASE("CS-GAP-NASA: CALL NASA is not a CoolSolve procedure", "[library-gaps][nasa]") {
-    // the model is rewritten with property calls; the call must not be silently ignored
+TEST_CASE("CS-GAP-NASA: CALL NASA is a built-in procedure, the register reproducer", "[library-gaps][nasa][call-nasa]") {
+    // was: warning "Unknown function 'NASA'", then "Unknown procedure: NASA" (the rewrite with property calls, tested above, stays valid)
     auto run = runModel(R"(
 T = 2000
 CALL NASA('CO2',T:CP,H,S)
 )");
-    CHECK_FALSE(run.solveOk);
-    CHECK(run.message.find("Unknown procedure: NASA") != std::string::npos);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+    CHECK_FALSE(anyContains(run.warnings, "NASA"));
+    const nasa_glenn::Point p = nasa_glenn::evaluate(*nasa_glenn::find("CO2"), 2273.15);
+    CHECK_THAT(run["CP"], WithinRel(1000.0 * p.cp, 1e-12));   // J/kmol-K
+    CHECK_THAT(run["H"], WithinRel(1000.0 * p.h, 1e-12));     // J/kmol
+    CHECK_THAT(run["S"], WithinRel(1000.0 * p.s, 1e-12));     // J/kmol-K, at 1 bar
 }
 
 // ============================================================================
@@ -25803,4 +25810,536 @@ TEST_CASE("CS-GAP-FLUIDS-NASA-SPECIES: the law of mass action of octane with 120
     CHECK_THAT(run["g_NO"] / 1000.0, WithinAbs(-356360.3152, 10.0));   // kJ/kmol
     // the atom balances and the sum of the mole fractions
     CHECK_THAT(run["y_CO2"] + run["y_CO"] + run["y_H2O"] + run["y_N2"] + run["y_O2"] + run["y_NO"], WithinAbs(1.0, 1e-12));
+}
+
+// ============================================================================
+// CS-GAP-NASA: the built-in CALL NASA(Species$, T : cp, h, s) of EES, on the NASA-Glenn table of nasa_glenn.h, in the units
+// of the model (T in C, cp [J/kmol-K], h [J/kmol], s [J/kmol-K] at 1 bar); EES: K and kJ/kmol
+// ============================================================================
+
+namespace {
+
+/// The products of the flame of the CALL NASA tests: the CSL-0150 pattern, the species names in a lookup table.
+const std::map<std::string, std::string> kProductsTable = {{"Products", "Name\nCO2\nH2O\nO2\nN2\n"}};
+
+/// The ratio of the gas constants, CODATA 2018 (nasa_glenn.h) over the 8.314 that EES applies to the same polynomials
+constexpr double kRatioToEesR = 8.314462618 / 8.314;
+
+/// The outputs of `CALL NASA(species, T : cp, h, s)` for an unknown temperature `Tv` (C) seeded as the only variable, with
+/// their gradients, evaluated directly; `units` is the unit system of the evaluator.
+struct NasaCall {
+    double cp, h, s, dcp, dh, ds;   ///< the outputs and their derivatives with respect to Tv
+};
+
+NasaCall evalNasaCall(const std::string& species, double Tv, const UnitSystem& units = UnitSystem()) {
+    EESParser parser;
+    auto parsed = parser.parse("CALL NASA('" + species + "', Tv : cp, h, s)\n");
+    REQUIRE(parsed.success);
+    CoolPropConfig config;
+    config.units = units;
+    ExpressionEvaluator ev(1, config);
+    ev.setVariable("Tv", ADValue::independent(Tv, 0, 1));
+    for (const auto& stmt : parsed.program.statements)
+        if (stmt->is<ProcedureCall>()) ev.evaluateProcedureCall(stmt->as<ProcedureCall>());
+    const ADValue cp = ev.getVariable("cp"), h = ev.getVariable("h"), s = ev.getVariable("s");
+    return {cp.value, h.value, s.value, cp.gradient[0], h.gradient[0], s.gradient[0]};
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-NASA: CALL NASA of CO2 at 300 K against the EES stored solution (Exo_1_resolution_RD)", "[library-gaps][call-nasa]") {
+    // EES (R = 8.314, T in K, kJ/kmol outputs) stores for CALL NASA('CO2', 300 K) cp 37.21782645 kJ/kmol-K, h -393416.7759 kJ/kmol,
+    // s 214.0042458 kJ/kmol-K (Exo_1_resolution_RD; Ex_1_Tables_NASA stores h -393417.088, the same call of another run). The
+    // polynomials are the same: CoolSolve differs by the ratio of the gas constants, 5.6e-5, and for h by the 2.2 J/mol
+    // of the anchoring on the heat of formation (the polynomial's own H(298.15 K) is 2.24 J/mol above it)
+    auto run = runModel("T_CO2 = 26.85\nCALL NASA('CO2', T_CO2 : cp_NASA, h_NASA, s_NASA)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["cp_NASA"], WithinRel(37217.82645, 1.5e-4));
+    CHECK_THAT(run["h_NASA"], WithinRel(-393416775.9, 1.5e-4));
+    CHECK_THAT(run["s_NASA"], WithinRel(214004.2458, 1.5e-4));
+    // measured: cp +5.56e-5, s +5.56e-5 (the ratio of the gas constants, 1.0000556), h -6.2e-5
+    CHECK_THAT(run["cp_NASA"] / 37217.82645, WithinAbs(kRatioToEesR, 1e-8));
+    CHECK_THAT(run["s_NASA"] / 214004.2458, WithinAbs(kRatioToEesR, 1e-8));
+    // h: the stored value of the call at 300 K scaled to CODATA's R is the polynomial's H(300 K); CoolSolve's is that minus
+    // the 2.2425 J/mol by which the polynomial's H(298.15 K) exceeds the header (CO2: the largest of the 17 species but N)
+    const nasa_glenn::Species& co2 = *nasa_glenn::find("CO2");
+    CHECK_THAT(co2.polynomialH298 - co2.formationEnthalpy, WithinAbs(2.2425, 1e-4));
+    CHECK_THAT((run["h_NASA"] - kRatioToEesR * -393417088.0) / 1000.0, WithinAbs(-(co2.polynomialH298 - co2.formationEnthalpy), 0.01));
+    CHECK_THAT(run["h_NASA"], WithinRel(-393417088.0 * kRatioToEesR, 1e-8 + 2.5 / 393417.0));   // J/kmol, to the anchoring
+}
+
+TEST_CASE("CS-GAP-NASA: CALL NASA against NIST-JANAF at 2000 K", "[library-gaps][call-nasa]") {
+    // JANAF (janaf.nist.gov, C-095, H-064, N-005) at 2000 K, J/mol-K and kJ/mol: CO2 cp 60.350, S 309.293, H - H(298) 91.439;
+    // NO 36.647, 273.128, 57.859; H2O 51.180, 264.769, 72.790. The NASA-Glenn CO2 and NO agree to 0.1 %; its H2O (Woolley 1987,
+    // TRC) is 1.1 % above JANAF in cp at 2000 K (the same difference as for the CoolProp H2O: language_reference.md §5)
+    struct Janaf { const char* species; double cp, S, dH, tolCp, tolS, tolH; };
+    for (const Janaf& j : std::vector<Janaf>{{"CO2", 60.350, 309.293, 91.439, 1e-3, 0.01, 0.01},
+                                             {"NO", 36.647, 273.128, 57.859, 1.5e-3, 0.02, 0.03},
+                                             {"H2O", 51.180, 264.769, 72.790, 0.012, 0.2, 0.3}}) {
+        INFO(j.species);
+        auto run = runModel(std::string("T = 1726.85\nCALL NASA('") + j.species + "', T : cp, h, s)\n" +
+                            "CALL NASA('" + j.species + "', 25 : , h_25, )\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["cp"] / 1000.0, WithinRel(j.cp, j.tolCp));
+        CHECK_THAT(run["s"] / 1000.0, WithinAbs(j.S, j.tolS));
+        CHECK_THAT((run["h"] - run["h_25"]) / 1e6, WithinAbs(j.dH, j.tolH));   // J/kmol -> kJ/mol
+    }
+}
+
+TEST_CASE("CS-GAP-NASA: CALL NASA gives the table of nasa_glenn.h for the 22 species, in any case", "[library-gaps][call-nasa]") {
+    for (const auto& species : nasa_glenn::allSpecies()) {
+        INFO(species.name);
+        std::string lower = species.name, upper = species.name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        std::transform(upper.begin(), upper.end(), upper.begin(), ::toupper);
+        auto run = runModel("CALL NASA('" + lower + "', 500 : cp, h, s)\nCALL NASA('" + upper + "', 500 : cp2, h2, s2)\n"
+                            "sp$ = '" + std::string(species.name) + "'\nCALL NASA(sp$, 500 : cp3, h3, s3)\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        const nasa_glenn::Point p = nasa_glenn::evaluate(species, 773.15);
+        for (const char* suffix : {"", "2", "3"}) {
+            CHECK_THAT(run[std::string("cp") + suffix], WithinRel(1000.0 * p.cp, 1e-12));
+            CHECK_THAT(run[std::string("h") + suffix], WithinRel(1000.0 * p.h, 1e-12));
+            CHECK_THAT(run[std::string("s") + suffix], WithinRel(1000.0 * p.s, 1e-12));
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-NASA: for OH, H, O, N, NO and NO2 CALL NASA is exactly MolarMass*cp, *enthalpy and *entropy of the fluid",
+          "[library-gaps][call-nasa]") {
+    // the same module evaluates both: the species with no CoolProp fluid (CS-GAP-FLUIDS-NASA-SPECIES)
+    for (const std::string species : {"OH", "H", "O", "N", "NO", "NO2"}) {
+        for (double TC : {-50.0, 25.0, 500.0, 1500.0, 3000.0}) {
+            INFO(species << " at " << TC << " C");
+            const std::string T = numText(TC);
+            auto run = runModel("CALL NASA('" + species + "', " + T + " : cp, h, s)\n"
+                                "cp_f = molarmass(" + species + ")*cp(" + species + ", T=" + T + ")\n"
+                                "h_f = molarmass(" + species + ")*enthalpy(" + species + ", T=" + T + ")\n"
+                                "s_f = molarmass(" + species + ")*entropy(" + species + ", T=" + T + ", P=1E5)\n");
+            INFO(run.message);
+            REQUIRE(run.solveOk);
+            CHECK(run.verified);
+            CHECK_THAT(run["cp"], WithinRel(run["cp_f"], 1e-12));
+            CHECK_THAT(run["h"], WithinRel(run["h_f"], 1e-12));
+            CHECK_THAT(run["s"], WithinRel(run["s_f"], 1e-12));
+        }
+    }
+    // h(25 C) is the formation enthalpy, s(25 C) the standard entropy, in J/kmol
+    auto run = runModel("CALL NASA('NO', 25 : , h, s)\n");
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["h"], WithinRel(91271.31e3, 1e-12));
+    CHECK_THAT(run["s"], WithinRel(nasa_glenn::find("NO")->standardEntropy * 1000.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-NASA: for the species that CoolProp has too, CALL NASA is the NASA polynomials, not the ideal-gas part of CoolProp",
+          "[library-gaps][call-nasa]") {
+    // 9 temperatures from 300 K to 3000 K, the relative difference of CALL NASA and MolarMass*cp, *(h - h(25 C)) and *s(1 bar)
+    // of the CoolProp ideal gas, measured (language_reference.md §5): the largest, cp / enthalpy rise / entropy, in %
+    struct Overlap { const char* species; double cp, rise, s; };   // upper bounds, a little above the measured maximum
+    const std::vector<Overlap> overlap = {
+        {"N2", 0.02, 0.01, 0.002},   {"O2", 0.5, 0.1, 0.02},      {"H2", 0.3, 0.15, 0.04},    {"He", 1e-4, 1e-4, 1e-4},
+        {"Ar", 1e-3, 1e-3, 1e-3},    {"CO2", 0.3, 0.07, 0.02},    {"CO", 0.25, 0.1, 0.02},    {"CH4", 5.5, 2.9, 1.0},
+        {"C2H6", 0.06, 0.07, 0.01},  {"C3H8", 0.42, 0.42, 0.12},  {"C4H10", 0.2, 0.2, 0.04},  {"C5H12", 19.5, 9.2, 3.8},
+        {"C6H14", 10.0, 3.3, 1.2},   {"C7H16", 8.0, 3.2, 1.3},    {"C8H18", 1.1, 0.75, 0.32}, {"H2O", 2.2, 1.0, 0.2}};
+    const std::vector<double> temperatures = {300.0, 400.0, 600.0, 800.0, 1000.0, 1500.0, 2000.0, 2500.0, 3000.0};
+    for (const Overlap& o : overlap) {
+        INFO(o.species);
+        std::string code = std::string("CALL NASA('") + o.species + "', 25 : , hr, sr)\n" +
+                           "hr_f = molarmass(" + o.species + ")*enthalpy(" + o.species + ", T=25)\n" +
+                           "sr_f = molarmass(" + o.species + ")*entropy(" + o.species + ", T=25, P=1E5)\n";
+        for (size_t k = 0; k < temperatures.size(); ++k) {
+            const std::string T = numText(temperatures[k] - 273.15), n = std::to_string(k), sp = o.species;
+            code += "CALL NASA('" + sp + "', " + T + " : cp" + n + ", h" + n + ", s" + n + ")\n"
+                    "cp_f" + n + " = molarmass(" + sp + ")*cp(" + sp + ", T=" + T + ")\n"
+                    "h_f" + n + " = molarmass(" + sp + ")*enthalpy(" + sp + ", T=" + T + ")\n"
+                    "s_f" + n + " = molarmass(" + sp + ")*entropy(" + sp + ", T=" + T + ", P=1E5)\n";
+        }
+        auto run = runModel(code);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        double maxCp = 0, maxRise = 0, maxS = 0;
+        for (size_t k = 0; k < temperatures.size(); ++k) {
+            const std::string n = std::to_string(k);
+            maxCp = std::max(maxCp, std::abs(run["cp_f" + n] - run["cp" + n]) / run["cp" + n]);
+            maxRise = std::max(maxRise, std::abs((run["h_f" + n] - run["hr_f"]) - (run["h" + n] - run["hr"])) / (run["h" + n] - run["hr"]));
+            maxS = std::max(maxS, std::abs(run["s_f" + n] - run["s" + n]) / run["s" + n]);
+        }
+        INFO("cp " << 100 * maxCp << " %, enthalpy rise " << 100 * maxRise << " %, s " << 100 * maxS << " %");
+        CHECK(100 * maxCp <= o.cp);
+        CHECK(100 * maxRise <= o.rise);
+        CHECK(100 * maxS <= o.s);
+        // the formation enthalpy and the standard entropy are the same (the reference states of the fluids)
+        CHECK_THAT(run["hr"], WithinRel(run["hr_f"], 1e-9));
+        CHECK_THAT(run["sr"], WithinRel(run["sr_f"], 1e-9));
+    }
+}
+
+TEST_CASE("CS-GAP-NASA: the outputs left out, in any position, are not computed", "[library-gaps][call-nasa]") {
+    // EES files comment outputs out: CALL NASA(Prod$[i], T_ref : {CP_ref[i]}, H_ref[i], {S_ref[i]})
+    const nasa_glenn::Point p = nasa_glenn::evaluate(*nasa_glenn::find("CO2"), 300.0);
+    SECTION("h only, with the first and the last position empty") {
+        auto run = runModel("CALL NASA('CO2', 26.85 : , h, )\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["h"], WithinRel(1000.0 * p.h, 1e-12));
+        CHECK(run.vars.size() == 1);   // cp and s are no variables of the model
+    }
+    SECTION("every subset of the three positions") {
+        const std::vector<std::pair<std::string, std::vector<std::string>>> forms = {
+            {"cp, h, s", {"cp", "h", "s"}}, {"cp, , s", {"cp", "s"}}, {", h, s", {"h", "s"}}, {"cp, h, ", {"cp", "h"}},
+            {"cp, , ", {"cp"}},             {", , s", {"s"}},         {", h, ", {"h"}},        {", h", {"h"}},
+            {"cp", {"cp"}},                 {" , , s", {"s"}}};
+        for (const auto& [form, written] : forms) {
+            INFO("CALL NASA('CO2', T : " << form << ")");
+            // each output is written with the name of its position (v_cp, v_h, v_s): the value tells where it came from
+            std::string code = "CALL NASA('CO2', 26.85 : ";
+            const std::vector<std::string> names = {"cp", "h", "s"};
+            std::stringstream in(form);
+            std::string item;
+            std::vector<std::string> items;
+            while (std::getline(in, item, ',')) items.push_back(item);
+            for (size_t i = 0; i < items.size(); ++i) {
+                const bool skipped = items[i].find_first_not_of(' ') == std::string::npos;
+                code += (i ? ", " : "") + (skipped ? std::string() : "v_" + names[i]);
+            }
+            code += ")\n";
+            auto run = runModel(code);
+            INFO(run.message);
+            REQUIRE(run.solveOk);
+            CHECK(run.verified);
+            CHECK(run.vars.size() == written.size());
+            const double value[3] = {1000.0 * p.cp, 1000.0 * p.h, 1000.0 * p.s};
+            for (size_t k = 0; k < 3; ++k) {
+                const std::string name = "v_" + names[k];
+                if (std::find(written.begin(), written.end(), names[k]) == written.end()) {
+                    CHECK(run.vars.count(name) == 0);
+                } else {
+                    REQUIRE(run.vars.count(name) == 1);
+                    CHECK_THAT(run[name], WithinRel(value[k], 1e-12));
+                }
+            }
+        }
+    }
+    SECTION("array outputs and a DUPLICATE loop, the skipped positions stay skipped in every copy") {
+        auto run = runModel("DUPLICATE i = 1, 3\n  CALL NASA('CO2', 100*i : {cp[i]}, h[i], )\nEND\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        for (int i = 1; i <= 3; ++i) {
+            CHECK_THAT(run["h[" + std::to_string(i) + "]"],
+                       WithinRel(1000.0 * nasa_glenn::evaluate(*nasa_glenn::find("CO2"), 100.0 * i + 273.15).h, 1e-12));
+            CHECK(run.vars.count("cp[" + std::to_string(i) + "]") == 0);
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-NASA: expression outputs, as for any CALL", "[library-gaps][call-nasa]") {
+    // Exo_1_resolution_RD writes CALL NASA('CO2', T : cp_NASA/1000, h_NASA/1000, s_NASA/1000): the output of the procedure
+    // equals the expression (here the outputs are in J/kmol, so the expression is in kJ/kmol)
+    auto run = runModel("CALL NASA('CO2', 26.85 : cp_k/1000, h_k/1000, s_k/1000)\nCALL NASA('CO2', 26.85 : cp, h, s)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["cp_k"], WithinRel(1000.0 * run["cp"], 1e-12));
+    CHECK_THAT(run["h_k"], WithinRel(1000.0 * run["h"], 1e-12));
+    CHECK_THAT(run["s_k"], WithinRel(1000.0 * run["s"], 1e-12));
+    // mixed with skipped outputs: the expression stays at the position it was written at
+    auto mixed = runModel("CALL NASA('CO2', 26.85 : , h_k/1000, s)\nCALL NASA('CO2', 26.85 : cp, , )\n");
+    INFO(mixed.message);
+    REQUIRE(mixed.solveOk);
+    CHECK_THAT(mixed["h_k"], WithinRel(1000.0 * 1000.0 * nasa_glenn::evaluate(*nasa_glenn::find("CO2"), 300.0).h, 1e-12));
+    CHECK_THAT(mixed["s"], WithinRel(1000.0 * nasa_glenn::evaluate(*nasa_glenn::find("CO2"), 300.0).s, 1e-12));
+}
+
+TEST_CASE("CS-GAP-NASA: the CSL-0150 pattern, species from a lookup table in a DUPLICATE loop; the adiabatic flame temperature of CH4",
+          "[library-gaps][call-nasa]") {
+    // the model of "CS-GAP-NASA: adiabatic flame temperature of CH4 with the rewritten species enthalpies" with CALL NASA: CH4 and
+    // air at 14.85 C, 20 % excess air, the products CO2, H2O, O2, N2 named in a lookup table. Hand balance with the NASA-Glenn data
+    // (thermo.inp, python): H_react -78.344 MJ/kmol fuel, T_adiab 2061.0 K = 1787.85 C (EES stores H_react -78 333.02 kJ/kmol)
+    auto run = runModel(R"(
+m = 1 ; n = 4 ; e = 0.2
+T_fuel = 14.85 ; T_air = 14.85
+CALL NASA('CH4', T_fuel : {cp_CH4}, h_CH4, {s_CH4})
+CALL NASA('O2', T_air : {cp_O2}, h_O2, {s_O2})
+CALL NASA('N2', T_air : , h_N2, )
+H_react = h_CH4 + (m+n/4)*(1+e)*(h_O2 + (79/21)*h_N2)
+nkmol[1] = m ; nkmol[2] = n/2 ; nkmol[3] = (m+n/4)*e ; nkmol[4] = (m+n/4)*(79/21)*(1+e)
+Nprod = 4
+DUPLICATE i = 1, Nprod
+  CALL NASA(LOOKUP$('Products', i, 1), T_adiab : {cp[i]}, H[i], {S[i]})
+END
+H_prod = sum(nkmol[i]*H[i], i=1, Nprod)
+H_prod = H_react
+)", kProductsTable);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["H_react"], WithinRel(-78.344e6, 1e-5));
+    CHECK_THAT(run["T_adiab"], WithinAbs(1787.85, 0.05));   // with CoolProp's ideal-gas parts: +0.8 K
+    CHECK_THAT(run["H_react"], WithinRel(-78.333e6, 5e-4));   // the EES value (its R is 8.314)
+    CHECK(run.vars.count("cp[1]") == 0);
+    // the string array of EES (Prod$[i]) is still refused, with the lookup-table rewrite as the way out
+    auto stringArray = parseErrors("Prod$[1] = 'CO2'\nCALL NASA(Prod$[1], 25 : , h, )\n");
+    REQUIRE_FALSE(stringArray.empty());
+    CHECK(stringArray[0].find("String arrays are not supported") != std::string::npos);
+}
+
+TEST_CASE("CS-GAP-NASA: the derivatives with respect to T are exact, and a T that is unknown is solved through the procedure",
+          "[library-gaps][call-nasa]") {
+    SECTION("dcp/dT, cp and cp/T, against finite differences of the values") {
+        for (const std::string species : {"CO2", "NO", "OH", "H2O", "NO2", "C8H18", "N2"}) {
+            for (double TC : {-50.0, 25.0, 300.0, 900.0, 1500.0, 3000.0}) {
+                INFO(species << " at " << TC << " C");
+                const NasaCall c = evalNasaCall(species, TC);
+                const double step = 1e-4 * (TC + 273.15);
+                const NasaCall up = evalNasaCall(species, TC + step), down = evalNasaCall(species, TC - step);
+                CHECK_THAT(c.dcp, WithinAbs((up.cp - down.cp) / (2.0 * step), 1e-6 * std::max(1.0, std::abs(c.dcp))));
+                CHECK_THAT(c.dh, WithinRel(c.cp, 1e-12));                       // dh/dT = cp
+                CHECK_THAT(c.ds, WithinRel(c.cp / (TC + 273.15), 1e-12));       // ds/dT = cp/T
+                CHECK_THAT((up.h - down.h) / (2.0 * step), WithinRel(c.cp, 1e-6));
+                CHECK_THAT((up.s - down.s) / (2.0 * step), WithinRel(c.cp / (TC + 273.15), 1e-6));
+            }
+        }
+    }
+    SECTION("T solved from an enthalpy, from a state with Newton's exact Jacobian") {
+        auto run = runModel(R"(
+CALL NASA('CO2', 1000 : , h_t, )
+CALL NASA('CO2', T_x : , h_x, )
+h_x = h_t
+CALL NASA('NO', T_y : , , s_y)
+s_y = s_target
+CALL NASA('NO', 1500 : , , s_target)
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["T_x"], WithinAbs(1000.0, 1e-6));
+        CHECK_THAT(run["T_y"], WithinAbs(1500.0, 1e-4));   // the residual of s [J/kmol-K] is converged to 1e-9 relative
+    }
+    SECTION("a block that couples the call with a balance: the flame temperature has the Jacobian of the species") {
+        // the converged solution satisfies the equation, and the number of iterations stays that of a smooth problem
+        auto run = runModel(R"(
+CALL NASA('N2', T_x : , h1, )
+CALL NASA('O2', T_x : , h2, )
+3*h1 + 2*h2 = 3*h1_target + 2*h2_target
+CALL NASA('N2', 800 : , h1_target, )
+CALL NASA('O2', 800 : , h2_target, )
+)");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["T_x"], WithinAbs(800.0, 1e-6));
+    }
+}
+
+TEST_CASE("CS-GAP-NASA: the units of the model, T in K and the kJ of EES are a unit system away", "[library-gaps][call-nasa]") {
+    const NasaCall reference = evalNasaCall("CO2", 26.85);
+    UnitSystem kelvin;
+    kelvin.temperature = "K";
+    const NasaCall inK = evalNasaCall("CO2", 300.0, kelvin);
+    CHECK_THAT(inK.cp, WithinRel(reference.cp, 1e-12));
+    CHECK_THAT(inK.h, WithinRel(reference.h, 1e-12));
+    CHECK_THAT(inK.s, WithinRel(reference.s, 1e-12));
+    CHECK_THAT(inK.dcp, WithinRel(reference.dcp, 1e-12));   // a kelvin is a degree
+    UnitSystem kilo;   // the energy of the model in kJ: the outputs are in kJ/kmol and kJ/kmol-K, as EES gives them
+    kilo.specific_energy = "kJ/kg";
+    kilo.specific_heat = "kJ/kg-K";
+    kilo.specific_entropy = "kJ/kg-K";
+    const NasaCall inKJ = evalNasaCall("CO2", 26.85, kilo);
+    CHECK_THAT(inKJ.cp, WithinRel(reference.cp / 1000.0, 1e-12));
+    CHECK_THAT(inKJ.h, WithinRel(reference.h / 1000.0, 1e-12));
+    CHECK_THAT(inKJ.s, WithinRel(reference.s / 1000.0, 1e-12));
+    CHECK_THAT(inKJ.dh, WithinRel(inKJ.cp, 1e-12));
+    CHECK_THAT(inKJ.cp, WithinRel(37.2198973599, 1e-9));   // the kJ/kmol-K of EES (37.21782645) times the ratio of the gas constants
+}
+
+TEST_CASE("CS-GAP-NASA: a PROCEDURE NASA of the model replaces the built-in one, as Colebrook; psychprops does not", "[library-gaps][call-nasa]") {
+    // the convention of the other built-ins that a model can redefine (CALL Colebrook, CALL NH3H2O): the definition comes before the call
+    auto own = runModel(R"(
+PROCEDURE NASA(species$, T : a, b, c, d)
+  a = T
+  b = 2*T
+  c = 3*T
+  d = 4*T
+END
+CALL NASA('anything', 20 : x1, x2, x3, x4)
+)");
+    INFO(own.message);
+    REQUIRE(own.solveOk);
+    CHECK(own["x1"] == 20.0);
+    CHECK(own["x2"] == 40.0);
+    CHECK(own["x4"] == 80.0);   // four outputs: not the built-in's three
+    // without the definition the built-in answers
+    auto builtin = runModel("CALL NASA('CO2', 20 : x1, x2, x3)\n");
+    REQUIRE(builtin.solveOk);
+    CHECK_THAT(builtin["x1"], WithinRel(1000.0 * nasa_glenn::evaluate(*nasa_glenn::find("CO2"), 293.15).cp, 1e-12));
+}
+
+TEST_CASE("CS-GAP-NASA: negative tests, what is refused and with which message", "[library-gaps][call-nasa]") {
+    const std::string known = "H2, O2, H2O, CO, CO2, OH, H, O, N2, N, NO, NO2, CH4, Ar, He, C2H6, C3H8, C4H10, C5H12, C6H14, C7H16, C8H18";
+    SECTION("an unknown species lists the species of the table") {
+        auto run = runModel("CALL NASA('XYZ', 20 : cp, h, s)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "CALL NASA: unknown species 'XYZ'; the species of the NASA-Glenn table are " + known));
+        // the names of the record of the file are not the names of the table
+        auto record = runModel("CALL NASA('C8H18,n-octane', 20 : cp, h, s)\n");
+        CHECK_FALSE(record.solveOk);
+        CHECK(anyContains({record.message}, "unknown species 'C8H18,n-octane'"));
+        // a species of the database that the table does not hold
+        auto ion = runModel("CALL NASA('CO2+', 20 : cp, h, s)\n");
+        CHECK_FALSE(ion.solveOk);
+        CHECK(anyContains({ion.message}, "unknown species 'CO2+'"));
+        // the name from a string variable and from a lookup table
+        auto fromString = runModel("sp$ = 'water'\nCALL NASA(sp$, 20 : cp, h, s)\n");
+        CHECK_FALSE(fromString.solveOk);
+        CHECK(anyContains({fromString.message}, "unknown species 'water'"));
+        auto fromTable = runModel("CALL NASA(LOOKUP$('Products', 2, 1), 20 : cp, h, s)\n", {{"Products", "Name\nCO2\nSteam\n"}});
+        CHECK_FALSE(fromTable.solveOk);
+        CHECK(anyContains({fromTable.message}, "unknown species 'Steam'"));
+    }
+    SECTION("a number as species") {
+        auto run = runModel("CALL NASA(5, 20 : cp, h, s)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "CALL NASA: the first input is the species, a string ('CO2', a string variable ending in $ or "
+                                         "a string function such as LOOKUP$), not a number or a name without quotes"));
+    }
+    SECTION("the number of inputs and of outputs is checked when the model is parsed, with the line") {
+        const std::string usage = "CALL NASA takes 2 inputs (Species$, T) and 1 to 3 outputs (cp, h, s): CALL NASA(Species$, T : cp, h, s)";
+        auto one = parseErrors("x = 1\nCALL NASA('CO2' : cp, h, s)\n");
+        REQUIRE_FALSE(one.empty());
+        CHECK(one[0].find(usage) != std::string::npos);
+        CHECK(one[0].find("got 1 input(s) and 3 output(s)") != std::string::npos);
+        auto three = parseErrors("CALL NASA('CO2', 20, 1E5 : cp, h, s)\n");
+        REQUIRE_FALSE(three.empty());
+        CHECK(three[0].find("got 3 input(s) and 3 output(s)") != std::string::npos);
+        auto none = parseErrors("CALL NASA('CO2', 20 : , , )\n");
+        REQUIRE_FALSE(none.empty());
+        CHECK(none[0].find("got 2 input(s) and 0 output(s)") != std::string::npos);
+        auto noColon = parseErrors("CALL NASA('CO2', 20)\n");
+        REQUIRE_FALSE(noColon.empty());
+        CHECK(noColon[0].find("got 2 input(s) and 0 output(s)") != std::string::npos);
+        auto run = runModel("x = 1\nCALL NASA('CO2' : cp, h, s)\n");
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+    }
+    SECTION("more than three outputs: the output number that does not exist") {
+        auto four = parseErrors("CALL NASA('CO2', 20 : cp, h, s, u)\n");
+        REQUIRE_FALSE(four.empty());
+        CHECK(four[0].find("NASA has 3 outputs (cp, h, s): the output number 4 does not exist") != std::string::npos);
+        auto skipped = parseErrors("CALL NASA('CO2', 20 : , , , u)\n");
+        REQUIRE_FALSE(skipped.empty());
+        CHECK(skipped[0].find("NASA has 3 outputs (cp, h, s): the output number 4 does not exist") != std::string::npos);
+        auto tenth = parseErrors("CALL NASA('CO2', 20 : , , , , , , , , , u)\n");
+        REQUIRE_FALSE(tenth.empty());
+        CHECK(tenth[0].find("the output number 10 does not exist") != std::string::npos);
+    }
+    SECTION("T outside the data of the species, in any unit of the model, names the species and its range") {
+        auto above = runModel("CALL NASA('NO2', 6000 : cp, h, s)\n");   // 6273.15 K
+        CHECK_FALSE(above.solveOk);
+        CHECK(anyContains({above.message}, "CALL NASA: NASA-Glenn data of NO2: T = 6273.15 K is outside the range 200 K to 6000 K"));
+        auto below = runModel("CALL NASA('OH', -100 : , h, )\n");   // 173.15 K
+        CHECK_FALSE(below.solveOk);
+        CHECK(anyContains({below.message}, "CALL NASA: NASA-Glenn data of OH: T = 173.15 K is outside the range 200 K to 20000 K"));
+        auto hot = runModel("CALL NASA('OH', 19800 : , h, )\n");   // 20073.15 K
+        CHECK_FALSE(hot.solveOk);
+        CHECK(anyContains({hot.message}, "T = 20073.15 K is outside the range 200 K to 20000 K"));
+        auto negative = runModel("CALL NASA('N2', -300 : cp, h, s)\n");   // below 0 K
+        CHECK_FALSE(negative.solveOk);
+        CHECK(anyContains({negative.message}, "NASA-Glenn data of N2: T = -26.85 K is outside the range 200 K to 20000 K"));
+        // the ends of the range are in it
+        auto edges = runModel("CALL NASA('NO2', -73.1 : , h1, )\nCALL NASA('NO2', 5726.8 : , h2, )\n");
+        INFO(edges.message);
+        REQUIRE(edges.solveOk);
+        CHECK(edges.verified);
+    }
+    SECTION("no message names the CoolProp fluid or NASA:: of the registry") {
+        auto run = runModel("CALL NASA('OH', -100 : , h, )\n");
+        CHECK(run.message.find("NASA::") == std::string::npos);
+    }
+}
+
+TEST_CASE("CS-GAP-NASA: a trial point of T below or above the data is limited, a converged one outside the range is an error",
+          "[library-gaps][call-nasa][input-clamp]") {
+    SECTION("the limit and its report, as for the property calls, on both sides: a failing call would stop the iteration") {
+        auto limited = [&](const std::string& species, double TC, std::vector<std::string>* report) {
+            EESParser parser;
+            auto parsed = parser.parse("CALL NASA('" + species + "', Tv : cp, h, s)\n");
+            REQUIRE(parsed.success);
+            ExpressionEvaluator ev(1);
+            InputClampLog log;
+            log.report = report;
+            ev.setInputClampLog(&log);
+            ev.setVariable("Tv", ADValue::independent(TC, 0, 1));
+            for (const auto& stmt : parsed.program.statements)
+                if (stmt->is<ProcedureCall>()) ev.evaluateProcedureCall(stmt->as<ProcedureCall>());
+            CHECK(log.fired == !report->empty());
+            return std::make_pair(ev.getVariable("h").value, ev.getVariable("h").gradient[0]);
+        };
+        const nasa_glenn::Species& no2 = *nasa_glenn::find("NO2");
+        std::vector<std::string> report;
+        const auto below = limited("NO2", -123.15, &report);   // 150 K
+        CHECK_THAT(below.first, WithinRel(1000.0 * nasa_glenn::evaluate(no2, 200.0).h, 1e-12));
+        CHECK_THAT(below.second, WithinRel(1000.0 * nasa_glenn::evaluate(no2, 200.0).cp, 1e-9));   // the gradient is kept
+        REQUIRE(report.size() == 1);
+        CHECK(report[0].find("CALL NASA(NO2, T): temperature 150 K is below the lowest temperature of the NASA-Glenn data of NO2 (200 K)") == 0);
+        CHECK(report[0].find("solution would not satisfy this equation") != std::string::npos);
+        report.clear();
+        const auto above = limited("NO2", 6000.0, &report);   // 6273.15 K
+        CHECK_THAT(above.first, WithinRel(1000.0 * nasa_glenn::evaluate(no2, 6000.0).h, 1e-12));
+        REQUIRE(report.size() == 1);
+        CHECK(report[0].find("temperature 6273.15 K is above the highest temperature of the NASA-Glenn data of NO2 (6000 K)") != std::string::npos);
+        report.clear();
+        limited("NO2", 25.0, &report);   // inside: nothing
+        CHECK(report.empty());
+    }
+    SECTION("a solve that starts below or above the range finds its solution inside it") {
+        auto low = runModel("CALL NASA('NO2', 1000 : , h_t, )\nCALL NASA('NO2', T_x : , h_x, )\nh_x = h_t\n", {}, "T_x = -150\n");   // 123 K
+        INFO(low.message);
+        REQUIRE(low.solveOk);
+        CHECK(low.verified);
+        CHECK_THAT(low["T_x"], WithinAbs(1000.0, 1e-6));
+        auto high = runModel("CALL NASA('NO2', 500 : , h_t, )\nCALL NASA('NO2', T_x : , h_x, )\nh_x = h_t\n", {}, "T_x = 9000\n");   // 9273 K
+        INFO(high.message);
+        REQUIRE(high.solveOk);
+        CHECK(high.verified);
+        CHECK_THAT(high["T_x"], WithinAbs(500.0, 1e-6));
+    }
+    SECTION("a solution that the limit would hide is refused with the call and the limit") {
+        // the unknown is fixed by the equation below the range and the call does not weigh on the residual
+        auto run = runModel("T1 = -150 + 0*cp_x\nCALL NASA('NO2', T1 : cp_x, , )\n");   // 123.15 K
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "CALL NASA(NO2, T): temperature 123.15 K is below the lowest temperature of the NASA-Glenn data of NO2 (200 K)"));
+        CHECK(anyContains({run.message}, "solution would not satisfy this equation"));
+    }
+}
+
+TEST_CASE("CS-GAP-NASA: CALL NASA in a FUNCTION and a PROCEDURE body, with the species as argument", "[library-gaps][call-nasa]") {
+    auto run = runModel(R"(
+PROCEDURE hot(sp$, T : dh)
+  CALL NASA(sp$, T : , h, )
+  CALL NASA(sp$, 25 : , h0, )
+  dh = h - h0
+END
+FUNCTION cpbar(sp$, T1, T2)
+  CALL NASA(sp$, T1 : , hh1, )
+  CALL NASA(sp$, T2 : , hh2, )
+  cpbar = (hh2 - hh1)/(T2 - T1)
+END
+CALL hot('CO2', 1000 : dh_CO2)
+c_bar = cpbar('CO2', 25, 1000)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const nasa_glenn::Species& co2 = *nasa_glenn::find("CO2");
+    const double rise = 1000.0 * (nasa_glenn::evaluate(co2, 1273.15).h - nasa_glenn::evaluate(co2, 298.15).h);
+    CHECK_THAT(run["dh_CO2"], WithinRel(rise, 1e-12));
+    CHECK_THAT(run["c_bar"], WithinRel(rise / 975.0, 1e-12));   // J/kmol-K, the mean specific heat between 25 C and 1000 C
+    // the procedure is the same as the call, and a failure inside names the species
+    auto failing = runModel("PROCEDURE p(sp$, T : h)\n  CALL NASA(sp$, T : , h, )\nEND\nCALL p('XYZ', 20 : h)\n");
+    CHECK_FALSE(failing.solveOk);
+    CHECK(anyContains({failing.message}, "unknown species 'XYZ'"));
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ast.h"
+#include "builtin_procedures.h"
 #include "ir.h"
 #include "lookup_table.h"
 #include "structural_analysis.h"
@@ -346,6 +347,16 @@ private:
                                      const std::map<std::string, ADValue>& inputs);
     /// The built-in procedure CALL psychprops (positional or named inputs; EES help `hs786.htm`).
     void evaluatePsychpropsCall(const ProcedureCall& call);
+    /// The built-in procedure CALL NASA(Species$, T : cp, h, s): the molar specific heat, enthalpy and entropy of a species of
+    /// the NASA-Glenn data (src/nasa_glenn.cpp), in the units of the model, with their derivatives with respect to T.
+    void evaluateNasaCall(const ProcedureCall& call);
+    /// Checks the outputs of a call of the built-in procedure `proc` (builtin_procedures.h): at least one, not more than the
+    /// procedure has, and the positions the parser recorded (`ProcedureCall::outputSlots`) exist. The position of output `i`
+    /// is then `call.outputSlots[i]`, or `i` when the outputs are the first ones in order (`outputSlotOf`).
+    static void checkPositionedOutputs(const ProcedureCall& call, const PositionedOutputs& proc);
+    static int outputSlotOf(const ProcedureCall& call, size_t i) {
+        return call.outputSlots.empty() ? static_cast<int>(i) : call.outputSlots[i];
+    }
 
     // The EES ammonia-water mixture NH3H2O (src/evaluator_nh3h2o.cpp): its property functions, called from
     // evaluateCoolPropFunction with the named inputs already evaluated, and the procedure CALL NH3H2O.
