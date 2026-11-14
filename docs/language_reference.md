@@ -786,6 +786,41 @@ These take *only* the fluid (no state):
 `liquid`, `gas`, `twophase`, `supercritical`, `supercritical_gas`,
 `supercritical_liquid`, `critical_point`, `unknown`, `not_imposed`.
 
+### Heating values: `LowerHeatingValue` and `HigherHeatingValue`
+
+`LowerHeatingValue(Fuel)` and `HigherHeatingValue(Fuel)` (EES help *LowerHeatingValue*, *HigherHeatingValue*) give the heating
+value of a fuel at 25 °C **per kg of fuel**, in J/kg (the energy unit of the model per kg). They take the fuel like the fluid of
+a property call, the only argument: unquoted (`LowerHeatingValue(CH4)`), quoted, a string variable or a string function such as
+`LOOKUP$('Fuels', i, 1)`, in any case, and no state (`T=`, `P=` are an error: the heating values are those at 25 °C). The result is
+a constant of the fuel (derivative 0).
+
+```ees
+LHV_f = LowerHeatingValue(H2)             "= 1.1996E8 J/kg (EES stores 1.19946E8)"
+Q_dot_f = M_dot_f*LowerHeatingValue(CH4)  "kg/s of methane for a heat release"
+eta = W_dot/(M_dot_f*LowerHeatingValue('C8H18'))
+```
+
+- **Fuels.** The ideal gases of §5 whose composition (the NASA-Glenn table) is **C, H and O only**, with at least one C or H atom: `H2`,
+  `CO`, `CH4`, `C2H6`, `C3H8`, `C4H10` to `C8H18` (n-alkanes), and, as computed species, `OH` and `H`. They are taken in the gas phase, with
+  the heat of formation of the gas (the EES value of isooctane, 5.100E6 kJ/kmol, is that of the gas). EES also takes organic
+  incompressible liquids (ethanol, n-propanol): CoolSolve has none registered, so `LowerHeatingValue(C2H5OH)` is the error
+  *Unknown fluid*.
+- **Lower value** (water of the products as vapour), per kmol of fuel: `LHV = Δh_f(fuel) − n_C·Δh_f(CO2) − (n_H/2)·Δh_f(H2O, gas)`, with the
+  formation enthalpies of the registry (the headers of NASA-Glenn's `thermo.inp`: the same source as `enthalpy(X, T=25)`), divided by the
+  molar mass of the fuel. **Higher value** (liquid water): the lower value plus `(n_H/2)·M_H2O·h_fg`, with the enthalpy of
+  vaporisation of water at 25 °C of CoolProp's real fluid `Water` (IAPWS-95: 2441.6 kJ/kg = 43 987 kJ/kmol; EES 43 990), computed once.
+- **Errors** (each names the function and the fuel): `Air` (no composition: *Air has no composition in the NASA-Glenn table*), species with
+  nitrogen, argon or helium (`N2`, `NO`, `NO2`, `N`, `Ar`, `He`: *is no fuel of the heating values: they are defined for species of C, H and O
+  only*), without carbon or hydrogen (`O2`, `O`), the products themselves (`CO2`, `H2O`: *is a product of the combustion, it does not burn*),
+  real fluids (*the heating values are defined for the ideal gases … not for the real fluid Methane; use the ideal gas CH4*), incompressible
+  solutions, CoolProp mixtures, humid air and ammonia-water. A fluid CoolSolve does not know is the usual *Unknown fluid* error.
+- **Differences from EES.** EES uses `R = 8.314` for the same data (its H2O(g) is −241 811 kJ/kmol, CoolSolve's −241 826, the NASA-Glenn
+  header). Compared with the EES help: CH4 802 562 against 802 663 kJ/kmol (LHV, −1.26e-4) and 890 537 against 890 643 (HHV, −1.19e-4;
+  HHV − LHV 87 975 against 87 980); H2 119 961 against the 119 946 kJ/kg stored by EES (+1.2e-4). NIST's enthalpies of combustion of the
+  gas (liquid water) are CH4 890.35 to 890.7, C3H8 2219.2, CO 283.0, H2 285.83 kJ/mol; CoolSolve gives 890.54, 2219.10, 282.97 and 285.81.
+  The `C8H18` of CoolSolve is n-octane (5.116E6 kJ/kmol), not the isooctane of the EES help (5.100E6): the difference of 15 260 kJ/kmol is that of
+  their formation enthalpies.
+
 ### Ideal-gas test
 
 `ISIDEALGAS(Fluid)` returns **1** if CoolSolve models the substance as an ideal gas, **0** otherwise. It

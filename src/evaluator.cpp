@@ -1150,6 +1150,27 @@ static ADValue evaluateAbsorptionFunction(ExpressionEvaluator& evaluator, const 
         return ADValue::constant(fluid->getType() == FluidType::IdealGas ? 1.0 : 0.0, numVariables_);
     }
 
+    // LOWERHEATINGVALUE(Fuel) and HIGHERHEATINGVALUE(Fuel) (EES): the heating values at 25 C of an ideal-gas fuel of C, H and O,
+    // in the energy unit of the model per kg of fuel, a constant (derivative 0). The fuel is read like the fluid of a property
+    // call: unquoted, quoted, a string variable or a string function. See `heatingValues` (fluids.h).
+    if (name == "lowerheatingvalue" || name == "higherheatingvalue") {
+        if (func.args.size() != 1 || !func.namedArgs.empty())
+            throw std::runtime_error(func.name + "(): expects 1 argument, the fuel (a name, a quoted string or a string variable), "
+                                     "no state inputs such as T= or P=: the heating values are those at 25 C");
+        const std::string fuelName = fluidNameOf(func.args[0]);
+        const auto fuel = resolveFluid(fuelName, diagnostics_);
+        if (fuel->getType() == FluidType::Unknown) {
+            auto unsupported = std::dynamic_pointer_cast<UnsupportedFluid>(fuel);
+            throw std::runtime_error("Fluid '" + fuelName + "' is not supported: " + (unsupported ? unsupported->getReason() : "Unknown reason"));
+        }
+        HeatingValues values;
+        if (const std::string why = heatingValues(*fuel, values); !why.empty())
+            throw std::runtime_error(func.name + "(" + fuelName + "): " + why);
+        const double perKg = name == "lowerheatingvalue" ? values.lowerPerKg() : values.higherPerKg();
+        return ADValue::constant(UnitConverter::fromSI(perKg, UnitType::SpecificEnergy, coolpropConfig_.units.specific_energy),
+                                 numVariables_);
+    }
+
     // X_LIBR, H_LIBR, T_LIBR and P_LIBR('SI', ...): lithium bromide - water solution (ASHRAE correlations), and the EES
     // routines of the absorption pairs not implemented yet. Before the property calls (a call with named arguments
     // would be taken for one) and before the evaluation of all the arguments as numbers (the first is a string).

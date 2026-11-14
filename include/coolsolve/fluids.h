@@ -263,6 +263,31 @@ private:
  */
 std::optional<double> elementAtomicWeight(const std::string& symbol);
 
+/// The heating values of a fuel at 25 °C (see `heatingValues`).
+struct HeatingValues {
+    double lowerPerKmol;    ///< J/kmol of fuel, the water of the products as vapour
+    double higherPerKmol;   ///< J/kmol of fuel, the water of the products as liquid
+    double molarMass;       ///< kg/kmol of the fuel
+    double lowerPerKg() const { return lowerPerKmol / molarMass; }    ///< J/kg of fuel
+    double higherPerKg() const { return higherPerKmol / molarMass; }  ///< J/kg of fuel
+};
+
+/**
+ * @brief The lower and higher heating values at 25 °C of a fuel, as EES's `LowerHeatingValue` and `HigherHeatingValue`.
+ *
+ * The fuel is an ideal gas of the registry whose NASA-Glenn composition is C, H and O only, with at least one C or H atom,
+ * in the gas phase (EES: the phase it has at 25 °C and 1 atm; CoolSolve has no organic liquid), burning completely to CO2
+ * and water. The lower value has water vapour as product:
+ * `LHV = dHf(fuel) - nC dHf(CO2) - (nH/2) dHf(H2O, gas)` per kmol of fuel, with the formation enthalpies of the registry (the
+ * headers of NASA-Glenn's thermo.inp, the data of the enthalpies of the ideal gases); the higher value adds the enthalpy
+ * of vaporisation of the water formed, `(nH/2) M_H2O h_fg` with h_fg of CoolProp's real fluid Water at 25 °C (IAPWS-95),
+ * computed once per process.
+ * @param fluid   a fluid of the registry
+ * @param values  the result when the fuel is accepted
+ * @return the reason why the fluid has no heating value (for a message `LowerHeatingValue(X): <reason>`), or "" when it has
+ */
+std::string heatingValues(const Fluid& fluid, HeatingValues& values);
+
 class FluidRegistry {
 public:
     /**

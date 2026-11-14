@@ -540,6 +540,84 @@ ReferenceState IdealGasFluid::getReferenceState(const std::string& /*backend*/) 
     return reference;
 }
 
+namespace {
+
+/// The enthalpy of vaporisation of water at 25 °C [J/kg]: the saturated vapour minus the saturated liquid of CoolProp's real
+/// fluid Water (IAPWS-95, 2441.7 kJ/kg; EES: 43 990 kJ/kmol = 2441.7 kJ/kg). A state of its own, not the cached one of the
+/// evaluator; the static is initialised once and thread-safely.
+double waterVaporizationEnthalpy25C() {
+    static const double hfg = [] {
+        std::unique_ptr<CoolProp::AbstractState> water(CoolProp::AbstractState::factory("HEOS", "Water"));
+        water->update(CoolProp::QT_INPUTS, 1.0, 298.15);
+        const double vapour = water->hmass();
+        water->update(CoolProp::QT_INPUTS, 0.0, 298.15);
+        return vapour - water->hmass();
+    }();
+    return hfg;
+}
+
+/// The ideal gas of the registry that has the CoolProp equation of state of the real fluid `real` (`CH4` for `Methane`), or null
+std::shared_ptr<IdealGasFluid> idealGasOfRealFluid(const Fluid& real) {
+    for (const auto& fluid : FluidRegistry::getAllFluids())
+        if (auto ideal = std::dynamic_pointer_cast<IdealGasFluid>(fluid))
+            if (ideal->hasCoolPropFluid() && ideal->getCoolPropName() == real.getCoolPropName()) return ideal;
+    return nullptr;
+}
+
+/// Why the ideal gas `fuel` is no fuel of the heating values ("" when it is), and its composition
+std::string fuelComposition(const IdealGasFluid& fuel, nasa_glenn::Composition& composition) {
+    const nasa_glenn::Species* species = nasa_glenn::find(fuel.getName());
+    if (!species)   // Air
+        return fuel.getName() + " has no composition in the NASA-Glenn table (it is a mixture of N2, O2 and Ar): "
+               "burn its fuel with the species of the products";
+    composition = species->composition;
+    const auto& c = composition;
+    if (c.N || c.Ar || c.He)
+        return fuel.getName() + " is no fuel of the heating values: they are defined for species of C, H and O only";
+    if (!c.C && !c.H) return fuel.getName() + " has no carbon or hydrogen to burn";
+    if (2 * c.O == 4 * c.C + c.H)   // the oxygen of the products already: CO2 and H2O, the products themselves
+        return fuel.getName() + " is a product of the combustion, it does not burn";
+    return "";
+}
+
+}  // namespace
+
+std::string heatingValues(const Fluid& fluid, HeatingValues& values) {
+    switch (fluid.getType()) {
+        case FluidType::IdealGas: break;
+        case FluidType::Real: {
+            const auto ideal = idealGasOfRealFluid(fluid);
+            nasa_glenn::Composition composition;
+            return "the heating values are defined for the ideal gases (CH4, C3H8, H2, CO, ...), not for the real fluid " +
+                   fluid.getName() +
+                   (ideal && fuelComposition(*ideal, composition).empty() ? "; use the ideal gas " + ideal->getName() : std::string());
+        }
+        case FluidType::Incompressible:
+            return fluid.getName() + " is an incompressible solution: the heating values are defined for the ideal gases of the "
+                   "registry (EES also takes organic incompressible liquids such as ethanol, which are not registered here)";
+        case FluidType::Mixture:
+            return "a CoolProp mixture has no heating value: give the fuel, an ideal gas of the registry";
+        case FluidType::HumidAir:
+            return "humid air has no heating value";
+        case FluidType::AmmoniaWater:
+            return "the ammonia-water mixture has no heating value";
+        default:
+            return fluid.getName() + " is not supported";
+    }
+    const auto& fuel = static_cast<const IdealGasFluid&>(fluid);
+    nasa_glenn::Composition c;
+    if (const std::string why = fuelComposition(fuel, c); !why.empty()) return why;
+
+    const auto co2 = std::dynamic_pointer_cast<IdealGasFluid>(FluidRegistry::getFluid("CO2"));
+    const auto h2o = std::dynamic_pointer_cast<IdealGasFluid>(FluidRegistry::getFluid("H2O"));
+    values.lowerPerKmol = *fuel.getFormationEnthalpy() - c.C * *co2->getFormationEnthalpy() - 0.5 * c.H * *h2o->getFormationEnthalpy();
+    const double molesOfWater = 0.5 * c.H;
+    values.higherPerKmol = values.lowerPerKmol +
+                           molesOfWater * waterVaporizationEnthalpy25C() * 1000.0 * idealGasMolarMass(h2o->getCoolPropName());
+    values.molarMass = 1000.0 * idealGasMolarMass(fuel.getCoolPropName());
+    return "";
+}
+
 std::string IdealGasFluid::getRealFluidName() const {
     // the CoolProp name itself (Nitrogen, Water, n-Octane, ...), or the real-fluid name of the equation of state of
     // Air; an ideal gas of the registry is not a real fluid

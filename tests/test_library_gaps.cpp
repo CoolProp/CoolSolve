@@ -26343,3 +26343,239 @@ c_bar = cpbar('CO2', 25, 1000)
     CHECK_FALSE(failing.solveOk);
     CHECK(anyContains({failing.message}, "unknown species 'XYZ'"));
 }
+
+// ============================================================================
+// CS-GAP-HEATING-VALUE: LowerHeatingValue(Fuel) and HigherHeatingValue(Fuel) of EES (help hs706.htm, hs705.htm): the heating
+// values at 25 C of an ideal-gas fuel of C, H and O, J/kg of fuel in the energy unit of the model, from the formation
+// enthalpies of the registry (NASA-Glenn headers) and, for the higher value, the enthalpy of vaporisation of CoolProp's Water
+// ============================================================================
+
+namespace {
+
+/// The enthalpy of vaporisation of water at 25 C [J/kmol], from CoolProp's own PropsSI (independent of src/fluids.cpp)
+double waterVaporizationPerKmol() {
+    const double hfg = CoolProp::PropsSI("H", "T", 298.15, "Q", 1, "Water") - CoolProp::PropsSI("H", "T", 298.15, "Q", 0, "Water");
+    return hfg * 1000.0 * CoolProp::PropsSI("M", "T", 298.15, "Q", 1, "Water");
+}
+
+/// The lower heating value [J/kmol of fuel] by the balance of the formation enthalpies of the headers of thermo.inp [J/kmol]:
+/// dHf(fuel) - nC dHf(CO2) - nH/2 dHf(H2O gas), written out of the registry
+double lowerHeatingValueByBalance(double formation, int nC, int nH) {
+    return formation - nC * -393510e3 - 0.5 * nH * -241826e3;
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-HEATING-VALUE: the register reproducer, LowerHeatingValue(H2) in J/kg", "[library-gaps][heating-value]") {
+    // was: warning "Unknown function" (parser) then "Unknown or unsupported function: LowerHeatingValue with 1 arguments"
+    auto run = runModel("LHV = LowerHeatingValue(H2)\nz = LHV\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    // 241 826 kJ/kmol (the formation enthalpy of the vapour, NASA-Glenn) over the molar mass of H2 (CoolProp): J/kg
+    CHECK_THAT(run["LHV"], WithinRel(241826e3 / molarMassKgPerKmol("Hydrogen"), 1e-12));
+    CHECK(run["z"] == run["LHV"]);
+    // EES stores 119 946 kJ/kg for LowerHeatingValue(H2) (its H2O(g) is -241 811 kJ/kmol and its H2 2.016 kg/kmol): 0.012 % lower
+    CHECK_THAT(run["LHV"], WithinRel(1.19946e8, 2e-4));
+    CHECK_THAT(run["LHV"] / 1.19946e8 - 1.0, WithinAbs(1.2e-4, 3e-5));   // measured: +1.2e-4
+}
+
+TEST_CASE("CS-GAP-HEATING-VALUE: CH4, CO, H2, C3H8 and C8H18 against the EES help, NIST and the balance of the formation enthalpies",
+          "[library-gaps][heating-value]") {
+    auto run = runModel(R"(
+LHV_CH4 = LowerHeatingValue(CH4)*molarmass(CH4)/1000   "kJ/kmol"
+HHV_CH4 = HigherHeatingValue(CH4)*molarmass(CH4)/1000
+LHV_CO = LowerHeatingValue(CO)*molarmass(CO)/1000
+HHV_CO = HigherHeatingValue(CO)*molarmass(CO)/1000
+LHV_H2 = LowerHeatingValue(H2)*molarmass(H2)/1000
+HHV_H2 = HigherHeatingValue(H2)*molarmass(H2)/1000
+LHV_C3H8 = LowerHeatingValue(C3H8)*molarmass(C3H8)/1000
+HHV_C3H8 = HigherHeatingValue(C3H8)*molarmass(C3H8)/1000
+LHV_C8H18 = LowerHeatingValue(C8H18)*molarmass(C8H18)/1000
+HHV_C8H18 = HigherHeatingValue(C8H18)*molarmass(C8H18)/1000
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // the balance of the formation enthalpies of the registry (NASA-Glenn headers), exactly [kJ/kmol]
+    CHECK_THAT(run["LHV_CH4"], WithinRel(lowerHeatingValueByBalance(-74600e3, 1, 4) / 1000.0, 1e-12));      // 802 562
+    CHECK_THAT(run["LHV_CO"], WithinRel(lowerHeatingValueByBalance(-110535.196e3, 1, 0) / 1000.0, 1e-12));  // 282 974.8
+    CHECK_THAT(run["LHV_H2"], WithinRel(lowerHeatingValueByBalance(0.0, 0, 2) / 1000.0, 1e-12));            // 241 826
+    CHECK_THAT(run["LHV_C3H8"], WithinRel(lowerHeatingValueByBalance(-104680e3, 3, 8) / 1000.0, 1e-12));    // 2 043 154
+    CHECK_THAT(run["LHV_C8H18"], WithinRel(lowerHeatingValueByBalance(-208750e3, 8, 18) / 1000.0, 1e-12));  // 5 115 764 (n-octane)
+    // the higher value adds the vaporisation of the water formed: nH/2 times h_fg(25 C) of Water (43 989 kJ/kmol, EES 43 990)
+    const double hfg = waterVaporizationPerKmol() / 1000.0;
+    CHECK_THAT(hfg, WithinRel(43990.0, 1e-4));
+    CHECK_THAT(run["HHV_CH4"] - run["LHV_CH4"], WithinRel(2.0 * hfg, 1e-12));
+    CHECK_THAT(run["HHV_H2"] - run["LHV_H2"], WithinRel(1.0 * hfg, 1e-12));
+    CHECK_THAT(run["HHV_C3H8"] - run["LHV_C3H8"], WithinRel(4.0 * hfg, 1e-12));
+    CHECK_THAT(run["HHV_C8H18"] - run["LHV_C8H18"], WithinRel(9.0 * hfg, 1e-12));
+    CHECK(run["HHV_CO"] == run["LHV_CO"]);   // no hydrogen: no water
+    // EES (help hs706.htm, hs705.htm) for CH4: 802 663 and 890 643 kJ/kmol, HHV - LHV = 87 980. CoolSolve's formation enthalpies
+    // are the NASA headers at R = 8.314462618 (EES's -74 595, -393 486, -241 811 are 5.6e-5 lower on the last two), so the
+    // values are 1.26e-4 and 1.19e-4 below; the difference of the two is 87 975, 5.8e-5 below
+    CHECK_THAT(run["LHV_CH4"], WithinRel(802663.0, 2e-4));
+    CHECK_THAT(run["HHV_CH4"], WithinRel(890643.0, 2e-4));
+    CHECK_THAT(run["LHV_CH4"] / 802663.0 - 1.0, WithinAbs(-1.26e-4, 1e-5));
+    CHECK_THAT(run["HHV_CH4"] / 890643.0 - 1.0, WithinAbs(-1.19e-4, 1e-5));
+    CHECK_THAT(run["HHV_CH4"] - run["LHV_CH4"], WithinRel(87980.0, 1e-4));
+    // the EES help value of isooctane is the gas formation enthalpy of NASA's C8H18,isooctane (-224 010 kJ/kmol): 5.100E6 and
+    // 5.496E6 kJ/kmol. The registry's C8H18 is n-octane (-208 750), 15 260 kJ/kmol (0.30 %) higher
+    CHECK_THAT(run["LHV_C8H18"], WithinRel(5.100e6, 4e-3));
+    CHECK_THAT(run["HHV_C8H18"], WithinRel(5.496e6, 4e-3));
+    CHECK_THAT(run["LHV_C8H18"] - lowerHeatingValueByBalance(-224010e3, 8, 18) / 1000.0, WithinAbs(15260.0, 1e-6));
+    // NIST (webbook.nist.gov, standard enthalpy of combustion of the gas, liquid water): CH4 890.7 +- 0.4 and 890.35 +- 0.30,
+    // C3H8 2219.2 +- 0.46, CO 283.0 and H2 285.83 kJ/mol
+    CHECK_THAT(run["HHV_CH4"] / 1000.0, WithinRel(890.5, 5e-4));
+    CHECK_THAT(run["HHV_C3H8"] / 1000.0, WithinRel(2219.2, 5e-4));
+    CHECK_THAT(run["HHV_CO"] / 1000.0, WithinRel(283.0, 5e-4));
+    CHECK_THAT(run["HHV_H2"] / 1000.0, WithinRel(285.83, 5e-4));
+}
+
+TEST_CASE("CS-GAP-HEATING-VALUE: the other fuels of C, H and O of the registry: every alkane, OH and H", "[library-gaps][heating-value]") {
+    // every ideal gas of the table with C, H and O only that burns: the alkanes C2H6 to C7H16 too, OH and H as computed species
+    struct Fuel { const char* name; int nC, nH; };
+    for (const Fuel& f : std::vector<Fuel>{{"CH4", 1, 4}, {"C2H6", 2, 6}, {"C3H8", 3, 8}, {"C4H10", 4, 10}, {"C5H12", 5, 12}, {"C6H14", 6, 14},
+                                           {"C7H16", 7, 16}, {"C8H18", 8, 18}, {"CO", 1, 0}, {"H2", 0, 2}, {"OH", 0, 1}, {"H", 0, 1}}) {
+        INFO(f.name);
+        const auto fluid = std::dynamic_pointer_cast<IdealGasFluid>(FluidRegistry::getFluid(f.name));
+        REQUIRE(fluid);
+        const double formation = *fluid->getFormationEnthalpy();
+        auto run = runModel(std::string("M = molarmass(") + f.name + ")\nLHV = LowerHeatingValue(" + f.name + ")\nHHV = HigherHeatingValue(" + f.name + ")\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK_THAT(run["LHV"] * run["M"], WithinRel(lowerHeatingValueByBalance(formation, f.nC, f.nH), 1e-12));   // J/kmol
+        CHECK_THAT((run["HHV"] - run["LHV"]) * run["M"], WithinRel(0.5 * f.nH * waterVaporizationPerKmol(), 1e-9));
+        CHECK(run["LHV"] > 0.0);
+    }
+    // OH and H, computed (they are not stable fuels): OH + 1/4 O2 -> 1/2 H2O, H + 1/4 O2 -> 1/2 H2O
+    auto atoms = runModel("M_OH = molarmass(OH)\nL_OH = LowerHeatingValue(OH)*M_OH/1000\nM_H = molarmass(H)\nL_H = LowerHeatingValue(H)*M_H/1000\n");
+    REQUIRE(atoms.solveOk);
+    CHECK_THAT(atoms["L_OH"], WithinRel(37278.206 + 120913.0, 1e-9));    // kJ/kmol
+    CHECK_THAT(atoms["L_H"], WithinRel(217998.828 + 120913.0, 1e-9));
+}
+
+TEST_CASE("CS-GAP-HEATING-VALUE: the fuel written as a property call's fluid: unquoted, quoted, string variable, string function, any case",
+          "[library-gaps][heating-value]") {
+    auto run = runModel(R"(
+a = LowerHeatingValue(CH4)
+b = LowerHeatingValue('CH4')
+c = lowerheatingvalue(ch4)
+d = LOWERHEATINGVALUE('Ch4')
+fuel$ = 'CH4'
+e = LowerHeatingValue(fuel$)
+f = LowerHeatingValue(LOOKUP$('Fuels', 2, 1))
+g = LowerHeatingValue(UPPERCASE$('ch4'))
+h = HigherHeatingValue(CH4)
+i = higherheatingvalue(fuel$)
+)", {{"Fuels", "Name\nH2\nCH4\n"}});
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());   // neither the parser nor the evaluator warns
+    for (const char* name : {"b", "c", "d", "e", "f", "g"}) {
+        INFO(name);
+        CHECK(run[name] == run["a"]);
+    }
+    CHECK(run["i"] == run["h"]);
+    CHECK(run["h"] > run["a"]);
+    // the fuel of a FUNCTION or PROCEDURE argument
+    auto routine = runModel("FUNCTION lhv(f$)\n  lhv = LowerHeatingValue(f$)\nEND\nx = lhv('C3H8')\ny = LowerHeatingValue(C3H8)\n");
+    INFO(routine.message);
+    REQUIRE(routine.solveOk);
+    CHECK(routine["x"] == routine["y"]);
+}
+
+TEST_CASE("CS-GAP-HEATING-VALUE: a constant of the fuel, derivative 0, usable in equations and with the unit system of the model",
+          "[library-gaps][heating-value]") {
+    const double lhv = evaluateAD("LowerHeatingValue(CH4)", {}).value;
+    const ADResult product = evaluateAD("x*LowerHeatingValue(CH4) + HigherHeatingValue(H2)", {{"x", 2.0}});
+    CHECK_THAT(product.value, WithinRel(2.0 * lhv + evaluateAD("HigherHeatingValue(H2)", {}).value, 1e-12));
+    REQUIRE(product.gradient.size() == 1);
+    CHECK_THAT(product.gradient[0], WithinRel(lhv, 1e-12));   // the only dependence is the factor x
+    const ADResult constant = evaluateAD("LowerHeatingValue(CH4)", {{"x", 2.0}});
+    REQUIRE(constant.gradient.size() == 1);
+    CHECK(constant.gradient[0] == 0.0);
+    // an implicit equation: the fuel mass flow that gives a power
+    auto run = runModel("Q_dot = 1E6\nQ_dot = M_dot*LowerHeatingValue(CH4)\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["M_dot"], WithinRel(1e6 / lhv, 1e-9));
+    // J/kg in the default unit system, kJ/kg when the specific energy of the model is kJ/kg
+    EESParser parser;
+    auto parsed = parser.parse("y = LowerHeatingValue(CH4)\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    CoolPropConfig kilo;
+    kilo.units.specific_energy = "kJ/kg";
+    ExpressionEvaluator ev(1, kilo);
+    CHECK_THAT(ev.evaluate(ir.getEquations()[0].rhs).value, WithinRel(lhv / 1000.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-HEATING-VALUE: negative tests, what has no heating value and the message", "[library-gaps][heating-value]") {
+    SECTION("Air has no composition; species without C or H, with N, Ar or He, and the products of the combustion") {
+        CHECK(idealCallError("LowerHeatingValue(Air)") ==
+              "LowerHeatingValue(Air): Air has no composition in the NASA-Glenn table (it is a mixture of N2, O2 and Ar): burn its fuel with "
+              "the species of the products");
+        for (const std::string species : {"N2", "NO", "NO2", "N", "Ar", "He"}) {
+            INFO(species);
+            CHECK(idealCallError("LowerHeatingValue(" + species + ")") ==
+                  "LowerHeatingValue(" + species + "): " + species + " is no fuel of the heating values: they are defined for species of C, "
+                  "H and O only");
+            CHECK(idealCallError("HigherHeatingValue(" + species + ")").find("is no fuel of the heating values") != std::string::npos);
+        }
+        for (const std::string species : {"O2", "O"})
+            CHECK(idealCallError("LowerHeatingValue(" + species + ")") ==
+                  "LowerHeatingValue(" + species + "): " + species + " has no carbon or hydrogen to burn");
+        for (const std::string species : {"CO2", "H2O"})
+            CHECK(idealCallError("HigherHeatingValue(" + species + ")") ==
+                  "HigherHeatingValue(" + species + "): " + species + " is a product of the combustion, it does not burn");
+    }
+    SECTION("a real fluid: the message names the ideal gas to use, when there is a fuel") {
+        CHECK(idealCallError("LowerHeatingValue(Methane)") ==
+              "LowerHeatingValue(Methane): the heating values are defined for the ideal gases (CH4, C3H8, H2, CO, ...), not for the real "
+              "fluid Methane; use the ideal gas CH4");
+        CHECK(idealCallError("HigherHeatingValue(Hydrogen)").find("not for the real fluid Hydrogen; use the ideal gas H2") != std::string::npos);
+        CHECK(idealCallError("LowerHeatingValue(Propane)").find("use the ideal gas C3H8") != std::string::npos);
+        CHECK(idealCallError("LowerHeatingValue('n-Octane')").find("use the ideal gas C8H18") != std::string::npos);
+        // no fuel behind it: no suggestion
+        for (const std::string fluid : {"Water", "Nitrogen", "CarbonDioxide", "Air_ha", "R134a"}) {
+            INFO(fluid);
+            const std::string message = idealCallError("LowerHeatingValue(" + fluid + ")");
+            CHECK(message.find("not for the real fluid") != std::string::npos);
+            CHECK(message.find("use the ideal gas") == std::string::npos);
+        }
+    }
+    SECTION("incompressibles, mixtures, humid air, ammonia-water, unsupported and unknown fluids") {
+        CHECK(idealCallError("LowerHeatingValue(MEG)").find("is an incompressible solution: the heating values are defined for the ideal gases "
+                                                           "of the registry (EES also takes organic incompressible liquids such as ethanol, "
+                                                           "which are not registered here)") != std::string::npos);
+        CHECK(idealCallError("LowerHeatingValue('R245fa[0.5]&R134a[0.5]')") ==
+              "LowerHeatingValue(R245fa[0.5]&R134a[0.5]): a CoolProp mixture has no heating value: give the fuel, an ideal gas of the registry");
+        CHECK(idealCallError("HigherHeatingValue(AirH2O)") == "HigherHeatingValue(AirH2O): humid air has no heating value");
+        CHECK(idealCallError("HigherHeatingValue(NH3H2O)") == "HigherHeatingValue(NH3H2O): the ammonia-water mixture has no heating value");
+        CHECK(idealCallError("LowerHeatingValue(Acetylene)") == "Fluid 'Acetylene' is not supported: Not in CoolProp standard fluids");
+        CHECK(idealCallError("LowerHeatingValue(Unobtainium)").find("Unknown fluid: 'Unobtainium'") == 0);
+        CHECK(idealCallError("LowerHeatingValue(C2H5OH)").find("Unknown fluid: 'C2H5OH'") == 0);   // liquid ethanol: not registered
+    }
+    SECTION("the number and kind of arguments") {
+        const std::string usage = "(): expects 1 argument, the fuel (a name, a quoted string or a string variable), no state inputs such as "
+                                  "T= or P=: the heating values are those at 25 C";
+        CHECK(idealCallError("LowerHeatingValue()") == "LowerHeatingValue" + usage);
+        CHECK(idealCallError("HigherHeatingValue(CH4, O2)") == "HigherHeatingValue" + usage);
+        CHECK(idealCallError("LowerHeatingValue(CH4, T=25)") == "LowerHeatingValue" + usage);
+        CHECK(idealCallError("LowerHeatingValue(CH4, T=25, P=1E5)") == "LowerHeatingValue" + usage);
+    }
+    SECTION("in a model: the error stops the calculation with its message, and no other function is affected") {
+        auto run = runModel("x = LowerHeatingValue(Methane)\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "not for the real fluid Methane; use the ideal gas CH4"));
+        auto n2 = runModel("fuel$ = 'N2'\nx = HigherHeatingValue(fuel$)\n");
+        CHECK_FALSE(n2.solveOk);
+        CHECK(anyContains({n2.message}, "HigherHeatingValue(N2): N2 is no fuel of the heating values"));
+        // the other thermophysical functions of the fuels are unchanged
+        auto other = runModel("h = enthalpy(CH4, T=25)\nM = molarmass(CH4)\n");
+        REQUIRE(other.solveOk);
+    }
+}

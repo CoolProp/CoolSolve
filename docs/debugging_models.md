@@ -208,6 +208,15 @@ and a solution at the limit is refused (*CALL NASA(NO2, T): temperature … K is
 data …*). *CALL NASA: unknown species 'XYZ'; the species of the NASA-Glenn table are …* lists the 22 names the table holds. Outputs
 that are 1000 times too small or too large are the kJ of EES: the procedure gives J/kmol.
 
+### A heating value that is refused
+
+`LowerHeatingValue(Fuel)` and `HigherHeatingValue(Fuel)` ([Language Reference §3](language_reference.md#heating-values-lowerheatingvalue-and-higherheatingvalue))
+take an ideal gas of C, H and O: *LowerHeatingValue(Methane): the heating values are defined for the ideal gases … not for the real
+fluid Methane; use the ideal gas CH4* means that the fuel is written with the name of its real fluid; *N2 is no fuel of the heating values*,
+*Air has no composition …* and *CO2 is a product of the combustion* name a species that does not burn or is not a pure fuel of C, H and
+O. A liquid fuel of EES (ethanol, n-propanol) is the *Unknown fluid* error: give its heating value as a number. The result is in J/kg of
+fuel, whatever the EES file reads in kJ/kmol (multiply by the molar mass of the fuel, `molarmass(X)`, to get J/kmol).
+
 ### Procedure Fixes
 
 - Procedures are a common source of issues. Check:

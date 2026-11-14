@@ -62,12 +62,13 @@ static bool isEESThermophysicalFunction(const std::string& name) {
     return EES_THERMOPHYSICAL_FUNCTIONS.find(lower) != EES_THERMOPHYSICAL_FUNCTIONS.end();
 }
 
-/// ISIDEALGAS(Fluid) takes the fluid like a property function but computes no property: the hints given to
-/// property calls (units of the inputs, suggestions for the fluid name such as "'Air' is not moist air") do not apply.
+/// ISIDEALGAS(Fluid), LOWERHEATINGVALUE(Fuel) and HIGHERHEATINGVALUE(Fuel) take the fluid like a property function but compute no
+/// property of a state: the hints given to property calls (units of the inputs, suggestions for the fluid name such as
+/// "'Air' is not moist air") do not apply.
 static bool isFluidQueryFunction(const std::string& name) {
     std::string lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-    return lower == "isidealgas";
+    return lower == "isidealgas" || lower == "lowerheatingvalue" || lower == "higherheatingvalue";
 }
 
 // ============================================================================
