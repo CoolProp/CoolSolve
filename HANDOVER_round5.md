@@ -76,12 +76,17 @@ Opus is the orchestrator and Sonnet agents implement the items.
 
 Sizes: S small, M medium, L large. "Rec." is the recommended option.
 
-**Progress (2026-11-09).** Wave 1 is done and committed (`9c8a3a4`, `adb89c5`, `b9574b0`, `94e1198`, `1ecbd34`,
-`479f520`, `f2ea938`, `6b254eb`); summary in register §9. State at `6b254eb`: unit suite 1331 passed + 2 pdflatex
-skips, examples 45/48 solving (same 3 failures), library regression 219 PASS / 101 DEVIATION / 0 FAIL (the deviations
-are obsolete baselines, listed in §9, for the maintainer to re-explain in the library). **Next: Wave 2, first item
-`CS-BUG-BLOCK-EVAL-SCALING`.** The agent brief in use is §6 plus rule 6 above; each brief also gives HEAD and the
-current library baseline (219/101/0) and asks for a copy of `build/library_regression.md` before any change.
+**Progress (2026-11-15).** Wave 1 is done and committed (`9c8a3a4`, `adb89c5`, `b9574b0`, `94e1198`, `1ecbd34`,
+`479f520`, `f2ea938`, `6b254eb`), and so is **Wave 5** with two Wave 3 items, out of order at the maintainer's request
+(2026-11-14): `CS-GAP-FLUIDS-NASA-SPECIES` (`c8db8ac`), `CS-GAP-NASA` reopened and built in (`83d89e1`),
+`CS-GAP-HEATING-VALUE` (`00a4daa`; `CS-GAP-ENTHALPY-FUSION` of the same Wave 3 row stays open), `CS-GAP-CHEM-EQUIL`
+(`a04cad5`, numerical core by the orchestrator); summaries in register §9. State at `a04cad5`: unit suite 1386 passed + 2
+pdflatex skips, examples 47/50 solving (same 3 failures), library regression 219 PASS / 101 DEVIATION / 0 FAIL on the 320
+baseline targets (the library checkout has grown to 335 targets, the new greenhouse models take ~8 min each: compare with
+`COOLSOLVE_LIBRARY_TEST_FILTER` set to the old ones). New: `CS-BUG-BLOCK-SCALE-SPREAD` (§5; a candidate for Wave 2 next to
+`CS-BUG-NEWTON-CYCLE`). **Next: Wave 2, first item `CS-BUG-BLOCK-EVAL-SCALING`.** The agent brief in use is §6 plus rule 6
+above; each brief also gives HEAD and the current library baseline (219/101/0) and asks for a copy of
+`build/library_regression.md` before any change.
 
 ### Wave 1: silent wrong results
 
@@ -141,7 +146,7 @@ At the end of the wave: the full unit suite and `[examples-comprehensive]` (not 
 - `CS-BUG-LOOKUP-HINT`, `CS-DOC-EESCSV`, `CS-DOC-SQUARE-INTEGRAL`.
 - `CS-GAP-INTERP2D` (P3, one example; may be deferred).
 
-### Wave 5: CHEM_EQUIL
+### Wave 5: CHEM_EQUIL (done 2026-11-15, see the progress note)
 
 1. `CS-GAP-FLUIDS-NASA-SPECIES`: NASA-Glenn 7-coefficient polynomials (McBride, Zehe & Gordon 2002) for OH, H, O,
    N, NO and NO2, with the same reference as the Wave 1 ideal gases. Do it after `CS-GAP-IDEAL-GAS-MODEL`.

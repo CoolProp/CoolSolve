@@ -543,6 +543,26 @@ commit message of `adb89c5`), `CSL-0240` (`b9574b0`, baseline accepted 0.3 off),
 `QUALITY`, last `$IntegralTable` row). Documented limit of `CS-BUG-TINY-IMPLICIT`: a residual below 1e-21 is accepted
 (`x^3 = 8E-60` stops at 9e-8).
 
+**Wave 5 of round 5 done, with two Wave 3 items (2026-11-14/15, `fix/library-gaps-5`, not pushed).** The ideal-gas gaps,
+one commit each (§7): `CS-GAP-FLUIDS-NASA-SPECIES` (`c8db8ac`), `CS-GAP-NASA` (`83d89e1`), `CS-GAP-HEATING-VALUE` (`00a4daa`),
+`CS-GAP-CHEM-EQUIL` (`a04cad5`). Maintainer decisions of 2026-11-14: `CALL NASA` is built in (decision D12 "rewrite the
+model" reopened); new procedures take the units of the model (°C, Pa, J/kmol), not EES's fixed K/kPa/kJ; the 17 CoolProp
+ideal gases stay on alpha0. Integration with CoolProp: one ideal-gas layer with two data sources (`src/ideal_gas.cpp`:
+CoolProp's alpha0, or the NASA-Glenn polynomials of `src/nasa_glenn.cpp` for the species CoolProp lacks, name
+`NASA::<species>`), the Δh_f and s° of all 22 registered gases from one table, no CoolProp change: CoolProp has no
+species database or equilibrium solver, and these radicals have no real-fluid equation of state; `nasa_glenn` has no
+CoolProp dependency, so a NASA backend could be proposed upstream later. `CHEM_EQUIL` data: NASA-Glenn for all 14 species;
+EES's stored results differ on OH, NO, NO2 by 4 to 10 % (older JANAF data), the major species within 0.4 %. The numerical
+core of `CHEM_EQUIL` was written by the orchestrator (the agent's solver failed on rich mixtures at 400–600 K). End check
+at `a04cad5`: unit suite 1386 passed + 2 pdflatex skips, examples 47/50 solving (the three known failures), library
+regression 219 PASS / 101 DEVIATION / 0 FAIL on the 320 baseline targets, every target identical to the start of the wave
+(the library checkout now has 335 targets; run the comparison with `COOLSOLVE_LIBRARY_TEST_FILTER` on the old ones).
+New rows: `CS-BUG-BLOCK-SCALE-SPREAD` (§5, a solver weakness found with `CSL-0150`); `CS-BUG-QUALITY-ALIAS-PARSE` extended
+with `mm`, `mu`, `k`. **Library follow-ups for the maintainer:** `CSL-0150` passes `T = T_adiab_K` (write `T = T_adiab`)
+and its 14 unknowns `H[i]` stall the flame block (sum them in a `FUNCTION`, or `/1E6`: then 1776.08 °C), and it may drop
+the D12 rewrite with `CALL NASA`; the register's EES value 2417.129 K was a stale fuel-oil record; the native files of
+`CSL-0264`, `CSL-0278` and `CSL-0331` solve (the `_coolsolve` variants of `CSL-0278` and `CSL-0331` become unnecessary).
+
 **Open points of round 3** (choices of the implementers, to confirm in EES or by the maintainer):
 an `ENDIF` that closes no `IF` in a body is ignored with warning `P008` (evidence: `Brineprop.lib`);
 `Uppercase$`/`Lowercase$` convert ASCII and Latin-1 letters only; in `INTERPOLATE('t','A','B',A=3)` the named
