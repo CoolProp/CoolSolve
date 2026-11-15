@@ -3,6 +3,7 @@
 #include "coolsolve/ees_string.h"
 #include "coolsolve/libr_ashrae.h"
 #include "coolsolve/lookup_table.h"
+#include "coolsolve/chem_equil.h"
 #include "coolsolve/nasa_glenn.h"
 #include "coolsolve/psychprops.h"
 #include "coolsolve/units.h"
@@ -747,6 +748,12 @@ void ExpressionEvaluator::evaluateProcedureCall(const ProcedureCall& call) {
         // the model, found above, replaces it, as for Colebrook
         if (lowerName == "nasa") {
             evaluateNasaCall(call);
+            return;
+        }
+        // Built-in CALL CHEM_EQUIL(P, T, A\\O, C\\O, H\\O, N\\O : x_H2, ..., x_Ar): the 14-species equilibrium; a PROCEDURE
+        // CHEM_EQUIL of the model, found above, replaces it, as for NASA and Colebrook
+        if (lowerName == "chem_equil") {
+            evaluateChemEquilCall(call);
             return;
         }
         // Built-in CALL NH3H2O(Code, In1, In2, In3 : T, P, x, h, s, u, v, q): the EES ammonia-water procedure
@@ -1661,6 +1668,93 @@ void ExpressionEvaluator::evaluateNasaCall(const ProcedureCall& call) {
         if (!residualOnly_)
             for (size_t k = 0; k < numVariables_; ++k) output.gradient[k] = derivative * dTK_dT * T.gradient[k];
         setVariable(resolveVariableName(call.outputVars[i]), output);
+    }
+}
+
+/// CALL CHEM_EQUIL(P, T, A\\O, C\\O, H\\O, N\\O : x_H2, x_O2, x_H2O, x_CO, x_CO2, x_OH, x_H, x_O, x_N2, x_N, x_NO, x_NO2, x_CH4, x_Ar),
+/// the external routine of the EES files that compute chemical equilibria (not in the EES help): the mole fractions of the 14
+/// species at the pressure P and temperature T, for a mixture whose atoms of argon, carbon, hydrogen and nitrogen are in the
+/// ratios A\\O, C\\O, H\\O, N\\O to its oxygen atoms. The numerics are those of chem_equil.h (element potentials, the NASA-Glenn
+/// data of the 14 species, gas phase only). P and T are in the units of the model (Pa and C), unlike the files for EES (kPa and K).
+/// The derivatives of the mole fractions with respect to the six inputs are exact; they reach the unknowns through the gradients of
+/// the inputs. An input that depends on the unknowns of its block and leaves the domain is limited to it during the iterations
+/// (T to the range of the data on both sides, P to 1 Pa, a negative ratio to 0: the logged limit makes a solution there an error,
+/// see InputClampLog), since an error would stop the iteration; a constant input outside the domain is the error that names it.
+void ExpressionEvaluator::evaluateChemEquilCall(const ProcedureCall& call) {
+    constexpr int kIn = chem_equil::kInputCount, kOut = chem_equil::kSpeciesCount;
+    if (call.inputArgs.size() != static_cast<size_t>(kIn) || call.outputVars.size() != static_cast<size_t>(kOut))   // the parser refuses these calls
+        throw std::runtime_error("CALL CHEM_EQUIL takes 6 inputs (P, T, A\\O, C\\O, H\\O, N\\O) and 14 outputs (x_H2 ... x_Ar), got " +
+                                 std::to_string(call.inputArgs.size()) + " input(s) and " + std::to_string(call.outputVars.size()) + " output(s)");
+    std::vector<ADValue> value;
+    value.reserve(kIn);
+    for (int i = 0; i < kIn; ++i) {
+        if (isStringExpression(call.inputArgs[i]))
+            throw std::runtime_error(std::string("CALL CHEM_EQUIL: the input ") + chem_equil::kInputNames[i] + " (number " + std::to_string(i + 1) +
+                                     ") is a string: the six inputs are numbers");
+        value.push_back(evaluate(call.inputArgs[i]));
+    }
+
+    // the inputs in SI, and d(SI)/d(unit of the model): P [Pa] and T [K] follow the unit system, the ratios are pure numbers
+    const UnitSystem& units = coolpropConfig_.units;
+    const double siPerUnit[kIn] = {UnitConverter::scaleToSI(UnitType::Pressure, units.pressure),
+                                   UnitConverter::scaleToSI(UnitType::Temperature, units.temperature), 1.0, 1.0, 1.0, 1.0};
+    chem_equil::Inputs in;
+    for (int i = 0; i < kIn; ++i) in[i] = value[i].value;
+    in[0] = UnitConverter::toSI(value[0].value, UnitType::Pressure, units.pressure);
+    in[1] = UnitConverter::toSI(value[1].value, UnitType::Temperature, units.temperature);
+
+    // trial points of the solver: an input that depends on the unknowns of its block is limited to the domain (and logged)
+    if (!disableClamping_) {
+        constexpr double kLowestPressure = 1.0;   // Pa: the lowest pressure the equilibrium is validated at
+        auto text = [](double v) { std::ostringstream o; o << v; return o.str(); };
+        auto dependsOnUnknowns = [&](int i) {
+            return std::any_of(value[i].gradient.begin(), value[i].gradient.end(), [](double g) { return g != 0.0; });
+        };
+        auto limit = [&](int i, double bound, const std::string& what) {
+            if (clampLog_) {
+                clampLog_->fired = true;
+                if (clampLog_->report) {
+                    std::ostringstream oss;
+                    oss << "CALL CHEM_EQUIL" << (routine_.empty() ? "" : " in " + routine_) << ": " << what << " (" << bound << (i == 0 ? " Pa" : i == 1 ? " K" : "")
+                        << "); an input that depends on the unknowns of its block is limited there during the iterations, so the solution would "
+                           "not satisfy this equation";
+                    clampLog_->report->push_back(oss.str());
+                }
+            }
+            in[i] = bound;   // the gradient is kept: the solver still has a direction back into the domain
+        };
+        if (in[0] < kLowestPressure && dependsOnUnknowns(0))
+            limit(0, kLowestPressure, "pressure " + text(in[0]) + " Pa is below the lowest pressure of the equilibrium");
+        const chem_equil::TemperatureRange range = chem_equil::temperatureRange(in);
+        if (dependsOnUnknowns(1) && in[1] < range.tMin)
+            limit(1, range.tMin, "temperature " + text(in[1]) + " K is below the lowest temperature of the NASA-Glenn data of its species");
+        else if (dependsOnUnknowns(1) && in[1] > range.tMax)
+            limit(1, range.tMax, "temperature " + text(in[1]) + " K is above the highest temperature of the NASA-Glenn data of its species");
+        for (int i = 2; i < kIn; ++i)
+            if (in[i] < 0.0 && dependsOnUnknowns(i))
+                limit(i, 0.0, std::string("the ratio ") + chem_equil::kInputNames[i] + " = " + text(in[i]) + " is negative");
+    }
+
+    chem_equil::Result result;
+    try {
+        result = chem_equil::solve(in, !residualOnly_);
+    } catch (const std::domain_error& e) {
+        throw std::runtime_error(std::string("CALL CHEM_EQUIL: ") + e.what());
+    } catch (const std::out_of_range& e) {
+        throw std::runtime_error(std::string("CALL CHEM_EQUIL: ") + e.what());
+    } catch (const std::runtime_error& e) {
+        throw std::runtime_error(std::string("CALL CHEM_EQUIL: ") + e.what());
+    }
+
+    for (int j = 0; j < kOut; ++j) {
+        ADValue output(result.x[j], numVariables_);
+        if (!residualOnly_)
+            for (size_t k = 0; k < numVariables_; ++k) {
+                double g = 0.0;   // d x_j / d unknown k = sum_i (d x_j / d input_i, SI) (d input_i SI / d unit) (d input_i / d unknown k)
+                for (int i = 0; i < kIn; ++i) g += result.dx[j][i] * siPerUnit[i] * value[i].gradient[k];
+                output.gradient[k] = g;
+            }
+        setVariable(resolveVariableName(call.outputVars[j]), output);
     }
 }
 

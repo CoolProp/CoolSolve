@@ -8,6 +8,7 @@
 #include "coolsolve/library_store.h"
 #include "coolsolve/libr_ashrae.h"
 #include "coolsolve/builtin_procedures.h"
+#include "coolsolve/chem_equil.h"
 #include "coolsolve/psychprops.h"
 #include "coolsolve/units.h"
 #include "coolsolve/user_hints.h"
@@ -883,6 +884,7 @@ private:
             "nh3h2o",  // the built-in procedure CALL NH3H2O(Code, In1, In2, In3 : T, P, x, h, s, u, v, q)
             "psychprops",  // the built-in procedure CALL psychprops(T=T, P=P, R=R : T, v, h, s, u, w, R, WetB, DewP)
             "nasa",  // the built-in procedure CALL NASA(Species$, T : cp, h, s)
+            "chem_equil",  // the built-in procedure CALL CHEM_EQUIL(P, T, A\\O, C\\O, H\\O, N\\O : x_H2, ..., x_Ar)
             "ntumethod", "effectivenessntu",
             "lmtd",
             "integral", "integralvalue",  // equation-based dynamic solver
@@ -3330,6 +3332,14 @@ private:
         return lower == "nasa" && !procedureNames_.count(name);
     }
 
+    /// True for a CALL of the built-in procedure CHEM_EQUIL(P, T, A\\O, C\\O, H\\O, N\\O : x_H2, ..., x_Ar): as NASA, a PROCEDURE
+    /// CHEM_EQUIL defined by the model before the call replaces it.
+    bool isBuiltinChemEquil(const std::string& name) const {
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        return lower == "chem_equil" && !procedureNames_.count(name);
+    }
+
     /// True for a CALL of the built-in procedure psychprops: it always runs, whatever the model defines under that name.
     static bool isBuiltinPsychprops(const std::string& name) {
         std::string lower = name;
@@ -3604,6 +3614,12 @@ private:
             const std::string why = psychpropsOutputs(inputArgs, inputNames, outputVars, outputExprs, outputPositions, outputSlots);
             if (!why.empty()) return refuse(why);
         }
+        if (isBuiltinChemEquil(name) && (inputArgs.size() != static_cast<size_t>(chem_equil::kInputCount) ||
+                                         outputVars.size() != static_cast<size_t>(chem_equil::kSpeciesCount)))
+            return refuse("CALL CHEM_EQUIL takes 6 inputs (P, T, A\\O, C\\O, H\\O, N\\O) and 14 outputs (the mole fractions of H2, O2, H2O, CO, CO2, OH, "
+                          "H, O, N2, N, NO, NO2, CH4 and Ar, in this order): CALL CHEM_EQUIL(P, T, A\\O, C\\O, H\\O, N\\O : x_H2, x_O2, x_H2O, x_CO, "
+                          "x_CO2, x_OH, x_H, x_O, x_N2, x_N, x_NO, x_NO2, x_CH4, x_Ar); got " + std::to_string(inputArgs.size()) +
+                          " input(s) and " + std::to_string(outputVars.size()) + " output(s)");
         if (isBuiltinNasa(name)) {
             const std::string why = positionedOutputs(kNasaOutputs, nullptr, outputVars, outputExprs, outputPositions, outputSlots);
             if (!why.empty()) return refuse(why);

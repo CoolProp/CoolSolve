@@ -8,9 +8,12 @@
  */
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_exception.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "coolsolve/autodiff_node.h"
+#include "coolsolve/chem_equil.h"
 #include "coolsolve/constants.h"
 #include "coolsolve/ees_string.h"
 #include "coolsolve/evaluator.h"
@@ -30,6 +33,7 @@
 #include "HumidAirProp.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -26578,4 +26582,703 @@ TEST_CASE("CS-GAP-HEATING-VALUE: negative tests, what has no heating value and t
         auto other = runModel("h = enthalpy(CH4, T=25)\nM = molarmass(CH4)\n");
         REQUIRE(other.solveOk);
     }
+}
+
+// ============================================================================
+// CS-GAP-CHEM-EQUIL: the built-in CALL CHEM_EQUIL(P, T, A\O, C\O, H\O, N\O : x_H2, ..., x_Ar), the mole fractions of the 14
+// species of the equilibrium of combustion gases (include/coolsolve/chem_equil.h, src/chem_equil.cpp: element potentials, the
+// NASA-Glenn data of nasa_glenn.h, gas phase only); P in Pa and T in C in the model, as every property function
+// ============================================================================
+
+namespace {
+
+namespace ce = chem_equil;
+
+/// The species of the outputs, in the order of the CALL
+enum Species14 { sH2, sO2, sH2O, sCO, sCO2, sOH, sH, sO, sN2, sN, sNO, sNO2, sCH4, sAr };
+
+ce::Inputs equilInputs(double P, double TK, double AO, double CO, double HO, double NO) { return {P, TK, AO, CO, HO, NO}; }
+
+/// The oxygen, carbon, hydrogen, nitrogen and argon atoms of a mixture of mole fractions x (per mole of mixture)
+struct Atoms {
+    double O, C, H, N, Ar;
+};
+
+Atoms atomsOf(const double* x) {
+    return {x[sH2O] + x[sCO] + 2.0 * x[sCO2] + x[sOH] + x[sO] + 2.0 * x[sO2] + x[sNO] + 2.0 * x[sNO2],
+            x[sCO] + x[sCO2] + x[sCH4],
+            2.0 * x[sH2] + 2.0 * x[sH2O] + x[sOH] + x[sH] + 4.0 * x[sCH4],
+            2.0 * x[sN2] + x[sN] + x[sNO] + x[sNO2],
+            x[sAr]};
+}
+
+/// The balances of the equilibrium `x` of the inputs `in`: the atoms per oxygen atom are the ratios, the fractions sum to 1
+void checkBalances(const ce::Result& r, const ce::Inputs& in, double tolerance = 1e-12) {
+    const Atoms a = atomsOf(r.x);
+    double sum = 0.0;
+    for (int j = 0; j < ce::kSpeciesCount; ++j) {
+        CHECK(r.x[j] >= 0.0);
+        sum += r.x[j];
+    }
+    CHECK_THAT(sum, WithinAbs(1.0, tolerance));
+    CHECK_THAT(a.Ar / a.O, WithinAbs(in[2], tolerance * std::max(1.0, in[2])));
+    CHECK_THAT(a.C / a.O, WithinAbs(in[3], tolerance * std::max(1.0, in[3])));
+    CHECK_THAT(a.H / a.O, WithinAbs(in[4], tolerance * std::max(1.0, in[4])));
+    CHECK_THAT(a.N / a.O, WithinAbs(in[5], tolerance * std::max(1.0, in[5])));
+}
+
+/// The standard Gibbs energy of a species of the NASA-Glenn table at T [K] [J/mol]: h - T s (anchored enthalpy, entropy at 1 bar)
+double nasaGibbs(const char* species, double T) {
+    const nasa_glenn::Point p = nasa_glenn::evaluate(*nasa_glenn::find(species), T);
+    return p.h - T * p.s;
+}
+
+/// exp(-dG/RT) of a reaction, `terms` pairs of (stoichiometric coefficient, species): products positive
+double equilibriumConstant(std::initializer_list<std::pair<double, const char*>> terms, double T) {
+    double dG = 0.0;
+    for (const auto& [nu, species] : terms) dG += nu * nasaGibbs(species, T);
+    return std::exp(-dG / (nasa_glenn::kGasConstant * T));
+}
+
+/// The state of the orchestrator's reference: T 3000 K, P 1E7 Pa, octane with 20 % excess air (C\O 8/30, H\O 0.6, N\O 3.76, A\O 0)
+const ce::Inputs kOctane3000 = {1e7, 3000.0, 0.0, 8.0 / 30.0, 0.6, 3.76};
+
+/// The equivalence-ratio form of a fuel CxHy burning in air O2 + 3.76 N2 (+ argon): the ratios of the atoms to the oxygen atoms
+ce::Inputs airFlame(double P, double TK, double x, double y, double phi, double AO = 0.0) {
+    const double O = 2.0 * (x + y / 4.0) / phi;   // oxygen atoms per mole of fuel
+    return {P, TK, AO, x / O, y / O, 3.76};
+}
+
+/// The species of CALL CHEM_EQUIL as a lookup table, for the models of the tests
+const std::map<std::string, std::string> kSpecies14Table = {{"Species14", "Name\nH2\nO2\nH2O\nCO\nCO2\nOH\nH\nO\nN2\nN\nNO\nNO2\nCH4\nAr\n"}};
+
+/// The adiabatic flame of CH4 with 20 % excess air at 30 bar, reactants at 288 K (14.85 C), T_adiab unknown: H_reactants = H_products
+/// over the 14 species of CALL CHEM_EQUIL (the enthalpies of CALL NASA, the species names of the lookup table Species14). The enthalpy of
+/// the products is summed in a FUNCTION, so that the 14 species enthalpies (~1E8 J/kmol) are no unknowns of the block of T_adiab beside
+/// mole fractions of 1E-20: such a block stalls on the rounding of Newton's method (CS-BUG-BLOCK-SCALE-SPREAD, the formulation of CSL-0150).
+const std::string kAdiabaticFlameCh4 = R"(
+"molar enthalpy of the products [J/kmol of mixture]: the sum of x_i h_i, h_i from CALL NASA, the data of CHEM_EQUIL"
+FUNCTION hmix(T, x[1..14])
+  hmix := 0
+  i := 1
+  REPEAT
+    CALL NASA(LOOKUP$('Species14', i, 1), T : , h, )
+    hmix := hmix + x[i]*h
+    i := i + 1
+  UNTIL (i > 14)
+END
+
+m = 1 ; n = 4 ; e = 0.2
+T_fuel = 14.85 ; T_air = 14.85
+CALL NASA('CH4', T_fuel : , h_CH4, )
+CALL NASA('O2', T_air : , h_O2, )
+CALL NASA('N2', T_air : , h_N2, )
+H_react = h_CH4 + (m+n/4)*(1+e)*(h_O2 + (79/21)*h_N2)
+P = 30E5
+T = T_adiab
+"ratios of the atoms to the oxygen atoms; the argon a trace, as in the EES file"
+A\O = 1e-10
+C\O = m/(2*(m+n/4)*(1+e))
+H\O = n/(2*(m+n/4)*(1+e))
+N\O = 79/21
+CALL CHEM_EQUIL(P,T,A\O,C\O,H\O,N\O:x_H2,x_O2,x_H2O,x_CO,x_CO2,x_OH,x_H,x_O,x_N2,x_N,x_NO,x_NO2,x_CH4,x_Ar)
+x[1] = x_H2 ; x[2] = x_O2 ; x[3] = x_H2O ; x[4] = x_CO ; x[5] = x_CO2 ; x[6] = x_OH ; x[7] = x_H ; x[8] = x_O
+x[9] = x_N2 ; x[10] = x_N ; x[11] = x_NO ; x[12] = x_NO2 ; x[13] = x_CH4 ; x[14] = x_Ar
+"conservation of the H atoms gives the moles of products per kmol of fuel"
+n = ntot*(2*x_H2 + 2*x_H2O + x_OH + x_H + 4*x_CH4)
+H_react = ntot*hmix(T_adiab, x[1..14])
+)";
+
+const char* const kChemEquilOutputs = "x_H2,x_O2,x_H2O,x_CO,x_CO2,x_OH,x_H,x_O,x_N2,x_N,x_NO,x_NO2,x_CH4,x_Ar";
+
+}  // namespace
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: the register reproducer, CALL CHEM_EQUIL is a built-in procedure", "[library-gaps][chem-equil]") {
+    // was: warning "Unknown function 'CHEM_EQUIL'", then "Unknown procedure: CHEM_EQUIL"
+    auto run = runModel(std::string("P = 3000E3\nT = 2143.85\nCALL CHEM_EQUIL(P,T,1e-10,0.2,0.8,3.7619:") + kChemEquilOutputs + ")\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    // no "Unknown function" warning: the only one is W002, for the trace species (argon 4e-11), whose value is exact
+    CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
+    for (const auto& w : run.warningItems) {
+        INFO(w.message);
+        CHECK(w.code == "W002");
+    }
+    // P in Pa and T in C: the core at 3000 kPa and 2417 K (2143.85 C)
+    const ce::Inputs in = equilInputs(3000e3, 2143.85 + 273.15, 1e-10, 0.2, 0.8, 3.7619);
+    const ce::Result r = ce::solve(in);
+    CHECK_THAT(run["x_CO2"], WithinRel(r.x[sCO2], 1e-12));
+    CHECK_THAT(run["x_N2"], WithinRel(r.x[sN2], 1e-12));
+    CHECK_THAT(run["x_NO"], WithinRel(r.x[sNO], 1e-12));
+    CHECK(run["x_CH4"] < 1e-15);
+    // the case in lower case, as the EES files write it
+    auto lower = runModel(std::string("Call chem_equil(3000E3, 2143.85, 1e-10, 0.2, 0.8, 3.7619 : ") + kChemEquilOutputs + ")\n");
+    REQUIRE(lower.solveOk);
+    CHECK(lower["x_CO2"] == run["x_CO2"]);
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: the numerics, the state of the orchestrator's reference, the balances", "[library-gaps][chem-equil]") {
+    const ce::Result r = ce::solve(kOctane3000);
+    checkBalances(r, kOctane3000);
+    // 7 significant digits
+    const double expected[ce::kSpeciesCount] = {2.792360e-03, 2.987745e-02, 1.078714e-01, 1.670589e-02, 8.719515e-02, 1.161410e-02, 8.356775e-04,
+                                                1.955764e-03, 7.238525e-01, 1.183470e-06, 1.726056e-02, 3.798198e-05, 0.0,          0.0};
+    for (int j = 0; j < ce::kSpeciesCount; ++j) {
+        INFO(ce::kSpeciesNames[j]);
+        if (expected[j] > 0.0) CHECK_THAT(r.x[j], WithinRel(expected[j], 2e-6));
+    }
+    CHECK(r.x[sAr] == 0.0);       // A\O = 0: no argon
+    CHECK(r.x[sCH4] < 1e-12);     // the methane is 1e-17 at this state
+    CHECK(r.iterations > 0);
+    // the same through the CALL, in the units of the model
+    auto run = runModel(std::string("CALL CHEM_EQUIL(1E7, 2726.85, 0, 8/30, 0.6, 3.76 : ") + kChemEquilOutputs + ")\n");
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const char* names[ce::kSpeciesCount] = {"x_H2", "x_O2", "x_H2O", "x_CO", "x_CO2", "x_OH", "x_H", "x_O", "x_N2", "x_N", "x_NO", "x_NO2", "x_CH4", "x_Ar"};
+    for (int j = 0; j < ce::kSpeciesCount; ++j) {
+        INFO(names[j]);
+        // the CALL is solved like any block, to the solver tolerance (1e-9, absolute for values below 1): a trace species has its absolute digits
+        CHECK(std::abs(run[names[j]] - r.x[j]) <= 1e-12 + 1e-9 * r.x[j]);
+    }
+    // deterministic: the same inputs, the same bits
+    const ce::Result again = ce::solve(kOctane3000);
+    for (int j = 0; j < ce::kSpeciesCount; ++j) CHECK(again.x[j] == r.x[j]);
+    // derivatives are not needed for a residual: x is the same without them
+    const ce::Result without = ce::solve(kOctane3000, false);
+    for (int j = 0; j < ce::kSpeciesCount; ++j) CHECK(without.x[j] == r.x[j]);
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: the equilibrium constants of the reactions are those of the NASA-Glenn data, to 1e-10", "[library-gaps][chem-equil]") {
+    // CO2 = CO + 1/2 O2, H2O = H2 + 1/2 O2, N2 + O2 = 2 NO, 1/2 H2 + 1/2 O2 = OH, H2 = 2 H, O2 = 2 O, N2 = 2 N: Kp = exp(-dG/RT) from nasa_glenn
+    const std::vector<ce::Inputs> states = {kOctane3000, equilInputs(1e5, 2000.0, 0.0, 8.0 / 30.0, 0.6, 3.76), airFlame(3e6, 2500.0, 1, 4, 0.8, 0.0224),
+                                            airFlame(1e5, 3500.0, 1, 4, 1.4, 0.0224), airFlame(1e3, 4000.0, 0, 2, 1.0), airFlame(1e7, 1800.0, 8, 18, 0.5)};
+    for (const ce::Inputs& in : states) {
+        INFO("P " << in[0] << " Pa, T " << in[1] << " K, ratios " << in[2] << " " << in[3] << " " << in[4] << " " << in[5]);
+        const ce::Result r = ce::solve(in);
+        checkBalances(r, in);
+        const double T = in[1], P = in[0] / 1e5, *x = r.x;
+        if (x[sCO2] > 1e-30 && x[sCO] > 1e-30)
+            CHECK_THAT(x[sCO] * std::sqrt(x[sO2] * P) / x[sCO2], WithinRel(equilibriumConstant({{1, "CO"}, {0.5, "O2"}, {-1, "CO2"}}, T), 1e-10));
+        if (x[sH2O] > 1e-30 && x[sH2] > 1e-30)
+            CHECK_THAT(x[sH2] * std::sqrt(x[sO2] * P) / x[sH2O], WithinRel(equilibriumConstant({{1, "H2"}, {0.5, "O2"}, {-1, "H2O"}}, T), 1e-10));
+        if (x[sNO] > 1e-30 && x[sN2] > 1e-30)
+            CHECK_THAT(x[sNO] * x[sNO] / (x[sN2] * x[sO2]), WithinRel(equilibriumConstant({{2, "NO"}, {-1, "N2"}, {-1, "O2"}}, T), 1e-10));
+        if (x[sOH] > 1e-30)
+            CHECK_THAT(x[sOH] / std::sqrt(x[sH2] * x[sO2]), WithinRel(equilibriumConstant({{1, "OH"}, {-0.5, "H2"}, {-0.5, "O2"}}, T), 1e-10));
+        if (x[sH] > 1e-30)
+            CHECK_THAT(x[sH] * x[sH] * P / x[sH2], WithinRel(equilibriumConstant({{2, "H"}, {-1, "H2"}}, T), 1e-10));
+        if (x[sO] > 1e-30)
+            CHECK_THAT(x[sO] * x[sO] * P / x[sO2], WithinRel(equilibriumConstant({{2, "O"}, {-1, "O2"}}, T), 1e-10));
+        if (x[sN] > 1e-30)
+            CHECK_THAT(x[sN] * x[sN] * P / x[sN2], WithinRel(equilibriumConstant({{2, "N"}, {-1, "N2"}}, T), 1e-10));
+        if (x[sNO2] > 1e-30 && x[sNO] > 1e-30)
+            CHECK_THAT(x[sNO2] / (x[sNO] * std::sqrt(x[sO2] * P)), WithinRel(equilibriumConstant({{1, "NO2"}, {-1, "NO"}, {-0.5, "O2"}}, T), 1e-10));
+        if (x[sCH4] > 1e-30 && x[sH2] > 1e-30 && x[sCO] > 1e-30)   // CH4 + 1/2 O2 = CO + 2 H2: the change of moles is 3/2
+            CHECK_THAT(x[sCO] * x[sH2] * x[sH2] * std::pow(P, 1.5) / (x[sCH4] * std::sqrt(x[sO2])),
+                       WithinRel(equilibriumConstant({{1, "CO"}, {2, "H2"}, {-1, "CH4"}, {-0.5, "O2"}}, T), 1e-9));
+    }
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: the data against NIST-JANAF, log10 Kf of OH, NO, H and O at 2000 K and 3000 K", "[library-gaps][chem-equil]") {
+    // JANAF (janaf.nist.gov: H-038, N-005, H-001, O-001) log Kf of the formation from the elements, at 1 bar:
+    // OH -0.240, 0.074; NO -1.699, -0.913; H -2.788, -0.801; O -3.175, -0.946. The formation of OH is from 1/2 H2 + 1/2 O2, and the
+    // heat of formation of the NASA-Glenn data differs from JANAF's for OH (37.28 against 38.99 kJ/mol: 0.044 in log K at 2000 K,
+    // 0.030 at 3000 K) and for NO (91.27 against 90.29 kJ/mol: 0.026 and 0.017); H and O are the same data
+    struct Janaf { double T, OH, NO, H, O; };
+    for (const Janaf& j : {Janaf{2000.0, -0.240, -1.699, -2.788, -3.175}, Janaf{3000.0, 0.074, -0.913, -0.801, -0.946}}) {
+        INFO("T " << j.T << " K");
+        const ce::Inputs in = airFlame(1e5, j.T, 1, 4, 1.0, 0.0224);
+        const ce::Result r = ce::solve(in);
+        const double *x = r.x, P = 1.0;
+        CHECK_THAT(std::log10(x[sOH] / std::sqrt(x[sH2] * x[sO2])), WithinAbs(j.OH, j.T == 2000.0 ? 0.05 : 0.04));
+        CHECK_THAT(std::log10(x[sNO] / std::sqrt(x[sN2] * x[sO2])), WithinAbs(j.NO, j.T == 2000.0 ? 0.03 : 0.02));
+        CHECK_THAT(std::log10(x[sH] * std::sqrt(P) / std::sqrt(x[sH2])), WithinAbs(j.H, 0.003));
+        CHECK_THAT(std::log10(x[sO] * std::sqrt(P) / std::sqrt(x[sO2])), WithinAbs(j.O, 0.003));
+    }
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: the EES result at 3000 K and 10000 kPa (Ex_2_T_P_effects_on_dissociation)", "[library-gaps][chem-equil]") {
+    // EES stores x_H2 0.002863922069, x_O2 0.02976769748, x_H2O 0.1081372975, x_CO 0.01666254423, x_CO2 0.08724803022, x_OH 0.01094846463,
+    // x_H 8.478888e-4, x_O 1.953129e-3, x_N2 0.7236036682, x_N 1.187432e-6, x_NO 0.01793176347, x_NO2 3.440625e-5. EES's data are older: the major
+    // species agree within 1 %, the minor ones differ by the data (JANAF's heats of formation of OH and NO, which the NASA-Glenn data revised)
+    const ce::Result r = ce::solve(kOctane3000);
+    struct Ees { int species; double x, tolerance; };
+    // the species of 1 % and the measured differences of the others: CoolSolve/EES - 1
+    for (const Ees& e : {Ees{sH2O, 0.1081372975, 0.01}, Ees{sCO2, 0.08724803022, 0.01}, Ees{sN2, 0.7236036682, 0.01}, Ees{sO2, 0.02976769748, 0.01},
+                         Ees{sCO, 0.01666254423, 0.01}, Ees{sO, 0.001953128998, 0.01}}) {
+        INFO(ce::kSpeciesNames[e.species]);
+        CHECK_THAT(r.x[e.species] / e.x - 1.0, WithinAbs(0.0, e.tolerance));
+    }
+    CHECK_THAT(r.x[sCO2] / 0.08724803022 - 1.0, WithinAbs(-6.0e-4, 2e-4));   // the example's value: 0.087195, -0.06 %
+    CHECK_THAT(r.x[sH2] / 0.002863922069 - 1.0, WithinAbs(-0.0250, 0.002));      // -2.5 %
+    CHECK_THAT(r.x[sOH] / 0.01094846463 - 1.0, WithinAbs(0.0608, 0.002));        // +6.1 %: the heat of formation of OH
+    CHECK_THAT(r.x[sH] / 0.0008478888111 - 1.0, WithinAbs(-0.0144, 0.002));      // -1.4 %
+    CHECK_THAT(r.x[sN] / 1.187431829e-06 - 1.0, WithinAbs(-0.0033, 0.002));
+    CHECK_THAT(r.x[sNO] / 0.01793176347 - 1.0, WithinAbs(-0.0374, 0.002));       // -3.7 %: the heat of formation of NO
+    CHECK_THAT(r.x[sNO2] / 3.440624813e-05 - 1.0, WithinAbs(0.1039, 0.003));     // +10.4 %
+    CHECK(r.x[sCH4] < 1e-12);
+    CHECK(r.x[sAr] == 0.0);
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: the EES result for a stoichiometric fuel-oil flame at 1 atm (Ex_3_4_CH4_Fuel_Oil_Tadiab...2016)", "[library-gaps][chem-equil]") {
+    // the stored solution of the EES file: T 2417.129 K, P 101325 Pa, C\O 0.3442947702, H\O 0.6228209192, N\O 79/21, A\O 1e-10;
+    // x_H2 0.00433468828, x_O2 0.0105494341, x_H2O 0.1129207515, x_CO 0.02448084819, x_CO2 0.1089178018, x_OH 0.005672346338, x_H 0.001131708225,
+    // x_O 0.0009685497652, x_N2 0.7265450666, x_N 1.124249531e-07, x_NO 0.004477799449, x_NO2 8.93301875e-07
+    const ce::Inputs in = {101325.0, 2417.129, 1e-10, 0.3442947702, 0.6228209192, 79.0 / 21.0};
+    const ce::Result r = ce::solve(in);
+    checkBalances(r, in);
+    struct Ees { int species; double x; };
+    for (const Ees& e : {Ees{sH2O, 0.1129207515}, Ees{sCO2, 0.1089178018}, Ees{sN2, 0.7265450666}}) {
+        INFO(ce::kSpeciesNames[e.species]);
+        CHECK_THAT(r.x[e.species] / e.x - 1.0, WithinAbs(0.0, 0.01));
+    }
+    // the other major species and the minor ones, with the measured differences (the data of EES against NASA-Glenn)
+    for (const Ees& e : {Ees{sO2, 0.0105494341}, Ees{sCO, 0.02448084819}, Ees{sH2, 0.00433468828}}) {
+        INFO(ce::kSpeciesNames[e.species]);
+        CHECK_THAT(r.x[e.species] / e.x - 1.0, WithinAbs(0.0, 0.03));
+    }
+    CHECK_THAT(r.x[sOH] / 0.005672346338 - 1.0, WithinAbs(0.08, 0.015));      // +8 %
+    CHECK_THAT(r.x[sNO] / 0.004477799449 - 1.0, WithinAbs(-0.05, 0.015));     // -5 %
+    CHECK_THAT(r.x[sNO2] / 8.93301875e-07 - 1.0, WithinAbs(0.055, 0.015));    // +5.5 %
+    CHECK_THAT(r.x[sAr], WithinAbs(0.0, 1e-9));   // A\O = 1e-10: argon is a trace
+    CHECK(r.x[sAr] > 0.0);
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: a robustness sweep, T 300 K to 5000 K, P 1E3 Pa to 1E7 Pa, CH4, C8H18 and H2 at phi 0.5 to 2", "[library-gaps][chem-equil]") {
+    // the reduced form of the orchestrator's sweep of 25 200 cases: every case converges, with the balances
+    struct Fuel { double x, y; };
+    int cases = 0;
+    for (const Fuel& fuel : {Fuel{1, 4}, Fuel{8, 18}, Fuel{0, 2}})
+        for (double phi : {0.5, 1.0, 1.5, 2.0})
+            for (double AO : {0.0, 0.0224})
+                for (double P : {1e3, 1e5, 1e7})
+                    for (double T : {300.0, 600.0, 1000.0, 1500.0, 2000.0, 3000.0, 4000.0, 5000.0}) {
+                        const ce::Inputs in = airFlame(P, T, fuel.x, fuel.y, phi, AO);
+                        INFO("C" << fuel.x << "H" << fuel.y << " phi " << phi << " A\\O " << AO << " P " << P << " T " << T);
+                        ce::Result r;
+                        REQUIRE_NOTHROW(r = ce::solve(in));
+                        checkBalances(r, in);
+                        ++cases;
+                    }
+    CHECK(cases == 3 * 4 * 2 * 3 * 8);
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: the derivatives with respect to the six inputs are exact", "[library-gaps][chem-equil]") {
+    // against five-point central differences of the solution, at a lean, a stoichiometric-hot and a rich state; A\O is present
+    // (its derivative is 0 where the ratio is 0: the element is absent)
+    const std::vector<std::pair<const char*, ce::Inputs>> states = {{"lean", airFlame(2e6, 1800.0, 1, 4, 0.6, 0.0224)},
+                                                                    {"stoichiometric, hot", airFlame(1e5, 2800.0, 1, 4, 1.0, 0.0224)},
+                                                                    {"rich", airFlame(5e5, 2200.0, 1, 4, 1.6, 0.0224)}};
+    for (const auto& [name, in] : states) {
+        INFO(name);
+        const ce::Result r = ce::solve(in);
+        for (int i = 0; i < ce::kInputCount; ++i) {
+            const double step = 1e-3 * std::abs(in[i]);
+            auto at = [&](double shift) {
+                ce::Inputs shifted = in;
+                shifted[i] += shift;
+                return ce::solve(shifted, false);
+            };
+            const ce::Result m2 = at(-2 * step), m1 = at(-step), p1 = at(step), p2 = at(2 * step);
+            for (int j = 0; j < ce::kSpeciesCount; ++j) {
+                if (r.x[j] < 1e-10) continue;   // the trace species: their derivatives are checked relative to their own size below
+                const double fd = (-p2.x[j] + 8.0 * p1.x[j] - 8.0 * m1.x[j] + m2.x[j]) / (12.0 * step);
+                INFO(ce::kSpeciesNames[j] << " with respect to " << ce::kInputNames[i] << ": analytical " << r.dx[j][i] << ", FD " << fd);
+                CHECK(std::abs(r.dx[j][i] - fd) <= 1e-6 * (std::abs(fd) + r.x[j] / std::abs(in[i]) * 1e-3));
+            }
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: a zero ratio removes its element, H2 as fuel, no argon, no nitrogen", "[library-gaps][chem-equil]") {
+    SECTION("H2 burning in air: C\\O = 0, A\\O = 0: no carbon species, no argon, and zero derivatives") {
+        const ce::Inputs in = airFlame(1e5, 2500.0, 0, 2, 1.0);
+        const ce::Result r = ce::solve(in);
+        checkBalances(r, in);
+        for (int species : {sCO, sCO2, sCH4, sAr}) {
+            CHECK(r.x[species] == 0.0);
+            for (int i = 0; i < ce::kInputCount; ++i) CHECK(r.dx[species][i] == 0.0);   // also with respect to the ratio of the absent element
+        }
+        for (int j = 0; j < ce::kSpeciesCount; ++j) {
+            CHECK(r.dx[j][2] == 0.0);   // A\O
+            CHECK(r.dx[j][3] == 0.0);   // C\O
+        }
+        CHECK(r.x[sH2O] > 0.1);
+    }
+    SECTION("no nitrogen: the species of nitrogen are 0") {
+        const ce::Inputs in = equilInputs(1e5, 3000.0, 0.0, 0.25, 0.5, 0.0);
+        const ce::Result r = ce::solve(in);
+        checkBalances(r, in);
+        for (int species : {sN2, sN, sNO, sNO2}) CHECK(r.x[species] == 0.0);
+        CHECK(r.x[sCO] > 0.0);
+    }
+    SECTION("oxygen alone, where the range of the data goes to 20000 K: O2 = 2 O") {
+        const ce::Inputs in = equilInputs(1e5, 6500.0, 0.0, 0.0, 0.0, 0.0);
+        const ce::TemperatureRange range = ce::temperatureRange(in);
+        CHECK(range.tMin == 200.0);
+        CHECK(range.tMax == 20000.0);
+        const ce::Result r = ce::solve(in);
+        checkBalances(r, in);
+        CHECK_THAT(r.x[sO] * r.x[sO] * 1.0 / r.x[sO2], WithinRel(equilibriumConstant({{2, "O"}, {-1, "O2"}}, 6500.0), 1e-10));
+        // with hydrogen or nitrogen present the range stops at 6000 K (H2O and CH4, NO2); carbon alone (O2, O, CO, CO2) goes to 20000 K
+        CHECK(ce::temperatureRange(equilInputs(1e5, 3000.0, 0.0, 0.0, 0.5, 0.0)).tMax == 6000.0);
+        CHECK(ce::temperatureRange(equilInputs(1e5, 3000.0, 0.0, 0.1, 0.0, 0.0)).tMax == 20000.0);
+        CHECK(ce::temperatureRange(equilInputs(1e5, 3000.0, 0.0, 0.0, 0.0, 3.76)).tMax == 6000.0);
+        CHECK(ce::temperatureRange(equilInputs(1e5, 3000.0, 0.01, 0.0, 0.0, 0.0)).tMax == 20000.0);   // argon alone is fine to 20000 K
+    }
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: negative tests of the core, the error names the input", "[library-gaps][chem-equil]") {
+    using Catch::Matchers::ContainsSubstring;
+    const ce::Inputs good = kOctane3000;
+    auto with = [&](int index, double value) {
+        ce::Inputs in = good;
+        in[index] = value;
+        return in;
+    };
+    SECTION("the pressure") {
+        CHECK_THROWS_AS(ce::solve(with(0, 0.0)), std::domain_error);
+        CHECK_THROWS_WITH(ce::solve(with(0, 0.0)), "the pressure P = 0 Pa is not positive");
+        CHECK_THROWS_AS(ce::solve(with(0, -5.0)), std::domain_error);
+        CHECK_THROWS_WITH(ce::solve(with(0, -5.0)), "the pressure P = -5 Pa is not positive");
+        CHECK_THROWS_AS(ce::solve(with(0, std::nan(""))), std::domain_error);
+        CHECK_THROWS_AS(ce::solve(with(0, INFINITY)), std::domain_error);
+    }
+    SECTION("the temperature, in K, with the range of the species present") {
+        CHECK_THROWS_AS(ce::solve(with(1, 150.0)), std::out_of_range);
+        CHECK_THROWS_WITH(ce::solve(with(1, 150.0)), "the temperature T = 150 K is outside the range of the NASA-Glenn data of the species of the mixture, 200 K to 6000 K");
+        CHECK_THROWS_AS(ce::solve(with(1, 6001.0)), std::out_of_range);
+        CHECK_THROWS_WITH(ce::solve(with(1, 6001.0)), ContainsSubstring("T = 6001 K is outside the range"));
+        CHECK_NOTHROW(ce::solve(with(1, 200.0)));
+        CHECK_NOTHROW(ce::solve(with(1, 6000.0)));
+        CHECK_THROWS_AS(ce::solve(with(1, std::nan(""))), std::domain_error);
+        CHECK_THROWS_AS(ce::solve(equilInputs(1e5, 25000.0, 0.0, 0.0, 0.0, 0.0)), std::out_of_range);
+        CHECK_THROWS_WITH(ce::solve(equilInputs(1e5, 25000.0, 0.0, 0.0, 0.0, 0.0)), ContainsSubstring("200 K to 20000 K"));
+    }
+    SECTION("a negative or infinite ratio names the input") {
+        for (int i = 2; i < ce::kInputCount; ++i) {
+            INFO(ce::kInputNames[i]);
+            CHECK_THROWS_AS(ce::solve(with(i, -0.1)), std::domain_error);
+        CHECK_THROWS_WITH(ce::solve(with(i, -0.1)), ContainsSubstring(std::string("the ratio ") + ce::kInputNames[i] + " = -0.1 is negative or not finite"));
+            CHECK_THROWS_AS(ce::solve(with(i, std::nan(""))), std::domain_error);
+            CHECK_THROWS_AS(ce::solve(with(i, INFINITY)), std::domain_error);
+        }
+    }
+    SECTION("the graphite limit: the carbon cannot be held by CO, CO2 and CH4") {
+        CHECK_THROWS_AS(ce::solve(equilInputs(1e5, 2000.0, 0.0, 1.5, 0.5, 3.76)), std::domain_error);
+        CHECK_THROWS_WITH(ce::solve(equilInputs(1e5, 2000.0, 0.0, 1.5, 0.5, 3.76)), ContainsSubstring("C\\O = 1.5 is not below 1 + H\\O/4 = 1.125: the carbon cannot be held by CO, CO2 and CH4"));
+        CHECK_NOTHROW(ce::solve(equilInputs(1e5, 2000.0, 0.0, 1.1, 0.5, 3.76)));   // below the limit
+    }
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: the CALL in the units of the model: P in Pa and T in C by default, kPa and K when the unit system says so",
+          "[library-gaps][chem-equil]") {
+    const ce::Result reference = ce::solve(kOctane3000);
+    auto call = [&](const UnitSystem& units, double P, double T, std::vector<std::pair<std::string, double>> unknowns) {
+        EESParser parser;
+        auto parsed = parser.parse(std::string("CALL CHEM_EQUIL(Pv, Tv, 0, 8/30, 0.6, 3.76 : ") + kChemEquilOutputs + ")\n");
+        REQUIRE(parsed.success);
+        CoolPropConfig config;
+        config.units = units;
+        ExpressionEvaluator ev(2, config);
+        ev.setVariable("Pv", ADValue::independent(P, 0, 2));
+        ev.setVariable("Tv", ADValue::independent(T, 1, 2));
+        for (const auto& stmt : parsed.program.statements)
+            if (stmt->is<ProcedureCall>()) ev.evaluateProcedureCall(stmt->as<ProcedureCall>());
+        std::vector<ADValue> x;
+        for (const char* name : {"x_CO2", "x_NO", "x_H2O"}) x.push_back(ev.getVariable(name));
+        return x;
+    };
+    SECTION("Pa and C (the default)") {
+        const auto x = call(UnitSystem(), 1e7, 2726.85, {});
+        CHECK_THAT(x[0].value, WithinRel(reference.x[sCO2], 1e-12));
+        CHECK_THAT(x[1].value, WithinRel(reference.x[sNO], 1e-12));
+        CHECK_THAT(x[0].gradient[0], WithinRel(reference.dx[sCO2][0], 1e-12));   // per Pa
+        CHECK_THAT(x[0].gradient[1], WithinRel(reference.dx[sCO2][1], 1e-12));   // per degree = per K
+        CHECK_THAT(x[2].gradient[1], WithinRel(reference.dx[sH2O][1], 1e-12));
+    }
+    SECTION("kPa and K") {
+        UnitSystem units;
+        units.pressure = "kPa";
+        units.temperature = "K";
+        const auto x = call(units, 10000.0, 3000.0, {});
+        CHECK_THAT(x[0].value, WithinRel(reference.x[sCO2], 1e-12));
+        CHECK_THAT(x[1].value, WithinRel(reference.x[sNO], 1e-12));
+        CHECK_THAT(x[0].gradient[0], WithinRel(reference.dx[sCO2][0] * 1000.0, 1e-12));   // per kPa: 1000 Pa
+        CHECK_THAT(x[0].gradient[1], WithinRel(reference.dx[sCO2][1], 1e-12));            // per K
+    }
+    SECTION("bar and F: the scale factors of the unit conversion, not 1") {
+        UnitSystem units;
+        units.pressure = "bar";
+        units.temperature = "F";
+        const auto x = call(units, 100.0, 4940.33, {});   // 3000 K = 4940.33 F
+        CHECK_THAT(x[0].value, WithinRel(reference.x[sCO2], 1e-9));
+        CHECK_THAT(x[0].gradient[0], WithinRel(reference.dx[sCO2][0] * 1e5, 1e-9));          // per bar
+        CHECK_THAT(x[0].gradient[1], WithinRel(reference.dx[sCO2][1] * 5.0 / 9.0, 1e-9));    // per degree F
+    }
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: the gradients of the outputs reach the unknowns, the 14 outputs against finite differences of the call",
+          "[library-gaps][chem-equil]") {
+    // a call whose six inputs are all expressions of two unknowns u and v: the chain rule through the inputs
+    auto evaluate = [&](double u, double v, std::vector<double>* gradient) {
+        EESParser parser;
+        auto parsed = parser.parse(std::string("CALL CHEM_EQUIL(1E6*u, 2000 + 100*v, 0.01*v, 0.2*u, 0.5 + 0.1*v*u, 3.76 : ") + kChemEquilOutputs + ")\n");
+        REQUIRE(parsed.success);
+        ExpressionEvaluator ev(2);
+        ev.setVariable("u", ADValue::independent(u, 0, 2));
+        ev.setVariable("v", ADValue::independent(v, 1, 2));
+        for (const auto& stmt : parsed.program.statements)
+            if (stmt->is<ProcedureCall>()) ev.evaluateProcedureCall(stmt->as<ProcedureCall>());
+        std::vector<double> x;
+        for (const char* name : {"x_H2", "x_O2", "x_H2O", "x_CO", "x_CO2", "x_OH", "x_N2", "x_NO"}) {
+            const ADValue value = ev.getVariable(name);
+            x.push_back(value.value);
+            if (gradient) { gradient->push_back(value.gradient[0]); gradient->push_back(value.gradient[1]); }
+        }
+        return x;
+    };
+    std::vector<double> gradient;
+    const std::vector<double> base = evaluate(0.5, 1.0, &gradient);
+    for (int k = 0; k < 2; ++k) {
+        const double step = 1e-4;
+        const std::vector<double> up = k == 0 ? evaluate(0.5 + step, 1.0, nullptr) : evaluate(0.5, 1.0 + step, nullptr);
+        const std::vector<double> down = k == 0 ? evaluate(0.5 - step, 1.0, nullptr) : evaluate(0.5, 1.0 - step, nullptr);
+        for (size_t j = 0; j < base.size(); ++j) {
+            const double fd = (up[j] - down[j]) / (2.0 * step);
+            INFO("output " << j << " with respect to the unknown " << k);
+            CHECK(std::abs(gradient[2 * j + k] - fd) <= 1e-6 * (std::abs(fd) + 1e-3 * base[j]));
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: an adiabatic flame with T unknown, H_reactants = H_products over the 14 species (the CSL-0150 pattern)",
+          "[library-gaps][chem-equil]") {
+    // CH4 with 20 % excess air at 30 bar, reactants at 288 K (14.85 C); the enthalpies of the species from CALL NASA (the same data as
+    // CHEM_EQUIL), the names of the species in the lookup table Species14. The orchestrator's all-NASA prototype: T_adiab 2048.2268 K = 1775.0768 C
+    const std::string model = kAdiabaticFlameCh4;
+
+    // guesses: T (= T_adiab) with T_adiab, and the moles of products per kmol of CH4 (about 12.4)
+    const std::string initials = "T_adiab = 1700\nT = 1700\nntot = 12\n";
+    auto run = runModel(model, kSpecies14Table, initials);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["T_adiab"] + 273.15, WithinAbs(2048.2268, 0.01));   // K
+    // the equilibrium at the flame temperature: the balances of the mixture
+    ce::Result r = ce::solve(equilInputs(30e5, run["T_adiab"] + 273.15, 1e-10, run["C\\O"], run["H\\O"], run["N\\O"]));
+    checkBalances(r, equilInputs(30e5, run["T_adiab"] + 273.15, 1e-10, run["C\\O"], run["H\\O"], run["N\\O"]));
+    CHECK_THAT(run["x_CO2"], WithinRel(r.x[sCO2], 1e-9));
+    CHECK_THAT(run["x_NO"], WithinRel(r.x[sNO], 1e-9));
+    // with dissociation the flame is cooler than the 2061 K (1787.85 C) of complete combustion
+    CHECK(run["T_adiab"] < 1787.85);
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: a trial point outside the domain is limited and logged, a converged solution there is refused",
+          "[library-gaps][chem-equil][input-clamp]") {
+    // the call evaluated at (P, T, C\O, H\O), each input depending on one unknown; the lambda returned owns the parse
+    // result and the pointers (captured by value: they outlive this function)
+    auto limited = [](const std::string& inputs, std::vector<std::string>* report, std::vector<ADValue>* x = nullptr) {
+        EESParser parser;
+        auto parsed = parser.parse("CALL CHEM_EQUIL(" + inputs + " : " + std::string(kChemEquilOutputs) + ")\n");
+        REQUIRE(parsed.success);
+        return std::make_pair(parsed, [parsed, report, x](double P, double T, double C, double H) {
+            ExpressionEvaluator e(4);
+            InputClampLog l;
+            l.report = report;
+            e.setInputClampLog(&l);
+            e.setVariable("Pv", ADValue::independent(P, 0, 4));
+            e.setVariable("Tv", ADValue::independent(T, 1, 4));
+            e.setVariable("Cv", ADValue::independent(C, 2, 4));
+            e.setVariable("Hv", ADValue::independent(H, 3, 4));
+            for (const auto& stmt : parsed.program.statements)
+                if (stmt->is<ProcedureCall>()) e.evaluateProcedureCall(stmt->as<ProcedureCall>());
+            if (x) *x = {e.getVariable("x_CO2"), e.getVariable("x_H2O")};
+            return l.fired;
+        });
+    };
+    const std::string inputs = "Pv, Tv, 0, Cv, Hv, 3.76";
+    SECTION("T below and above the range, P not positive, a negative ratio: limited, with the gradient kept") {
+        std::vector<std::string> report;
+        std::vector<ADValue> x;
+        auto run = limited(inputs, &report, &x).second;
+        // inside the domain: nothing is limited
+        CHECK_FALSE(run(1e6, 1800.0, 0.25, 0.5));
+        CHECK(report.empty());
+        // T = 100 C is 373 K, inside; T = -150 C is 123 K, below 200 K
+        CHECK(run(1e6, -150.0, 0.25, 0.5));
+        REQUIRE(report.size() == 1);
+        CHECK(report[0].find("CALL CHEM_EQUIL: temperature 123.15 K is below the lowest temperature of the NASA-Glenn data of its species (200 K); "
+                             "an input that depends on the unknowns of its block is limited there during the iterations, so the solution would "
+                             "not satisfy this equation") == 0);
+        const ce::Result atBound = ce::solve(equilInputs(1e6, 200.0, 0.0, 0.25, 0.5, 3.76));
+        CHECK_THAT(x[0].value, WithinRel(atBound.x[sCO2], 1e-12));    // the value at the bound
+        CHECK_THAT(x[0].gradient[1], WithinRel(atBound.dx[sCO2][1], 1e-9));   // and its gradient, to come back by
+        report.clear();
+        CHECK(run(1e6, 6000.0, 0.25, 0.5));   // 6273 K
+        REQUIRE(report.size() == 1);
+        CHECK(report[0].find("temperature 6273.15 K is above the highest temperature of the NASA-Glenn data of its species (6000 K)") != std::string::npos);
+        report.clear();
+        CHECK(run(-5.0, 1800.0, 0.25, 0.5));
+        REQUIRE(report.size() == 1);
+        CHECK(report[0].find("pressure -5 Pa is below the lowest pressure of the equilibrium (1 Pa)") != std::string::npos);
+        report.clear();
+        CHECK(run(1e6, 1800.0, -0.05, 0.5));
+        REQUIRE(report.size() == 1);
+        CHECK(report[0].find("the ratio C\\O = -0.05 is negative (0)") != std::string::npos);
+        report.clear();
+        CHECK(run(1e6, 1800.0, 0.25, -0.01));
+        REQUIRE(report.size() == 1);
+        CHECK(report[0].find("the ratio H\\O = -0.01 is negative (0)") != std::string::npos);
+        // all four at once: four reports
+        report.clear();
+        CHECK(run(-5.0, -150.0, -0.05, -0.01));
+        CHECK(report.size() == 4);
+    }
+    SECTION("a solve that starts below the range finds its solution inside it") {
+        // T_adiab starts at -100 C = 173 K, below the 200 K of the data of every species: the first iterates are limited to 200 K
+        auto run = runModel(kAdiabaticFlameCh4, kSpecies14Table, "T_adiab = -100\nT = -100\nntot = 12\n");
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["T_adiab"] + 273.15, WithinAbs(2048.2268, 0.01));
+    }
+    SECTION("a solution at the limit is refused with the call and the limit named") {
+        auto run = runModel(std::string("T1 = -150 + 0*x_CO2\nCALL CHEM_EQUIL(1E5, T1, 0, 0.25, 0.5, 3.76 : ") + kChemEquilOutputs + ")\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "CALL CHEM_EQUIL: temperature 123.15 K is below the lowest temperature of the NASA-Glenn data of its species (200 K)"));
+        CHECK(anyContains({run.message}, "solution would not satisfy this equation"));
+    }
+    SECTION("a constant input outside the domain is the error that names it") {
+        auto run = runModel(std::string("CALL CHEM_EQUIL(1E5, -150, 0, 0.25, 0.5, 3.76 : ") + kChemEquilOutputs + ")\n");
+        CHECK_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "CALL CHEM_EQUIL: the temperature T = 123.15 K is outside the range of the NASA-Glenn data of the species of the mixture, 200 K to 6000 K"));
+    }
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: negative tests of the CALL, with their messages", "[library-gaps][chem-equil]") {
+    const std::string outputs = kChemEquilOutputs;
+    SECTION("the number of inputs and outputs is checked when the model is parsed, with the line") {
+        const std::string usage = "CALL CHEM_EQUIL takes 6 inputs (P, T, A\\O, C\\O, H\\O, N\\O) and 14 outputs (the mole fractions of H2, O2, H2O, CO, CO2, OH, "
+                                  "H, O, N2, N, NO, NO2, CH4 and Ar, in this order): CALL CHEM_EQUIL(P, T, A\\O, C\\O, H\\O, N\\O : x_H2, x_O2, x_H2O, x_CO, "
+                                  "x_CO2, x_OH, x_H, x_O, x_N2, x_N, x_NO, x_NO2, x_CH4, x_Ar)";
+        auto fiveInputs = parseErrors("x = 1\nCALL CHEM_EQUIL(1E5, 2000, 0, 0.25, 0.5 : " + outputs + ")\n");
+        REQUIRE_FALSE(fiveInputs.empty());
+        CHECK(fiveInputs[0].find(usage) != std::string::npos);
+        CHECK(fiveInputs[0].find("got 5 input(s) and 14 output(s)") != std::string::npos);
+        auto sevenInputs = parseErrors("CALL CHEM_EQUIL(1E5, 2000, 0, 0.25, 0.5, 3.76, 1 : " + outputs + ")\n");
+        REQUIRE_FALSE(sevenInputs.empty());
+        CHECK(sevenInputs[0].find("got 7 input(s) and 14 output(s)") != std::string::npos);
+        auto thirteen = parseErrors("CALL CHEM_EQUIL(1E5, 2000, 0, 0.25, 0.5, 3.76 : x_H2,x_O2,x_H2O,x_CO,x_CO2,x_OH,x_H,x_O,x_N2,x_N,x_NO,x_NO2,x_CH4)\n");
+        REQUIRE_FALSE(thirteen.empty());
+        CHECK(thirteen[0].find("got 6 input(s) and 13 output(s)") != std::string::npos);
+        auto fifteen = parseErrors("CALL CHEM_EQUIL(1E5, 2000, 0, 0.25, 0.5, 3.76 : " + outputs + ", x_extra)\n");
+        REQUIRE_FALSE(fifteen.empty());
+        CHECK(fifteen[0].find("got 6 input(s) and 15 output(s)") != std::string::npos);
+        auto skipped = parseErrors("CALL CHEM_EQUIL(1E5, 2000, 0, 0.25, 0.5, 3.76 : , x_O2,x_H2O,x_CO,x_CO2,x_OH,x_H,x_O,x_N2,x_N,x_NO,x_NO2,x_CH4,x_Ar)\n");
+        REQUIRE_FALSE(skipped.empty());   // no output position is skipped: the EES files write the 14
+        CHECK(skipped[0].find("got 6 input(s) and 13 output(s)") != std::string::npos);
+        auto run = runModel("x = 1\nCALL CHEM_EQUIL(1E5, 2000, 0, 0.25, 0.5 : " + outputs + ")\n");
+        CHECK_FALSE(run.parseOk);
+        CHECK_FALSE(run.solveOk);
+    }
+    SECTION("a negative ratio, P not positive, T outside the range, the graphite limit: the error names the input and the call") {
+        auto negative = runModel("CALL CHEM_EQUIL(1E5, 2000, 0, -0.1, 0.5, 3.76 : " + outputs + ")\n");
+        CHECK_FALSE(negative.solveOk);
+        CHECK(anyContains({negative.message}, "CALL CHEM_EQUIL: the ratio C\\O = -0.1 is negative or not finite (the atoms of the element per oxygen atom)"));
+        auto pressure = runModel("CALL CHEM_EQUIL(0, 2000, 0, 0.25, 0.5, 3.76 : " + outputs + ")\n");
+        CHECK_FALSE(pressure.solveOk);
+        CHECK(anyContains({pressure.message}, "CALL CHEM_EQUIL: the pressure P = 0 Pa is not positive"));
+        auto cold = runModel("CALL CHEM_EQUIL(1E5, -100, 0, 0.25, 0.5, 3.76 : " + outputs + ")\n");   // 173.15 K
+        CHECK_FALSE(cold.solveOk);
+        CHECK(anyContains({cold.message}, "CALL CHEM_EQUIL: the temperature T = 173.15 K is outside the range of the NASA-Glenn data of the species of the mixture, 200 K to 6000 K"));
+        auto hot = runModel("CALL CHEM_EQUIL(1E5, 6000, 0, 0.25, 0.5, 3.76 : " + outputs + ")\n");   // 6273.15 K
+        CHECK_FALSE(hot.solveOk);
+        CHECK(anyContains({hot.message}, "T = 6273.15 K is outside the range"));
+        auto graphite = runModel("CALL CHEM_EQUIL(1E5, 2000, 0, 1.5, 0.5, 3.76 : " + outputs + ")\n");
+        CHECK_FALSE(graphite.solveOk);
+        CHECK(anyContains({graphite.message}, "CALL CHEM_EQUIL: C\\O = 1.5 is not below 1 + H\\O/4 = 1.125: the carbon cannot be held by CO, CO2 and CH4"));
+        // the sub-message never names NASA:: or a CoolProp fluid
+        CHECK(graphite.message.find("NASA::") == std::string::npos);
+    }
+    SECTION("a string input") {
+        auto first = runModel("p$ = 'high'\nCALL CHEM_EQUIL(p$, 2000, 0, 0.25, 0.5, 3.76 : " + outputs + ")\n");
+        CHECK_FALSE(first.solveOk);
+        CHECK(anyContains({first.message}, "CALL CHEM_EQUIL: the input P (number 1) is a string: the six inputs are numbers"));
+        auto literal = runModel("CALL CHEM_EQUIL(1E5, 'hot', 0, 0.25, 0.5, 3.76 : " + outputs + ")\n");
+        CHECK_FALSE(literal.solveOk);
+        CHECK(anyContains({literal.message}, "CALL CHEM_EQUIL: the input T (number 2) is a string"));
+    }
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: a PROCEDURE CHEM_EQUIL of the model replaces the built-in one, as NASA and Colebrook", "[library-gaps][chem-equil]") {
+    auto own = runModel(R"(
+PROCEDURE CHEM_EQUIL(P, T, a, c, h, n : x1, x2)
+  x1 = P + T
+  x2 = a + c + h + n
+END
+CALL CHEM_EQUIL(1E5, 20, 0, 0.25, 0.5, 3.76 : y1, y2)
+)");
+    INFO(own.message);
+    REQUIRE(own.solveOk);
+    CHECK(own["y1"] == 100020.0);   // two outputs and no range: not the built-in
+    CHECK_THAT(own["y2"], WithinAbs(4.51, 1e-12));
+    // without the definition the built-in answers, and a model with the equations around it is solved
+    auto builtin = runModel(std::string("CALL CHEM_EQUIL(1E5, 1726.85, 0, 0.25, 0.5, 3.76 : ") + kChemEquilOutputs + ")\nsum_x = x_H2+x_O2+x_H2O+x_CO+x_CO2+x_OH+x_H+x_O+x_N2+x_N+x_NO+x_NO2+x_CH4+x_Ar\n");
+    REQUIRE(builtin.solveOk);
+    CHECK(builtin.verified);
+    CHECK_THAT(builtin["sum_x"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: the species of the equilibrium as the other tools give them, a parametric sweep of T", "[library-gaps][chem-equil]") {
+    // the effect of the temperature on the dissociation, as the exercise of the library: x_CO2 falls and x_CO rises with T, x_NO rises
+    double previousCO2 = 1.0, previousNO = 0.0;
+    for (double TK : {2000.0, 2500.0, 3000.0, 3500.0, 4000.0}) {
+        auto run = runModel("T = " + numText(TK - 273.15) + "\nCALL CHEM_EQUIL(1E7, T, 0, 8/30, 0.6, 3.76 : " + std::string(kChemEquilOutputs) + ")\n");
+        REQUIRE(run.solveOk);
+        INFO("T " << TK);
+        if (TK > 2000.0) {
+            CHECK(run["x_CO2"] < previousCO2);
+            if (TK <= 3500.0) CHECK(run["x_NO"] > previousNO);
+        }
+        previousCO2 = run["x_CO2"];
+        previousNO = run["x_NO"];
+    }
+    // the effect of the pressure: dissociation increases when the pressure falls (Le Chatelier)
+    auto lowP = runModel("CALL CHEM_EQUIL(1E5, 2726.85, 0, 8/30, 0.6, 3.76 : " + std::string(kChemEquilOutputs) + ")\n");
+    auto highP = runModel("CALL CHEM_EQUIL(1E7, 2726.85, 0, 8/30, 0.6, 3.76 : " + std::string(kChemEquilOutputs) + ")\n");
+    REQUIRE(lowP.solveOk);
+    REQUIRE(highP.solveOk);
+    CHECK(lowP["x_CO"] > highP["x_CO"]);
+    CHECK(lowP["x_O"] > highP["x_O"]);
+    CHECK(lowP["x_CO2"] < highP["x_CO2"]);
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: the example examples/chem_equil_dissociation.eescode", "[library-gaps][chem-equil]") {
+    const fs::path example = fs::path("..") / "examples" / "chem_equil_dissociation.eescode";
+    if (!fs::exists(example)) SKIP("examples/chem_equil_dissociation.eescode not found (run from the build folder)");
+    std::ifstream in(example);
+    const std::string code((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["x_CO2"], WithinRel(0.08724803022, 1e-2));   // EES; -0.06 %
+    CHECK_THAT(run["x_H2O"], WithinRel(0.1081372975, 1e-2));
+    CHECK_THAT(run["x_N2"], WithinRel(0.7236036682, 1e-2));
+    CHECK_THAT(run["sum_x"], WithinAbs(1.0, 1e-12));
+}
+
+TEST_CASE("CS-GAP-CHEM-EQUIL: timing of a call at 2500 K (not run by default)", "[.][chem-equil-benchmark]") {
+    const ce::Inputs in = airFlame(1e5, 2500.0, 1, 4, 1.0, 0.0224);
+    const int calls = 20000;
+    double sink = 0.0;
+    auto time = [&](bool derivatives) {
+        const auto start = std::chrono::steady_clock::now();
+        for (int k = 0; k < calls; ++k) sink += ce::solve(in, derivatives).x[sCO2];
+        return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / calls;
+    };
+    const double with = time(true), without = time(false);
+    WARN("chem_equil::solve at 2500 K: " << with << " us with the derivatives, " << without << " us without (" << sink << ")");
 }

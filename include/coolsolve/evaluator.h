@@ -350,6 +350,9 @@ private:
     /// The built-in procedure CALL NASA(Species$, T : cp, h, s): the molar specific heat, enthalpy and entropy of a species of
     /// the NASA-Glenn data (src/nasa_glenn.cpp), in the units of the model, with their derivatives with respect to T.
     void evaluateNasaCall(const ProcedureCall& call);
+    /// The built-in procedure CALL CHEM_EQUIL(P, T, A\\O, C\\O, H\\O, N\\O : x_H2, ..., x_Ar): the equilibrium mole fractions of the 14
+    /// species of src/chem_equil.cpp, in the units of the model, with exact derivatives with respect to the six inputs.
+    void evaluateChemEquilCall(const ProcedureCall& call);
     /// Checks the outputs of a call of the built-in procedure `proc` (builtin_procedures.h): at least one, not more than the
     /// procedure has, and the positions the parser recorded (`ProcedureCall::outputSlots`) exist. The position of output `i`
     /// is then `call.outputSlots[i]`, or `i` when the outputs are the first ones in order (`outputSlotOf`).

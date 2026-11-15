@@ -2104,6 +2104,80 @@ H_prod = sum(nkmol[i]*H[i], i=1, 4)
 H_prod = H_react                                                "T_adiab = 1787.85 C"
 ```
 
+### CALL CHEM_EQUIL (chemical equilibrium of combustion products)
+
+`CHEM_EQUIL` is the external routine of the EES files that compute the dissociation of combustion products (it is not in
+the EES help). It is built in: the mole fractions of the 14-species ideal-gas mixture in chemical equilibrium at P and T,
+
+```ees
+CALL CHEM_EQUIL(P, T, A\O, C\O, H\O, N\O : x_H2, x_O2, x_H2O, x_CO, x_CO2, x_OH, x_H, x_O, x_N2, x_N, x_NO, x_NO2, x_CH4, x_Ar)
+```
+
+- **Inputs.** `P` in the pressure unit of the model (**Pa**) and `T` in its temperature unit (**°C**), as for every property
+  function; the EES files pass kPa and K: write `P*1000` and `T - 273.15`, or convert the values. `A\O`, `C\O`, `H\O`, `N\O`
+  are the ratios of the atoms of argon, carbon, hydrogen and nitrogen to the oxygen atoms of the mixture (for a fuel
+  `CmHn` burnt with `(m + n/4)(1 + e)` kmol of O2 and 79/21 N2 per O2: `C\O = m/(2(m + n/4)(1 + e))`,
+  `H\O = n/(2(m + n/4)(1 + e))`, `N\O = 79/21`). Any case (`Call chem_equil`).
+- **Outputs.** The 14 mole fractions, in this order, summing to 1; all 14 are written (a number of inputs other than 6 or of
+  outputs other than 14 is a parse error with the line).
+- **Data.** The NASA-Glenn polynomials of all 14 species (§5, *NASA-Glenn species*: anchored enthalpies, entropies at 1 bar,
+  R = 8.314462618), also for the 8 species whose property functions follow the CoolProp equation of state: the
+  equilibrium has one source of Gibbs energies.
+- **Gas phase only.** No graphite: the carbon must fit in CO, CO2 and CH4, `C\O < 1 + H\O/4`, or the call is an error
+  (*… the mixture would form graphite, which the 14 gaseous species of the equilibrium do not include*).
+- **A zero ratio** removes its element: its species are exactly 0, with zero derivatives (also with respect to that ratio,
+  where the function is not differentiable). When the ratio is an unknown of the model, use a small value such as
+  `A\O = 1E-10`, as the EES files do.
+- **Range.** 200 K to 6000 K when hydrogen or nitrogen is present (the data of H2O, CH4 and NO2 stop there), 200 K to
+  20000 K otherwise; outside, the call is an error naming the range, in K. A negative ratio, a pressure that is not positive
+  are errors naming the input. During the iterations, an input that depends on the unknowns of its block and leaves the
+  domain is limited to it (T to the range on both sides, P to 1 Pa, a ratio to 0), and a solution there is refused with the
+  call named, as for the property functions.
+- **Derivatives** with respect to the six inputs are exact (implicit-function theorem at the equilibrium), so `T` or a ratio
+  may be an unknown: the adiabatic flame below solves for `T_adiab`. A call takes about 15 µs.
+- A `PROCEDURE CHEM_EQUIL` defined by the model before its calls replaces the built-in one, as for `NASA`.
+
+The equilibrium minimises the Gibbs energy of the mixture under the conservation of the five elements, by the element
+potentials (Gordon & McBride, NASA RP-1311, 1994): `src/chem_equil.cpp` solves the dual problem at constant volume, which is
+concave and converges from any start (validated from 200 K to 6000 K, 1 Pa to 1E8 Pa, equivalence ratios 0.1 to 4 with
+and without nitrogen, argon or hydrogen).
+
+**Differences from EES.** EES's routine uses older thermodynamic data than NASA-Glenn's (the heats of formation of OH and
+NO of the JANAF tables; NASA-Glenn takes OH from Ruscic et al., 2002). Against the results stored in the EES files: at
+3000 K and 10000 kPa (octane with 20 % excess air, `Ex_2_T_P_effects_on_dissociation`) the major species agree within 0.4 %
+(`x_CO2` 0.087195 against 0.087248), `OH` is 6 % higher, `NO` 3.7 % lower, `NO2` 10 % higher, `H2` 2.5 % lower; for a
+stoichiometric fuel-oil flame at 2417.13 K and 1 atm, `OH` +8 %, `NO` −5 %, `NO2` +5.5 %, the major species within 0.4 %.
+
+```ees
+"adiabatic flame of CH4 with 20 % excess air at 30 bar, reactants at 14.85 C, with dissociation"
+"the molar enthalpy of the products, sum of x_i h_i, in a FUNCTION: h_i from CALL NASA, the data of CHEM_EQUIL"
+FUNCTION hmix(T, x[1..14])
+  hmix := 0
+  i := 1
+  REPEAT
+    CALL NASA(LOOKUP$('Species14', i, 1), T : , h, )     "H2, O2, H2O, CO, CO2, OH, H, O, N2, N, NO, NO2, CH4, Ar"
+    hmix := hmix + x[i]*h
+    i := i + 1
+  UNTIL (i > 14)
+END
+m = 1 ; n = 4 ; e = 0.2
+CALL NASA('CH4', 14.85 : , h_CH4, )
+CALL NASA('O2', 14.85 : , h_O2, )
+CALL NASA('N2', 14.85 : , h_N2, )
+H_react = h_CH4 + (m+n/4)*(1+e)*(h_O2 + (79/21)*h_N2)
+CALL CHEM_EQUIL(30E5, T_adiab, 1E-10, m/(2*(m+n/4)*(1+e)), n/(2*(m+n/4)*(1+e)), 79/21 : x_H2, x_O2, x_H2O, x_CO, x_CO2, x_OH, x_H, x_O, x_N2, x_N, x_NO, x_NO2, x_CH4, x_Ar)
+x[1] = x_H2 ; x[2] = x_O2 ; x[3] = x_H2O ; x[4] = x_CO ; x[5] = x_CO2 ; x[6] = x_OH ; x[7] = x_H
+x[8] = x_O ; x[9] = x_N2 ; x[10] = x_N ; x[11] = x_NO ; x[12] = x_NO2 ; x[13] = x_CH4 ; x[14] = x_Ar
+n = ntot*(2*x_H2 + 2*x_H2O + x_OH + x_H + 4*x_CH4)    "the H atoms: kmol of products per kmol of fuel"
+H_react = ntot*hmix(T_adiab, x[1..14])                 "T_adiab = 1775.08 C (2048.23 K); without dissociation 1787.85 C"
+```
+
+The species enthalpies are summed inside a function on purpose: written as 14 unknowns `H[i]` of the block of `T_adiab`
+(enthalpies of 1E8 J/kmol beside mole fractions of 1E-20, the formulation of the EES file), the block can stall on the
+rounding of Newton's method (register `CS-BUG-BLOCK-SCALE-SPREAD`). With the property functions instead of `CALL NASA`
+(`MolarMass(X$)*enthalpy(X$, T=T)`, the CoolProp equation of state for 8 of the species) the flame is 1 K hotter,
+1776.08 °C.
+
 ### `$INCLUDE`: functions and procedures of another file
 
 `$INCLUDE name` imports **all the `FUNCTION`s and `PROCEDURE`s** of another `.eescode` file: a model of the
