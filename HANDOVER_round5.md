@@ -83,8 +83,8 @@ Sizes: S small, M medium, L large. "Rec." is the recommended option.
 (`a04cad5`, numerical core by the orchestrator); summaries in register §9. State at `a04cad5`: unit suite 1386 passed + 2
 pdflatex skips, examples 47/50 solving (same 3 failures), library regression 219 PASS / 101 DEVIATION / 0 FAIL on the 320
 baseline targets (the library checkout has grown to 335 targets, the new greenhouse models take ~8 min each: compare with
-`COOLSOLVE_LIBRARY_TEST_FILTER` set to the old ones). New: `CS-BUG-BLOCK-SCALE-SPREAD` (§5; a candidate for Wave 2 next to
-`CS-BUG-NEWTON-CYCLE`). **Next: Wave 2, first item `CS-BUG-BLOCK-EVAL-SCALING`.** The agent brief in use is §6 plus rule 6
+`COOLSOLVE_LIBRARY_TEST_FILTER` set to the old ones). Found and fixed the same day: `CS-BUG-BLOCK-SCALE-SPREAD` (`a84f0e4`: a Newton step that
+leaves equations unmet is solved again on the equilibrated system; library and examples unchanged). **Next: Wave 2, first item `CS-BUG-BLOCK-EVAL-SCALING`.** The agent brief in use is §6 plus rule 6
 above; each brief also gives HEAD and the current library baseline (219/101/0) and asks for a copy of
 `build/library_regression.md` before any change.
 
