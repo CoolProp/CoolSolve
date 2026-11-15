@@ -2172,11 +2172,12 @@ n = ntot*(2*x_H2 + 2*x_H2O + x_OH + x_H + 4*x_CH4)    "the H atoms: kmol of prod
 H_react = ntot*hmix(T_adiab, x[1..14])                 "T_adiab = 1775.08 C (2048.23 K); without dissociation 1787.85 C"
 ```
 
-The species enthalpies are summed inside a function on purpose: written as 14 unknowns `H[i]` of the block of `T_adiab`
-(enthalpies of 1E8 J/kmol beside mole fractions of 1E-20, the formulation of the EES file), the block can stall on the
-rounding of Newton's method (register `CS-BUG-BLOCK-SCALE-SPREAD`). With the property functions instead of `CALL NASA`
-(`MolarMass(X$)*enthalpy(X$, T=T)`, the CoolProp equation of state for 8 of the species) the flame is 1 K hotter,
-1776.08 °C.
+The function keeps the block of `T_adiab` small. The formulation of the EES file, the 14 species enthalpies as unknowns
+(`DUPLICATE i=1,14` ⏎ `CALL NASA(LOOKUP$('Species14', i, 1), T_adiab : , H[i], )` ⏎ `END`, then
+`H_react = sum(ntot*x[i]*H[i], i=1, 14)`), gives the same temperature: its block holds enthalpies of 1E8 J/kmol beside mole
+fractions of 1E-20, which the Newton steps handle by solving the row- and column-equilibrated system (register
+`CS-BUG-BLOCK-SCALE-SPREAD`). With the property functions instead of `CALL NASA` (`MolarMass(X$)*enthalpy(X$, T=T)`, the
+CoolProp equation of state for 8 of the species) the flame is 1 K hotter, 1776.08 °C.
 
 ### `$INCLUDE`: functions and procedures of another file
 

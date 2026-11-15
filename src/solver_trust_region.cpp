@@ -260,9 +260,8 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
                 std::cout << "TrustRegion: adaptive initial delta = " << delta << std::endl;
         }
 
-        // Newton step
-        Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(J);
-        Eigen::VectorXd dx_n = qr.solve(-F);
+        // Newton step (solveNewtonStep, solver_common.h: equilibrated when the plain QR leaves the equations unmet)
+        Eigen::VectorXd dx_n = solveNewtonStep(J, -F, problem.residualScale, options.tolerance);
         if (!dx_n.allFinite()) {
             // Broyden approximation produced an unusable step; retry this
             // iterate with a full Jacobian instead of the Cauchy fallback.
