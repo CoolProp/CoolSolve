@@ -142,7 +142,7 @@ the model library open a model without touching the model of another tab
 | `PUT` | `/api/v1/files/conf` | Set solver configuration |
 | `POST` | `/api/v1/files/open` | Open the `.eescode` file passed on the command line (file association); auto-discovers companion `.initials`, `.sol`, `coolsolve.conf` and lookup tables. Any other path is refused (403): a client never makes the server read a file of its choice |
 | `GET` | `/api/v1/files/bundle` | Download a ZIP bundle (eescode + initials + sol + conf + the files of its `$INCLUDE`s + debug files, §7.2) |
-| `POST` | `/api/v1/files/upload` | Upload a multipart `.zip` bundle or individual files; returns `mainFile`, the `.eescode` taken as the model when there are several (§7.2) |
+| `POST` | `/api/v1/files/upload` | Upload a multipart `.zip` bundle (made by CoolSolve or by any zip tool); returns `mainFile`, the `.eescode` taken as the model when there are several; 400 with the reason when the ZIP cannot be opened (§7.2) |
 | `POST` | `/api/v1/includes/open` | Open a file that the model includes in a **new** session, for a new window; body: `{"name":"<as in $INCLUDE>"}`, resolved as for the solve (§7.5). Returns `{sessionId, modelName, description}`; 404 with the resolution error |
 
 The file workflow is **ZIP-centric**:
@@ -741,8 +741,24 @@ The folder *is* the project — no proprietary format is needed.
 
 ### 7.2 ZIP Bundle Format
 
-The ZIP uses a minimal uncompressed implementation (custom CRC32-based ZIP
-writer/reader in `server.cpp` — no external library):
+*Save* writes the files uncompressed; *Open* reads the ZIP files of any zip tool
+(`src/zip_bundle.cpp`, on the miniz library that CoolProp compiles in): stored or
+Deflate-compressed files (the default of `zip`, 7-Zip, Windows' *Compressed folder*
+and macOS' *Compress*), data descriptors, ZIP64, names in UTF-8 or in code page 437
+(Windows). The ZIP of a folder opens like the folder's files (the top folder is left
+out of the names), and macOS' `__MACOSX/`, `._*` and `.DS_Store` are ignored.
+
+A ZIP that cannot be opened is refused (400) with the reason, and the session keeps
+its model: a password, another compression method than Deflate (BZIP2, LZMA, … named
+in the message), a file that is not a ZIP archive or is damaged, a name outside the
+folder (`../`, absolute), more than 256 MB once uncompressed, no `.eescode` file (the
+message lists the files found), or a `.eescode`, `.initials`, `.sol`, `.conf` or
+`.csv` file that is not UTF-8 text (e.g. a model saved by EES in Windows ANSI with a
+`°`; the message gives the byte and its line). An error of another route that the
+route does not handle reaches the Console as `Internal error (<route>): <reason>`
+(JSON `error`, status 500), not as a bare *Internal Server Error*.
+
+The entries of a bundle:
 
 | Entry | Contents |
 |-------|----------|
@@ -755,7 +771,7 @@ writer/reader in `server.cpp` — no external library):
 | `parametric_studies.json` | Parametric study results (§4.8) |
 | `diagrams.json` | Diagram definitions of the Diagrams tab (§6.8): fluid, CoolPlot spec, cycles as variable names |
 | `<other>.eescode`, `<other>-<table>.csv` | Every file the model includes (`$INCLUDE`, nested includes too; library models as their `.eescode` file) with its lookup tables, and the other `.eescode` files of an uploaded project |
-| `debug/*` | Debug output files (if present) |
+| `debug_output/*` | Debug output files (if present) |
 
 **Included files.** Because a file of the model folder takes precedence over a library model of the same
 name, the bundle runs on its own: unzipped and run with the CLI, or uploaded again, the model includes the
@@ -1036,6 +1052,7 @@ All the following tests pass against the current codebase:
 | Session isolation | ✅ New session gets empty state; original retains files |
 | ZIP bundle download | ✅ Valid ZIP, 4 files, 6972 bytes |
 | ZIP bundle upload | ✅ Re-uploaded ZIP; all companion files detected |
+| ZIP files of the zip tools (Info-ZIP Deflate and streamed, 7-Zip, bsdtar, ZIP64, a folder, macOS, Windows code page 437), the refused ones with their message (password, BZIP2/LZMA, not a ZIP, damaged, `../`, no `.eescode`, not UTF-8) and the session kept, Save then Open, an uncaught exception as a JSON message | ✅ `tests/test_bundle_api.py --auto` (65 checks); the reader: `./coolsolve_tests "[zip]"` |
 | Debug files (before solve) | ✅ `{"files":[]}` |
 | Debug files (after debug solve) | ✅ 15+ files generated |
 | Debug file content (`report.md`) | ✅ Full analysis content |

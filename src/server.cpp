@@ -16,6 +16,7 @@
 #include "coolsolve/usage_log.h"
 #include "coolsolve/library_store.h"
 #include "coolsolve/include_resolver.h"
+#include "coolsolve/zip_bundle.h"
 #include "coolsolve/diagram/engine.h"
 #include "coolsolve/diagram/states.h"
 
@@ -439,87 +440,6 @@ static std::string getClientIP(const httplib::Request& req) {
 }
 
 // ============================================================================
-// ZIP helpers (minimal uncompressed archive implementation)
-// ============================================================================
-
-static uint32_t zipCrc32(const uint8_t* data, size_t length) {
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < length; i++) {
-        crc ^= data[i];
-        for (int j = 0; j < 8; j++)
-            crc = (crc >> 1) ^ (0xEDB88320u & (~(crc & 1) + 1));
-    }
-    return ~crc;
-}
-
-static void zipW16(std::string& s, uint16_t v) {
-    s += static_cast<char>(v & 0xFF);
-    s += static_cast<char>((v >> 8) & 0xFF);
-}
-static void zipW32(std::string& s, uint32_t v) {
-    s += static_cast<char>(v & 0xFF);
-    s += static_cast<char>((v >> 8) & 0xFF);
-    s += static_cast<char>((v >> 16) & 0xFF);
-    s += static_cast<char>((v >> 24) & 0xFF);
-}
-static uint16_t zipR16(const char* p) {
-    return static_cast<uint8_t>(p[0]) | (static_cast<uint8_t>(p[1]) << 8);
-}
-static uint32_t zipR32(const char* p) {
-    return static_cast<uint8_t>(p[0]) | (static_cast<uint8_t>(p[1]) << 8)
-         | (static_cast<uint8_t>(p[2]) << 16) | (static_cast<uint8_t>(p[3]) << 24);
-}
-
-static std::string createZipBundle(const std::vector<std::pair<std::string, std::string>>& files) {
-    std::string out;
-    struct E { std::string name; uint32_t crc, size, off; };
-    std::vector<E> entries;
-    for (const auto& [name, data] : files) {
-        E e{name, zipCrc32(reinterpret_cast<const uint8_t*>(data.data()), data.size()),
-            static_cast<uint32_t>(data.size()), static_cast<uint32_t>(out.size())};
-        zipW32(out, 0x04034b50); zipW16(out, 20); zipW16(out, 0); zipW16(out, 0);
-        zipW16(out, 0); zipW16(out, 0);
-        zipW32(out, e.crc); zipW32(out, e.size); zipW32(out, e.size);
-        zipW16(out, static_cast<uint16_t>(name.size())); zipW16(out, 0);
-        out += name; out += data;
-        entries.push_back(e);
-    }
-    uint32_t cdOff = static_cast<uint32_t>(out.size());
-    for (const auto& e : entries) {
-        zipW32(out, 0x02014b50); zipW16(out, 20); zipW16(out, 20);
-        zipW16(out, 0); zipW16(out, 0); zipW16(out, 0); zipW16(out, 0);
-        zipW32(out, e.crc); zipW32(out, e.size); zipW32(out, e.size);
-        zipW16(out, static_cast<uint16_t>(e.name.size()));
-        zipW16(out, 0); zipW16(out, 0); zipW16(out, 0); zipW16(out, 0);
-        zipW32(out, 0); zipW32(out, e.off);
-        out += e.name;
-    }
-    uint32_t cdSize = static_cast<uint32_t>(out.size()) - cdOff;
-    zipW32(out, 0x06054b50); zipW16(out, 0); zipW16(out, 0);
-    zipW16(out, static_cast<uint16_t>(entries.size()));
-    zipW16(out, static_cast<uint16_t>(entries.size()));
-    zipW32(out, cdSize); zipW32(out, cdOff); zipW16(out, 0);
-    return out;
-}
-
-static std::map<std::string, std::string> extractZipBundle(const std::string& data) {
-    std::map<std::string, std::string> files;
-    size_t pos = 0;
-    while (pos + 30 <= data.size()) {
-        if (zipR32(data.data() + pos) != 0x04034b50) break;
-        uint16_t nameLen = zipR16(data.data() + pos + 26);
-        uint16_t extraLen = zipR16(data.data() + pos + 28);
-        uint32_t compSize = zipR32(data.data() + pos + 18);
-        std::string name(data.data() + pos + 30, nameLen);
-        pos += 30 + nameLen + extraLen;
-        if (pos + compSize <= data.size())
-            files[name] = std::string(data.data() + pos, compSize);
-        pos += compSize;
-    }
-    return files;
-}
-
-// ============================================================================
 // Helper: Read file to string
 // ============================================================================
 static std::string toLowerCopy(std::string s) {
@@ -921,7 +841,23 @@ int startServer(const ServerOptions& options) {
         }
         return httplib::Server::HandlerResponse::Unhandled;
     });
-    
+
+    // An exception that a route does not catch: the GUI shows its message (`error`), not a bare
+    // "Internal Server Error"; the server log keeps it with the route.
+    svr.set_exception_handler([](const httplib::Request& req, httplib::Response& res, std::exception_ptr ep) {
+        std::string what = "unknown exception";
+        try {
+            std::rethrow_exception(ep);
+        } catch (const std::exception& e) {
+            what = e.what();
+        } catch (...) {
+        }
+        std::cerr << "[Error] " << req.method << " " << req.path << ": " << what << std::endl;
+        res.status = 500;
+        json j = {{"error", "Internal error (" + req.method + " " + req.path + "): " + what}};
+        res.set_content(j.dump(-1, ' ', false, json::error_handler_t::replace), "application/json");
+    });
+
     // ================================================================
     // Health check
     // ================================================================
@@ -3197,30 +3133,47 @@ int startServer(const ServerOptions& options) {
         std::string zipContent;
         std::string zipFilename;
         for (const auto& [name, file] : req.files) {
-            if (endsWith(file.filename, ".zip") && file.content.size() > 4) {
+            if (endsWith(toLowerCopy(file.filename), ".zip") && file.content.size() > 4) {
                 zipContent = file.content;
                 zipFilename = file.filename;
                 break;
             }
         }
-        
+
         if (zipContent.empty()) {
             res.status = 400;
             json j = {{"error", "Please upload a .zip file"}};
             res.set_content(j.dump(), "application/json");
             return;
         }
-        
-        auto extracted = extractZipBundle(zipContent);
-        
+
+        // Nothing of the session changes until the ZIP is read and its text files are UTF-8 (the routes
+        // that return them write JSON); the user model files are checked, CoolSolve writes the others.
+        std::map<std::string, std::string> extracted;
+        try {
+            extracted = extractZipBundle(zipContent);
+            for (const auto& [zname, zcontent] : extracted)
+                if (endsWith(zname, ".eescode") || endsWith(zname, ".initials") || endsWith(zname, ".sol") ||
+                    endsWith(zname, ".conf") || endsWith(zname, ".csv"))
+                    checkUtf8Text(zname, zcontent);
+        } catch (const ZipBundleError& e) {
+            res.status = 400;
+            json j = {{"error", "Cannot open " + zipFilename + ": " + e.what()}};
+            res.set_content(j.dump(-1, ' ', false, json::error_handler_t::replace), "application/json");
+            return;
+        }
+
         // The model: the .eescode file named like the ZIP, else the one that no other file includes (a
         // file with its .initials or .sol first), else the first. The other .eescode files are project files.
         const std::string zipStem = zipFilename.empty() ? "" : fs::path(zipFilename).stem().string();
         std::string mainEescode = pickMainEescode(extracted, zipStem);
         if (mainEescode.empty()) {
+            std::string found;
+            for (const auto& [zname, _] : extracted) found += (found.empty() ? "" : ", ") + zname;
             res.status = 400;
-            json j = {{"error", "ZIP must contain an .eescode file"}};
-            res.set_content(j.dump(), "application/json");
+            json j = {{"error", "Cannot open " + zipFilename + ": it contains no .eescode file" +
+                                    (found.empty() ? std::string(" (the archive is empty)") : " (files: " + found + ")")}};
+            res.set_content(j.dump(-1, ' ', false, json::error_handler_t::replace), "application/json");
             return;
         }
         

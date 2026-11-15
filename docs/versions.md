@@ -45,6 +45,12 @@ Model results can move: re-check models that use the items below.
   isolines by default; SVG/PDF downloads, vector figures in the LaTeX report,
   `coolsolve --diagram`. The charts are saved in the ZIP bundle (`diagrams.json`); the former
   `POST /api/v1/coolprop/saturation` is removed ([CoolPlot integration](coolplot_integration.md)).
+- **Open reads the ZIP files of any zip tool**: Deflate-compressed archives (the default of `zip`,
+  7-Zip, Windows and macOS), data descriptors, ZIP64, the ZIP of a folder and Windows' code
+  page 437 names; before, only uncompressed archives opened, and a Deflate one ended in a bare
+  *Internal Server Error*. A ZIP that cannot be opened (password, BZIP2/LZMA, damaged, a file that
+  is not UTF-8 text, …) is refused with the reason, and an uncaught server error reaches the
+  Console with its message ([GUI §7.2](gui.md#72-zip-bundle-format)).
 - **Dependencies**: coolplot-core is pinned like CoolProp (`COOLSOLVE_COOLPLOT_PINNED_TAG`);
   nlohmann/json 3.12.0; CMake 3.16. A server drawing PDF diagrams needs a TrueType font
   (`fonts-dejavu-core`).

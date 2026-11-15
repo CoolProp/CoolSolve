@@ -232,7 +232,8 @@ If the feature has to be reachable from the GUI:
       semantics.
 - [ ] Add at least one targeted test (Python or C++) that hits the new
       route end-to-end. Existing examples: `tests/test_parametric_api.py`,
-      `tests/test_library_api.py`, `tests/test_diagram_api.py` (`--auto`
+      `tests/test_library_api.py`, `tests/test_diagram_api.py`,
+      `tests/test_bundle_api.py` (`--auto`
       starts the server). A GUI
       behaviour that only a browser shows (keyboard shortcuts) is tested in
       headless Chromium: `tests/test_gui_shortcuts.py`,
@@ -248,9 +249,11 @@ The GUI exchanges complete model state as a ZIP bundle through
 `/api/v1/files/upload` and `/api/v1/files/bundle`:
 
 - [ ] **`src/server.cpp`** — if the feature persists user-editable data,
-      add it to both `createZipBundle` (export) and `extractZipBundle`
-      (import). Keep file extensions stable; add new ones rather than
-      reusing existing ones.
+      add it to both the bundle route (`/api/v1/files/bundle`, export) and
+      the upload route (`/api/v1/files/upload`, import); the ZIP format itself
+      is `src/zip_bundle.cpp`. Keep file extensions stable; add new ones
+      rather than reusing existing ones. A new user-editable text file is
+      checked as UTF-8 by the upload route (`checkUtf8Text`).
 - [ ] Confirm round-trip: download a bundle, upload it back, verify the
       session state is identical.
 - [ ] If you change the bundle layout, document the new convention here
@@ -542,7 +545,7 @@ concern lives.
 | Debug-folder generation                  | `CoolSolveRunner::generateDebugOutput()` in `src/runner.cpp` |
 | LaTeX report                             | `src/latex_report.cpp`                               |
 | HTTP server / REST endpoints             | `src/server.cpp`                                     |
-| ZIP bundle import/export                 | `createZipBundle` / `extractZipBundle` in `src/server.cpp` |
+| ZIP bundle import/export                 | `createZipBundle` / `extractZipBundle` in `src/zip_bundle.cpp` (miniz); what the upload keeps: `/api/v1/files/upload` in `src/server.cpp`; tests: `tests/test_zip_bundle.cpp`, `tests/test_bundle_api.py` |
 | GUI config editor                        | `gui/src/components/ConfigEditor.tsx`                |
 | GUI Monaco syntax highlighting           | `gui/src/languages/ees.ts`                           |
 | GUI Zustand stores                       | `gui/src/stores/modelStore.ts`, `uiStore.ts`         |

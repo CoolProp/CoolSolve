@@ -41,15 +41,22 @@ function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   });
 }
 
+/**
+ * The error of a failed response: the server's message (`{"error": ...}`), else the HTTP status
+ * (`HTTP 502 Bad Gateway` from a proxy, which has no JSON body).
+ */
+async function responseError(res: Response): Promise<Error> {
+  const body = await res.json().catch(() => null);
+  if (body && typeof body.error === 'string' && body.error) return new Error(body.error);
+  return new Error(`HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}`);
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await apiFetch(path, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(body.error || `HTTP ${res.status}`);
-  }
+  if (!res.ok) throw await responseError(res);
   return res.json();
 }
 
@@ -197,10 +204,7 @@ export const api = {
   // Upload ZIP file
   uploadFiles: async (formData: FormData): Promise<UploadResponse> => {
     const res = await apiFetch('/files/upload', { method: 'POST', body: formData });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(body.error || `HTTP ${res.status}`);
-    }
+    if (!res.ok) throw await responseError(res);
     return res.json();
   },
 
@@ -234,10 +238,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(err.error || `HTTP ${res.status}`);
-    }
+    if (!res.ok) throw await responseError(res);
     const name = (res.headers.get('Content-Disposition') ?? '').match(/filename="([^"]+)"/)?.[1];
     return { blob: await res.blob(), filename: name ?? `diagram.${body.format}` };
   },
@@ -263,10 +264,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(doc),
     });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(body.error || `HTTP ${res.status}`);
-    }
+    if (!res.ok) throw await responseError(res);
   },
 
   // Parametric study (async — returns immediately, results come via SSE)
@@ -330,10 +328,7 @@ export const api = {
 
   getTableCSV: async (name: string): Promise<string> => {
     const res = await apiFetch(`/tables/${encodeURIComponent(name)}`);
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(body.error || `HTTP ${res.status}`);
-    }
+    if (!res.ok) throw await responseError(res);
     return res.text();
   },
 
@@ -343,10 +338,7 @@ export const api = {
       headers: { 'Content-Type': 'text/csv' },
       body: csvContent,
     });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(body.error || `HTTP ${res.status}`);
-    }
+    if (!res.ok) throw await responseError(res);
     return res.json();
   },
 

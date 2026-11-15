@@ -378,6 +378,21 @@ elseif(TARGET CoolProp)
     target_include_directories(coolsolve_lib PUBLIC ${COOLPROP_INCLUDE_DIRS})
 endif()
 
+# miniz, the ZIP reader of the GUI's bundles (src/zip_bundle.cpp): the copy CoolProp compiles into its library
+if(COOLSOLVE_USE_SYSTEM_COOLPROP)
+    find_path(MINIZ_INCLUDE_DIR NAMES miniz.h PATH_SUFFIXES miniz REQUIRED)
+    find_library(MINIZ_LIBRARY NAMES miniz REQUIRED)
+    target_include_directories(coolsolve_lib PRIVATE ${MINIZ_INCLUDE_DIR})
+    target_link_libraries(coolsolve_lib PUBLIC ${MINIZ_LIBRARY})
+else()
+    file(GLOB COOLSOLVE_MINIZ_DIR LIST_DIRECTORIES true "${coolprop_SOURCE_DIR}/externals/miniz-*")
+    if(NOT COOLSOLVE_MINIZ_DIR)
+        message(FATAL_ERROR "miniz not found in ${coolprop_SOURCE_DIR}/externals (CoolProp ${COOLSOLVE_COOLPROP_TAG})")
+    endif()
+    list(GET COOLSOLVE_MINIZ_DIR 0 COOLSOLVE_MINIZ_DIR)
+    target_include_directories(coolsolve_lib PRIVATE ${COOLSOLVE_MINIZ_DIR})
+endif()
+
 # --- Main Executable ---
 add_executable(coolsolve ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp)
 target_link_libraries(coolsolve PRIVATE coolsolve_lib)

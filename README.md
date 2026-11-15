@@ -54,7 +54,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 - **Output Formats**: JSON, LaTeX, `.sol` files, CSV trajectory files, and a comprehensive **Debug Mode** (`-d`) folder.
 
-- **GUI & REST API**: Embedded single-page app (React/TypeScript) with a code editor, variable table, parametric studies, thermodynamic diagrams, and ZIP bundle round-trip. See [GUI & REST API](docs/gui.md).
+- **GUI & REST API**: Embedded single-page app (React/TypeScript) with a code editor, variable table, parametric studies, thermodynamic diagrams, and ZIP bundle round-trip (*Open* reads the ZIP files of any zip tool and says why when one cannot be opened). See [GUI & REST API](docs/gui.md).
 
 - **Thermodynamic Diagrams**: log(p)-h, T-s, h-s, p-s, p-ρ, T-ρ, p-T and T-h charts of the model's fluid — pure fluids, CoolProp mixtures, incompressible solutions at their concentration and ideal gases (on CoolSolve's EES/JANAF basis) — and psychrometric and Mollier charts of humid air, in the model's units, with isolines, themes, zoom and the solved cycle on top: states grouped from the model's property calls, or the elements of arrays (any number of overlays), paths along the processes (isobars through the dome, isentropes, …), values on hover. Drawn by the C++ core of [CoolPlot](https://github.com/CoolProp/CoolPlot) from lines computed by the pinned CoolProp (`CoolProp::Plot`) with the model's backend, with a badge naming the equation of state; downloads as SVG or PDF, vector figures in the LaTeX report, the chart spec for CoolPlot in Python, and `coolsolve --diagram` on the command line. The charts are saved with the model (`diagrams.json`). See [GUI §6.8](docs/gui.md) and [CoolPlot Integration](docs/coolplot_integration.md).
 
@@ -124,7 +124,7 @@ CoolSolve is a **standalone library** that automatically downloads all its depen
 
 | Dependency | Purpose |
 |------------|---------|
-| **CoolProp** | Thermodynamic property calculations |
+| **CoolProp** | Thermodynamic property calculations; the miniz library it compiles in reads the ZIP bundles of the GUI |
 | **cpp-peglib** | PEG parser generator |
 | **nlohmann/json** | JSON serialization |
 | **Eigen** | Linear algebra |
@@ -357,6 +357,11 @@ python3 ../tests/test_library_api.py --auto
 python3 ../tests/test_diagram_api.py --auto
 python3 ../tests/test_gui_diagrams.py --auto
 
+# ZIP bundles: the reader on the archives of the usual zip tools (unit tests), and opening
+# them through the GUI server, with the messages of the ZIP files that cannot be opened
+./coolsolve_tests "[zip]"
+python3 ../tests/test_bundle_api.py --auto
+
 # GUI keyboard shortcuts (F2 = Solve) in headless Chromium, against the GUI server
 # (needs Chromium/Chrome and the Python package websockets; skipped without them)
 python3 ../tests/test_gui_shortcuts.py --auto
@@ -456,6 +461,7 @@ CoolSolve/
 │   ├── usage_log.h             # GUI solve-attempt log (append + aggregated stats)
 │   ├── library_store.h         # Model library index: menu of verified models, model-folder loader
 │   ├── include_resolver.h      # `$INCLUDE <name>`: a file of the model folder, else a library model
+│   ├── zip_bundle.h            # The GUI's ZIP bundle: written by Save, read from any zip tool by Open
 │   ├── version.h               # CoolSolve / CoolProp version info (`--version`)
 │   └── solver.h                # Solver pipeline, all SolverOptions declarations
 ├── include/coolsolve/integral/
@@ -505,6 +511,7 @@ CoolSolve/
 │   ├── usage_log.cpp           # GUI solve-attempt log: CSV append + cached statistics
 │   ├── library_store.cpp       # Model library index and loader (independent of HTTP), embedded snapshot accessor
 │   ├── include_resolver.cpp    # Resolution of `$INCLUDE` names (project folder, library) for the CLI and the GUI
+│   ├── zip_bundle.cpp          # ZIP bundle writer and reader (miniz): Deflate, ZIP64, folders, code page 437 names, errors
 │   ├── version.cpp             # CoolSolve and CoolProp (version, git revision) at run time
 │   └── solution_checker.cpp    # Post-solve equation-by-equation verification
 ├── tests/
@@ -523,6 +530,9 @@ CoolSolve/
 │   ├── test_library_store.cpp  # Model library index/loader unit tests
 │   ├── test_library_regression.cpp # Library regression: every runnable library model vs its .sol (slow, hidden) + self-tests
 │   ├── test_includes.cpp       # `$INCLUDE`: resolution, imported routines, precedence, errors
+│   ├── test_zip_bundle.cpp     # ZIP bundle: archives of the zip tools (fixtures/zip/), round trip, refused archives
+│   ├── test_bundle_api.py      # Opening ZIP files through the REST API, error messages, uncaught exceptions (needs the GUI build)
+│   ├── fixtures/zip/           # The same model zipped by Info-ZIP, 7-Zip, bsdtar, Python, macOS and Windows layouts (tools/zip_fixtures.py)
 │   ├── test_diagram.cpp        # Diagrams: planning, domain, CoolPlot fixtures, invariants, cycles, paths, states, errors
 │   ├── test_diagram_states_library.cpp # The grouping of states on every library model vs the name heuristic (hidden)
 │   ├── test_diagram_outputs.cpp # Diagrams: badge, SVG/PDF files, report figures, `coolsolve --diagram`
@@ -537,6 +547,7 @@ CoolSolve/
 ├── tools/                      # EES import helpers: ees_extract.py, compare_solution.py (see docs/ees_import.md);
 │                               # update_coolsolve.sh: server update, run as root (see docs/deployment_ubuntu_apache.md)
 │                               # coolplot_fixtures.py: CoolPlot fixtures of the [diagram] tests
+│                               # zip_fixtures.py: ZIP fixtures of the [zip] tests
 └── examples/                   # Example .eescode files for the CLI and the regression tests
 ```
 
