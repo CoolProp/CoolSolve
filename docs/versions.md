@@ -8,6 +8,12 @@ changes introduced.
 
 ---
 
+## Next release (unreleased)
+
+Notes of the changes merged since v0.5, gathered for the next changelog.
+
+---
+
 ## v0.5 — November 2026 (current)
 
 | Item | Detail |
