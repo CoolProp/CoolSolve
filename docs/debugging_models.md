@@ -218,7 +218,7 @@ fluid Methane; use the ideal gas CH4* means that the fuel is written with the na
 O. A liquid fuel of EES (ethanol, n-propanol) is the *Unknown fluid* error: give its heating value as a number. The result is in J/kg of
 fuel, whatever the EES file reads in kJ/kmol (multiply by the molar mass of the fuel, `molarmass(X)`, to get J/kmol).
 
-### CALL CHEM_EQUIL: domain errors
+### CALL CHEM_EQUIL: domain errors and a flame that does not converge
 
 `CALL CHEM_EQUIL` ([Language Reference §7](language_reference.md#call-chem_equil-chemical-equilibrium-of-combustion-products))
 names the input it refuses: *CALL CHEM_EQUIL: the temperature T = … K is outside the range of the NASA-Glenn data of the species of
@@ -227,6 +227,13 @@ high or a pressure 1000 times too low is the usual cause), *the ratio C\O = … 
 (C\O ≥ 1 + H\O/4: a fuel-rich mixture beyond what CO, CO2 and CH4 hold). During the iterations an input that depends on the unknowns is
 limited to the domain; *CALL CHEM_EQUIL: temperature … K is below the lowest temperature …; an input that depends on the unknowns of
 its block is limited there* means the solver converged on that limit: check the energy balance that gives the temperature.
+
+An adiabatic flame written as in the EES files, with the species enthalpies as unknowns of the block of the flame temperature
+(`DUPLICATE i=1,14` ⏎ `H[i] = MolarMass(…)*enthalpy(…, T=T_adiab)` ⏎ `END`, then `sum(ntot*x[i]*H[i], i=1,14)`), can stop on a
+residual of about 1E-2 that Newton's method no longer reduces (*LineSearchFailed* or *MaxIterations*, the trace showing steps of
+1E-7): the block holds enthalpies of 1E8 J/kmol beside mole fractions of 1E-20 (register `CS-BUG-BLOCK-SCALE-SPREAD`). Sum the
+enthalpies of the products in a `FUNCTION` (the example of the Language Reference), or write them in MJ/kmol
+(`H[i] = MolarMass(…)*enthalpy(…, T=T_adiab)/1E6`).
 
 ### Procedure Fixes
 

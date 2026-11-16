@@ -218,8 +218,9 @@ SolverStatus NewtonSolver::solve(Problem& problem,
             return SolverStatus::Success;
         }
 
-        // Solve J*dy = -F (solveNewtonStep, solver_common.h: equilibrated when the plain QR leaves the equations unmet)
-        dy = solveNewtonStep(J, -F, problem.residualScale, options.tolerance);
+        // Solve J*dy = -F
+        Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(J);
+        dy = qr.solve(-F);
 
         if (!dy.allFinite()) {
             // If using Broyden approximation, retry with full Jacobian
