@@ -388,10 +388,12 @@ immediately visible to users.
       `tools/coolplot_fixtures.py` (the `[diagram]` tests refuse fixtures of
       another commit) and adapting `src/diagram/` to what fails
       ([CoolPlot integration](coolplot_integration.md) §6.4).
-- [ ] Verify the **Windows build path** still works: `build_installer.bat`
-      and `coolsolve.nsi` should not need changes for normal feature
-      additions, but should be regenerated and tested for installer-level
-      changes.
+- [ ] Verify the **Windows, macOS and Linux build paths** for changes of the
+      build system, of platform-specific code or of the packaging: run the
+      *Release packages* workflow (`gh workflow run packages.yml --ref <branch>`,
+      §9.6), which compiles with MSVC, Apple Clang and the GCC of Ubuntu 22.04
+      and runs a smoke test on each; `build_installer.bat` and `coolsolve.nsi`
+      stay the hand route for Windows.
 
 #### Pinned CoolProp version
 
@@ -610,154 +612,136 @@ CoolSolve uses **semantic versioning** with two components: `MAJOR.MINOR`.
 
 ### 9.2 Update version strings
 
-The version is declared in one authoritative place and propagated everywhere
-else at build time. Edit only the files below.
+Edit only these three files; everything else (`--help`, `--version`, the installer title, Add/Remove Programs,
+the `.deb` and `.dmg` names and metadata) derives from them:
 
-**`CMakeLists.txt`** — change the `VERSION` field in `project()`:
+| File | Change (example for 0.5) |
+|------|--------------------------|
+| `CMakeLists.txt` | `project(CoolSolve VERSION 0.5.0 LANGUAGES CXX)` |
+| `coolsolve.nsi` | `!define VERSION "0.5"` and `!define COOLPROP_VERSION "8.1.0dev (8eb3b778)"`: the version and the short hash of the pinned CoolProp (`COOLSOLVE_COOLPROP_PINNED_TAG`, §9.3), which moves between releases |
+| `coolsolve.rc` | `FILEVERSION 0,5,0,0`, `PRODUCTVERSION 0,5,0,0`, `"FileVersion"` and `"ProductVersion"` `"0.5.0.0"` |
 
-```cmake
-project(CoolSolve VERSION 0.3.0 CXX)
-```
+### 9.3 Tag the model library, check CoolProp
 
-**`coolsolve.nsi`** — change the `!define VERSION` line:
-
-```nsis
-!define VERSION "0.3"
-!define COOLPROP_VERSION "<new-version>"
-```
-
-**`coolsolve.rc`** (Windows resource file) — change both the binary version
-fields and the string values (use four-component format):
-
-```rc
-FILEVERSION 0,3,0,0
-PRODUCTVERSION 0,3,0,0
-…
-VALUE "FileVersion", "0.3.0.0"
-VALUE "ProductVersion", "0.3.0.0"
-```
-
-All other places (`--help` output, Windows installer title, Add/Remove
-Programs entry) derive the version automatically from these three files.
-
-### 9.3 Verify the CoolProp version
-
-Check which CoolProp commit is included in this build (it must be the pinned
-one, see *Pinned CoolProp version* in §3.13):
+A release embeds a **tagged** library, so that it can be rebuilt identically. The library tag has the name of the
+release and goes on a commit **pushed** to GitHub (the builds clone it from there; uncommitted work of a local
+checkout is not in it):
 
 ```bash
-./coolsolve --version
-cd .fetchcontent_cache/coolprop-src
-git log --oneline -1
-git describe --tags
-```
-
-Note the commit hash and version string — you will need them in §9.5. Do the
-same for the model library: `./coolsolve --version` prints its commit and
-snapshot hash. A release should embed a **tagged** library, so that the release
-can be rebuilt identically: ask the library maintainer to tag it
-(`git tag vX.Y` in `CoolSolve_Library`) and build with
-`cmake -DCOOLSOLVE_LIBRARY_TAG=vX.Y ..`. The Windows script takes the tag from the
-`LIBRARY_TAG` environment variable (`set "LIBRARY_TAG=vX.Y"` before running
-`build_installer.bat`, §9.6) and passes `main` when it is not set.
-
-### 9.4 Run the full test suite
-
-```bash
-cd build
-cmake --build . -j$(nproc)
-
-./coolsolve_tests
-./coolsolve_tests "[examples-comprehensive]"
-./coolsolve_tests "[solver-robustness]"
-```
-
-All three must pass. Check `examples/solver_robustness_report.md` for
-unexpected changes in iteration counts or runtimes (see §5).
-
-### 9.5 Update the version history document
-
-Edit [`docs/versions.md`](versions.md):
-
-1. Add a new `## vX.Y — Month Year (current)` section at the top with:
-   - The Windows installer download link (GitHub Releases URL — see §9.7).
-   - The CoolProp commit hash and version string from §9.3.
-   - The model library tag and number of models (`./coolsolve --version`).
-   - A bullet list of the main changes since the previous release.
-2. Remove the `(current)` label from the previous version's heading.
-
-Keep the v0.1 entry permanently at the bottom as the historical baseline.
-
-Also update the **Try CoolSolve** section in `README.md` to point to the new
-version's installer link.
-
-The download URL follows a fixed pattern once the tag is chosen:
-
-```
-https://github.com/CoolProp/CoolSolve/releases/download/vX.Y/CoolSolve_vX.Y_Installer.exe
-```
-
-You can set this link in the docs **before** publishing the release (the URL
-is deterministic). The installer built in §9.6 will not embed the updated
-docs — that is expected and harmless.
-
-### 9.6 Build the Windows installer
-
-On a Windows machine with Visual Studio 2022, Python 3, Node.js, and NSIS:
-
-```bat
-set "LIBRARY_TAG=vX.Y"
-build_installer.bat
-```
-
-`LIBRARY_TAG` is the tag of the model library to embed (§9.3). This produces `CoolSolve_vX.Y_Installer.exe` in the project root. Do **not**
-commit the `.exe` to git; it is attached to the GitHub Release in §9.7.
-
-### 9.7 Publish the GitHub Release
-
-Commit the documentation updates from §9.5, then create and push the tag:
-
-```bash
-git add docs/versions.md README.md
-git commit -m "docs: add vX.Y GitHub release download link"
-git tag -a vX.Y -m "CoolSolve vX.Y"
-git push origin main
+cd ../CoolSolve_Library
+git fetch origin
+git tag -a vX.Y origin/main -m "CoolSolve Library vX.Y"
 git push origin vX.Y
 ```
 
-Create the release and upload the installer with the GitHub CLI
-(`gh` must be installed and authenticated — `gh auth login`):
+Its number of models (for §9.5): `git show vX.Y:library.json` (`models`, and their `status`).
+
+The CoolProp of a build is the pinned commit (*Pinned CoolProp version* in §3.13): `coolsolve --version` prints
+its version and git revision; `git -C .fetchcontent_cache/coolprop-src log -1 --format='%h %ad' <pin>` its date.
+
+### 9.4 Release build and tests
+
+Build the release in a **separate build directory**, with the library tag:
 
 ```bash
-gh release create vX.Y \
-  --repo CoolProp/CoolSolve \
-  --title "CoolSolve vX.Y" \
-  --notes-file docs/versions.md \
-  CoolSolve_vX.Y_Installer.exe
+mkdir -p build-release && cd build-release
+cmake -DCMAKE_BUILD_TYPE=Release -DCOOLSOLVE_LIBRARY_TAG=vX.Y ..
+make -j$(nproc) coolsolve coolsolve_tests
+./coolsolve --version          # CoolSolve X.Y.0, the CoolProp pin, the commit of the library tag
 ```
 
-On Windows (PowerShell), use backtick line continuations or a single line:
+A development build directory may embed something else than the tag: a cached `FETCHCONTENT_SOURCE_DIR_COOLSOLVELIBRARY`
+embeds a local checkout (`--version` then shows `<commit>+local-changes`) and `FETCHCONTENT_FULLY_DISCONNECTED`
+skips the fetch. The binary directories of the dependencies are shared by all build directories
+(`.fetchcontent_cache/*-build`): never build two directories at the same time, and re-run `cmake ..` in the
+development directory afterwards.
 
-```powershell
-gh release create vX.Y --repo CoolProp/CoolSolve --title "CoolSolve vX.Y" `
-  --notes-file docs/versions.md CoolSolve_vX.Y_Installer.exe
+```bash
+./coolsolve_tests
+./coolsolve_tests "[examples-comprehensive]"
+./coolsolve_tests "[library-regression]"           # the models of the tagged library against their .sol
+python3 ../tests/test_library_api.py --auto
+python3 ../tests/test_bundle_api.py --auto
+./coolsolve_tests "[solver-robustness]"            # last, once, on an idle machine (§5); commit the report
 ```
 
-The release page will be at
-`https://github.com/CoolProp/CoolSolve/releases/tag/vX.Y`.
+All must pass; compare `examples/solver_robustness_report.md` with the previous report cell by cell and explain
+every lost cell before going on.
 
-Older releases (v0.1, v0.2) may still point to the legacy dox.uliege.be
-host; new releases should use GitHub Releases exclusively.
+### 9.5 Version history and README
 
-### 9.8 Checklist summary
+In [`docs/versions.md`](versions.md), the *Next release (unreleased)* section becomes
+`## vX.Y — Month Year (current)`, and *(current)* leaves the previous heading. The section has:
+
+1. a table: the three download links (§9.7 gives their fixed URLs, so they are written before the packages
+   exist), the GitHub release, the CoolProp commit and date, the library tag and its number of models, the demo;
+2. *Installing*: the first-run notes of each platform (SmartScreen, Gatekeeper, `apt install`);
+3. *Behaviour changes* (results that can move), *New*, *Fixed*, *Dependencies*.
+
+Write the changelog from `git log --oneline vPREV..main`, not only from the notes gathered under *Next release*:
+they miss what was merged without a note. In `README.md`, *Try CoolSolve* lists the three downloads of the new
+version. These edits are committed **before** the packages are built (§9.6): the binaries embed the documentation,
+and the tag must be the commit they were built from.
+
+### 9.6 Build the packages
+
+The workflow `.github/workflows/packages.yml` builds the Windows installer, the macOS disk image and the Linux
+package of one commit on GitHub-hosted machines ([Desktop Application §2](desktop_app_options.md#2-building-the-packages-of-a-release)):
+
+```bash
+git push origin main
+gh workflow run packages.yml --ref main -f library_tag=vX.Y
+gh run list --workflow packages.yml --limit 1      # the run id
+gh run watch <run-id>                              # 30-90 min
+gh run download <run-id> --dir dist                # dist/coolsolve-{windows,macos,linux}/
+```
+
+`gh` must be installed and logged in (`sudo apt install gh`, `gh auth login`). A failed job: `gh run view <run-id>
+--log-failed`; fix on `main` and run again (the tag is not there yet). Never commit the packages (`.gitignore`). The
+Windows installer can still be built by hand (`set "LIBRARY_TAG=vX.Y"` then `build_installer.bat`), the `.deb`
+with `tools/package_deb.sh` (it then requires the glibc of the build machine).
+
+### 9.7 Tag and publish
+
+Tag the commit the packages were built from (the run shows it: `gh run view <run-id>`), and publish:
+
+```bash
+git tag -a vX.Y <commit> -m "CoolSolve vX.Y"
+git push origin vX.Y
+tools/release_notes.sh vX.Y > dist/notes.md       # the vX.Y section of versions.md, links made absolute
+gh release create vX.Y --repo CoolProp/CoolSolve --title "CoolSolve vX.Y" --notes-file dist/notes.md \
+  dist/coolsolve-windows/CoolSolve_vX.Y_Installer.exe \
+  dist/coolsolve-macos/CoolSolve_vX.Y_macOS_universal.dmg \
+  dist/coolsolve-linux/coolsolve_X.Y.0_amd64.deb
+```
+
+The download URLs are fixed by the tag and the file names:
+
+```
+https://github.com/CoolProp/CoolSolve/releases/download/vX.Y/CoolSolve_vX.Y_Installer.exe
+https://github.com/CoolProp/CoolSolve/releases/download/vX.Y/CoolSolve_vX.Y_macOS_universal.dmg
+https://github.com/CoolProp/CoolSolve/releases/download/vX.Y/coolsolve_X.Y.0_amd64.deb
+```
+
+Check that each one downloads (`curl -sIL <url> | grep -i content-length`). Releases up to v0.2 point to the
+legacy dox.uliege.be host; new releases use GitHub Releases only.
+
+### 9.8 After the release
+
+- Deploy the online demo ([Deployment Guide](deployment_ubuntu_apache.md)); it builds `main` with the library's
+  `main`.
+- Start a `## Next release (unreleased)` section at the top of `docs/versions.md` for the notes of the next changes.
+- Re-run `cmake ..` in the development build directory (§9.4).
+
+### 9.9 Checklist
 
 ```markdown
-- [ ] Version bumped in CMakeLists.txt, coolsolve.nsi, coolsolve.rc
-- [ ] Model library tagged and embedded with `-DCOOLSOLVE_LIBRARY_TAG=<tag>`; tag recorded in docs/versions.md
-- [ ] Full test suite passes (unit + examples-comprehensive + solver-robustness + `tests/test_library_api.py --auto`)
-- [ ] docs/versions.md updated (new section, CoolProp version, changelog)
-- [ ] README.md "Try CoolSolve" section updated to the new version
-- [ ] Windows installer built with build_installer.bat (not committed to git)
-- [ ] Git tag created and pushed
-- [ ] GitHub Release published with installer attached (gh release create)
+- [ ] Version bumped in CMakeLists.txt, coolsolve.nsi (with the CoolProp pin), coolsolve.rc
+- [ ] Library tagged vX.Y on a pushed commit, tag pushed
+- [ ] Release build in build-release/ with -DCOOLSOLVE_LIBRARY_TAG=vX.Y; --version checked
+- [ ] Tests pass: unit, examples-comprehensive, library-regression, test_library_api/test_bundle_api, solver-robustness (report committed)
+- [ ] docs/versions.md (vX.Y section from git log, Installing, three links) and README downloads, committed
+- [ ] Workflow packages.yml green on that commit; the three packages downloaded
+- [ ] Tag vX.Y on the built commit, pushed; release created with tools/release_notes.sh and the three packages
+- [ ] Download URLs checked; demo deployed; Next release section started
 ```

@@ -2,13 +2,37 @@
 
 [← Back to overview](../README.md)
 
-This page lists all released versions of CoolSolve, their Windows installer
-download links, the CoolProp version bundled in each release, and the main
+This page lists all released versions of CoolSolve, their installer
+download links (Windows; macOS and Linux since v0.5), the CoolProp version bundled in each release, and the main
 changes introduced.
 
 ---
 
-## Next release (unreleased)
+## v0.5 — November 2026 (current)
+
+| Item | Detail |
+|------|--------|
+| **Windows installer** | **[CoolSolve v0.5 for Windows](https://github.com/CoolProp/CoolSolve/releases/download/v0.5/CoolSolve_v0.5_Installer.exe)** (Windows 10/11, x64) |
+| **macOS disk image** | **[CoolSolve v0.5 for macOS](https://github.com/CoolProp/CoolSolve/releases/download/v0.5/CoolSolve_v0.5_macOS_universal.dmg)** (macOS 12+, Apple Silicon and Intel; not signed by Apple, see *Installing*) |
+| **Linux package** | **[CoolSolve v0.5 for Debian/Ubuntu](https://github.com/CoolProp/CoolSolve/releases/download/v0.5/coolsolve_0.5.0_amd64.deb)** (Ubuntu 22.04+, Debian 12+, x64) |
+| **Release notes** | [GitHub release v0.5](https://github.com/CoolProp/CoolSolve/releases/tag/v0.5) |
+| **CoolProp** | master branch, commit `8eb3b778` (8.1.0dev, 31 October 2026) |
+| **Model library** | [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) tag `v0.5` (336 models, 307 verified), embedded in the GUI binary |
+| **Online demo** | [https://coolsolve.squoilin.eu/](https://coolsolve.squoilin.eu/) |
+
+### Installing
+
+- **Windows**: run the installer. It is not signed: SmartScreen shows *Windows protected your PC*, click *More info*
+  → *Run anyway*. CoolSolve is in the Start Menu, and a double click on a `.eescode` file opens it.
+- **macOS** (new): open the `.dmg` and drag CoolSolve to Applications. The app is not signed by Apple: macOS refuses
+  the first opening. Go to *System Settings → Privacy & Security* and click *Open Anyway* (repeat if macOS asks
+  again), or run once in Terminal `xattr -dr com.apple.quarantine /Applications/CoolSolve.app`. CoolSolve opens a
+  Terminal window (the server; close it to stop CoolSolve) and the GUI in the browser. The command-line tool is
+  `/Applications/CoolSolve.app/Contents/MacOS/coolsolve`.
+- **Linux** (new): `sudo apt install ./coolsolve_0.5.0_amd64.deb`. *CoolSolve* is in the applications menu (Science)
+  and opens `.eescode` files; `coolsolve` is the command-line tool, `coolsolve --gui` the GUI.
+
+See [Desktop Application](desktop_app_options.md) for how the packages are built.
 
 ### Behaviour changes
 
@@ -31,11 +55,20 @@ Model results can move: re-check models that use the items below.
 - **Convergence test relative to the size of each equation's terms**: tiny values (1e-20) are solved instead of
   being set to 0, and large energy balances converge at the rounding level of their terms; new warning `W002` for
   an implicitly solved value below the tolerance (*Convergence tolerance*, Language Reference §10).
+- **The GUI server listens on `127.0.0.1` only** (it listened on every interface, `0.0.0.0`): the GUI is no
+  longer reachable from other machines of the network. `coolsolve --gui --host 0.0.0.0` restores it; a reverse
+  proxy on the same machine (the online demo) needs nothing ([GUI §12.1](gui.md#121-local-mode)).
+- **Try Harder also turns on equation scaling** (`enableEquationScaling`, below), with tearing and symbolic
+  reduction: a model that needed *Try Harder* may converge to another solution of a block with several.
 - **`VOLUME` is labelled `m^3/kg`**, and `$IntegralTable` rows are at multiples of the output interval
   (`integralOutputInterval` is now applied).
 
 ### New
 
+- **Desktop packages for macOS and Linux**, next to the Windows installer: a `.dmg` with `CoolSolve.app` (universal
+  binary) and a `.deb` package with a menu entry, the `.eescode` file type and the command-line tool. The three
+  packages are built from the release commit by the GitHub Actions workflow `packages.yml`
+  ([Desktop Application](desktop_app_options.md)).
 - **Thermodynamic diagrams on CoolPlot**: the Diagrams tab is rebuilt on the C++ core of
   [CoolPlot](https://github.com/CoolProp/CoolPlot) (coolplot-core 1.5.0, CoolPlot `7338f48`) and on
   `CoolProp::Plot` of the pinned CoolProp (`8eb3b778`): isolines in the model's units, short
@@ -45,19 +78,54 @@ Model results can move: re-check models that use the items below.
   isolines by default; SVG/PDF downloads, vector figures in the LaTeX report,
   `coolsolve --diagram`. The charts are saved in the ZIP bundle (`diagrams.json`); the former
   `POST /api/v1/coolprop/saturation` is removed ([CoolPlot integration](coolplot_integration.md)).
+- **`$INCLUDE <name>`**: a model imports the functions and procedures of another `.eescode` file of its folder or
+  of a library model (e.g. `$INCLUDE hx_ees_function`), in the CLI and the GUI alike; the Library menu copies the
+  line, an include bar opens each included file, the ZIP bundle carries them
+  ([Language Reference §7](language_reference.md#include-functions-and-procedures-of-another-file)).
+- **Combustion**: `OH`, `H`, `O`, `N`, `NO` and `NO2` are ideal gases from the NASA-Glenn polynomials (200 K to
+  20000 K); `CALL NASA(Species$, T : cp, h, s)` on the same table of 22 species; `LowerHeatingValue(Fuel)` and
+  `HigherHeatingValue(Fuel)` of the ideal-gas fuels of C, H and O; `CALL CHEM_EQUIL(P, T, A\O, C\O, H\O, N\O : …)`,
+  the chemical equilibrium of 14 combustion species by minimum Gibbs energy, with exact derivatives: adiabatic flame
+  temperatures with dissociation are solved directly ([Language Reference §5, §7](language_reference.md)).
+- **Option `enableEquationScaling`** (default off; *Try Harder* turns it on): Newton steps on the equilibrated
+  system (rows and columns scaled by powers of two), for blocks whose equations have terms of very different sizes,
+  such as the adiabatic flame with dissociation (*Equation scaling*, Language Reference §10).
+- **Dynamic models**: a variable-order BDF integrator for stiff models (`integralMethod = BDF`); faster evaluation
+  (variables by slot instead of by name); the check equations that read `t` or a state are verified during the
+  march; the step budget of RK45 and BDF follows the step of the model ([Dynamic Solving](integral_table.md)).
 - **Open reads the ZIP files of any zip tool**: Deflate-compressed archives (the default of `zip`,
   7-Zip, Windows and macOS), data descriptors, ZIP64, the ZIP of a folder and Windows' code
   page 437 names; before, only uncompressed archives opened, and a Deflate one ended in a bare
   *Internal Server Error*. A ZIP that cannot be opened (password, BZIP2/LZMA, damaged, a file that
   is not UTF-8 text, …) is refused with the reason, and an uncaught server error reaches the
   Console with its message ([GUI §7.2](gui.md#72-zip-bundle-format)).
-- **Dependencies**: coolplot-core is pinned like CoolProp (`COOLSOLVE_COOLPLOT_PINNED_TAG`);
-  nlohmann/json 3.12.0; CMake 3.16. A server drawing PDF diagrams needs a TrueType font
-  (`fonts-dejavu-core`).
+- **Debug folder**: `solver_final_residuals.md`, the residual of every equation of the block that did not converge
+  at its solver's last iterate, sorted worst first; `coolsolve_residuals.md` after a failure is evaluated where the
+  solve stopped instead of at the guesses ([Debugging Models](debugging_models.md)).
+- **GUI**: `F2` solves the model. The server listens on `127.0.0.1` only, `--host <address>` otherwise (see above).
+- **EES import tools** (`tools/ees_extract.py`, `tools/compare_solution.py`) no longer drop or invent data silently:
+  names with `\ % | # °` and accents, the range comma of `SUM`/`PRODUCT`/`DUPLICATE`, tables after the first block
+  of records ([Importing EES Models](ees_import.md)).
+- **Library regression test** `[library-regression]`: every runnable library model against its `.sol` baseline.
+
+### Fixed
+
+- **`x^y` with a negative base** (`q^2`, `q^3` with `q < 0`) had a NaN derivative, which sent blocks to the fallback
+  solvers.
+- **Tearing**: a bounded backtracking line search on the outer step (the full step could overshoot to a non-physical
+  root).
+- **Newton1D** no longer accepts a bracket collapsed onto a jump of F (a failed CoolProp call at the edge of its
+  domain was taken for a root).
+- **Dynamic models**: a Jacobian whose evaluation fails leaves the previous one intact.
+
+### Dependencies
+
+- CoolProp pinned to `8eb3b778`; coolplot-core 1.5.0 pinned like CoolProp (`COOLSOLVE_COOLPLOT_PINNED_TAG`);
+  nlohmann/json 3.12.0; CMake 3.16. A server drawing PDF diagrams needs a TrueType font (`fonts-dejavu-core`).
 
 ---
 
-## v0.4 — October 2026 (current)
+## v0.4 — October 2026
 
 | Item | Detail |
 |------|--------|
@@ -86,7 +154,7 @@ Model results can move: re-check models that use the items below.
   third-law entropies and NASA-Glenn formation enthalpies; the ASHRAE lithium bromide-water routines `X_LIBR`,
   `H_LIBR`, `T_LIBR`, `P_LIBR`; the incompressible solutions in the EES form `cp('EG', T=T, C=30)`; humid-air `cv`
   and density as EES; CoolProp mixtures as fluids (with a warning).
-- **Ammonia-water (`NH3H2O`)** *(if included in the release)*: the IAPWS Guideline G4-01 Helmholtz formulation, with
+- **Ammonia-water (`NH3H2O`)**: the IAPWS Guideline G4-01 Helmholtz formulation, with
   15 flash input combinations, `CALL NH3H2O` and the usual property functions; see
   [language_reference.md](language_reference.md) and [nh3h2o_review.md](nh3h2o_review.md).
 - **Solver**: step control in the one-dimensional Newton solver (no more silent divergence); the input clamp only

@@ -10,9 +10,16 @@ CoolSolve is a parser, structural analyzer, and equation solver using a language
 
 ## Try CoolSolve
 
-### Windows Desktop Application (v0.4)
+### Desktop Application (v0.5)
 
-Download the Windows installer: **[CoolSolve v0.4 for Windows](https://github.com/CoolProp/CoolSolve/releases/download/v0.4/CoolSolve_v0.4_Installer.exe)**
+| Platform | Download |
+|----------|----------|
+| Windows 10/11 (x64) | **[CoolSolve_v0.5_Installer.exe](https://github.com/CoolProp/CoolSolve/releases/download/v0.5/CoolSolve_v0.5_Installer.exe)** |
+| macOS 12+ (Apple Silicon and Intel) | **[CoolSolve_v0.5_macOS_universal.dmg](https://github.com/CoolProp/CoolSolve/releases/download/v0.5/CoolSolve_v0.5_macOS_universal.dmg)** — not signed by Apple: on the first opening, *System Settings → Privacy & Security → Open Anyway* |
+| Ubuntu 22.04+ / Debian 12+ (x64) | **[coolsolve_0.5.0_amd64.deb](https://github.com/CoolProp/CoolSolve/releases/download/v0.5/coolsolve_0.5.0_amd64.deb)** — `sudo apt install ./coolsolve_0.5.0_amd64.deb` |
+
+The application runs its server in a console (Windows), Terminal (macOS) or terminal (Linux) window and opens the GUI
+in the default browser; closing that window stops CoolSolve. Installation details: [Version History](docs/versions.md#installing).
 
 See [Version History](docs/versions.md) for all releases, changelogs, and
 the CoolProp version bundled in each release.
@@ -78,6 +85,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 | [GUI & REST API](docs/gui.md) | Web interface, REST API, and parametric studies |
 | [CoolPlot Integration](docs/coolplot_integration.md) | The Diagrams tab on CoolPlot: architecture, REST contract, diagram definitions, phases and status |
 | [Deployment Guide](docs/deployment_ubuntu_apache.md) | Deploying CoolSolve on Ubuntu with Apache |
+| [Desktop Application](docs/desktop_app_options.md) | Installers for Windows, macOS (`.dmg`, built on GitHub Actions) and Linux (`.deb`), the release checklist, native-window options |
 | [Contributing Guide](docs/contributing.md) | Workflow and integration checklist for new features and bug fixes |
 | [Version History](docs/versions.md) | Release notes, download links, and CoolProp version per release |
 
@@ -552,6 +560,7 @@ CoolSolve/
 ├── cmake/                      # embed_assets / embed_library / embed_bibtex: GUI, docs, model library and CoolProp's bibliography embedded in the binary
 ├── tools/                      # EES import helpers: ees_extract.py, compare_solution.py (see docs/ees_import.md);
 │                               # update_coolsolve.sh: server update, run as root (see docs/deployment_ubuntu_apache.md)
+│                               # package_deb.sh, package_macos.sh: Linux .deb and macOS .dmg (see docs/desktop_app_options.md)
 │                               # coolplot_fixtures.py: CoolPlot fixtures of the [diagram] tests
 │                               # zip_fixtures.py: ZIP fixtures of the [zip] tests
 └── examples/                   # Example .eescode files for the CLI and the regression tests
