@@ -1,0 +1,28 @@
+"Dissociation of the combustion products of octane at 3000 K and 100 bar"
+
+"Octane C8H18 burns with 20 % excess dry air: C8H18 + 12.5 (1 + 0.2) (O2 + 3.76 N2). The products are in chemical
+equilibrium at T and P, in the gas phase: the procedure CHEM_EQUIL returns the mole fractions of the 14 species
+H2, O2, H2O, CO, CO2, OH, H, O, N2, N, NO, NO2, CH4 and Ar from the ratios of the atoms of argon, carbon, hydrogen and
+nitrogen to the oxygen atoms (A\O, C\O, H\O, N\O). Units of the model: T in C, P in Pa (the EES files pass K and kPa).
+The thermodynamic data are the NASA-Glenn polynomials of the 14 species; EES's older data give the same major species
+within 1 % (x_CO2 = 0.08724803022 at this state) and OH, NO, NO2 and H2 a few percent apart."
+
+T_K = 3000 [K]
+T = T_K - 273.15 [C]
+P = 1E7 [Pa]
+
+"Atoms per oxygen atom of C8H18 + 12.5 (1 + e) (O2 + 3.76 N2), e = 0.2"
+e = 0.2
+a = 12.5*(1 + e)                         "kmol of O2 per kmol of fuel"
+A\O = 0                                  "no argon"
+C\O = 8/(2*a)
+H\O = 18/(2*a)
+N\O = 3.76
+
+CALL CHEM_EQUIL(P, T, A\O, C\O, H\O, N\O : x_H2, x_O2, x_H2O, x_CO, x_CO2, x_OH, x_H, x_O, x_N2, x_N, x_NO, x_NO2, x_CH4, x_Ar)
+
+"Check of the mole fractions"
+sum_x = x_H2 + x_O2 + x_H2O + x_CO + x_CO2 + x_OH + x_H + x_O + x_N2 + x_N + x_NO + x_NO2 + x_CH4 + x_Ar
+
+"Degree of dissociation of the carbon: the part of it that is CO"
+CO_share = x_CO/(x_CO + x_CO2)

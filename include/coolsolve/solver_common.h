@@ -141,6 +141,75 @@ inline Eigen::VectorXd computeScalingFactors(const Eigen::VectorXd& x) {
 }
 
 // ============================================================================
+// Equilibrated linear solve (Newton steps)
+// ============================================================================
+
+/// The power of two nearest below 1/m for a magnitude m > 0 (1 for 0 or a non-finite m): scaling by it is exact.
+inline double inversePowerOfTwo(double m) {
+    if (!(m > 0.0) || !std::isfinite(m)) return 1.0;
+    int exponent = 0;
+    std::frexp(m, &exponent);   // m = f 2^exponent, f in [0.5, 1)
+    return std::ldexp(1.0, -exponent);
+}
+
+/**
+ * @brief The solution of J dx = rhs by a column-pivoting QR factorisation of the equilibrated matrix R J C.
+ *
+ * R and C are diagonal: each row of J is scaled so that its largest entry is in [0.5, 1), then each column of the
+ * result likewise, by powers of two (exact: the scaling adds no rounding; the row/column equilibration of LAPACK's
+ * xGEEQU). A block whose equations have terms of very different sizes (an energy balance of 1E9 J/kmol beside mole
+ * fractions of 1E-2, register CS-BUG-BLOCK-SCALE-SPREAD) has a Jacobian whose condition number is ~1E19 as it stands
+ * and ~1E5 equilibrated: the QR, which treats the pivots below eps times its largest one as zero, then keeps every
+ * direction of the small equations.
+ * @param rank  when given, the rank the QR found for the equilibrated matrix
+ */
+inline Eigen::VectorXd solveEquilibrated(const Eigen::MatrixXd& J, const Eigen::VectorXd& rhs, Eigen::Index* rank = nullptr) {
+    const Eigen::Index rows = J.rows(), cols = J.cols();
+    Eigen::VectorXd r(rows), c(cols);
+    for (Eigen::Index i = 0; i < rows; ++i) r(i) = inversePowerOfTwo(J.row(i).cwiseAbs().maxCoeff());
+    Eigen::MatrixXd A = r.asDiagonal() * J;
+    for (Eigen::Index j = 0; j < cols; ++j) c(j) = inversePowerOfTwo(A.col(j).cwiseAbs().maxCoeff());
+    A = A * c.asDiagonal();
+    Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(A);
+    if (rank) *rank = qr.rank();
+    return c.cwiseProduct(qr.solve(r.cwiseProduct(rhs)));
+}
+
+/**
+ * @brief The Newton step: the solution of J dx = rhs by the column-pivoting QR of J, as the solvers always took it;
+ *        when that step leaves linear equations unmet that the convergence test counts, the solution of the
+ *        equilibrated system if it meets them better.
+ *
+ * The plain step is kept when its linear residual J dx - rhs passes the convergence test of the block
+ * (weightedResidualNorm with the residual scale and the tolerance of the solver, below \p tolerance): every block it
+ * solves takes the same steps and iterations as before, a singular but consistent block (a family of solutions, of
+ * which the equilibrated QR would pick another member) and the equations of rounding noise of a block (their weight,
+ * residualWeight) included. Otherwise (CS-BUG-BLOCK-SCALE-SPREAD: the QR dropped a direction of the small equations, and
+ * the step leaves their residuals untouched) solveEquilibrated is solved too, and the step whose linear residual is
+ * smaller in that test is taken. The cost is one product J dx, and a second factorisation only in that case.
+ * @param residualScale  the scale S of the residuals (`Problem::residualScale`; empty: the absolute test)
+ * @param rank  when given, the rank the QR found for the matrix of the step taken (KINSOL's singularity test)
+ */
+template <class Scale>   // Eigen::VectorXd or std::vector<double>
+Eigen::VectorXd solveNewtonStep(const Eigen::MatrixXd& J, const Eigen::VectorXd& rhs, const Scale& residualScale,
+                                double tolerance, Eigen::Index* rank = nullptr) {
+    Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(J);
+    Eigen::VectorXd dx = qr.solve(rhs);
+    if (rank) *rank = qr.rank();
+    auto unmet = [&](const Eigen::VectorXd& step) {   // the weighted linear residual (NaN or inf: not finite)
+        return step.allFinite() ? weightedResidualNorm(Eigen::VectorXd(J * step - rhs), residualScale)
+                                : std::numeric_limits<double>::infinity();
+    };
+    const double plain = unmet(dx);
+    if (plain < tolerance) return dx;
+    Eigen::Index equilibratedRank = 0;
+    Eigen::VectorXd equilibrated = solveEquilibrated(J, rhs, &equilibratedRank);
+    if (!(unmet(equilibrated) < plain)) return dx;
+    if (rank) *rank = equilibratedRank;
+    return equilibrated;
+}
+
+// ============================================================================
 // Non-Monotone Merit History
 // ============================================================================
 

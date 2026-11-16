@@ -109,6 +109,11 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     // Models from solving/
     {"air_screw_compressor.eescode",            {"epsilon_s", 0.4896}},
     {"air_screw_compressor_simple.eescode",     {"epsilon_s", 0.5918}},
+    // Klein's ChemEq example of EES (X8.868): y_NO 0.001861939532 (y_CO 0.0001996774977 is checked in test_library_gaps.cpp);
+    // the species NO is a NASA-Glenn ideal gas (CS-GAP-FLUIDS-NASA-SPECIES)
+    {"chemical_equilibrium_octane.eescode",     {"y_NO", 0.001861939532}},
+    // EES's CHEM_EQUIL at 3000 K and 10000 kPa (Ex_2_T_P_effects_on_dissociation): x_CO2 0.08724803022 (CoolSolve: 0.087195, -0.06 %)
+    {"chem_equil_dissociation.eescode",         {"x_CO2", 0.08724803022}},
     {"boiler_cpbar.eescode",                    {"eta", 0.8853}},
     {"boiler_cpbar2.eescode",                   {"eta", 0.8838}},
     {"compressor_refrigeration_simple.eescode", {"COP_1", 3.934}},

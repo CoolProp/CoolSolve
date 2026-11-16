@@ -7,6 +7,8 @@
 #include "coolsolve/ir.h"
 #include "coolsolve/library_store.h"
 #include "coolsolve/libr_ashrae.h"
+#include "coolsolve/builtin_procedures.h"
+#include "coolsolve/chem_equil.h"
 #include "coolsolve/psychprops.h"
 #include "coolsolve/units.h"
 #include "coolsolve/user_hints.h"
@@ -61,12 +63,13 @@ static bool isEESThermophysicalFunction(const std::string& name) {
     return EES_THERMOPHYSICAL_FUNCTIONS.find(lower) != EES_THERMOPHYSICAL_FUNCTIONS.end();
 }
 
-/// ISIDEALGAS(Fluid) takes the fluid like a property function but computes no property: the hints given to
-/// property calls (units of the inputs, suggestions for the fluid name such as "'Air' is not moist air") do not apply.
+/// ISIDEALGAS(Fluid), LOWERHEATINGVALUE(Fuel) and HIGHERHEATINGVALUE(Fuel) take the fluid like a property function but compute no
+/// property of a state: the hints given to property calls (units of the inputs, suggestions for the fluid name such as
+/// "'Air' is not moist air") do not apply.
 static bool isFluidQueryFunction(const std::string& name) {
     std::string lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-    return lower == "isidealgas";
+    return lower == "isidealgas" || lower == "lowerheatingvalue" || lower == "higherheatingvalue";
 }
 
 // ============================================================================
@@ -880,6 +883,8 @@ private:
             "colebrook",  // the built-in procedure CALL Colebrook(Re, RR : f)
             "nh3h2o",  // the built-in procedure CALL NH3H2O(Code, In1, In2, In3 : T, P, x, h, s, u, v, q)
             "psychprops",  // the built-in procedure CALL psychprops(T=T, P=P, R=R : T, v, h, s, u, w, R, WetB, DewP)
+            "nasa",  // the built-in procedure CALL NASA(Species$, T : cp, h, s)
+            "chem_equil",  // the built-in procedure CALL CHEM_EQUIL(P, T, A\\O, C\\O, H\\O, N\\O : x_H2, ..., x_Ar)
             "ntumethod", "effectivenessntu",
             "lmtd",
             "integral", "integralvalue",  // equation-based dynamic solver
@@ -3319,6 +3324,22 @@ private:
         return lower == "colebrook" && !procedureNames_.count(name);
     }
 
+    /// True for a CALL of the built-in procedure NASA(Species$, T : cp, h, s). Like Colebrook and NH3H2O, and unlike
+    /// psychprops, a PROCEDURE NASA defined by the model before the call replaces it: the call is then that of any procedure.
+    bool isBuiltinNasa(const std::string& name) const {
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        return lower == "nasa" && !procedureNames_.count(name);
+    }
+
+    /// True for a CALL of the built-in procedure CHEM_EQUIL(P, T, A\\O, C\\O, H\\O, N\\O : x_H2, ..., x_Ar): as NASA, a PROCEDURE
+    /// CHEM_EQUIL defined by the model before the call replaces it.
+    bool isBuiltinChemEquil(const std::string& name) const {
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        return lower == "chem_equil" && !procedureNames_.count(name);
+    }
+
     /// True for a CALL of the built-in procedure psychprops: it always runs, whatever the model defines under that name.
     static bool isBuiltinPsychprops(const std::string& name) {
         std::string lower = name;
@@ -3387,48 +3408,59 @@ private:
         return "";
     }
 
-    /// The outputs of CALL psychprops are at fixed positions (T, v, h, s, u, w, R, WetB, DewP) and may be skipped
-    /// (`: , , h_1, , , w_1`, EES help): `position` is where each output written stood in the list (0-based), `slots`
-    /// receives the position of each output kept (it stays empty when they are the first outputs in order). An output
-    /// written with the variable that is the input of the same quantity (`T=T_1, ... : T_1, ...`, the EES help example,
-    /// with T and R) is that input and is dropped: it would be the equation T_1 = T_1 and the system would have more
-    /// equations than unknowns. Returns why the outputs are refused ("" when fine).
-    std::string psychpropsOutputs(const std::vector<ExprPtr>& inputArgs, const std::vector<std::string>& inputNames,
+    /// The outputs of a built-in procedure whose outputs are at fixed positions (`proc`: CALL psychprops, CALL NASA) may be
+    /// skipped (`: , , h_1, , , w_1`, EES help): `position` is where each output written stood in the list (0-based),
+    /// `slots` receives the position of each output kept (it stays empty when they are the first outputs in order).
+    /// `echoes(k)`, when given, tells that output `k` is an input of the procedure written as an output (CALL psychprops:
+    /// `T=T_1, ... : T_1, ...`, the EES help example, with T and R): it is that input and is dropped, as it would be the
+    /// equation T_1 = T_1 and the system would have more equations than unknowns. Returns why the outputs are refused
+    /// ("" when fine).
+    std::string positionedOutputs(const PositionedOutputs& proc, const std::function<bool(size_t)>& echoes,
                                   std::vector<Variable>& outputVars, std::vector<ExprPtr>& outputExprs,
                                   const std::vector<size_t>& position, std::vector<int>& slots) {
         std::vector<Variable> keptVars;
         std::vector<ExprPtr> keptExprs;
         std::vector<int> keptSlots;
         for (size_t k = 0; k < outputVars.size(); ++k) {
-            if (position[k] >= static_cast<size_t>(psychprops::kOutputCount))
-                return "psychprops has " + std::to_string(psychprops::kOutputCount) + " outputs (T, v, h, s, u, w, R, WetB, "
-                       "DewP): the output number " + std::to_string(position[k] + 1) + " does not exist";
-            const bool isVariable = outputExprs.empty() || !outputExprs[k];
-            bool echo = false;
-            if (isVariable) {
-                auto output = std::make_shared<Expression>();
-                output->node = outputVars[k];
-                for (size_t j = 0; j < inputArgs.size() && !echo; ++j) {
-                    std::string identifier = !inputNames.empty() ? inputNames[j] : j < 3 ? psychprops::kPositionalInputs[j] : "";
-                    std::transform(identifier.begin(), identifier.end(), identifier.begin(), ::tolower);
-                    // the same variable, element included (`T[i]`), as written
-                    echo = identifier == psychprops::kOutputs[position[k]].input && inputArgs[j]->is<Variable>() &&
-                           eesCompareFolded(formatExpr(inputArgs[j]), formatExpr(output)) == 0;
-                }
-            }
-            if (echo) continue;
+            if (position[k] >= static_cast<size_t>(proc.count))
+                return std::string(proc.procedure) + " has " + std::to_string(proc.count) + " outputs (" + proc.list +
+                       "): the output number " + std::to_string(position[k] + 1) + " does not exist";
+            if (echoes && echoes(k)) continue;
             keptVars.push_back(outputVars[k]);
             if (!outputExprs.empty()) keptExprs.push_back(outputExprs[k]);
             keptSlots.push_back(static_cast<int>(position[k]));
         }
         if (keptVars.empty() && !outputVars.empty())
-            return "psychprops: every output written is an input (the same variable) and nothing is left to compute";
+            return std::string(proc.procedure) + ": every output written is an input (the same variable) and nothing is left to compute";
         bool inOrder = true;
         for (size_t k = 0; k < keptSlots.size(); ++k) inOrder = inOrder && keptSlots[k] == static_cast<int>(k);
         outputVars = std::move(keptVars);
         if (!outputExprs.empty()) outputExprs = std::move(keptExprs);
         if (!inOrder) slots = std::move(keptSlots);
         return "";
+    }
+
+    /// The outputs of CALL psychprops: an output written with the variable that is the input of the same quantity is
+    /// that input (see positionedOutputs).
+    std::string psychpropsOutputs(const std::vector<ExprPtr>& inputArgs, const std::vector<std::string>& inputNames,
+                                  std::vector<Variable>& outputVars, std::vector<ExprPtr>& outputExprs,
+                                  const std::vector<size_t>& position, std::vector<int>& slots) {
+        const auto echoes = [&](size_t k) {
+            if (position[k] >= static_cast<size_t>(psychprops::kOutputCount)) return false;   // refused by positionedOutputs
+            if (!outputExprs.empty() && outputExprs[k]) return false;   // an expression is no input
+            auto output = std::make_shared<Expression>();
+            output->node = outputVars[k];
+            for (size_t j = 0; j < inputArgs.size(); ++j) {
+                std::string identifier = !inputNames.empty() ? inputNames[j] : j < 3 ? psychprops::kPositionalInputs[j] : "";
+                std::transform(identifier.begin(), identifier.end(), identifier.begin(), ::tolower);
+                // the same variable, element included (`T[i]`), as written
+                if (identifier == psychprops::kOutputs[position[k]].input && inputArgs[j]->is<Variable>() &&
+                    eesCompareFolded(formatExpr(inputArgs[j]), formatExpr(output)) == 0)
+                    return true;
+            }
+            return false;
+        };
+        return positionedOutputs(kPsychpropsOutputs, echoes, outputVars, outputExprs, position, slots);
     }
 
     // `errorMsg`, when given, receives the reason why a CALL statement was refused
@@ -3581,6 +3613,20 @@ private:
         if (psychpropsCall) {
             const std::string why = psychpropsOutputs(inputArgs, inputNames, outputVars, outputExprs, outputPositions, outputSlots);
             if (!why.empty()) return refuse(why);
+        }
+        if (isBuiltinChemEquil(name) && (inputArgs.size() != static_cast<size_t>(chem_equil::kInputCount) ||
+                                         outputVars.size() != static_cast<size_t>(chem_equil::kSpeciesCount)))
+            return refuse("CALL CHEM_EQUIL takes 6 inputs (P, T, A\\O, C\\O, H\\O, N\\O) and 14 outputs (the mole fractions of H2, O2, H2O, CO, CO2, OH, "
+                          "H, O, N2, N, NO, NO2, CH4 and Ar, in this order): CALL CHEM_EQUIL(P, T, A\\O, C\\O, H\\O, N\\O : x_H2, x_O2, x_H2O, x_CO, "
+                          "x_CO2, x_OH, x_H, x_O, x_N2, x_N, x_NO, x_NO2, x_CH4, x_Ar); got " + std::to_string(inputArgs.size()) +
+                          " input(s) and " + std::to_string(outputVars.size()) + " output(s)");
+        if (isBuiltinNasa(name)) {
+            const std::string why = positionedOutputs(kNasaOutputs, nullptr, outputVars, outputExprs, outputPositions, outputSlots);
+            if (!why.empty()) return refuse(why);
+            if (inputArgs.size() != 2 || outputVars.empty())
+                return refuse("CALL NASA takes 2 inputs (Species$, T) and 1 to 3 outputs (cp, h, s): CALL NASA(Species$, T : cp, h, s), "
+                              "an output left empty is not computed; got " + std::to_string(inputArgs.size()) + " input(s) and " +
+                              std::to_string(outputVars.size()) + " output(s)");
         }
         StmtPtr call = makeProcedureCall(name, std::move(inputArgs), std::move(outputVars), lineNum, std::move(outputExprs));
         call->as<ProcedureCall>().inputNames = std::move(inputNames);

@@ -254,15 +254,17 @@ SolverStatus KINSOLSolver::solveLineSearch(Problem& problem, Eigen::VectorXd& y,
 
         // Exact linear solve: J · dy = −F (inexact-Newton with η = 0, since
         // CoolSolve uses direct solvers rather than Krylov iterations).
-        Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(J);
-        dy = qr.solve(-F);
-        if (!dy.allFinite() || qr.rank() < n) {
+        // solveNewtonStep (solver_common.h): equilibrated when the plain QR leaves the equations unmet; the rank is that of
+        // the matrix of the step taken
+        Eigen::Index rank = 0;
+        dy = solveNewtonStep(J, -F, problem.residualScale, options.tolerance, &rank);
+        if (!dy.allFinite() || rank < n) {
             if (trace) { trace->finalStatus = SolverStatus::SingularJacobian;
                          trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
             if (detailedError) {
                 std::ostringstream ss;
                 ss << "KINSOL(LS): singular Jacobian at iteration " << iter
-                   << " (rank " << qr.rank() << "/" << n << "), ||F|| = " << residualNorm;
+                   << " (rank " << rank << "/" << n << "), ||F|| = " << residualNorm;
                 *detailedError = ss.str();
             }
             return SolverStatus::SingularJacobian;

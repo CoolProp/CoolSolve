@@ -62,7 +62,9 @@ private:
 
 /**
  * @brief Ideal-gas species of EES (N2, CO2, H2O, ...), evaluated from the ideal-gas part (alpha0) of the CoolProp
- * equation of state of the substance (src/ideal_gas.cpp): pv = RT exactly, h and u functions of T only.
+ * equation of state of the substance, or, for the species CoolProp has no equation of state for (OH, H, O, N, NO, NO2:
+ * CoolProp name `NASA::<name>`), from the NASA-Glenn polynomials (src/ideal_gas.cpp, src/nasa_glenn.cpp): pv = RT
+ * exactly, h and u functions of T only.
  *
  * Optionally carries the standard enthalpy of formation and the standard (third-law) entropy, which put the
  * enthalpy and the entropy of the species on the EES/JANAF basis: h(25 °C) equals the enthalpy of formation
@@ -79,9 +81,15 @@ public:
      */
     IdealGasFluid(const std::string& name, const std::string& cpName,
                   std::optional<double> formationEnthalpy = std::nullopt,
-                  std::optional<double> standardEntropy = std::nullopt)
-        : name_(name), cpName_(cpName),
-          formationEnthalpy_(formationEnthalpy), standardEntropy_(standardEntropy) {}
+                  std::optional<double> standardEntropy = std::nullopt);
+
+    /// True when the species has a CoolProp fluid (`Nitrogen` for `N2`); false for a species of the NASA-Glenn data
+    /// that CoolProp lacks (`OH`): it has no critical point, triple point or acentric factor, and no transport model.
+    bool hasCoolPropFluid() const { return hasCoolPropFluid_; }
+
+    /// Lowest temperature of the data of the species [K]: a trial point below it is limited to it (see the property
+    /// calls of the evaluator). 0 for a CoolProp fluid, whose ideal-gas part has no such limit.
+    double getLowestTemperature() const { return lowestTemperature_; }
 
     /// Standard enthalpy of formation at 25 °C [J/kmol], if the species has one.
     std::optional<double> getFormationEnthalpy() const { return formationEnthalpy_; }
@@ -116,6 +124,8 @@ private:
     std::string cpName_;
     std::optional<double> formationEnthalpy_;
     std::optional<double> standardEntropy_;
+    bool hasCoolPropFluid_ = true;
+    double lowestTemperature_ = 0.0;
     mutable std::shared_mutex offsetMutex_;
     mutable std::optional<ReferenceState> reference_;
 };
@@ -252,6 +262,31 @@ private:
  *         the symbol is not an element with a standard atomic weight (also the elements without stable nuclide)
  */
 std::optional<double> elementAtomicWeight(const std::string& symbol);
+
+/// The heating values of a fuel at 25 °C (see `heatingValues`).
+struct HeatingValues {
+    double lowerPerKmol;    ///< J/kmol of fuel, the water of the products as vapour
+    double higherPerKmol;   ///< J/kmol of fuel, the water of the products as liquid
+    double molarMass;       ///< kg/kmol of the fuel
+    double lowerPerKg() const { return lowerPerKmol / molarMass; }    ///< J/kg of fuel
+    double higherPerKg() const { return higherPerKmol / molarMass; }  ///< J/kg of fuel
+};
+
+/**
+ * @brief The lower and higher heating values at 25 °C of a fuel, as EES's `LowerHeatingValue` and `HigherHeatingValue`.
+ *
+ * The fuel is an ideal gas of the registry whose NASA-Glenn composition is C, H and O only, with at least one C or H atom,
+ * in the gas phase (EES: the phase it has at 25 °C and 1 atm; CoolSolve has no organic liquid), burning completely to CO2
+ * and water. The lower value has water vapour as product:
+ * `LHV = dHf(fuel) - nC dHf(CO2) - (nH/2) dHf(H2O, gas)` per kmol of fuel, with the formation enthalpies of the registry (the
+ * headers of NASA-Glenn's thermo.inp, the data of the enthalpies of the ideal gases); the higher value adds the enthalpy
+ * of vaporisation of the water formed, `(nH/2) M_H2O h_fg` with h_fg of CoolProp's real fluid Water at 25 °C (IAPWS-95),
+ * computed once per process.
+ * @param fluid   a fluid of the registry
+ * @param values  the result when the fuel is accepted
+ * @return the reason why the fluid has no heating value (for a message `LowerHeatingValue(X): <reason>`), or "" when it has
+ */
+std::string heatingValues(const Fluid& fluid, HeatingValues& values);
 
 class FluidRegistry {
 public:

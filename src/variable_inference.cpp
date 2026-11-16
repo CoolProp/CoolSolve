@@ -229,10 +229,15 @@ static bool tryComputeProperty(const std::string& cpFluid, const std::string& pr
         // an ideal gas has the value of its ideal-gas model at (T, P), the same as its property calls (CoolProp basis)
         const bool volume = prop == kVolumeCode;   // 1/D
         const std::string cpProp = volume ? "D" : prop;
+        // A species of the NASA-Glenn data is no CoolProp fluid: every property is asked from the ideal-gas model (its cp
+        // too), and one it has none of (viscosity, conductivity, quality) has no guess. The other ideal gases keep
+        // the real fluid of CoolProp for cp, viscosity and conductivity.
+        const bool nasaSpecies = idealGas && isNasaGlennGas(cpFluid);
         const CoolProp::parameters idealParam =
             cpProp == "H" ? CoolProp::iHmass : cpProp == "S" ? CoolProp::iSmass : cpProp == "U" ? CoolProp::iUmass :
             cpProp == "D" ? CoolProp::iDmass : cpProp == "T" ? CoolProp::iT : cpProp == "P" ? CoolProp::iP :
-            CoolProp::INVALID_PARAMETER;
+            (nasaSpecies && cpProp == "C") ? CoolProp::iCpmass : CoolProp::INVALID_PARAMETER;
+        if (nasaSpecies && idealParam == CoolProp::INVALID_PARAMETER) return false;
         double valSI = (idealGas && idealParam != CoolProp::INVALID_PARAMETER)
             ? idealGasProperty(cpFluid, idealParam, CoolProp::iT, T_K, CoolProp::iP, P_Pa, false).value
             : CoolProp::PropsSI(cpProp, "T", T_K, "P", P_Pa, cpFluid);
@@ -408,14 +413,14 @@ void initializeVariables(IR& ir) {
                     }
                 } else {
                     initErrors.push_back("Variable '" + name + "': could not compute " + info.inferredProperty + 
-                                       " for " + cpFluid + " at any reference condition");
+                                       " for " + fluid->getName() + " at any reference condition");
                 }
             }
             
             // Final check: ensure the computed value is finite
             if (!std::isfinite(value)) {
                 initErrors.push_back("Variable '" + name + "': computed value is not finite (inf or NaN) for " + 
-                                   info.inferredProperty + " of " + cpFluid);
+                                   info.inferredProperty + " of " + fluid->getName());
                 value = 1.0; // Reset to default
             }
         }

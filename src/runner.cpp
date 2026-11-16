@@ -3,6 +3,7 @@
 #include "coolsolve/variable_inference.h"
 #include "coolsolve/evaluator.h" // For getProfilingStatsString
 #include "coolsolve/lookup_table.h"
+#include "coolsolve/solver_common.h"   // residualWeight: the weights of the convergence test
 #include "coolsolve/integral/integral_problem.h"  // hasIntegral
 #include <cmath>
 #include <fstream>
@@ -65,6 +66,7 @@ CoolSolveRunner::CoolSolveRunner(const std::string& inputFile)
     : inputFile_(inputFile) {}
 
 bool CoolSolveRunner::run(const SolverOptions& options, bool enableTracing) {
+    solverOptions_ = options;
     resetCoolPropUnitHints();
 
     auto pipeline_start = std::chrono::high_resolution_clock::now();
@@ -216,6 +218,136 @@ static void writeFile(const fs::path& path, const std::string& content) {
     if (file.is_open()) {
         file << content;
     }
+}
+
+void CoolSolveRunner::setEndOfSolveState(SystemEvaluator& eval) const {
+    if (solveResult_.variables.empty()) {   // not solved (parse or analysis failure)
+        eval.initializeFromGuesses();
+        return;
+    }
+    for (const auto& [n, v] : solveResult_.variables) eval.setVariableValue(n, v);
+    for (const auto& [n, v] : solveResult_.stringVariables) eval.setStringVariableValue(n, v);
+    if (solveResult_.success || solveResult_.blockResults.empty() || solveResult_.blockResults.back().success) return;
+    // the block that failed: the last iterate of its solver, when its trace holds one of the size of the block
+    const size_t failed = solveResult_.blockResults.back().id;
+    if (failed >= analysisResult_.blocks.size() || failed >= solveResult_.blockTraces.size()) return;
+    const auto& vars = analysisResult_.blocks[failed].variables;
+    const auto& iterations = solveResult_.blockTraces[failed].iterations;
+    if (iterations.empty() || iterations.back().x.size() != vars.size()) return;
+    for (size_t j = 0; j < vars.size(); ++j) eval.setVariableValue(vars[j], iterations.back().x[j]);
+}
+
+std::string CoolSolveRunner::finalResidualsReport(size_t blockIdx) const {
+    const auto& block = analysisResult_.blocks[blockIdx];
+    const auto& equations = ir_->getEquations();
+    const SolverTrace* trace = blockIdx < solveResult_.blockTraces.size() ? &solveResult_.blockTraces[blockIdx] : nullptr;
+    const bool lastIterate = trace && !trace->iterations.empty() && trace->iterations.back().x.size() == block.variables.size();
+    const double tolerance = solverOptions_.tolerance;
+
+    std::ostringstream md;
+    md << "# Final residuals of the block that did not converge\n\n";
+    md << "Every equation of block " << blockIdx << " (" << block.equationIds.size() << " equations), evaluated ";
+    if (lastIterate)
+        md << "at the last iterate of its solver (iteration " << trace->iterations.back().iter << " of "
+           << (trace->solverType.empty() ? std::string("the solver") : trace->solverType) << ")";
+    else
+        md << "at the values the variables held when the solve stopped (the trace of the block holds no iterate of its size)";
+    md << ", the blocks before it at their solution. The convergence test of the solvers weights each residual F by the "
+          "scale S of its equation (the magnitudes of its terms; `residualWeight` in `solver_common.h`): the block "
+          "converges when every rho = |F| / w is below the tolerance (" << std::scientific << std::setprecision(1)
+       << tolerance << "). The equations are listed worst first: those that are not met are where to look (a unit, a "
+          "sign, an equation that its variable cannot satisfy, a starting point too far).\n\n";
+    if (!solveResult_.blockResults.empty()) {
+        const auto& br = solveResult_.blockResults.back();
+        md << "**Status:** " << statusToString(br.status);
+        if (!br.solverAttempts.empty()) {
+            md << " (";
+            for (size_t i = 0; i < br.solverAttempts.size(); ++i)
+                md << (i ? " -> " : "") << strategyToString(br.solverAttempts[i].strategy) << " "
+                   << statusToString(br.solverAttempts[i].status);
+            md << ")";
+        }
+        md << "\n\n";
+    }
+
+    SystemEvaluator eval(*ir_, analysisResult_, solverOptions_.coolpropConfig);
+    eval.setLookupTableStore(&lookupTableStore_);
+    setEndOfSolveState(eval);
+    EvaluationResult result;
+    try {
+        result = eval.evaluateBlock(blockIdx, true);
+    } catch (const std::exception& e) {
+        md << "The block cannot be evaluated at that point: `" << markdownTableCell(e.what()) << "`\n";
+        return md.str();
+    }
+    const size_t n = result.residuals.size();
+    if (n != block.equationIds.size()) {
+        md << "The evaluation gives " << n << " residuals for " << block.equationIds.size() << " equations: nothing to list.\n";
+        return md.str();
+    }
+    const bool scaled = result.scale.size() == n;
+    const double blockScale = scaled ? blockResidualScale(result.scale) : 0.0;
+    std::vector<double> rho(n);
+    size_t unmet = 0;
+    for (size_t i = 0; i < n; ++i) {
+        // the weighted residual of the convergence tests (weightedResidual, solver_common.h)
+        rho[i] = scaled ? weightedResidual(result.residuals[i], result.scale[i], blockScale) : std::abs(result.residuals[i]);
+        if (!(rho[i] < tolerance)) ++unmet;   // NaN counts as not met
+    }
+    std::vector<size_t> order(n);
+    for (size_t i = 0; i < n; ++i) order[i] = i;
+    // worst first; a non-finite residual before every finite one; ties in the order of the block (deterministic)
+    std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        const bool fa = std::isfinite(rho[a]), fb = std::isfinite(rho[b]);
+        if (fa != fb) return !fa;
+        return fa && rho[a] > rho[b];
+    });
+
+    md << "**Equations not met:** " << unmet << " of " << n << "; largest rho " << std::scientific << std::setprecision(3)
+       << (n ? rho[order[0]] : 0.0) << ".\n\n";
+    constexpr size_t kMaxRows = 100;
+    const size_t rows = std::min(n, std::min(kMaxRows, std::max<size_t>(unmet, 10)));
+    md << "## Equations, worst first\n\n";
+    md << "| # | Eq | Line | Equation | Variable | Residual F | Scale S | rho | Met |\n";
+    md << "|---|---|---|---|---|---|---|---|---|\n";
+    for (size_t k = 0; k < rows; ++k) {
+        const size_t i = order[k];
+        const int eqId = block.equationIds[i];
+        const EquationInfo* eq = eqId >= 0 && eqId < static_cast<int>(equations.size()) ? &equations[eqId] : nullptr;
+        md << "| " << k + 1 << " | " << eqId << " | " << (eq ? std::to_string(eq->sourceLine) : "?") << " | `"
+           << (eq ? markdownTableCell(eq->originalText) : std::string("?")) << "` | `"
+           << (eq ? markdownTableCell(eq->outputVariable) : std::string("?")) << "` | " << std::scientific
+           << std::setprecision(6) << result.residuals[i] << " | ";
+        if (scaled) md << result.scale[i]; else md << "-";
+        md << " | " << std::setprecision(3) << rho[i] << " | " << (rho[i] < tolerance ? "yes" : "**no**") << " |\n";
+    }
+    if (rows < n)
+        md << "\n" << n - rows << " more equation" << (n - rows == 1 ? "" : "s") << " not listed ("
+           << (unmet > rows ? unmet - rows : 0) << " of them not met).\n";
+
+    md << "\n## Variables of the block\n\n";
+    md << "Their values at that point, the change of the last iteration of the solver and the guess: a variable still at its "
+          "guess after many iterations, or one far from the range it should have, is a lead.\n\n";
+    md << "| Variable | Value | Last change | Guess |\n|---|---|---|---|\n";
+    const bool change = lastIterate && trace->iterations.size() >= 2 &&
+                        trace->iterations[trace->iterations.size() - 2].x.size() == block.variables.size();
+    const size_t vrows = std::min(block.variables.size(), kMaxRows);
+    for (size_t j = 0; j < vrows; ++j) {
+        const std::string& name = block.variables[j];
+        md << "| `" << markdownTableCell(name) << "` | " << std::scientific << std::setprecision(6) << eval.getVariableValue(name)
+           << " | ";
+        if (change)
+            md << trace->iterations.back().x[j] - trace->iterations[trace->iterations.size() - 2].x[j];
+        else
+            md << "-";
+        md << " | ";
+        const VariableInfo* info = ir_->getVariable(name);
+        if (info && info->guessValue) md << *info->guessValue; else md << "-";
+        md << " |\n";
+    }
+    if (vrows < block.variables.size())
+        md << "\n" << block.variables.size() - vrows << " more variables not listed.\n";
+    return md.str();
 }
 
 void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const std::string& sourceCode) {
@@ -441,19 +573,21 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     // 7. Residuals (Markdown) & Evaluator
     std::ostringstream csRes;
     csRes << "# CoolSolve Residuals Report\n\n";
+    if (solveResult_.success)
+        csRes << "Every equation evaluated at the solution.\n\n";
+    else if (!solveResult_.variables.empty())
+        csRes << "Every equation evaluated where the solve stopped: the blocks solved at their solution, the block that "
+                 "failed at the last iterate of its solver (see [solver_final_residuals.md](solver_final_residuals.md)), "
+                 "the blocks after it at their guesses.\n\n";
+    else
+        csRes << "Every equation evaluated at the guesses (the model was not solved).\n\n";
     csRes << "| Block | Equation | LHS | RHS | Residual |\n";
     csRes << "|-------|----------|-----|-----|----------|\n";
     
-    // Create evaluator for reporting
-    coolsolve::SystemEvaluator csEval(*ir_, analysisResult_);
+    // Create evaluator for reporting, with the CoolProp configuration of the solve
+    coolsolve::SystemEvaluator csEval(*ir_, analysisResult_, solverOptions_.coolpropConfig);
     csEval.setLookupTableStore(&lookupTableStore_);
-    // Use solve result if available
-    if (solveResult_.success) {
-        for (const auto& [n, v] : solveResult_.variables) csEval.setVariableValue(n, v);
-        for (const auto& [n, v] : solveResult_.stringVariables) csEval.setStringVariableValue(n, v);
-    } else {
-        csEval.initializeFromGuesses(); // From IR
-    }
+    setEndOfSolveState(csEval);
     
     std::map<int, std::vector<const coolsolve::EquationInfo*>> blockEqs;
     for (const auto& eq : ir_->getEquations()) blockEqs[eq.blockId].push_back(&eq);
@@ -707,6 +841,11 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
         break;  // Only first failing block
     }
 
+    // 13c. Per-equation residuals of the block that did not converge, at the last iterate of its solver
+    if (!solveResult_.success && !solveResult_.blockResults.empty() && !solveResult_.blockResults.back().success &&
+        solveResult_.blockResults.back().id < analysisResult_.blocks.size())
+        writeFile(debugDir / "solver_final_residuals.md", finalResidualsReport(solveResult_.blockResults.back().id));
+
     // 13b. Integral model summary (equation-based dynamic / INTEGRAL models).
     if (integralModel_) {
         std::ostringstream md;
@@ -791,6 +930,10 @@ void CoolSolveRunner::generateDebugOutput(const std::string& debugDirStr, const 
     }
     if (fs::exists(debugDir / "tearing.md")) {
         index << "| [tearing.md](tearing.md) | Tear sets per block (when enableTearing is used) |\n";
+    }
+    if (!solveResult_.success && fs::exists(debugDir / "solver_final_residuals.md")) {
+        index << "| [solver_final_residuals.md](solver_final_residuals.md) | Residual of every equation of the block that did "
+                 "not converge, at the last iterate of its solver, weighted as the convergence test, worst first |\n";
     }
     if (!solveResult_.success && fs::exists(debugDir / "solver_singular_diagnostics.md")) {
         index << "| [solver_singular_diagnostics.md](solver_singular_diagnostics.md) | Jacobian diagnostics when singular |\n";

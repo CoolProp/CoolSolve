@@ -101,6 +101,7 @@ the user must add it to `solverPipeline` explicitly.
 | `PipelineTiming` | Per-solve timing breakdown, displayed in GUI |
 | CoolProp call profiling | Per-call timing for `PropsSI`, `AbstractState`, `HAPropsSI`; warmup tracked separately |
 | Variable scaling | Shared `computeScalingFactors()` in `solver_common.h`, used by Newton/TR/LM/BisectionND |
+| Newton step | Shared `solveNewtonStep()` in `solver_common.h`, used by Newton, TrustRegion (its Newton step) and KINSOL: the column-pivoting QR of J as before; when its step leaves linear equations unmet that the convergence test counts (its linear residual fails `weightedResidualNorm`), also the QR of the row- and column-equilibrated matrix (`solveEquilibrated()`, powers of two), the step with the smaller residual taken. A block whose equations have terms of very different sizes keeps every direction (condition number 4E19 → 5E5 on the flame block of `CSL-0150`, register `CS-BUG-BLOCK-SCALE-SPREAD`); every block the plain QR solves takes the same steps as before |
 | `--no-superancillary` flag | Disables the CoolProp superancillary functions |
 
 ---

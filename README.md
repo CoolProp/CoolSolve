@@ -42,7 +42,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
   - **Symbolic Block Reduction** (explicit extraction, CoolProp call inversion, equation substitution)
   - **Multi-Start** fallback (CoolProp-consistent starting points for thermo blocks, scale factors for algebraic blocks; parallel execution available; engageable always, never, or only on Deep Search)
 
-- **CoolProp Integration**: Thermodynamic property calculations via the low-level `AbstractState` API (2–5× faster than `PropsSI`), with analytical derivatives and thread-local caching. CoolProp mixtures are accepted as fluids (`'R245fa[0.5]&R134a[0.5]'`, with a warning that mixture properties are predictive). The lithium bromide - water solution of the absorption machines is available through the EES ASHRAE routines `X_LIBR`, `H_LIBR`, `T_LIBR` and `P_LIBR` (`X_LIBR('SI', T, P)`, analytical derivatives; see [Language Reference §5](docs/language_reference.md#libr-h2o-solutions-ees-ashrae-routines)). The ammonia-water mixture is the EES fluid `NH3H2O` (any three of T, P, X, Q, H, S, U, V) and the procedure `CALL NH3H2O(Code, In1, In2, In3 : T, P, x, h, s, u, v, q)`, on the IAPWS G4-01 formulation with exact derivatives (EES uses another model, so results agree within about 1 %; see [Language Reference §5](docs/language_reference.md#ammonia-water-nh3h2o)).
+- **CoolProp Integration**: Thermodynamic property calculations via the low-level `AbstractState` API (2–5× faster than `PropsSI`), with analytical derivatives and thread-local caching. CoolProp mixtures are accepted as fluids (`'R245fa[0.5]&R134a[0.5]'`, with a warning that mixture properties are predictive). The lithium bromide - water solution of the absorption machines is available through the EES ASHRAE routines `X_LIBR`, `H_LIBR`, `T_LIBR` and `P_LIBR` (`X_LIBR('SI', T, P)`, analytical derivatives; see [Language Reference §5](docs/language_reference.md#libr-h2o-solutions-ees-ashrae-routines)). The ammonia-water mixture is the EES fluid `NH3H2O` (any three of T, P, X, Q, H, S, U, V) and the procedure `CALL NH3H2O(Code, In1, In2, In3 : T, P, x, h, s, u, v, q)`, on the IAPWS G4-01 formulation with exact derivatives (EES uses another model, so results agree within about 1 %; see [Language Reference §5](docs/language_reference.md#ammonia-water-nh3h2o)). The combustion species that CoolProp has no fluid for, `OH`, `H`, `O`, `N`, `NO` and `NO2`, are ideal gases like `N2` and `CO2` (any two of T, P, h, u, d, s; exact derivatives; the enthalpy of formation and the third-law entropy of EES), evaluated from the NASA-Glenn 9-coefficient polynomials (`thermo.inp` of NASA CEA, 200 K to 20000 K, `NO2` to 6000 K; thermodynamic properties only, see [Language Reference §5](docs/language_reference.md#ideal-gases)). `LowerHeatingValue(Fuel)` and `HigherHeatingValue(Fuel)` give the heating values at 25 °C of the ideal-gas fuels of C, H and O (J/kg of fuel; see [Language Reference §3](docs/language_reference.md#heating-values-lowerheatingvalue-and-higherheatingvalue)). The EES procedure `CALL NASA(Species$, T : cp, h, s)` is built in on the same table of 22 species (molar cp, h and s in the units of the model, exact derivatives, outputs may be left out; see [Language Reference §7](docs/language_reference.md#call-nasa-nasa-glenn-species-properties)). The chemical equilibrium of the 14 combustion species (H2, O2, H2O, CO, CO2, OH, H, O, N2, N, NO, NO2, CH4, Ar) is the EES procedure `CALL CHEM_EQUIL(P, T, A\O, C\O, H\O, N\O : x_H2, …, x_Ar)`: minimum Gibbs energy on the same NASA-Glenn data, exact derivatives, so adiabatic flame temperatures with dissociation are solved directly (see [Language Reference §7](docs/language_reference.md#call-chem_equil-chemical-equilibrium-of-combustion-products)).
 
 - **Lookup Tables**: 1D/2D interpolation, cell access, text cells (`LOOKUP$`, the replacement of string arrays, which are not supported), the row of a key (`LOOKUP$ROW`), and aggregate functions from external CSV files, usable in equations, in `FUNCTION`/`PROCEDURE` bodies and in `INTEGRAL` models. A GUI panel lets you create and edit tables in-browser.
 
@@ -286,7 +286,7 @@ The debug folder contains:
 | `variables.csv` | Variable mapping (CSV for external tools) |
 | `equations.md` | Equations grouped by solution block |
 | `analysis.json` | Full JSON analysis data |
-| `residuals.txt` | CoolSolve residuals report |
+| `coolsolve_residuals.md` | LHS, RHS and residual of every equation: at the solution, or where the solve stopped (the failed block at its solver's last iterate) |
 | `equations.tex` | LaTeX formatted equations |
 | `incidence.md` | Variable-equation incidence matrix |
 | `evaluator.md` | Evaluator structure and block evaluation tests |
@@ -295,6 +295,7 @@ The debug folder contains:
 | `integral_table.csv` | Full trajectory CSV (dynamic/`INTEGRAL` models) |
 | `solution_check.md` | Post-solve equation verification (LHS vs RHS for every equation) |
 | `solver_singular_diagnostics.md` | Residuals and Jacobian of the first block that failed with a singular Jacobian, with its non-finite entries and zero rows/columns |
+| `solver_final_residuals.md` | Residual of every equation of the block that did not converge, at its solver's last iterate, weighted as the convergence test and sorted worst first, with the block's variables, their last change and their guess |
 | `original.eescode` | Copy of the original input |
 
 ### Command Line Options
@@ -453,9 +454,12 @@ CoolSolve/
 │   ├── autodiff_node.h         # Forward-mode AD types and operations
 │   ├── evaluator.h             # Block and system evaluators
 │   ├── libr_ashrae.h           # LiBr-H2O solution properties (EES routines X_LIBR, H_LIBR, T_LIBR, P_LIBR)
-│   ├── ideal_gas.h             # Ideal gases (N2, CO2, H2O, ...): ideal-gas part of the CoolProp equation of state, exact derivatives
+│   ├── ideal_gas.h             # Ideal gases (N2, CO2, H2O, ...): ideal-gas part of the CoolProp equation of state or NASA-Glenn polynomials, exact derivatives
+│   ├── nasa_glenn.h            # NASA-Glenn 9-coefficient polynomials of 22 ideal-gas species (no CoolProp dependency): cp, h, s, composition
+│   ├── chem_equil.h            # CALL CHEM_EQUIL: equilibrium of the 14 combustion species (element potentials, NASA-Glenn data, exact derivatives)
 │   ├── nh3h2o.h                # Ammonia-water: IAPWS G4-01 formulation, saturation, 15 flashes (fluid and CALL NH3H2O)
 │   ├── psychprops.h            # The nine outputs of CALL psychprops (EES PSYCHPROPS), shared by parser and evaluator
+│   ├── builtin_procedures.h    # Built-in procedures whose outputs stand at fixed positions (psychprops, NASA), shared by parser and evaluator
 │   ├── taylor_jet.h            # Truncated Taylor arithmetic in 3 variables (exact derivatives of the Helmholtz energy)
 │   ├── solution_checker.h      # Post-solve solution verification
 │   ├── usage_log.h             # GUI solve-attempt log (append + aggregated stats)
@@ -475,7 +479,9 @@ CoolSolve/
 │   ├── autodiff_node.cpp       # AD function implementations
 │   ├── evaluator.cpp           # Evaluator implementations
 │   ├── libr_ashrae.cpp         # ASHRAE LiBr-H2O correlations and their analytical derivatives
-│   ├── ideal_gas.cpp           # Ideal gases from alpha0 of CoolProp: state from any two inputs, implicit-function derivatives
+│   ├── ideal_gas.cpp           # Ideal gases from alpha0 of CoolProp or the NASA-Glenn data: state from any two inputs, implicit-function derivatives
+│   ├── nasa_glenn.cpp          # The NASA-Glenn table (thermo.inp, McBride-Zehe-Gordon) and its evaluation
+│   ├── chem_equil.cpp          # Gibbs minimum of the 14 species: concave dual at constant volume, implicit-function derivatives
 │   ├── nh3h2o.cpp              # Ammonia-water Helmholtz formulation (IAPWS G4-01)
 │   ├── nh3h2o_flash.cpp        # Ammonia-water saturation solver and the three-property flashes
 │   ├── evaluator_nh3h2o.cpp    # NH3H2O in the evaluator: fluid functions, CALL NH3H2O, units, derivatives

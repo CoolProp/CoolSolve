@@ -1,0 +1,59 @@
+"Chemical equilibrium of octane combustion by the law of mass action"
+
+"Octane C8H18 burns with 120 % of the theoretical air:
+
+    C8H18 + a (O2 + 3.76 N2) = n_CO2 CO2 + n_CO CO + n_H2O H2O + n_N2 N2 + n_O2 O2 + n_NO NO
+
+Basis: 1 kmol of octane. The products leave at T = 1850 K and P = 1 bar. Two dissociations proceed to equilibrium,
+CO2 <=> CO + 1/2 O2 and N2 + O2 <=> 2 NO, each with its equilibrium constant from the law of mass action:
+the standard Gibbs energy change of the reaction DeltaG = -R T ln(K), with the Gibbs energy of every species
+g = h - T s from its enthalpy of formation and its absolute entropy at 1 bar (the references of the NASA-Glenn data;
+CO2, CO, N2 and O2 follow the ideal-gas part of their CoolProp equation of state, NO, which CoolProp lacks, the
+NASA-Glenn polynomials).
+Units: C, Pa, kmol, J/kmol, as everywhere in CoolSolve."
+
+"Gibbs energy of a species at T [C] and the pressure of the standard state, J/kmol"
+FUNCTION Gibbs(species$, T_gas, P_ref)
+  Gibbs = molarmass(species$)*(enthalpy(species$, T=T_gas) - (T_gas+273.15)*entropy(species$, T=T_gas, P=P_ref))
+END
+
+"Conditions of the products"
+T_K = 1850 [K]
+T = T_K - 273.15 [C]
+P = 1E5 [Pa]
+P_ref = 1E5 [Pa]
+R = R#  "J/kmol-K"
+
+"Air supply: 120 % of the theoretical air of complete combustion"
+a_stoic = 8 + 18/4
+a = 1.2*a_stoic
+
+"Atom balances"
+8 - n_CO2 - n_CO = 0
+18 - 2*n_H2O = 0
+2*a - 2*n_CO2 - n_CO - n_H2O - 2*n_O2 - n_NO = 0
+2*3.76*a - 2*n_N2 - n_NO = 0
+
+"Mole fractions"
+n_tot = n_CO2 + n_CO + n_H2O + n_N2 + n_O2 + n_NO
+y_CO2 = n_CO2/n_tot
+y_CO = n_CO/n_tot
+y_H2O = n_H2O/n_tot
+y_N2 = n_N2/n_tot
+y_O2 = n_O2/n_tot
+y_NO = n_NO/n_tot
+
+"Standard-state Gibbs energies at T and 1 bar"
+g_CO2 = Gibbs('CO2', T, P_ref)
+g_CO = Gibbs('CO', T, P_ref)
+g_N2 = Gibbs('N2', T, P_ref)
+g_O2 = Gibbs('O2', T, P_ref)
+g_NO = Gibbs('NO', T, P_ref)
+
+"Gibbs energy change of the two reactions and the laws of mass action"
+DeltaG_1 = 0.5*g_O2 + g_CO - g_CO2
+DeltaG_2 = 2*g_NO - g_O2 - g_N2
+DeltaG_1 = -R*T_K*ln(K_1)
+DeltaG_2 = -R*T_K*ln(K_2)
+K_1 = y_CO*sqrt(y_O2*P/P_ref)/y_CO2
+K_2 = y_NO^2/(y_O2*y_N2)

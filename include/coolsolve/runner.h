@@ -101,7 +101,15 @@ public:
     }
 
 private:
+    /// Sets \p eval to the state where the solve stopped: the solution after a success; after a failure the blocks
+    /// solved at their solution, the block that failed at the last iterate of its solver (when its trace holds one of
+    /// the size of the block), the later blocks at their guesses. Before any solve, the guesses.
+    void setEndOfSolveState(SystemEvaluator& eval) const;
+    /// The debug report `solver_final_residuals.md` of the block \p blockIdx that did not converge.
+    std::string finalResidualsReport(size_t blockIdx) const;
+
     std::string inputFile_;
+    SolverOptions solverOptions_;   ///< the options of the last run(): CoolProp configuration and tolerance of the debug reports
     ParseResult parseResult_;
     std::unique_ptr<IR> ir_;
     StructuralAnalysisResult analysisResult_;
