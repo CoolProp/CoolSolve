@@ -1,0 +1,144 @@
+# Release packages: builds the GUI binary of CoolSolve on GitHub-hosted machines and packages it for the three
+# desktop platforms, from the commit of the chosen ref:
+#   - Windows: CoolSolve_vX.Y_Installer.exe (NSIS, coolsolve.nsi)
+#   - macOS:   CoolSolve_vX.Y_macOS_<arch>.dmg (tools/package_macos.sh)
+#   - Linux:   coolsolve_X.Y.0_amd64.deb (tools/package_deb.sh), built on Ubuntu 22.04 so that it installs on
+#              Ubuntu 22.04+ / Debian 12+
+# Started by hand (Actions tab > Release packages > Run workflow, or
+# `gh workflow run packages.yml --ref main -f library_tag=v0.5`); the packages are artifacts of the run, attached to
+# the GitHub release by the maintainer. See docs/desktop_app_options.md and docs/contributing.md §9.
+name: Release packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      library_tag:
+        description: CoolSolve Library tag or branch to embed (a release embeds its tag, e.g. v0.5)
+        default: main
+      mac_architectures:
+        description: macOS binary, arm64 (Apple Silicon) or arm64;x86_64 (universal, also Intel Macs)
+        type: choice
+        options: ["arm64;x86_64", "arm64"]
+        default: "arm64;x86_64"
+
+permissions:
+  contents: read
+
+env:
+  LIBRARY_TAG: ${{ inputs.library_tag }}
+  # CMake 4 refuses dependencies that declare cmake_minimum_required < 3.5
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+jobs:
+  macos:
+    runs-on: macos-latest   # Apple Silicon
+    timeout-minutes: 240
+    env:
+      ARCHITECTURES: ${{ inputs.mac_architectures }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: Build the GUI frontend
+        working-directory: gui
+        run: npm ci && npm run build
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCOOLSOLVE_BUILD_GUI=ON
+          -DCOOLSOLVE_BUILD_TESTS=OFF
+          -DCOOLSOLVE_LIBRARY_TAG="$LIBRARY_TAG"
+          -DCMAKE_OSX_ARCHITECTURES="$ARCHITECTURES"
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+      - name: Build
+        run: cmake --build build --target coolsolve -j 3
+      - name: Smoke test
+        run: tools/smoke_test.sh build/coolsolve
+      - name: Package CoolSolve.app
+        run: tools/package_macos.sh build/coolsolve dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coolsolve-macos
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 240
+    env:
+      # The embedded library is ~50 MB of C arrays: the 32-bit host compiler runs out of heap (C1060)
+      PreferredToolArchitecture: x64
+    steps:
+      # The files of the checkout and of the fetched library keep their LF line ends, as on the other platforms
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: Build the GUI frontend
+        working-directory: gui
+        run: npm ci && npm run build
+      # No zlib: coolplot-core then writes uncompressed PDF streams, and coolsolve.exe needs no zlib DLL
+      - name: Configure
+        shell: bash
+        run: >
+          cmake -S . -B build -A x64
+          -DCOOLSOLVE_BUILD_GUI=ON
+          -DCOOLSOLVE_BUILD_TESTS=OFF
+          -DCOOLSOLVE_LIBRARY_TAG="$LIBRARY_TAG"
+          -DCMAKE_DISABLE_FIND_PACKAGE_ZLIB=ON
+      - name: Build
+        run: cmake --build build --config Release --target coolsolve --parallel 4
+      - name: Smoke test
+        shell: bash
+        run: tools/smoke_test.sh build/Release/coolsolve.exe
+      - name: Installer
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) { choco install nsis -y --no-progress }
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" coolsolve.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coolsolve-windows
+          path: CoolSolve_v*_Installer.exe
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-22.04   # the oldest supported target: the .deb requires the glibc of the build machine
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y dpkg-dev fakeroot zlib1g-dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+      - name: Build the GUI frontend
+        working-directory: gui
+        run: npm ci && npm run build
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCOOLSOLVE_BUILD_GUI=ON
+          -DCOOLSOLVE_BUILD_TESTS=OFF
+          -DCOOLSOLVE_LIBRARY_TAG="$LIBRARY_TAG"
+      - name: Build
+        run: cmake --build build --target coolsolve -j 4
+      - name: Smoke test
+        run: tools/smoke_test.sh build/coolsolve
+      - name: Package
+        run: tools/package_deb.sh build/coolsolve dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coolsolve-linux
+          path: dist/*.deb
+          if-no-files-found: error

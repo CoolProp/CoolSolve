@@ -1,7 +1,13 @@
 /build/
+/build-*/
 /.fetchcontent_cache/
 /misc/
 CoolSolve_Installer.exe
+# Release packages (attached to the GitHub release, never committed)
+CoolSolve_v*_Installer.exe
+*.dmg
+*.deb
+/dist/
 *.csv#
 # Auto-generated integral trajectories (equation-based dynamic models)
 *-integral.csv
