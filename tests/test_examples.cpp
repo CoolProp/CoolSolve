@@ -92,7 +92,9 @@ const std::map<std::string, ExpectedSolution> EXPECTED_SOLUTIONS = {
     // Equation-based dynamic (INTEGRAL) model: y(4) = e^{-4} ~= 0.01832.
     {"integral_decay.eescode",    {"y", 0.01832}},
     // INTEGRAL examples (final integrated state at t = tf)
-    {"ice_storage_tank.eescode",  {"E_discharged", 6.56833e10}},
+    // ice_storage_tank: closed form of the two phases (melting at the constant power eps*C*5 = 1.31367 MW for 30 418.7 s,
+    // then the liquid warming towards 5 C with the time constant M*c_liq/(eps*C) = 1912.4 s): 4.247211e10 J.
+    {"ice_storage_tank.eescode",  {"E_discharged", 4.247211e10}},
     {"engine_weibe_cycle.eescode", {"p", 89221.7}},
     // INTERPOLATE (weather table) during INTEGRAL, T_in at tau = 604800 s (CS-GAP-INTEGRAL-LOOKUP).
     // No EES stored solution: the reference is an independent RK4 integration (h = 15 s) of the same

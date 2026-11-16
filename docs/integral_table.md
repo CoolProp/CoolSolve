@@ -450,8 +450,8 @@ interpolated states.
 **2. Switches on a state** (1–2 weeks). The case with no implicit solution is
 §2.3 (the intake of the two engine models): RK45 follows the switch with very
 short steps, RK4 crosses it with an error of the order of its step. A start on
-a switch costs rejected steps (`examples/ice_storage_tank`: 235 of 521 with
-BDF). Locate the change of sign of an `IF` on a state between two steps (a root
+a switch costs rejected steps (`examples/ice_storage_tank`, which starts on one and
+switches again when the ice is melted: 32 rejected of 169 steps with BDF). Locate the change of sign of an `IF` on a state between two steps (a root
 of the condition on the interpolant) and restart there. On a surface that holds
 the trajectory, integrate with the flow that stays on it, or report the surface.
 This is the event detection worth building: `$IntegralStop` stays uninterpreted.

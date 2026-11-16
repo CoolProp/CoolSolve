@@ -101,11 +101,15 @@ option on the default pipeline.
   is full rank, so KINSOL proceeds where it returned *SingularJacobian*; intended, but a behaviour change of that test.
 - Cost when on: one n×n copy and O(n²) scaling per step beside the O(n³) QR; when off, one branch.
 - `CSL-0150`: its library `coolsolve.conf` can set `enableEquationScaling = true` (maintainer's file).
-- Found in passing: `examples/ice_storage_tank.eescode` writes `U_dot_sto = M * u_dot` and `u_dot = U_dot_sto / M`
-  (the same equation twice) and no energy balance (`U_dot_sto = H_dot_br_sto - Q_dot_env_sto` presumably): the block
-  is singular with a family of solutions, the solver keeps `U_dot_sto` at its guess 1 (off) or picks 65537 (on), and
-  `u`, `t_ice`, `x_ice` are arbitrary. Its checked value `E_discharged` does not depend on it. A separate fix of the
-  example.
+- `examples/ice_storage_tank.eescode` was ill-posed (`U_dot_sto = M * u_dot` and `u_dot = U_dot_sto / M`, no energy
+  balance: a family of solutions, `U_dot_sto` at its guess 1 with the option off, 65537 with it on). Fixed on this branch
+  (maintainer request, 2026-11-16): the duplicate replaced by the first law `Q_dot_env_sto + H_dot_br_sto = U_dot_sto`, as
+  in library model `CSL-0041`. The tank now melts in 30 419 s and warms to 5 °C: `E_discharged` = 4.247211e10 J, the closed
+  form of the two phases to 7 digits, equal to `DELTAU_sto` (the former 6.56833e10 was the initial power times 50 000 s);
+  identical with the option on; BDF 32 rejected of 169 steps (was 235 of 521, `docs/integral_table.md`).
+- Library: `CSL-0150` updated in the library working tree (uncommitted): `T = T_adiab`, `coolsolve.conf` with
+  `enableEquationScaling = true`, native `.sol`, verified (EES stored run: fuel oil, e = 0, 1 atm, T_adiab −0.21 %). It
+  needs this branch: with `main` the key is unknown and the flame block fails, so the library change goes in with the merge.
 
 ## 7. `[solver-robustness]` (run by the supervisor, Release, report committed on the branch)
 
@@ -121,7 +125,6 @@ option on the default pipeline.
   Without initials, `cooling_coil` (block 12, MaxIterations, residual 96) and `heat_pump_MSTh_SB_R10` (block 39,
   MaxIterations, residual 1e8) solve with the default pipeline and fail with the option; no example gains. The option is
   a remedy for scale-spread blocks, not a free improvement: this supports the default off.
-- Open question for Try Harder: forcing the option there could lose models that Try Harder solved before (a model that
-  fails by default for another reason than scale). Not measured: the robustness suite has no Deep Search configuration
-  and the CLI has no Try Harder. Alternatives if it matters: Try Harder runs its pipeline without the option first and
-  with it after a failure, or the option stays a coolsolve.conf key only.
+- Try Harder: maintainer decision (2026-11-16): Try Harder keeps equation scaling forced on, to maximise the chance that a
+  failing model starts working. Try Harder only runs after a failed solve; a model it solved before for another reason
+  than scale may take another path (not measured: the robustness suite has no Deep Search configuration).

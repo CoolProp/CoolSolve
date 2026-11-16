@@ -25,6 +25,7 @@ tau_1 = 0
 tau_2 = 50000
 
 "--- Energy balance ---"
+Q_dot_env_sto + H_dot_br_sto = U_dot_sto   "first law on the tank contents [W]"
 Q_dot_env_sto = 0
 U_dot_sto = M * u_dot
 H_dot_br_sto = Q_dot_br_sto
@@ -42,7 +43,6 @@ u_1 = u_ice_0
 point (NaN in verification). Replace with the CoolProp call once that is fixed.
 Same for VOLUME() below — use tabulated constants for now."
 u_ice_0 = -333000
-u_dot = U_dot_sto / M
 
 "--- Phase-change temperatures and quality (nested 3-arg IF) ---"
 t_ice_0 = -0.01

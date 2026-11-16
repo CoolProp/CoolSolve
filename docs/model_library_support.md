@@ -524,11 +524,10 @@ labels (`kg/m^3` → `m^3/kg`) and `COOLPROP_BASELINE` of `tools/test_models.py`
   (operating point of the stored EES solution), `CSL-0202` (failing); the `pi_val` workarounds of
   `CS-BUG-PI-FUNCTION` in the heat-transfer models can go back to the native `pi`/`g#`; `CSL-0158` needs quoted CSV
   headers and an `R717_CHECK` without `StringPos`.
-- Library follow-ups of wave 5: `CSL-0150` passes `T = T_adiab_K` (write `T = T_adiab`), and its 14 unknowns `H[i]` stall
-  the flame block with the default options (`CS-BUG-BLOCK-SCALE-SPREAD`): its `coolsolve.conf` can set
-  `enableEquationScaling = true` (then 1776.08 °C from the library's guesses; that file is the maintainer's to write in the
-  library), or sum them in a `FUNCTION`, or `/1E6`; and it may drop the
-  D12 rewrite with `CALL NASA`; the register's EES value 2417.129 K was a stale fuel-oil record; the native files of
+- Library follow-ups of wave 5: `CSL-0150` re-checked in the library working tree (2026-11-16, for the maintainer to
+  commit with this branch): `T = T_adiab` passed to `CHEM_EQUIL`, a `coolsolve.conf` with `enableEquationScaling = true`,
+  native `.sol` (1776.08 °C), status `verified` against the EES stored run, which is the fuel oil at e = 0 and 1 atm
+  (T_adiab 2412.01 K vs 2417.129 K); it may still drop the D12 rewrite with `CALL NASA`; the register's EES value 2417.129 K was a stale fuel-oil record; the native files of
   `CSL-0264`, `CSL-0278` and `CSL-0331` solve (the `_coolsolve` variants of `CSL-0278` and `CSL-0331` become unnecessary).
 
 **How to resume.**
