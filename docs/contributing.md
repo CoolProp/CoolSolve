@@ -387,7 +387,10 @@ immediately visible to users.
       regenerating the fixtures of `tests/fixtures/coolplot/` with
       `tools/coolplot_fixtures.py` (the `[diagram]` tests refuse fixtures of
       another commit) and adapting `src/diagram/` to what fails
-      ([CoolPlot integration](coolplot_integration.md) §6.4).
+      ([CoolPlot integration](coolplot_integration.md) §6.4). On macOS the
+      floating-point `to_chars`/`from_chars` calls of coolplot-core are
+      substituted (`cmake/coolplot_charconv_compat.h`); the configure stops
+      when a new commit calls them differently.
 - [ ] Verify the **Windows, macOS and Linux build paths** for changes of the
       build system, of platform-specific code or of the packaging: run the
       *Release packages* workflow (`gh workflow run packages.yml --ref <branch>`,

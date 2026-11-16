@@ -107,6 +107,45 @@ set(COOLPLOT_CORE_TESTS OFF CACHE BOOL "" FORCE)    # no second Catch2
 set(COOLPLOT_CORE_PYTHON OFF CACHE BOOL "" FORCE)
 add_subdirectory(${coolplot_SOURCE_DIR}/cpp ${coolplot_BINARY_DIR} EXCLUDE_FROM_ALL)
 
+# coolplot-core writes and reads numbers with the floating-point std::to_chars / std::from_chars, which the libc++ of
+# macOS provides from macOS 13.3 / 26.0 only. On Apple, its two files that call them are compiled from copies whose
+# calls go to cmake/coolplot_charconv_compat.h (snprintf / strtod in the "C" locale: the same text). The fetched
+# sources are not modified. ON elsewhere too to test the substitute ([diagram] tests compare the text of the charts).
+option(COOLSOLVE_COOLPLOT_CHARCONV_COMPAT "Compile coolplot-core with printf/strtod for to_chars/from_chars (macOS)" ${APPLE})
+if(COOLSOLVE_COOLPLOT_CHARCONV_COMPAT)
+    set(_charconv_dir "${CMAKE_BINARY_DIR}/coolplot_charconv_compat")
+    get_target_property(_coolplot_sources coolplot_core SOURCES)
+    set(_coolplot_new_sources "")
+    foreach(_source IN LISTS _coolplot_sources)
+        get_filename_component(_name "${_source}" NAME)
+        set(_path "${coolplot_SOURCE_DIR}/cpp/${_source}")
+        if(IS_ABSOLUTE "${_source}")
+            set(_path "${_source}")
+        endif()
+        if(_name STREQUAL "core.cpp" OR _name STREQUAL "compose.cpp")
+            file(READ "${_path}" _text)
+            string(REPLACE "std::to_chars(" "coolsolve_charconv::to_chars(" _text "${_text}")
+            string(REPLACE "std::from_chars(" "coolsolve_charconv::from_chars(" _text "${_text}")
+            if(_text MATCHES "std::(to|from)_chars\\(" OR NOT _text MATCHES "coolsolve_charconv::")
+                message(FATAL_ERROR "COOLSOLVE_COOLPLOT_CHARCONV_COMPAT: unexpected calls in ${_path} "
+                        "(coolplot-core moved on: review cmake/coolplot_charconv_compat.h)")
+            endif()
+            file(WRITE "${_charconv_dir}/${_name}.tmp"
+                 "#include \"${CMAKE_CURRENT_SOURCE_DIR}/cmake/coolplot_charconv_compat.h\"\n#line 1 \"${_path}\"\n${_text}")
+            execute_process(COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                            "${_charconv_dir}/${_name}.tmp" "${_charconv_dir}/${_name}")
+            list(APPEND _coolplot_new_sources "${_charconv_dir}/${_name}")
+        else()
+            list(APPEND _coolplot_new_sources "${_path}")
+        endif()
+    endforeach()
+    set_property(TARGET coolplot_core PROPERTY SOURCES ${_coolplot_new_sources})
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                 "${coolplot_SOURCE_DIR}/cpp/src/core.cpp" "${coolplot_SOURCE_DIR}/cpp/src/compose.cpp"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/coolplot_charconv_compat.h")
+    message(STATUS "coolplot-core: to_chars/from_chars replaced by cmake/coolplot_charconv_compat.h")
+endif()
+
 # cpp-httplib - Header-only HTTP server library (for GUI)
 if(COOLSOLVE_BUILD_GUI)
     FetchContent_Declare(

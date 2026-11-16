@@ -17,8 +17,16 @@ PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 SERVER=""
 cleanup() {
-    [ -n "$SERVER" ] && kill "$SERVER" 2>/dev/null || true
-    rm -rf "$WORK"
+    if [ -n "$SERVER" ]; then
+        kill "$SERVER" 2>/dev/null || true
+        wait "$SERVER" 2>/dev/null || true
+    fi
+    # Windows keeps the folder busy for a moment after the server (its working directory) ends
+    for _ in 1 2 3 4 5; do
+        rm -rf "$WORK" 2>/dev/null && break
+        sleep 1
+    done
+    return 0
 }
 trap cleanup EXIT
 

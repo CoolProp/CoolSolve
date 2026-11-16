@@ -555,12 +555,15 @@ CoolSolve/
 │   ├── test_library_api.py     # Library menu, open, per-tab sessions, /library/, `$INCLUDE` (REST, needs the GUI build)
 │   ├── test_gui_shortcuts.py   # GUI keyboard shortcuts (F2) in headless Chromium (needs the GUI build)
 │   ├── test_gui_diagrams.py    # Diagrams tab in headless Chromium: chart, cycle states, arrays overlays, zoom, report figure (needs the GUI build)
+│   ├── test_charconv_compat.cpp # The to_chars/from_chars substitute of coolplot-core on macOS vs the standard functions
 │   ├── test_ees_tools.py       # EES import tools (ees_extract.py, compare_solution.py) on synthetic files (plain Python, no build)
 │   └── test_kinsol.cpp         # KINSOL solver unit tests (3 modes + config)
-├── cmake/                      # embed_assets / embed_library / embed_bibtex: GUI, docs, model library and CoolProp's bibliography embedded in the binary
+├── cmake/                      # embed_assets / embed_library / embed_bibtex: GUI, docs, model library and CoolProp's bibliography embedded in the binary;
+│                               # coolplot_charconv_compat.h: to_chars/from_chars of coolplot-core on macOS
 ├── tools/                      # EES import helpers: ees_extract.py, compare_solution.py (see docs/ees_import.md);
 │                               # update_coolsolve.sh: server update, run as root (see docs/deployment_ubuntu_apache.md)
-│                               # package_deb.sh, package_macos.sh: Linux .deb and macOS .dmg (see docs/desktop_app_options.md)
+│                               # package_deb.sh, package_macos.sh, smoke_test.sh: Linux .deb, macOS .dmg, their check (see docs/desktop_app_options.md)
+│                               # release_notes.sh: notes of a GitHub release from docs/versions.md
 │                               # coolplot_fixtures.py: CoolPlot fixtures of the [diagram] tests
 │                               # zip_fixtures.py: ZIP fixtures of the [zip] tests
 └── examples/                   # Example .eescode files for the CLI and the regression tests

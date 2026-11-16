@@ -169,9 +169,10 @@ Not tested yet; the shell launcher may need replacing by a small compiled launch
 
 | Dependency | How it is obtained | Windows (MSVC) | macOS (Apple Clang) |
 |------------|-------------------|----------------|---------------------|
-| CoolProp (pinned commit) | FetchContent `git clone` from GitHub, compiled from source; Python 3 at configure | works (v0.4 installer) | expected to work: CoolProp builds on macOS in its own CI; first CoolSolve build on the runner |
-| CoolSolve Library | FetchContent `git clone` (public repository), embedded as C arrays by a pure CMake script (`cmake/embed_common.cmake`): no platform tool | works (64-bit compiler host needed, set by `build_installer.bat`) | expected to work: same script |
-| coolplot-core, cpp-httplib, peglib, nlohmann/json, Eigen | FetchContent, header-only or plain C++17 | works | expected to work |
+| CoolProp (pinned commit) | FetchContent `git clone` from GitHub, compiled from source; Python 3 at configure | works | works (universal binary) |
+| CoolSolve Library | FetchContent `git clone` (public repository), embedded as C arrays by a pure CMake script (`cmake/embed_common.cmake`): no platform tool | works (64-bit compiler host needed: `PreferredToolArchitecture=x64`) | works |
+| coolplot-core | FetchContent, C++17 | works | its floating-point `std::to_chars`/`std::from_chars` exist in the libc++ of macOS 13.3/26.0 only: on Apple, `core.cpp` and `compose.cpp` are compiled from copies calling `cmake/coolplot_charconv_compat.h` (printf/strtod in the C locale, the same text; option `COOLSOLVE_COOLPLOT_CHARCONV_COMPAT`, tested against the standard functions by `[charconv]` and, switched on under Linux, by the `[diagram]` fixtures) |
+| cpp-httplib, peglib, nlohmann/json, Eigen | FetchContent, header-only | works | works |
 | Fonts of the PDF diagrams | found at run time by coolplot-core in `C:/Windows/Fonts`, `/Library/Fonts`, `/System/Library/Fonts`, `~/Library/Fonts` (TrueType) | Arial | Arial (`/System/Library/Fonts/Supplemental`), to check once |
 
 Nothing has to be installed on the user's machine: the binary embeds everything, and the system libraries it links
