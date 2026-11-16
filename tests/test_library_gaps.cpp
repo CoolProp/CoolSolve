@@ -26720,7 +26720,8 @@ const std::map<std::string, std::string> kSpecies14Table = {{"Species14", "Name\
 /// The adiabatic flame of CH4 with 20 % excess air at 30 bar, reactants at 288 K (14.85 C), T_adiab unknown: H_reactants = H_products
 /// over the 14 species of CALL CHEM_EQUIL (the enthalpies of CALL NASA, the species names of the lookup table Species14). The enthalpy of
 /// the products is summed in a FUNCTION, so that the 14 species enthalpies (~1E8 J/kmol) are no unknowns of the block of T_adiab beside
-/// mole fractions of 1E-20: such a block stalls on the rounding of Newton's method (CS-BUG-BLOCK-SCALE-SPREAD, the formulation of CSL-0150).
+/// mole fractions of 1E-20: such a block stalls on the rounding of Newton's method with the default options (CS-BUG-BLOCK-SCALE-SPREAD, the
+/// formulation of CSL-0150, which solves with enableEquationScaling: tested with that tag).
 const std::string kAdiabaticFlameCh4 = R"(
 "molar enthalpy of the products [J/kmol of mixture]: the sum of x_i h_i, h_i from CALL NASA, the data of CHEM_EQUIL"
 FUNCTION hmix(T, x[1..14])
@@ -27423,4 +27424,186 @@ TEST_CASE("Debug folder: no final-residuals report after a successful solve", "[
     CHECK(readText(dir / "debug" / "README.md").find("solver_final_residuals.md") == std::string::npos);
     CHECK(readText(dir / "debug" / "coolsolve_residuals.md").find("Every equation evaluated at the solution.") != std::string::npos);
     fs::remove_all(dir);
+}
+
+// ============================================================================
+// CS-BUG-BLOCK-SCALE-SPREAD: with `enableEquationScaling` (default off, on in Try Harder) the Newton steps of Newton,
+// TrustRegion and KINSOL solve the row- and column-equilibrated system (solveEquilibrated, solver_common.h), so that a
+// block whose equations have terms of very different sizes keeps every direction of its small equations
+// ============================================================================
+
+TEST_CASE("CS-BUG-BLOCK-SCALE-SPREAD: the equilibration factors are exact powers of two", "[library-gaps][block-scale-spread]") {
+    CHECK(inversePowerOfTwo(3.0) == 0.25);    // 3 = 0.75 * 2^2: the scaled magnitude is in [0.5, 1)
+    CHECK(inversePowerOfTwo(1.0) == 0.5);
+    CHECK(inversePowerOfTwo(0.75) == 1.0);
+    CHECK(inversePowerOfTwo(1e-6) == std::ldexp(1.0, 19));
+    for (const double m : {1e10, 1e-20, 6.02e23, 1.0 / 3.0}) {
+        INFO(m);
+        const double scaled = m * inversePowerOfTwo(m);
+        CHECK(scaled >= 0.5);
+        CHECK(scaled < 1.0);
+    }
+    // nothing to scale: a zero row or column, or a non-finite entry (the solve then gives a non-finite step, as without)
+    CHECK(inversePowerOfTwo(0.0) == 1.0);
+    CHECK(inversePowerOfTwo(std::numeric_limits<double>::infinity()) == 1.0);
+    CHECK(inversePowerOfTwo(std::numeric_limits<double>::quiet_NaN()) == 1.0);
+}
+
+TEST_CASE("CS-BUG-BLOCK-SCALE-SPREAD: a nonsingular system whose small rows the plain QR discards is solved equilibrated",
+          "[library-gaps][block-scale-spread]") {
+    // one equation of terms 1E10 and two of terms 1E-8: nonsingular, but the column-pivoting QR treats the pivots below
+    // eps times its largest one (1.7E10 eps = 4E-6) as zero and drops the two small rows
+    Eigen::MatrixXd J(3, 3);
+    J << 1e10, 1e10, 1e10,
+         1e-8, -1e-8, 0.0,
+         1e-8, 0.0, -1e-8;
+    Eigen::VectorXd xTrue(3);
+    xTrue << 1.0, 2.0, 3.0;
+    const Eigen::VectorXd b = J * xTrue;
+    Eigen::ColPivHouseholderQR<Eigen::MatrixXd> plain(J);
+    CHECK(plain.rank() == 1);
+    CHECK((J * plain.solve(b) - b).lpNorm<Eigen::Infinity>() > 1e-9);   // the small equations (terms 1E-8) are not met
+    Eigen::Index rank = 0;
+    const Eigen::VectorXd x = solveEquilibrated(J, b, &rank);
+    CHECK(rank == 3);
+    CHECK((x - xTrue).lpNorm<Eigen::Infinity>() < 1e-9);
+
+    SECTION("a well-conditioned system: the same solution as the plain QR, to the rounding") {
+        Eigen::MatrixXd A(3, 3);
+        A << 4.0, 1.0, 0.5,
+             1.0, 3.0, 0.2,
+             0.5, 0.2, 2.0;
+        const Eigen::VectorXd rhs = Eigen::Vector3d(1.0, -2.0, 0.5);
+        const Eigen::VectorXd ref = Eigen::ColPivHouseholderQR<Eigen::MatrixXd>(A).solve(rhs);
+        CHECK((solveEquilibrated(A, rhs) - ref).lpNorm<Eigen::Infinity>() < 1e-14);
+    }
+    SECTION("a singular system stays singular: its rank says so (the test of KINSOL), a zero row included") {
+        Eigen::MatrixXd S(3, 3);
+        S << 1.0, 2.0, 3.0,
+             2.0, 4.0, 6.0,
+             0.0, 1.0, 1.0;
+        Eigen::Index r = 0;
+        solveEquilibrated(S, Eigen::Vector3d(1.0, 2.0, 1.0), &r);
+        CHECK(r == 2);
+        Eigen::MatrixXd Z = Eigen::MatrixXd::Identity(3, 3);
+        Z.row(1).setZero();
+        solveEquilibrated(Z, Eigen::Vector3d(1.0, 0.0, 1.0), &r);
+        CHECK(r == 2);
+    }
+}
+
+TEST_CASE("CS-BUG-BLOCK-SCALE-SPREAD: the Newton step is the plain QR step, bit for bit, when enableEquationScaling is off",
+          "[library-gaps][block-scale-spread]") {
+    // solveNewtonStep (the step of Newton, TrustRegion and KINSOL): off, the column-pivoting QR of J exactly as before the
+    // option (same steps, same iterations, same solutions); on, the equilibrated solve at every step, no trigger
+    REQUIRE_FALSE(SolverOptions{}.enableEquationScaling);   // the default
+    Eigen::MatrixXd A(3, 3);
+    A << 4.0, 1.0, 0.5,
+         1.0, 3.0, 0.2,
+         0.5, 0.2, 2.0;
+    Eigen::MatrixXd S(3, 3);   // singular but consistent: a family of solutions (the plain QR picks one member)
+    S << 1.0, 2.0, 3.0,
+         2.0, 4.0, 6.0,
+         0.0, 1.0, 1.0;
+    Eigen::MatrixXd W(3, 3);   // nonsingular, but the plain QR drops its small rows (rank 1)
+    W << 1e10, 1e10, 1e10,
+         1e-8, -1e-8, 0.0,
+         1e-8, 0.0, -1e-8;
+    const Eigen::VectorXd F1 = Eigen::Vector3d(1.0, -2.0, 0.5);
+    const Eigen::VectorXd F2 = Eigen::Vector3d(-1.0, -2.0, -1.0);
+    const Eigen::VectorXd F3 = -(W * Eigen::Vector3d(1.0, 2.0, 3.0));
+    const std::vector<std::pair<Eigen::MatrixXd, Eigen::VectorXd>> systems = {{A, F1}, {S, F2}, {W, F3}};
+    for (const auto& [J, F] : systems) {
+        // as the solvers took it on main: ColPivHouseholderQR<Eigen::MatrixXd> qr(J); dy = qr.solve(-F);
+        Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(J);
+        const Eigen::VectorXd plain = qr.solve(-F);
+        Eigen::Index rank = -1;
+        const Eigen::VectorXd off = solveNewtonStep(J, -F, false, &rank);
+        CHECK(off == plain);   // exact equality of every component
+        CHECK(rank == qr.rank());
+        CHECK(solveNewtonStep(J, -F, false) == plain);
+        Eigen::Index equilibratedRank = -1;
+        const Eigen::VectorXd equilibrated = solveEquilibrated(J, -F, &equilibratedRank);
+        CHECK(solveNewtonStep(J, -F, true, &rank) == equilibrated);
+        CHECK(rank == equilibratedRank);
+    }
+    // on, the ill-scaled system is solved; off, it keeps the plain step that leaves its small equations unmet
+    CHECK((solveNewtonStep(W, -F3, true) - Eigen::Vector3d(1.0, 2.0, 3.0)).lpNorm<Eigen::Infinity>() < 1e-9);
+    CHECK((solveNewtonStep(W, -F3, false) - Eigen::Vector3d(1.0, 2.0, 3.0)).lpNorm<Eigen::Infinity>() > 1.0);
+}
+
+namespace {
+
+/// The adiabatic flame of CH4 with 20 % excess air at 30 bar written as in the EES file of library model CSL-0150: the 14
+/// species enthalpies H[i] (1E8 J/kmol) are unknowns of the block of T_adiab, beside the mole fractions of CHEM_EQUIL
+/// (1E-20 for CH4). `species` is the statement that gives H[i] for the species LOOKUP$('Species14', i, 1).
+std::string flameWithEnthalpyUnknowns(const std::string& species) {
+    return R"(
+m = 1 ; n = 4 ; e = 0.2
+CALL NASA('CH4', 14.85 : , h_CH4, )
+CALL NASA('O2', 14.85 : , h_O2, )
+CALL NASA('N2', 14.85 : , h_N2, )
+H_react = h_CH4 + (m+n/4)*(1+e)*(h_O2 + (79/21)*h_N2)
+CALL CHEM_EQUIL(30E5, T_adiab, 1E-10, m/(2*(m+n/4)*(1+e)), n/(2*(m+n/4)*(1+e)), 79/21 : x_H2,x_O2,x_H2O,x_CO,x_CO2,x_OH,x_H,x_O,x_N2,x_N,x_NO,x_NO2,x_CH4,x_Ar)
+x[1] = x_H2 ; x[2] = x_O2 ; x[3] = x_H2O ; x[4] = x_CO ; x[5] = x_CO2 ; x[6] = x_OH ; x[7] = x_H
+x[8] = x_O ; x[9] = x_N2 ; x[10] = x_N ; x[11] = x_NO ; x[12] = x_NO2 ; x[13] = x_CH4 ; x[14] = x_Ar
+DUPLICATE i = 1, 14
+  )" + species + R"(
+END
+n = ntot*(2*x_H2 + 2*x_H2O + x_OH + x_H + 4*x_CH4)
+H_react = sum(ntot*x[i]*H[i], i=1, 14)
+)";
+}
+
+const std::string kFlameNasaEnthalpies = "CALL NASA(LOOKUP$('Species14', i, 1), T_adiab : , H[i], )";
+const std::string kFlamePropertyEnthalpies = "H[i] = MolarMass(LOOKUP$('Species14', i, 1))*enthalpy(LOOKUP$('Species14', i, 1), T=T_adiab)";
+const std::string kFlameGuesses = "T_adiab = 1700\nntot = 12\n";
+
+}  // namespace
+
+TEST_CASE("CS-BUG-BLOCK-SCALE-SPREAD: the adiabatic flame with the species enthalpies as unknowns of its block solves with "
+          "enableEquationScaling (CSL-0150)", "[library-gaps][block-scale-spread]") {
+    // without the option: "Block … failed to converge: MaxIterations (residual=0.010659)" or LineSearchFailed, Newton stalling at
+    // ||F|| = 1E-2 with steps of 1E-17: the Jacobian, of condition number 4E19 as it stands (an energy row of 1E9 beside rows
+    // of 1), has a direction the QR discards; equilibrated, its condition number is 5E5
+    const auto equationScaling = [](SolverOptions& o) { o.enableEquationScaling = true; };
+    SECTION("CALL NASA enthalpies: the all-NASA flame temperature of the independent prototype") {
+        auto run = runModel(flameWithEnthalpyUnknowns(kFlameNasaEnthalpies), kSpecies14Table, kFlameGuesses, equationScaling);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        CHECK_THAT(run["T_adiab"], WithinAbs(1775.08, 0.005));            // C
+        CHECK_THAT(run["T_adiab"] + 273.15, WithinAbs(2048.2268, 0.001));   // K
+        CHECK(run.iterations < 80);   // a few Newton steps per block, no stall
+    }
+    SECTION("property functions, as in the library file: the same as the energy balance written without the H[i]") {
+        auto run = runModel(flameWithEnthalpyUnknowns(kFlamePropertyEnthalpies), kSpecies14Table, kFlameGuesses, equationScaling);
+        INFO(run.message);
+        REQUIRE(run.solveOk);
+        CHECK(run.verified);
+        // the reference: the products' enthalpy summed directly, no unknown H[i]
+        std::string direct = flameWithEnthalpyUnknowns("H_unused[i] = i");
+        const std::string old = "H_react = sum(ntot*x[i]*H[i], i=1, 14)";
+        const char* names[14] = {"H2", "O2", "H2O", "CO", "CO2", "OH", "H", "O", "N2", "N", "NO", "NO2", "CH4", "Ar"};
+        std::string sum = "H_react = ntot*(";
+        for (int k = 0; k < 14; ++k)
+            sum += std::string(k ? " + " : "") + "x[" + std::to_string(k + 1) + "]*MolarMass(" + names[k] + ")*enthalpy(" + names[k] + ", T=T_adiab)";
+        direct.replace(direct.find(old), old.size(), sum + ")");
+        auto reference = runModel(direct, kSpecies14Table, kFlameGuesses, equationScaling);
+        INFO(reference.message);
+        REQUIRE(reference.solveOk);
+        CHECK_THAT(run["T_adiab"], WithinAbs(reference["T_adiab"], 1e-4));
+        CHECK_THAT(run["T_adiab"], WithinAbs(1776.0848, 0.001));   // C: 1 K above the all-NASA flame (CoolProp's alpha0 for 8 species)
+    }
+}
+
+TEST_CASE("CS-BUG-BLOCK-SCALE-SPREAD: Try Harder (deepSearch) solves the flame with the species enthalpies as unknowns",
+          "[library-gaps][block-scale-spread]") {
+    // Deep Search forces enableEquationScaling, as it forces tearing and symbolic reduction
+    const auto deepSearch = [](SolverOptions& o) { o.deepSearch = true; };
+    auto run = runModel(flameWithEnthalpyUnknowns(kFlameNasaEnthalpies), kSpecies14Table, kFlameGuesses, deepSearch);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["T_adiab"] + 273.15, WithinAbs(2048.2268, 0.001));   // K
 }

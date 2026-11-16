@@ -77,9 +77,10 @@ export default function Toolbar() {
   // Solve handler — async with SSE progress streaming.
   //
   // `deepSearch = true` triggers a "Try Harder" run: the backend swaps in the
-  // deep-search pipeline and forces tearing + symbolic reduction.  This is
-  // exposed in the UI by morphing the primary "Solve" button into a
-  // "Try Harder" button after a failed solve (see tryHarderAvailable).
+  // deep-search pipeline and forces tearing, symbolic reduction and equation
+  // scaling on.  This is exposed in the UI by morphing the primary "Solve"
+  // button into a "Try Harder" button after a failed solve (see
+  // tryHarderAvailable).
   const handleSolve = useCallback(
     async (debug = false, deepSearch = false) => {
       if (!eescode.trim()) return;

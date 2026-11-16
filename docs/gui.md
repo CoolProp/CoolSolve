@@ -432,7 +432,7 @@ Implemented in `Toolbar.tsx`.  All actions include keyboard shortcuts:
 | Library | — | Drop-down that follows the taxonomy of the model library (category → sub-category → model) with a search box; lists the **verified** models only. Picking one opens the whole model folder (§7.3). The last entry opens the dashboard `/library/` with all the models |
 | Save | `Ctrl+S` | Download ZIP bundle |
 | Solve | `F2` or `Ctrl+Enter` | Run async solve, stream progress via SSE. `F2` is the EES key; it also works while the editor has the focus (Monaco's own `F2`, *Rename Symbol*, is overridden) |
-| Try Harder | `F2` or `Ctrl+Enter` (after a failure) | Re-run with `deepSearch: true` — substitutes `deepSearchPipeline`, forces tearing + symbolic reduction on, and consults `multiStartMode`.  The Solve button morphs into Try Harder automatically when the previous run failed; editing the model, initials, or config reverts it to Solve. |
+| Try Harder | `F2` or `Ctrl+Enter` (after a failure) | Re-run with `deepSearch: true` — substitutes `deepSearchPipeline`, forces tearing, symbolic reduction and equation scaling (`enableEquationScaling`) on, and consults `multiStartMode`.  The Solve button morphs into Try Harder automatically when the previous run failed; editing the model, initials, or config reverts it to Solve. |
 | Debug Solve | `Ctrl+Shift+Enter` | Solve with tracing enabled, generate debug output |
 | Stop | `Escape` | Cancel running solve |
 | Update Guesses | `Ctrl+G` | Copy solved values into initial guesses |
@@ -504,6 +504,7 @@ groups covering all `SolverOptions` keys (~40+ fields):
 |-------|-----------|
 | Main Iteration | `maxIterations`, `tolerance`, `relativeTolerance`, `verbose` |
 | Line Search | `lsAlpha`, `lsRho`, `lsMaxIterations` |
+| Scaling | `enableScaling` (variables), `enableEquationScaling` (equations; off by default, on in *Try Harder*), `broydenRecomputeInterval` |
 | Trust Region | `trInitialRadius`, `trMaxRadius`, `trEta` |
 | Levenberg-Marquardt | `lmInitialLambda`, `lmLambdaFactor` |
 | Partitioned Solver | `partitionedMaxIterations`, `partitionedTolerance` |

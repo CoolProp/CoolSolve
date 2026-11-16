@@ -141,6 +141,57 @@ inline Eigen::VectorXd computeScalingFactors(const Eigen::VectorXd& x) {
 }
 
 // ============================================================================
+// Equation scaling: the equilibrated Newton step (`SolverOptions::enableEquationScaling`)
+// ============================================================================
+
+/// The power of two nearest below 1/m for a magnitude m > 0 (1 for 0 or a non-finite m): scaling by it is exact.
+inline double inversePowerOfTwo(double m) {
+    if (!(m > 0.0) || !std::isfinite(m)) return 1.0;
+    int exponent = 0;
+    std::frexp(m, &exponent);   // m = f 2^exponent, f in [0.5, 1)
+    return std::ldexp(1.0, -exponent);
+}
+
+/**
+ * @brief The solution of J dx = rhs by a column-pivoting QR factorisation of the equilibrated matrix R J C.
+ *
+ * R and C are diagonal: each row of J is scaled so that its largest entry is in [0.5, 1), then each column of the
+ * result likewise, by powers of two (exact: the scaling adds no rounding; the row/column equilibration of LAPACK's
+ * xGEEQU). A block whose equations have terms of very different sizes (an energy balance of 1E9 J/kmol beside the
+ * equations of mole fractions, register CS-BUG-BLOCK-SCALE-SPREAD) has a Jacobian whose condition number is ~1E19 as it stands
+ * and ~1E5 equilibrated: the QR, which treats the pivots below eps times its largest one as zero, then keeps every
+ * direction of the small equations.
+ * @param rank  when given, the rank the QR found for the equilibrated matrix
+ */
+inline Eigen::VectorXd solveEquilibrated(const Eigen::MatrixXd& J, const Eigen::VectorXd& rhs, Eigen::Index* rank = nullptr) {
+    const Eigen::Index rows = J.rows(), cols = J.cols();
+    Eigen::VectorXd r(rows), c(cols);
+    for (Eigen::Index i = 0; i < rows; ++i) r(i) = inversePowerOfTwo(J.row(i).cwiseAbs().maxCoeff());
+    Eigen::MatrixXd A = r.asDiagonal() * J;
+    for (Eigen::Index j = 0; j < cols; ++j) c(j) = inversePowerOfTwo(A.col(j).cwiseAbs().maxCoeff());
+    A = A * c.asDiagonal();
+    Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(A);
+    if (rank) *rank = qr.rank();
+    return c.cwiseProduct(qr.solve(r.cwiseProduct(rhs)));
+}
+
+/**
+ * @brief The Newton step of Newton, TrustRegion and KINSOL: the solution of J dx = rhs.
+ *
+ * \p equationScaling false (the default of `SolverOptions::enableEquationScaling`): the column-pivoting QR of J,
+ * exactly as the solvers always took it. True: the QR of the equilibrated system (solveEquilibrated), at every step,
+ * with no trigger and no comparison of two steps.
+ * @param rank  when given, the rank the QR found for the matrix it factorised (KINSOL's singularity test)
+ */
+inline Eigen::VectorXd solveNewtonStep(const Eigen::MatrixXd& J, const Eigen::VectorXd& rhs, bool equationScaling,
+                                       Eigen::Index* rank = nullptr) {
+    if (equationScaling) return solveEquilibrated(J, rhs, rank);
+    Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(J);
+    if (rank) *rank = qr.rank();
+    return qr.solve(rhs);
+}
+
+// ============================================================================
 // Non-Monotone Merit History
 // ============================================================================
 

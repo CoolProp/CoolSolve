@@ -149,6 +149,13 @@ struct SolverOptions {
     // Variable scaling
     bool enableScaling = true;        // Enable automatic variable scaling for improved conditioning
 
+    // Equation scaling, the row counterpart of enableScaling: when true, every Newton step of Newton, TrustRegion
+    // and KINSOL (line search) solves the row- and column-equilibrated system (solveEquilibrated, solver_common.h),
+    // so that a block whose equations have terms of very different sizes (an energy balance of 1E9 beside mole
+    // fractions) keeps the directions of its small equations. LM and BisectionND are unchanged. Default off: the
+    // plain column-pivoting QR of J, bit for bit. Forced on by Deep Search ("Try Harder").
+    bool enableEquationScaling = false;
+
     // --- Broyden quasi-Newton (Jacobian reuse) ---
     // When > 0, the Newton solver computes a full Jacobian every K iterations
     // and uses Broyden rank-1 updates in between, saving O(n) CoolProp calls
@@ -313,8 +320,9 @@ struct SolverOptions {
     // When `deepSearch` is true (set transiently by the GUI's "Try Harder"
     // button — never read from coolsolve.conf), the solver substitutes
     // `deepSearchPipeline` for `solverPipeline` and additionally forces
-    // `enableTearing = true` and `enableSymbolicReduction = true` so that the
-    // hardest possible pass is applied.  Default deepSearchPipeline is the
+    // `enableTearing = true`, `enableSymbolicReduction = true` and
+    // `enableEquationScaling = true` so that the hardest possible pass is
+    // applied.  Default deepSearchPipeline is the
     // full sequential chain so that a single click tries every available
     // strategy before giving up.  Users may customise it (e.g. drop
     // BisectionND for very large models) via the `deepSearchPipeline` key in
@@ -333,8 +341,8 @@ struct SolverOptions {
     SolverPipelineMode deepSearchPipelineMode = SolverPipelineMode::Sequential;
 
     /// Transient flag: when true, the solver uses `deepSearchPipeline` and
-    /// forces tearing + symbolic reduction.  Set by the GUI "Try Harder"
-    /// button via the `/api/v1/solve` body (`{"deepSearch": true}`); never
+    /// forces tearing, symbolic reduction and equation scaling.  Set by the
+    /// GUI "Try Harder" button via the `/api/v1/solve` body (`{"deepSearch": true}`); never
     /// parsed from coolsolve.conf.
     bool deepSearch = false;
 
@@ -1119,8 +1127,8 @@ private:
      */
     void warnTinyValues(size_t blockIndex, double tolerance, DiagnosticCollector& out);
 
-    /// The options in effect: \p options, with the Deep Search pipeline, tearing and symbolic reduction when
-    /// `deepSearch` is set (the GUI's "Try Harder").
+    /// The options in effect: \p options, with the Deep Search pipeline, tearing, symbolic reduction and equation
+    /// scaling when `deepSearch` is set (the GUI's "Try Harder").
     static SolverOptions effectiveOptions(const SolverOptions& options);
 
     /**

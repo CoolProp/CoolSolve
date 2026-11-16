@@ -285,6 +285,7 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             else if (key == "lsRelaxedTolerance") options.lsRelaxedTolerance = std::stod(val);
             else if (key == "lsNonMonotoneMemory") options.lsNonMonotoneMemory = std::stoi(val);
             else if (key == "enableScaling") options.enableScaling = parseBool(val);
+            else if (key == "enableEquationScaling") options.enableEquationScaling = parseBool(val);
             else if (key == "broydenRecomputeInterval") options.broydenRecomputeInterval = std::stoi(val);
             else if (key == "trInitialRadius") options.trInitialRadius = std::stod(val);
             else if (key == "trMaxRadius") options.trMaxRadius = std::stod(val);
@@ -2823,10 +2824,10 @@ void Solver::warnTinyValues(size_t blockIndex, double tolerance, DiagnosticColle
 
 SolverOptions Solver::effectiveOptions(const SolverOptions& options) {
     // Deep Search override: when options.deepSearch is set (the GUI's "Try
-    // Harder" button), substitute the deep-search pipeline and force tearing +
-    // symbolic reduction on, regardless of their normal defaults.  Multi-start
-    // engagement is decided later via isMultiStartActive(), which already
-    // consults `deepSearch`.
+    // Harder" button), substitute the deep-search pipeline and force tearing,
+    // symbolic reduction and equation scaling on, regardless of their normal
+    // defaults.  Multi-start engagement is decided later via
+    // isMultiStartActive(), which already consults `deepSearch`.
     SolverOptions effOpts = options;
     if (effOpts.deepSearch) {
         if (!effOpts.deepSearchPipeline.empty()) {
@@ -2837,6 +2838,7 @@ SolverOptions Solver::effectiveOptions(const SolverOptions& options) {
         effOpts.pipelineMode = effOpts.deepSearchPipelineMode;
         effOpts.enableTearing = true;
         effOpts.enableSymbolicReduction = true;
+        effOpts.enableEquationScaling = true;
     }
     return effOpts;
 }

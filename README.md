@@ -50,7 +50,7 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
   - **Solution Verification**: Post-solve check that re-evaluates every equation (LHS ≈ RHS) to catch bugs the solver's convergence check may miss.
 
-  - **Try Harder**: One-click recovery for failed solves. After a failed run the GUI's *Solve* button morphs into *Try Harder*; clicking it re-runs the model with the full Deep Search pipeline, tearing and symbolic reduction forced on, and the configured multi-start policy. Editing the model, the initials, or the configuration restores the normal *Solve* button.
+  - **Try Harder**: One-click recovery for failed solves. After a failed run the GUI's *Solve* button morphs into *Try Harder*; clicking it re-runs the model with the full Deep Search pipeline, tearing, symbolic reduction and equation scaling forced on, and the configured multi-start policy. Editing the model, the initials, or the configuration restores the normal *Solve* button.
 
 - **Output Formats**: JSON, LaTeX, `.sol` files, CSV trajectory files, and a comprehensive **Debug Mode** (`-d`) folder.
 
@@ -95,7 +95,7 @@ CoolSolve uses several file formats for input and verification:
 - **.eescode**: The EES source code to be parsed and solved.
 - **.initials**: Initial values for variables, used to seed the solver or evaluator. Format: `variable=value` (one per line).
 - **coolsolve.conf**: Optional solver configuration, one `key = value` per line, placed in the **same folder** as the `.eescode` file: only the keys it sets override the defaults. Every key, with its default and when to change it, is documented in **[`examples/coolsolve.conf`](examples/coolsolve.conf)**; the GUI configuration editor edits the same keys. The groups of options:
-  - **Convergence**: tolerances, iteration limits, line search, variable scaling, timeout.
+  - **Convergence**: tolerances, iteration limits, line search, variable scaling, equation scaling (`enableEquationScaling`, for blocks whose equations have terms of very different sizes), timeout.
   - **Solver pipeline**: which solvers run and in what order (`solverPipeline`; default `Newton`), sequential or parallel, the *Try Harder* (Deep Search) pipeline, multi-start, and the tuning of each solver.
   - **Block pre-processing**: structural tearing and symbolic block reduction (off by default).
   - **CoolProp**: backend, AbstractState API, analytical derivatives, caching, superancillaries.

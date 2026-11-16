@@ -103,6 +103,7 @@ struct SolverConfig {
     int multiStartNumCores = 1;          // 1 = sequential multi-start (default); 0/N>1 = parallel
     // Globalisation strategy when the pipeline contains Kinsol (linesearch/picard/fp).
     coolsolve::KinsolGlobalStrategy kinsolStrategy = coolsolve::KinsolGlobalStrategy::LineSearch;
+    bool enableEquationScaling = false;  // equilibrated Newton steps (SolverOptions::enableEquationScaling)
 };
 
 static bool shouldSkipFile(const fs::path& filepath) {
@@ -225,6 +226,7 @@ static RobustnessResult testFile(const fs::path& filepath, const SolverConfig& c
     opts.trBroydenRecomputeInterval = cfg.trBroydenRecomputeInterval;
     opts.multiStartNumCores = cfg.multiStartNumCores;
     opts.kinsolGlobalStrategy = cfg.kinsolStrategy;
+    opts.enableEquationScaling = cfg.enableEquationScaling;
 
     // If we want to skip initials, we need to run the pipeline stages manually
     // to avoid auto-loading from .initials file
@@ -402,6 +404,15 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
           coolsolve::SolverStrategy::Partitioned},
          true, true, true},
 
+        {"Default + EquationScaling (with initials)",
+         {coolsolve::SolverStrategy::Newton,
+          coolsolve::SolverStrategy::TrustRegion,
+          coolsolve::SolverStrategy::LevenbergMarquardt,
+          coolsolve::SolverStrategy::BisectionND,
+          coolsolve::SolverStrategy::Homotopy,
+          coolsolve::SolverStrategy::Partitioned},
+         true, false, false, 0, 1, coolsolve::KinsolGlobalStrategy::LineSearch, true},
+
         // -- Without initials --
         {"Default pipeline (NO initials)",
          {coolsolve::SolverStrategy::Newton,
@@ -466,6 +477,15 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
           coolsolve::SolverStrategy::Homotopy,
           coolsolve::SolverStrategy::Partitioned},
          false, true, true},
+
+        {"Default + EquationScaling (NO initials)",
+         {coolsolve::SolverStrategy::Newton,
+          coolsolve::SolverStrategy::TrustRegion,
+          coolsolve::SolverStrategy::LevenbergMarquardt,
+          coolsolve::SolverStrategy::BisectionND,
+          coolsolve::SolverStrategy::Homotopy,
+          coolsolve::SolverStrategy::Partitioned},
+         false, false, false, 0, 1, coolsolve::KinsolGlobalStrategy::LineSearch, true},
 
         // -- Multi-start (parallel) without initials --
         // Exercises the parallel multi-start path (roadmap §4.2). Candidates
@@ -660,6 +680,7 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
                 shortLabel += sn;
             }
             if (configs[ci].enableTearing) shortLabel += "+Tear";
+            if (configs[ci].enableEquationScaling) shortLabel += "+EqScale";
             // Distinguish the three KINSOL globalisation modes in column headers.
             if (!configs[ci].pipeline.empty() &&
                 configs[ci].pipeline[0] == coolsolve::SolverStrategy::Kinsol) {
@@ -707,6 +728,7 @@ TEST_CASE("Solver robustness diagnosis", "[.][solver-robustness]") {
                 shortLabel += sn;
             }
             if (configs[ci].enableTearing) shortLabel += "+Tear";
+            if (configs[ci].enableEquationScaling) shortLabel += "+EqScale";
             // Distinguish the three KINSOL globalisation modes in column headers.
             if (!configs[ci].pipeline.empty() &&
                 configs[ci].pipeline[0] == coolsolve::SolverStrategy::Kinsol) {

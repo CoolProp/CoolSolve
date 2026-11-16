@@ -101,6 +101,7 @@ the user must add it to `solverPipeline` explicitly.
 | `PipelineTiming` | Per-solve timing breakdown, displayed in GUI |
 | CoolProp call profiling | Per-call timing for `PropsSI`, `AbstractState`, `HAPropsSI`; warmup tracked separately |
 | Variable scaling | Shared `computeScalingFactors()` in `solver_common.h`, used by Newton/TR/LM/BisectionND |
+| Equation scaling | `enableEquationScaling` (default off, on in Try Harder): the Newton steps of Newton, TR and KINSOL solve the row- and column-equilibrated system (`solveEquilibrated()` in `solver_common.h`, powers of two); LM, BisectionND and the tearing outer step unchanged (`CS-BUG-BLOCK-SCALE-SPREAD`) |
 | `--no-superancillary` flag | Disables the CoolProp superancillary functions |
 
 ---

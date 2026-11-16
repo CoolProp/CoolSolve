@@ -143,7 +143,7 @@ export const api = {
 
   // Solve (async — returns immediately, results come via SSE)
   // `deepSearch: true` triggers a "Try Harder" run: the deep-search pipeline
-  // is used and tearing + symbolic reduction are forced on.
+  // is used and tearing, symbolic reduction and equation scaling are forced on.
   solve: (options?: { eescode?: string; initials?: string; debug?: boolean; deepSearch?: boolean }) =>
     request<{ status: string }>('/solve', {
       method: 'POST',

@@ -2171,8 +2171,10 @@ H_react = ntot*hmix(T_adiab, x[1..14])                 "T_adiab = 1775.08 C (204
 ```
 
 The species enthalpies are summed inside a function on purpose: written as 14 unknowns `H[i]` of the block of `T_adiab`
-(enthalpies of 1E8 J/kmol beside mole fractions of 1E-20, the formulation of the EES file), the block can stall on the
-rounding of Newton's method (register `CS-BUG-BLOCK-SCALE-SPREAD`). With the property functions instead of `CALL NASA`
+(enthalpies of 1E8 J/kmol beside mole fractions of 1E-20, the formulation of the EES file), the block stalls with the
+default options. It solves with `enableEquationScaling = true` in `coolsolve.conf` ([§10](#equation-scaling)), which
+*Try Harder* turns on; without the option, sum the enthalpies in a `FUNCTION` as above or write them in MJ/kmol
+(`/1E6`). With the property functions instead of `CALL NASA`
 (`MolarMass(X$)*enthalpy(X$, T=T)`, the CoolProp equation of state for 8 of the species) the flame is 1 K hotter,
 1776.08 °C.
 
@@ -2305,7 +2307,8 @@ Guess values live in a `.initials` file next to the model, one
 `coolsolve.conf`, next to the `.eescode` file, holds one `key = value` per line (no sections); every key, with
 its default and when to change it, is documented in `examples/coolsolve.conf`. The groups of keys:
 
-- convergence: `tolerance` (below), `relativeTolerance`, iteration limits, line search, scaling, `timeoutSeconds`;
+- convergence: `tolerance` (below), `relativeTolerance`, iteration limits, line search, variable scaling
+  (`enableScaling`, on by default), equation scaling (`enableEquationScaling`, below), `timeoutSeconds`;
 - solver pipeline: `solverPipeline` (Newton, TrustRegion, LM, BisectionND, Homotopy, Partitioned, Kinsol; default
   Newton), `pipelineMode`, the *Try Harder* pipeline (`deepSearchPipeline`), multi-start (`multiStartMode`), and
   the tuning keys of each solver;
@@ -2355,6 +2358,21 @@ magnitudes deserves a look at the equation (units, a variable that should be 0).
 The weight floor `10⁻¹²` means that a residual below `tolerance·10⁻¹²` (`10⁻²¹`) is always accepted: an equation
 whose terms are all below that is not resolved. `x^3 = 8E-60` stops at `x ≈ 9·10⁻⁸` (`x³ ≈ 7·10⁻²²`), not at
 `2·10⁻²⁰`; write such an equation in scaled variables (`x = x_s·1E-20`).
+
+### Equation scaling
+
+`enableEquationScaling` (default `false`) is the row counterpart of the variable scaling `enableScaling`. Newton's step
+solves `J·dx = −F` by a column-pivoting QR factorisation, which treats the pivots below `ε` times its largest one as
+zero. In a block whose equations have terms of very different sizes (an energy balance of `10⁹` J/kmol beside mole
+fractions of `10⁻²⁰`, the adiabatic flame of `CALL CHEM_EQUIL` with the species enthalpies as unknowns) that drops
+directions of the small equations, and Newton stalls at a residual it no longer reduces (*LineSearchFailed* or
+*MaxIterations*). With `enableEquationScaling = true` every Newton step of Newton, TrustRegion and KINSOL (line search)
+solves the system with its rows, then its columns, scaled by powers of two (exact; the equilibration of LAPACK's
+`xGEEQU`); KINSOL's singularity test then uses the rank of the equilibrated matrix. The line search, the merit function
+and the convergence test are unchanged. LM, BisectionND and the outer step of the tearing solver are not affected. Off
+(the default), the steps are those of the Jacobian as it stands; on, a model that solves without it may take another
+path (more or fewer iterations, or another solution of a model that has several), so it is an option for the blocks
+that need it, not a default. *Try Harder* turns it on.
 
 ---
 

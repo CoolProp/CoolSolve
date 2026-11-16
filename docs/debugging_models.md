@@ -36,8 +36,9 @@ This creates a folder `<input>_coolsolve/` (or `<input>_coolsolve/` next to the 
 Before diving into the diagnosis below, click the **Try Harder** button in the
 GUI (shortcut: `Ctrl+Enter` after a failed solve). It re-runs the model with
 the full **Deep Search** pipeline (`deepSearchPipeline`), forces structural
-**tearing** and **symbolic reduction** on, and engages multi-start according
-to `multiStartMode`. If the failure was due to a poor initial guess or an
+**tearing**, **symbolic reduction** and **equation scaling**
+(`enableEquationScaling`) on, and engages multi-start according to
+`multiStartMode`. If the failure was due to a poor initial guess or an
 algebraic loop that tearing can crack, Try Harder recovers it in one click —
 no manual diagnosis required.
 
@@ -231,8 +232,10 @@ its block is limited there* means the solver converged on that limit: check the 
 An adiabatic flame written as in the EES files, with the species enthalpies as unknowns of the block of the flame temperature
 (`DUPLICATE i=1,14` ⏎ `H[i] = MolarMass(…)*enthalpy(…, T=T_adiab)` ⏎ `END`, then `sum(ntot*x[i]*H[i], i=1,14)`), can stop on a
 residual of about 1E-2 that Newton's method no longer reduces (*LineSearchFailed* or *MaxIterations*, the trace showing steps of
-1E-7): the block holds enthalpies of 1E8 J/kmol beside mole fractions of 1E-20 (register `CS-BUG-BLOCK-SCALE-SPREAD`). Sum the
-enthalpies of the products in a `FUNCTION` (the example of the Language Reference), or write them in MJ/kmol
+1E-7): the block holds enthalpies of 1E8 J/kmol beside mole fractions of 1E-20, and the QR of Newton's step drops directions
+of the small equations. First remedy: set `enableEquationScaling = true` in `coolsolve.conf` (equilibrated Newton steps,
+[Language Reference §10](language_reference.md#equation-scaling)), or click **Try Harder**, which turns it on. Without the
+option, sum the enthalpies of the products in a `FUNCTION` (the example of the Language Reference), or write them in MJ/kmol
 (`H[i] = MolarMass(…)*enthalpy(…, T=T_adiab)/1E6`).
 
 ### Procedure Fixes

@@ -371,3 +371,34 @@ TEST_CASE("Deep search pipeline default is the full sequential chain", "[config]
     REQUIRE(options.deepSearch == false);  // never persisted from conf
 }
 
+
+TEST_CASE("Equation scaling is loaded from config and defaults to off", "[config][solver][equation-scaling]") {
+    coolsolve::SolverOptions defaults;
+    REQUIRE(defaults.enableEquationScaling == false);
+    REQUIRE(defaults.enableScaling == true);   // the variable (column) scaling it complements
+
+    fs::path tmpDir = fs::temp_directory_path();
+    fs::path configPath = tmpDir / "coolsolve_test_equation_scaling.conf";
+    const std::pair<const char*, bool> cases[] = {{"true", true}, {"false", false}, {"1", true}, {"0", false}};
+    for (const auto& [text, expected] : cases) {
+        std::ofstream f(configPath);
+        REQUIRE(f.is_open());
+        f << "enableEquationScaling = " << text << "\n";
+        f.close();
+        coolsolve::SolverOptions options;
+        options.enableEquationScaling = !expected;
+        bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
+        INFO(text);
+        REQUIRE(loaded);
+        REQUIRE(options.enableEquationScaling == expected);
+    }
+    // a file without the key leaves the default
+    {
+        std::ofstream f(configPath);
+        f << "maxIterations = 50\n";
+    }
+    coolsolve::SolverOptions options;
+    REQUIRE(coolsolve::loadSolverOptionsFromFile(configPath.string(), options));
+    REQUIRE(options.enableEquationScaling == false);
+    fs::remove(configPath);
+}

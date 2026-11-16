@@ -256,7 +256,6 @@ convenience. Update the *Blocked models* column when you mark a model blocked.
 | `CS-BUG-STRING-FUNC-WARNING` | `String$` is evaluated but missing from the parser's list of built-in functions (`knownBuiltinFunctions`, `src/parser.cpp`): every use raises the spurious warning *"Unknown function 'String$'"* (cosmetic). Found while fixing `CS-GAP-UPPERCASE` | `PROCEDURE p(a : s$)` ⏎ `s$ = String$(a)` ⏎ `END` ⏎ `CALL p(3 : t$)` ⏎ `x = 1` → SUCCESS with *"warning (line 2): Unknown function 'String$'"* | Ignore the warning. Fix: add `string$` (and check `phase$`, `stringval`) to the list; `psychprops` (a built-in procedure) gets the same spurious warning (2026-10-15) | P3 | – |
 | `CS-BUG-INTERNALENERGY-UNQUOTED` | The alias **`internalenergy`** of `intenergy` is evaluated but missing from the parser's list of thermophysical functions, so an unquoted fluid (`internalenergy(Water, T=20, P=1e5)`) is read as a variable: structural error *"1 equations and 2 unknowns"* (`intenergy(Water, …)` and the quoted fluid work). Found 2026-10-16 | `u = internalenergy(Water, T=20, P=1e5)` → not square | Use `intenergy` (the EES name) or quote the fluid | P3 | – |
 | `CS-BUG-STRING-ORDER` | String comparisons with `<`, `>`, `<=`, `>=` in IF/UNTIL conditions are false whatever the strings: `evaluateBinaryOp` (`src/evaluator.cpp`) handles only `=` and `<>` for strings, while `ees_vs_coolsolve.csv` (IF-THEN-ELSE) and the Language Reference claimed every operator. The EES help documents `=`/`<>` for strings only, and no EES file of the collection orders strings: the fix is an error naming the operator, unless an EES run shows lexicographic order. Found at the round-5 review | `FUNCTION f(s$)` ⏎ `IF (s$ < 'b') THEN f=1 ELSE f=2` ⏎ `END` ⏎ `r = f('a')` → `r` = 2 | Compare with `=`/`<>` only | P3 (silent, but no known use) | – |
-| `CS-BUG-BLOCK-SCALE-SPREAD` | **A block whose equations have terms of very different sizes stalls: the Newton step drops directions of its small equations.** The adiabatic flame of `CSL-0150` written as in the EES file: the 14 species enthalpies `H[i] = MolarMass(…)*enthalpy(…, T=T_adiab)` (~1E8 J/kmol) are unknowns of the block of `T_adiab`, beside the mole fractions of `CALL CHEM_EQUIL` (`x_CH4` ~1E-20) and an energy balance of terms 1E9. Newton converges to ‖F‖ ≈ 1E-2, then its steps no longer reduce it (*LineSearchFailed* or *MaxIterations*; TrustRegion and LM do not do better). Root cause (2026-11-15): the Jacobian is not singular, but its condition number is 4E19 as Newton builds it (columns scaled by the variable values, `enableScaling`; rows not at all) and 5E5 once its rows and columns are equilibrated; the column-pivoting QR treats the pivots below eps times its largest one as zero and the step leaves the residuals of the small equations untouched. A conditional fix (`a84f0e4`: when the plain QR step's linear residual fails the convergence test, also solve the equilibrated system and take the step of smaller linear residual) was rejected at review (2026-11-16): 6 `[solver-robustness]` cells regressed (`exchangers2` Newton only and `heat_pump_MSTh_SB_R10` default pipeline, no initials) — the smaller linear residual always prefers the full-rank equilibrated step, even where the truncated plain step was a useful regularization (steps of 1E8–1E13 instead of 1E-3), and the absolute trigger fires on the rounding of large steps (1129 times in one heat-pump solve). Row scaling by the term scale S of the equations breaks the flame, and trying the equilibrated step only after a failed line search comes too late. Planned: an explicit equation-scaling option beside `enableScaling` (equilibrated Newton steps, default off, on in Try Harder), on a branch for review. Found while integrating `CS-GAP-CHEM-EQUIL` (2026-11-15) | Native `CSL-0150` with `T = T_adiab` instead of `T = T_adiab_K` (scratch copy): *Block 17 (45 vars) failed to converge: LineSearchFailed*, from the library's guesses or from `T_adiab = 1775`, `ntot = 12.5` | Keep the large intermediate quantities out of the block (a `FUNCTION`), or scale them (`/1E6`) | P2 | `CSL-0150` |
 
 ---
 
@@ -426,6 +425,7 @@ One line per fixed item. The regression tests are in `tests/test_library_gaps.cp
 | `CS-GAP-NASA` | `CALL NASA(Species$, T : cp, h, s)` is built in (D12 reopened by the maintainer, 2026-11-14): the 22 NASA-Glenn species, molar outputs in the units of the model, exact derivatives, skipped outputs not computed; a model's own `PROCEDURE NASA` replaces it; tests `[library-gaps][call-nasa]` | 2026-11-14, `fix/library-gaps-5` |
 | `CS-GAP-HEATING-VALUE` | `LowerHeatingValue(Fuel)` and `HigherHeatingValue(Fuel)` [J/kg of fuel, 25 °C] for the C-H-O ideal gases of the NASA-Glenn table, from the registry's formation enthalpies (HHV with h_fg of CoolProp's Water); CH4 −1.26e-4 against EES; tests `[library-gaps][heating-value]` | 2026-11-14, `fix/library-gaps-5` |
 | `CS-GAP-CHEM-EQUIL` | `CALL CHEM_EQUIL(P, T, A\O, C\O, H\O, N\O : x_H2, …, x_Ar)` is built in: 14-species ideal-gas equilibrium on the NASA-Glenn data, P and T in the units of the model, gas phase only, exact derivatives (implicit-function theorem), dual Gibbs solver of `src/chem_equil.cpp` (all 24 120 states of a 200–6000 K, 1 Pa–1E8 Pa, φ 0.1–4 sweep); EES's older data: major species within 0.4 %, OH/NO/NO2 4–10 %; example `chem_equil_dissociation`, tests `[library-gaps][chem-equil]` | 2026-11-14, `fix/library-gaps-5` |
+| `CS-BUG-BLOCK-SCALE-SPREAD` | A block whose equations have terms of very different sizes (the `CSL-0150` flame with its unknowns `H[i]`) stalled: fixed by the option `enableEquationScaling` (default off, on in Try Harder: equilibrated Newton steps of Newton, TrustRegion, KINSOL); tests `[library-gaps][block-scale-spread]` | 2026-11-16, `feat/equation-scaling` (under review) |
 
 ## 8. Unverified by a reviewer
 
@@ -459,7 +459,8 @@ keeps only the current state, the queue and the open decisions: the history of t
 **State (2026-11-16).** Rounds 1–4 are in `main`. Round 5 (`fix/library-gaps-5`, from `main` @ `37e29f1`, merged
 into `main`): the EES-help review of the register, `CS-FEAT-LIB-TEST`, the `tools/` items, `CS-BUG-IF-ANDOR-ORDER`,
 the eight silent-result items of wave 1, wave 5 (`CS-GAP-FLUIDS-NASA-SPECIES`, `CS-GAP-NASA`, `CS-GAP-CHEM-EQUIL`) with
-and `CS-GAP-HEATING-VALUE` of wave 3 are closed (§7); `CS-BUG-BLOCK-SCALE-SPREAD` stays open (§5). Baselines (CoolProp pin `8eb3b778`):
+and `CS-GAP-HEATING-VALUE` of wave 3 are closed (§7); `CS-BUG-BLOCK-SCALE-SPREAD` is fixed by the option
+`enableEquationScaling` on `feat/equation-scaling` (core change, not merged until reviewed). Baselines (CoolProp pin `8eb3b778`):
 examples 47/50 solving (not `cooling_tower2`, `orc_complex`, `turbocompressor_interpolate`); library regression
 219 PASS / 101 DEVIATION / 0 FAIL on the 320 baseline targets of library `a4ea304` (the library checkout has grown to
 335 targets, the new greenhouse models take ~8 min each: compare with `COOLSOLVE_LIBRARY_TEST_FILTER` on the old ones).
@@ -474,8 +475,7 @@ labels (`kg/m^3` → `m^3/kg`) and `COOLPROP_BASELINE` of `tools/test_models.py`
 **Queue** (round 5, next first; the recommended option is in each register row):
 1. *Wave 2, performance and robustness*: `CS-BUG-BLOCK-EVAL-SCALING` (per-block list of the external variables read,
    computed once; measure on `CSL-0079`/`CSL-0326`), `CS-BUG-NONFINITE-START`, `CS-BUG-GUESS-INFER`,
-   `CS-BUG-NEWTON-CYCLE` (tearing first, then column scaling; measured on the examples and the library regression),
-   `CS-BUG-BLOCK-SCALE-SPREAD` (an explicit equation-scaling option, default off, on in Try Harder; core change, on a branch).
+   `CS-BUG-NEWTON-CYCLE` (tearing first, then column scaling; measured on the examples and the library regression).
 2. *Wave 3, blocked library models*: `CS-GAP-IFNOT` with `CS-BUG-STRING-ORDER`, `CS-GAP-PROC-COMMENT`,
    `CS-GAP-USER-STRING-FUNC`, `CS-GAP-IFSTR`, `CS-GAP-INTEGRALVALUE`, `CS-GAP-PSYCHRO-SAT`, `CS-GAP-FLUIDS-ALIAS` with
    `-R1336MZZ`, `CS-GAP-INDEX-VAR`, `CS-GAP-ENTHALPY-FUSION`, `CS-BUG-WATER-NEAR-FREEZING` with
@@ -525,7 +525,9 @@ labels (`kg/m^3` → `m^3/kg`) and `COOLPROP_BASELINE` of `tools/test_models.py`
   `CS-BUG-PI-FUNCTION` in the heat-transfer models can go back to the native `pi`/`g#`; `CSL-0158` needs quoted CSV
   headers and an `R717_CHECK` without `StringPos`.
 - Library follow-ups of wave 5: `CSL-0150` passes `T = T_adiab_K` (write `T = T_adiab`), and its 14 unknowns `H[i]` stall
-  the flame block (`CS-BUG-BLOCK-SCALE-SPREAD`: sum them in a `FUNCTION`, or `/1E6`; then 1776.08 °C), and it may drop the
+  the flame block with the default options (`CS-BUG-BLOCK-SCALE-SPREAD`): its `coolsolve.conf` can set
+  `enableEquationScaling = true` (then 1776.08 °C from the library's guesses; that file is the maintainer's to write in the
+  library), or sum them in a `FUNCTION`, or `/1E6`; and it may drop the
   D12 rewrite with `CALL NASA`; the register's EES value 2417.129 K was a stale fuel-oil record; the native files of
   `CSL-0264`, `CSL-0278` and `CSL-0331` solve (the `_coolsolve` variants of `CSL-0278` and `CSL-0331` become unnecessary).
 

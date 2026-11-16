@@ -94,6 +94,7 @@ SolverStatus HomotopySolver::solve(Problem& problem,
         correctorOpts.relativeTolerance = 1e-10;
         correctorOpts.stepTolerance = options.stepTolerance;
         correctorOpts.enableScaling = options.enableScaling;
+        correctorOpts.enableEquationScaling = options.enableEquationScaling;
         correctorOpts.lsAlpha = options.lsAlpha;
         correctorOpts.lsRho = options.lsRho;
         correctorOpts.lsMaxIterations = options.lsMaxIterations;

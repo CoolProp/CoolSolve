@@ -220,10 +220,17 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
     ],
   },
   {
-    title: 'Variable Scaling',
+    title: 'Scaling',
     fields: [
       { key: 'enableScaling', label: 'Enable scaling', type: 'boolean', defaultVal: 'true',
         description: 'Automatic variable scaling for better Jacobian conditioning. Recommended for models mixing variables of very different magnitudes (e.g. Pa and m³/kg).' },
+      { key: 'enableEquationScaling', label: 'Equation scaling', type: 'boolean', defaultVal: 'false',
+        description:
+          'Equation (row) scaling, the counterpart of variable scaling: every Newton step of Newton, TrustRegion '
+          + 'and KINSOL solves the system with its rows and columns equilibrated (scaled by powers of two). '
+          + 'Use it for a block whose equations have terms of very different sizes, e.g. an energy balance of 1E9 J/kmol '
+          + 'beside mole fractions of 1E-20 (CALL CHEM_EQUIL flames), which otherwise stalls at a residual Newton no longer reduces. '
+          + 'LM and BisectionND are unchanged. Default off (the steps are those of the plain Jacobian); Try Harder turns it on.' },
       { key: 'broydenRecomputeInterval', label: 'Broyden interval', type: 'number', defaultVal: '0',
         description:
           'Broyden quasi-Newton enhancement for the Newton solver. '
