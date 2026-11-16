@@ -27450,3 +27450,80 @@ TEST_CASE("CS-BUG-BLOCK-SCALE-SPREAD: the adiabatic flame with the species entha
         CHECK_THAT(run["T_adiab"], WithinAbs(1776.0848, 0.001));   // C: 1 K above the all-NASA flame (CoolProp's alpha0 for 8 species)
     }
 }
+
+// ============================================================================
+// Debug folder: solver_final_residuals.md, the residual of every equation of the block that did not converge at the
+// last iterate of its solver, weighted as the convergence test (the diagnosis of CS-BUG-BLOCK-SCALE-SPREAD needed it);
+// coolsolve_residuals.md evaluated where the solve stopped, no longer at the guesses
+// ============================================================================
+
+namespace {
+
+/// Solve `code` (written to a temporary folder) and generate its debug folder; returns the folder.
+fs::path debugFolderOf(const std::string& name, const std::string& code) {
+    const fs::path dir = fs::temp_directory_path() / ("coolsolve_test_final_residuals_" + name);
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const fs::path file = dir / "model.eescode";
+    { std::ofstream f(file); f << code; }
+    CoolSolveRunner runner(file.string());
+    SolverOptions options;
+    runner.run(options, true);
+    runner.generateDebugOutput((dir / "debug").string(), code);
+    return dir;
+}
+
+std::string readText(const fs::path& path) {
+    std::ifstream in(path);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+}  // namespace
+
+TEST_CASE("Debug folder: the final residuals of the block that did not converge, worst first", "[debug-output][final-residuals]") {
+    // block 2 has no real solution: x^2 + y^2 = -3 is never met, x - y = 2 is; the second equation of the block has terms
+    // of 1E12, whose rounding residual is above 1e-9 but within its weight
+    const std::string code =
+        "a = 2\n"
+        "b = a + 1\n"
+        "x^2 + y^2 = -b\n"
+        "1E12*(x - y) = 1E12*a\n"
+        "z = x + 1\n";
+    const fs::path dir = debugFolderOf("fail", code);
+    const fs::path report = dir / "debug" / "solver_final_residuals.md";
+    REQUIRE(fs::exists(report));
+    const std::string md = readText(report);
+    INFO(md);
+    CHECK(md.find("# Final residuals of the block that did not converge") != std::string::npos);
+    CHECK(md.find("evaluated at the last iterate of its solver") != std::string::npos);
+    CHECK(md.find("**Equations not met:** 1 of 2") != std::string::npos);
+    // the equation that is not met comes first, the met one second
+    const size_t first = md.find("\n| 1 | ");   // rows start a line ("| 2 | " also occurs inside row 1: its Eq column)
+    const size_t second = md.find("\n| 2 | ");
+    REQUIRE(first != std::string::npos);
+    REQUIRE(second != std::string::npos);
+    CHECK(md.substr(first, second - first).find("x ^ 2.000000") != std::string::npos);
+    CHECK(md.substr(first, second - first).find("**no**") != std::string::npos);
+    const std::string secondRow = md.substr(second + 1, md.find('\n', second + 1) - second - 1);
+    CHECK(secondRow.find("1000000000000") != std::string::npos);
+    CHECK(secondRow.find("| yes |") != std::string::npos);
+    // the variables of the block, their last change and their guess
+    CHECK(md.find("## Variables of the block") != std::string::npos);
+    CHECK(md.find("| `x` | ") != std::string::npos);
+    CHECK(md.find("| `y` | ") != std::string::npos);
+    // the index of the debug folder lists it
+    CHECK(readText(dir / "debug" / "README.md").find("[solver_final_residuals.md](solver_final_residuals.md)") != std::string::npos);
+    // coolsolve_residuals.md is where the solve stopped: b solved (3), the failed block at its last iterate, z at its guess
+    const std::string residuals = readText(dir / "debug" / "coolsolve_residuals.md");
+    CHECK(residuals.find("Every equation evaluated where the solve stopped") != std::string::npos);
+    CHECK(residuals.find("| 1 | `b = (a + 1.000000)` | 3.0000e+00 | 3.0000e+00 | 0.0000e+00 |") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("Debug folder: no final-residuals report after a successful solve", "[debug-output][final-residuals]") {
+    const fs::path dir = debugFolderOf("ok", "x^2 + y^2 = 5\nx - y = 1\n");
+    CHECK_FALSE(fs::exists(dir / "debug" / "solver_final_residuals.md"));
+    CHECK(readText(dir / "debug" / "README.md").find("solver_final_residuals.md") == std::string::npos);
+    CHECK(readText(dir / "debug" / "coolsolve_residuals.md").find("Every equation evaluated at the solution.") != std::string::npos);
+    fs::remove_all(dir);
+}

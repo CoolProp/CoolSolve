@@ -299,7 +299,7 @@ The debug folder contains:
 | `variables.csv` | Variable mapping (CSV for external tools) |
 | `equations.md` | Equations grouped by solution block |
 | `analysis.json` | Full JSON analysis data |
-| `residuals.txt` | CoolSolve residuals report |
+| `coolsolve_residuals.md` | LHS, RHS and residual of every equation: at the solution, or where the solve stopped (the failed block at its solver's last iterate) |
 | `equations.tex` | LaTeX formatted equations |
 | `incidence.md` | Variable-equation incidence matrix |
 | `evaluator.md` | Evaluator structure and block evaluation tests |
@@ -308,6 +308,7 @@ The debug folder contains:
 | `integral_table.csv` | Full trajectory CSV (dynamic/`INTEGRAL` models) |
 | `solution_check.md` | Post-solve equation verification (LHS vs RHS for every equation) |
 | `solver_singular_diagnostics.md` | Residuals and Jacobian of the first block that failed with a singular Jacobian, with its non-finite entries and zero rows/columns |
+| `solver_final_residuals.md` | Residual of every equation of the block that did not converge, at its solver's last iterate, weighted as the convergence test and sorted worst first, with the block's variables, their last change and their guess |
 | `original.eescode` | Copy of the original input |
 
 ### Command Line Options

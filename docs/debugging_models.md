@@ -27,7 +27,8 @@ This creates a folder `<input>_coolsolve/` (or `<input>_coolsolve/` next to the 
 | `solver_errors.md` | Error type (LineSearchFailed, MaxIterations, Diverged, EvaluationError) |
 | `solver_trace.md` | Per-block Newton iterations, residual norms |
 | `evaluator.md` | Block evaluation status, max residuals at current state |
-| `coolsolve_residuals.md` | Equation-by-equation LHS, RHS, residual values |
+| `coolsolve_residuals.md` | Equation-by-equation LHS, RHS, residual values: at the solution, or where the solve stopped (the blocks solved at their solution, the failed block at its solver's last iterate, the later blocks at their guesses) |
+| `solver_final_residuals.md` | After a failure: every equation of the block that did not converge at its solver's last iterate, with its residual F, its scale S and rho = abs(F)/w as the convergence test weights it, worst first; the variables of the block with their last change and their guess |
 | `equations.md` | Which equations are in each block |
 
 ## Quick Win — "Try Harder" (GUI)
@@ -58,13 +59,13 @@ Outside the GUI, the equivalent is to send `{"deepSearch": true}` to the
 
 - **Meaning**: The Newton step direction is valid, but no step size satisfies the line search (e.g. step would push variables into invalid region, or Armijo condition not met).
 - **Typical causes**: Poor initial guess, variables near physical limits, ill-conditioned Jacobian.
-- **Check**: `solver_trace.md` – residual at failure, step norm. If residual is small (e.g. < 1), the solution may be very close.
+- **Check**: `solver_trace.md` – residual at failure, step norm. If residual is small (e.g. < 1), the solution may be very close. `solver_final_residuals.md` names the equations that are not met, worst first.
 
 ### MaxIterations
 
 - **Meaning**: Newton did not converge within the iteration limit (default 100).
 - **Typical causes**: Large algebraic loop, poor initials, slow convergence.
-- **Check**: `solver_trace.md` – does the residual decrease or stall? A stall near a small residual suggests a near-solution.
+- **Check**: `solver_trace.md` – does the residual decrease or stall? A stall near a small residual suggests a near-solution. `solver_final_residuals.md` lists the equations that hold the residual (rho above the tolerance) and the variables still at their guess.
 
 ### EvaluationError (CoolProp)
 
@@ -281,7 +282,7 @@ This example shows how to diagnose and fix a failing model when you do **not** h
    ```
    Result: Block 38 (62 equations) fails with `LineSearchFailed` or `MaxIterations`.
 
-2. Inspect `coolsolve_residuals.md`: equations like `h_cf_su_cd_sc = h_cf_su_cd` show LHS = 1.0 instead of ~4e5. Variables without values in `.initials` default to 1.0; enthalpies should be ~4e5 J/kg for air.
+2. Inspect `solver_final_residuals.md` (the equations of block 38 that are not met, worst first, and its variables with their guess) and `coolsolve_residuals.md`: equations like `h_cf_su_cd_sc = h_cf_su_cd` show values of 1.0 instead of ~4e5. Variables without values in `.initials` default to 1.0; enthalpies should be ~4e5 J/kg for air.
 
 3. Inspect the `two_phase_CD` procedure: `specheat(cf$, T=t_bar_cf, P=1)` uses P=1. CoolProp expects Pa; 1 Pa is unphysical for air. Some solvers may treat 1 as 1 bar; CoolProp does not.
 
