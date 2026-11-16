@@ -42,6 +42,8 @@ void printUsage(const char* programName) {
 #ifdef COOLSOLVE_GUI
     std::cerr << "  --gui [port]            Start the GUI web server (default port: 8550)\n";
     std::cerr << "  --no-browser            Don't open browser automatically (with --gui)\n";
+    std::cerr << "  --host <address>        Address the GUI server listens on (default: 127.0.0.1, this machine\n";
+    std::cerr << "                          only; 0.0.0.0: every network interface)\n";
 #endif
     std::cerr << "  --version               Print the CoolSolve and CoolProp (version, git revision) versions,\n";
     std::cerr << "                          and the commit of the embedded model library (GUI builds)\n";
@@ -76,6 +78,7 @@ int main(int argc, char* argv[]) {
     bool guiMode = false;
     int guiPort = 8550;
     bool guiOpenBrowser = true;
+    std::string guiHost = "127.0.0.1";
 #endif
     
     // Parse command line arguments
@@ -115,6 +118,12 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--no-browser") {
             guiOpenBrowser = false;
+        } else if (arg == "--host") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --host requires an address (e.g. 0.0.0.0)\n";
+                return 1;
+            }
+            guiHost = argv[++i];
 #endif
         } else if (arg == "-d" || arg == "--debug") {
             debugMode = true;
@@ -154,6 +163,7 @@ int main(int argc, char* argv[]) {
         coolsolve::ServerOptions serverOpts;
         serverOpts.port = guiPort;
         serverOpts.openBrowser = guiOpenBrowser;
+        serverOpts.host = guiHost;
         return coolsolve::startServer(serverOpts);
 #else
         std::cerr << "Error: No input file specified\n";
@@ -168,6 +178,7 @@ int main(int argc, char* argv[]) {
         coolsolve::ServerOptions serverOpts;
         serverOpts.port = guiPort;
         serverOpts.openBrowser = guiOpenBrowser;
+        serverOpts.host = guiHost;
         serverOpts.initialFile = fs::absolute(inputFile).string();
         return coolsolve::startServer(serverOpts);
     }

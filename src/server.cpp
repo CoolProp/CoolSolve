@@ -3772,7 +3772,7 @@ int startServer(const ServerOptions& options) {
     
     // Try to find an available port
     for (int attempt = 0; attempt < 10; ++attempt) {
-        if (svr.bind_to_port("0.0.0.0", port)) {
+        if (svr.bind_to_port(options.host, port)) {
             break;
         }
         std::cerr << "Port " << port << " is in use, trying " << (port + 1) << "\n";
@@ -3787,6 +3787,10 @@ int startServer(const ServerOptions& options) {
     std::cout << "║  URL: " << std::left << std::setw(35) << url << "║\n";
     std::cout << "║  Press Ctrl+C to stop                    ║\n";
     std::cout << "╚══════════════════════════════════════════╝\n";
+    if (options.host != "127.0.0.1" && options.host != "localhost") {
+        std::cout << "Listening on " << options.host << ":" << port
+                  << ": the GUI is reachable from other machines" << std::endl;
+    }
     std::cout << "\n";
     
     // Warmup CoolProp in background thread

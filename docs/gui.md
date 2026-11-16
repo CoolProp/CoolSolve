@@ -1083,12 +1083,15 @@ All the following tests pass against the current codebase:
 ### 12.1 Local Mode
 
 ```
-coolsolve --gui [port] [--no-browser]
+coolsolve --gui [port] [--no-browser] [--host <address>]
 ```
 
 Opens the default browser at `http://localhost:<port>` after a short warmup.
 `--no-browser` suppresses automatic browser launch (useful for headless
-environments or when tunnelling).
+environments or when tunnelling). The server listens on `127.0.0.1` only: the
+GUI is not reachable from other machines. `--host 0.0.0.0` opens it on every
+network interface (a container, a machine reached directly without reverse
+proxy); a reverse proxy on the same machine needs no option.
 
 ### 12.2 Online Mode (Reverse Proxy)
 
