@@ -425,7 +425,7 @@ One line per fixed item. The regression tests are in `tests/test_library_gaps.cp
 | `CS-GAP-NASA` | `CALL NASA(Species$, T : cp, h, s)` is built in (D12 reopened by the maintainer, 2026-11-14): the 22 NASA-Glenn species, molar outputs in the units of the model, exact derivatives, skipped outputs not computed; a model's own `PROCEDURE NASA` replaces it; tests `[library-gaps][call-nasa]` | 2026-11-14, `fix/library-gaps-5` |
 | `CS-GAP-HEATING-VALUE` | `LowerHeatingValue(Fuel)` and `HigherHeatingValue(Fuel)` [J/kg of fuel, 25 °C] for the C-H-O ideal gases of the NASA-Glenn table, from the registry's formation enthalpies (HHV with h_fg of CoolProp's Water); CH4 −1.26e-4 against EES; tests `[library-gaps][heating-value]` | 2026-11-14, `fix/library-gaps-5` |
 | `CS-GAP-CHEM-EQUIL` | `CALL CHEM_EQUIL(P, T, A\O, C\O, H\O, N\O : x_H2, …, x_Ar)` is built in: 14-species ideal-gas equilibrium on the NASA-Glenn data, P and T in the units of the model, gas phase only, exact derivatives (implicit-function theorem), dual Gibbs solver of `src/chem_equil.cpp` (all 24 120 states of a 200–6000 K, 1 Pa–1E8 Pa, φ 0.1–4 sweep); EES's older data: major species within 0.4 %, OH/NO/NO2 4–10 %; example `chem_equil_dissociation`, tests `[library-gaps][chem-equil]` | 2026-11-14, `fix/library-gaps-5` |
-| `CS-BUG-BLOCK-SCALE-SPREAD` | A block whose equations have terms of very different sizes (the `CSL-0150` flame with its unknowns `H[i]`) stalled: fixed by the option `enableEquationScaling` (default off, on in Try Harder: equilibrated Newton steps of Newton, TrustRegion, KINSOL); tests `[library-gaps][block-scale-spread]` | 2026-11-16, `feat/equation-scaling` (under review) |
+| `CS-BUG-BLOCK-SCALE-SPREAD` | A block whose equations have terms of very different sizes (the `CSL-0150` flame with its unknowns `H[i]`) stalled: fixed by the option `enableEquationScaling` (default off, on in Try Harder: equilibrated Newton steps of Newton, TrustRegion, KINSOL); tests `[library-gaps][block-scale-spread]` | 2026-11-16, `feat/equation-scaling` ([solver roadmap §4.8](solver_roadmap.md#48-equation-scaling)) |
 
 ## 8. Unverified by a reviewer
 
@@ -460,7 +460,7 @@ keeps only the current state, the queue and the open decisions: the history of t
 into `main`): the EES-help review of the register, `CS-FEAT-LIB-TEST`, the `tools/` items, `CS-BUG-IF-ANDOR-ORDER`,
 the eight silent-result items of wave 1, wave 5 (`CS-GAP-FLUIDS-NASA-SPECIES`, `CS-GAP-NASA`, `CS-GAP-CHEM-EQUIL`) with
 and `CS-GAP-HEATING-VALUE` of wave 3 are closed (§7); `CS-BUG-BLOCK-SCALE-SPREAD` is fixed by the option
-`enableEquationScaling` on `feat/equation-scaling` (core change, not merged until reviewed). Baselines (CoolProp pin `8eb3b778`):
+`enableEquationScaling` on `feat/equation-scaling` ([solver roadmap §4.8](solver_roadmap.md#48-equation-scaling)). Baselines (CoolProp pin `8eb3b778`):
 examples 47/50 solving (not `cooling_tower2`, `orc_complex`, `turbocompressor_interpolate`); library regression
 219 PASS / 101 DEVIATION / 0 FAIL on the 320 baseline targets of library `a4ea304` (the library checkout has grown to
 335 targets, the new greenhouse models take ~8 min each: compare with `COOLSOLVE_LIBRARY_TEST_FILTER` on the old ones).

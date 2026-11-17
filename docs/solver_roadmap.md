@@ -101,7 +101,7 @@ the user must add it to `solverPipeline` explicitly.
 | `PipelineTiming` | Per-solve timing breakdown, displayed in GUI |
 | CoolProp call profiling | Per-call timing for `PropsSI`, `AbstractState`, `HAPropsSI`; warmup tracked separately |
 | Variable scaling | Shared `computeScalingFactors()` in `solver_common.h`, used by Newton/TR/LM/BisectionND |
-| Equation scaling | `enableEquationScaling` (default off, on in Try Harder): the Newton steps of Newton, TR and KINSOL solve the row- and column-equilibrated system (`solveEquilibrated()` in `solver_common.h`, powers of two); LM, BisectionND and the tearing outer step unchanged (`CS-BUG-BLOCK-SCALE-SPREAD`) |
+| Equation scaling | `enableEquationScaling` (default off, on in Try Harder). See §4.8 |
 | `--no-superancillary` flag | Disables the CoolProp superancillary functions |
 
 ---
@@ -294,6 +294,33 @@ where that walk dominates (see §5, not recommended).
 The same evaluation is what a time step of a dynamic model calls. The
 march, the integrators and what remains to do there are in
 [Dynamic Solving](integral_table.md).
+
+### 4.8 Equation scaling
+
+`enableEquationScaling` (default off) is the row counterpart of
+`enableScaling`. When it is on, the Newton step of Newton, TrustRegion
+(before the dogleg), KINSOL line search and Homotopy's Newton corrector
+is `solveEquilibrated()` (`solver_common.h`): rows of `J` scaled so the
+largest entry lies in [0.5, 1), then the columns, by powers of two
+(LAPACK `xGEEQU`), then the same `ColPivHouseholderQR`. KINSOL's
+singularity test uses the rank of that matrix, so a Jacobian that is
+rank-deficient only through scale is treated as full rank. Line search,
+merit, convergence tests, variable scaling and Broyden updates are
+unchanged. LM, BisectionND, Partitioned, Newton1D and the tearing outer
+step are not. Off, the step is the plain QR of `J` (one extra branch;
+the step itself is the same).
+
+On, each step copies `J` and spends an `O(n²)` scaling beside the
+`O(n³)` QR. Left off by default: with it on everywhere the examples keep
+their verdicts, but `CSL-0026` (a singular consistent block) moves to
+another solution of its family, and `CSL-0326` (3599 unknowns) takes
+about twice as long. On the robustness suite the default pipeline with
+the option on stays 44/46 with initials and loses two models without
+them (`cooling_coil`, `heat_pump_MSTh_SB_R10`: 36/45 → 34/45). It is
+the remedy for a block whose equations have terms of very different
+sizes (`CS-BUG-BLOCK-SCALE-SPREAD`, the adiabatic flame), not a general
+improvement. Try Harder forces it on, together with tearing and symbolic
+reduction, because it runs only after a failed solve.
 
 ---
 
