@@ -61,13 +61,13 @@ Try CoolSolve in your browser: **[https://coolsolve.squoilin.eu/](https://coolso
 
 - **Output Formats**: JSON, LaTeX, `.sol` files, CSV trajectory files, and a comprehensive **Debug Mode** (`-d`) folder.
 
-- **GUI & REST API**: Embedded single-page app (React/TypeScript) with a code editor, variable table, parametric studies, thermodynamic diagrams, and ZIP bundle round-trip (*Open* reads the ZIP files of any zip tool and says why when one cannot be opened). See [GUI & REST API](docs/gui.md).
+- **GUI & REST API**: Embedded single-page app (React/TypeScript) with a code editor, variable table, parametric studies, thermodynamic diagrams, and ZIP bundle round-trip (*Open* reads the ZIP files of any zip tool and says why when one cannot be opened). The server listens on this computer only unless started with `--host`, and refuses cross-site and DNS-rebinding requests. See [GUI & REST API](docs/gui.md).
 
 - **Thermodynamic Diagrams**: log(p)-h, T-s, h-s, p-s, p-ρ, T-ρ, p-T and T-h charts of the model's fluid — pure fluids, CoolProp mixtures, incompressible solutions at their concentration and ideal gases (on CoolSolve's EES/JANAF basis) — and psychrometric and Mollier charts of humid air, in the model's units, with isolines, themes, zoom and the solved cycle on top: states grouped from the model's property calls, or the elements of arrays (any number of overlays), paths along the processes (isobars through the dome, isentropes, …), values on hover. Drawn by the C++ core of [CoolPlot](https://github.com/CoolProp/CoolPlot) from lines computed by the pinned CoolProp (`CoolProp::Plot`) with the model's backend, with a badge naming the equation of state; downloads as SVG or PDF, vector figures in the LaTeX report, the chart spec for CoolPlot in Python, and `coolsolve --diagram` on the command line. The charts are saved with the model (`diagrams.json`). See [GUI §6.8](docs/gui.md) and [CoolPlot Integration](docs/coolplot_integration.md).
 
 - **Model Library**: The GUI binary embeds the [CoolSolve Library](https://github.com/IntSusEnergySystems/CoolSolve_Library) — documented, verified EES models (cycles, components, heat transfer, HVAC, …). The toolbar **Library** button follows the library taxonomy and opens a whole model folder (code, initial values, lookup tables, configuration) in one click; the dashboard at `/library/` lists every model, blocked ones included, with an *Open in CoolSolve* link on each. The library is fetched at build time, always at its latest version. Any model imports the functions and procedures of a library model, or of another `.eescode` file of its folder, with **`$INCLUDE <name>`** — in the CLI and the GUI alike (a file of the folder takes precedence over a library model of the same name; the Library menu copies the line, an include bar opens each included file in its own window, the ZIP bundle carries them; e.g. `$INCLUDE hx_ees_function` for the EES `HX` function). See [Model Library Support](docs/model_library_support.md) and [Language Reference §7](docs/language_reference.md#include-functions-and-procedures-of-another-file).
 
-- **Usage Log**: In GUI mode, every solve or *Try Harder* attempt appends one CSV line to a local log file (timestamp, model name and size, outcome, duration, client IP, version). Written after the solve completes — no impact on solving. Aggregated statistics are available on a hidden `/stats` dashboard. See [GUI & REST API](docs/gui.md).
+- **Usage Log**: In GUI mode, every solve or *Try Harder* attempt appends one CSV line to a local log file (timestamp, model name and size, outcome, duration, client IP, version). Written after the solve completes, with no impact on solving. Aggregated statistics are available on a hidden `/stats` dashboard, which shows client networks, never full addresses. See [GUI & REST API](docs/gui.md).
 
 ## Documentation
 
@@ -319,6 +319,10 @@ The debug folder contains:
 | `--diagram <file>` | Solve the model, then draw a diagram of a diagram definitions document (the `diagrams.json` of a ZIP bundle, saved by the Diagrams tab) with the solution, to `-o chart.svg` or `-o chart.pdf` (the format from the extension; the spec's page size, 576 × 432 pt by default). The PDF embeds TrueType fonts found on the system (e.g. DejaVu Sans) |
 | `--diagram-name <name>` | The diagram of the document to draw (default: the first one) |
 | `--version` | Print the CoolSolve version, the CoolProp version and git revision, (GUI builds) the embedded model library commit, and the coolplot-core version with its CoolPlot commit |
+| `--gui [port]` | Start the GUI web server (default port: 8550); with an input file, open it in the GUI |
+| `--no-browser` | Do not open the browser automatically (with `--gui`) |
+| `--host <address>` | Address the GUI server listens on (default: `127.0.0.1`, this computer only; `0.0.0.0` = every network interface, with a warning: the GUI has no authentication) |
+| `--allowed-host <name>` | Host name the GUI server answers to, besides `localhost` and IP addresses (repeatable; e.g. the domain behind a reverse proxy). See [GUI section 4](docs/gui.md#4-rest-api-reference) |
 | `-h, --help` | Show help message |
 
 ### Performance Options
@@ -374,6 +378,10 @@ python3 ../tests/test_bundle_api.py --auto
 # GUI keyboard shortcuts (F2 = Solve) in headless Chromium, against the GUI server
 # (needs Chromium/Chrome and the Python package websockets; skipped without them)
 python3 ../tests/test_gui_shortcuts.py --auto
+
+# Security guards of the GUI server (LaTeX compiler allow-list, cross-site requests,
+# client networks in the statistics, listening on 127.0.0.1 only)
+python3 ../tests/test_security_api.py --auto
 
 # Run solver robustness tests (stress-tests every example with multiple
 # solver configurations: Newton-only, LM-only, tearing, symbolic reduction, etc.)
@@ -442,6 +450,12 @@ make -j$(nproc) coolsolve
 # 3) Run the GUI
 ./coolsolve --gui     # opens the default browser, serving on http://localhost:8550
 ```
+
+The server listens on `127.0.0.1`, so only this computer can reach it. To use it from
+another computer, start it with `--host 0.0.0.0` (and `--allowed-host <name>` to reach it
+by a name rather than an IP address); the GUI has no authentication, so do this only on a
+trusted network or behind a reverse proxy (see the
+[Deployment Guide](docs/deployment_ubuntu_apache.md)).
 
 For more detailed information on the GUI architecture and advanced workflows (ZIP bundles, online deployment, thermodynamic diagrams, etc.), see `docs/gui.md`.
 
@@ -557,6 +571,7 @@ CoolSolve/
 │   ├── test_gui_diagrams.py    # Diagrams tab in headless Chromium: chart, cycle states, arrays overlays, zoom, report figure (needs the GUI build)
 │   ├── test_charconv_compat.cpp # The to_chars/from_chars substitute of coolplot-core on macOS vs the standard functions
 │   ├── test_ees_tools.py       # EES import tools (ees_extract.py, compare_solution.py) on synthetic files (plain Python, no build)
+│   ├── test_security_api.py    # GUI server guards: LaTeX compiler, cross-site requests, stats (REST)
 │   └── test_kinsol.cpp         # KINSOL solver unit tests (3 modes + config)
 ├── cmake/                      # embed_assets / embed_library / embed_bibtex: GUI, docs, model library and CoolProp's bibliography embedded in the binary;
 │                               # coolplot_charconv_compat.h: to_chars/from_chars of coolplot-core on macOS

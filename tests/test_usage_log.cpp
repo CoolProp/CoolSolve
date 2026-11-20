@@ -299,3 +299,45 @@ TEST_CASE("Cache invalidates when the file grows", "[usage-log]") {
     REQUIRE(updated.failures == 1);
     std::remove(path.c_str());
 }
+
+TEST_CASE("clientNetwork keeps only the network part of an address", "[usage-log]") {
+    // IPv4: the /24
+    REQUIRE(clientNetwork("203.0.113.7") == "203.0.113.0/24");
+    REQUIRE(clientNetwork("127.0.0.1") == "127.0.0.0/24");
+    REQUIRE(clientNetwork("0.0.0.0") == "0.0.0.0/24");
+    // IPv6: the /48, written in the short form
+    REQUIRE(clientNetwork("2001:db8:1:2::7") == "2001:db8:1::/48");
+    REQUIRE(clientNetwork("2001:0DB8:0001:0002:0003:0004:0005:0006") == "2001:db8:1::/48");
+    REQUIRE(clientNetwork("2001:db8::1") == "2001:db8:0::/48");
+    REQUIRE(clientNetwork("::1") == "0:0:0::/48");
+    REQUIRE(clientNetwork("fe80::1%eth0") == "fe80:0:0::/48");
+    // IPv4-mapped IPv6: an IPv4 client
+    REQUIRE(clientNetwork("::ffff:203.0.113.7") == "203.0.113.0/24");
+    // Not an address: never echoed back
+    REQUIRE(clientNetwork("") == "(other)");
+    REQUIRE(clientNetwork("unknown") == "(other)");
+    REQUIRE(clientNetwork("256.1.1.1") == "(other)");
+    REQUIRE(clientNetwork("1.2.3") == "(other)");
+    REQUIRE(clientNetwork("1.2.3.4.5") == "(other)");
+    REQUIRE(clientNetwork("1:2:3:4:5:6:7:8:9") == "(other)");
+    REQUIRE(clientNetwork("1::2::3") == "(other)");
+    REQUIRE(clientNetwork("12345::1") == "(other)");
+    REQUIRE(clientNetwork(":1::2") == "(other)");
+}
+
+TEST_CASE("Usage statistics rank client networks", "[usage-log]") {
+    auto path = tempLogPath("networks");
+    appendUsageLog(path, makeEntry("success", 100.0, "m", "203.0.113.7"));
+    appendUsageLog(path, makeEntry("success", 100.0, "m", "203.0.113.8"));
+    appendUsageLog(path, makeEntry("success", 100.0, "m", "198.51.100.1"));
+
+    auto stats = computeUsageLogStats(path);
+    REQUIRE(stats.valid);
+    REQUIRE(stats.uniqueIps == 3);
+    REQUIRE(stats.topNetworks.size() == 2);
+    REQUIRE(stats.topNetworks[0].name == "203.0.113.0/24");
+    REQUIRE(stats.topNetworks[0].count == 2);
+    REQUIRE(stats.topNetworks[1].name == "198.51.100.0/24");
+    REQUIRE(stats.topNetworks[1].count == 1);
+    std::remove(path.c_str());
+}
