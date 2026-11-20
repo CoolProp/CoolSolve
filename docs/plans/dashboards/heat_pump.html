@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="coolsolve-dashboard" content="1">
+<title>Heat pump dashboard</title>
+<!--
+  Example dashboard for CSL-0025 heat_pump_cycle_r22_30kw (docs/plans/dashboards.md):
+  a steady model, its values written on the schematic of the cycle, the inputs of the
+  model (lines "name = value"), the Solve / Update guesses buttons of the GUI and the
+  P-h diagram saved in the session as the plot "ph". Opened from disk, it shows the
+  results snapshot; the inputs and buttons work when CoolSolve hosts it.
+-->
+<style>
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--cs-bg); color: var(--cs-fg); }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4em 1em; padding: 14px 18px 4px; }
+  h1 { font-size: 1.25em; margin: 0; }
+  h2 { font-size: 1em; margin: 0 0 8px; }
+  main { display: grid; grid-template-columns: minmax(300px, 2fr) minmax(260px, 1fr); gap: 14px; padding: 10px 18px 18px; }
+  .card { background: var(--cs-card); border: 1px solid var(--cs-line); border-radius: 10px; padding: 12px; }
+  .side { display: grid; gap: 14px; align-content: start; }
+  .inputs { display: grid; gap: 8px; }
+  .buttons { display: flex; gap: 8px; margin-top: 6px; }
+  .kpi { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
+  .kpi cs-value { display: flex; flex-direction: column; gap: 0; }
+  .kpi .cs-num { font-size: 1.3em; font-weight: 600; }
+  /* labels on the schematic */
+  .state { font-size: 15px; line-height: 1.35; background: color-mix(in srgb, var(--cs-card) 88%, transparent);
+           border: 1px solid var(--cs-line); border-radius: 6px; padding: 3px 8px; display: grid; }
+  .state b { color: var(--cs-cycle); }
+  .big { font-size: 34px; font-weight: 700; }
+  .big .cs-label { font-size: 16px; font-weight: 500; }
+  .flowlabel { font-size: 15px; }
+  /* the drawing */
+  .pipe { fill: none; stroke-width: 9; stroke-linejoin: round; stroke-linecap: round; }
+  .flow { fill: none; stroke: #fff; stroke-width: 2.5; opacity: .85; }
+  .water { fill: none; stroke: #0ea5e9; stroke-width: 6; stroke-linecap: round; }
+  .box { fill: var(--cs-card); stroke: var(--cs-muted); stroke-width: 2; }
+  .name { fill: var(--cs-muted); font: 600 14px system-ui, sans-serif; }
+  .heat { fill: none; stroke: #ef4444; stroke-width: 4; marker-end: url(#arrow-red); }
+  .power { fill: none; stroke: #eab308; stroke-width: 4; marker-end: url(#arrow-yellow); }
+  @media (max-width: 860px) { main { grid-template-columns: minmax(0, 1fr); } }
+</style>
+</head>
+<body>
+<cs-dashboard results="heat_pump.results.js" autosolve="false"></cs-dashboard>
+
+<header>
+  <h1>Ground-source heat pump</h1>
+  <span class="cs-muted" data-cs-model-title></span>
+  <cs-status></cs-status>
+</header>
+
+<main>
+  <section class="card">
+    <!-- Design coordinates 1000 × 560: the schematic and the labels scale together. -->
+    <cs-stage width="1000" height="560">
+      <svg width="1000" height="560" viewBox="0 0 1000 560" aria-label="Heat pump cycle">
+        <defs>
+          <marker id="arrow-red" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#ef4444"/></marker>
+          <marker id="arrow-yellow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 Z" fill="#eab308"/></marker>
+        </defs>
+        <!-- refrigerant pipes, coloured by their temperature; white dashes move with the mass flow -->
+        <path class="pipe" d="M620 440 L800 440 L800 326" data-cs-stroke="T_1" data-cs-colormap="0:#2563eb,30:#a855f7,60:#f97316,90:#dc2626"/>
+        <path class="pipe" d="M800 234 L800 80 L620 80" data-cs-stroke="T_2" data-cs-colormap="0:#2563eb,30:#a855f7,60:#f97316,90:#dc2626"/>
+        <path class="pipe" d="M380 80 L200 80 L200 258" data-cs-stroke="T_3" data-cs-colormap="0:#2563eb,30:#a855f7,60:#f97316,90:#dc2626"/>
+        <path class="pipe" d="M200 302 L200 440 L380 440" data-cs-stroke="T[4]" data-cs-colormap="0:#2563eb,30:#a855f7,60:#f97316,90:#dc2626"/>
+        <path class="flow" d="M620 440 L800 440 L800 326 M800 234 L800 80 L620 80 M380 80 L200 80 L200 258 M200 302 L200 440 L380 440"
+              data-cs-flow="M_dot_r" data-cs-flow-ref="0.16"/>
+        <!-- groundwater through the evaporator (counter-flow) -->
+        <path class="water" d="M960 482 L40 482"/>
+        <path class="flow" d="M960 482 L40 482" data-cs-flow="M_dot_w" data-cs-flow-ref="2.8"/>
+        <!-- components -->
+        <rect class="box" x="380" y="50" width="240" height="60" rx="8"/>
+        <path d="M400 80 q15 -22 30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0" fill="none" stroke="var(--cs-muted)" stroke-width="2"/>
+        <text class="name" x="500" y="132" text-anchor="middle">Condenser</text>
+        <rect class="box" x="380" y="420" width="240" height="80" rx="8"/>
+        <path d="M400 452 q15 -22 30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0" fill="none" stroke="var(--cs-muted)" stroke-width="2"/>
+        <text class="name" x="500" y="410" text-anchor="middle">Evaporator</text>
+        <circle class="box" cx="800" cy="280" r="46"/>
+        <path d="M770 300 L770 260 L830 270 L830 290 Z" fill="none" stroke="var(--cs-muted)" stroke-width="2.5"/>
+        <text class="name" x="740" y="350" text-anchor="end">Compressor</text>
+        <path d="M180 258 L220 258 L180 302 L220 302 Z" class="box"/>
+        <text class="name" x="230" y="285">Expansion valve</text>
+        <!-- heat delivered and power -->
+        <path class="heat" d="M500 48 L500 14"/>
+        <path class="power" d="M960 280 L856 280"/>
+      </svg>
+
+      <!-- state points: x, y are design coordinates of the stage -->
+      <div class="state" x="822" y="380" anchor="left"><b>1</b>
+        <cs-value name="T_1" decimals="1" label="T"></cs-value>
+        <cs-value name="P_1" unit="bar" decimals="2" label="P"></cs-value>
+        <cs-value name="h_1" unit="kJ/kg" decimals="1" label="h"></cs-value></div>
+      <div class="state" x="822" y="150" anchor="left"><b>2</b>
+        <cs-value name="T_2" decimals="1" label="T"></cs-value>
+        <cs-value name="P_2" unit="bar" decimals="2" label="P"></cs-value>
+        <cs-value name="h_2" unit="kJ/kg" decimals="1" label="h"></cs-value></div>
+      <div class="state" x="180" y="160" anchor="right"><b>3</b>
+        <cs-value name="T_3" decimals="1" label="T"></cs-value>
+        <cs-value name="P_3" unit="bar" decimals="2" label="P"></cs-value>
+        <cs-value name="h_3" unit="kJ/kg" decimals="1" label="h"></cs-value></div>
+      <div class="state" x="180" y="380" anchor="right"><b>4</b>
+        <cs-value name="T[4]" decimals="1" label="T"></cs-value>
+        <cs-value name="P_4" unit="bar" decimals="2" label="P"></cs-value>
+        <cs-value name="x_4" decimals="3" label="x"></cs-value></div>
+
+      <cs-value class="big" x="500" y="270" anchor="center" name="COP" decimals="2" label="COP"></cs-value>
+      <cs-value class="flowlabel" x="515" y="20" anchor="left" expr="-Q_dot_23" units="W" unit="kW" decimals="1" label="heating"></cs-value>
+      <cs-value class="flowlabel" x="960" y="258" anchor="right" name="W_dot_cp" unit="kW" decimals="2" label="power"></cs-value>
+      <cs-value class="flowlabel" x="960" y="508" anchor="right" name="T_w_su" decimals="1" label="groundwater in"></cs-value>
+      <cs-value class="flowlabel" x="40" y="508" anchor="left" name="T_w_ex" decimals="1" label="out"></cs-value>
+      <cs-value class="flowlabel" x="500" y="532" anchor="center" name="V_dot_w" decimals="2" label="groundwater flow"></cs-value>
+    </cs-stage>
+  </section>
+
+  <aside class="side">
+    <section class="card">
+      <h2>Inputs</h2>
+      <div class="inputs">
+        <cs-input name="T_ev" label="Evaporation" min="-10" max="20" step="0.5"></cs-input>
+        <cs-input name="T_cond" label="Condensation" min="35" max="70" step="0.5"></cs-input>
+        <cs-input name="DELTA_T_sc" label="Subcooling" min="0" max="15" step="0.5"></cs-input>
+        <cs-input name="epsilon_s_cp" label="Compressor ε_s" min="0.5" max="1" step="0.01"></cs-input>
+      </div>
+      <div class="buttons">
+        <cs-button action="solve"></cs-button>
+        <cs-button action="update-guesses"></cs-button>
+      </div>
+    </section>
+    <section class="card kpi">
+      <cs-value name="COP" decimals="2" label="COP"></cs-value>
+      <cs-value name="W_dot_cp" unit="kW" decimals="2" label="Compressor power"></cs-value>
+      <cs-value name="Q_dot_41" unit="kW" decimals="1" label="Heat from the ground"></cs-value>
+      <cs-value name="M_dot_r" unit="g/s" decimals="0" label="Refrigerant flow"></cs-value>
+      <cs-value name="T_2" decimals="1" label="Discharge temperature" warn-above="100"></cs-value>
+      <cs-value name="V_dot_w" decimals="2" label="Groundwater flow"></cs-value>
+    </section>
+  </aside>
+
+  <section class="card" style="grid-column: 1 / -1; max-width: 760px;">
+    <cs-plot ref="ph" x-unit="kJ/kg" y-unit="bar" x-range="150, 480" y-range="2, 60"></cs-plot>
+  </section>
+</main>
+
+<script src="coolsolve-dashboard.js"></script>
+</body>
+</html>
