@@ -380,7 +380,8 @@ The compiler is run through the shell, so its name is never free text: only
 without it, from `latexCompiler` in the session's `coolsolve.conf`. Any other
 value (a path, extra arguments) is refused with `400`. Plot names must be letters,
 digits and underscores followed by `.png` (else `400`), so that an image can never
-replace `report.tex`. On Linux and macOS (TeX Live) the compiler runs with
+replace `report.tex`; the vector figures of the diagrams (`thermo_diagrams.pdf`, …) are
+drawn by the server itself (§6.8), never uploaded. On Linux and macOS (TeX Live) the compiler runs with
 `-no-shell-escape`; on Windows the TeX installation keeps its own default
 (restricted in MiKTeX), because MiKTeX documents `--disable-write18` instead.
 
@@ -1080,7 +1081,7 @@ All the following tests pass against the current codebase:
 | `POST /api/v1/files/open` with a `.eescode` file | ✅ Loads file + discovers companion files |
 | Library menu / open / per-tab sessions / bundle round-trip / `/library/` pages / `/files/open` restricted to the command-line file | ✅ `tests/test_library_api.py --auto` (67 checks) |
 | `F2` in headless Chromium: Solve and Try Harder reach `POST /api/v1/solve`, in and outside the editor; no solve on `Shift`/`Ctrl`/`Alt+F2`, an empty model or a running solve | ✅ `tests/test_gui_shortcuts.py --auto` (16 checks) |
-| LaTeX compiler allow-list and plot names / no CORS / cross-site and Host guards / client networks in `/stats/log` / listening on `127.0.0.1` | Pass: `tests/test_security_api.py --auto` (64 checks) |
+| LaTeX compiler allow-list and plot names / no CORS / cross-site and Host guards / client networks in `/stats/log` / listening on `127.0.0.1` | ✅ `tests/test_security_api.py --auto` (64 checks) |
 | `POST /api/v1/solve` with rankine1 example | ✅ Full solve result with block details |
 | `GET /api/v1/variables` | ✅ Returns solved variable values |
 | `GET /api/v1/solve/stream` (SSE, curl) | ✅ 30/30 blocks streamed; final result JSON embedded |
