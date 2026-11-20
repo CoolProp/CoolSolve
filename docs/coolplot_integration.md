@@ -800,6 +800,20 @@ Updated with each phase: [gui.md](gui.md) (§4.7, §6.8, §7.2, §8.4, §10, §1
   (§5, phase 3); the regular face chosen among the DejaVu files (§5, phase 4); documenting the
   compose record and the 1.5 scene ids in `contracts.md`; an option of coolplot-core to use the
   caller's `nlohmann_json` (D4); `plan()`, cycle paths and humid-air lines upstream (D2).
+  Further items from the upstream work list of revision 2 of this plan (CoolProp/CoolSolve#7):
+  the values of lines placed through saturation states as a `PropertyPlot` method (today
+  `saturationAnchorValues` in `diagram/domain`); a `PropertyPlot` built from an existing
+  `AbstractState`, for the states that a fluid string cannot name (changed interaction
+  parameters, mass-fraction bases); in coolplot-core's CMake, its tests off unless it is the
+  top-level project (`PROJECT_IS_TOP_LEVEL`) and an alias target `coolplot::core`, so that an
+  embedding project needs no `COOLPLOT_CORE_TESTS OFF`. Which project takes an item (the rule
+  of that revision): work that needs an `AbstractState` or `HAPropsSI` and serves any CoolProp
+  fluid goes to CoolProp (`CoolProp::Plot`); work without property calls (planning, compose,
+  layout, styles, SVG, PDF) to coolplot-core; whatever knows CoolSolve's models, its own fluids
+  (`NH3H2O`, LiBr) or the EES/JANAF reference states stays in CoolSolve; a new chart kind
+  (Dühring, h-x) has its axes and families in CoolPlot and its numerics in CoolSolve. Each
+  item lands upstream with its Python reference, and the CoolSolve code it replaces is dropped
+  when the pin moves (D2).
 - **Not verified**: the MSVC build of coolplot-core and of `src/diagram/` (CoolPlot's CI builds
   the core with GCC only; `references.cpp` declares CoolProp's `get_mixture_binary_pair_data`
   itself instead of including an internal header).
