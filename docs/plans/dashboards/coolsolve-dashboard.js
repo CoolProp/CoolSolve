@@ -13,7 +13,7 @@
  *   <cs-input name>           an input: a `name = constant` line of the model
  *   <cs-button action>        solve | update-guesses | stop | reset-inputs
  *   <cs-status>               solve state of the data shown
- *   <cs-plot ref | x y>       a saved plot, or a plot of integral columns
+ *   <cs-plot ref | x y>       a diagram of the session (CoolPlot SVG), or a plot of integral columns
  *   <cs-player>               animation controls of the integral table
  *   data-cs-*                 bindings on any element, SVG included
  *   data-cs-action, -set      GUI actions and input presets on any element
@@ -486,8 +486,9 @@
   }
 
   // ---------------------------------------------------------------- plots --
-  // Minimal SVG charts (the real runtime uses Plotly, as the GUI): line series,
-  // log axes, labelled state points and a cursor that follows the player.
+  // Plots of integral columns: minimal SVG charts (the real runtime uses Plotly,
+  // as the Integral and Parametric tabs), line series, log axes and a cursor that
+  // follows the player. Diagrams (ref) are CoolPlot SVGs drawn by the server.
   const PW = 520, PH = 300, M = { l: 58, r: 14, t: 26, b: 42 };
   let plotCount = 0;
 
@@ -518,13 +519,20 @@
   }
 
   function setupPlot(el) {
+    const ref = el.getAttribute('ref');
+    if (ref) {
+      const p = data.plots && data.plots[ref];
+      if (!p) problems.add(`<cs-plot ref="${ref}">: no saved plot or diagram of that name`);
+      else if (p.kind === 'diagram') setupDiagram(el, p);
+      else problems.add(`<cs-plot ref="${ref}">: saved plots of kind "${p.kind}" are not in the prototype`);
+      return;
+    }
     const ns = 'http://www.w3.org/2000/svg';
     const svg = document.createElementNS(ns, 'svg');
     svg.setAttribute('viewBox', `0 0 ${PW} ${PH}`);
     svg.setAttribute('class', 'cs-plot-svg');
     el.appendChild(svg);
-    const ref = el.getAttribute('ref');
-    const spec = ref ? plotFromRef(ref, el) : plotFromAttributes(el);
+    const spec = plotFromAttributes(el);
     if (!spec) return;
     const logx = el.hasAttribute('log-x') || spec.logx, logy = el.hasAttribute('log-y') || spec.logy;
     const xs = [], ys = [];
@@ -562,14 +570,7 @@
         if (ok) { d += (pen ? 'L' : 'M') + fx(xv).toFixed(1) + ' ' + fy(s.y[j]).toFixed(1); }
         pen = ok;
       });
-      if (s.close && d) d += 'Z';
       g += `<path class="cs-series ${s.cls || ''}" d="${d}"/>`;
-      if (s.labels) {
-        s.x.forEach((xv, j) => {
-          g += `<circle class="cs-point" cx="${fx(xv)}" cy="${fy(s.y[j])}" r="3.5"/>` +
-            `<text class="cs-pointlabel" x="${fx(xv) + 6}" y="${fy(s.y[j]) - 6}">${s.labels[j]}</text>`;
-        });
-      }
     }
     g += '</g><g class="cs-cursor"><line class="cs-cursor-line"/><circle r="5"/></g>';
     svg.innerHTML = g;
@@ -589,28 +590,60 @@
     return name + (prettyUnit(unit) ? ` [${prettyUnit(unit)}]` : '');
   }
 
-  /** A saved plot of the session (here: a thermodynamic diagram with the cycle on it). */
-  function plotFromRef(ref, el) {
-    const p = data.plots && data.plots[ref];
-    if (!p) { problems.add(`<cs-plot ref="${ref}">: no saved plot of that name`); return null; }
-    const xu = el.getAttribute('x-unit'), yu = el.getAttribute('y-unit');
-    const xscale = unitScale(p.x.units, xu, p.x.name), yscale = unitScale(p.y.units, yu, p.y.name);
-    const series = [{ x: p.dome.x.map((v) => v * xscale), y: p.dome.y.map((v) => v * yscale), cls: 'cs-dome' }];
-    if (p.path) {
-      const pts = arrayPoints(p.path.x, p.path.y);
-      series.push({ x: pts.map((q) => q[1] * xscale), y: pts.map((q) => q[2] * yscale), labels: pts.map((q) => q[0]), close: p.path.close, cls: 'cs-cycle' });
+  /**
+   * A diagram of the session (diagrams.json), drawn by the server with CoolPlot:
+   * its SVG is shown as is. The SVG names its axis limits in display units
+   * (data-x-limits, data-x-log, …) and its plot area (rect.cp-background), so a
+   * model value maps onto it: display = value × axes.x.scale + axes.x.offset.
+   * Used here for the tooltips of the states.
+   */
+  function setupDiagram(el, p) {
+    const id = 'cs-d' + (++plotCount);
+    const title = el.getAttribute('title') || p.title || '';
+    // One page may show several charts: their ids (clip paths) are made unique
+    el.innerHTML = (title ? `<div class="cs-diagram-title">${title}</div>` : '') +
+      p.svg.replace(/\bid="([^"]+)"/g, `id="${id}-$1"`).replace(/url\(#([^)]+)\)/g, `url(#${id}-$1)`);
+    const svg = el.querySelector('svg');
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    svg.classList.add('cs-diagram');
+    const frame = diagramFrame(svg, p.axes || {});
+    if (!frame) { problems.add(`<cs-plot ref="${el.getAttribute('ref')}">: the chart has no plot area or axis limits`); return; }
+    const overlay = document.createElementNS(SVG_NS, 'g');
+    overlay.setAttribute('class', 'cs-diagram-overlay');
+    svg.appendChild(overlay);
+    for (const s of p.states || []) {
+      const at = frame.at(value(s.vars[frame.xKey]), value(s.vars[frame.yKey]));
+      if (!at) continue;
+      const lines = Object.values(s.vars).map((n) => `${n} = ${format(value(n))}${unitsOf(n) ? ' ' + prettyUnit(unitsOf(n)) : ''}`);
+      const c = document.createElementNS(SVG_NS, 'circle');
+      c.setAttribute('cx', at[0]);
+      c.setAttribute('cy', at[1]);
+      c.setAttribute('r', 9);
+      c.setAttribute('class', 'cs-diagram-state');
+      c.innerHTML = `<title>State ${s.label || s.number}\n${lines.join('\n')}</title>`;
+      overlay.appendChild(c);
     }
-    return { title: p.title, series, bands: [], logx: !!p.x.log, logy: !!p.y.log, xlabel: axisLabel(p.x.name, xu || p.x.units), ylabel: axisLabel(p.y.name, yu || p.y.units) };
   }
 
-  /** [index, x, y] of the solved array elements X[i], Y[i]. */
-  function arrayPoints(X, Y) {
-    const out = [];
-    for (let i = 1; lookup.has(`${X}[${i}]`.toLowerCase()); i++) {
-      out.push([i, value(`${X}[${i}]`), value(`${Y}[${i}]`)]);
-    }
-    if (!out.length) problems.add(`path ${X}[i], ${Y}[i]: no such arrays`);
-    return out;
+  /** The mapping from model values to the viewBox of a CoolPlot SVG, or null. */
+  function diagramFrame(svg, axes) {
+    const bg = svg.querySelector('rect.cp-background');
+    const limits = (a) => (svg.getAttribute(a) || '').trim().split(/\s+/).map(Number);
+    const [x0, x1] = limits('data-x-limits'), [y0, y1] = limits('data-y-limits');
+    if (!bg || ![x0, x1, y0, y1].every(isFinite)) return null;
+    const [bx, by, bw, bh] = ['x', 'y', 'width', 'height'].map((a) => +bg.getAttribute(a));
+    const logx = svg.getAttribute('data-x-log') === '1', logy = svg.getAttribute('data-y-log') === '1';
+    const ax = axes.x || {}, ay = axes.y || {};
+    const frac = (d, lo, hi, log) => (log ? Math.log(d / lo) / Math.log(hi / lo) : (d - lo) / (hi - lo));
+    return {
+      xKey: ax.key, yKey: ay.key,
+      at(xv, yv) {
+        const fx = frac(xv * (ax.scale ?? 1) + (ax.offset ?? 0), x0, x1, logx);
+        const fy = frac(yv * (ay.scale ?? 1) + (ay.offset ?? 0), y0, y1, logy);
+        return isFinite(fx) && isFinite(fy) ? [bx + bw * fx, by + bh * (1 - fy)] : null;
+      },
+    };
   }
 
   /** A plot of integral columns: x="V" y="p" (y may list several columns). */
@@ -884,7 +917,11 @@
   function boot() {
     injectStyle();
     if (window.parent !== window) {
-      window.parent.postMessage({ source: 'coolsolve-dashboard', version: 1, type: 'ready' }, '*');
+      // The diagrams the host must draw, at the size of their figure (points)
+      const plots = [...document.querySelectorAll('cs-plot[ref]')].map((el) => ({
+        ref: el.getAttribute('ref'), width: +el.getAttribute('width') || 640, height: +el.getAttribute('height') || 440,
+      }));
+      window.parent.postMessage({ source: 'coolsolve-dashboard', version: 1, type: 'ready', plots }, '*');
       setTimeout(() => { if (!hosted) loadStandalone(); }, 400);
     } else loadStandalone();
   }
@@ -929,9 +966,10 @@ cs-plot{display:block}
 .cs-grid{stroke:var(--cs-line);stroke-width:1} .cs-frame{fill:none;stroke:var(--cs-muted);stroke-width:1}
 .cs-series{fill:none;stroke:var(--cs-s0);stroke-width:2;stroke-linejoin:round}
 .cs-series.cs-s1{stroke:var(--cs-s1)} .cs-series.cs-s2{stroke:var(--cs-s2)}
-.cs-series.cs-dome{stroke:var(--cs-muted);stroke-width:1.5} .cs-series.cs-cycle{stroke:var(--cs-cycle);stroke-width:2.5}
-.cs-point{fill:var(--cs-cycle)} .cs-pointlabel{fill:var(--cs-fg);font-weight:600}
 .cs-plot-band{fill:var(--cs-cycle);opacity:.12} .cs-plot-bandlabel{fill:var(--cs-cycle);font-size:10px}
+.cs-diagram{width:100%;height:auto;display:block;border-radius:6px}
+.cs-diagram-title{font-weight:600;font-size:12px;margin:0 0 4px}
+.cs-diagram-state{fill:transparent;cursor:help} .cs-diagram-state:hover{fill:var(--cs-accent);fill-opacity:.25}
 .cs-cursor circle{fill:var(--cs-accent);stroke:var(--cs-card);stroke-width:2}
 .cs-cursor-line{stroke:var(--cs-accent);stroke-width:1;stroke-dasharray:3 3}
 cs-player{display:flex;align-items:center;gap:.5em;flex-wrap:wrap}

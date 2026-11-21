@@ -2,7 +2,9 @@
 
 **Status:** proposal, 2026-11-20, not started (Phase 0 done: this plan, a prototype runtime and
 two example dashboards in [`dashboards/`](dashboards/)). Amended 2026-11-21 (R15): actions on any
-element and preset buttons, actions from pop-up windows, dashboards that open in a pop-up window.
+element and preset buttons, actions from pop-up windows, dashboards that open in a pop-up window;
+then, after the merge into `main`, diagrams built on the CoolPlot Diagrams tab (`diagrams.json`,
+server-drawn SVG) instead of Plotly.
 **Scope:** GUI, server, CLI, ZIP bundle, model library. No change to the language or the solver.
 **Not served:** this file lives in `docs/plans/`, a subfolder of `docs/`. `cmake/embed_assets.cmake`
 embeds the files of `docs/` only (no subfolders) and the server has no filesystem fallback in a
@@ -20,7 +22,7 @@ template, opened live in the GUI or on its own as a snapshot, and saved with the
 |---|---|
 | [§1](#1-requirements) | Requirements, and where this plan answers each of them |
 | [§2](#2-what-exists-today) | What CoolSolve has today |
-| [§3](#3-concepts) | Concepts: saved plot, dashboard, runtime, host, snapshot |
+| [§3](#3-concepts) | Concepts: diagram, saved plot, dashboard, runtime, host, snapshot |
 | [§4](#4-user-experience) | User experience |
 | [§5](#5-authoring-contract-v1) | The authoring contract (elements, bindings, expressions, JavaScript API, layout) |
 | [§6](#6-data-contract) | The data contract (what a dashboard receives) |
@@ -63,12 +65,23 @@ template, opened live in the GUI or on its own as a snapshot, and saved with the
 
 ## 2. What exists today
 
-- **Diagrams tab** — `gui/src/components/ThermoDiagram.tsx` (Plotly): the saturation dome of one
-  fluid (`POST /api/v1/coolprop/saturation`, computed in `src/server.cpp`), the solved states
-  grouped by name, one array path (`X[i]`, `Y[i]`). Its configuration is not saved
-  ([gui.md §14.4](../gui.md), *Diagram state persistence*). A redesign on CoolPlot is planned
-  ([coolplot_integration.md](../coolplot_integration.md)); this plan only needs a diagram to be
-  describable by a *spec* and drawable from it (§9.10), whatever draws it.
+- **Diagrams tab** — `gui/src/components/diagram/` ([gui.md §6.8](../gui.md),
+  [coolplot_integration.md](../coolplot_integration.md), done in four phases): property charts of
+  a fluid (p-h, T-s, h-s, …, psychrometric) **drawn by the server** with CoolPlot's C++ core.
+  `POST /api/v1/diagram/scene` takes a **diagram definition** (fluid, CoolPlot spec, cycles naming
+  the model's variables: inferred states or arrays) and returns the SVG, the axes (limits in
+  display units, log flags, `x_unit`/`y_unit` as SI × scale + offset), the states of the cycles
+  and the labels. The SVG itself names its axis limits and log flags (`data-x-limits`,
+  `data-x-log`, …) and its plot area (`rect.cp-background`), and tags its items (`data-item=
+  "cycle/Cycle/states"`, `"iso/T/…"`): the tab maps the pointer onto it this way
+  (`svgCoords.ts`). The definitions are a list, `diagrams.json` (`{"format":
+  "coolsolve-diagrams", "diagrams": [{name, fluid, spec, cycles}]}`), stored in the session
+  (`GET`/`PUT /api/v1/diagram/definitions`) and in the ZIP bundle; the tab edits the first one
+  (*Multiple diagrams* is still to do, gui.md §14.4). Downloads SVG, PDF and the chart spec; the
+  LaTeX report draws every stored definition as a vector figure; `coolsolve --diagram
+  diagrams.json -o chart.svg model.eescode` draws one from the command line. The CoolPlot plan
+  foresaw this one: "an HTML page of the folder can ask the server for the SVG of a named diagram
+  of the solved model and show it among its overlaid variables" (coolplot_integration.md §3.4).
 - **Parametric tab** — `ParametricStudy.tsx`: 1-D line plots and 2-D contours of a sweep. The
   sweep variables are the variables flagged `isImposed` by `POST /api/v1/parse` (lines
   `name = number`, scalars only, detected in the parse handler of `src/server.cpp`). Each grid point
@@ -78,8 +91,8 @@ template, opened live in the GUI or on its own as a snapshot, and saved with the
 - **Integral tab** — `IntegralTable.tsx`: the trajectory table of an `INTEGRAL` model and a line plot
   of one column. The trajectory is `GET /api/v1/integral/result` (columnar JSON) and, after a bundle
   round trip, the CSV `<model>-integral.csv`. The `.sol` file also carries it (`# IntegralTable`).
-- **Exports of plots** — `gui/src/utils/exportPlots.ts` captures every visible Plotly chart as PNG
-  (LaTeX report).
+- **Exports of plots** — `gui/src/utils/exportPlots.ts` captures the visible Plotly charts
+  (parametric, integral) as PNG for the LaTeX report; the diagrams come from the server as PDF.
 - **ZIP bundle** — `createZipBundle` / `extractZipBundle` in `src/server.cpp` (uncompressed ZIP,
   subfolders allowed: `debug_output/`). The upload ignores the file types it does not know.
 - **Sessions** — per-tab sessions (`X-CoolSolve-Session`, `?sid=`), the `/?library=` and
@@ -107,12 +120,14 @@ and exportable as a single file that anyone opens in a browser.
 
 | Term | Meaning |
 |---|---|
-| **Saved plot** | A named chart of the session — a thermodynamic diagram, a parametric plot or an integral plot — stored as a **spec** (what to draw, not the picture) and redrawn from the current results. Shown as a tab of the bottom panel; usable in dashboards by its id. |
+| **Diagram** | A named definition of `diagrams.json` (§2): a CoolPlot chart of a fluid with the model's cycles, drawn by the server as SVG from the current results. |
+| **Saved plot** | A named parametric or integral plot, stored as a **spec** (what to draw, not the picture) in `plots.json` and drawn with Plotly from the current results. |
+| **Ref** | The name of a diagram or of a saved plot (one namespace): a bottom tab shows it, a dashboard uses it (`<cs-plot ref>`). |
 | **Dashboard** | An HTML file of the model folder, `dashboards/<name>.html`, with its images in `dashboards/assets/`. Written against the contract of §5. |
 | **Runtime** | `coolsolve-dashboard.js`: the script a dashboard includes. It finds the data, binds the elements, draws the plots, runs the player and talks to the host. |
 | **Host** | The CoolSolve GUI page that shows a dashboard (a bottom-panel tab, or a pop-up window of its own). It feeds the data and passes the actions on. |
 | **Editor window** | The GUI window that owns the editor of the session (the main window). It carries out the actions of every dashboard of the session, popped-out ones included (§9.4). |
-| **Data** | One JSON document, `coolsolve-dashboard-data/1` (§6): results, inputs, integral table, parametric study, saved plots, solve status. |
+| **Data** | One JSON document, `coolsolve-dashboard-data/1` (§6): results, inputs, integral table, parametric study, the diagrams (SVG) and saved plots a dashboard uses, solve status. |
 | **Hosted mode** | Inside the GUI: live data, working inputs and buttons. |
 | **Standalone mode** | Without the GUI: a **snapshot** of the data (inlined in an exported file, or `results.js` next to the dashboard). Inputs and buttons are shown but disabled, with a tooltip. Animation, plots, zoom and the layout helper work. |
 
@@ -120,18 +135,25 @@ and exportable as a single file that anyone opens in a browser.
 
 ## 4. User experience
 
-### 4.1 Saved plots: several diagrams, as tabs
+### 4.1 Several diagrams and plots, as tabs
 
-- The **Diagrams** tab stays what it is: the scratch diagram of the session.
-- A **Save** button (pin icon) on the Diagrams tab, on the plot of the Parametric tab and on the
-  plot of the Integral tab asks for a title and stores the current configuration as a saved plot.
-- Each saved plot becomes a **tab of the bottom panel**, after *Console · Parametric · Lookup
-  Tables · Integral*, with the plot icon and its title. The tab redraws the plot from the current
-  results after every solve (a thermodynamic diagram of a cycle follows the cycle). Tab menu:
-  rename, duplicate, delete, *pop out* (its own window), *copy id* (to paste in a dashboard).
+- The **Diagrams** tab (right panel) stays what it is: the chart being worked on.
+- A **Save** button (pin icon) in its status line asks for a name and adds a copy of the current
+  definition to `diagrams.json` under that name. This is the *Multiple diagrams* item of
+  gui.md §14.4, done the way the request puts it ("keep the current window, save it, new tab").
+  The same button on the plot of the Parametric tab and on the plot of the Integral tab stores
+  that plot's settings as a saved plot (`plots.json`).
+- Each saved diagram or plot becomes a **tab of the bottom panel**, after *Console · Parametric ·
+  Lookup Tables · Integral*, with the plot icon and its name. A diagram tab is a `DiagramView`
+  (which "draws any definition", gui.md §6.8: zoom, hover and badge included); a plot tab draws
+  its Plotly figure. Both are redrawn after every solve (a cycle on a p-h chart follows the
+  cycle). Tab menu: rename, duplicate, delete, *edit in the Diagrams tab* (diagrams: the tab then
+  edits that definition, through the selector coolplot_integration.md §3.4 announced), *pop out*
+  (its own window), *copy name* (to paste in a dashboard).
 - The bottom tab bar scrolls horizontally when it is full; the panel can be maximised
   (double-click on its header) so that a tab fills the window.
-- Saved plots are saved in the bundle (`plots.json`, §9.7).
+- Both files are in the bundle (§9.7), and the LaTeX report already draws every definition of
+  `diagrams.json` as a vector figure: saved diagrams are in the report for free.
 
 ### 4.2 Dashboards in the GUI
 
@@ -250,13 +272,14 @@ ignored elsewhere.
 | `<cs-input>` | `name`, `label`, `min`, `max`, `step`, `unit`; `widget` (`slider` default, `number`, `select`, `radio`), `options` (string inputs) | An input of the model (§7): slider and number box, or a choice for a string variable. |
 | `<cs-button>` | `action`: `solve`, `update-guesses`, `stop`, `reset-inputs`; text content = label | A GUI action (§9.3, §9.4), carried out by the editor window wherever the dashboard is. Disabled in standalone mode, with a tooltip, and while the action is not available (as the toolbar: *Stop* only while solving). `solve` becomes *Try Harder* as in the toolbar. The styled shorthand of `data-cs-action` (§5.3). |
 | `<cs-status>` | — | `solved` / `failed` / `solving` / `stale` pill, message, time; "snapshot of …" in standalone mode. |
-| `<cs-plot>` | `ref` (a saved plot, §4.1) **or** `x`, `y` (columns of the integral table or of the parametric study, `y` may list several), `source` (`integral` default, `parametric`), `x-unit`, `y-unit`, `log-x`, `log-y`, `x-range`, `y-range`, `cursor`, `band-x` + `band-label`, `title` | An interactive chart (Plotly: zoom, hover). With `cursor`, a marker follows the player. |
+| `<cs-plot>` | `ref` (a diagram or a saved plot, §4.1) **or** `x`, `y` (columns of the integral table or of the parametric study, `y` may list several), `source` (`integral` default, `parametric`), `x-unit`, `y-unit`, `log-x`, `log-y`, `x-range`, `y-range`, `cursor`, `band-x` + `band-label`, `title`; for a diagram, `width` and `height` (the figure the server draws, in points, default 640 × 440; it then scales with the page) | A **diagram**: the CoolPlot SVG drawn by CoolSolve (the picture of the Diagrams tab, the report and `--diagram`), with the states' values as tooltips; `cursor="h_x, P_x"` places a marker that follows the player (§8.3). A saved plot or columns: an interactive chart (Plotly: zoom, hover); with `cursor`, a marker follows the player. |
 | `<cs-player>` | `duration` (s for the whole range at ×1, default 10), `realtime`, `autoplay`, `no-loop`, `source` (`integral` default, `parametric`) | Animation controls (§8): start, step back, play/pause, step forward, scrubber, position, speed, loop. |
 | `<cs-table>` | `names` (list), `units`, `decimals` | A small value table (name, value, unit), e.g. the state points. *(v1.1)* |
 | `<cs-log>` | `lines` | The last lines of the GUI console (hosted mode). *(v1.1)* |
 
 Elements marked v1.1 come after v1. The prototype has the v1 elements except `widget` and
-`options` of `cs-input`, `source="parametric"` and `realtime`.
+`options` of `cs-input`, `source="parametric"`, `realtime`, saved plots of `plots.json`, and
+`width`, `height` and `cursor` of a diagram (it shows the SVG of its data as is).
 
 ### 5.3 Attribute bindings (any element, SVG included)
 
@@ -348,7 +371,7 @@ of the data come from the model (`[unit]` of the code, inferred units of the var
 
 ### 5.8 Problems
 
-A name that is not a variable, an input that is not an input, a saved plot that does not exist, an
+A name that is not a variable, an input that is not an input, a diagram or saved plot that does not exist, an
 expression that cannot be read, an exception in `onFrame`: each is listed in a **problem badge**
 at the bottom right of the page (the element and the reason). A dashboard written for another
 version of the model, or by an LLM that guessed a name, shows at once what to fix. The same rules
@@ -383,9 +406,15 @@ the server and the CLI (D7). The prototype snapshots `dashboards/*.results.js` f
   "integral": { "var": "theta", "units": { "theta": "deg", "p": "Pa" },
                 "columns": { "theta": [-360, -358], "p": [100000, 99810] } },
   "parametric": { "sweep": ["T_ev"], "runs": [ { "T_ev": 0, "COP": 3.9 } ] },
-  "plots": { "ph": { "title": "R22 P-h diagram", "kind": "thermo", "fluid": "R22", "diagram": "Ph",
-                     "x": { "name": "h", "units": "J/kg" }, "y": { "name": "P", "units": "Pa", "log": true },
-                     "dome": { "x": [], "y": [] }, "path": { "x": "h", "y": "P", "close": true } } }
+  "plots": {
+    "ph": { "kind": "diagram", "title": "R22 p-h diagram", "fluid": "R22", "diagram": "ph",
+            "svg": "<svg … data-x-limits=\"90.7 577.6\" data-y-log=\"1\" …>…</svg>",
+            "axes": { "x": { "key": "h", "units": "kJ/kg", "scale": 0.001, "offset": 0 },
+                      "y": { "key": "p", "units": "bar", "scale": 1e-05, "offset": 0 } },
+            "states": [ { "cycle": "Cycle", "number": 1,
+                          "vars": { "p": "P[1]", "h": "h[1]", "T": "T[1]" } } ] },
+    "cop_vs_tev": { "kind": "parametric", "title": "COP vs T_ev", "x": "T_ev", "y": ["COP"] }
+  }
 }
 ```
 
@@ -397,8 +426,12 @@ the server and the CLI (D7). The prototype snapshots `dashboards/*.results.js` f
   (default 5 000 rows, option `--dashboard-max-rows`) by keeping evenly spaced rows plus the first
   and the last; the GUI sends it whole.
 - `parametric`: the last parametric study, every run with all its variables (`ParametricGridPoint`).
-- `plots`: the saved plots with what they need to be drawn without CoolSolve (a thermodynamic
-  diagram carries its dome, §9.10).
+- `plots`: the diagrams and saved plots **the dashboard uses** (its `cs-plot ref`), with what they
+  need to be drawn without CoolSolve (§9.10). A diagram carries the SVG of the server, drawn for the
+  last solve at the size the dashboard asks; `axes` say how a model value maps onto it (display =
+  value × `scale` + `offset`, from the scene's `x_unit` and the model's units, so °C works too);
+  `states` are the cycles' states of the scene, with their variables. A saved plot carries its
+  spec; its data are the parametric runs or the integral columns above.
 - Sources: the last solve of the session, or a `.sol` file (values, units, integral table) — which
   is how a library model shows its dashboard without solving (§4.4, §9.11).
 
@@ -477,17 +510,22 @@ engine at 2° per row has 271).
 
 Everything bound to a name follows the player: `cs-value`, the `data-cs-*` bindings (colours,
 visibility, rotations, translations, flows), the cursors of the plots (`cursor`: a marker on a p–V
-loop, a vertical line on a time plot), and the `onFrame` functions (mechanisms). Steady values
-stay as solved. See `dashboards/engine.html`: crank, rod, piston and intake valve follow the crank
-angle, the gas colour follows its temperature, the spark and the flame show at the right angles,
-the intake flow moves while the valve is open, the p–V loop and the pressure and temperature
-curves carry the cursor.
+loop, a vertical line on a time plot, a point on a CoolPlot diagram placed through its `axes`,
+§9.10), and the `onFrame` functions (mechanisms). Steady values stay as solved. See
+`dashboards/engine.html`: crank, rod, piston and intake valve follow the crank angle, the gas
+colour follows its temperature, the spark and the flame show at the right angles, the intake flow
+moves while the valve is open, the p–V loop and the pressure and temperature curves carry the
+cursor.
 
 ### 8.4 Later
 
 - **Parametric player** (`source="parametric"`): step through the runs of a 1-D sweep (each run
-  keeps all its variables), so that the schematic and the cycle on the P-h diagram move with the
-  swept evaporation temperature. Cheap, and very telling in lectures.
+  keeps all its variables), so that the schematic and the cycle on the p-h diagram move with the
+  swept evaporation temperature. Cheap, and very telling in lectures. On a diagram, the server's
+  cycle is the one of the solved run: while the player runs, the runtime hides it (its items are
+  tagged `data-item="cycle/…"`) and draws the current run's states over the fluid lines, joined by
+  straight segments, through the `axes` mapping. Exact process paths per run would need a scene per
+  run (`steps` points along each path): possible for a few runs, left for later.
 - **Follow the solve**: stream the rows of the trajectory while the integration runs (SSE) and
   play them as they come. Needs a solver callback per accepted step; worth it for long runs only.
 
@@ -502,13 +540,13 @@ gui/src/dashboard/            runtime (TypeScript) → gui/dist/dashboard/coolso
   runtime.ts, elements/*.ts,    (second Vite entry; embedded in the binary with the GUI)
   expr.ts, units.ts, player.ts
   AUTHORING (from docs/dashboards.md, §10.2) and templates/*.html
-gui/src/plots/figures.ts      Plotly figures of thermo / parametric / integral plots, shared by
-                              ThermoDiagram, the saved-plot tabs and the runtime
+gui/src/plots/figures.ts      Plotly figures of parametric and integral plots, shared by
+                              ParametricStudy, IntegralTable, the saved-plot tabs and the runtime
 gui/src/components/
   DashboardTab.tsx            host: sandboxed iframe + message bridge (§9.2, §9.3)
   DashboardWindow.tsx         the page of a popped-out dashboard: slim header + host (§9.4)
   DashboardMenu.tsx           toolbar drop-down, Add dashboard dialog (§4.3)
-  SavedPlotTab.tsx            a saved plot as a bottom tab (§4.1)
+  SavedPlotTab.tsx            a saved diagram (diagram/DiagramView) or plot as a bottom tab (§4.1)
 gui/src/utils/
   sessionActions.ts           solve, stop, update guesses: shared by toolbar, shortcuts, hosts
   sessionChannel.ts           the BroadcastChannel of a session, editor ownership (§9.4)
@@ -547,7 +585,7 @@ library on the public server. It never runs with the rights of the GUI (D8):
 
 | From | Message | Meaning |
 |---|---|---|
-| dashboard | `{source: 'coolsolve-dashboard', version: 1, type: 'ready'}` | Loaded; send the data |
+| dashboard | `{source: 'coolsolve-dashboard', version: 1, type: 'ready', plots: [{ref, width, height}]}` | Loaded; send the data, with these diagrams drawn at these sizes (§9.10) |
 | host | `{source: 'coolsolve-host', type: 'data', data, theme}` | Data (§6) after load and after each solve |
 | host | `{source: 'coolsolve-host', type: 'status', status}` | Solve progress, failure, *Try Harder* available |
 | dashboard | `{… type: 'action', action}` | `solve`, `update-guesses`, `stop`, `reset-inputs` |
@@ -642,7 +680,7 @@ the laptop window is closed, and says what it solves.
 | `GET` | `/api/v1/dashboards/{name}/standalone` | The single-file export (§9.8) |
 | `GET` | `/api/v1/dashboard-data` | The data document of the session (§6) |
 | `POST` | `/api/v1/inputs` | `{eescode, values: {T_ev: 5}}` → `{eescode, changed: [{name, line, old, new}]}` (§7.3) |
-| `GET` / `PUT` / `DELETE` | `/api/v1/plots`, `/api/v1/plots/{id}` | Saved plots (§4.1) |
+| `GET` / `PUT` / `DELETE` | `/api/v1/plots`, `/api/v1/plots/{id}` | Saved plots (§4.1); diagrams keep the existing `GET`/`PUT /api/v1/diagram/definitions` and `POST /api/v1/diagram/scene` |
 | `GET` | `/d/{session}/{name}.html`, `/d/{session}/assets/{file}`, `/d/{session}/coolsolve-dashboard.js`, `/d/{session}/plotly.js` | The dashboard document and its files, with the policy of §9.2 |
 
 The session ID is in the path so that the relative URLs of a dashboard (`assets/x.svg`,
@@ -653,15 +691,18 @@ New session state: `dashboards` (name → HTML), `dashboardAssets` (file → byt
 
 ### 9.6 Names
 
-Dashboard names: `[A-Za-z0-9_-]+`, as table names. Saved-plot ids: the same, generated from the
-title, unique in the session.
+Dashboard names: `[A-Za-z0-9_-]+`, as table names. Refs (§3): the `name` of a diagram of
+`diagrams.json` (free text today, "unique in the document") or the id of a saved plot (generated
+from its title); the GUI keeps them unique across both files and proposes `[A-Za-z0-9_-]` names
+when saving, so that a ref is easy to type in HTML.
 
 ### 9.7 Bundle and model folder
 
 ```
 my_model/
 ├── my_model.eescode, .initials, .sol, coolsolve.conf, my_model-<table>.csv, …
-├── plots.json                    saved plots (§4.1)
+├── diagrams.json                 diagrams (exists today; several of them with §4.1)
+├── plots.json                    saved parametric and integral plots (§4.1)
 └── dashboards/
     ├── main.html                 a dashboard (source)
     ├── animation.html
@@ -674,19 +715,23 @@ my_model/
   model has dashboards, the runtime and `results.js` (`window.COOLSOLVE_DATA = {…}`, a script and
   not JSON so that `file://` pages can read it); `extractZipBundle` reads the first three and
   ignores the generated two. Round trip: download → upload → same dashboards, same saved plots.
-- A model opened from disk (`POST /api/v1/files/open`) reads `plots.json` and `dashboards/` of its
-  folder, like its lookup tables.
+  `diagrams.json` travels already.
+- A model opened from disk (`POST /api/v1/files/open`) reads `diagrams.json`, `plots.json` and
+  `dashboards/` of its folder, like its lookup tables.
 - Library models may carry the same layout (§9.11).
 
 ### 9.8 Standalone export
 
 One HTML file: the dashboard, with its `<script src="coolsolve-dashboard.js">` replaced by the
 inlined runtime, Plotly inlined (the cartesian bundle the GUI already uses, about 1.4 MB, only when
-the dashboard has a `cs-plot`), the data inlined as `<script type="application/json"
-id="coolsolve-data">`, and the images as data URIs. Deterministic output (same model, same file),
-so that exports can be committed or compared. Written by the C++ exporter (server and CLI); the
-runtime and Plotly come from the embedded GUI assets, so the export needs a GUI build (D5); a
-CLI-only build says so.
+the dashboard has a saved plot or a plot of columns: **diagrams need no Plotly**, they are SVG in
+the data), the data inlined as `<script type="application/json" id="coolsolve-data">`, and the
+images as data URIs. A diagram is drawn by the same engine as `coolsolve --diagram`, at the
+dashboard's size, in its theme (`theme="auto"` embeds the light and the dark variant and shows one
+by `prefers-color-scheme`; about 80 kB each for the p-h chart of `CSL-0025`). Deterministic output
+(same model, same file), so that exports can be committed or compared. Written by the C++ exporter
+(server and CLI); the runtime and Plotly come from the embedded GUI assets, so the export needs a
+GUI build (D5); a CLI-only build says so.
 
 ### 9.9 Command line
 
@@ -701,29 +746,56 @@ coolsolve --dashboard-export dashboards/main.html model.eescode [-o main_standal
 - `--dashboard-check` parses the model (no solve) and checks the dashboard (§10.4): Markdown or
   JSON report, exit code 1 when there are errors.
 - `--dashboard-export` solves the model with the usual pipeline (or reads its `.sol` with
-  `--from-sol`) and writes the standalone file (§9.8).
+  `--from-sol`) and writes the standalone file (§9.8); the diagrams come from the `diagrams.json`
+  next to the model (or `--diagram <file>`, the option `--diagram` already has), drawn as
+  `--diagram` draws them.
 
 ### 9.10 Plots
 
-- A saved plot is a spec: `{id, title, kind: 'thermo' | 'parametric' | 'integral', …}` with the
-  settings of the tab it was saved from (fluid, diagram, overlays, array path; sweep axes; columns).
-- Its Plotly figure is built by one module, `gui/src/plots/figures.ts`, used by the Diagrams tab,
-  the saved-plot tabs and the runtime: the three draw the same picture.
-- What needs CoolProp is computed by the server and travels in the data (§6): the saturation dome
-  (the computation of `POST /api/v1/coolprop/saturation` moved to a function the CLI exporter also
-  calls). When the CoolPlot integration lands ([coolplot_integration.md](../coolplot_integration.md))
-  a thermo plot may carry the SVG scene of coolplot-core instead, which a dashboard shows as is.
+**Diagrams: CoolPlot SVG drawn by the server** (D6).
+
+- A diagram of a dashboard is the definition of `diagrams.json` its `ref` names, drawn by the
+  engine of the Diagrams tab (`src/diagram/`, `POST /api/v1/diagram/scene`): the same picture as the
+  tab, the report and `coolsolve --diagram` — fluid lines, cycles of the model, labels laid out by
+  CoolPlot, theme, badge. No CoolProp in the browser.
+- **Only what the dashboard uses, at its size.** The runtime lists its diagrams and their sizes in
+  `ready` (`cs-plot ref`, `width`, `height` in points, default 640 × 440); the host asks one scene
+  per diagram after each solve and when the theme changes, and sends the SVGs in `data`. The
+  checker and the exporter read the same list from the HTML. CSL-0025's p-h chart takes about a
+  second with its solve from the command line (`--diagram`, 1.3 s in all).
+- **Shown as is, scaled with the page** (`width: 100%`, aspect kept). The runtime prefixes the ids
+  of each SVG (`coolplot-plot-area` clip path) so that several charts can share a page.
+- **Values onto the chart.** The SVG names its axis limits and log flags (`data-x-limits`,
+  `data-y-log`, …) and its plot area (`rect.cp-background`); with the `axes` of the data
+  (display = value × scale + offset) the runtime maps any model value onto the chart, as
+  `svgCoords.ts` maps the pointer the other way. Used for the tooltips of the states (v1), the
+  `cursor` of a player (§8.3) and the cycle of the parametric player (§8.4). Checked with the
+  prototype: the four state positions it computes for `CSL-0025` fall on CoolPlot's own markers
+  to 0.01 viewBox unit.
+- Not in v1: zoom (hosted mode could ask a scene with a `view_SI`, as `DiagramView` does) and the
+  state under the pointer (`POST /api/v1/diagram/state` through the host).
+
+**Saved plots: Plotly** (parametric and integral plots).
+
+- A saved plot is a spec: `{id, title, kind: 'parametric' | 'integral', …}` with the settings of
+  the tab it was saved from (sweep axes, contour or lines; columns).
+- Its Plotly figure is built by one module, `gui/src/plots/figures.ts`, used by the Parametric and
+  Integral tabs, the saved-plot tabs and the runtime: the three draw the same picture. The plots of
+  integral columns written in a dashboard (`cs-plot x y`) use it too.
 
 ### 9.11 Library
 
 - Allow-list: `dashboards/*.html` and `dashboards/assets/*.{svg,png,jpg,jpeg,webp}` of a model
-  folder, and `plots.json`, in `cmake/embed_library.cmake` **and** `EMBED_FILES` of the library's
-  `tools/build_index.py` (they mirror each other); `LibraryStore::loadModel` loads them into the
-  session; `model.json` lists them (`"dashboards": ["main"]`).
+  folder, `diagrams.json` (foreseen by coolplot_integration.md §3.4: "opening a model shows the
+  chart its author made") and `plots.json`, in `cmake/embed_library.cmake` **and** `EMBED_FILES`
+  of the library's `tools/build_index.py` (they mirror each other); `LibraryStore::loadModel`
+  loads them into the session; `model.json` lists them (`"dashboards": ["main"]`).
 - The library dashboard (`library.html`) shows a dashboard badge, and *View dashboard* on the model
   page: `GET /library/<model path>/dashboards/<name>.html` served as a standalone snapshot built
-  from the embedded `.sol` (values and `# IntegralTable`), with no solve. The public site gains a
-  gallery of animated models that anyone can explore.
+  from the embedded `.sol` (values and `# IntegralTable`), with no solve. Its diagrams are drawn
+  from the `.sol` values (the diagram engine takes a map of values, as its tests do) and cached by
+  model, diagram, size and theme: the fluid lines cost CPU, the public server draws each once. The
+  public site gains a gallery of animated models that anyone can explore.
 - The library workflow (`docs/model_workflow.md` of the library) gains a step: a dashboard is
   checked with `--dashboard-check` by the library tests, and its screenshot may be the README figure.
 
@@ -755,7 +827,8 @@ Markdown:
    375 px wide; comment the parts a person may want to adjust.
 4. **The model**: name, title, kind (steady / dynamic), the variables table (name, units, value,
    input or not, description from the line comment), the arrays, the integral columns and the
-   integration range, the saved plots (id, title, kind), the parametric study if any, and — when
+   integration range, the diagrams (name, fluid, chart, the variables of their states) and saved
+   plots (id, title, kind), the parametric study if any, and — when
    chosen — the model code.
 5. **Answer format**: the HTML file only, in one fenced block.
 
@@ -787,7 +860,7 @@ Static checks of a dashboard against the model (parse only), shared by the GUI (
 |---|---|
 | error | a name of `cs-value`, `cs-input`, `data-cs-*`, an expression, `ctx.get('…')` / `CoolSolve.value('…')` in a script that is not a variable of the model |
 | error | a `cs-input` on a variable that is not an input (§7.1), with the reason and the fix (`N = 3000/60` → write a constant) |
-| error | a `cs-plot ref` that is not a saved plot; `x`/`y` that are not integral columns (with the `$IntegralTable` line to add) |
+| error | a `cs-plot ref` that is neither a diagram nor a saved plot (with the names there are); `x`/`y` that are not integral columns (with the `$IntegralTable` line to add) |
 | error | an action of `cs-button` / `data-cs-action` that is not one of §9.4; a `data-cs-set` on a variable that is not an input, or whose value is not a constant (a number, or a quoted string for a string input) |
 | warning | a `cs-player` or a `cursor` for a model without `INTEGRAL`; an unknown `cs-*` element or attribute (typo) |
 | warning | a URL to the network (blocked in the GUI); a missing asset; a file larger than 2 MB |
@@ -812,12 +885,12 @@ the dashboards restore what the import dropped).
 
 | Model | Kind | Exercises | Dashboard |
 |---|---|---|---|
-| `CSL-0025` *heat_pump_cycle_r22_30kw* (55 eq.) | steady, R22 | values on a schematic, numeric inputs, *Solve* / *Update guesses*, a saved P-h diagram from the arrays `P[i]`, `h[i]`, pipes coloured by temperature, flows moving with the mass flow, a warning limit | `dashboards/heat_pump.html` (prototype); to become the library's `dashboards/main.html` |
-| `CSL-0345` *r134a_isenthalpic_throttle* (16 eq., variant R1234yf) | steady | the input-rule extension: **string input** (radio R134a / R1234yf) and **array-element inputs** (`T[1]`, `P[1]`); parity with the radio button and edit boxes of the EES Diagram window | throttle sketch, inlet/outlet states, T-h saved plot |
+| `CSL-0025` *heat_pump_cycle_r22_30kw* (55 eq.) | steady, R22 | values on a schematic, numeric inputs, *Solve* / *Update guesses*, its p-h diagram (CoolPlot, the cycle from the arrays `P[i]`, `h[i]`) in `diagrams.json`, pipes coloured by temperature, flows moving with the mass flow, a warning limit | `dashboards/heat_pump.html` (prototype); to become the library's `dashboards/main.html` |
+| `CSL-0345` *r134a_isenthalpic_throttle* (16 eq., variant R1234yf) | steady | the input-rule extension: **string input** (radio R134a / R1234yf) and **array-element inputs** (`T[1]`, `P[1]`); parity with the radio button and edit boxes of the EES Diagram window | throttle sketch, inlet/outlet states, T-h diagram |
 | `CSL-0339` *gas_spring_oscillator* (28 eq.) | dynamic (time, 5 s) | the EES animation of the original (`Ball.top`): `data-cs-translate`, colour by gas temperature, `realtime` player, L(t) and P(t) with cursors. The file has no `$IntegralTable`: the checker must tell which line to add for P and T | ball in a tube over a bottle |
 | `CSL-0024` *single_cylinder_engine_weibe* (72 eq.) | dynamic (crank angle) | a mechanism drawn by `onFrame`, declarative show / rotate / fill / flow, p–V loop on log axes with a cursor, a band for the combustion window | `dashboards/engine.html` (prototype), on a variant integrating from −360° to +180° (below) |
 | `CSL-0009` *dhw_tank_dynamic* (20 eq.) | dynamic, 18 000 rows | a large integral table (decimation of exports, interpolation speed), schedules shown with `data-cs-show` (heater on, tap draw), tank colour by temperature, 5 h played in 15 s | tank, heater, tap, T(t), heat flows |
-| `CSL-0019` *orc_simple_r245fa* (182 eq.) | steady, large | about forty labels on a P&ID-like schematic, speed of the data builder and of the page, a T-s saved plot | stretch goal |
+| `CSL-0019` *orc_simple_r245fa* (182 eq.) | steady, large | about forty labels on a P&ID-like schematic, speed of the data builder and of the page, a T-s diagram | stretch goal |
 
 **The engine variant.** The library model integrates the intake stroke only (−360° to −180°), which
 animates half a crank turn without combustion. The prototype data come from the same file with the
@@ -843,8 +916,8 @@ Sizes are rough.
 | **1 — Contract, runtime, standalone export** | `gui/src/dashboard/` (port of the prototype, Plotly charts, ~1 500 lines TS); `src/dashboard.cpp`: data builder (live result or `.sol`), checker, exporter (~1 200 lines C++); `--dashboard-check`, `--dashboard-export`; `docs/dashboards.md` (contract reference) | An agent makes a standalone dashboard of a library model with the CLI alone |
 | **2 — GUI host and bundle** | Session state, routes (§9.5), bundle and disk folder (§9.7), toolbar menu, bottom tabs, sandboxed host and message bridge, `sessionActions.ts` shared with the toolbar, buttons and `data-cs-action`, live updates, pop-up windows (`open="window"`, *Always open in a window*), `BroadcastChannel`, editor ownership and the pop-up fallback (§9.4), presentation mode | A dashboard of a bundle opens in the GUI, solves from its button — also from its pop-up window, and still after the main window was closed — follows a solve made in the editor, and survives a download/upload round trip |
 | **3 — Inputs** | `src/model_inputs.cpp` (detection with array elements and strings, rewrite), parametric study on the shared detection, `/api/v1/inputs`, undoable editor edits, `autosolve`, *Reset inputs*, string widgets, `data-cs-set` presets | `CSL-0345`: the radio button switches the refrigerant, the editor shows it, Ctrl+Z undoes it; a preset button of `CSL-0025` sets two inputs and solves once |
-| **4 — Saved plots** | *Save* on the three plot tabs, `plots.json`, saved-plot tabs, `gui/src/plots/figures.ts`, dome in the data, `cs-plot ref` | The P-h diagram of `CSL-0025` is a tab and is in its dashboard, live and in the standalone file |
-| **5 — Animation** | Player complete (`realtime`, events, `CoolSolve.player`), `data-cs-translate` / `data-cs-scale-y`, cursors on all plot kinds, parametric player | `CSL-0339`, `CSL-0024` (variant) and `CSL-0009` animate smoothly |
+| **4 — Diagrams and saved plots** | *Save* on the Diagrams tab (several definitions in `diagrams.json`, the selector of the tab: *Multiple diagrams* of gui.md §14.4) and on the Parametric and Integral plots (`plots.json`); bottom tabs (`DiagramView`, `gui/src/plots/figures.ts`); scenes in the data at the size and theme a dashboard asks (§9.10), ids prefixed, state tooltips; diagrams in the standalone export and in `--dashboard-export`; `cs-plot ref` | The p-h diagram of `CSL-0025` is a bottom tab and is in its dashboard, live and in the standalone file |
+| **5 — Animation** | Player complete (`realtime`, events, `CoolSolve.player`), `data-cs-translate` / `data-cs-scale-y`, cursors on all plot kinds (on diagrams through the `axes` mapping), parametric player (with the run's cycle drawn over a diagram, §8.4) | `CSL-0339`, `CSL-0024` (variant) and `CSL-0009` animate smoothly |
 | **6 — LLM workflow** | Prompt builder, `--dashboard-prompt`, *Add dashboard* dialog (three routes), templates, fix-up prompt, evaluation (§10.5) | A user without HTML knowledge makes the dashboard of a test model through an assistant in a few minutes |
 | **7 — Library** | Allow-list on both sides, loader, `model.json`, *View dashboard* from the `.sol`, dashboards of the test models (library workflow) | The test models have their dashboards on the public library pages |
 | **8 — Ideas** | A selection from §14 | — |
@@ -864,12 +937,12 @@ Phases 3–5. Phase 7 needs Phases 1–2.
 | 3.2 Solvers | not applicable | — (a callback per accepted integration step only if *follow the solve* is done, §8.4) |
 | 3.3 `coolsolve.conf` | not applicable | Dashboard settings live in the dashboard (`<cs-dashboard>`), not in the solver configuration |
 | 3.4 Config editor | not applicable | — |
-| 3.5 GUI frontend | needed | `types.ts` (dashboards, saved plots, data), `client.ts` (routes through `request()`), `modelStore.ts` / `uiStore.ts` (dashboards, saved plots, bottom tabs), `sessionModel.ts` (read them back), `App.tsx` (bottom tabs, the `?dashboard=` window), `Toolbar.tsx` (menu; its solve, stop and update-guesses handlers move to `sessionActions.ts`), `ThermoDiagram.tsx` / `ParametricStudy.tsx` / `IntegralTable.tsx` (*Save*), new components of §9.1, `CodeEditor.tsx` (undoable input edits) |
+| 3.5 GUI frontend | needed | `types.ts` (dashboards, saved plots, data), `client.ts` (routes through `request()`), `modelStore.ts` / `uiStore.ts` (dashboards, saved plots, bottom tabs), `sessionModel.ts` (read them back), `App.tsx` (bottom tabs, the `?dashboard=` window), `Toolbar.tsx` (menu; its solve, stop and update-guesses handlers move to `sessionActions.ts`), `diagram/DiagramTab.tsx` (*Save*, selector of the definitions) / `ParametricStudy.tsx` / `IntegralTable.tsx` (*Save*), `diagram/DiagramView.tsx` reused by the bottom tabs, new components of §9.1, `CodeEditor.tsx` (undoable input edits) |
 | 3.6 Server / REST | needed | Routes of §9.5 through `getSession()`; session IDs of `/d/{session}/…` checked with `isValidSessionId()`; `tests/test_dashboard_api.py` (`--auto`) |
 | 3.7 ZIP bundle | needed | §9.7 in `createZipBundle` / `extractZipBundle`; round-trip test; layout documented in `contributing.md` §3.7 and `gui.md` §7.2 |
 | 3.8 Debug mode | not applicable | — |
 | 3.9 Console | needed | Checker problems and input rewrites reported in the console with the usual markers (`[Warning]`, `ERROR`) |
-| 3.10 LaTeX report | optional | Saved plots in the report (they are Plotly charts; `exportPlots.ts` already captures visible charts) |
+| 3.10 LaTeX report | mostly done | Every definition of `diagrams.json` is already a vector figure of the report (saved diagrams included); saved plots are Plotly charts, which `exportPlots.ts` captures when visible |
 | 3.11 Examples | needed | `examples/dashboards/` with a small model and a dashboard for the CLI tests (`--dashboard-check`, `--dashboard-export`) |
 | 3.12 README and docs | needed | §17 |
 | 3.13 Build system | needed | Second Vite entry for the runtime; the runtime and `docs/dashboards.md` embedded (the latter in every build, for the prompt); library allow-list on both sides |
@@ -902,7 +975,7 @@ Ranked by value for effort; the first ones are cheap once the core exists.
 8. **Claude Code skill / agent recipe** `coolsolve-dashboard` (§10.3) published with the library:
    "make a dashboard for this model" in one sentence for users of coding agents.
 9. **Starter dashboard generated without an LLM**: from the model alone, a page with the inputs as
-   sliders, the outputs as a table, the saved plots and, for an `INTEGRAL` model, a player and one
+   sliders, the outputs as a table, the diagrams and saved plots and, for an `INTEGRAL` model, a player and one
    plot per column. A useful default that also serves as a template.
 10. **Import of the EES Diagram window**: decode the text items, edit boxes and their positions in
     the EES file (`ees_extract.py`) into a dashboard skeleton. Research: the binary layout of these
@@ -921,11 +994,11 @@ Taken while hesitating, without asking (R14). Each can be revisited; the alterna
 | # | Decision | Alternatives | Why |
 |---|---|---|---|
 | D1 | The plan and its examples are in `docs/plans/` | A flat `docs/` file (served); a folder outside `docs/` | Subfolders of `docs/` are not embedded (`embed_assets.cmake` globs the files of `docs/` only) and the release server has no filesystem fallback: not served, yet in `docs/` as asked. `docs/plans/README.md` says so. |
-| D2 | "Several diagrams" = **saved plots**: the Diagrams tab stays the scratch diagram; *Save* adds a bottom tab. Extended to the parametric and integral plots | Several Diagrams tabs on the right; saved plots only inside dashboards | The request says "keep the current window, save it, new tab at the bottom"; the same gesture on the three plot kinds is consistent; dashboards reuse saved plots by id |
+| D2 | "Several diagrams" = **several named definitions of `diagrams.json`**: the Diagrams tab stays the chart being worked on; *Save* adds a copy under a name, shown as a bottom tab. The same gesture saves the parametric and integral plots (`plots.json`) | Several Diagrams tabs on the right; saved plots only inside dashboards; one new file for every kind of plot | The request says "keep the current window, save it, new tab at the bottom"; `diagrams.json` is already a list made for it (coolplot_integration.md §3.4), read by the report and `--diagram`; dashboards use both by name |
 | D3 | A dashboard is **a plain HTML file** with custom elements, `data-cs-*` attributes and optional JavaScript | A JSON layout drawn by the GUI; a GUI editor (EES-like) | LLMs write HTML/SVG/JS very well; users edit it in any editor; anything the web can draw is possible; a standalone file is natural. The request excludes editing in the GUI |
 | D4 | Labels are placed on a **stage in design coordinates scaled as one piece** | Percent positions; SVG `foreignObject`; CSS container units | Exact placement at any size with text that scales with the drawing; works the same for inline SVG and images; `foreignObject` has browser quirks for inputs; percent positions keep the font size and drift with the aspect ratio. Checked at 1280 and 375 px |
 | D5 | The runtime is **TypeScript in `gui/src/dashboard/`, built by Vite**; the standalone export needs a GUI build | Hand-written JavaScript embedded in every build | Shares the figure code with the GUI (no duplication, §1 of the contributing guide); the distributed binaries (installer, server) are GUI builds. The prototype is plain JS only to run without a build |
-| D6 | Plots use **Plotly**, as the GUI | A small SVG chart library (as in the prototype) | Same pictures as the GUI tabs, zoom and hover for free, log axes, contours; 1.4 MB inlined only in exports that have a plot |
+| D6 | **Diagrams are the server's CoolPlot SVG**, sent in the data at the size the dashboard asks; parametric and integral plots use **Plotly**, as their tabs | Plotly for every plot (the first version of this plan, written before the Diagrams tab moved to CoolPlot); the scene's curves sent as data and drawn in the browser | One picture of a diagram everywhere (tab, report, `--diagram`, dashboards) with CoolPlot's labels, themes and badge, no CoolProp in the browser; the SVG names its axes and plot area, so values can be placed on it; tens of kB instead of 1.4 MB of Plotly in an export with diagrams only. Plotly stays where the GUI uses it, for zoom, hover and contours |
 | D7 | The data document is built by **one C++ function** for the server and the CLI | Assembled in the GUI from its store | One builder for the GUI, the CLI export and the library snapshots (from `.sol`) |
 | D8 | Dashboards run in a **sandboxed iframe** and speak `postMessage` only — library dashboards too | Same-origin iframe calling the REST API | Dashboards are code from LLMs and from other people's bundles, on a public server too; an opaque origin and `connect-src 'none'` make a malicious page harmless |
 | D9 | An input change **rewrites the line of the model**, as an undoable editor edit | An override layer next to the code (EES keeps Diagram-window values apart from the equations) | The code stays the single source of truth for the editor, the bundle and the CLI; reuses the parametric substitution; no new state to save |
@@ -952,6 +1025,11 @@ Taken while hesitating, without asking (R14). Each can be revisited; the alterna
 - **CSP and opaque origins.** `'self'` in a policy of a sandboxed document must still match the
   server's URLs for the runtime and assets (it is the URL's origin in CSP 3); to verify on Chromium,
   Firefox and Safari in Phase 2. Fallback: inline the runtime into the served document.
+- **CoolPlot SVG in a page.** Labels are laid out by the server with its font metrics (`Inter,
+  'Helvetica Neue', Arial, 'DejaVu Sans'`); a viewer without these fonts may see labels shift a
+  little. Several charts on one page share ids unless prefixed (done by the prototype). The cost
+  of the fluid lines is paid per solve and per diagram used: cache scenes until the next solve,
+  and per model on the public server (§9.11).
 - **Plotly in a sandbox.** Plotly needs no network or storage; its hover and zoom work in sandboxed
   iframes (to confirm in Phase 1).
 - **Editor ownership** (§7.3, §9.4). Several windows of one session could edit at once. Designed:
@@ -977,16 +1055,18 @@ Taken while hesitating, without asking (R14). Each can be revisited; the alterna
 
 ## 17. Documentation to update when it lands
 
-- `README.md`: *Features* (dashboards and saved plots), *Command Line Options* (three options),
+- `README.md`: *Features* (dashboards, saved diagrams and plots), *Command Line Options* (three options),
   *File Formats* (`dashboards/`, `plots.json`), *Project Structure* (new files), *Documentation*
   table (`docs/dashboards.md`).
 - New **`docs/dashboards.md`**: user guide and contract reference (the prompt is taken from it,
   §10.2), with screenshots; in the sidebar of `docs/docs.html`.
 - `docs/gui.md`: routes (§4), session state (§5), layout and tabs (§6), bundle (§7.2), library
-  (§7.3); remove *Diagram state persistence* from §14.4 once saved plots exist.
+  (§7.3), §6.8 (*Save*, the selector of the definitions); remove *Multiple diagrams* from §14.4.
 - `docs/contributing.md`: §3.7 (bundle layout), §3.5 (new components).
 - `docs/model_library_support.md`: a feature row `CS-FEAT-DASHBOARD` in §3; the resolution path of
   `CS-GAP-DIAGRAM-WINDOW` and of case (a) of `CS-GAP-IF-NO-CONSTANT` (string inputs on a dashboard).
+- `docs/coolplot_integration.md`: §3.4 (*Later, in model folders*) points to this plan once the
+  library carries `diagrams.json`.
 - Library: `docs/model_workflow.md` (dashboards of a model, checker in the tests), `EMBED_FILES`.
 - `docs/versions.md` at the release.
 
@@ -998,7 +1078,7 @@ In [`dashboards/`](dashboards/), next to this plan (not served either):
 
 | File | What |
 |---|---|
-| `coolsolve-dashboard.js` | Prototype runtime (plain JavaScript, no dependency): stage scaling, `cs-value`, `cs-input`, `cs-button`, `cs-status`, `cs-plot` (small SVG charts instead of Plotly), `cs-player`, the `data-cs-*` bindings, `data-cs-action` and `data-cs-set`, `CoolSolve.action` / `setInput(s)` / `onStatus` / `hosted`, the `cs-hosted` / `cs-standalone` classes, the expression language, units, problem badge, layout helper (<kbd>L</kbd>), and the host protocol of §9.3 (`data`, `status` with available actions and *Try Harder*) |
+| `coolsolve-dashboard.js` | Prototype runtime (plain JavaScript, no dependency): stage scaling, `cs-value`, `cs-input`, `cs-button`, `cs-status`, `cs-plot` (diagrams: the CoolPlot SVG with state tooltips placed through its axes; columns: small SVG charts instead of Plotly), `cs-player`, the `data-cs-*` bindings, `data-cs-action` and `data-cs-set`, `CoolSolve.action` / `setInput(s)` / `onStatus` / `hosted`, the `cs-hosted` / `cs-standalone` classes, the expression language, units, problem badge, layout helper (<kbd>L</kbd>), and the host protocol of §9.3 (`data`, `status` with available actions and *Try Harder*) |
 | `engine.html` + `engine.results.js` | `CSL-0024` animated: slider-crank mechanism, valves, spark, flame, gas coloured by temperature, p–V loop and p(θ), T(θ) with cursors, player (the "animated internal combustion engine" of the request) |
 | `heat_pump.html` + `heat_pump.results.js` | `CSL-0025`: values on the schematic at the four states, COP, pipes coloured by temperature with moving flows, inputs and buttons, two preset buttons (`data-cs-set` + `data-cs-action="solve"`), a compressor that solves when clicked with a *click to solve* hint shown in the GUI only (all disabled standalone), saved P-h diagram |
 
@@ -1006,17 +1086,30 @@ In [`dashboards/`](dashboards/), next to this plan (not served either):
 `file://` is fine), or serve the folder: `python3 -m http.server -d docs/plans/dashboards`. Keys:
 space (play/pause), ←/→ (step), <kbd>L</kbd> (layout helper; drag a label, its new tag is copied).
 
-**Where the data come from.** `heat_pump.results.js`: the `.sol` baseline of `CSL-0025` and the R22
-dome of `POST /api/v1/coolprop/saturation`. `engine.results.js`: a CLI run of `CSL-0024` with the
-integration window extended to +180° (§11). Inputs were detected with the rule of §7.1, units taken
-from the comments of the model. They follow the data contract of §6.
+**Where the data come from.** `heat_pump.results.js`: the `.sol` baseline of `CSL-0025`, and its
+p-h diagram drawn by CoolSolve 0.5.0 (`coolsolve --no-sol --diagram diagrams.json -o ph.svg
+heat_pump_cycle_r22_30kw.eescode`) from this definition:
+
+```json
+{"format": "coolsolve-diagrams", "version": 1, "diagrams": [
+ {"name": "ph", "fluid": "R22",
+  "spec": {"diagram": "ph", "units": "engineering", "limits": "ACHP",
+           "isolines": [{"key": "T", "num": 8}, {"key": "s", "num": 8}, {"key": "Q", "num": 5}],
+           "settings": {"labels": {"mode": "rails", "symbols": "unicode"}}},
+  "cycles": [{"name": "Cycle", "numbers": true, "arrays": {"p": "P", "h": "h"}, "closed": true}]}]}
+```
+
+(`"units": "engineering"` draws kJ/kg and bar; the Diagrams tab stores the model's units, which
+the server, the report and dashboards draw as stored.) `engine.results.js`: a CLI run of `CSL-0024`
+with the integration window extended to +180° (§11). Inputs were detected with the rule of §7.1,
+units taken from the comments of the model. They follow the data contract of §6.
 
 **Sketch of a generated prompt** (`CSL-0025`, abbreviated):
 
 ````markdown
 You are writing a CoolSolve dashboard: one HTML file that shows the results of the model below.
 Request: the cycle on a schematic with T, P and h at each state point, the COP in big, sliders for
-T_ev, T_cond, DELTA_T_sc and epsilon_s_cp, a Solve button, and the saved P-h diagram "ph".
+T_ev, T_cond, DELTA_T_sc and epsilon_s_cp, a Solve button, and the p-h diagram "ph".
 
 ## Dashboard contract (version 1)
 … (from docs/dashboards.md: file skeleton, elements, data-cs-* bindings, expressions,
@@ -1036,7 +1129,7 @@ CoolSolve.onFrame, cs-stage placement, units) …
 | COP | - | 4.4745 | | coefficient of performance [-] |
 | h[1..4], P[1..4], T[1..4], s[1..4] | J/kg, Pa, °C, J/kg-K | … | | state points of the cycle |
 | … 55 variables … |
-Saved plots: ph (thermo, R22, P-h, path h[i], P[i], closed)
+Diagrams: ph (R22, p-h, engineering units; cycle from the arrays P[i], h[i], states 1-4)
 Integral table: none.
 
 ## Check your file
