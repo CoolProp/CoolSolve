@@ -364,6 +364,8 @@ immediately visible to users.
 - [ ] **`docs/docs.html`** — if you add a brand-new `.md` page to
       `docs/`, append it to the sidebar nav so the in-app docs viewer
       can find it.
+- [ ] Design plans that should not be published go to `docs/plans/`:
+      subfolders of `docs/` are not embedded, so they are not served.
 
 ### 3.13 Build System
 

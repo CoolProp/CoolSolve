@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="coolsolve-dashboard" content="1">
+<title>Engine animation</title>
+<!--
+  Example dashboard for CSL-0024 single_cylinder_engine_weibe (docs/plans/dashboards.md).
+  Everything below is what a dashboard author (a person or an LLM) writes: HTML, CSS,
+  an inline SVG drawing, cs-* elements bound to model variables and one onFrame function
+  for the mechanism. Results and animation come from coolsolve-dashboard.js.
+-->
+<style>
+  body { margin: 0; font: 14px/1.4 system-ui, sans-serif; background: var(--cs-bg); color: var(--cs-fg); }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4em 1em; padding: 14px 18px 4px; }
+  h1 { font-size: 1.25em; margin: 0; }
+  main { display: grid; grid-template-columns: minmax(260px, 5fr) minmax(280px, 6fr); gap: 14px; padding: 10px 18px; }
+  .card { background: var(--cs-card); border: 1px solid var(--cs-line); border-radius: 10px; padding: 12px; }
+  .engine { align-self: start; position: sticky; top: 8px; }
+  .plots { display: grid; gap: 10px; align-content: start; }
+  .kpis { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 10px 26px; align-items: baseline; }
+  .kpis cs-value { font-size: 1.15em; }
+  #phase { font-size: 1.4em; font-weight: 700; min-width: 7.5em; color: var(--cs-cycle); }
+  footer { position: sticky; bottom: 0; margin: 0 18px 14px; }
+  .note { color: var(--cs-muted); font-size: .85em; padding: 0 18px 14px; }
+  cs-stage cs-value { font-size: 15px; background: color-mix(in srgb, var(--cs-card) 85%, transparent); padding: 1px 6px; border-radius: 5px; }
+  /* the drawing */
+  .metal { fill: #9ca3af; stroke: #4b5563; stroke-width: 1.5; }
+  .metal-dark { fill: #6b7280; stroke: #374151; stroke-width: 1.5; }
+  .port { fill: color-mix(in srgb, var(--cs-bg) 70%, #94a3b8); stroke: #4b5563; stroke-width: 1.5; }
+  .leader { stroke: var(--cs-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  .tick { fill: var(--cs-muted); font-size: 11px; }
+  .arrow { fill: none; stroke: #2563eb; stroke-width: 3; stroke-linecap: round; }
+  @media (max-width: 760px) { main { grid-template-columns: minmax(0, 1fr); } .engine { position: static; } }
+</style>
+</head>
+<body>
+<cs-dashboard results="engine.results.js"></cs-dashboard>
+
+<header>
+  <h1>Four-stroke engine, one cylinder</h1>
+  <span class="cs-muted" data-cs-model-title></span>
+  <cs-status></cs-status>
+</header>
+
+<main>
+  <section class="card engine">
+    <!-- Design coordinates: 460 × 620. The labels below stay on the drawing at any size. -->
+    <cs-stage width="460" height="620">
+      <svg width="460" height="620" viewBox="0 0 460 620" aria-label="Engine cross-section">
+        <defs>
+          <clipPath id="chamber"><rect id="chamber-clip" x="150" y="110" width="160" height="20"/></clipPath>
+          <radialGradient id="flame-grad">
+            <stop offset="0" stop-color="#fff7cc" stop-opacity=".95"/>
+            <stop offset=".55" stop-color="#fb923c" stop-opacity=".75"/>
+            <stop offset="1" stop-color="#dc2626" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <!-- crankcase -->
+        <path d="M120 380 L120 470 A110 110 0 0 0 340 470 L340 380 Z" fill="none" stroke="var(--cs-line)" stroke-width="3"/>
+        <!-- cylinder walls, TDC / BDC marks -->
+        <rect class="metal" x="134" y="108" width="16" height="268"/>
+        <rect class="metal" x="310" y="108" width="16" height="268"/>
+        <line x1="326" x2="334" y1="128" y2="128" stroke="var(--cs-muted)"/>
+        <text class="tick" x="337" y="132">TDC</text>
+        <line x1="326" x2="334" y1="288" y2="288" stroke="var(--cs-muted)"/>
+        <text class="tick" x="337" y="292">BDC</text>
+        <!-- gas in the cylinder: colour from the temperature T [K] -->
+        <rect id="gas" x="150" y="110" width="160" height="20"
+              data-cs-fill="T" data-cs-colormap="250:#bfdbfe,700:#c7d2fe,1300:#fdba74,2200:#ef4444,3200:#fde047"/>
+        <!-- flame front of the Weibe combustion -->
+        <circle id="flame" cx="230" cy="112" r="20" fill="url(#flame-grad)" clip-path="url(#chamber)"
+                data-cs-show="x_b > 0.002 && x_b < 0.998"/>
+        <!-- piston (moved by onFrame) -->
+        <g id="piston">
+          <rect class="metal" x="152" y="0" width="156" height="70" rx="4"/>
+          <line x1="152" x2="308" y1="9" y2="9" stroke="#4b5563"/>
+          <line x1="152" x2="308" y1="16" y2="16" stroke="#4b5563"/>
+          <circle cx="230" cy="28" r="9" class="metal-dark"/>
+        </g>
+        <!-- connecting rod and crank (onFrame) -->
+        <line id="rod" stroke="#6b7280" stroke-width="16" stroke-linecap="round"/>
+        <g id="crank">
+          <path class="metal-dark" d="M-50 30 A58 58 0 0 0 50 30 L18 -80 A18 18 0 0 0 -18 -80 Z"/>
+          <circle cx="0" cy="-80" r="11" fill="#d1d5db" stroke="#374151" stroke-width="1.5"/>
+          <circle cx="0" cy="0" r="15" fill="#d1d5db" stroke="#374151" stroke-width="1.5"/>
+        </g>
+        <!-- head, ports, valves, spark plug -->
+        <rect class="metal" x="120" y="50" width="220" height="60"/>
+        <path class="port" d="M30 62 L168 62 Q194 62 199 108 L169 108 Q167 88 150 87 L30 87 Z"/>
+        <path class="port" d="M430 62 L292 62 Q266 62 261 108 L291 108 Q293 88 310 87 L430 87 Z"/>
+        <g id="intake-valve">
+          <rect x="181" y="14" width="6" height="90" fill="#475569"/>
+          <path d="M168 110 L200 110 L190 103 L178 103 Z" fill="#2563eb" stroke="#1e3a8a"/>
+        </g>
+        <g id="exhaust-valve">
+          <rect x="273" y="14" width="6" height="90" fill="#475569"/>
+          <path d="M260 110 L292 110 L282 103 L270 103 Z" fill="#dc2626" stroke="#7f1d1d"/>
+        </g>
+        <rect x="222" y="22" width="16" height="66" rx="3" fill="#f5f5f4" stroke="#57534e"/>
+        <rect x="226" y="88" width="8" height="20" fill="#78716c"/>
+        <path d="M230 108 l4 9 l9 -2 l-6 7 l6 7 l-9 -2 l-4 9 l-4 -9 l-9 2 l6 -7 l-6 -7 l9 2 Z"
+              fill="#facc15" stroke="#ca8a04" data-cs-show="theta > theta_s - 6 && theta < theta_s + 2"/>
+        <!-- intake flow while the valve is open and the cylinder fills -->
+        <path class="arrow" d="M40 75 L150 75 Q178 76 184 100" data-cs-show="M_dot > 0"
+              data-cs-flow="M_dot" data-cs-flow-ref="0.05"/>
+        <text class="tick" x="34" y="102">intake</text>
+        <text class="tick" x="426" y="102" text-anchor="end">exhaust</text>
+        <!-- leaders from the chamber to the values -->
+        <line class="leader" x1="300" y1="150" x2="340" y2="150"/>
+        <!-- crank-angle dial: data-cs-rotate turns the needle with theta -->
+        <circle cx="62" cy="540" r="40" fill="none" stroke="var(--cs-line)" stroke-width="3"/>
+        <text class="tick" x="62" y="494" text-anchor="middle">TDC</text>
+        <line x1="62" y1="540" x2="62" y2="506" stroke="var(--cs-cycle)" stroke-width="3" stroke-linecap="round"
+              data-cs-rotate="theta" data-cs-origin="62 540"/>
+        <circle cx="62" cy="540" r="4" fill="var(--cs-cycle)"/>
+      </svg>
+      <cs-value x="344" y="150" anchor="left" name="p" unit="bar" decimals="2" label="p"></cs-value>
+      <cs-value x="344" y="178" anchor="left" name="T" decimals="0" label="T"></cs-value>
+      <cs-value x="344" y="206" anchor="left" name="V" unit="cm3" decimals="0" label="V"></cs-value>
+      <cs-value x="344" y="234" anchor="left" name="m" unit="mg" decimals="0" label="m"></cs-value>
+      <cs-value x="62" y="598" anchor="center" name="theta" decimals="0" label="θ"></cs-value>
+    </cs-stage>
+  </section>
+
+  <section class="card plots">
+    <cs-plot title="p–V diagram (log–log)" x="V" y="p" x-unit="cm3" y-unit="bar" log-x log-y cursor></cs-plot>
+    <cs-plot title="Cylinder pressure" x="theta" y="p" y-unit="bar" cursor
+             band-x="theta_s; theta_s + theta_d" band-label="combustion"></cs-plot>
+    <cs-plot title="Gas temperature" x="theta" y="T" cursor></cs-plot>
+  </section>
+
+  <section class="card kpis">
+    <span id="phase">—</span>
+    <cs-value name="W_tot" unit="kJ" decimals="3" label="piston work so far"></cs-value>
+    <cs-value name="Q_tot" unit="kJ" decimals="3" label="heat released"></cs-value>
+    <cs-value name="x_b" unit="%" decimals="0" label="burnt fraction"></cs-value>
+    <cs-value expr="100 * W_tot / Q_comb" units="%" decimals="1" label="work / fuel energy"></cs-value>
+    <cs-value name="W_dot_eng" unit="kW" decimals="1" label="engine power (6 cyl.)"></cs-value>
+  </section>
+</main>
+
+<footer class="card"><cs-player duration="12" autoplay></cs-player></footer>
+<p class="note">Data: CoolSolve run of CSL-0024 with the integration window extended to
+  [−360°, +180°] (intake, compression, combustion, expansion); the library model integrates
+  the intake stroke only, and the exhaust stroke is not simulated. Press <kbd>space</kbd> to play or pause,
+  <kbd>←</kbd>/<kbd>→</kbd> to step, <kbd>L</kbd> for the layout helper.</p>
+
+<script src="coolsolve-dashboard.js"></script>
+<script>
+  // The mechanism: piston, rod, crank and intake valve follow the crank angle, with the
+  // slider-crank relation of the model (theta in degrees, geometry from the results).
+  const HEAD = 110, CX = 230;          // underside of the head, cylinder axis [px]
+  const $ = (id) => document.getElementById(id);
+
+  CoolSolve.onFrame((ctx) => {
+    const D = ctx.get('D'), L = ctx.get('L'), B = ctx.get('B'), Rv = ctx.get('R_v');
+    const theta = ctx.get('theta'), th = theta * Math.PI / 180;
+    const k = 160 / D;                  // the bore is drawn 160 px wide
+    const R = L / 2;
+    const y = B + R - (R * Math.cos(th) + Math.sqrt(B * B - (R * Math.sin(th)) ** 2));  // as in the model
+    const crown = HEAD + L / (Rv - 1) * k + y * k;
+    const crankY = HEAD + L / (Rv - 1) * k + 28 + (B + R) * k;
+    const pin = [CX + R * k * Math.sin(th), crankY - R * k * Math.cos(th)];
+
+    $('piston').setAttribute('transform', `translate(0 ${crown})`);
+    $('gas').setAttribute('height', crown - HEAD);
+    $('chamber-clip').setAttribute('height', crown - HEAD);
+    $('rod').setAttribute('x1', CX); $('rod').setAttribute('y1', crown + 28);
+    $('rod').setAttribute('x2', pin[0]); $('rod').setAttribute('y2', pin[1]);
+    $('crank').setAttribute('transform', `translate(${CX} ${crankY}) rotate(${theta}) scale(${R * k / 80})`);
+
+    const ivo = ctx.get('theta_ivo'), ivc = ctx.get('theta_ivc');
+    const lift = theta > ivo && theta < ivc ? 10 * Math.sin(Math.PI * (theta - ivo) / (ivc - ivo)) : 0;
+    $('intake-valve').setAttribute('transform', `translate(0 ${lift})`);
+    $('flame').setAttribute('r', 20 + 150 * ctx.get('x_b'));
+
+    const ts = ctx.get('theta_s'), td = ctx.get('theta_d');
+    $('phase').textContent = theta < ivc ? 'Intake' : theta < ts ? 'Compression'
+      : theta < ts + td ? 'Combustion' : 'Expansion';
+  });
+</script>
+</body>
+</html>
