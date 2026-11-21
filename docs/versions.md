@@ -37,6 +37,13 @@ Notes of the changes merged since v0.5, gathered for the next changelog.
   `<>` beside the orderings, strings compared with `=` and `<>` (`IF(layout$ = 'staggered', a, b)`), `AND`, `OR`
   and parentheses (GitHub issues #3 and #4). `IF(a = 5, 1, 2)`, until now a parse error, tests `a = 5`.
 
+### Fixed
+
+- **String variables written twice**: the `.sol` and `.initials` files and the variable table of the GUI listed
+  each string variable also as the number 0 (`fluid$ = 0.0` beside `fluid$ = 'R22'`); it is now written once, as
+  its string (GitHub issue #4). A tool that compares `.sol` files should ignore the `name$ = 0.0` lines of older
+  ones, as the library regression of CoolSolve now does.
+
 ---
 
 ## v0.5 — November 2026 (current)

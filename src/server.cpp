@@ -774,6 +774,7 @@ static json solveResultToJSON(const SolveResult& result, const CoolSolveRunner::
     // Variables
     json vars = json::object();
     for (const auto& [name, val] : result.variables) {
+        if (result.isStringVariable(name)) continue;
         vars[name] = val;
     }
     j["variables"] = vars;
@@ -1781,6 +1782,7 @@ int startServer(const ServerOptions& options) {
                         const auto& solveResult = runner.getSolveResult();
                         const auto& ir = runner.getIR();
                         for (const auto& [name, val] : solveResult.variables) {
+                            if (solveResult.isStringVariable(name)) continue;
                             solStream << name << " = " << val;
                             const auto* info = ir.getVariable(name);
                             if (info && !info->units.empty()) {
@@ -2557,6 +2559,7 @@ int startServer(const ServerOptions& options) {
                         successCount++;
                         json vars = json::object();
                         for (const auto& [name, val] : pointSolveResult.variables) {
+                            if (pointSolveResult.isStringVariable(name)) continue;
                             vars[name] = val;
                         }
                         pointResult["variables"] = vars;
@@ -2703,6 +2706,7 @@ int startServer(const ServerOptions& options) {
         
         json vars = json::array();
         for (const auto& [name, val] : session.lastResult.variables) {
+            if (session.lastResult.isStringVariable(name)) continue;
             json varObj;
             varObj["name"] = name;
             varObj["value"] = val;

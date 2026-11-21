@@ -9001,6 +9001,28 @@ TEST_CASE("CS-BUG-NO-SOL-DELETE: --no-sol leaves an existing .sol untouched and 
     fs::remove_all(dir);
 }
 
+TEST_CASE("CS-BUG-SOL-STRING (GitHub #4): a string variable is written once, as its string", "[library-gaps][sol-string]") {
+    const fs::path binary = fs::absolute("coolsolve");
+    if (!fs::exists(binary)) SKIP("coolsolve binary not found next to the tests: " << binary.string());
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_sol_string";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    // case 1 of the issue: the copy of a string variable; the variable table showed `coisinha$ 0` and
+    // `layout_teste$ 0` beside the strings (the .sol file too: `fluid$ = 0.0` in 74 library baselines)
+    { std::ofstream f(dir / "m.eescode"); f << "layout_teste$ = 'staggered'\ncoisinha$ = layout_teste$\nx = 2\n"; }
+    REQUIRE(runCli(binary, dir, "--guess"));
+    for (const std::string file : {"m.sol", "m.initials"}) {
+        INFO(file);
+        const std::string text = fileText(dir / file);
+        CHECK(text.find("coisinha$ = 'staggered'") != std::string::npos);
+        CHECK(text.find("layout_teste$ = 'staggered'") != std::string::npos);
+        CHECK(text.find("coisinha$ = 0") == std::string::npos);
+        CHECK(text.find("layout_teste$ = 0") == std::string::npos);
+        CHECK(text.find("x = 2.") != std::string::npos);
+    }
+    fs::remove_all(dir);
+}
+
 // ============================================================================
 // CS-GAP-COLEBROOK: the built-in procedure Colebrook(Re, RR : f) of the EES library, the Darcy friction
 // factor of the implicit Colebrook-White equation 1/sqrt(f) = -2*log10(RR/3.7 + 2.51/(Re*sqrt(f))),

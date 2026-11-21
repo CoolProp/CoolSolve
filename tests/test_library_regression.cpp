@@ -14,8 +14,9 @@
  * tables and `$INCLUDE`d project files are used as the CLI uses them) with the CLI's pipeline: solver options
  * from `coolsolve.conf`, solver, then the solution verification that gates the `.sol` of the CLI.
  *
- * Comparison: for every numeric `name = value` line of the baseline (names case-insensitive, strings and the
- * IntegralTable rows are not values), the fresh value must satisfy
+ * Comparison: for every numeric `name = value` line of the baseline (names case-insensitive, strings, the
+ * placeholder `name$ = 0.0` of a string variable in older baselines and the IntegralTable rows are not values),
+ * the fresh value must satisfy
  *     |new - baseline| <= 1e-9 + 1e-6 * max(|new|, |baseline|)
  * and exist. A value that became undefined or infinite is a deviation too (tools/test_models.py lets it pass).
  * The test fails when a target does not solve, deviates, misses a variable, or has a baseline without any
@@ -395,7 +396,8 @@ SolveOutcome solveLikeCli(const fs::path& file, const coolsolve::LibraryStore& l
                 }
             return out;
         }
-        for (const auto& [name, value] : solve.variables) out.values[lower(name)] = asWrittenToSol(value);
+        for (const auto& [name, value] : solve.variables)
+            if (!solve.isStringVariable(name)) out.values[lower(name)] = asWrittenToSol(value);   // as the CLI's .sol
         out.ok = true;
     } catch (const std::exception& e) {
         out.message = std::string("Exception: ") + e.what();
@@ -421,6 +423,9 @@ std::map<std::string, double> readSol(const fs::path& path) {
         if (eq == std::string::npos) continue;
         const std::string key = trim(line.substr(0, eq));
         if (key.empty() || key.find_first_of(" \t\r\n\f\v") != std::string::npos) continue;
+        // `fluid$ = 0.0`: the numeric placeholder of a string variable, which the .sol files written before
+        // CS-BUG-SOL-STRING (GitHub #4) hold next to `fluid$ = 'R22'`; it is no value of the model
+        if (key.back() == '$') continue;
         const std::string rest = line.substr(eq + 1);
         size_t i = 0;
         while (i < rest.size() && std::isspace(static_cast<unsigned char>(rest[i]))) ++i;
@@ -857,6 +862,8 @@ TEST_CASE("Library regression: reading a .sol baseline", "[library-regression]")
         "a = 1.5e+00 \"kW\"\n"
         "B_1[2] = -3\n"
         "s = 'text'\n"
+        "fluid$ = 0.000000000000e+00\n"   // the placeholder of a string variable in an older baseline
+        "fluid$ = 'R22'\n"
         "# IntegralTable\n"
         "t,y\n"
         "0,1\n"
@@ -875,6 +882,7 @@ TEST_CASE("Library regression: reading a .sol baseline", "[library-regression]")
     CHECK(std::isnan(values.at("c")));
     CHECK(std::isinf(values.at("d")));
     CHECK(values.at("g") == 0.5);
+    CHECK(values.count("fluid$") == 0);
 
     CHECK(readSol(dir.path / "missing.sol").empty());   // no file: nothing to compare, no crash
 }

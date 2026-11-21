@@ -452,6 +452,7 @@ int main(int argc, char* argv[]) {
         if (solFile.is_open()) {
             solFile << std::scientific << std::setprecision(12);
             for (const auto& [name, val] : solveResult.variables) {
+                if (solveResult.isStringVariable(name)) continue;
                 solFile << name << " = " << val;
                 // Add units if available
                 const auto* info = ir.getVariable(name);
@@ -496,6 +497,7 @@ int main(int argc, char* argv[]) {
         if (initialsFile.is_open()) {
             initialsFile << std::scientific << std::setprecision(12);
             for (const auto& [name, val] : solveResult.variables) {
+                if (solveResult.isStringVariable(name)) continue;
                 initialsFile << name << " = " << val;
                 const auto* info = ir.getVariable(name);
                 if (info && !info->units.empty()) {
