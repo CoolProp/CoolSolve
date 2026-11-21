@@ -925,6 +925,46 @@ private:
         return message + "only the thermophysical property functions do, e.g. enthalpy(Water, T=20, P=1E5)";
     }
 
+    /// The first relation <, >, <= or >= of the condition \p cond (relations combined by AND and OR) that has a string
+    /// operand; null when there is none.
+    static const BinaryOp* stringOrderingIn(const ExprPtr& cond) {
+        if (!cond || !cond->is<BinaryOp>()) return nullptr;
+        const auto& op = cond->as<BinaryOp>();
+        if (op.code == OpCode::And || op.code == OpCode::Or) {
+            const BinaryOp* left = stringOrderingIn(op.left);
+            return left ? left : stringOrderingIn(op.right);
+        }
+        const bool ordering = op.code == OpCode::Lt || op.code == OpCode::Gt || op.code == OpCode::Le || op.code == OpCode::Ge;
+        return ordering && (isStringExpression(op.left) || isStringExpression(op.right)) ? &op : nullptr;
+    }
+
+    /// Why the call \p call of IF, with the arguments \p argTexts as written, is refused for a string argument; ""
+    /// when it is not. IF compares and returns numbers, and a string read as a number is 0, which selected a branch
+    /// without any message (GitHub #9: IF(s$, 'banana', 10, 20, 30) always gave 20). Strings are compared in the
+    /// condition of IF(cond, a, b), with = and <> (the orderings between strings are not supported).
+    std::string ifStringArgumentError(const FunctionCall& call, const std::vector<std::string>& argTexts) {
+        const auto& args = call.args;
+        if (args.size() != 3 && args.size() != 5) return "";   // the evaluator names the two accepted forms
+        const std::string& name = call.name;
+        auto text = [&](size_t i) { return trim(argTexts[i]); };
+        if (args.size() == 5 && (isStringExpression(args[0]) || isStringExpression(args[1])))
+            return name + "(A, B, X, Y, Z) compares numbers: A and B cannot be strings (" + text(0) + ", " + text(1)
+                   + "); compare strings in the condition of the 3-argument form, " + name + "(" + text(0) + " = "
+                   + text(1) + ", X, Y) (X if they are equal, without regard to case, Y otherwise)";
+        if (args.size() == 3 && isStringExpression(args[0]))
+            return "The condition of " + name + " is a string (" + text(0) + "): compare it with = or <>, e.g. "
+                   + name + "(" + text(0) + " = 'text', X, Y)";
+        if (args.size() == 3)
+            if (const BinaryOp* ordering = stringOrderingIn(args[0]))
+                return name + " compares strings with = and <> only: '" + ordering->op + "' between strings in the "
+                       "condition " + text(0) + " is not supported";
+        for (size_t i = args.size() == 5 ? 2 : 1; i < args.size(); ++i)
+            if (isStringExpression(args[i]))
+                return name + " returns a number: argument " + std::to_string(i + 1) + " (" + text(i)
+                       + ") cannot be a string (the string form IF$ is not implemented, register CS-GAP-IFSTR)";
+        return "";
+    }
+
     /// Receives the calls found by forEachCall: the name, whether it is a CALL statement (false: a call in an
     /// expression, `f(x)`), the line and the call itself (null for a CALL statement).
     using CallVisitor = std::function<void(const std::string& name, bool isCallStatement, int line, const FunctionCall* call)>;
@@ -4433,7 +4473,15 @@ private:
             fc.args.push_back(argExpr);
             isFirstPositionalArg = false;
         }
-        
+
+        if (lower == "if") {
+            const std::string why = ifStringArgumentError(fc, argStrings);
+            if (!why.empty()) {
+                setExpressionError(why);
+                return nullptr;
+            }
+        }
+
         // CONVERT('from', 'to') and CONVERTTEMP('from', 'to', value) with literal units: an unknown unit, units of
         // different dimensions (CONVERT) or a unit that is not a temperature scale (CONVERTTEMP) are an error of
         // this line, found before the solve (a unit string computed at run time is checked when evaluated)

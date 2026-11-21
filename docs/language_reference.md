@@ -466,7 +466,12 @@ r = if(a < b AND a > 0, 1000, -1)
 - All arguments are evaluated, as for any function: the branch that is not
   selected must be computable too.
 - Any other number of arguments is an error that names the two accepted forms.
-  The string form `IF$(...)` is not implemented.
+- `IF` compares and returns numbers, as in EES: `A` and `B` of the 5-argument form,
+  the condition when it is not a comparison, and the branches cannot be strings,
+  and the condition compares strings with `=` and `<>` only. Each is a parse error
+  (a string read as a number would be 0 and select a branch silently):
+  `IF(s$, 'banana', X, Y, Z)` names `IF(s$ = 'banana', X, Y)`. The string form
+  `IF$(...)` is not implemented (register `CS-GAP-IFSTR`).
 - Only the condition takes a comparison: an `=` in any other argument
   (`IF(a=5, 1, 2, 3, 4)`) is the parse error *"IF does not take named arguments
   ('a=5'); a comparison is the condition of the 3-argument form, IF(a = 5, X, Y)

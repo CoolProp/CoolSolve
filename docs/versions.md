@@ -43,6 +43,9 @@ Notes of the changes merged since v0.5, gathered for the next changelog.
   each string variable also as the number 0 (`fluid$ = 0.0` beside `fluid$ = 'R22'`); it is now written once, as
   its string (GitHub issue #4). A tool that compares `.sol` files should ignore the `name$ = 0.0` lines of older
   ones, as the library regression of CoolSolve now does.
+- **Strings in `IF`**: `IF(s$, 'banana', 10, 20, 30)` read both strings as 0 and always took the "equal" branch,
+  without any message. `IF` compares and returns numbers, as in EES: a string where `IF` expects a number is now a
+  parse error, which names the condition that compares the strings, `IF(s$ = 'banana', X, Y)` (GitHub issue #9).
 
 ---
 

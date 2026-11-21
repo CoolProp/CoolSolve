@@ -1826,6 +1826,41 @@ Call sel('inline', 1 : y2)
     CHECK_THAT(procedure["y2"], WithinAbs(3.0, 1e-12));
 }
 
+TEST_CASE("GitHub #9: a string is never read as a number by IF", "[library-gaps][if-condition]") {
+    // was: IF(s$, 'banana', 10, 20, 30) read both strings as 0 and always gave 20, without any message; EES's
+    // IF(A, B, X, Y, Z) compares numbers (help _if.htm), so a string A or B is a parse error naming the condition
+    // of the 3-argument form, which compares strings
+    const auto fiveArgs = parseErrors("s$ = 'apple'\ny = IF(s$, 'banana', 10, 20, 30)\n");
+    REQUIRE(fiveArgs.size() == 1);
+    CHECK(anyContains(fiveArgs, "IF(A, B, X, Y, Z) compares numbers: A and B cannot be strings (s$, 'banana')"));
+    CHECK(anyContains(fiveArgs, "IF(s$ = 'banana', X, Y)"));
+    CHECK(parseErrors("y = IF('zebra', 'apple', 10, 20, 30)\n").size() == 1);
+    CHECK(parseErrors("y = if(1, lowercase$('A'), 10, 20, 30)\n").size() == 1);   // a string function too
+    // the form the message recommends (the reproducer of the issue rewritten)
+    auto rewritten = runModel(R"(
+s$ = 'apple'
+y_same = IF(s$ = 'apple', 20, 10)
+y_diff = IF(s$ = 'banana', 20, 10)
+)");
+    INFO(rewritten.message);
+    REQUIRE(rewritten.solveOk);
+    CHECK_THAT(rewritten["y_same"], WithinAbs(20.0, 1e-12));
+    CHECK_THAT(rewritten["y_diff"], WithinAbs(10.0, 1e-12));
+
+    // a bare string as the condition, an ordering between strings, a string branch: errors, never 0
+    CHECK(anyContains(parseErrors("s$ = 'b'\ny = IF(s$, 1, 2)\n"),
+                      "The condition of IF is a string (s$): compare it with = or <>, e.g. IF(s$ = 'text', X, Y)"));
+    CHECK(anyContains(parseErrors("s$ = 'b'\ny = IF(s$ < 'c', 1, 2)\n"),
+                      "IF compares strings with = and <> only: '<' between strings in the condition s$ < 'c'"));
+    CHECK(anyContains(parseErrors("s$ = 'b'\ny = IF(x > 0 AND 'c' >= s$, 1, 2)\n"), "'>=' between strings"));
+    CHECK(anyContains(parseErrors("y = IF(1, 'a', 2)\n"), "IF returns a number: argument 2 ('a') cannot be a string"));
+    CHECK(anyContains(parseErrors("y = IF(1, 2, 3, 4, s$)\n"), "argument 5 (s$) cannot be a string"));
+    // in a body too
+    CHECK(parseErrors("FUNCTION f(s$)\n  f = IF(s$, 'x', 1, 2, 3)\nEND\ny = f('x')\n").size() == 1);
+    // numbers compared with numbers are unaffected, a numeric function of a string included
+    CHECK(parseErrors("b = IF(isidealgas('Air'), 0.5, 10, 20, 30)\n").empty());
+}
+
 TEST_CASE("CS-BUG-ARG-DROP: the other built-in functions take no named argument either", "[library-gaps][named-arg]") {
     CHECK(anyContains(parseErrors("y = max(a=1, 2)\n"), "max does not take named arguments ('a=1')"));
     CHECK(anyContains(parseErrors("y = sin(x=30)\n"), "sin does not take named arguments ('x=30')"));
