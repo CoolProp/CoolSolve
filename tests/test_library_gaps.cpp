@@ -229,6 +229,27 @@ CALL p(-5 : c)
     }
 }
 
+TEST_CASE("CS-BUG-IF-IGNORED: reproducer of GitHub #2 (condition without parentheses, :=, EndIf)", "[library-gaps][if-then-else]") {
+    // reported on v0.2: the ELSE branch always ran (c = 3); fixed by c8ce07c (post-v0.3.0)
+    const std::string procedure = R"(
+Procedure calcSoma(a, b : resultado)
+  If a<b Then
+    resultado := 1000
+  Else
+    resultado := a+b
+  EndIf
+End
+)";
+    auto taken = runModel(procedure + "a=1\nb=2\nCall calcSoma(a,b : c)\n");
+    INFO(taken.message);
+    REQUIRE(taken.solveOk);
+    CHECK_THAT(taken["c"], WithinAbs(1000.0, 1e-12));
+    auto other = runModel(procedure + "a=5\nb=2\nCall calcSoma(a,b : c)\n");
+    INFO(other.message);
+    REQUIRE(other.solveOk);
+    CHECK_THAT(other["c"], WithinAbs(7.0, 1e-12));
+}
+
 TEST_CASE("CS-BUG-IF-IGNORED: block form with ELSE and ENDIF", "[library-gaps][if-then-else]") {
     // Layout of the ULiege cpbar library: THEN followed by a comment, ELSE and
     // ENDIF on their own lines, statements separated by semicolons, brace comment after ELSE.
