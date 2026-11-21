@@ -31,6 +31,16 @@ Notes of the changes merged since v0.5, gathered for the next changelog.
 - **Usage statistics**: `GET /api/v1/stats/log` and the `/stats` dashboard show client networks (`topNetworks`,
   IPv4 /24 and IPv6 /48) instead of full client addresses (`topIps` is removed). The log file is unchanged.
 
+### Behaviour changes
+
+- **Relaxed acceptance of a stalled solver**: when a step stalls or the line search fails, Newton, TrustRegion,
+  Levenberg-Marquardt, KINSOL, the N-D bisection, the partitioned solver and the tearing fallback accept the point
+  only if each equation that `tolerance` does not meet is within `lsRelaxedTolerance` of its own terms when these are
+  below 1 (it was the absolute residual whenever the block also held terms of order 1). A system without a real
+  root whose residual was small only because of its scale, `1e-5*(y + x^2 + 1) = 0` with `y = x`, was reported
+  solved and verified; it now fails (GitHub issue #8). A model whose equations of small terms (viscosities,
+  conductivities, concentrations) stopped short of convergence now fails instead of returning a wrong value.
+
 ### New
 
 - **Conditions in `IF(cond, a, b)`**: the condition is written as the one of an `IF ... THEN` statement: `=` and

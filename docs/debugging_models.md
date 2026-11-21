@@ -270,7 +270,8 @@ For difficult models, you can adjust `SolverOptions` in code (e.g. in `runner.cp
 - `tolerance` – loosen if near-convergence is acceptable. It applies to the residual of each equation relative to the
   size of its terms ([Language Reference §10](language_reference.md#convergence-tolerance)): the same absolute `1e-9`
   for terms of order 1, relative to the terms in a block whose equations all have terms below 1, and not below the rounding level of the terms above `7·10⁴`.
-- `lsRelaxedTolerance` – accept convergence when line search fails but residual is small.
+- `lsRelaxedTolerance` – accept convergence when line search fails (or a step stalls) but the residual is small:
+  below it in absolute value for terms of order 1, relative to its own terms for an equation of terms below 1.
 
 **`warning: x = … is below the solver tolerance (…)` (`W002`).** A variable solved by an implicit block has a
 value between 0 and `tolerance` (1e-9) in magnitude. Its digits are right only if its block holds nothing but tiny

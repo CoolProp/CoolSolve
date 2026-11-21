@@ -206,7 +206,7 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
       { key: 'lsMinStep', label: 'Min step', type: 'number', defaultVal: '1e-10',
         description: 'Minimum step size in line search; smaller steps are rejected.' },
       { key: 'lsRelaxedTolerance', label: 'Relaxed tolerance', type: 'number', defaultVal: '1e-2',
-        description: 'Accept as converged if line search fails but ‖F‖ is below this. Prevents discarding near-converged solutions.' },
+        description: 'Accept as converged if line search fails (or a step stalls) but the residual is below this: absolute for terms of order 1, relative to its own terms for an equation of terms below 1. Prevents discarding near-converged solutions.' },
       { key: 'lsNonMonotoneMemory', label: 'Non-monotone memory M', type: 'number', defaultVal: '10',
         description:
           'Non-monotone line search memory (Grippo et al. 1986). '

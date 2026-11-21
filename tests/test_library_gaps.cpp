@@ -23999,6 +23999,50 @@ TEST_CASE("CS-BUG-TINY-IMPLICIT: an energy balance of terms ~5E7 converges at th
     CHECK(run.iterations <= 20);
 }
 
+TEST_CASE("GitHub #8: the relaxed acceptance weighs an unmet equation by its own terms", "[library-gaps][tiny-implicit]") {
+    const double tol = 1e-9;
+    Eigen::VectorXd F(2), S(2);
+    // the stall of the issue: 1e-5*(y + x^2 + 1) = 0 at its minimum (terms ~2.5E-5, residual 7.5E-6) beside y = x
+    // (terms ~2): absolute weight, 7.5E-6 < lsRelaxedTolerance; with its own terms, 0.3
+    F << 7.5e-6, 7.5e-11;
+    S << 2.5e-5, 2.0;
+    CHECK_THAT(weightedResidualNorm(F, S), WithinRel(7.5e-6, 1e-12));
+    CHECK_THAT(relaxedResidualNorm(F, S, tol), WithinRel(0.3, 1e-12));
+    // an equation of tiny terms met by the absolute test of its block (rounding noise of the block) keeps that weight
+    F << 3e-10, 2e-4;
+    S << 1e-13, 1e6;
+    CHECK(relaxedResidualNorm(F, S, tol) == weightedResidualNorm(F, S));
+    // terms of order 1 or more, and a block of tiny terms, as weightedResidualNorm
+    F << 5e-3, 1e-12;
+    S << 2.0, 1e-3;
+    CHECK(relaxedResidualNorm(F, S, tol) == weightedResidualNorm(F, S));
+    S << 0.5, 1e-3;
+    CHECK(relaxedResidualNorm(F, S, tol) == weightedResidualNorm(F, S));
+    // no scale: the plain norm; NaN stays NaN
+    CHECK(relaxedResidualNorm(F, Eigen::VectorXd(), tol) == 5e-3);
+    F[0] = std::numeric_limits<double>::quiet_NaN();
+    CHECK(std::isnan(relaxedResidualNorm(F, S, tol)));
+
+    // the reproducer: no real root, so every pipeline fails (TrustRegion reported SUCCESS and the check passed)
+    const std::string noRoot = "1e-5*(y + x^2 + 1) = 0\ny = x\n";
+    using Strategy = SolverStrategy;
+    for (const auto& pipeline : std::vector<std::vector<Strategy>>{{Strategy::Newton, Strategy::TrustRegion},
+                                                                   {Strategy::Newton, Strategy::LevenbergMarquardt},
+                                                                   {Strategy::TrustRegion}, {Strategy::LevenbergMarquardt}}) {
+        auto run = runModel(noRoot, {}, "", [&](SolverOptions& o) { o.solverPipeline = pipeline; });
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+    }
+    CHECK_FALSE(runModel(noRoot).solveOk);
+    // with a root, the same block of terms 1E-5 beside terms of order 1 solves: x = (sqrt(5) - 1)/2, to the absolute
+    // test of the block (|F| < 1E-9 on terms of 1E-5 leaves x within about 2E-5)
+    auto root = runModel("1e-5*(y + x^2 - 1) = 0\ny = x\n", {}, "x = 0.5\ny = 0.5\n",
+                         [](SolverOptions& o) { o.solverPipeline = {SolverStrategy::Newton, SolverStrategy::TrustRegion}; });
+    INFO(root.message);
+    REQUIRE(root.solveOk);
+    CHECK_THAT(root["x"], WithinAbs((std::sqrt(5.0) - 1.0) / 2.0, 1e-4));
+}
+
 // ============================================================================
 // CS-GAP-QUALITY-DOME: QUALITY outside the saturation dome is -100 (liquid side: compressed liquid) or +100 (vapour
 // side: superheated vapour, supercritical gas), as EES; a state in the dome keeps its quality in [0, 1].

@@ -1852,7 +1852,8 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
         }
 
         if (stepNorm < options.stepTolerance) {
-            if (rhoNorm < options.tolerance * 100 || rhoNorm < options.lsRelaxedTolerance) {
+            if (rhoNorm < options.tolerance * 100 ||
+                relaxedResidualNorm(F, evalResult.scale, options.tolerance) < options.lsRelaxedTolerance) {
                 if (trace) {
                     trace->finalStatus = SolverStatus::Success;
                     trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
@@ -2203,7 +2204,7 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
             // Schur complement is singular — tear Newton step impossible.
             // However, if the acyclic forward sweep already brought the
             // full residual close to tolerance, accept the current x.
-            if (fullRho < std::max(options.tolerance * 1000.0, 1e-3)) {
+            if (relaxedResidualNorm(F, evalResult.scale, options.tolerance) < std::max(options.tolerance * 1000.0, 1e-3)) {
                 if (trace) {
                     trace->finalStatus = SolverStatus::Success;
                     trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;

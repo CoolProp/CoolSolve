@@ -2355,7 +2355,10 @@ terms of `10⁸`). An equation of tiny terms in a block that also holds enthalpi
 residual (a pressure drop of `10⁻²³` Pa, a `MIN(a, b)` of two noisy `10⁻⁸`) is rounding noise of the block, which a
 test relative to its own terms would never meet. The looser acceptance thresholds (`100 · tolerance` on a stalled
 step, `lsRelaxedTolerance`, the fallback of the tearing solver) are applied the same way, with the same rounding level:
-they are never multiplied by it. `relativeTolerance` compares the distance to convergence, the largest
+they are never multiplied by it. The last two (`lsRelaxedTolerance`, `10⁻²` by default, and the tearing fallback)
+weigh an equation that the `tolerance` test does not meet by its own terms, `w = max(S, 10⁻¹²)` when `S < 1`, even
+beside larger terms: a stall at `1e-5*(y + x^2 + 1) = 0` (no real root) with a residual of `7.5·10⁻⁶`, as large as
+its terms, is a failure, not a solution. `relativeTolerance` compares the distance to convergence, the largest
 `|LHS − RHS| / max(tolerance · w, 64·ε·S)`, with its value at the start, so that a guess of huge terms (a residual of
 `10²⁰`) does not make a point that is still wrong look converged. A derivative that is infinite at the point (`sqrt` at
 0) gives no `S`: the absolute test. The merit
