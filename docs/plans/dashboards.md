@@ -1,7 +1,8 @@
 # Dashboards plan
 
 **Status:** proposal, 2026-11-20, not started (Phase 0 done: this plan, a prototype runtime and
-two example dashboards in [`dashboards/`](dashboards/)).
+two example dashboards in [`dashboards/`](dashboards/)). Amended 2026-11-21 (R15): actions on any
+element and preset buttons, actions from pop-up windows, dashboards that open in a pop-up window.
 **Scope:** GUI, server, CLI, ZIP bundle, model library. No change to the language or the solver.
 **Not served:** this file lives in `docs/plans/`, a subfolder of `docs/`. `cmake/embed_assets.cmake`
 embeds the files of `docs/` only (no subfolders) and the server has no filesystem fallback in a
@@ -50,12 +51,13 @@ template, opened live in the GUI or on its own as a snapshot, and saved with the
 | R6 | Variables are outputs (read from the results) or inputs; inputs follow the rule of the parametric table: only isolated, directly defined variables | §7 |
 | R7 | `INTEGRAL` models: animate plots, diagrams and schematics, live, from the integral table, with proper animation buttons; animated drawings (e.g. an internal combustion engine) | §8, example `dashboards/engine.html` |
 | R8 | Users are encouraged to go through an LLM with clear instructions; better still if the LLM can run the `coolsolve` binary | §10.3 |
-| R9 | The important GUI buttons (Solve, Update guesses, …) can be placed on a dashboard; they do nothing when the page is not served by the GUI | §5.2 (`cs-button`), §9.3 |
+| R9 | The important GUI buttons (Solve, Update guesses, …) can be placed on a dashboard; they do nothing when the page is not served by the GUI | §5.2 (`cs-button`), §5.3 (`data-cs-action`), §9.3, §9.4 |
 | R10 | The plan is in `docs/` but not served online | header of this file, D1 |
 | R11 | Dashboards are saved and loaded with the other files of the model (ZIP export/import) | §9.7 |
 | R12 | A few library models to test the feature | §11 |
 | R13 | Nice features that make CoolSolve attractive; more customisable and practical than the EES Diagram window | §14 |
 | R14 | No questions: decisions taken while hesitating are documented | §15 |
+| R15 | *(follow-up, 2026-11-21)* A dashboard acts on the current session through predefined actions and buttons written in its HTML (e.g. *Solve*), and can appear as a pop-up window; only when served by the GUI | §4.2, §5.3, §9.3, §9.4, D22–D24 |
 
 ---
 
@@ -108,7 +110,8 @@ and exportable as a single file that anyone opens in a browser.
 | **Saved plot** | A named chart of the session — a thermodynamic diagram, a parametric plot or an integral plot — stored as a **spec** (what to draw, not the picture) and redrawn from the current results. Shown as a tab of the bottom panel; usable in dashboards by its id. |
 | **Dashboard** | An HTML file of the model folder, `dashboards/<name>.html`, with its images in `dashboards/assets/`. Written against the contract of §5. |
 | **Runtime** | `coolsolve-dashboard.js`: the script a dashboard includes. It finds the data, binds the elements, draws the plots, runs the player and talks to the host. |
-| **Host** | The CoolSolve GUI page that shows a dashboard (a bottom-panel tab, or a window of its own). It feeds the data and carries out the actions. |
+| **Host** | The CoolSolve GUI page that shows a dashboard (a bottom-panel tab, or a pop-up window of its own). It feeds the data and passes the actions on. |
+| **Editor window** | The GUI window that owns the editor of the session (the main window). It carries out the actions of every dashboard of the session, popped-out ones included (§9.4). |
 | **Data** | One JSON document, `coolsolve-dashboard-data/1` (§6): results, inputs, integral table, parametric study, saved plots, solve status. |
 | **Hosted mode** | Inside the GUI: live data, working inputs and buttons. |
 | **Standalone mode** | Without the GUI: a **snapshot** of the data (inlined in an exported file, or `results.js` next to the dashboard). Inputs and buttons are shown but disabled, with a tooltip. Animation, plots, zoom and the layout helper work. |
@@ -136,14 +139,23 @@ and exportable as a single file that anyone opens in a browser.
   *Import HTML…*, and for the dashboard shown: *Export standalone file*, *Download source*,
   *Check*, *Delete*.
 - A dashboard opens as a **tab of the bottom panel** (next to the saved plots), with three buttons
-  in the tab header: **pop out** (a window of its own, which can go to a second screen),
-  **presentation** (full screen, no CoolSolve chrome: lectures, demos) and **reload** (re-read
-  the file).
+  in the tab header: **pop out** (a pop-up window of its own, without browser toolbars, which can go
+  to a second screen), **presentation** (full screen, no CoolSolve chrome: lectures, demos) and
+  **reload** (re-read the file).
+- **Open in a window by default.** A dashboard can ask to open directly in its pop-up window:
+  `<cs-dashboard open="window">` (§5.1), set by its author or by *Always open in a window* in the
+  tab menu, which changes that attribute in the file (D24). Its tab then stays as a small
+  placeholder with *Bring to front* and *Show here*. Windows open on a click only: loading a model
+  adds the tabs of its dashboards and opens no window.
 - **Live**: after each solve the dashboard receives the new results; while a solve runs it shows
   the status (`solving`, block *i*/*n*); a failed solve leaves the last results, marked stale.
   A popped-out window stays in sync with the main window (§9.4).
-- Inputs changed on a dashboard rewrite the line of the model in the editor, as an undoable edit
-  (§7.3). *Solve* on a dashboard is the toolbar *Solve* (it becomes *Try Harder* after a failure).
+- **Actions**: the buttons and clickable elements of a dashboard (§5.2, §5.3) act on the session:
+  *Solve* on a dashboard is the toolbar *Solve* (it becomes *Try Harder* after a failure), also from
+  a pop-up window, where the main window carries it out (§9.4); the console says which dashboard
+  asked. Inputs changed on a dashboard rewrite the line of the model in the editor, as an undoable
+  edit (§7.3). All of this exists only in the GUI: a standalone dashboard shows the same controls,
+  disabled (§4.4).
 
 ### 4.3 *Add dashboard*
 
@@ -224,7 +236,10 @@ rest is ordinary HTML, CSS and SVG. The prototype `dashboards/coolsolve-dashboar
 
 `<cs-dashboard>` attributes: `autosolve` (`false` by default, §7.4), `results` (file of the
 snapshot in standalone mode, default `results.js`), `theme` (`auto`, `light`, `dark`; `auto`
-follows the GUI).
+follows the GUI), `open` (`tab` by default, or `window`: the GUI opens the dashboard in a pop-up
+window, §4.2) and `window-size` (`1100x750`; by default the size of the stage plus the margins).
+`open` and `window-size` are read by the GUI (from the source, without running the page) and
+ignored elsewhere.
 
 ### 5.2 Elements
 
@@ -233,7 +248,7 @@ follows the GUI).
 | `<cs-stage>` | `width`, `height` (design units), `fit` (`width` default, `contain`) | A canvas in design coordinates, scaled as one piece (§5.6). Children with `x`, `y` (and `anchor`) are placed on it. |
 | `<cs-value>` | `name` or `expr`, `unit` (display unit, §5.7), `scale`, `decimals`, `label`, `hide-unit`, `warn-above`, `warn-below`, `units` (unit of an `expr`) | Label, number, unit. Tooltip: the variable name and whether it is an input. Red when outside the warning limits. |
 | `<cs-input>` | `name`, `label`, `min`, `max`, `step`, `unit`; `widget` (`slider` default, `number`, `select`, `radio`), `options` (string inputs) | An input of the model (§7): slider and number box, or a choice for a string variable. |
-| `<cs-button>` | `action`: `solve`, `update-guesses`, `stop`, `reset-inputs`; text content = label | A GUI action (§9.3). Disabled in standalone mode, with a tooltip. `solve` becomes *Try Harder* as in the toolbar. |
+| `<cs-button>` | `action`: `solve`, `update-guesses`, `stop`, `reset-inputs`; text content = label | A GUI action (§9.3, §9.4), carried out by the editor window wherever the dashboard is. Disabled in standalone mode, with a tooltip, and while the action is not available (as the toolbar: *Stop* only while solving). `solve` becomes *Try Harder* as in the toolbar. The styled shorthand of `data-cs-action` (§5.3). |
 | `<cs-status>` | — | `solved` / `failed` / `solving` / `stale` pill, message, time; "snapshot of …" in standalone mode. |
 | `<cs-plot>` | `ref` (a saved plot, §4.1) **or** `x`, `y` (columns of the integral table or of the parametric study, `y` may list several), `source` (`integral` default, `parametric`), `x-unit`, `y-unit`, `log-x`, `log-y`, `x-range`, `y-range`, `cursor`, `band-x` + `band-label`, `title` | An interactive chart (Plotly: zoom, hover). With `cursor`, a marker follows the player. |
 | `<cs-player>` | `duration` (s for the whole range at ×1, default 10), `realtime`, `autoplay`, `no-loop`, `source` (`integral` default, `parametric`) | Animation controls (§8): start, step back, play/pause, step forward, scrubber, position, speed, loop. |
@@ -257,6 +272,25 @@ or an expression (§5.4).
 | `data-cs-translate="0, -L*2000"` | Translation in drawing units *(not in the prototype)* |
 | `data-cs-scale-y="level/H"` + `data-cs-origin` | Scale (a liquid level, a bar) *(not in the prototype)* |
 | `data-cs-flow="M_dot_r"` + `data-cs-flow-ref="0.16"` | Dashes moving along a path, period 1 s when the value equals the reference: flows come alive, also for steady models |
+
+**Actions on any element.** `<cs-button>` is a ready-styled button; any other element, HTML or
+SVG, can carry the same actions, so that a schematic is clickable like a real control panel and a
+scenario is one line of HTML (D23):
+
+| Attribute | Effect |
+|---|---|
+| `data-cs-action="solve"` | On click (or <kbd>Enter</kbd> / <kbd>Space</kbd>), carries out a GUI action: `solve`, `update-guesses`, `stop`, `reset-inputs` (§9.4). The runtime makes the element focusable (`role="button"`, `tabindex="0"`, pointer cursor) and disables it as a `cs-button` (standalone mode, action not available): class `cs-disabled`, tooltip |
+| `data-cs-set="T_ev = -5; T_cond = 45"` | On click, sets inputs (§7.1) to constants — numbers, or `'R1234yf'` for a string input — as one undoable edit: a **preset**. With a `data-cs-action` on the same element, the action follows: `data-cs-action="solve"` sets and solves |
+
+```html
+<button data-cs-set="T_ev = -5; T_cond = 45" data-cs-action="solve">Cold day</button>
+<button data-cs-set="R$ = 'R1234yf'" data-cs-action="solve">Switch to R1234yf</button>
+<g class="compressor" data-cs-action="solve"> … </g>   <!-- click the compressor to solve -->
+```
+
+The runtime puts the class `cs-hosted` or `cs-standalone` on `<html>`, so that the author can hide
+what only makes sense in the GUI: `:root:not(.cs-hosted) .gui-only { display: none }` (hidden
+also during the 400 ms the runtime waits for a host).
 
 ### 5.4 Expressions
 
@@ -284,8 +318,11 @@ CoolSolve.onFrame((ctx) => {
 
 It is called when data arrive (each solve) and at each animation frame. Also planned in v1:
 `CoolSolve.value(name)`, `CoolSolve.onData(fn)`, `CoolSolve.player` (`play()`, `pause()`,
-`seek(t)`), `CoolSolve.setInput(name, value)` and `CoolSolve.action(name)` (both no-ops, with a
-problem notice, in standalone mode). Nothing else of the page is reachable from the host (§9.2).
+`seek(t)`), `CoolSolve.setInput(name, value)` (or `setInputs({T_ev: 5, T_cond: 45})`, one edit)
+and `CoolSolve.action(name)` (no-ops in standalone mode, with a console notice),
+`CoolSolve.hosted` (true in the GUI) and `CoolSolve.onStatus(fn)` (the `status` of §9.3, for a
+custom control that follows the solve). Nothing else of the page is reachable from the host
+(§9.2).
 
 ### 5.6 Placement and resizing
 
@@ -406,8 +443,9 @@ the new value, the bundle saves it, the CLI solves the same model.
   `BroadcastChannel` of §9.4 from a popped-out window); the main window rewrites its editor text
   with the same rule (`POST /api/v1/inputs` on the current text, which returns the new text and
   the changed lines) and applies it as an **undoable edit** (Monaco `pushEditOperations`): Ctrl+Z
-  in the editor undoes a slider move. Without a main window (a popped-out dashboard whose main
-  window was closed) the host rewrites the session's code on the server.
+  in the editor undoes a slider move. Several values sent at once (a preset button, §5.3) are one
+  edit, undone by one Ctrl+Z. Without a main window (a popped-out dashboard whose main window was
+  closed) the host rewrites the session's code on the server (§9.4).
 - **Reset inputs** returns to the values the inputs had when the dashboard was opened.
 
 ### 7.4 When to solve
@@ -468,8 +506,12 @@ gui/src/plots/figures.ts      Plotly figures of thermo / parametric / integral p
                               ThermoDiagram, the saved-plot tabs and the runtime
 gui/src/components/
   DashboardTab.tsx            host: sandboxed iframe + message bridge (§9.2, §9.3)
+  DashboardWindow.tsx         the page of a popped-out dashboard: slim header + host (§9.4)
   DashboardMenu.tsx           toolbar drop-down, Add dashboard dialog (§4.3)
   SavedPlotTab.tsx            a saved plot as a bottom tab (§4.1)
+gui/src/utils/
+  sessionActions.ts           solve, stop, update guesses: shared by toolbar, shortcuts, hosts
+  sessionChannel.ts           the BroadcastChannel of a session, editor ownership (§9.4)
 include/coolsolve/dashboard.h, src/dashboard.cpp
                               data builder (§6), checker (§10.4), prompt builder (§10.2),
                               standalone exporter (§9.8)
@@ -509,22 +551,84 @@ library on the public server. It never runs with the rights of the GUI (D8):
 | host | `{source: 'coolsolve-host', type: 'data', data, theme}` | Data (§6) after load and after each solve |
 | host | `{source: 'coolsolve-host', type: 'status', status}` | Solve progress, failure, *Try Harder* available |
 | dashboard | `{… type: 'action', action}` | `solve`, `update-guesses`, `stop`, `reset-inputs` |
-| dashboard | `{… type: 'set-input', name, value}` | An input changed (§7.3) |
+| dashboard | `{… type: 'set-input', values}` | One or several inputs changed, `{T_ev: 5}` (§7.3), applied as one undoable edit |
+
+`status` carries `state`, `message`, `canTryHarder`, `actions` (which actions are available now,
+as the toolbar: `stop` only while solving) and `editor` (`open`, or `closed` in a pop-up without
+an editor window, §9.4). The host carries out the messages of one dashboard **in order**, so that
+a `solve` sent after a `set-input` (a preset button, §5.3) solves the rewritten code.
 
 Without an answer to `ready` within 400 ms the runtime takes the standalone path. Checked with the
-prototype: a test page that answers `ready` enables the inputs and buttons, applies the theme, and
-receives `action` and `set-input` messages.
+prototype, the host's messages being posted to the page: `data` enables the inputs and buttons
+and applies the theme; `cs-button`, `cs-input` (on release of the slider), the clickable
+compressor (click and <kbd>Enter</kbd>) and a preset (one `set-input` with two values, then
+`solve`) post the messages above; a `status` *solving* disables them all and nothing is posted;
+*failed* with `canTryHarder` turns *Solve* into *Try Harder*. An unknown action, a `data-cs-set`
+on an output, a non-constant or a string given to a number are listed in the problem badge and
+their element is disabled.
 
-### 9.4 Windows
+### 9.4 Windows and actions
 
-- *Pop out* opens `/?dashboard=<name>` in a new window that uses the session of the main window:
-  the cookie session as it is, or a tab session handed over through `localStorage` as the include
-  links do (`coolsolve_include_opener`), then adopted (`adoptTabSession`); the parameter is
-  consumed and removed from the address. The window shows the dashboard alone, full size.
-- The windows of one session keep in step through a `BroadcastChannel('coolsolve-<session>')`:
-  `solved` (re-read the data), `code-changed`, `set-input` (applied by the window that owns the
-  editor). Same browser only; a second device would need server events (`GET
-  /api/v1/session/events`, SSE), listed in §14.
+**Opening a window.** *Pop out* (tab header), or opening a dashboard whose file says
+`open="window"` (§4.2), calls `window.open('/?dashboard=<name>', 'coolsolve-<session>-<name>',
+'popup,width=…,height=…')`:
+
+- a window without browser toolbars, sized by `window-size` or else by the stage of the dashboard;
+  the window name makes a second click bring the same window to the front instead of opening
+  another one;
+- it uses the session of the main window: the cookie session as it is, or a tab session handed over
+  through `localStorage` as the include links do (`coolsolve_include_opener`), then adopted
+  (`adoptTabSession`); the parameter is consumed and removed from the address;
+- it shows the dashboard alone, full size, under a slim header: title, status, *presentation*,
+  *show in the main window* (closes the pop-up, the dashboard goes back to its tab);
+- it is opened from a click only (menu, tab, button), never at load, since browsers block pop-ups
+  without a user gesture. When the browser blocks it anyway, the dashboard opens in its tab with a
+  notice. Safari ignores the `popup` feature and opens a tab: the dashboard works the same.
+
+**Who carries out an action.** Every action and every input change is carried out by the
+**editor window** (the main window, which owns the editor of the session), wherever the dashboard
+is (D22):
+
+- `solve` sends the editor's text and initials (`POST /api/v1/solve` takes them from the client:
+  edits not yet solved exist only in the editor) and runs the progress stream; `update-guesses`
+  refreshes the initials of its store; input changes and `reset-inputs` edit its editor, undoably
+  (§7.3); `stop` cancels the solve it started.
+- The toolbar, the keyboard shortcuts and the hosts call the same functions
+  (`gui/src/utils/sessionActions.ts`, moved out of `Toolbar.tsx`), so *Solve* on a dashboard is the
+  toolbar's *Solve*, *Try Harder* included.
+- A dashboard in a bottom tab of the editor window calls them directly. A popped-out host forwards
+  them on the channel below.
+- The console of the editor window says which dashboard asked (`>>> Solve requested by dashboard
+  main`): a solve started from a second screen is not a mystery.
+
+**The channel.** The windows of one session keep in step through a
+`BroadcastChannel('coolsolve-<session>')`. Only the hosts (GUI pages) are on it; a dashboard, with
+its opaque origin, cannot join it (§9.2).
+
+| Message | From | Meaning |
+|---|---|---|
+| `who-owns` | pop-up | At load: which window owns the editor? |
+| `owner` | editor window | I own the editor (at load, on focus, in answer to `who-owns`) |
+| `owner-gone` | editor window | Sent on `pagehide` (closed or reloaded) |
+| `action {id, dashboard, action}` | pop-up | Carry out this action |
+| `set-input {id, dashboard, values}` | pop-up | Apply these input changes (§7.3) |
+| `ack {id}` | editor window | Received; the outcome follows as `status` and `solved` |
+| `status {status}` | editor window | Solve progress, relayed to the dashboards of every window |
+| `solved` | editor window | Re-read the data (`GET /api/v1/dashboard-data`) |
+| `code-changed` | editor window | The code changed (the list of inputs may have changed) |
+
+If two windows with an editor share a session (a cookie session open in two tabs), the one focused
+last claims ownership with `owner` and the other yields. Same browser only; a second device would
+need server events (`GET /api/v1/session/events`, SSE), listed in §14.
+
+**Without an editor window.** When a pop-up has no owner (no answer to `who-owns`, an
+`owner-gone`, or no `ack` within 500 ms), it carries out the actions itself on the session's code as
+the server last received it (last solve or save): it solves that code, `stop` cancels its own solve,
+`update-guesses` updates the session's initials, input changes rewrite the session's code on the
+server (§7.3). The status of its dashboards says *editor closed: solving the code of the last
+solve*, and the header offers *Open the editor*, which opens `/?sid=<session>` in a new window that
+shows the session's model and becomes the owner. A second-screen dashboard thus stays usable when
+the laptop window is closed, and says what it solves.
 
 ### 9.5 Server routes
 
@@ -684,6 +788,7 @@ Static checks of a dashboard against the model (parse only), shared by the GUI (
 | error | a name of `cs-value`, `cs-input`, `data-cs-*`, an expression, `ctx.get('…')` / `CoolSolve.value('…')` in a script that is not a variable of the model |
 | error | a `cs-input` on a variable that is not an input (§7.1), with the reason and the fix (`N = 3000/60` → write a constant) |
 | error | a `cs-plot ref` that is not a saved plot; `x`/`y` that are not integral columns (with the `$IntegralTable` line to add) |
+| error | an action of `cs-button` / `data-cs-action` that is not one of §9.4; a `data-cs-set` on a variable that is not an input, or whose value is not a constant (a number, or a quoted string for a string input) |
 | warning | a `cs-player` or a `cursor` for a model without `INTEGRAL`; an unknown `cs-*` element or attribute (typo) |
 | warning | a URL to the network (blocked in the GUI); a missing asset; a file larger than 2 MB |
 | info | stage children without `x`/`y`; a missing `<meta name="coolsolve-dashboard">` |
@@ -736,8 +841,8 @@ Sizes are rough.
 |---|---|---|
 | **0 — Plan and prototype** *(done)* | This plan; prototype runtime and two examples (§18) | — |
 | **1 — Contract, runtime, standalone export** | `gui/src/dashboard/` (port of the prototype, Plotly charts, ~1 500 lines TS); `src/dashboard.cpp`: data builder (live result or `.sol`), checker, exporter (~1 200 lines C++); `--dashboard-check`, `--dashboard-export`; `docs/dashboards.md` (contract reference) | An agent makes a standalone dashboard of a library model with the CLI alone |
-| **2 — GUI host and bundle** | Session state, routes (§9.5), bundle and disk folder (§9.7), toolbar menu, bottom tabs, sandboxed host and message bridge, buttons, live updates, pop-out windows and `BroadcastChannel`, presentation mode | A dashboard of a bundle opens in the GUI, solves from its button, follows a solve made in the editor, and survives a download/upload round trip |
-| **3 — Inputs** | `src/model_inputs.cpp` (detection with array elements and strings, rewrite), parametric study on the shared detection, `/api/v1/inputs`, undoable editor edits, `autosolve`, *Reset inputs*, string widgets | `CSL-0345`: the radio button switches the refrigerant, the editor shows it, Ctrl+Z undoes it |
+| **2 — GUI host and bundle** | Session state, routes (§9.5), bundle and disk folder (§9.7), toolbar menu, bottom tabs, sandboxed host and message bridge, `sessionActions.ts` shared with the toolbar, buttons and `data-cs-action`, live updates, pop-up windows (`open="window"`, *Always open in a window*), `BroadcastChannel`, editor ownership and the pop-up fallback (§9.4), presentation mode | A dashboard of a bundle opens in the GUI, solves from its button — also from its pop-up window, and still after the main window was closed — follows a solve made in the editor, and survives a download/upload round trip |
+| **3 — Inputs** | `src/model_inputs.cpp` (detection with array elements and strings, rewrite), parametric study on the shared detection, `/api/v1/inputs`, undoable editor edits, `autosolve`, *Reset inputs*, string widgets, `data-cs-set` presets | `CSL-0345`: the radio button switches the refrigerant, the editor shows it, Ctrl+Z undoes it; a preset button of `CSL-0025` sets two inputs and solves once |
 | **4 — Saved plots** | *Save* on the three plot tabs, `plots.json`, saved-plot tabs, `gui/src/plots/figures.ts`, dome in the data, `cs-plot ref` | The P-h diagram of `CSL-0025` is a tab and is in its dashboard, live and in the standalone file |
 | **5 — Animation** | Player complete (`realtime`, events, `CoolSolve.player`), `data-cs-translate` / `data-cs-scale-y`, cursors on all plot kinds, parametric player | `CSL-0339`, `CSL-0024` (variant) and `CSL-0009` animate smoothly |
 | **6 — LLM workflow** | Prompt builder, `--dashboard-prompt`, *Add dashboard* dialog (three routes), templates, fix-up prompt, evaluation (§10.5) | A user without HTML knowledge makes the dashboard of a test model through an assistant in a few minutes |
@@ -759,7 +864,7 @@ Phases 3–5. Phase 7 needs Phases 1–2.
 | 3.2 Solvers | not applicable | — (a callback per accepted integration step only if *follow the solve* is done, §8.4) |
 | 3.3 `coolsolve.conf` | not applicable | Dashboard settings live in the dashboard (`<cs-dashboard>`), not in the solver configuration |
 | 3.4 Config editor | not applicable | — |
-| 3.5 GUI frontend | needed | `types.ts` (dashboards, saved plots, data), `client.ts` (routes through `request()`), `modelStore.ts` / `uiStore.ts` (dashboards, saved plots, bottom tabs), `sessionModel.ts` (read them back), `App.tsx` (bottom tabs), `Toolbar.tsx` (menu), `ThermoDiagram.tsx` / `ParametricStudy.tsx` / `IntegralTable.tsx` (*Save*), new components of §9.1, `CodeEditor.tsx` (undoable input edits) |
+| 3.5 GUI frontend | needed | `types.ts` (dashboards, saved plots, data), `client.ts` (routes through `request()`), `modelStore.ts` / `uiStore.ts` (dashboards, saved plots, bottom tabs), `sessionModel.ts` (read them back), `App.tsx` (bottom tabs, the `?dashboard=` window), `Toolbar.tsx` (menu; its solve, stop and update-guesses handlers move to `sessionActions.ts`), `ThermoDiagram.tsx` / `ParametricStudy.tsx` / `IntegralTable.tsx` (*Save*), new components of §9.1, `CodeEditor.tsx` (undoable input edits) |
 | 3.6 Server / REST | needed | Routes of §9.5 through `getSession()`; session IDs of `/d/{session}/…` checked with `isValidSessionId()`; `tests/test_dashboard_api.py` (`--auto`) |
 | 3.7 ZIP bundle | needed | §9.7 in `createZipBundle` / `extractZipBundle`; round-trip test; layout documented in `contributing.md` §3.7 and `gui.md` §7.2 |
 | 3.8 Debug mode | not applicable | — |
@@ -768,7 +873,7 @@ Phases 3–5. Phase 7 needs Phases 1–2.
 | 3.11 Examples | needed | `examples/dashboards/` with a small model and a dashboard for the CLI tests (`--dashboard-check`, `--dashboard-export`) |
 | 3.12 README and docs | needed | §17 |
 | 3.13 Build system | needed | Second Vite entry for the runtime; the runtime and `docs/dashboards.md` embedded (the latter in every build, for the prompt); library allow-list on both sides |
-| Tests | needed | Catch2: data builder (live and `.sol`), input detection and rewrite (numbers, array elements, strings, comments and units kept), checker (each rule, negative cases), exporter (deterministic, decimation). Headless Chromium (pattern of `tests/test_gui_shortcuts.py`): the examples render without problem badge; a label keeps its place on the schematic from 1280 to 375 px; the player advances and a cursor moves; a hosted dashboard's button solves and an input rewrites the editor; the sandbox cannot `fetch('/api/v1/files/eescode')` |
+| Tests | needed | Catch2: data builder (live and `.sol`), input detection and rewrite (numbers, array elements, strings, comments and units kept), checker (each rule, negative cases), exporter (deterministic, decimation). Headless Chromium (pattern of `tests/test_gui_shortcuts.py`): the examples render without problem badge; a label keeps its place on the schematic from 1280 to 375 px; the player advances and a cursor moves; a hosted dashboard's button solves and an input rewrites the editor; a `data-cs-action` element of an SVG solves; a preset sets two inputs as one undoable edit, then solves; a button of a popped-out dashboard solves through the main window, then on its own once the main window is closed; the sandbox cannot `fetch('/api/v1/files/eescode')` |
 
 ---
 
@@ -828,7 +933,7 @@ Taken while hesitating, without asking (R14). Each can be revisited; the alterna
 | D11 | **Manual solve** by default; `autosolve` per dashboard | Always solve on change | Many library models take seconds; a slider that solves at each move would freeze the page |
 | D12 | Animation is a **playback of the integral table** in the browser, interpolated; *follow the solve* later | Re-solving per frame; streaming during the solve | "Live, but using the results of the integral table" (the request); smooth, instant, works in standalone files |
 | D13 | The bundle carries the runtime and `results.js` (generated, ignored at import), not Plotly | Nothing generated in the bundle; Plotly in every bundle | The unzipped folder opens offline from `file://` for a few kB; 1.4 MB in every bundle is too much, and the standalone export covers offline plots |
-| D14 | Dashboards and saved plots are **bottom-panel tabs**, with pop-out and presentation | A right-panel tab; a separate page only | The request places saved diagrams at the bottom; one place for both; the panel is resizable and maximisable, and pop-out gives a full window |
+| D14 | Dashboards and saved plots are **bottom-panel tabs**, with pop-out and presentation; a dashboard may ask to open in its pop-up window (D24) | A right-panel tab; a separate page only | The request places saved diagrams at the bottom; one place for both; the panel is resizable and maximisable, and pop-out gives a full window |
 | D15 | Buttons: `solve` (with *Try Harder*), `update-guesses`, `stop`, `reset-inputs` | Also *Save*, *Open*, *Debug solve* | The actions that make sense while exploring; file actions stay in the toolbar (a dashboard must not trigger downloads) |
 | D16 | The GUI **does not call an LLM**: it generates the prompt, the user pastes it; the contract text has one source, `docs/dashboards.md` (markers), embedded in every build | Built-in LLM calls with an API key; a separate authoring guide | No key, no cost, offline, provider-neutral; one text for users and LLMs cannot drift |
 | D17 | CLI options `--dashboard-prompt`, `--dashboard-check`, `--dashboard-export` | Sub-commands (`coolsolve dashboard check`) | Consistent with the existing long options of `main.cpp` |
@@ -836,6 +941,9 @@ Taken while hesitating, without asking (R14). Each can be revisited; the alterna
 | D19 | Names are **case-insensitive**, trigonometric functions in **degrees** | JavaScript conventions | EES/CoolSolve semantics: `T_ev` and `t_ev` are one variable; `sin(30) = 0.5` in the model and on the dashboard |
 | D20 | The test models are `CSL-0025`, `CSL-0345`, `CSL-0339`, `CSL-0024` (+ variant), `CSL-0009`, and `CSL-0019` as a stretch | Others (building `CSL-0042`, absorption chillers) | Small to large, steady and dynamic, the three Diagram-window cases of the register, a mechanism, a long table |
 | D21 | The prototype's examples use **real CoolSolve results** (library `.sol`, and a run of the engine variant), copied into `*.results.js` | Synthetic data | Shows what a real dashboard looks like and already revealed a modelling question (§11) |
+| D22 | Actions are carried out by the **editor window**; a pop-up forwards them on the `BroadcastChannel`; without an editor window, the pop-up acts on the session's code as the server last received it, and says so | Each window solves on its own from the server's copy; actions disabled in a pop-up once the main window is closed | Edits not yet solved exist only in the editor, and so do the guesses shown and the undo history; one place carrying out actions means two windows never solve two versions of the model at once; the fallback keeps a second-screen dashboard usable when the laptop window is closed |
+| D23 | Actions on **any element** (`data-cs-action`) and **preset buttons** (`data-cs-set`), `cs-button` being the styled shorthand | `cs-button` only; actions from JavaScript only (`CoolSolve.action`) | A schematic becomes clickable like a real control panel; a scenario ("cold day", another refrigerant) is one line of HTML for an LLM, without JavaScript; the checker validates attributes statically, which it cannot do for a script |
+| D24 | Opening in a window is a **setting of the dashboard file** (`<cs-dashboard open="window">`), toggled from the tab menu; windows open on a click only | A preference in the browser (`localStorage`); a manifest `dashboards/dashboards.json`; a floating panel inside the GUI page; windows opened at load | The setting travels with the dashboard (bundle, library) and the author or an LLM can write it; the GUI changes one attribute of a tag, as it changes one line for an input; a floating panel cannot go to a second screen; browsers block pop-ups opened without a click |
 
 ---
 
@@ -846,9 +954,12 @@ Taken while hesitating, without asking (R14). Each can be revisited; the alterna
   Firefox and Safari in Phase 2. Fallback: inline the runtime into the served document.
 - **Plotly in a sandbox.** Plotly needs no network or storage; its hover and zoom work in sandboxed
   iframes (to confirm in Phase 1).
-- **Editor ownership** (§7.3). Several windows of one session could edit at once; the rule "the
-  window with the editor applies input changes" must be enforced (one owner, announced on the
-  `BroadcastChannel`).
+- **Editor ownership** (§7.3, §9.4). Several windows of one session could edit at once. Designed:
+  one owner announced on the `BroadcastChannel`, the last focused editor window, and a pop-up that
+  acts on the server's copy when no owner answers. To verify with two tabs of one cookie session
+  and with a reload of the main window during a solve requested from a pop-up.
+- **Pop-up windows.** Blocked without a user gesture, so never opened at load; `popup` window
+  features differ between browsers (Safari opens a tab). The tab stays the fallback.
 - **Large tables.** 18 000 rows × 10 columns is ~2 MB of JSON: fine for `postMessage`, decimated for
   exports. Models with 100 000 rows would need decimation in the GUI too.
 - **Contract stability.** Once library dashboards exist, the v1 contract must stay readable; new
@@ -887,9 +998,9 @@ In [`dashboards/`](dashboards/), next to this plan (not served either):
 
 | File | What |
 |---|---|
-| `coolsolve-dashboard.js` | Prototype runtime (plain JavaScript, no dependency): stage scaling, `cs-value`, `cs-input`, `cs-button`, `cs-status`, `cs-plot` (small SVG charts instead of Plotly), `cs-player`, the `data-cs-*` bindings, the expression language, units, problem badge, layout helper (<kbd>L</kbd>), and the host protocol of §9.3 |
+| `coolsolve-dashboard.js` | Prototype runtime (plain JavaScript, no dependency): stage scaling, `cs-value`, `cs-input`, `cs-button`, `cs-status`, `cs-plot` (small SVG charts instead of Plotly), `cs-player`, the `data-cs-*` bindings, `data-cs-action` and `data-cs-set`, `CoolSolve.action` / `setInput(s)` / `onStatus` / `hosted`, the `cs-hosted` / `cs-standalone` classes, the expression language, units, problem badge, layout helper (<kbd>L</kbd>), and the host protocol of §9.3 (`data`, `status` with available actions and *Try Harder*) |
 | `engine.html` + `engine.results.js` | `CSL-0024` animated: slider-crank mechanism, valves, spark, flame, gas coloured by temperature, p–V loop and p(θ), T(θ) with cursors, player (the "animated internal combustion engine" of the request) |
-| `heat_pump.html` + `heat_pump.results.js` | `CSL-0025`: values on the schematic at the four states, COP, pipes coloured by temperature with moving flows, inputs and buttons (disabled standalone), saved P-h diagram |
+| `heat_pump.html` + `heat_pump.results.js` | `CSL-0025`: values on the schematic at the four states, COP, pipes coloured by temperature with moving flows, inputs and buttons, two preset buttons (`data-cs-set` + `data-cs-action="solve"`), a compressor that solves when clicked with a *click to solve* hint shown in the GUI only (all disabled standalone), saved P-h diagram |
 
 **Opening them.** Double-click the `.html` file (it reads its `*.results.js` from the same folder,
 `file://` is fine), or serve the folder: `python3 -m http.server -d docs/plans/dashboards`. Keys:

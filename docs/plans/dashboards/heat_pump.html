@@ -8,7 +8,8 @@
 <!--
   Example dashboard for CSL-0025 heat_pump_cycle_r22_30kw (docs/plans/dashboards.md):
   a steady model, its values written on the schematic of the cycle, the inputs of the
-  model (lines "name = value"), the Solve / Update guesses buttons of the GUI and the
+  model (lines "name = value"), the Solve / Update guesses buttons of the GUI, two preset
+  buttons (data-cs-set + data-cs-action), a compressor that solves when clicked, and the
   P-h diagram saved in the session as the plot "ph". Opened from disk, it shows the
   results snapshot; the inputs and buttons work when CoolSolve hosts it.
 -->
@@ -21,7 +22,13 @@
   .card { background: var(--cs-card); border: 1px solid var(--cs-line); border-radius: 10px; padding: 12px; }
   .side { display: grid; gap: 14px; align-content: start; }
   .inputs { display: grid; gap: 8px; }
-  .buttons { display: flex; gap: 8px; margin-top: 6px; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  h2.sub { margin: 14px 0 0; color: var(--cs-muted); font-weight: 600; }
+  .preset { font: inherit; padding: .3em .7em; border-radius: 6px; border: 1px solid var(--cs-line);
+            background: var(--cs-card); color: var(--cs-fg); }
+  .preset:not(:disabled):hover { border-color: var(--cs-accent); }
+  .hint { fill: var(--cs-accent); font: italic 12px system-ui, sans-serif; }
+  :root:not(.cs-hosted) .gui-only { display: none; }   /* GUI-only parts, hidden in a snapshot */
   .kpi { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; }
   .kpi cs-value { display: flex; flex-direction: column; gap: 0; }
   .kpi .cs-num { font-size: 1.3em; font-weight: 600; }
@@ -78,9 +85,13 @@
         <rect class="box" x="380" y="420" width="240" height="80" rx="8"/>
         <path d="M400 452 q15 -22 30 0 t30 0 t30 0 t30 0 t30 0 t30 0 t30 0" fill="none" stroke="var(--cs-muted)" stroke-width="2"/>
         <text class="name" x="500" y="410" text-anchor="middle">Evaporator</text>
-        <circle class="box" cx="800" cy="280" r="46"/>
-        <path d="M770 300 L770 260 L830 270 L830 290 Z" fill="none" stroke="var(--cs-muted)" stroke-width="2.5"/>
+        <!-- the compressor solves the model when clicked (in the GUI) -->
+        <g data-cs-action="solve">
+          <circle class="box" cx="800" cy="280" r="46"/>
+          <path d="M770 300 L770 260 L830 270 L830 290 Z" fill="none" stroke="var(--cs-muted)" stroke-width="2.5"/>
+        </g>
         <text class="name" x="740" y="350" text-anchor="end">Compressor</text>
+        <text class="hint gui-only" x="740" y="368" text-anchor="end">click to solve</text>
         <path d="M180 258 L220 258 L180 302 L220 302 Z" class="box"/>
         <text class="name" x="230" y="285">Expansion valve</text>
         <!-- heat delivered and power -->
@@ -127,6 +138,12 @@
       <div class="buttons">
         <cs-button action="solve"></cs-button>
         <cs-button action="update-guesses"></cs-button>
+      </div>
+      <!-- presets: set inputs, then solve (one undoable edit of the model) -->
+      <h2 class="sub">Scenarios</h2>
+      <div class="buttons">
+        <button class="preset" data-cs-set="T_ev = 8; T_cond = 60" data-cs-action="solve">Design point</button>
+        <button class="preset" data-cs-set="T_ev = 0; T_cond = 65" data-cs-action="solve">Cold ground, hot water</button>
       </div>
     </section>
     <section class="card kpi">

@@ -8,4 +8,4 @@ broken in the in-app viewer.
 
 | Plan | Status |
 |---|---|
-| [Dashboards](dashboards.md) — HTML dashboards of a model: values on schematics, inputs, GUI buttons, saved diagrams as tabs, animation of `INTEGRAL` models, LLM authoring; prototype and examples in [`dashboards/`](dashboards/) | proposal, 2026-11-20 |
+| [Dashboards](dashboards.md) — HTML dashboards of a model: values on schematics, inputs, GUI actions on any element, pop-up windows, saved diagrams as tabs, animation of `INTEGRAL` models, LLM authoring; prototype and examples in [`dashboards/`](dashboards/) | proposal, 2026-11-20, amended 2026-11-21 |

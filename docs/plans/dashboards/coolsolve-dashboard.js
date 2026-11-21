@@ -16,6 +16,7 @@
  *   <cs-plot ref | x y>       a saved plot, or a plot of integral columns
  *   <cs-player>               animation controls of the integral table
  *   data-cs-*                 bindings on any element, SVG included
+ *   data-cs-action, -set      GUI actions and input presets on any element
  *   CoolSolve.onFrame(fn)     custom drawing, called for every frame
  *
  * Data: a host page (the CoolSolve GUI) posts it with postMessage; standalone,
@@ -32,6 +33,7 @@
 
   let data = null;                 // the data contract (schema coolsolve-dashboard-data/1)
   let hosted = false;              // true once a CoolSolve host has answered
+  let hostStatus = {};             // last status posted by the host: state, actions, canTryHarder
   let lookup = new Map();          // lower-case name -> variable record
   let columns = new Map();         // lower-case name -> integral column
   let integralVar = null;          // lower-case name of the integration variable
@@ -307,8 +309,10 @@
       range.disabled = box.disabled = !!why;
       el.title = why;
     };
-    const send = (x) => { range.value = box.value = x; post({ type: 'set-input', name, value: +x }); };
-    range.addEventListener('input', () => send(range.value));
+    // A slider sends its value when released: one edit of the model per move.
+    const send = (x) => { range.value = box.value = x; CS.setInput(name, +x); };
+    range.addEventListener('input', () => { box.value = range.value; });
+    range.addEventListener('change', () => send(range.value));
     box.addEventListener('change', () => send(box.value));
     enable();
     statusListeners.push(enable);
@@ -316,28 +320,123 @@
 
   const ACTIONS = { solve: 'Solve', 'update-guesses': 'Update guesses', stop: 'Stop', 'reset-inputs': 'Reset inputs' };
 
+  // '' when the action can be carried out now, else the reason (shown as a tooltip)
+  function unavailable(action) {
+    if (!hosted) return 'Available when the dashboard is opened from the CoolSolve GUI';
+    if (action && hostStatus.actions && hostStatus.actions[action] === false) return `${ACTIONS[action]}: not available now`;
+    return '';
+  }
+
   function setupButton(el) {
     const action = el.getAttribute('action');
     if (!ACTIONS[action]) problems.add(`<cs-button action="${action}">: unknown action`);
     const b = document.createElement('button');
     b.type = 'button';
-    b.textContent = el.textContent.trim() || ACTIONS[action] || action;
+    const label = el.textContent.trim();
     el.textContent = '';
     el.appendChild(b);
-    b.addEventListener('click', () => post({ type: 'action', action }));
+    b.addEventListener('click', () => CS.action(action));
     const enable = () => {
-      b.disabled = !hosted;
-      b.title = hosted ? '' : 'Available when the dashboard is opened from the CoolSolve GUI';
+      const why = unavailable(action);
+      b.disabled = !!why;
+      b.title = why;
+      // As the toolbar: Solve becomes Try Harder after a failure
+      b.textContent = label || (action === 'solve' && hostStatus.canTryHarder ? 'Try Harder' : ACTIONS[action] || action);
     };
     enable();
     statusListeners.push(enable);
   }
 
+  // "T_ev = -5; R$ = 'R1234yf'" -> {T_ev: -5, R$: 'R1234yf'}: inputs set to constants
+  function parseSet(src, where) {
+    const values = {};
+    let ok = true;
+    const bad = (why) => { problems.add(`${where}: ${why}`); ok = false; };
+    for (const part of src.split(';')) {
+      if (!part.trim()) continue;
+      const m = part.match(/^\s*([A-Za-z_][\w$]*(?:\[\d+\])?)\s*=\s*(?:'([^']*)'|"([^"]*)"|([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?))\s*$/);
+      if (!m) { bad(`"${part.trim()}" is not "name = constant"`); continue; }
+      const rec = lookup.get(m[1].toLowerCase());
+      const isString = m[4] === undefined;
+      if (!rec) bad(`${m[1]} is not a variable of the model`);
+      else if (!rec.input) bad(`${m[1]} is not a directly defined input`);
+      else if (isString !== (rec.type === 'string')) bad(`${m[1]} takes a ${rec.type === 'string' ? "quoted string" : 'number'}`);
+      values[m[1]] = isString ? (m[2] ?? m[3]) : +m[4];
+    }
+    return ok ? values : null;
+  }
+
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  // [data-cs-action] / [data-cs-set]: any element, HTML or SVG, acts on the
+  // session; with both, the inputs are set first, then the action follows.
+  function setupActions(root) {
+    for (const el of root.querySelectorAll('[data-cs-action], [data-cs-set]')) {
+      const action = el.getAttribute('data-cs-action');
+      const set = el.getAttribute('data-cs-set');
+      let broken = '';
+      if (action !== null && !ACTIONS[action]) {
+        problems.add(`data-cs-action="${action}": unknown action`);
+        broken = `unknown action "${action}"`;
+      }
+      const values = set === null ? null : parseSet(set, `data-cs-set="${set}"`);
+      if (set !== null && !values) broken = 'invalid data-cs-set (see the problem badge)';
+      const native = el instanceof HTMLButtonElement;
+      if (!native) { el.setAttribute('role', 'button'); el.setAttribute('tabindex', '0'); }
+      el.classList.add('cs-action');
+      const what = [
+        values && 'Set ' + Object.entries(values).map(([k, v]) => `${k} = ${v}`).join(', '),
+        action && (values ? ACTIONS[action].toLowerCase() : ACTIONS[action]),
+      ].filter(Boolean).join(' and ');
+      const own = el.getAttribute('title');
+      let why = '';
+      const fire = () => {
+        if (why) return;
+        if (values) CS.setInputs(values);
+        if (action) CS.action(action);
+      };
+      el.addEventListener('click', fire);
+      if (!native) {
+        el.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fire(); }
+        });
+      }
+      const enable = () => {
+        why = broken || unavailable(action);
+        el.classList.toggle('cs-disabled', !!why);
+        el.setAttribute('aria-disabled', why ? 'true' : 'false');
+        if (native) el.disabled = !!why;
+        if (el instanceof SVGElement) {
+          // SVG shows the first <title> child as the tooltip
+          let tip = el.querySelector(':scope > title.cs-tip');
+          if (!tip) { tip = document.createElementNS(SVG_NS, 'title'); tip.setAttribute('class', 'cs-tip'); el.prepend(tip); }
+          tip.textContent = why || what;
+        } else if (why || own) el.title = why || own;
+        else el.removeAttribute('title');
+      };
+      enable();
+      statusListeners.push(enable);
+    }
+  }
+
   const statusListeners = [];
+  const statusHooks = [];          // CoolSolve.onStatus callbacks
+
+  function currentStatus() {
+    return Object.assign({ state: 'unsolved' }, data && data.status, hostStatus, { hosted });
+  }
+
+  function statusChanged() {
+    for (const f of statusListeners) f();
+    const s = currentStatus();
+    for (const f of statusHooks) {
+      try { f(s); } catch (e) { problems.add(`onStatus: ${e.message}`); showProblems(); }
+    }
+  }
 
   function setupStatus(el) {
     const show = () => {
-      const s = (data && data.status) || { state: 'unsolved' };
+      const s = currentStatus();
       const when = s.solvedAt ? new Date(s.solvedAt).toLocaleString() : '';
       el.innerHTML = `<span class="cs-pill cs-${s.state}">${s.state}</span> ` +
         `<span class="cs-muted">${hosted ? (s.message || '') : 'snapshot' + (when ? ' of ' + when : '')}</span>`;
@@ -632,6 +731,21 @@
   CS.value = value;
   CS.format = format;
 
+  // Session actions: carried out by the CoolSolve GUI, no-ops in standalone mode.
+  CS.setInputs = (values) => {
+    if (!hosted) { console.info('[CoolSolve] inputs change only when the dashboard is opened from the CoolSolve GUI'); return; }
+    post({ type: 'set-input', values });
+  };
+  CS.setInput = (name, v) => CS.setInputs({ [name]: v });
+  CS.action = (name) => {
+    if (!ACTIONS[name]) { problems.add(`CoolSolve.action("${name}"): unknown action`); showProblems(); return; }
+    const why = unavailable(name);
+    if (why) { console.info(`[CoolSolve] ${name}: ${why}`); return; }
+    post({ type: 'action', action: name });
+  };
+  CS.onStatus = (fn) => { statusHooks.push(fn); if (data) fn(currentStatus()); };
+  Object.defineProperty(CS, 'hosted', { get: () => hosted });
+
   // ------------------------------------------------------- problem badge --
   // Unknown variables and other binding errors are listed in a badge, so that
   // a dashboard written for another version of the model shows what to fix.
@@ -690,10 +804,10 @@
       drag = null;
       // The start tag as written by the author: without what the runtime added
       const copy = el.cloneNode(false);
-      copy.classList.remove('cs-placed', 'cs-warn');
+      copy.classList.remove('cs-placed', 'cs-warn', 'cs-action', 'cs-disabled');
       if (!copy.classList.length) copy.removeAttribute('class');
-      copy.removeAttribute('style');
-      copy.removeAttribute('title');
+      for (const a of ['style', 'title', 'aria-disabled']) copy.removeAttribute(a);
+      if (copy.matches('[data-cs-action], [data-cs-set]')) for (const a of ['role', 'tabindex', 'disabled']) copy.removeAttribute(a);
       const tag = copy.outerHTML.replace(/>[\s\S]*$/, '>');
       tip.textContent = `${tag} — copied`;
       if (navigator.clipboard) navigator.clipboard.writeText(tag).catch(() => {});
@@ -705,7 +819,8 @@
   // Protocol with a CoolSolve host page (planned GUI side): the dashboard posts
   // {source: 'coolsolve-dashboard', type: 'ready' | 'action' | 'set-input'} to
   // its parent; the host answers with {source: 'coolsolve-host', type: 'data',
-  // data, theme}. Without an answer the dashboard stays a standalone snapshot.
+  // data, theme} and {type: 'status', status}. Without an answer the dashboard
+  // stays a standalone snapshot.
   function post(msg) {
     if (hosted) window.parent.postMessage(Object.assign({ source: 'coolsolve-dashboard', version: 1 }, msg), '*');
   }
@@ -714,7 +829,14 @@
     const m = e.data;
     if (!m || m.source !== 'coolsolve-host' || e.source !== window.parent) return;
     if (m.theme) document.documentElement.dataset.theme = m.theme;
-    if (m.type === 'data') { hosted = true; start(m.data); }
+    if (m.type === 'data') {
+      hosted = true;
+      hostStatus = Object.assign({}, hostStatus, m.data && m.data.status);
+      start(m.data);
+    } else if (m.type === 'status' && hosted) {
+      hostStatus = Object.assign({}, hostStatus, m.status);
+      statusChanged();
+    }
   });
 
   // ---------------------------------------------------------------- start --
@@ -735,10 +857,14 @@
       for (const el of document.querySelectorAll('cs-status')) setupStatus(el);
       for (const el of document.querySelectorAll('cs-plot')) setupPlot(el);
       setupBindings(document);
+      setupActions(document);
       setupLayoutHelper();
       for (const el of document.querySelectorAll('[data-cs-model-title]')) el.textContent = (data.model && data.model.title) || '';
     }
-    for (const f of statusListeners) f();
+    // For the author's CSS: :root:not(.cs-hosted) .gui-only { display: none }
+    document.documentElement.classList.toggle('cs-hosted', hosted);
+    document.documentElement.classList.toggle('cs-standalone', !hosted);
+    statusChanged();
     render();
     showProblems();
   }
@@ -787,9 +913,14 @@ cs-input input:disabled{opacity:.6;cursor:not-allowed}
 cs-button button,cs-player button,cs-player select{font:inherit;padding:.35em .8em;border-radius:6px;border:1px solid var(--cs-line);background:var(--cs-card);color:var(--cs-fg);cursor:pointer}
 cs-button button:not(:disabled){background:var(--cs-accent);border-color:var(--cs-accent);color:#fff}
 cs-button button:disabled{opacity:.55;cursor:not-allowed}
+.cs-action{cursor:pointer} .cs-action.cs-disabled{cursor:not-allowed}
+button.cs-action.cs-disabled{opacity:.55}
+svg .cs-action:not(.cs-disabled):hover{filter:brightness(1.12) drop-shadow(0 0 4px var(--cs-accent))}
+svg .cs-action:focus-visible{outline:2px solid var(--cs-accent);outline-offset:2px}
 .cs-pill{display:inline-block;padding:.05em .55em;border-radius:999px;font-size:.8em;font-weight:600;text-transform:uppercase;letter-spacing:.04em;background:var(--cs-line)}
 .cs-pill.cs-solved{background:color-mix(in srgb,var(--cs-ok) 20%,transparent);color:var(--cs-ok)}
 .cs-pill.cs-failed{background:color-mix(in srgb,var(--cs-warn) 20%,transparent);color:var(--cs-warn)}
+.cs-pill.cs-solving{background:color-mix(in srgb,var(--cs-accent) 20%,transparent);color:var(--cs-accent)}
 .cs-muted{color:var(--cs-muted)}
 cs-plot{display:block}
 .cs-plot-svg{width:100%;height:auto;display:block;font:11px system-ui,sans-serif}
