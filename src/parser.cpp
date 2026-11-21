@@ -920,9 +920,8 @@ private:
         std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
         std::string message = function + " does not take named arguments ('" + arg + "'); ";
         if (lower == "if")
-            return message + "to test an equality use the 5-argument form IF(A, B, X, Y, Z) "
-                   "(X if A<B, Y if A=B, Z if A>B), here IF(" + paramName + ", " + paramValue
-                   + ", X, Y, Z); IF(cond, a, b) tests cond > 0";
+            return message + "a comparison is the condition of the 3-argument form, IF(" + paramName + " = "
+                   + paramValue + ", X, Y) (X if true, Y if false)";
         return message + "only the thermophysical property functions do, e.g. enthalpy(Water, T=20, P=1E5)";
     }
 
@@ -4365,7 +4364,20 @@ private:
         
         for (size_t argIndex = 0; argIndex < argStrings.size(); ++argIndex) {
             std::string arg = trim(argStrings[argIndex]);
-            
+
+            // The condition of IF(cond, a, b) is written as the one of an IF statement: relations (=, <> and the
+            // orderings), strings compared with = and <>, AND, OR and parentheses
+            if (lower == "if" && argStrings.size() == 3 && argIndex == 0) {
+                auto condition = parseCondition(arg, lineNum);
+                if (!condition) {
+                    setExpressionError("Could not parse the condition of '" + name + "': '" + arg + "'");
+                    return nullptr;
+                }
+                fc.args.push_back(condition);
+                isFirstPositionalArg = false;
+                continue;
+            }
+
             // Check for named argument (e.g., T=value)
             size_t eqPos = namedArgumentEquals(arg);
             if (eqPos != std::string::npos && eqPos > 0) {

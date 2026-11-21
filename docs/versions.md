@@ -31,6 +31,12 @@ Notes of the changes merged since v0.5, gathered for the next changelog.
 - **Usage statistics**: `GET /api/v1/stats/log` and the `/stats` dashboard show client networks (`topNetworks`,
   IPv4 /24 and IPv6 /48) instead of full client addresses (`topIps` is removed). The log file is unchanged.
 
+### New
+
+- **Conditions in `IF(cond, a, b)`**: the condition is written as the one of an `IF ... THEN` statement: `=` and
+  `<>` beside the orderings, strings compared with `=` and `<>` (`IF(layout$ = 'staggered', a, b)`), `AND`, `OR`
+  and parentheses (GitHub issues #3 and #4). `IF(a = 5, 1, 2)`, until now a parse error, tests `a = 5`.
+
 ---
 
 ## v0.5 — November 2026 (current)
