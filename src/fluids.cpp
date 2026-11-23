@@ -349,7 +349,7 @@ void FluidRegistry::initialize() {
     }
     addUnsupported("LiBrH2O",
         "Lithium-bromide-water solution with EES correlation is not available in CoolProp. "
-        "Use the EES ASHRAE routines X_LIBR, H_LIBR, T_LIBR and P_LIBR "
+        "Use the EES ASHRAE routines X_LIBR, H_LIBR, T_LIBR, P_LIBR, VISC_LIBR and COND_LIBR "
         "(T in C, P in kPa, X in mass %, h in kJ/kg), e.g. X_LIBR('SI', T, P); "
         "the EES LiBrH2O library (functions *_LiBrH2O) is not implemented yet: register CS-GAP-LIBR-PK.");
     

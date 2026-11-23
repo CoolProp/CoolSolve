@@ -1128,7 +1128,8 @@ static bool isLookupFunction(const std::string& lowerName) {
 }
 
 /// The one entry point of the property routines of the absorption pairs (libr_ashrae.h; the modules to come, see that
-/// header, are reached from here): `X_LIBR('SI', T, P)`, `H_LIBR('SI', T, X)`, `T_LIBR('SI', P, X)`, `P_LIBR('SI', T, X)`.
+/// header, are reached from here): `X_LIBR('SI', T, P)`, `H_LIBR('SI', T, X)`, `T_LIBR('SI', P, X)`, `P_LIBR('SI', T, X)`,
+/// `VISC_LIBR('SI', T, X)` and `COND_LIBR('SI', T, X)`.
 /// The unit string is read as a string (a constant, a string variable or a string function), the two other arguments as
 /// numbers; the routine gives the value and its partial derivatives, combined here with the gradients of the
 /// arguments. A known EES routine that is not implemented (`V_LIBR`, `h_LiBrH2O`, ...) is an error that says so.
@@ -1142,6 +1143,20 @@ static ADValue evaluateAbsorptionFunction(ExpressionEvaluator& evaluator, const 
         throw std::runtime_error(std::string(routine.name) + ": the first argument must be the unit string 'SI' (a string constant "
                                  "or a string variable), not a number");
     libr_ashrae::checkUnitSystem(routine, evaluator.evaluateString(func.args[0]));
+    if (routine.solutionProperty) {
+        // VISC_LIBR, COND_LIBR: the property call `<property>('LiBr', T=<T>, C=<X>)` of CoolProp's LiBr solution, with
+        // its values, derivatives and errors (T in degC and X in mass % are also the units of that call)
+        auto fluid = std::make_shared<Expression>();
+        fluid->node = StringLiteral{"LiBr"};
+        auto call = std::make_shared<Expression>();
+        call->node = FunctionCall{routine.solutionProperty, {fluid}, {{"T", func.args[1]}, {"C", func.args[2]}}};
+        call->sourceLineNumber = func.args[1]->sourceLineNumber;
+        try {
+            return evaluator.evaluate(call);
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string(routine.name) + ": " + e.what());
+        }
+    }
     const ADValue first = evaluator.evaluate(func.args[1]);
     const ADValue second = evaluator.evaluate(func.args[2]);
     const libr_ashrae::Result result = routine.evaluate(first.value, second.value);

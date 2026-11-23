@@ -40,7 +40,8 @@ Notes of the changes merged since v0.5, gathered for the next changelog.
   `DowQ`, …), the liquid metals `LBE` and `LiqNa`, the molten salt `NaK`, the solutions without another name — and the
   EES brine names `EA`, `MA`, `GLYC`, `K2CO3`, `KAC`, `KFO`, `MGCL2`, `NH3W`.
 - **`LiBr` solution: viscosity and conductivity** (CoolProp 8.1.0 fits of Flessner & Ziegler 2023, Lee et al. 1990
-  and DiGuilio et al. 1990): `viscosity(LiBr, 55, T=60, P=1E5)` was an error.
+  and DiGuilio et al. 1990): `viscosity(LiBr, 55, T=60, P=1E5)` was an error. The EES routines `VISC_LIBR('SI', T, X)`
+  and `COND_LIBR('SI', T, X)` are these properties.
 
 ### Dependencies
 

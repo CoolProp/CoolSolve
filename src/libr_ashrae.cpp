@@ -29,14 +29,14 @@ constexpr double kLn10 = 2.30258509299404568402;
 // What a call of a known but not implemented routine is told (see Routine::notImplemented)
 constexpr const char* kAshraeMissing =
     "EES LiBr-H2O routine not implemented in CoolSolve yet (register CS-GAP-FLUIDS-ABS); the ASHRAE routines X_LIBR, "
-    "H_LIBR, T_LIBR, P_LIBR are available";
+    "H_LIBR, T_LIBR, P_LIBR, VISC_LIBR, COND_LIBR are available";
 constexpr const char* kPatekKlomfarMissing =
     "EES LiBr-H2O routine not implemented in CoolSolve yet (register CS-GAP-LIBR-PK); the ASHRAE routines X_LIBR, "
-    "H_LIBR, T_LIBR, P_LIBR are available";
+    "H_LIBR, T_LIBR, P_LIBR, VISC_LIBR, COND_LIBR are available";
 
-/// The routines: the four implemented ones (the descriptors of the messages below), then the known EES routines of
-/// the absorption pairs that are not implemented: the rest of the ASHRAE library, the Patek-Klomfar library
-/// (functions `*_LiBrH2O`, procedure `Q_LiBrH2O`).
+/// The routines: the four implemented ones (the descriptors of the messages below), the two transport properties of
+/// CoolProp's LiBr solution, then the known EES routines of the absorption pairs that are not implemented: the rest of
+/// the ASHRAE library, the Patek-Klomfar library (functions `*_LiBrH2O`, procedure `Q_LiBrH2O`).
 const Routine kRoutines[] = {
     {"X_LIBR", "T", "P", &concentration, nullptr},
     {"H_LIBR", "T", "X", &enthalpy, nullptr},
@@ -44,8 +44,8 @@ const Routine kRoutines[] = {
     {"P_LIBR", "T", "X", &pressure, nullptr},
     {"V_LIBR", nullptr, nullptr, nullptr, kAshraeMissing},
     {"Q_LIBR", nullptr, nullptr, nullptr, kAshraeMissing},
-    {"VISC_LIBR", nullptr, nullptr, nullptr, kAshraeMissing},
-    {"COND_LIBR", nullptr, nullptr, nullptr, kAshraeMissing},
+    {"VISC_LIBR", "T", "X", nullptr, nullptr, "viscosity"},
+    {"COND_LIBR", "T", "X", nullptr, nullptr, "conductivity"},
     {"T_LiBrH2O", nullptr, nullptr, nullptr, kPatekKlomfarMissing},
     {"P_LiBrH2O", nullptr, nullptr, nullptr, kPatekKlomfarMissing},
     {"x_LiBrH2O", nullptr, nullptr, nullptr, kPatekKlomfarMissing},
@@ -167,7 +167,8 @@ const Routine* findRoutine(const std::string& lowerName) {
 }
 
 void requireImplemented(const Routine& routine) {
-    if (!routine.evaluate) throw std::runtime_error(std::string(routine.name) + ": " + routine.notImplemented);
+    if (!routine.evaluate && !routine.solutionProperty)
+        throw std::runtime_error(std::string(routine.name) + ": " + routine.notImplemented);
 }
 
 void checkUnitSystem(const Routine& routine, const std::string& unit) {

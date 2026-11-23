@@ -20905,7 +20905,7 @@ TEST_CASE("CS-GAP-FLUIDS-ABS: the unsupported fluid LiBrH2O cites its register i
     auto run = runModel("h = ENTHALPY(LiBrH2O, T=40, P=1E5)\n");
     REQUIRE_FALSE(run.solveOk);
     CHECK(anyContains({run.message}, "LiBrH2O"));
-    CHECK(anyContains({run.message}, "X_LIBR, H_LIBR, T_LIBR and P_LIBR"));
+    CHECK(anyContains({run.message}, "X_LIBR, H_LIBR, T_LIBR, P_LIBR, VISC_LIBR and COND_LIBR"));
     CHECK(anyContains({run.message}, "CS-GAP-LIBR-PK"));
     CHECK_FALSE(anyContains({run.message}, "incompressible"));
     // NH3H2O is no longer unsupported (CS-GAP-NH3H2O): two properties do not fix its state
@@ -20919,7 +20919,7 @@ TEST_CASE("CS-GAP-FLUIDS-ABS: the other EES routines of the LiBr-H2O libraries a
           "[library-gaps][libr]") {
     struct Missing { const char* name; const char* registerId; };
     const Missing missing[] = {
-        {"V_LIBR", "CS-GAP-FLUIDS-ABS"}, {"VISC_LIBR", "CS-GAP-FLUIDS-ABS"}, {"COND_LIBR", "CS-GAP-FLUIDS-ABS"},
+        {"V_LIBR", "CS-GAP-FLUIDS-ABS"}, {"Q_LIBR", "CS-GAP-FLUIDS-ABS"},
         {"T_LiBrH2O", "CS-GAP-LIBR-PK"}, {"P_LiBrH2O", "CS-GAP-LIBR-PK"}, {"x_LiBrH2O", "CS-GAP-LIBR-PK"},
         {"h_LiBrH2O", "CS-GAP-LIBR-PK"}, {"s_LiBrH2O", "CS-GAP-LIBR-PK"}, {"cp_LiBrH2O", "CS-GAP-LIBR-PK"},
         {"rho_LiBrH2O", "CS-GAP-LIBR-PK"}, {"Visc_LiBrH2O", "CS-GAP-LIBR-PK"}, {"Cond_LiBrH2O", "CS-GAP-LIBR-PK"},
@@ -20933,7 +20933,8 @@ TEST_CASE("CS-GAP-FLUIDS-ABS: the other EES routines of the LiBr-H2O libraries a
             CHECK_FALSE(anyContains(run.warnings, "Unknown function"));
             REQUIRE_FALSE(run.solveOk);
             CHECK(anyContains({run.message}, std::string(m.name) + ": EES LiBr-H2O routine not implemented in CoolSolve yet (register " +
-                                                 m.registerId + "); the ASHRAE routines X_LIBR, H_LIBR, T_LIBR, P_LIBR are available"));
+                                                 m.registerId + "); the ASHRAE routines X_LIBR, H_LIBR, T_LIBR, P_LIBR, "
+                                                 "VISC_LIBR, COND_LIBR are available"));
         }
         // the name is case-insensitive and named arguments reach the same message (no "does not take named arguments")
         std::string lower = m.name;
@@ -20942,6 +20943,65 @@ TEST_CASE("CS-GAP-FLUIDS-ABS: the other EES routines of the LiBr-H2O libraries a
         REQUIRE(named.parseOk);
         REQUIRE_FALSE(named.solveOk);
         CHECK(anyContains({named.message}, std::string(m.name) + ": EES LiBr-H2O routine not implemented"));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ABS: VISC_LIBR and COND_LIBR are the transport properties of CoolProp's LiBr solution",
+          "[library-gaps][libr]") {
+    // EES: VISC_LIBR('SI', T, X) [kg/m-s] and COND_LIBR('SI', T, X) [W/m-K] (Lee, DiGuilio, Jeter & Teja, ASHRAE RP-527,
+    // 1990); CoolSolve: CoolProp 8.1.0's INCOMP::LiBr, fitted to the same data (and Flessner & Ziegler 2023 below 110 C)
+    auto run = runModel("mu = VISC_LIBR('SI', 60, 55)\n"
+                        "k = COND_LIBR('SI', 60, 55)\n"
+                        "u$ = 'si'\n"
+                        "mu2 = visc_libr(u$, 60, 55)\n"
+                        "mu_prop = viscosity(LiBr, T=60, C=55)\n"
+                        "k_prop = conductivity(LiBr, 55, T=60, P=101325)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    const double mu = CoolProp::PropsSI("V", "T", 333.15, "P", 101325.0, "INCOMP::LiBr[0.55]");
+    const double k = CoolProp::PropsSI("L", "T", 333.15, "P", 101325.0, "INCOMP::LiBr[0.55]");
+    CHECK_THAT(run["mu"], WithinRel(mu, 1e-12));
+    CHECK_THAT(run["k"], WithinRel(k, 1e-12));
+    CHECK_THAT(run["mu2"], WithinRel(mu, 1e-12));
+    CHECK_THAT(run["mu_prop"], WithinRel(mu, 1e-12));
+    CHECK_THAT(run["k_prop"], WithinRel(k, 1e-12));
+    // the order of magnitude of the RP-527 data at 60 C, 55 %: about 2.5 mPa-s and 0.45 W/m-K
+    CHECK(run["mu"] > 2e-3);
+    CHECK(run["mu"] < 3.5e-3);
+    CHECK(run["k"] > 0.40);
+    CHECK(run["k"] < 0.50);
+    SECTION("Newton solves the temperature and the concentration through them") {
+        auto inv = runModel("mu = " + numText(mu) + "\nk = " + numText(k) + "\n"
+                            "VISC_LIBR('SI', T, X) = mu\nCOND_LIBR('SI', T, X) = k\n",
+                            {}, "T=50\nX=50\n");
+        INFO(inv.message);
+        REQUIRE(inv.solveOk);
+        CHECK(inv.verified);
+        CHECK_THAT(inv["T"], WithinAbs(60.0, 1e-5));
+        CHECK_THAT(inv["X"], WithinAbs(55.0, 1e-5));
+    }
+    SECTION("the checks of the other ASHRAE routines, and the errors of the solution beyond its range") {
+        const std::vector<std::pair<std::string, std::string>> cases = {
+            {"VISC_LIBR('Eng', 140, 55)", "VISC_LIBR: 'Eng' (English units) is not supported by CoolSolve"},
+            {"COND_LIBR('SI', 60)", "COND_LIBR takes 3 arguments ('SI', T, X), got 2"},
+            {"VISC_LIBR(1, 60, 55)", "VISC_LIBR: the first argument must be the unit string 'SI'"},
+            {"VISC_LIBR('SI', 60, 120)", "VISC_LIBR: Incompressible solution 'LiBr' requires a concentration (mass %, 0..100)"},
+        };
+        for (const auto& [call, message] : cases) {
+            INFO(call);
+            auto bad = runModel("y = " + call + "\n");
+            REQUIRE_FALSE(bad.solveOk);
+            CHECK(anyContains({bad.message}, message));
+        }
+        // above the 75 % of CoolProp's fit: an error of the solution check naming the call, never a value
+        auto high = runModel("y = VISC_LIBR('SI', 60, 80)\n");
+        INFO(high.message);
+        REQUIRE(high.solveOk);   // the CoolProp failure is a penalty value for the iterations
+        CHECK_FALSE(high.verified);
+        REQUIRE_FALSE(high.checkErrors.empty());
+        CHECK(anyContains(high.checkErrors, "viscosity"));
     }
 }
 

@@ -29,9 +29,11 @@ namespace coolsolve::libr_ashrae {
  * by side: `libr_ashrae` now; planned `libr_patek_klomfar` for the functions `*_LiBrH2O` of the EES `LiBrH2O`
  * library (Patek & Klomfar 2006; register item `CS-GAP-LIBR-PK`). The ammonia-water mixture has its own module,
  * `nh3h2o` (IAPWS G4-01), reached through the fluid `NH3H2O` and `CALL NH3H2O` (`src/evaluator_nh3h2o.cpp`). Until
- * then the table of this module lists the EES LiBr routines that are not implemented (`V_LIBR`, `Q_LIBR`, `VISC_LIBR`,
- * `COND_LIBR`; `CS-GAP-FLUIDS-ABS`; the `*_LiBrH2O` ones) as known: a call fails with a message naming the routine and
- * the register item.
+ * then the table of this module lists the EES LiBr routines that are not implemented (`V_LIBR`, `Q_LIBR`;
+ * `CS-GAP-FLUIDS-ABS`; the `*_LiBrH2O` ones) as known: a call fails with a message naming the routine and the register
+ * item. `VISC_LIBR('SI', T, X)` and `COND_LIBR('SI', T, X)` [Pa-s, W/m-K] are the viscosity and the conductivity of
+ * CoolProp's LiBr solution (8.1.0: fits of the RP-527 data of Lee et al. and DiGuilio et al. that the EES routines
+ * implement, with Flessner & Ziegler 2023 below 110 degC), evaluated by the evaluator (Routine::solutionProperty).
  */
 
 /// Value of a routine and its partial derivatives with respect to its two numeric arguments, in argument order.
@@ -47,15 +49,18 @@ struct Routine {
     const char* name;     ///< EES name, e.g. "X_LIBR"
     const char* first;    ///< implemented: name of the first numeric argument, e.g. "T" (for the messages)
     const char* second;   ///< implemented: name of the second numeric argument, e.g. "P"
-    Result (*evaluate)(double, double);   ///< `nullptr` for a routine that is not implemented
+    Result (*evaluate)(double, double);   ///< `nullptr` for a routine that is not implemented, or one of solutionProperty
     const char* notImplemented;   ///< not implemented: the end of the message (what it is, the register item)
+    /// `VISC_LIBR`, `COND_LIBR`: the property function of CoolProp's LiBr solution (`INCOMP::LiBr`) that the routine is,
+    /// `viscosity` or `conductivity`, evaluated by the evaluator as `<property>('LiBr', T=first, C=second)`
+    const char* solutionProperty = nullptr;
 };
 
 /// The routine called `lowerName` (lower case), implemented or not, `nullptr` for any other name. Cheap (a test of
 /// the end of the name): meant to be asked of every function call.
 const Routine* findRoutine(const std::string& lowerName);
 
-/// Throws for a routine that is known but not implemented: "NAME: EES LiBr-H2O routine not implemented in
+/// Throws for a routine that is known but not implemented (neither `evaluate` nor `solutionProperty`): "NAME: EES LiBr-H2O routine not implemented in
 /// CoolSolve yet (register CS-GAP-…); …".
 /// @throws std::runtime_error
 void requireImplemented(const Routine& routine);

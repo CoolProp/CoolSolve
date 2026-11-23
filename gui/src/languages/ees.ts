@@ -33,7 +33,7 @@ export function registerEESLanguage(monaco: typeof Monaco) {
       'exp', 'ln', 'log', 'log10', 'sqrt', 'abs',
       'min', 'max', 'round', 'trunc', 'ceil', 'floor',
       'nDay_', 'NumDay_', 'AveDay_', 'EqnTime_',
-      'X_LIBR', 'H_LIBR', 'T_LIBR', 'P_LIBR', 'NH3H2O',
+      'X_LIBR', 'H_LIBR', 'T_LIBR', 'P_LIBR', 'VISC_LIBR', 'COND_LIBR', 'NH3H2O',
       'DELTAh_s', 'T_sat', 'P_sat', 'h_sat', 's_sat',
       'convert', 'unitsystem', 'error', 'warning', 'colebrook',
       // String functions

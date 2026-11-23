@@ -1348,7 +1348,7 @@ M = molarmass(fl$)                      "mole-weighted, in kg/kmol: 118.04"
 
 The lithium bromide - water solution of the absorption machines (vapour pressure, enthalpy of mixing) is not a CoolProp
 fluid; only its density and specific heat are (the solution `LiBr` of [Incompressible substances](#incompressible-substances)).
-CoolSolve has the four routines of the EES *ASHRAE* library, which take a unit string as first argument (`'SI'`) and two
+CoolSolve has six routines of the EES *ASHRAE* library, which take a unit string as first argument (`'SI'`) and two
 numbers:
 
 | Routine                  | Returns                                                          |
@@ -1357,6 +1357,8 @@ numbers:
 | `H_LIBR('SI', T, X)`     | specific enthalpy of the solution at `T` and `X`                 |
 | `T_LIBR('SI', P, X)`     | temperature of the solution of concentration `X` in equilibrium with the vapour at `P` |
 | `P_LIBR('SI', T, X)`     | vapour pressure over the solution of concentration `X` at `T`    |
+| `VISC_LIBR('SI', T, X)`  | dynamic viscosity of the solution [Pa-s = kg/m-s]                |
+| `COND_LIBR('SI', T, X)`  | thermal conductivity of the solution [W/m-K]                     |
 
 ```ees
 x_abs = X_LIBR('SI', T_abs, P_ev/1000)      "58.31 mass % at 40 °C and 0.8726 kPa"
@@ -1391,15 +1393,21 @@ h_abs = H_LIBR('SI', T_abs, x_abs)*1000     "107.2 kJ/kg, in J/kg"
 - **Derivatives** are analytical (the implicit function theorem for `X_LIBR`), so `T`, `P` or `X` may be unknowns;
   an implicit solve that leaves the validity of `X_LIBR` stops with the error above, an initial guess near the
   solution avoids it.
+- **`VISC_LIBR` and `COND_LIBR`** are the viscosity and the conductivity of CoolProp's solution `LiBr` (below), so
+  `VISC_LIBR('SI', T, X)` is exactly `viscosity(LiBr, T=T, C=X)`: CoolProp 8.1.0 fits of the ASHRAE RP-527 data of
+  Lee et al. (1990, viscosity above 110 °C) and DiGuilio et al. (1990, conductivity) that EES's routines implement,
+  with Flessner & Ziegler (2023) for the viscosity below 110 °C; the viscosity fit is within about 10 % of Lee's 52
+  points (2.8 % on average), the conductivity within 0.4 % of DiGuilio's correlation, so the values differ from EES's
+  by that much. Their range is that of the solution, 0–75 % (an error naming the call above it), measured up to 65 %.
+  The derivatives are those of the property calls (CoolProp has none for its transport fits: central differences).
 - A `FUNCTION` of the model with the name of a routine replaces it.
-- **Density and specific heat** of the solution (which the routines above do not give, `V_LIBR` and the transport
-  routines being missing) can be taken from the CoolProp solution `LiBr` of
+- **Density and specific heat** of the solution (which the routines above do not give, `V_LIBR` being missing) can be
+  taken from the CoolProp solution `LiBr` of
   [Incompressible substances](#incompressible-substances): `density(LiBr, X, T=T, P=P)`, `cp(LiBr, X, T=T, P=P)`, with
   `X` in mass %. Its enthalpy and entropy have no enthalpy of mixing and another reference state than `H_LIBR`
   (warning `C004`): keep `H_LIBR` for the energy balances.
 - **Not implemented yet** (a call is an error that names the routine and its register item, see
-  [Model library support](model_library_support.md) §4): `V_LIBR`, `Q_LIBR`, `VISC_LIBR` and `COND_LIBR`
-  (`CS-GAP-FLUIDS-ABS`); the `*_LiBrH2O` functions of the Pátek-Klomfar library and `Q_LiBrH2O` (`CS-GAP-LIBR-PK`).
+  [Model library support](model_library_support.md) §4): `V_LIBR` and `Q_LIBR` (`CS-GAP-FLUIDS-ABS`); the `*_LiBrH2O` functions of the Pátek-Klomfar library and `Q_LiBrH2O` (`CS-GAP-LIBR-PK`).
   The ammonia-water procedure and fluid `NH3H2O` are implemented (next section). The `*_LiBrSSC` library of EES (Yuan & Herold 2005) is
   not implemented either (`CS-GAP-LIBR-PK`; its names are unknown functions). The fluid `LiBrH2O` of the property
   calls (`ENTHALPY(LiBrH2O, …)`) is an error that points to the routines above.
