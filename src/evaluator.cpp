@@ -51,8 +51,10 @@ static std::shared_ptr<CoolProp::AbstractState> createState(const std::string& b
     std::string reason;
     auto mixture = std::dynamic_pointer_cast<MixtureFluid>(FluidRegistry::getFluid(fluidName, &reason));
     if (!mixture) throw std::runtime_error(reason.empty() ? "Unknown mixture: " + fluidName : reason);
+    // a GERG2008:: / GERG2004:: mixture is always that model; a HEOS one takes the configured backend (tabular, ...)
+    const std::string& own = mixture->getBackend();
     std::shared_ptr<CoolProp::AbstractState> state(
-        CoolProp::AbstractState::factory(backend, mixture->getComponentList()));
+        CoolProp::AbstractState::factory(own == "HEOS" ? backend : own, mixture->getComponentList()));
     state->set_mole_fractions(mixture->getMoleFractions());
     return state;
 }

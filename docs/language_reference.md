@@ -1324,7 +1324,15 @@ M = molarmass(fl$)                      "mole-weighted, in kg/kmol: 118.04"
 
 - The mole fractions are plain numbers (no expressions, no variables) and must sum to 1 (within
   1e-6); the composition is part of the string. An optional `HEOS::` prefix is accepted. Other
-  backends (`REFPROP::…`) are not.
+  backends (`REFPROP::…`) are not, except the two below.
+- **Natural gases: `GERG2008::` and `GERG2004::`** select CoolProp's strict GERG-2008 (21 components:
+  methane to n-decane, N2, CO2, H2, O2, CO, H2O, H2S, He, Ar) and GERG-2004 (18) models:
+  `density('GERG2008::Methane[0.9]&Ethane[0.06]&Nitrogen[0.03]&CarbonDioxide[0.01]', T=25, P=50E5)`.
+  Only their own components (another one is an error that says why), their own pure-fluid equations
+  and binary functions, no transport property (an error), 60–700 K; their enthalpies and entropies
+  are referred to the **ideal gas at 298.15 K and 101325 Pa**, unlike the other fluids. At least two
+  components must have a non-zero fraction (a pure fluid is written by its name). The warning `C003`
+  says so instead of the *predictive* one below.
 - The components are CoolProp fluid names (the names of the registry above, such as `R718` or `Steam`,
   are accepted too, in any case). A malformed string, fractions not summing to 1, an unknown component
   (the error names it) or a pair for which CoolProp has no binary interaction parameters is an

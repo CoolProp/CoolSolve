@@ -2022,3 +2022,28 @@ TEST_CASE("Diagram humid air: charts, a solved process, the state under the curs
         }
     }
 }
+
+TEST_CASE("Diagram of a GERG-2008 natural gas: the chart takes the mixture's own backend", "[diagram][gerg]") {
+    // CS-GAP-FLUIDS-GERG: GERG2008:: mixtures are always computed by that backend, the session's HEOS or not
+    const ChartFluid gas = chartFluid("GERG2008::Methane[0.9]&Ethane[0.1]");
+    CHECK(gas.backend == "GERG2008");
+    CHECK(gas.components == std::vector<std::string>{"Methane", "Ethane"});
+    REQUIRE(gas.fractions.size() == 2);
+    CHECK(gas.fractions[0] == 0.9);
+    CHECK(gas.fluidString().rfind("GERG2008::", 0) == 0);
+    // the same string without prefix stays the session's backend
+    CHECK(chartFluid("Methane[0.9]&Ethane[0.1]").backend == "HEOS");
+    // a p-h chart of it: lines, or an error of the Diagrams tab that says why, never a crash
+    json spec = defaultSpec("ph");
+    spec["isolines"] = {{{"key", "T"}, {"num", 4}}};
+    try {
+        const Chart chart(gas, PlanSpec::fromJson(spec));
+        Engine engine;
+        std::vector<std::string> warnings;
+        const Domain domain = engine.domain(chart, warnings);
+        CHECK(std::isfinite(domain.tp_box[0]));
+    } catch (const DiagramError& e) {
+        INFO(e.what());
+        CHECK(std::string(e.what()).size() > 10);
+    }
+}

@@ -198,7 +198,8 @@ private:
 
 /**
  * @brief A CoolProp mixture written `A[x]&B[y]` (mole fractions in brackets, two or more
- * components, optional `HEOS::` prefix), e.g. `'R245fa[0.5]&R134a[0.5]'`.
+ * components, optional `HEOS::` prefix, or `GERG2008::` / `GERG2004::` for CoolProp's strict natural-gas models),
+ * e.g. `'R245fa[0.5]&R134a[0.5]'`.
  *
  * Not in the fixed registry: created and checked by FluidRegistry::getFluid() from the string.
  * The name (also the CoolProp name) is the canonical form `A[x]&B[y]` without prefix, spaces
@@ -208,9 +209,10 @@ private:
  */
 class MixtureFluid : public Fluid {
 public:
-    MixtureFluid(std::string name, std::vector<std::string> components, std::vector<double> moleFractions)
+    MixtureFluid(std::string name, std::vector<std::string> components, std::vector<double> moleFractions,
+                 std::string backend = "HEOS")
         : name_(std::move(name)), components_(std::move(components)),
-          moleFractions_(std::move(moleFractions)) {}
+          moleFractions_(std::move(moleFractions)), backend_(std::move(backend)) {}
     std::string getName() const override { return name_; }
     std::string getCoolPropName() const override { return name_; }
     FluidType getType() const override { return FluidType::Mixture; }
@@ -222,11 +224,15 @@ public:
     const std::vector<double>& getMoleFractions() const { return moleFractions_; }
     /// Component names joined by '&', the fluid name of CoolProp's AbstractState factory.
     std::string getComponentList() const;
+    /// The CoolProp backend of the mixture: `HEOS` (the configured backend applies, e.g. a tabular one), or the strict
+    /// natural-gas models `GERG2008` and `GERG2004` of the prefixes `GERG2008::` and `GERG2004::` (always that backend).
+    const std::string& getBackend() const { return backend_; }
 
 private:
     std::string name_;
     std::vector<std::string> components_;
     std::vector<double> moleFractions_;
+    std::string backend_;
 };
 
 /**

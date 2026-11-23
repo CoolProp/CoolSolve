@@ -342,6 +342,15 @@ void checkThermoInputValueHint(DiagnosticCollector* diag,
 }
 
 void warnMixtureFluid(DiagnosticCollector* diag, const std::string& mixtureName) {
+    // GERG2008:: / GERG2004::: the reference equations of natural gases (ISO 20765-2 for GERG-2008), within their range
+    if (mixtureName.rfind("GERG", 0) == 0) {
+        emitHint(diag, "mixture:" + mixtureName,
+                 "Fluid '" + mixtureName + "' is a mixture of CoolProp's strict GERG model of natural gases: valid for "
+                 "its components and range (60-700 K, 70 MPa for GERG-2008), with no transport property (viscosity, "
+                 "conductivity) and enthalpies and entropies referred to the ideal gas at 298.15 K and 101325 Pa.",
+                 0, "C003");
+        return;
+    }
     emitHint(diag, "mixture:" + mixtureName,
              "Fluid '" + mixtureName + "' is a CoolProp mixture: its properties come from CoolProp's mixture model, "
              "which is predictive (mixing rules with binary interaction parameters) and may be unreliable, "

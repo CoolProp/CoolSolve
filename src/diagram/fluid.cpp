@@ -178,6 +178,7 @@ ChartFluid chartFluid(const std::string& name, const std::string& backend, const
             if (!mixture) break;
             chart.components = mixture->getComponents();
             chart.fractions = mixture->getMoleFractions();
+            if (mixture->getBackend() != "HEOS") chart.backend = mixture->getBackend();   // GERG2008::, GERG2004::
             return chart;
         }
         case FluidType::IdealGas:

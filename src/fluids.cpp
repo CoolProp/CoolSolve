@@ -3,6 +3,7 @@
 #include "coolsolve/nasa_glenn.h"
 #include "AbstractState.h"
 #include "CoolProp.h"
+#include "Backends/GERG/GERGBackend.h"
 #include "DataStructures.h"
 #include <algorithm>
 #include <cmath>
@@ -452,6 +453,11 @@ std::string MixtureFluid::getComponentList() const {
     return list;
 }
 
+// CoolProp registers its GERG2008 and GERG2004 backends from GERGBackend.cpp (its other backends are registered from
+// AbstractState.cpp and HelmholtzEOSMixtureBackend.cpp): with CoolProp linked as a static library that object file is
+// dropped when nothing refers to it, and the factory then refuses "GERG2008". This reference keeps it in the binary.
+static void* volatile keepGergBackends = reinterpret_cast<void*>(&CoolProp::GERG::make_gerg_fluid);
+
 std::shared_ptr<Fluid> FluidRegistry::getMixture(const std::string& name, std::string* error) {
     {
         std::shared_lock<std::shared_mutex> lock(mixturesMutex_);
@@ -463,13 +469,19 @@ std::shared_ptr<Fluid> FluidRegistry::getMixture(const std::string& name, std::s
         return nullptr;
     };
 
-    // Optional backend prefix: only the default backend, HEOS, is accepted
+    // Optional backend prefix: HEOS (the default), or CoolProp's strict GERG-2008 / GERG-2004 natural-gas models (their
+    // 21 / 18 components, their own pure-fluid equations, no transport properties)
     std::string text = trimmed(name);
+    std::string backend = "HEOS";
     const auto colons = text.find("::");
     if (colons != std::string::npos) {
         const std::string prefix = trimmed(text.substr(0, colons));
-        if (!equalsNoCase(prefix, "HEOS"))
-            return fail("the backend prefix '" + prefix + "::' is not supported (use 'HEOS::' or none)");
+        if (equalsNoCase(prefix, "GERG2008") || equalsNoCase(prefix, "GERG2004")) {
+            backend = equalsNoCase(prefix, "GERG2008") ? "GERG2008" : "GERG2004";
+        } else if (!equalsNoCase(prefix, "HEOS")) {
+            return fail("the backend prefix '" + prefix + "::' is not supported (use 'HEOS::', 'GERG2008::', "
+                        "'GERG2004::' or none)");
+        }
         text = trimmed(text.substr(colons + 2));
     }
 
@@ -528,18 +540,23 @@ std::shared_ptr<Fluid> FluidRegistry::getMixture(const std::string& name, std::s
         fractions.erase(fractions.begin() + i);
     }
     if (components.size() == 1) {
+        // A GERG model of a pure fluid is not that fluid of the registry, and CoolProp's pure GERG fluids have no
+        // pressure-caloric flash (P,h): name the pure fluid instead
+        if (backend != "HEOS")
+            return fail("a " + backend + " mixture needs two components or more with a non-zero fraction; for the pure "
+                        "fluid write its name ('" + components[0] + "')");
         auto pure = std::make_shared<RealFluid>(components[0], components[0]);
         std::unique_lock<std::shared_mutex> lock(mixturesMutex_);
         return mixtures_.emplace(name, pure).first->second;
     }
 
-    std::string canonical;
+    std::string canonical = backend == "HEOS" ? "" : backend + "::";
     for (size_t i = 0; i < components.size(); ++i)
         canonical += (i ? "&" : "") + components[i] + "[" + numberText(fractions[i], 15) + "]";
-    auto mixture = std::make_shared<MixtureFluid>(canonical, components, fractions);
-    try {   // binary interaction parameters of every pair, among others
+    auto mixture = std::make_shared<MixtureFluid>(canonical, components, fractions, backend);
+    try {   // binary interaction parameters of every pair, the components of a GERG model, among others
         std::unique_ptr<CoolProp::AbstractState> probe(
-            CoolProp::AbstractState::factory("HEOS", mixture->getComponentList()));
+            CoolProp::AbstractState::factory(backend, mixture->getComponentList()));
         probe->set_mole_fractions(fractions);
     } catch (const std::exception& e) {
         return fail(std::string("CoolProp cannot build it: ") + e.what());

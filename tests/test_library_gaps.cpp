@@ -6738,6 +6738,90 @@ TEST_CASE("CS-GAP-FLUIDS-MIXTURE: LaTeX report of a model with a mixture compile
     CHECK(pdflatexCompiles(tex, &log));
 }
 
+// ----------------------------------------------------------------------------
+// CS-GAP-FLUIDS-GERG: the prefixes GERG2008:: and GERG2004:: select CoolProp's strict natural-gas models (CoolProp
+// 8.1: their 21 / 18 components, their own pure-fluid equations, R = 8.314472, no transport property); the prefix
+// was refused ("use 'HEOS::' or none").
+// ----------------------------------------------------------------------------
+
+namespace {
+
+/// CoolProp's value of `output` [SI] of the mixture `components` (mole fractions `x`) of `backend` at T [K], P [Pa].
+double gergRef(const std::string& backend, const std::string& components, const std::vector<double>& x,
+               CoolProp::parameters output, double T, double P) {
+    std::unique_ptr<CoolProp::AbstractState> state(CoolProp::AbstractState::factory(backend, components));
+    state->set_mole_fractions(x);
+    state->update(CoolProp::PT_INPUTS, P, T);
+    return state->keyed_output(output);
+}
+
+}  // namespace
+
+TEST_CASE("CS-GAP-FLUIDS-GERG: natural gases with the GERG-2008 and GERG-2004 models", "[library-gaps][fluids-mixture][gerg]") {
+    auto run = runModel(
+        "ng$ = 'GERG2008::Methane[0.9]&Ethane[0.06]&Nitrogen[0.03]&CarbonDioxide[0.01]'\n"
+        "rho_2008 = density(ng$, T=25, P=50E5)\n"
+        "rho_2004 = density('GERG2004::Methane[0.9]&Ethane[0.06]&Nitrogen[0.03]&CarbonDioxide[0.01]', T=25, P=50E5)\n"
+        "rho_heos = density('Methane[0.9]&Ethane[0.06]&Nitrogen[0.03]&CarbonDioxide[0.01]', T=25, P=50E5)\n"
+        "h1 = enthalpy(ng$, T=25, P=50E5)\n"
+        "s1 = entropy(ng$, T=25, P=50E5)\n"
+        "T_back = temperature(ng$, P=50E5, h=h1)\n"
+        "c = soundspeed(ng$, T=25, P=50E5)\n"
+        "M = molarmass(ng$)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(anyContains(run.warnings, "is a mixture of CoolProp's strict GERG model of natural gases"));
+    CHECK(anyContains(run.warnings, "is a CoolProp mixture: its properties come from CoolProp's mixture model"));   // HEOS
+    const std::string comps = "Methane&Ethane&Nitrogen&CarbonDioxide";
+    const std::vector<double> x = {0.9, 0.06, 0.03, 0.01};
+    CHECK_THAT(run["rho_2008"], WithinRel(gergRef("GERG2008", comps, x, CoolProp::iDmass, 298.15, 50e5), 1e-9));
+    CHECK_THAT(run["rho_2004"], WithinRel(gergRef("GERG2004", comps, x, CoolProp::iDmass, 298.15, 50e5), 1e-9));
+    CHECK_THAT(run["rho_heos"], WithinRel(gergRef("HEOS", comps, x, CoolProp::iDmass, 298.15, 50e5), 1e-9));
+    CHECK_THAT(run["rho_2008"], WithinRel(run["rho_heos"], 5e-3));   // the same gas, two close models
+    CHECK(run["rho_2008"] != run["rho_heos"]);
+    CHECK_THAT(run["h1"], WithinRel(gergRef("GERG2008", comps, x, CoolProp::iHmass, 298.15, 50e5), 1e-9));
+    CHECK_THAT(run["T_back"], WithinAbs(25.0, 1e-6));
+    CHECK(run["c"] > 300.0);
+    CHECK_THAT(run["M"], WithinRel(1000.0 * gergRef("GERG2008", comps, x, CoolProp::imolar_mass, 298.15, 50e5), 1e-9));
+    SECTION("Newton through a GERG property") {
+        auto inv = runModel("ng$ = 'GERG2008::Methane[0.9]&Ethane[0.1]'\n"
+                            "density(ng$, T=T, P=50E5) = " +
+                            numText(gergRef("GERG2008", "Methane&Ethane", {0.9, 0.1}, CoolProp::iDmass, 280.0, 50e5)) + "\n");
+        INFO(inv.message);
+        REQUIRE(inv.solveOk);
+        CHECK(inv.verified);
+        CHECK_THAT(inv["T"], WithinAbs(280.0 - 273.15, 1e-6));
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-GERG: negative tests, each an error that says why", "[library-gaps][fluids-mixture][gerg]") {
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"density('GERG2008::Methane[0.5]&R134a[0.5]', T=25, P=1E5)", "CoolProp cannot build it"},
+        {"density('GERG2008::Methane[1]&Ethane[0]', T=25, P=1E5)", "a GERG2008 mixture needs two components or more"},
+        {"density('PR::Methane[0.5]&Ethane[0.5]', T=25, P=1E5)", "use 'HEOS::', 'GERG2008::', 'GERG2004::' or none"},
+    };
+    for (const auto& [call, message] : cases) {
+        INFO(call);
+        auto run = runModel("y = " + call + "\n");
+        REQUIRE_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, message));
+    }
+    // GERG has no transport properties: an error naming the call, never a value
+    auto mu = runModel("mu = viscosity('GERG2008::Methane[0.9]&Ethane[0.1]', T=25, P=50E5)\n");
+    INFO(mu.message);
+    const bool refused = !mu.solveOk || !mu.verified;
+    CHECK(refused);
+    // the HEOS and GERG mixtures of the same string are two fluids
+    auto heos = FluidRegistry::getFluid("Methane[0.9]&Ethane[0.1]");
+    auto gerg = FluidRegistry::getFluid("GERG2008::Methane[0.9]&Ethane[0.1]");
+    REQUIRE(heos);
+    REQUIRE(gerg);
+    CHECK(heos != gerg);
+    CHECK(gerg->getCoolPropName() == "GERG2008::Methane[0.9]&Ethane[0.1]");
+    CHECK(std::dynamic_pointer_cast<MixtureFluid>(gerg)->getBackend() == "GERG2008");
+}
+
 // ============================================================================
 // CS-BUG-MIX-AZEOTROPE-FLASH: the (T,P) flash of a near-azeotropic mixture called most of its two-phase states
 // single-phase with the CoolProp pin 8eb3b778 (CoolProp #3427, fixed by #3571 in 8.1.0): R410A written as

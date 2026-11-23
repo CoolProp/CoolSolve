@@ -437,6 +437,7 @@ One line per fixed item. The regression tests are in `tests/test_library_gaps.cp
 | `CS-GAP-INCOMP-EES-NAMES` | The EES brine names `EA`, `MA`, `GLYC`, `K2CO3`, `KAC`, `KFO`, `MGCL2`, `NH3W` are CoolProp's Melinder solutions `MEA`, `MMA`, `MGL`, `MKC`, `MKA`, `MKF`, `MMG`, `MAM`; `KOH` and `NaOH` (no CoolProp counterpart) are unsupported fluids naming the register. Whether EES's fits agree with CoolProp's is not checked | 2026-11-23 |
 | `CS-BUG-INCOMP-MOLARMASS` | `MOLARMASS` of an incompressible (`MEG`, `LiBr`, `INCOMP::TVP1`, …) was NaN: SUCCESS, then a failed verification. CoolProp's incompressibles are mass based: an error naming the call | 2026-11-23 |
 | `CS-GAP-FLUIDS-ABS` (VISC_LIBR, COND_LIBR) | `VISC_LIBR('SI',T,X)` and `COND_LIBR('SI',T,X)` are the property calls `viscosity(LiBr,T=T,C=X)` and `conductivity(LiBr,T=T,C=X)` of CoolProp 8.1.0's solution, fitted to the RP-527 data of Lee et al. and DiGuilio et al. that the EES routines implement (`Routine::solutionProperty`, `src/libr_ashrae.cpp`); `V_LIBR` and `Q_LIBR` remain | 2026-11-23 |
+| `CS-GAP-FLUIDS-GERG` | The mixture prefixes `GERG2008::` and `GERG2004::` select CoolProp's strict natural-gas models (CoolProp 8.1; `MixtureFluid::getBackend`, always that backend), with their own warning `C003`; a GERG string with one component left is an error (CoolProp's pure GERG fluids have no (P,h) flash). Was *"the backend prefix 'GERG2008::' is not supported"* | 2026-11-23 |
 
 ## 8. Unverified by a reviewer
 
