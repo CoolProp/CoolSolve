@@ -446,6 +446,8 @@ bool loadSolverOptionsFromFile(const std::string& path, SolverOptions& options) 
             else if (key == "coolpropEnableAnalyticalDerivatives") options.coolpropConfig.enableAnalyticalDerivatives = parseBool(val);
             else if (key == "coolpropCacheEnabled") options.coolpropConfig.cacheEnabled = parseBool(val);
             else if (key == "coolpropEnableSuperancillaries") options.coolpropConfig.enableSuperancillaries = parseBool(val);
+            else if (key == "coolpropChebyshevDensitySolver") options.coolpropConfig.chebyshevDensitySolver = parseBool(val);
+            else if (key == "coolpropIncompChebyshevCaloric") options.coolpropConfig.incompChebyshevCaloric = parseBool(val);
             // LaTeX report options
             else if (key == "enableLatexReport") options.enableLatexReport = parseBool(val);
             else if (key == "latexCompiler") options.latexCompiler = val;

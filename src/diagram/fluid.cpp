@@ -87,7 +87,8 @@ std::string ChartFluid::fluidString() const {
 std::string ChartFluid::portFluidString(const std::string& key) const {
     if (key != "Q" || !isTabular(backend)) return fluidString();
     ChartFluid base = *this;
-    base.backend = backend.substr(backend.find('&') + 1);
+    const std::string behind = backend.substr(backend.find('&') + 1);
+    base.backend = behind.substr(0, behind.find('?'));   // the options of the tables (?{"grid":...}) are not the EOS's
     return base.fluidString();
 }
 

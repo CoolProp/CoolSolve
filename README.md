@@ -106,7 +106,7 @@ CoolSolve uses several file formats for input and verification:
   - **Convergence**: tolerances, iteration limits, line search, variable scaling, equation scaling (`enableEquationScaling`, for blocks whose equations have terms of very different sizes), timeout.
   - **Solver pipeline**: which solvers run and in what order (`solverPipeline`; default `Newton`), sequential or parallel, the *Try Harder* (Deep Search) pipeline, multi-start, and the tuning of each solver.
   - **Block pre-processing**: structural tearing and symbolic block reduction (off by default).
-  - **CoolProp**: backend, AbstractState API, analytical derivatives, caching, superancillaries.
+  - **CoolProp**: backend (with the size of the tables of a tabular one), AbstractState API, analytical derivatives, caching, superancillaries, the Chebyshev density solver of the mixtures and the Chebyshev fits of the incompressibles (CoolProp 8.1; off: CoolProp 8.0's results).
   - **Dynamic models** (`INTEGRAL`): integrator, step size, error control, `$IntegralTable` output interval.
   - **LaTeX report**: generation and compiler.
 

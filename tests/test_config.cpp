@@ -135,12 +135,16 @@ TEST_CASE("CoolProp integration options are loaded from config", "[config][solve
     f << "coolpropEnableAnalyticalDerivatives = false\n";
     f << "coolpropCacheEnabled = true\n";
     f << "coolpropEnableSuperancillaries = false\n";
+    f << "coolpropChebyshevDensitySolver = false\n";
+    f << "coolpropIncompChebyshevCaloric = false\n";
     f.close();
     coolsolve::SolverOptions options;
     bool loaded = coolsolve::loadSolverOptionsFromFile(configPath.string(), options);
     fs::remove(configPath);
     REQUIRE(loaded);
     REQUIRE(options.coolpropConfig.backend == "TTSE&HEOS");
+    REQUIRE(options.coolpropConfig.chebyshevDensitySolver == false);
+    REQUIRE(options.coolpropConfig.incompChebyshevCaloric == false);
     REQUIRE(options.coolpropConfig.useAbstractState == true);
     REQUIRE(options.coolpropConfig.enableAnalyticalDerivatives == false);
     REQUIRE(options.coolpropConfig.cacheEnabled == true);
@@ -164,6 +168,20 @@ TEST_CASE("CoolProp config defaults from file with no CoolProp keys", "[config][
     REQUIRE(options.coolpropConfig.enableAnalyticalDerivatives == true);
     REQUIRE(options.coolpropConfig.cacheEnabled == true);
     REQUIRE(options.coolpropConfig.enableSuperancillaries == true);
+    REQUIRE(options.coolpropConfig.chebyshevDensitySolver == true);
+    REQUIRE(options.coolpropConfig.incompChebyshevCaloric == true);
+}
+
+TEST_CASE("The grid of a tabular backend is part of coolpropBackend, as CoolProp 8.1 reads it", "[config][solver][coolprop]") {
+    const fs::path configPath = fs::temp_directory_path() / "coolsolve_test_grid.conf";
+    {
+        std::ofstream f(configPath);
+        f << "coolpropBackend = BICUBIC&HEOS?{\"grid\":{\"Nx\":60,\"Ny\":60}}\n";
+    }
+    coolsolve::SolverOptions options;
+    REQUIRE(coolsolve::loadSolverOptionsFromFile(configPath.string(), options));
+    fs::remove(configPath);
+    CHECK(options.coolpropConfig.backend == R"(BICUBIC&HEOS?{"grid":{"Nx":60,"Ny":60}})");
 }
 
 TEST_CASE("TrustRegion hybrd Broyden options are loaded from config", "[config][solver][trustregion][hybrd]") {

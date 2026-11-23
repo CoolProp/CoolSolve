@@ -498,7 +498,8 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
         description:
           'CoolProp AbstractState backend. HEOS = full Helmholtz EOS (default). '
           + 'TTSE&HEOS or BICUBIC&HEOS = tabular interpolation backends that build lookup '
-          + 'tables on first use (slower startup, much faster evaluations for large models).' },
+          + 'tables on first use (slower startup, much faster evaluations for large models). '
+          + 'The size of the tables can be set in coolsolve.conf, e.g. BICUBIC&HEOS?{"grid":{"Nx":400,"Ny":400}}.' },
       { key: 'coolpropUseAbstractState', label: 'Use AbstractState', type: 'boolean', defaultVal: 'true',
         description:
           'Use the low-level AbstractState API instead of the high-level PropsSI function. '
@@ -516,6 +517,15 @@ const CONFIG_SCHEMA: ConfigGroup[] = [
       { key: 'coolpropEnableSuperancillaries', label: 'Superancillaries', type: 'boolean', defaultVal: 'true',
         description:
           'Use the CoolProp superancillary functions for the VLE of pure fluids.' },
+      { key: 'coolpropChebyshevDensitySolver', label: 'Chebyshev density solver', type: 'boolean', defaultVal: 'true',
+        description:
+          'The (T,P) flash of the CoolProp mixtures finds the density roots with the Chebyshev all-roots solver, '
+          + 'the default of CoolProp 8.1 (10-25x faster for gas mixtures). false: the solvers of CoolProp 8.0, '
+          + 'to compare results.' },
+      { key: 'coolpropIncompChebyshevCaloric', label: 'Incompressibles: Chebyshev fits', type: 'boolean', defaultVal: 'true',
+        description:
+          'Density, cp, h and s of the incompressible fluids from their Chebyshev fits, the default of CoolProp 8.1. '
+          + 'false: the classic polynomial fits of CoolProp 8.0, to compare results.' },
     ],
   },
   {
@@ -767,6 +777,8 @@ export default function ConfigEditor() {
                           options={[
                             { value: '', label: '— default —' },
                             ...field.options.map((o) => ({ value: o, label: o })),
+                            // a value of coolsolve.conf that is not in the list (a tabular grid) stays shown
+                            ...(isSet && !field.options.includes(current) ? [{ value: current, label: current }] : []),
                           ]}
                         />
                       ) : (

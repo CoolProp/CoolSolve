@@ -1492,7 +1492,8 @@ TEST_CASE("Diagram incompressibles: solutions at a mass fraction, absolute limit
 TEST_CASE("Diagram tabular backends: the lines of constant quality from the equation of state", "[diagram]") {
     // A model whose coolsolve.conf sets coolpropBackend = BICUBIC&HEOS (or TTSE&HEOS): the lines with the tables, the
     // lines of constant quality with the equation of state behind them, as CoolPlot's native.port_fluid_string
-    for (const char* backend : {"BICUBIC&HEOS", "TTSE&HEOS"}) {
+    // the grid of the tables chosen in the backend string (CoolProp 8.1): built in memory, not on disk
+    for (const char* backend : {"BICUBIC&HEOS", "TTSE&HEOS", R"(BICUBIC&HEOS?{"grid":{"Nx":80,"Ny":80}})"}) {
         INFO(backend);
         const ChartFluid water = chartFluid("Water", backend);
         CHECK(water.kind() == "Real");

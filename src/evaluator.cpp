@@ -22,6 +22,7 @@
 
 #include "CoolProp.h"
 #include "CoolPropLib.h"  // For set_config_bool C-style API
+#include "CoolProp/Configuration.h"
 #include "AbstractState.h"
 #include "DataStructures.h"
 #include "HumidAirProp.h"
@@ -84,6 +85,11 @@ struct AbstractStateCache {
     std::shared_ptr<CoolProp::AbstractState> getOrCreate(
         const std::string& backend, const std::string& fluidName) {
         std::string key = backend + "::" + fluidName;
+        // An incompressible state keeps the fits it was created with (INCOMP_PREFER_CHEBYSHEV_CALORIC, set by
+        // applyCoolPropConfig): one state per choice
+        if (fluidName.compare(0, 8, "INCOMP::") == 0 &&
+            !CoolProp::get_config_bool(INCOMP_PREFER_CHEBYSHEV_CALORIC))
+            key += "#classic";
         auto it = states.find(key);
         if (it != states.end()) {
             ++hits;
@@ -451,6 +457,9 @@ void applyCoolPropConfig(const CoolPropConfig& config) {
     // Set superancillary configuration using C-style API
     // Note: This must be called before any CoolProp fluid initialization
     ::set_config_bool("ENABLE_SUPERANCILLARIES", config.enableSuperancillaries);
+    ::set_config_bool("CHEBYSHEV_DENSITY_SOLVER", config.chebyshevDensitySolver);
+    // read by CoolProp when an incompressible state is created: AbstractStateCache keys its states by it
+    ::set_config_bool("INCOMP_PREFER_CHEBYSHEV_CALORIC", config.incompChebyshevCaloric);
 }
 
 // ============================================================================

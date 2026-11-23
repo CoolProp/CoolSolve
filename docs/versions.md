@@ -45,6 +45,11 @@ Notes of the changes merged since v0.5, gathered for the next changelog.
   and DiGuilio et al. 1990): `viscosity(LiBr, 55, T=60, P=1E5)` was an error. The EES routines `VISC_LIBR('SI', T, X)`
   and `COND_LIBR('SI', T, X)` are these properties.
 
+- **`coolsolve.conf`**: `coolpropChebyshevDensitySolver` and `coolpropIncompChebyshevCaloric` (default `true`, the
+  defaults of CoolProp 8.1; `false` gives the density solver of the mixtures and the fits of the incompressibles of
+  CoolProp 8.0, to compare), in the GUI configuration editor too; the size of the tables of a tabular backend in
+  `coolpropBackend` (`BICUBIC&HEOS?{"grid":{"Nx":400,"Ny":400}}`), kept by the configuration editor and the diagrams.
+
 ### Solver
 
 - **Exact derivatives inside the saturation dome of a pure fluid**: CoolProp's `first_partial_deriv()` is that of

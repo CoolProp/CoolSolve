@@ -5,6 +5,8 @@
 #include "coolsolve/parser.h"
 #include "coolsolve/ir.h"
 #include "coolsolve/structural_analysis.h"
+#include "CoolProp.h"
+#include "CoolProp/Configuration.h"
 #include <cmath>
 #include <iomanip>
 #include <sstream>
@@ -1960,4 +1962,57 @@ TEST_CASE("Two-phase derivatives: pseudo-pure fluids, T and P, and the tabular b
     auto exact = evalTwoPhaseCall("entropy(Water, P=a, h=b)", 1e5, 1.1e6);
     CHECK_THAT(legacy.value, WithinRel(exact.value, 1e-15));
     CHECK_THAT(legacy.db, WithinRel(exact.db, 1e-6));
+}
+
+// ============================================================================
+// The CoolProp 8.1 switches of coolsolve.conf (coolpropChebyshevDensitySolver, coolpropIncompChebyshevCaloric), applied
+// to CoolProp by applyCoolPropConfig as the CLI and the server do
+// ============================================================================
+
+TEST_CASE("coolpropIncompChebyshevCaloric: the classic fits of the incompressibles, the choice followed state by state",
+          "[evaluator][coolprop-config]") {
+    struct Restore {
+        ~Restore() { coolsolve::applyCoolPropConfig(coolsolve::CoolPropConfig{}); }
+    } restore;
+    coolsolve::CoolPropConfig chebyshev, classic;
+    classic.incompChebyshevCaloric = false;
+    auto density = [](double T_C) { return evalTwoPhaseCall("density('INCOMP::LiqNa', T=a, P=b)", T_C, 1e6).value; };
+    auto reference = [](double T_K) { return CoolProp::PropsSI("D", "T", T_K, "P", 1e6, "INCOMP::LiqNa"); };
+    for (int round = 0; round < 2; ++round) {   // back and forth in one thread: each value is that of its fits
+        INFO("round " << round);
+        coolsolve::applyCoolPropConfig(chebyshev);
+        CHECK(CoolProp::get_config_bool(INCOMP_PREFER_CHEBYSHEV_CALORIC));
+        const double newFit = density(500.0);
+        CHECK_THAT(newFit, WithinRel(reference(773.15), 1e-12));
+        coolsolve::applyCoolPropConfig(classic);
+        CHECK_FALSE(CoolProp::get_config_bool(INCOMP_PREFER_CHEBYSHEV_CALORIC));
+        const double oldFit = density(500.0);
+        CHECK_THAT(oldFit, WithinRel(reference(773.15), 1e-12));
+        CHECK(std::abs(oldFit - newFit) > 1e-3 * newFit);   // liquid sodium: a new fit of the data in CoolProp 8.1
+    }
+    // MEG's Chebyshev fit is an exact conversion of its polynomial: the same value either way
+    coolsolve::applyCoolPropConfig(classic);
+    const double megClassic = evalTwoPhaseCall("cp(MEG, 30, T=a, P=b)", 20.0, 1e5).value;
+    coolsolve::applyCoolPropConfig(chebyshev);
+    const double megChebyshev = evalTwoPhaseCall("cp(MEG, 30, T=a, P=b)", 20.0, 1e5).value;
+    CHECK_THAT(megClassic, WithinRel(megChebyshev, 1e-9));
+}
+
+TEST_CASE("coolpropChebyshevDensitySolver: the switch reaches CoolProp, the same gas-mixture densities",
+          "[evaluator][coolprop-config]") {
+    struct Restore {
+        ~Restore() { coolsolve::applyCoolPropConfig(coolsolve::CoolPropConfig{}); }
+    } restore;
+    const std::string call = "density('Methane[0.9]&Ethane[0.1]', T=a, P=b)";
+    coolsolve::applyCoolPropConfig(coolsolve::CoolPropConfig{});
+    CHECK(CoolProp::get_config_bool(CHEBYSHEV_DENSITY_SOLVER));   // the default of CoolProp 8.1
+    const auto chebyshev = evalTwoPhaseCall(call, 25.0, 50e5);
+    coolsolve::CoolPropConfig previous;
+    previous.chebyshevDensitySolver = false;
+    coolsolve::applyCoolPropConfig(previous);
+    CHECK_FALSE(CoolProp::get_config_bool(CHEBYSHEV_DENSITY_SOLVER));
+    const auto solvers80 = evalTwoPhaseCall(call, 25.0, 50e5);
+    // CoolProp: the two agree to ~1e-7 except where the previous solvers took a wrong root
+    CHECK_THAT(solvers80.value, WithinRel(chebyshev.value, 1e-7));
+    CHECK_THAT(solvers80.da, WithinRel(chebyshev.da, 1e-5));
 }

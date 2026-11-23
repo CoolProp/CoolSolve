@@ -118,6 +118,12 @@ struct CoolPropConfig {
     bool cacheEnabled = true;       // Cache AbstractState instances
     double cacheTolerance = 1e-10;  // Re-use cached state if inputs change less than this
     bool enableSuperancillaries = true;  // Enable CoolProp superancillary functions for the VLE of pure fluids
+    /// CoolProp's CHEBYSHEV_DENSITY_SOLVER: the all-roots density solver of the (T,P) flash of the mixtures (the default
+    /// of CoolProp 8.1; false: the solvers of CoolProp 8.0)
+    bool chebyshevDensitySolver = true;
+    /// CoolProp's INCOMP_PREFER_CHEBYSHEV_CALORIC: density, cp, h, s of the incompressibles from their Chebyshev fits (the
+    /// default of CoolProp 8.1; false: the classic polynomial fits of CoolProp 8.0)
+    bool incompChebyshevCaloric = true;
     
     // Low-level API: use AbstractState instead of PropsSI
     // When true, property evaluations go through cached AbstractState objects,

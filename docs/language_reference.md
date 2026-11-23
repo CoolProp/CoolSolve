@@ -2347,8 +2347,11 @@ its default and when to change it, is documented in `examples/coolsolve.conf`. T
   Newton), `pipelineMode`, the *Try Harder* pipeline (`deepSearchPipeline`), multi-start (`multiStartMode`), and
   the tuning keys of each solver;
 - block pre-processing: `enableTearing`, `enableSymbolicReduction`;
-- CoolProp: `coolpropBackend` (`HEOS`, `BICUBIC&HEOS`, `TTSE&HEOS`), AbstractState API, analytical derivatives,
-  caching, superancillaries;
+- CoolProp: `coolpropBackend` (`HEOS`, `BICUBIC&HEOS`, `TTSE&HEOS`; the size of the tables in the string,
+  `BICUBIC&HEOS?{"grid":{"Nx":400,"Ny":400}}`), AbstractState API, analytical derivatives, caching, superancillaries,
+  and the two switches of CoolProp 8.1, `coolpropChebyshevDensitySolver` (the density solver of the mixture (T,P)
+  flash) and `coolpropIncompChebyshevCaloric` (the Chebyshev or the classic polynomial fits of the incompressibles),
+  both `true` by default — `false` gives CoolProp 8.0's results, to compare;
 - dynamic models: the `integral…` keys (§12);
 - LaTeX report: `enableLatexReport`, `latexCompiler`.
 
