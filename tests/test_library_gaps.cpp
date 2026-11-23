@@ -6850,6 +6850,168 @@ TEST_CASE("CS-BUG-ANCILLARY-NOSUPERANC: subcooled R1234yf and saturated n-octane
 }
 
 // ============================================================================
+// CS-GAP-FLUIDS-COOLPROP: the registry of src/fluids.cpp is the list of the fluids a model can name, and 41 pure
+// fluids of CoolProp were missing from it (R1132a of CoolProp 8.1.0, R1123, R1336mzz(Z), Ethanol, CarbonMonoxide,
+// n-Decane, the xylenes, ...): "Unknown fluid" although CoolProp has them. CS-BUG-FLUIDS-UNSUPPORTED: Chlorine,
+// Chloroethene (vinyl chloride), EthyleneOxide and IsoHexane were refused as "not in CoolProp standard fluids" — CoolProp
+// has them (IsoHexane was registered, then overwritten by the unsupported entry). IsoOctane is really not in CoolProp.
+// ============================================================================
+
+namespace {
+
+/// The CAS number of a CoolProp fluid: it identifies the substance whatever the alias the name is.
+std::string casOf(const std::string& coolPropName) { return CoolProp::get_fluid_param_string(coolPropName, "CAS"); }
+
+}  // namespace
+
+TEST_CASE("CS-GAP-FLUIDS-COOLPROP: every pure fluid of CoolProp is reachable by its CoolProp name", "[library-gaps][fluids]") {
+    std::istringstream list(CoolProp::get_global_param_string("FluidsList"));
+    int count = 0;
+    for (std::string name; std::getline(list, name, ',');) {
+        INFO(name);
+        ++count;
+        auto fluid = FluidRegistry::getFluid(name);
+        REQUIRE(fluid);
+        if (name == "Air") {   // EES's Air is the ideal gas; the real dry air is Air_ha
+            CHECK(fluid->getType() == FluidType::IdealGas);
+            REQUIRE(FluidRegistry::getFluid("Air_ha"));
+            CHECK(FluidRegistry::getFluid("Air_ha")->getCoolPropName() == "Air");
+            continue;
+        }
+        if (fluid->getType() == FluidType::Incompressible) {   // Methanol, PropyleneGlycol: solutions with C=, else pure
+            auto solution = std::dynamic_pointer_cast<IncompressibleFluid>(fluid);
+            REQUIRE(solution->pureFluid());
+            fluid = solution->pureFluid();
+        }
+        REQUIRE(fluid->getType() == FluidType::Real);
+        CHECK(casOf(fluid->getCoolPropName()) == casOf(name));
+    }
+    CHECK(count >= 120);   // CoolProp 8.1.0 has 125
+}
+
+TEST_CASE("CS-GAP-FLUIDS-COOLPROP: the new fluids in a model, by name, as a string variable and in a mixture",
+          "[library-gaps][fluids]") {
+    auto run = runModel(
+        "T_a = temperature(R1132a, P=2E6, x=1)\n"
+        "fl$ = 'R1123'\n"
+        "h_b = enthalpy(fl$, T=20, P=1E5)\n"
+        "rho_c = density(Ethanol, T=25, P=1E5)\n"
+        "P_d = pressure('n-Decane', T=150, x=0)\n"
+        "s_e = entropy('o-Xylene', T=50, P=1E5)\n"
+        "h_m = enthalpy('Propane[0.5]&n-Decane[0.5]', T=200, P=1E5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["T_a"] + 273.15, WithinRel(CoolProp::PropsSI("T", "P", 2e6, "Q", 1, "R1132a"), 1e-9));
+    CHECK_THAT(run["h_b"], WithinRel(CoolProp::PropsSI("H", "T", 293.15, "P", 1e5, "R1123"), 1e-9));
+    CHECK_THAT(run["rho_c"], WithinRel(CoolProp::PropsSI("D", "T", 298.15, "P", 1e5, "Ethanol"), 1e-9));
+    CHECK(run["rho_c"] > 780.0);   // liquid ethanol at 25 C
+    CHECK_THAT(run["P_d"], WithinRel(CoolProp::PropsSI("P", "T", 423.15, "Q", 0, "n-Decane"), 1e-9));
+    CHECK_THAT(run["s_e"], WithinRel(CoolProp::PropsSI("S", "T", 323.15, "P", 1e5, "o-Xylene"), 1e-9));
+    CHECK(std::isfinite(run["h_m"]));
+    SECTION("an unknown name is still the error that says so") {
+        auto bad = runModel("h = enthalpy(R1132b, T=20, P=1E5)\n");
+        REQUIRE_FALSE(bad.solveOk);
+        CHECK(anyContains({bad.message}, "Unknown fluid: 'R1132b'"));
+    }
+}
+
+TEST_CASE("CS-BUG-FLUIDS-UNSUPPORTED: Chlorine, Chloroethene, EthyleneOxide and IsoHexane are CoolProp's fluids",
+          "[library-gaps][fluids]") {
+    // was: "Fluid 'Chlorine' is not supported: Not in CoolProp standard fluids" (and the same for the three others)
+    auto run = runModel(
+        "M_cl = molarmass(Chlorine)\n"
+        "P_cl = pressure(Chlorine, T=20, x=0)\n"
+        "M_vc = molarmass(Chloroethene)\n"
+        "T_vc = T_sat(Chloroethene, P=1E5)\n"
+        "h_eo = enthalpy(EthyleneOxide, T=0, P=1E5)\n"
+        "rho_ih = density(IsoHexane, T=25, P=1E5)\n"
+        "Tc_ih = T_crit(IsoHexane)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["M_cl"], WithinRel(molarMassKgPerKmol("Chlorine"), 1e-9));
+    CHECK_THAT(run["M_cl"], WithinAbs(70.906, 1e-2));
+    CHECK_THAT(run["P_cl"], WithinRel(CoolProp::PropsSI("P", "T", 293.15, "Q", 0, "Chlorine"), 1e-9));
+    CHECK_THAT(run["M_vc"], WithinAbs(62.498, 1e-2));
+    CHECK_THAT(run["T_vc"] + 273.15, WithinRel(CoolProp::PropsSI("T", "P", 1e5, "Q", 0, "VinylChloride"), 1e-9));
+    CHECK_THAT(run["h_eo"], WithinRel(CoolProp::PropsSI("H", "T", 273.15, "P", 1e5, "EthyleneOxide"), 1e-9));
+    CHECK_THAT(run["rho_ih"], WithinRel(CoolProp::PropsSI("D", "T", 298.15, "P", 1e5, "Isohexane"), 1e-9));
+    CHECK_THAT(run["Tc_ih"] + 273.15, WithinRel(CoolProp::Props1SI("Isohexane", "Tcrit"), 1e-9));
+    SECTION("IsoOctane, Acetylene, Helium3 have no equation of state in CoolProp: an error naming the fluid") {
+        for (const char* name : {"IsoOctane", "Acetylene", "Helium3"}) {
+            INFO(name);
+            auto bad = runModel(std::string("h = enthalpy(") + name + ", T=20, P=1E5)\n");
+            REQUIRE_FALSE(bad.solveOk);
+            CHECK(anyContains({bad.message}, std::string("Fluid '") + name + "' is not supported"));
+        }
+    }
+}
+
+TEST_CASE("CS-GAP-FLUIDS-R1336MZZ: register reproducer, the HTHP refrigerant R1336mzz(Z)", "[library-gaps][fluids]") {
+    // was: "Unknown fluid: 'R1336mzz(Z)'" for the name, a string variable and every spelling
+    auto run = runModel("T1 = temperature('R1336mzz(Z)', P=1050000, x=1)\n"
+                        "fl$ = 'r1336mzz(z)'\n"
+                        "h1 = enthalpy(fl$, P=1050000, x=1)\n"
+                        "T2 = temperature('R1336mzz(E)', P=1050000, x=1)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["T1"] + 273.15, WithinRel(CoolProp::PropsSI("T", "P", 1.05e6, "Q", 1, "R1336mzz(Z)"), 1e-9));
+    CHECK_THAT(run["h1"], WithinRel(CoolProp::PropsSI("H", "P", 1.05e6, "Q", 1, "R1336mzz(Z)"), 1e-9));
+    CHECK(run["T2"] < run["T1"]);   // the E isomer is the more volatile one
+}
+
+TEST_CASE("CS-GAP-FLUIDS-ALIAS: CarbonMonoxide is the real fluid, CO the ideal gas", "[library-gaps][fluids]") {
+    // was: "Unknown fluid: 'CarbonMonoxide'" (the EES real fluid of CSL-0058, molarmass 28.001)
+    auto run = runModel("MM_CO = molarmass(CarbonMonoxide)\n"
+                        "h_real = enthalpy(CarbonMonoxide, T=25, P=1E5)\n"
+                        "h_ideal = enthalpy(CO, T=25, P=1E5)\n"
+                        "rho_real = density(CarbonMonoxide, T=-150, P=50E5)\n"
+                        "rho_ideal = density(CO, T=-150, P=50E5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["MM_CO"], WithinAbs(28.01, 1e-2));
+    CHECK_THAT(run["h_real"], WithinRel(CoolProp::PropsSI("H", "T", 298.15, "P", 1e5, "CarbonMonoxide"), 1e-9));
+    CHECK(std::abs(run["h_ideal"] - run["h_real"]) > 1e6);   // the ideal gas carries the enthalpy of formation
+    CHECK(run["rho_real"] > 1.2 * run["rho_ideal"]);          // a dense real gas at -150 C, 50 bar
+}
+
+TEST_CASE("CS-GAP-FLUIDS-COOLPROP: Methanol and PropyleneGlycol are solutions with a concentration, pure fluids without",
+          "[library-gaps][fluids][incompressible]") {
+    auto run = runModel(
+        "rho_sol = density(Methanol, T=10, P=1E5, C=30)\n"
+        "rho_pure = density(Methanol, T=10, P=1E5)\n"
+        "Tc_m = T_crit(Methanol)\n"
+        "M_m = molarmass(Methanol)\n"
+        "P_m = pressure(Methanol, T=64.5, x=0)\n"
+        "ph$ = phase$(Methanol, T=25, P=1E5)\n"
+        "cp_sol = cp(PropyleneGlycol, T=20, C=40)\n"
+        "rho_pg = density(PropyleneGlycol, T=20, P=1E5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["rho_sol"], WithinRel(CoolProp::PropsSI("D", "T", 283.15, "P", 1e5, "INCOMP::MMA[0.3]"), 1e-9));
+    CHECK_THAT(run["rho_pure"], WithinRel(CoolProp::PropsSI("D", "T", 283.15, "P", 1e5, "Methanol"), 1e-9));
+    CHECK(run["rho_pure"] < run["rho_sol"]);   // pure methanol (800 kg/m^3) is lighter than the 30 % solution
+    CHECK_THAT(run["Tc_m"] + 273.15, WithinRel(CoolProp::Props1SI("Methanol", "Tcrit"), 1e-9));
+    CHECK_THAT(run["M_m"], WithinAbs(32.04, 1e-2));
+    CHECK_THAT(run["P_m"], WithinRel(101325.0, 0.02));   // the normal boiling point of methanol, 64.5 C
+    CHECK(run.strings.at("ph$") == "liquid");
+    CHECK_THAT(run["cp_sol"], WithinRel(CoolProp::PropsSI("C", "T", 293.15, "P", 101325.0, "INCOMP::MPG[0.4]"), 1e-9));
+    CHECK_THAT(run["rho_pg"], WithinRel(CoolProp::PropsSI("D", "T", 293.15, "P", 1e5, "PropyleneGlycol"), 1e-9));
+    SECTION("the other names of these solutions have no pure fluid: still the error asking for a concentration") {
+        for (const char* name : {"MMA", "PG", "MPG", "EthanolSolution"}) {
+            INFO(name);
+            auto bad = runModel(std::string("rho = density(") + name + ", T=10, P=1E5)\n");
+            REQUIRE_FALSE(bad.solveOk);
+            CHECK(anyContains({bad.message}, "requires a concentration"));
+        }
+    }
+}
+
+// ============================================================================
 // CS-BUG-COMMON-PROC: $COMMON is not supported (maintainer decision): the body of a
 // FUNCTION/PROCEDURE saw 0 for the variables of its $COMMON list while the run reported
 // SUCCESS. It is now an error that names the directive, the variables and the routine and
@@ -23647,8 +23809,10 @@ TEST_CASE("CS-GAP-IDEAL-GAS-MODEL: negative tests, no phase change and no two in
             {"enthalpy(H2O, T=25, quality=1)", "enthalpy(H2O, ...): an ideal gas has no phase change; use the real fluid Water"},
             {"cp(He, q=0)", "cp(He, ...): an ideal gas has no phase change; use the real fluid Helium"},
             {"pressure(CH4, T=25, x=1)", "pressure(CH4, ...): an ideal gas has no phase change; use the real fluid Methane"},
-            // CO has no real fluid in the registry: the message says no more than why
-            {"quality(CO, T=25, P=1E5)", "quality(CO, ...): an ideal gas has no phase change"},
+            // CO has its real fluid since CS-GAP-FLUIDS-ALIAS (before: the message said no more than why)
+            {"quality(CO, T=25, P=1E5)", "quality(CO, ...): an ideal gas has no phase change; use the real fluid CarbonMonoxide"},
+            // a species of the NASA-Glenn data has no real fluid: the message says no more than why
+            {"quality(OH, T=2000, P=1E5)", "quality(OH, ...): an ideal gas has no phase change"},
         };
         for (const auto& [call, message] : calls) {
             INFO(call);

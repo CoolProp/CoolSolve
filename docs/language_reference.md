@@ -969,11 +969,19 @@ R113 – R161, R218, R22 – R32, R125 – R152a, R227ea, R236ea/fa,
 R245ca/R245fa, R365mfc, R404A, R407C, R410A, R507A, R134a, R1233zd(E),
 R1234yf, R1234ze(E/Z), R1243zf, RC318, SES36; alkanes n-Butane / IsoButane /
 n-Pentane / IsoPentane / n-Hexane / IsoHexane / n-Heptane / n-Octane /
-IsoOctane; cyclics CycloHexane / CycloPentane; butenes, HeavyWater, Deuterium,
-DimethylEther / DiethylEther, EthylBenzene, Ethylene, Fluorine, HydrogenChloride,
+n-Nonane / n-Decane / n-Undecane / n-Dodecane; cyclics CycloPropane / CycloHexane / CycloPentane; butenes,
+HeavyWater, Deuterium, DimethylEther / DiethylEther, EthylBenzene, Ethylene, Fluorine, HydrogenChloride,
 HydrogenSulfide, Krypton, MM / MDM / MD2M / MD3M / MD4M, Neon, Neopentane,
 NitrousOxide, Novec649, OrthoHydrogen / ParaHydrogen, Propylene,
-SulfurDioxide, SulfurHexafluoride, Xenon, Air_ha (real dry air).
+SulfurDioxide, SulfurHexafluoride, Xenon, Air_ha (real dry air), CarbonMonoxide (the real fluid; `CO` is the ideal
+gas), Chlorine, Chloroethene / VinylChloride, EthyleneOxide, Ethanol, Tetrahydrofuran, the xylenes, the
+refrigerants R21, R40, R13I1, R1123, R1130(E), R1132(E), R1132a, R1224yd(Z), R1336mzz(E), R1336mzz(Z), and the
+other fluids of CoolProp.
+
+**Every pure fluid of CoolProp** (its `FluidsList`) is a real fluid of CoolSolve under its CoolProp name
+(`'n-Propane'`, `'1-Butene'`, `'HFE143m'`, `'MethylOleate'`, …), case-insensitive. `Methanol` and `PropyleneGlycol` are
+the aqueous solutions of the next section when the call has a concentration (`C=30`), and CoolProp's pure fluids
+otherwise (`density(Methanol, T=10, P=1E5)`, `T_crit(Methanol)`), as EES's real fluids of these names.
 
 ### Ideal gases
 
@@ -1217,11 +1225,11 @@ in mass %, or the named `C=...` argument):
 | Alias / primary name          | Description              |
 |:------------------------------|:-------------------------|
 | `EthyleneGlycol` / `EG` / `MEG` | Ethylene glycol/water   |
-| `PropyleneGlycol` / `PG` / `MPG`| Propylene glycol/water  |
+| `PropyleneGlycol` / `PG` / `MPG`| Propylene glycol/water (`PropyleneGlycol` without a concentration: the pure fluid) |
 | `CaCl2` / `MCA`               | Calcium chloride brine   |
 | `NaCl` / `MNA`                | Sodium chloride brine    |
 | `LiCl` / `MLI`                | Lithium chloride brine   |
-| `Methanol` / `MMA`            | Methanol/water           |
+| `Methanol` / `MMA`            | Methanol/water (`Methanol` without a concentration: the pure fluid) |
 | `EthanolSolution` / `MEA`     | Ethanol/water            |
 | `Glycerol` / `MGL`            | Glycerol/water           |
 | `LiBr`                        | Lithium bromide/water solution (CoolProp, Pátek-Klomfar fits, 0–75 %, 0–227 °C; density, cp, h, s, viscosity, conductivity) |
@@ -1461,8 +1469,7 @@ Some EES fluids are not modelled by CoolProp. Attempting to use them
 triggers a clear runtime error with the fluid name and a remediation
 suggestion:
 
-`LiBrH2O`, `Acetylene`, `Chlorine`, `Chloroethene`,
-`EthyleneOxide`, `Helium3`, `Potassium`, `Sodium`, `Aluminum`, `Copper`.
+`LiBrH2O`, `Acetylene`, `Helium3`, `IsoOctane`, `Potassium`, `Sodium`, `Aluminum`, `Copper`.
 
 `Aluminum` and `Copper` are EES solids of its property library; CoolProp has no solid properties, so their
 properties are not available (the call is an error naming the fluid, never a NaN): give them as constants or as a

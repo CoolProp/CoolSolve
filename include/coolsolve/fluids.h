@@ -155,6 +155,10 @@ public:
     std::string getCoolPropName() const override { return "INCOMP::" + coolPropKey_; }
     std::string getCoolPropKey() const { return coolPropKey_; }
     bool isSolution() const { return isSolution_; }
+    /// The pure CoolProp fluid of the same name (`Methanol`, `PropyleneGlycol`), or null: a call of the solution
+    /// without a concentration is a call of this fluid, EES's real fluid of that name (pureFluidWithoutConcentration).
+    const std::shared_ptr<Fluid>& pureFluid() const { return pureFluid_; }
+    void setPureFluid(std::shared_ptr<Fluid> fluid) { pureFluid_ = std::move(fluid); }
     FluidType getType() const override { return FluidType::Incompressible; }
     int getMinInputs() const override { return 2; }
 
@@ -189,6 +193,7 @@ private:
     std::string name_;
     std::string coolPropKey_;
     bool isSolution_;
+    std::shared_ptr<Fluid> pureFluid_;
 };
 
 /**

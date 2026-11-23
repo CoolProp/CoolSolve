@@ -4,6 +4,7 @@
 #include "CoolProp.h"
 #include "HumidAirProp.h"
 #include <iostream>
+#include <algorithm>
 #include <cmath>
 
 using namespace coolsolve;
@@ -27,7 +28,8 @@ TEST_CASE("Test all registered fluids with CoolProp", "[fluids]") {
                 // For IdealGas, we know it only needs T for enthalpy, 
                 // but CoolProp always wants 2 inputs.
                 
-                double T = 300.0; // K
+                // 300 K, or 20 K above the lowest temperature of the fluid (the methyl esters melt above 300 K)
+                double T = std::max(300.0, CoolProp::Props1SI(cpName, "Tmin") + 20.0);
                 double P = 1000000.0; // 10 bar (above triple point for CO2)
                 
                 double h = CoolProp::PropsSI("H", "T", T, "P", P, cpName);

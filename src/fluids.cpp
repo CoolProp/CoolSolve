@@ -67,7 +67,6 @@ void FluidRegistry::initialize() {
     addReal("IsoHexane", "Isohexane");
     addReal("n-Heptane", "n-Heptane");
     addReal("n-Octane", "n-Octane");
-    addReal("IsoOctane", "Isooctane");
     addReal("CycloHexane", "CycloHexane");
     addReal("Acetone", "Acetone");
     addReal("Benzene", "Benzene");
@@ -141,8 +140,55 @@ void FluidRegistry::initialize() {
     addReal("SulfurDioxide", "SulfurDioxide");
     addReal("SulfurHexafluoride", "SulfurHexafluoride");
     addReal("Xenon", "Xenon");
-    
-    // --- Unsupported Real Fluids (EES has them, CoolProp might not or they are special) ---
+
+    // The other pure fluids of CoolProp (8.1.0), by their CoolProp names; EES's spelling where it has another. A test
+    // ([fluids]) requires every fluid of CoolProp's FluidsList to be reachable by its name. Methanol and PropyleneGlycol
+    // are the solutions of the incompressibles below, and these fluids without a concentration.
+    addReal("n-Propane", "n-Propane");
+    addReal("1-Butene", "1-Butene");
+    addReal("CarbonMonoxide", "CarbonMonoxide");   // EES's real fluid; `CO` is the ideal gas (CS-GAP-FLUIDS-ALIAS)
+    addReal("CarbonylSulfide", "CarbonylSulfide");
+    addReal("Chlorine", "Chlorine");
+    addReal("CycloPropane", "CycloPropane");
+    addReal("Dichloroethane", "Dichloroethane");
+    addReal("DimethylCarbonate", "DimethylCarbonate");
+    addReal("Ethanol", "Ethanol");
+    addReal("EthyleneOxide", "EthyleneOxide");
+    addReal("HFE143m", "HFE143m");
+    addReal("MethylLinoleate", "MethylLinoleate");
+    addReal("MethylLinolenate", "MethylLinolenate");
+    addReal("MethylOleate", "MethylOleate");
+    addReal("MethylPalmitate", "MethylPalmitate");
+    addReal("MethylStearate", "MethylStearate");
+    addReal("n-Nonane", "n-Nonane");
+    addReal("n-Decane", "n-Decane");
+    addReal("n-Undecane", "n-Undecane");
+    addReal("n-Dodecane", "n-Dodecane");
+    addReal("n-Perfluorobutane", "n-Perfluorobutane");
+    addReal("n-Perfluoropentane", "n-Perfluoropentane");
+    addReal("n-Perfluorohexane", "n-Perfluorohexane");
+    addReal("OrthoDeuterium", "OrthoDeuterium");
+    addReal("ParaDeuterium", "ParaDeuterium");
+    addReal("Propyne", "Propyne");
+    addReal("R21", "R21");
+    addReal("R40", "R40");
+    addReal("R13I1", "R13I1");
+    addReal("R1123", "R1123");
+    addReal("R1130(E)", "R1130(E)");
+    addReal("R1132(E)", "R1132(E)");
+    addReal("R1132a", "R1132a");
+    addReal("R1224yd(Z)", "R1224YDZ");   // CoolProp's only name of it (no alias R1224yd(Z) in its fluid file)
+    addReal("R1224YDZ", "R1224YDZ");
+    addReal("R1336mzz(E)", "R1336mzz(E)");
+    addReal("R1336mzz(Z)", "R1336mzz(Z)");   // CS-GAP-FLUIDS-R1336MZZ
+    addReal("Tetrahydrofuran", "Tetrahydrofuran");
+    addReal("VinylChloride", "VinylChloride");
+    addReal("Chloroethene", "VinylChloride");   // EES's name of vinyl chloride
+    addReal("o-Xylene", "o-Xylene");
+    addReal("m-Xylene", "m-Xylene");
+    addReal("p-Xylene", "p-Xylene");
+
+    // --- Unsupported Real Fluids (EES has them, CoolProp has no equation of state for them) ---
     auto addUnsupported = [](const std::string& name, const std::string& reason) {
         auto fluid = std::make_shared<UnsupportedFluid>(name, reason);
         registry_[name] = fluid;
@@ -152,14 +198,10 @@ void FluidRegistry::initialize() {
     };
     
     addUnsupported("Acetylene", "Not in CoolProp standard fluids");
-    addUnsupported("Chlorine", "Not in CoolProp standard fluids");
-    addUnsupported("Chloroethene", "Not in CoolProp standard fluids");
-    addUnsupported("EthyleneOxide", "Not in CoolProp standard fluids");
     addUnsupported("Helium3", "Not in CoolProp standard fluids");
     addUnsupported("Potassium", "Liquid metal, not in CoolProp");
     addUnsupported("Sodium", "Liquid metal, not in CoolProp");
-    addUnsupported("IsoOctane", "Isooctane is not in CoolProp standard fluids");
-    addUnsupported("IsoHexane", "Isohexane is not in CoolProp standard fluids");
+    addUnsupported("IsoOctane", "Isooctane (2,2,4-trimethylpentane) is not in CoolProp standard fluids");
     
     // --- Ideal Gases ---
     // The heat of formation of the gas at 298.15 K (EES/JANAF convention: the elements in their reference state, N2 O2
@@ -262,6 +304,10 @@ void FluidRegistry::initialize() {
     addIncompSolution("Glycerol", "MGL");
     addIncompSolution("MGL", "MGL");
     
+    // EES's real fluids Methanol and PropyleneGlycol: the solutions of these names called without a concentration
+    for (const char* name : {"Methanol", "PropyleneGlycol"})
+        std::static_pointer_cast<IncompressibleFluid>(registry_.at(name))->setPureFluid(std::make_shared<RealFluid>(name, name));
+
     // Lithium bromide solution in water (CoolProp INCOMP::LiBr: mass fraction 0..0.75; viscosity and conductivity since 8.1.0)
     addIncompSolution("LiBr", "LiBr");
 

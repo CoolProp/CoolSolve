@@ -609,6 +609,17 @@ static std::shared_ptr<Fluid> resolveFluid(const std::string& name, DiagnosticCo
     return fluid;
 }
 
+/// A solution registered under the name of a pure CoolProp fluid (`Methanol`, `PropyleneGlycol`) is that pure fluid in a
+/// call without a concentration (no second positional argument, no C=): EES's real fluid of that name. Any other fluid
+/// is returned as it is.
+static std::shared_ptr<Fluid> pureFluidWithoutConcentration(std::shared_ptr<Fluid> fluid, const FunctionCall& call) {
+    const auto* solution = dynamic_cast<const IncompressibleFluid*>(fluid.get());
+    if (!solution || !solution->pureFluid() || call.args.size() >= 2) return fluid;
+    for (const auto& [argName, argExpr] : call.namedArgs)
+        if (isConcentrationArgName(argName)) return fluid;
+    return solution->pureFluid();
+}
+
 // ============================================================================
 // ExpressionEvaluator Implementation
 // ============================================================================
@@ -931,7 +942,7 @@ std::string ExpressionEvaluator::evaluateString(const ExprPtr& expr) {
         // human-readable string.
         if (lname == "phase$") {
             const std::string eesFluidName = fluidNameOf(call.args.empty() ? nullptr : call.args[0]);
-            auto fluid = resolveFluid(eesFluidName, diagnostics_);
+            auto fluid = pureFluidWithoutConcentration(resolveFluid(eesFluidName, diagnostics_), call);
             if (fluid->getType() == FluidType::HumidAir || fluid->getType() == FluidType::IdealGas) {
                 return "gas";   // an ideal gas has no other phase
             }
@@ -1828,7 +1839,7 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
         if (const auto weight = elementAtomicWeight(eesFluidName)) return ADValue::constant(*weight, numVariables_);
     }
 
-    auto fluid = resolveFluid(eesFluidName, diagnostics_);
+    auto fluid = pureFluidWithoutConcentration(resolveFluid(eesFluidName, diagnostics_), func);
     
     // Derived thermophysical properties — compute by combining base CoolProp calls
     // entirely in AD space so gradients are correct.
