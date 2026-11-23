@@ -2,6 +2,7 @@
 #include "coolsolve/ideal_gas.h"
 #include "coolsolve/nasa_glenn.h"
 #include "AbstractState.h"
+#include "CoolProp.h"
 #include "DataStructures.h"
 #include <algorithm>
 #include <cmath>
@@ -10,6 +11,7 @@
 #include <locale>
 #include <stdexcept>
 #include <set>
+#include <sstream>
 #include <unordered_map>
 #include <utility>
 
@@ -200,7 +202,8 @@ void FluidRegistry::initialize() {
     addUnsupported("Acetylene", "Not in CoolProp standard fluids");
     addUnsupported("Helium3", "Not in CoolProp standard fluids");
     addUnsupported("Potassium", "Liquid metal, not in CoolProp");
-    addUnsupported("Sodium", "Liquid metal, not in CoolProp");
+    addUnsupported("Sodium", "Liquid metal, not in CoolProp as a real fluid; its liquid is the incompressible "
+                             "'INCOMP::LiqNa' (400 to 2500 K, liquid only)");
     addUnsupported("IsoOctane", "Isooctane (2,2,4-trimethylpentane) is not in CoolProp standard fluids");
     
     // --- Ideal Gases ---
@@ -269,8 +272,8 @@ void FluidRegistry::initialize() {
     
     // --- Incompressible Fluids ---
     // CoolSolve registers the liquid solutions of CoolProp's incompressible library (INCOMP::<key>[x], mass
-    // fraction x): no pure incompressible (IncompressibleFluid(name, false, key) would be one), and no solid:
-    // CoolProp has none (CS-BUG-INCOMP-SOLIDS, below).
+    // fraction x) under EES names; every incompressible of CoolProp, the pure liquids included, is also reachable as
+    // `INCOMP::<key>` (getIncompressible). No solid: CoolProp has none (CS-BUG-INCOMP-SOLIDS, below).
     // Solutions: glycols, brines, secondary refrigerants, sea water (need concentration)
     auto addIncompSolution = [](const std::string& name, const std::string& cpKey) {
         auto fluid = std::make_shared<IncompressibleFluid>(name, /*isSolution=*/true, cpKey);
@@ -303,6 +306,17 @@ void FluidRegistry::initialize() {
     addIncompSolution("MEA", "MEA");
     addIncompSolution("Glycerol", "MGL");
     addIncompSolution("MGL", "MGL");
+
+    // The other EES names of its brines (EES help, Brine properties) that CoolProp has as Melinder solutions
+    // (CS-GAP-INCOMP-EES-NAMES; CaCl2, EG, LiCl, NaCl and PG are above). KOH and NaOH have no CoolProp counterpart.
+    addIncompSolution("EA", "MEA");
+    addIncompSolution("MA", "MMA");
+    addIncompSolution("GLYC", "MGL");
+    addIncompSolution("K2CO3", "MKC");
+    addIncompSolution("KAC", "MKA");
+    addIncompSolution("KFO", "MKF");
+    addIncompSolution("MGCL2", "MMG");
+    addIncompSolution("NH3W", "MAM");
     
     // EES's real fluids Methanol and PropyleneGlycol: the solutions of these names called without a concentration
     for (const char* name : {"Methanol", "PropyleneGlycol"})
@@ -314,6 +328,10 @@ void FluidRegistry::initialize() {
     // Sea water: CoolProp INCOMP::MITSW (Sharqawy et al. 2010), a salinity solution: mass fraction 0..0.12, 273.15..393.15 K,
     // liquid phase only; no h/s of mixing (CS-BUG-INCOMP-SEAWATER)
     addIncompSolution("SeaWater", "MITSW");
+
+    for (const char* brine : {"KOH", "NaOH"})
+        addUnsupported(brine, "EES brine (potassium or sodium hydroxide solution); CoolProp has no such solution "
+                              "(register CS-GAP-INCOMP-EES-NAMES)");
 
     // EES solids of its property library: CoolProp has no solid properties (CS-BUG-INCOMP-SOLIDS)
     for (const char* solid : {"Aluminum", "Copper"})
@@ -349,8 +367,9 @@ std::shared_ptr<Fluid> FluidRegistry::getFluid(const std::string& name, std::str
         return it->second;
     }
     
-    // Not in the registry: a CoolProp mixture `A[x]&B[y]` is built from the string. Any other
-    // CoolProp fluid is only reachable through the registry.
+    // Not in the registry: `INCOMP::<key>` is an incompressible fluid of CoolProp, a CoolProp mixture `A[x]&B[y]` is
+    // built from the string. Any other CoolProp fluid is only reachable through the registry.
+    if (lower.rfind("incomp::", 0) == 0) return getIncompressible(name, error);
     if (name.find('&') != std::string::npos) return getMixture(name, error);
     return nullptr;
 }
@@ -529,6 +548,39 @@ std::shared_ptr<Fluid> FluidRegistry::getMixture(const std::string& name, std::s
     std::unique_lock<std::shared_mutex> lock(mixturesMutex_);
     mixtures_.emplace(canonical, mixture);
     return mixtures_.emplace(name, mixtures_.at(canonical)).first->second;
+}
+
+std::shared_ptr<Fluid> FluidRegistry::getIncompressible(const std::string& name, std::string* error) {
+    {
+        std::shared_lock<std::shared_mutex> lock(mixturesMutex_);
+        auto it = mixtures_.find(name);
+        if (it != mixtures_.end()) return it->second;
+    }
+    auto fail = [&](const std::string& reason) -> std::shared_ptr<Fluid> {
+        if (error) *error = "Invalid incompressible fluid '" + name + "': " + reason;
+        return nullptr;
+    };
+    const std::string written = trimmed(name.substr(sizeof("INCOMP::") - 1));
+    if (written.find('[') != std::string::npos)
+        return fail("the concentration of a solution is an argument of the call, in mass % (C=30 or the second "
+                    "positional argument), not a fraction in the name");
+    // CoolProp's keys, matched case-insensitively: a pure liquid (thermal oils, liquid metals, molten salts) or a solution
+    auto find = [&](const char* list) -> std::string {
+        std::istringstream keys(CoolProp::get_global_param_string(list));
+        for (std::string key; std::getline(keys, key, ',');)
+            if (equalsNoCase(key, written)) return key;
+        return {};
+    };
+    std::string key = find("incompressible_list_pure");
+    const bool solution = key.empty();
+    if (solution) key = find("incompressible_list_solution");
+    if (key.empty())
+        return fail("CoolProp has no incompressible fluid '" + written + "' (its list: " +
+                    CoolProp::get_global_param_string("incompressible_list_pure") + ", " +
+                    CoolProp::get_global_param_string("incompressible_list_solution") + ")");
+    auto fluid = std::make_shared<IncompressibleFluid>("INCOMP::" + key, solution, key);
+    std::unique_lock<std::shared_mutex> lock(mixturesMutex_);
+    return mixtures_.emplace(name, fluid).first->second;
 }
 
 void FluidRegistry::addFluid(std::shared_ptr<Fluid> fluid) {

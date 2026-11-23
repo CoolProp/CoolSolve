@@ -1890,8 +1890,12 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
             if (inputs.empty()) {
                 return ADValue::constant(28.966, numVariables_);
             }
+        } else if (fluid->getType() == FluidType::Incompressible) {
+            // CoolProp's incompressibles are mass based and have no molar mass (PropsSI gives NaN): CS-BUG-INCOMP-MOLARMASS
+            throw std::runtime_error(func.name + "(" + eesFluidName + "): an incompressible fluid has no molar mass in "
+                                     "CoolProp (its properties are per kg); give it as a constant of the model");
         } else if (fluid->getType() != FluidType::Unknown) {
-            // For pure fluids or incompressible, molar mass is constant
+            // For pure fluids, molar mass is constant
             if (inputs.empty()) {
                 std::string cpFluidName = fluid->getCoolPropName();
                 // An ideal gas: the molar mass of the ideal-gas layer, CoolProp's equation of state or the NASA-Glenn record
@@ -2070,6 +2074,13 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                     "argument or a C=... named argument.");
             }
             solution = incomp.get();
+        } else if (incomp) {
+            // A pure liquid (thermal oil, liquid metal, molten salt): a concentration would be silently ignored
+            bool given = func.args.size() >= 2;
+            for (const auto& [name, value] : inputs) given = given || isConcentrationArgName(name);
+            if (given)
+                throw std::runtime_error("Incompressible fluid '" + eesFluidName + "' is a pure liquid: it takes no "
+                                         "concentration (second positional argument or C=...).");
         }
         // Reject quality-based inputs — saturation is not defined for incompressibles.
         for (const auto& [k, v] : inputs) {

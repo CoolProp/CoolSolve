@@ -21792,6 +21792,143 @@ TEST_CASE("CS-GAP-INCOMPRESSIBLE: a solution with T alone and no concentration k
     CHECK(anyContains({run.message}, "Incompressible solution 'EG' requires a concentration (mass %, 0..100)"));
 }
 
+// ----------------------------------------------------------------------------
+// CS-GAP-INCOMPRESSIBLE (remainder: the other substances): `INCOMP::<key>` is any incompressible of CoolProp by its key
+// (case-insensitive): the thermal oils (TVP1, T66, DowQ, ...), the liquid metals (LBE, new in CoolProp 8.1, LiqNa),
+// the molten salt NaK, and the solutions without an EES name; a pure liquid takes no concentration, a solution takes it
+// as the registered ones do. Was "Unknown fluid" (CSL-0147 needs Therminol VP-1).
+// ----------------------------------------------------------------------------
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: register reproducer, enthalpy('INCOMP::TVP1',T=390,P=2330400)", "[library-gaps][incompressible]") {
+    auto run = runModel("h = enthalpy('INCOMP::TVP1',T=390,P=2330400)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());
+    CHECK_THAT(run["h"], WithinRel(CoolProp::PropsSI("H", "T", 663.15, "P", 2330400.0, "INCOMP::TVP1"), 1e-9));
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: pure liquids of CoolProp, every property, T alone, Newton through them",
+          "[library-gaps][incompressible]") {
+    auto run = runModel(
+        "cp_vp1 = cp('INCOMP::TVP1', T=200)\n"           // the EES form: the temperature alone
+        "rho_vp1 = density('incomp::tvp1', T=200, P=1E5)\n"
+        "mu_66 = viscosity('INCOMP::T66', T=150, P=1E5)\n"
+        "k_dq = conductivity('INCOMP::DowQ', T=100, P=1E5)\n"
+        "rho_lbe = density('INCOMP::LBE', T=300, P=1E5)\n"
+        "mu_na = viscosity('INCOMP::LiqNa', T=400, P=1E5)\n"
+        "cp_salt = cp('INCOMP::NaK', T=400, P=1E5)\n"
+        "fl$ = 'INCOMP::TVP1'\n"
+        "s_vp1 = entropy(fl$, T=250, P=1E6)\n"
+        "h_target = enthalpy('INCOMP::TVP1', T=280, P=1E6)\n"
+        "enthalpy('INCOMP::TVP1', T=T_x, P=1E6) = h_target\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["cp_vp1"], WithinRel(CoolProp::PropsSI("C", "T", 473.15, "P", 101325.0, "INCOMP::TVP1"), 1e-9));
+    CHECK_THAT(run["rho_vp1"], WithinRel(CoolProp::PropsSI("D", "T", 473.15, "P", 1e5, "INCOMP::TVP1"), 1e-9));
+    CHECK_THAT(run["mu_66"], WithinRel(CoolProp::PropsSI("V", "T", 423.15, "P", 1e5, "INCOMP::T66"), 1e-9));
+    CHECK_THAT(run["k_dq"], WithinRel(CoolProp::PropsSI("L", "T", 373.15, "P", 1e5, "INCOMP::DowQ"), 1e-9));
+    CHECK_THAT(run["rho_lbe"], WithinRel(CoolProp::PropsSI("D", "T", 573.15, "P", 1e5, "INCOMP::LBE"), 1e-9));
+    CHECK(run["rho_lbe"] > 10000.0);   // lead-bismuth eutectic
+    CHECK_THAT(run["mu_na"], WithinRel(CoolProp::PropsSI("V", "T", 673.15, "P", 1e5, "INCOMP::LiqNa"), 1e-9));
+    CHECK_THAT(run["cp_salt"], WithinRel(CoolProp::PropsSI("C", "T", 673.15, "P", 1e5, "INCOMP::NaK"), 1e-9));
+    CHECK_THAT(run["s_vp1"], WithinRel(CoolProp::PropsSI("S", "T", 523.15, "P", 1e6, "INCOMP::TVP1"), 1e-9));
+    CHECK_THAT(run["T_x"], WithinAbs(280.0, 1e-6));
+    auto fluid = std::dynamic_pointer_cast<IncompressibleFluid>(FluidRegistry::getFluid("INCOMP::tvp1"));
+    REQUIRE(fluid);
+    CHECK_FALSE(fluid->isSolution());
+    CHECK(fluid->getCoolPropName() == "INCOMP::TVP1");
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: a solution by its CoolProp key takes the concentration like the registered ones",
+          "[library-gaps][incompressible]") {
+    auto run = runModel("a = density('INCOMP::MEG', T=20, P=1E5, C=30)\n"
+                        "b = density('INCOMP::MEG', 30, T=20, P=1E5)\n"
+                        "c = density(MEG, 30, T=20, P=1E5)\n"
+                        "d = cp('INCOMP::AEG', T=0, C=40)\n");   // a solution that has no other name in CoolSolve
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["a"], WithinRel(incompRef("D", "MEG", 30, 20, 1e5), 1e-9));
+    CHECK_THAT(run["b"], WithinRel(run["a"], 1e-12));
+    CHECK_THAT(run["c"], WithinRel(run["a"], 1e-12));
+    CHECK_THAT(run["d"], WithinRel(CoolProp::PropsSI("C", "T", 273.15, "P", 101325.0, "INCOMP::AEG[0.4]"), 1e-9));
+}
+
+TEST_CASE("CS-GAP-INCOMPRESSIBLE: negative tests of INCOMP::<key>, each an error that says why", "[library-gaps][incompressible]") {
+    const std::vector<std::pair<std::string, std::string>> cases = {
+        {"density('INCOMP::XYZ', T=20, P=1E5)", "CoolProp has no incompressible fluid 'XYZ' (its list:"},
+        {"density('INCOMP::MEG[0.3]', T=20, P=1E5)", "the concentration of a solution is an argument of the call"},
+        {"density('INCOMP::MEG', T=20, P=1E5)", "Incompressible solution 'INCOMP::MEG' requires a concentration"},
+        {"density('INCOMP::TVP1', 30, T=200, P=1E5)", "'INCOMP::TVP1' is a pure liquid: it takes no concentration"},
+        {"density('INCOMP::TVP1', T=200, P=1E5, C=30)", "'INCOMP::TVP1' is a pure liquid: it takes no concentration"},
+        {"quality('INCOMP::TVP1', T=200, P=1E5)", "Incompressible fluid 'INCOMP::TVP1' has no vapor quality"},
+        {"density('INCOMP::TVP1', T=200, x=0)", "does not support saturation (quality) inputs"},
+    };
+    for (const auto& [call, message] : cases) {
+        INFO(call);
+        auto run = runModel("y = " + call + "\n");
+        REQUIRE_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, message));
+    }
+}
+
+// ----------------------------------------------------------------------------
+// CS-GAP-INCOMP-EES-NAMES: the EES names of its brines EA, MA, GLYC, K2CO3, KAC, KFO, MGCL2, NH3W were "Unknown fluid";
+// they are CoolProp's Melinder solutions MEA, MMA, MGL, MKC, MKA, MKF, MMG, MAM. KOH and NaOH have no CoolProp
+// counterpart: an error naming them. (Whether EES's and CoolProp's fits agree is not checked: no EES at hand.)
+// ----------------------------------------------------------------------------
+
+TEST_CASE("CS-GAP-INCOMP-EES-NAMES: the EES brine names are CoolProp's Melinder solutions", "[library-gaps][incompressible]") {
+    struct Brine { const char* ees; const char* coolProp; double percent; double T_C; };
+    const std::vector<Brine> brines = {{"EA", "MEA", 20, 10}, {"MA", "MMA", 20, 10},  {"GLYC", "MGL", 30, 10},
+                                       {"K2CO3", "MKC", 20, 0}, {"KAC", "MKA", 20, 0}, {"KFO", "MKF", 20, 0},
+                                       {"MGCL2", "MMG", 10, 0}, {"NH3W", "MAM", 10, 0}};
+    std::string code;
+    for (const auto& b : brines)
+        code += std::string("cp_") + b.ees + " = cp(" + b.ees + ", T=" + numText(b.T_C) + ", C=" + numText(b.percent) + ")\n" +
+                "rho_" + b.ees + " = density('" + b.ees + "', " + numText(b.percent) + ", T=" + numText(b.T_C) + ", P=1E5)\n";
+    auto run = runModel(code);
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    for (const auto& b : brines) {
+        INFO(b.ees);
+        CHECK_THAT(run[std::string("cp_") + b.ees], WithinRel(incompRef("C", b.coolProp, b.percent, b.T_C), 1e-9));
+        CHECK_THAT(run[std::string("rho_") + b.ees], WithinRel(incompRef("D", b.coolProp, b.percent, b.T_C, 1e5), 1e-9));
+    }
+    for (const char* name : {"KOH", "NaOH", "koh"}) {
+        INFO(name);
+        auto bad = runModel(std::string("y = cp(") + name + ", T=10, C=20)\n");
+        REQUIRE_FALSE(bad.solveOk);
+        CHECK(anyContains({bad.message}, "CoolProp has no such solution"));
+    }
+}
+
+// ----------------------------------------------------------------------------
+// CS-BUG-INCOMP-MOLARMASS: molarmass(MEG) (any incompressible) was NaN: SUCCESS, then a failed verification with a NaN
+// residual. CoolProp's incompressibles are mass based and have no molar mass: an error naming the call. Sodium points
+// to CoolProp's liquid sodium.
+// ----------------------------------------------------------------------------
+
+TEST_CASE("CS-BUG-INCOMP-MOLARMASS: the molar mass of an incompressible is an error naming the call, never a NaN",
+          "[library-gaps][incompressible]") {
+    for (const char* fluid : {"MEG", "'INCOMP::TVP1'", "LiBr", "SeaWater"}) {
+        INFO(fluid);
+        auto run = runModel(std::string("M = molarmass(") + fluid + ")\n");
+        REQUIRE_FALSE(run.solveOk);
+        CHECK(anyContains({run.message}, "an incompressible fluid has no molar mass in CoolProp"));
+    }
+    // Methanol without a concentration is the pure fluid (CS-GAP-FLUIDS-COOLPROP): it has one
+    auto methanol = runModel("M = molarmass(Methanol)\n");
+    REQUIRE(methanol.solveOk);
+    CHECK_THAT(methanol["M"], WithinAbs(32.04, 1e-2));
+    auto sodium = runModel("rho = density(Sodium, T=500, P=1E5)\n");
+    REQUIRE_FALSE(sodium.solveOk);
+    CHECK(anyContains({sodium.message}, "'INCOMP::LiqNa'"));
+}
+
 // ============================================================================
 // CS-BUG-INCOMP-SEAWATER: the incompressible SeaWater is CoolProp's MITSW salinity solution, not a pure fluid
 // ============================================================================

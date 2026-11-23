@@ -142,8 +142,8 @@ class IncompressibleFluid : public Fluid {
 public:
     // `isSolution` indicates whether the fluid requires a mass-fraction
     // concentration (e.g. MEG, MPG, brines, LiBr solution, sea water).  A pure incompressible
-    // does not need one; none is registered at present (the solids Aluminum and Copper are
-    // unsupported fluids: CoolProp has none).
+    // (thermal oil, liquid metal: `INCOMP::TVP1`) takes none; the pure ones are reached as
+    // `INCOMP::<key>` only (the solids Aluminum and Copper are unsupported fluids: CoolProp has none).
     // `coolPropKey` optionally overrides the CoolProp key used for PropsSI.
     IncompressibleFluid(const std::string& name,
                         bool isSolution = false,
@@ -296,7 +296,8 @@ std::string heatingValues(const Fluid& fluid, HeatingValues& values);
 class FluidRegistry {
 public:
     /**
-     * @brief Look a fluid up by name (case-insensitive); a name containing '&' is a CoolProp mixture.
+     * @brief Look a fluid up by name (case-insensitive); a name containing '&' is a CoolProp mixture, `INCOMP::<key>` an
+     * incompressible fluid of CoolProp.
      *
      * Mixtures are parsed, checked against CoolProp (components, binary parameters) and cached by
      * string, once per process; pure fluids pay nothing for it.
@@ -311,10 +312,13 @@ public:
     
 private:
     static std::shared_ptr<Fluid> getMixture(const std::string& name, std::string* error);
+    /// `INCOMP::<key>`: an incompressible fluid of CoolProp by its key (case-insensitive), pure or a solution as CoolProp
+    /// lists it; checked and cached like a mixture.
+    static std::shared_ptr<Fluid> getIncompressible(const std::string& name, std::string* error);
 
     static std::map<std::string, std::shared_ptr<Fluid>> registry_;
     static bool initialized_;
-    static std::map<std::string, std::shared_ptr<Fluid>> mixtures_;   ///< by string as written and by canonical name
+    static std::map<std::string, std::shared_ptr<Fluid>> mixtures_;   ///< mixtures and INCOMP:: fluids, by string as written (and canonical name)
     static std::shared_mutex mixturesMutex_;
     static void initialize();
 };

@@ -25,6 +25,8 @@ Notes of the changes merged since v0.5, gathered for the next changelog.
   concerned.
 - **Superancillaries off** (`--no-superancillary`): subcooled liquid R1234yf near saturation was a vapour (41.5 kg/m³
   instead of 1085 kg/m³); n-octane had the same kind of error (CoolProp #3544).
+- **`MOLARMASS` of an incompressible** (`MEG`, `LiBr`, …) was NaN (SUCCESS, then a failed verification): an error
+  naming the call (CoolProp's incompressibles have no molar mass).
 - **`Chlorine`, `Chloroethene`, `EthyleneOxide`, `IsoHexane`** were refused as *not in CoolProp*: they are CoolProp
   fluids. `IsoOctane` is not (the language reference listed it).
 
@@ -34,6 +36,9 @@ Notes of the changes merged since v0.5, gathered for the next changelog.
   R1336mzz(Z), `CarbonMonoxide` (the real fluid, next to the ideal gas `CO`), Ethanol, n-Decane, the xylenes, … (41
   fluids were missing). `Methanol` and `PropyleneGlycol` are the aqueous solutions with a concentration and the pure
   fluids without one, as in EES.
+- **`'INCOMP::<key>'`: every incompressible of CoolProp** by its key — the thermal oils (`'INCOMP::TVP1'`, `T66`,
+  `DowQ`, …), the liquid metals `LBE` and `LiqNa`, the molten salt `NaK`, the solutions without another name — and the
+  EES brine names `EA`, `MA`, `GLYC`, `K2CO3`, `KAC`, `KFO`, `MGCL2`, `NH3W`.
 - **`LiBr` solution: viscosity and conductivity** (CoolProp 8.1.0 fits of Flessner & Ziegler 2023, Lee et al. 1990
   and DiGuilio et al. 1990): `viscosity(LiBr, 55, T=60, P=1E5)` was an error.
 

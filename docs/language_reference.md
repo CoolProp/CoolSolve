@@ -1215,9 +1215,15 @@ of the EES example: −0.07 % and −0.22 %.
 
 ### Incompressible substances
 
-CoolSolve's incompressible substances are the liquid **solutions** of CoolProp's incompressible library (`INCOMP::…`):
-no pure incompressible is registered. The EES solids `Aluminum` and `Copper` are not available (CoolProp has no solid
-properties, see *Unsupported EES fluids* below).
+CoolSolve's incompressible substances are the liquid **solutions** of CoolProp's incompressible library registered
+under the names of the table below, and **any incompressible of CoolProp by its key**, `'INCOMP::<key>'`
+(case-insensitive): the pure liquids — thermal oils (`'INCOMP::TVP1'` Therminol VP-1, `T66`, `DowQ`, …), liquid metals
+(`'INCOMP::LBE'` lead-bismuth eutectic, `'INCOMP::LiqNa'` liquid sodium), the molten salt `'INCOMP::NaK'` (60 % NaNO3,
+40 % KNO3) — and the solutions without another name (`'INCOMP::AEG'`). A pure liquid takes **no concentration** (an error
+when one is given); a solution takes it as the registered ones do; the concentration is never written in the name
+(`'INCOMP::MEG[0.3]'` is an error saying so). An unknown key is an error that lists CoolProp's keys. CoolProp's
+incompressibles are mass based: **`MOLARMASS` of an incompressible is an error** naming the call (it was NaN). The EES
+solids `Aluminum` and `Copper` are not available (CoolProp has no solid properties, see *Unsupported EES fluids* below).
 
 **Solutions** (require a concentration as the *second positional argument*
 in mass %, or the named `C=...` argument):
@@ -1232,6 +1238,8 @@ in mass %, or the named `C=...` argument):
 | `Methanol` / `MMA`            | Methanol/water (`Methanol` without a concentration: the pure fluid) |
 | `EthanolSolution` / `MEA`     | Ethanol/water            |
 | `Glycerol` / `MGL`            | Glycerol/water           |
+| `EA`, `MA`, `GLYC`            | EES names of the ethanol, methanol and glycerol solutions (`MEA`, `MMA`, `MGL`) |
+| `K2CO3`, `KAC`, `KFO`, `MGCL2`, `NH3W` | EES names of the potassium carbonate, potassium acetate, potassium formate, magnesium chloride and ammonia solutions (CoolProp's Melinder fits `MKC`, `MKA`, `MKF`, `MMG`, `MAM`) |
 | `LiBr`                        | Lithium bromide/water solution (CoolProp, Pátek-Klomfar fits, 0–75 %, 0–227 °C; density, cp, h, s, viscosity, conductivity) |
 | `SeaWater`                    | Sea water, salinity in mass % (0–12 %, 3.5 % = 35 g/kg), Sharqawy et al. 2010 via CoolProp, 0–120 °C, liquid only; density, cp, viscosity, conductivity, h, s |
 
@@ -1242,6 +1250,7 @@ rho = density('MEG', 30, T=10, P=101325)   "30 % MEG at 10 °C"
 cp  = cp('EthyleneGlycol', T=10, P=101325, C=30)
 cp_w = cp(EG, T=50, C=30)                  "the EES form: T and the concentration alone, 3802.5 J/kg-K"
 rho_sw = density(SeaWater, 3.5, T=20, P=101325)   "sea water, salinity 3.5 % (35 g/kg): 1024.9 kg/m3"
+h_oil = enthalpy('INCOMP::TVP1', T=390, P=2330400) "Therminol VP-1, a pure liquid: no concentration"
 ```
 
 **The concentration can be an unknown of the model.** `rho = density(MEG, C, T=20, P=1E5)` ⏎ `rho = 1040` solves for
@@ -1469,7 +1478,8 @@ Some EES fluids are not modelled by CoolProp. Attempting to use them
 triggers a clear runtime error with the fluid name and a remediation
 suggestion:
 
-`LiBrH2O`, `Acetylene`, `Helium3`, `IsoOctane`, `Potassium`, `Sodium`, `Aluminum`, `Copper`.
+`LiBrH2O`, `Acetylene`, `Helium3`, `IsoOctane`, `Potassium`, `Sodium`, `Aluminum`, `Copper`, and the EES brines
+`KOH` and `NaOH`. The liquid of `Sodium` is the incompressible `'INCOMP::LiqNa'` (400–2500 K).
 
 `Aluminum` and `Copper` are EES solids of its property library; CoolProp has no solid properties, so their
 properties are not available (the call is an error naming the fluid, never a NaN): give them as constants or as a
