@@ -54,7 +54,7 @@ into independent sub-blocks before entering the solver pipeline. See
 |---------|----------------|
 | Backend | Low-level `AbstractState` API (2–5× faster than `PropsSI`); `PropsSI` only as a fallback |
 | Caching | `thread_local AbstractStateCache` keyed by `(backend, fluid)`. Each parallel-solver thread gets its own cache automatically. Toggle via `coolpropCacheEnabled` (default `true`). |
-| Derivatives | `first_partial_deriv()` provides exact analytical derivatives. A forward-FD consistency check (5 % tolerance, 2 extra `update()` calls) catches bad analytical derivatives near phase boundaries for pseudo-pure fluids and falls back to finite differences. Toggle via `coolpropEnableAnalyticalDerivatives` (default `true`). |
+| Derivatives | `first_partial_deriv()` provides exact analytical derivatives in single phase. A forward-FD consistency check (5 % tolerance, 2 extra `update()` calls) catches bad analytical derivatives near phase boundaries for pseudo-pure fluids and falls back to finite differences. **Inside the saturation dome of a pure fluid** (HEOS) `first_partial_deriv()` is the derivative of the homogeneous phase, which the check rejected: the derivatives are those of the lever rule in (T, Q) instead, exact, from `first_saturation_deriv()` at the saturated liquid and vapour (two `QT` updates of a second state, superancillary-fast) — every pair of T, P, Q, h, s, u, ρ (`twoPhaseDerivatives`, `src/evaluator.cpp`; pseudo-pure fluids, mixtures and the tabular backends keep the check). Toggle via `coolpropEnableAnalyticalDerivatives` (default `true`). |
 | Superancillaries | Enabled by default (`coolpropEnableSuperancillaries`); disable with `--no-superancillary`. |
 
 **Supported CoolProp input pairs** (used by symbolic CoolProp call

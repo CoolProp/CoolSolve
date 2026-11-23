@@ -114,7 +114,29 @@ struct AbstractStateCache {
         return limits[key] = found;
     }
 
-    void clear() { states.clear(); limits.clear(); hits = misses = 0; }
+    /// A second state of the fluid, for the saturated liquid and vapour of twoPhaseDerivatives (the state of the call
+    /// keeps its own update).
+    std::shared_ptr<CoolProp::AbstractState> getOrCreateSaturation(const std::string& backend, const std::string& fluidName) {
+        auto& state = saturation[backend + "::" + fluidName];
+        if (!state) state = createState(backend, fluidName);
+        return state;
+    }
+
+    /// True for a pure fluid of CoolProp, false for a pseudo-pure one (R404A, Air: bubble and dew curves differ) or a
+    /// name CoolProp does not answer for.
+    bool isPureFluid(const std::string& fluidName) {
+        auto it = pure.find(fluidName);
+        if (it != pure.end()) return it->second;
+        bool isPure = false;
+        try { isPure = CoolProp::get_fluid_param_string(fluidName, "pure") == "true"; } catch (...) {}
+        return pure[fluidName] = isPure;
+    }
+
+    void clear() { states.clear(); limits.clear(); saturation.clear(); pure.clear(); hits = misses = 0; }
+
+private:
+    std::map<std::string, std::shared_ptr<CoolProp::AbstractState>> saturation;
+    std::map<std::string, bool> pure;
 };
 
 static thread_local AbstractStateCache g_abstractStateCache;
@@ -126,6 +148,76 @@ static void setMassFraction(CoolProp::AbstractState& state, double massFraction)
     static thread_local std::vector<CoolPropDbl> fraction(1);
     fraction[0] = massFraction;
     state.set_mass_fractions(fraction);
+}
+
+/// Exact derivatives of a property of a pure fluid inside its saturation dome with respect to the two inputs of the call
+/// (`d1` for `in1`, `d2` for `in2`). CoolProp's first_partial_deriv is that of the homogeneous phase there (the consistency
+/// check of the caller rejects it and falls back to differences), and its two-phase derivatives (first_two_phase_deriv)
+/// cover only rho and Q of (h, p). In the coordinates (T, Q) of the dome the lever rule gives y = y'(T) + Q (y''(T) - y'(T))
+/// for y = h, s, u and v = 1/rho, and p = p_sat(T): the derivatives along the saturation curve y'(T), y''(T), p_sat'(T)
+/// come from `sat`, updated at the saturated liquid then the saturated vapour at the temperature of `state`
+/// (first_saturation_deriv, Clausius-Clapeyron), and the derivatives with respect to the inputs from the inverse of the
+/// 2x2 Jacobian of the inputs in (T, Q). Returns false (nothing written) when a parameter is not one of T, P, Q, h, s, u,
+/// rho, when the pair does not fix the state inside the dome (T and P) or when a value is not finite.
+static bool twoPhaseDerivatives(CoolProp::AbstractState& state, CoolProp::AbstractState& sat, CoolProp::parameters out,
+                                CoolProp::parameters in1, CoolProp::parameters in2, double& d1, double& d2) {
+    using CoolProp::parameters;
+    const parameters params[3] = {out, in1, in2};
+    auto caloric = [](parameters p) {
+        return p == CoolProp::iHmass || p == CoolProp::iSmass || p == CoolProp::iUmass || p == CoolProp::iDmass;
+    };
+    for (parameters p : params)
+        if (!caloric(p) && p != CoolProp::iT && p != CoolProp::iP && p != CoolProp::iQ) return false;
+
+    const double T = state.T();
+    const double Q = state.Q();
+    // Value and derivative along the saturation curve, at the liquid (end 0) and vapour (end 1) ends, of the caloric
+    // parameters of the call (v = 1/rho for the density)
+    double value[3][2] = {}, slope[3][2] = {};
+    double dpdT = 0.0;
+    for (int end = 0; end < 2; ++end) {
+        sat.update(CoolProp::QT_INPUTS, end, T);
+        if (end == 0) dpdT = sat.first_saturation_deriv(CoolProp::iP, CoolProp::iT);
+        for (int k = 0; k < 3; ++k) {
+            if (!caloric(params[k])) continue;
+            if (params[k] == CoolProp::iDmass) {
+                const double rho = sat.rhomass();
+                value[k][end] = 1.0 / rho;
+                slope[k][end] = -sat.first_saturation_deriv(CoolProp::iDmass, CoolProp::iT) / (rho * rho);
+            } else {
+                value[k][end] = sat.keyed_output(params[k]);
+                slope[k][end] = sat.first_saturation_deriv(params[k], CoolProp::iT);
+            }
+        }
+    }
+    // Gradient of parameter k in (T, Q)
+    double gT[3], gQ[3];
+    for (int k = 0; k < 3; ++k) {
+        switch (params[k]) {
+            case CoolProp::iT: gT[k] = 1.0; gQ[k] = 0.0; break;
+            case CoolProp::iP: gT[k] = dpdT; gQ[k] = 0.0; break;
+            case CoolProp::iQ: gT[k] = 0.0; gQ[k] = 1.0; break;
+            default: {
+                gT[k] = (1.0 - Q) * slope[k][0] + Q * slope[k][1];
+                gQ[k] = value[k][1] - value[k][0];
+                if (params[k] == CoolProp::iDmass) {   // rho = 1/v
+                    const double v = value[k][0] + Q * gQ[k];
+                    gT[k] = -gT[k] / (v * v);
+                    gQ[k] = -gQ[k] / (v * v);
+                }
+            }
+        }
+    }
+    // [dy/d(in1), dy/d(in2)] = [gT, gQ](out) . M^-1, M = [[gT, gQ](in1); [gT, gQ](in2)]
+    const double det = gT[1] * gQ[2] - gQ[1] * gT[2];
+    const double size = std::abs(gT[1] * gQ[2]) + std::abs(gQ[1] * gT[2]);
+    if (!(std::abs(det) > 1e-12 * size)) return false;   // T and P (or NaN)
+    const double r1 = (gT[0] * gQ[2] - gQ[0] * gT[2]) / det;
+    const double r2 = (gQ[0] * gT[1] - gT[0] * gQ[1]) / det;
+    if (!std::isfinite(r1) || !std::isfinite(r2)) return false;
+    d1 = r1;
+    d2 = r2;
+    return true;
 }
 
 /// Derivative of a property of an incompressible solution with respect to its mass fraction x, by a central difference
@@ -2643,8 +2735,23 @@ ADValue ExpressionEvaluator::evaluateCoolPropFunction(const FunctionCall& func) 
                 // ── Derivatives (none outside the saturation dome: the quality is a constant there) ──
                 if (!residualOnly_ && !singlePhaseQuality) {
                     bool derivOk = false;
-                    
-                    if (coolpropConfig_->enableAnalyticalDerivatives) {
+
+                    // Inside the saturation dome of a pure fluid: the exact derivatives of the lever rule (pseudo-pure
+                    // fluids, mixtures and the tabular backends keep the path below)
+                    if (coolpropConfig_->enableAnalyticalDerivatives && fluid->getType() == FluidType::Real &&
+                        coolpropConfig_->getBackendString() == "HEOS" && state->phase() == CoolProp::iphase_twophase &&
+                        g_abstractStateCache.isPureFluid(cpFluidName)) {
+                        try {
+                            auto sat = g_abstractStateCache.getOrCreateSaturation(coolpropConfig_->getBackendString(), cpFluidName);
+                            derivOk = twoPhaseDerivatives(*state, *sat, outputInfo.param, input1Param, input2Param,
+                                                          dResult_dInput1, dResult_dInput2);
+                            if (derivOk) g_profilingStats.analyticalDeriv_calls++;
+                        } catch (const std::exception&) {
+                            derivOk = false;   // e.g. no saturation state at this temperature: the path below
+                        }
+                    }
+
+                    if (!derivOk && coolpropConfig_->enableAnalyticalDerivatives) {
                         // Analytical derivatives via first_partial_deriv() with
                         // forward-FD consistency check.  CoolProp's analytical
                         // derivatives can be wildly wrong near phase boundaries

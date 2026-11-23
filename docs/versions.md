@@ -43,6 +43,14 @@ Notes of the changes merged since v0.5, gathered for the next changelog.
   and DiGuilio et al. 1990): `viscosity(LiBr, 55, T=60, P=1E5)` was an error. The EES routines `VISC_LIBR('SI', T, X)`
   and `COND_LIBR('SI', T, X)` are these properties.
 
+### Solver
+
+- **Exact derivatives inside the saturation dome of a pure fluid**: CoolProp's `first_partial_deriv()` is that of
+  the homogeneous phase there, so CoolSolve fell back to finite differences for every two-phase property call
+  (quality, (P,h), (T,x), …). The derivatives are now those of the lever rule, from CoolProp's saturation derivatives
+  at the saturated liquid and vapour, for every pair of T, P, x, h, s, u, ρ; pseudo-pure fluids (R404A, R410A, Air)
+  and mixtures keep the check and its differences. The results are unchanged; the Jacobians in the dome are exact.
+
 ### Dependencies
 
 - CoolProp `4e195377` (8.1.0, 22 November 2026), was `8eb3b778` (8.1.0dev).

@@ -1855,3 +1855,109 @@ TEST_CASE("Evaluator comparison and logical operators of IF conditions", "[evalu
         REQUIRE(r.gradient[0] == 0.0);
     }
 }
+
+// ============================================================================
+// Derivatives inside the saturation dome of a pure fluid (twoPhaseDerivatives, src/evaluator.cpp): CoolProp's
+// first_partial_deriv is that of the homogeneous phase there; the evaluator takes the exact derivatives of the lever
+// rule in (T, Q) instead of the finite differences it fell back to.
+// ============================================================================
+
+namespace {
+
+struct TwoPhaseCall {
+    double value, da, db;
+};
+
+/// `call` written with the variables a and b (e.g. "enthalpy(Water, P=a, h=b)"), evaluated at a, b with its derivatives.
+TwoPhaseCall evalTwoPhaseCall(const std::string& call, double a, double b,
+                              const coolsolve::CoolPropConfig& cfg = coolsolve::CoolPropConfig()) {
+    coolsolve::EESParser parser;
+    auto parsed = parser.parse("y = " + call + "\n");
+    REQUIRE(parsed.success);
+    auto ir = coolsolve::IR::fromAST(parsed.program);
+    coolsolve::ExpressionEvaluator ev(2, cfg);
+    ev.setVariable("a", coolsolve::ADValue::independent(a, 0, 2));
+    ev.setVariable("b", coolsolve::ADValue::independent(b, 1, 2));
+    const auto r = ev.evaluate(ir.getEquations()[0].rhs);
+    return {r.value, r.gradient[0], r.gradient[1]};
+}
+
+}  // namespace
+
+TEST_CASE("Two-phase derivatives of a pure fluid: exact identities of the dome", "[evaluator][two-phase-derivatives]") {
+    using CoolProp::PropsSI;
+    const double T = 100.0, Tk = 373.15;   // water at 100 C
+    const double hL = PropsSI("H", "T", Tk, "Q", 0, "Water"), hV = PropsSI("H", "T", Tk, "Q", 1, "Water");
+    const double sL = PropsSI("S", "T", Tk, "Q", 0, "Water"), sV = PropsSI("S", "T", Tk, "Q", 1, "Water");
+    const double vL = 1 / PropsSI("D", "T", Tk, "Q", 0, "Water"), vV = 1 / PropsSI("D", "T", Tk, "Q", 1, "Water");
+    const double p = PropsSI("P", "T", Tk, "Q", 0.3, "Water");
+    // h is linear in the quality at constant T: dh/dx = h'' - h' (finite differences: ~1e-10 off)
+    auto h = evalTwoPhaseCall("enthalpy(Water, T=a, x=b)", T, 0.3);
+    CHECK_THAT(h.db, WithinRel(hV - hL, 1e-11));
+    // ds/dh at constant pressure is 1/T, dT/dh is 0, dQ/dh is 1/(h'' - h')
+    auto s = evalTwoPhaseCall("entropy(Water, P=a, h=b)", p, hL + 0.3 * (hV - hL));
+    CHECK_THAT(s.db, WithinRel(1.0 / Tk, 1e-11));
+    auto t = evalTwoPhaseCall("temperature(Water, P=a, h=b)", p, hL + 0.3 * (hV - hL));
+    CHECK(t.db == 0.0);
+    // dT/dP along the saturation curve: Clausius-Clapeyron T (v'' - v') / (h'' - h')
+    CHECK_THAT(t.da, WithinRel(Tk * (vV - vL) / (hV - hL), 1e-9));
+    auto q = evalTwoPhaseCall("quality(Water, P=a, h=b)", p, hL + 0.3 * (hV - hL));
+    CHECK_THAT(q.db, WithinRel(1.0 / (hV - hL), 1e-11));
+    // dP/dx at constant T is 0; ds/dx is s'' - s'
+    auto pr = evalTwoPhaseCall("pressure(Water, T=a, x=b)", T, 0.3);
+    CHECK(pr.db == 0.0);
+    auto sx = evalTwoPhaseCall("entropy(Water, T=a, x=b)", T, 0.3);
+    CHECK_THAT(sx.db, WithinRel(sV - sL, 1e-11));
+}
+
+TEST_CASE("Two-phase derivatives of a pure fluid agree with central differences for every input pair",
+          "[evaluator][two-phase-derivatives]") {
+    struct Case { const char* call; double a, b, ha, hb; };
+    // inside the dome of water (1 bar, 100 C) and R134a (0 C, 2.93 bar); steps of 1e-4 of the value (central)
+    const std::vector<Case> cases = {
+        {"enthalpy(Water, T=a, x=b)", 100.0, 0.3, 1e-2, 1e-4},
+        {"enthalpy(Water, P=a, x=b)", 1e5, 0.3, 10.0, 1e-4},
+        {"density(Water, T=a, x=b)", 100.0, 0.3, 1e-2, 1e-4},
+        {"volume(Water, P=a, x=b)", 1e5, 0.3, 10.0, 1e-4},
+        {"entropy(Water, P=a, h=b)", 1e5, 1.1e6, 10.0, 100.0},
+        {"temperature(Water, P=a, h=b)", 1e5, 1.1e6, 10.0, 100.0},
+        {"quality(Water, P=a, h=b)", 1e5, 1.1e6, 10.0, 100.0},
+        {"density(Water, P=a, h=b)", 1e5, 1.1e6, 10.0, 100.0},
+        {"intenergy(Water, P=a, s=b)", 1e5, 3000.0, 10.0, 0.3},
+        {"quality(Water, T=a, s=b)", 100.0, 3000.0, 1e-2, 0.3},
+        {"enthalpy(Water, T=a, s=b)", 100.0, 3000.0, 1e-2, 0.3},
+        {"temperature(Water, h=a, s=b)", 1.1e6, 3200.0, 100.0, 0.3},
+        {"pressure(Water, T=a, v=b)", 100.0, 0.5, 1e-2, 1e-4},
+        {"enthalpy(R134a, T=a, x=b)", 0.0, 0.5, 1e-2, 1e-4},
+        {"quality(R134a, P=a, h=b)", 2.93e5, 3.0e5, 30.0, 30.0},
+        {"entropy(R134a, P=a, x=b)", 2.93e5, 0.5, 30.0, 1e-4},
+    };
+    for (const auto& c : cases) {
+        INFO(c.call << " at a = " << c.a << ", b = " << c.b);
+        const auto at = evalTwoPhaseCall(c.call, c.a, c.b);
+        REQUIRE(std::isfinite(at.value));
+        const double fda = (evalTwoPhaseCall(c.call, c.a + c.ha, c.b).value - evalTwoPhaseCall(c.call, c.a - c.ha, c.b).value) / (2 * c.ha);
+        const double fdb = (evalTwoPhaseCall(c.call, c.a, c.b + c.hb).value - evalTwoPhaseCall(c.call, c.a, c.b - c.hb).value) / (2 * c.hb);
+        // a comparison with differences of CoolProp's flashes (their precision divided by the step), not a solver tolerance
+        const double scaleA = std::abs(fda) + 1e-9 * std::abs(at.value / c.ha);
+        const double scaleB = std::abs(fdb) + 1e-9 * std::abs(at.value / c.hb);
+        CHECK(std::abs(at.da - fda) <= 1e-5 * scaleA);
+        CHECK(std::abs(at.db - fdb) <= 1e-5 * scaleB);
+    }
+}
+
+TEST_CASE("Two-phase derivatives: pseudo-pure fluids, T and P, and the tabular backend keep the previous path",
+          "[evaluator][two-phase-derivatives]") {
+    // R404A is pseudo-pure (bubble and dew pressures differ): its derivatives are those of the finite differences
+    auto r = evalTwoPhaseCall("enthalpy(R404A, T=a, x=b)", 0.0, 0.5);
+    const double fd = (evalTwoPhaseCall("enthalpy(R404A, T=a, x=b)", 0.0, 0.5 + 1e-4).value -
+                       evalTwoPhaseCall("enthalpy(R404A, T=a, x=b)", 0.0, 0.5 - 1e-4).value) / 2e-4;
+    CHECK_THAT(r.db, WithinRel(fd, 1e-4));
+    // the derivatives with analytical derivatives off are the central differences of the legacy path
+    coolsolve::CoolPropConfig fdOnly;
+    fdOnly.enableAnalyticalDerivatives = false;
+    auto legacy = evalTwoPhaseCall("entropy(Water, P=a, h=b)", 1e5, 1.1e6, fdOnly);
+    auto exact = evalTwoPhaseCall("entropy(Water, P=a, h=b)", 1e5, 1.1e6);
+    CHECK_THAT(legacy.value, WithinRel(exact.value, 1e-15));
+    CHECK_THAT(legacy.db, WithinRel(exact.db, 1e-6));
+}
