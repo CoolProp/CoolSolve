@@ -999,7 +999,9 @@ J/mol-K, up to 1.5e-5 from the CODATA value). There is no phase: no liquid, no s
 `enthalpy('n-Octane', T=25, P=1E5)`), `enthalpy(H2O, T=0, P=101325)` the vapor, and
 `volume(He, T=20, P=14E6)` is `R·T/P`, not the real-gas value (Z = 1.067). The real fluid of the same equation
 of state is the fluid of the same name in the real-fluid list above (`Nitrogen`, `Water`, `n-Octane`, `Air_ha`
-for `Air`; `CO` has none, nor have the six NASA-Glenn species).
+for `Air`, `CarbonMonoxide` for `CO`; the six NASA-Glenn species have none). The formation enthalpies of the table
+agree with the ATcT values that CoolProp 8.1 gives (`HFORMATION`, Active Thermochemical Tables) within 0.1 kJ/mol for
+`CO`, `CO2`, `CH4` and `H2O` and 0.9 kJ/mol for the n-alkanes (checked by the test `[hformation]`).
 
 **The NASA-Glenn species `OH`, `H`, `O`, `N`, `NO` and `NO2`** (the hydroxyl radical, the atoms H, O and N, nitric oxide and
 nitrogen dioxide) are the other substances of the combustion equilibrium (Klein's `ChemEq` example of EES). CoolProp

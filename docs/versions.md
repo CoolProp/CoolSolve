@@ -58,6 +58,13 @@ Notes of the changes merged since v0.5, gathered for the next changelog.
   at the saturated liquid and vapour, for every pair of T, P, x, h, s, u, ρ; pseudo-pure fluids (R404A, R410A, Air)
   and mixtures keep the check and its differences. The results are unchanged; the Jacobians in the dome are exact.
 
+### Tests
+
+- The formation enthalpies of the NASA-Glenn ideal gases are checked against CoolProp 8.1's ATcT values
+  (`HFORMATION`): within 0.1 kJ/mol for CO, CO2, CH4, H2O, 0.9 kJ/mol for the n-alkanes.
+- Every pure fluid of CoolProp must be reachable by its name (a CoolProp update that adds a fluid fails the test until
+  it is registered); regression tests of the CoolProp fixes CoolSolve relies on (near-azeotrope flash, ancillaries).
+
 ### Dependencies
 
 - CoolProp `4e195377` (8.1.0, 22 November 2026), was `8eb3b778` (8.1.0dev).

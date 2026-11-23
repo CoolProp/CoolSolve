@@ -101,3 +101,29 @@ TEST_CASE("Humid Air specific properties and derivatives", "[fluids][humidair]")
         REQUIRE(dp < T);
     }
 }
+
+TEST_CASE("The NASA-Glenn formation enthalpies of the ideal gases agree with CoolProp's ATcT values (HFORMATION)",
+          "[fluids][hformation]") {
+    // CoolSolve's ideal gases carry the enthalpy of formation of the NASA-Glenn table (src/nasa_glenn.cpp, McBride, Zehe &
+    // Gordon 2002); CoolProp 8.1 gives the ATcT value of its fluids (HFORMATION, Active Thermochemical Tables). Two
+    // independent data sets of the same quantity: a comparison of data, not a tolerance of CoolSolve.
+    int compared = 0;
+    for (const auto& fluid : FluidRegistry::getAllFluids()) {
+        const auto ideal = std::dynamic_pointer_cast<IdealGasFluid>(fluid);
+        if (!ideal || !ideal->hasCoolPropFluid() || !ideal->getFormationEnthalpy()) continue;
+        double atct = NAN;
+        try {
+            atct = CoolProp::Props1SI(ideal->getCoolPropName(), "HFORMATION");   // J/mol
+        } catch (...) {
+        }
+        INFO(ideal->getName() << " (" << ideal->getCoolPropName() << "): NASA-Glenn "
+                              << *ideal->getFormationEnthalpy() / 1000.0 << " J/mol, ATcT " << atct << " J/mol");
+        if (!std::isfinite(atct)) continue;   // a fluid without an ATcT value in CoolProp
+        ++compared;
+        const double nasa = *ideal->getFormationEnthalpy() / 1000.0;   // J/kmol -> J/mol
+        // measured with CoolProp 8.1.0: 0 for the elements, 16 to 87 J/mol for CO, H2O, CO2, CH4, 150 to 860 J/mol for the
+        // n-alkanes (C2H6 to C8H18)
+        CHECK(std::abs(nasa - atct) < 1000.0);
+    }
+    CHECK(compared >= 12);
+}
