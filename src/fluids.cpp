@@ -262,7 +262,7 @@ void FluidRegistry::initialize() {
     addIncompSolution("Glycerol", "MGL");
     addIncompSolution("MGL", "MGL");
     
-    // Lithium bromide solution in water (CoolProp INCOMP::LiBr: mass fraction 0..0.75, no viscosity or conductivity)
+    // Lithium bromide solution in water (CoolProp INCOMP::LiBr: mass fraction 0..0.75; viscosity and conductivity since 8.1.0)
     addIncompSolution("LiBr", "LiBr");
 
     // Sea water: CoolProp INCOMP::MITSW (Sharqawy et al. 2010), a salinity solution: mass fraction 0..0.12, 273.15..393.15 K,

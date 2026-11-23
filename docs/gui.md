@@ -628,7 +628,7 @@ draws any definition.
 #### Badge, persistence and export
 
 The badge in a corner of the chart names the equation of state of the fluid
-(`R134a: Tillner-Roth and Baehr (1994)`) and the versions (`CoolProp 8.1.0dev (8eb3b77),
+(`R134a: Tillner-Roth and Baehr (1994)`) and the versions (`CoolProp 8.1.0 (4e19537),
 CoolPlot 1.5.0`), as CoolPlot writes them; definitions saved before it keep no badge.
 
 The definition is stored in the session (`PUT /api/v1/diagram/definitions`, debounced) and travels

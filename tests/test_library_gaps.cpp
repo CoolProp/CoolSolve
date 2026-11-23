@@ -6739,6 +6739,117 @@ TEST_CASE("CS-GAP-FLUIDS-MIXTURE: LaTeX report of a model with a mixture compile
 }
 
 // ============================================================================
+// CS-BUG-MIX-AZEOTROPE-FLASH: the (T,P) flash of a near-azeotropic mixture called most of its two-phase states
+// single-phase with the CoolProp pin 8eb3b778 (CoolProp #3427, fixed by #3571 in 8.1.0): R410A written as
+// R32/R125 gave x = +/-100 and enthalpies 20 kJ/kg off without any error, R507A up to 179 kJ/kg, and every
+// (P,h) call of these mixtures failed ("HSU_P_flash for mixture did not converge"). The pseudo-pure fluids
+// R410A, R404A and R507A of the registry were not concerned.
+// ============================================================================
+
+namespace {
+
+/// A model that computes, for each quality of `qualities` at each temperature of `temperatures` [C], the saturation
+/// state of mixture `mix` from (T, x), then the same state from (T, P) and from (P, h): `xTP`, `hTP`, `TPH`, `xPH`.
+std::string azeotropeFlashModel(const std::string& mix, const std::vector<double>& temperatures,
+                                const std::vector<double>& qualities) {
+    std::ostringstream code;
+    code << "mix$ = '" << mix << "'\n";
+    int i = 0;
+    for (double T : temperatures)
+        for (double x : qualities) {
+            ++i;
+            code << "T[" << i << "] = " << T << "\nx[" << i << "] = " << x << "\n"
+                 << "P[" << i << "] = pressure(mix$, T=T[" << i << "], x=x[" << i << "])\n"
+                 << "h[" << i << "] = enthalpy(mix$, T=T[" << i << "], x=x[" << i << "])\n"
+                 << "xTP[" << i << "] = quality(mix$, T=T[" << i << "], P=P[" << i << "])\n"
+                 << "hTP[" << i << "] = enthalpy(mix$, T=T[" << i << "], P=P[" << i << "])\n"
+                 << "TPH[" << i << "] = temperature(mix$, P=P[" << i << "], h=h[" << i << "])\n"
+                 << "xPH[" << i << "] = quality(mix$, P=P[" << i << "], h=h[" << i << "])\n";
+        }
+    return code.str();
+}
+
+/// Every state of azeotropeFlashModel is found again from (T, P) and from (P, h).
+void requireAzeotropeStates(const std::string& mix, const std::vector<double>& temperatures,
+                            const std::vector<double>& qualities) {
+    auto run = runModel(azeotropeFlashModel(mix, temperatures, qualities));
+    INFO(mix << ": " << run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    const int n = static_cast<int>(temperatures.size() * qualities.size());
+    for (int i = 1; i <= n; ++i) {
+        const std::string k = "[" + std::to_string(i) + "]";
+        INFO("state " << i << ": T = " << run["T" + k] << " C, x = " << run["x" + k]);
+        CHECK_THAT(run["xTP" + k], WithinAbs(run["x" + k], 1e-6));
+        // two flashes of CoolProp agree to ~4e-7 for these mixtures; the pin 8eb3b778 was off by up to 1.8e5 J/kg
+        CHECK_THAT(run["hTP" + k], WithinRel(run["h" + k], 1e-6));
+        CHECK_THAT(run["TPH" + k], WithinAbs(run["T" + k], 1e-6));
+        CHECK_THAT(run["xPH" + k], WithinAbs(run["x" + k], 1e-6));
+    }
+}
+
+}  // namespace
+
+TEST_CASE("CS-BUG-MIX-AZEOTROPE-FLASH: R410A as a R32/R125 mixture, two-phase states from (T,P) and (P,h)",
+          "[library-gaps][fluids-mixture][mix-azeotrope]") {
+    // the pin 8eb3b778: 8 of these 15 states were single-phase from (T,P), every (P,h) call failed
+    requireAzeotropeStates("R32[0.697612]&R125[0.302388]", {-50, -30, -10, 10, 30}, {0.1, 0.5, 0.9});
+}
+
+TEST_CASE("CS-BUG-MIX-AZEOTROPE-FLASH: R507A and R404A as mixtures, two-phase states from (T,P) and (P,h)",
+          "[library-gaps][fluids-mixture][mix-azeotrope]") {
+    // the pin 8eb3b778: 13 of the 15 R507A states single-phase (enthalpy up to 179 kJ/kg off), 1 for R404A
+    requireAzeotropeStates("R125[0.411840]&R143a[0.588160]", {-50, -30, -10, 10, 30}, {0.1, 0.5, 0.9});
+    requireAzeotropeStates("R125[0.357817]&R143a[0.603919]&R134a[0.038264]", {-50, 10}, {0.1, 0.5, 0.9});
+}
+
+TEST_CASE("CS-BUG-MIX-AZEOTROPE-FLASH: CoolProp's own (T,P) flash of the R507A mixture inside the dome",
+          "[library-gaps][fluids-mixture][mix-azeotrope]") {
+    // the property library itself, without CoolSolve: the state at the pressure of x = 0.5 is two-phase
+    std::unique_ptr<CoolProp::AbstractState> mix(CoolProp::AbstractState::factory("HEOS", "R125&R143a"));
+    mix->set_mole_fractions({0.411840, 0.588160});
+    for (double T : {223.15, 263.15, 303.15}) {
+        INFO("T = " << T << " K");
+        mix->update(CoolProp::QT_INPUTS, 0.5, T);
+        const double p = mix->p();
+        const double h = mix->hmass();
+        mix->update(CoolProp::PT_INPUTS, p, T);
+        CHECK(mix->phase() == CoolProp::iphase_twophase);
+        CHECK_THAT(mix->Q(), WithinAbs(0.5, 1e-6));
+        CHECK_THAT(mix->hmass(), WithinRel(h, 1e-6));
+    }
+}
+
+// ============================================================================
+// CS-BUG-ANCILLARY-NOSUPERANC: with the superancillaries off (`--no-superancillary`,
+// `coolpropEnableSuperancillaries = false`), the saturation ancillary of R1234yf had a wrong exponent in CoolProp up
+// to 8.1.0dev (#3544): subcooled liquid R1234yf near saturation was put on the vapour branch, 41.5 kg/m^3 instead of
+// 1085 at 26.85 C and 7.4 bar, without any error. n-Octane had the same kind of typo. Fixed by the pin 8.1.0.
+// ============================================================================
+
+TEST_CASE("CS-BUG-ANCILLARY-NOSUPERANC: subcooled R1234yf and saturated n-octane without superancillaries",
+          "[library-gaps][superancillary]") {
+    const double rhoLiquid = CoolProp::PropsSI("D", "T", 300.0, "P", 740000.0, "R1234yf");   // superancillaries on
+    REQUIRE(rhoLiquid > 1000.0);
+    CoolPropConfig off;
+    off.enableSuperancillaries = false;
+    applyCoolPropConfig(off);
+    struct Restore {
+        ~Restore() { applyCoolPropConfig(CoolPropConfig{}); }
+    } restore;
+    auto run = runModel("rho_yf = density(R1234yf, T=26.85, P=740000)\n"
+                        "rho_oct = density('n-Octane', T=100, x=1)\n"
+                        "P_oct = pressure('n-Octane', T=100, x=1)\n",
+                        {}, "", [](SolverOptions& o) { o.coolpropConfig.enableSuperancillaries = false; });
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["rho_yf"], WithinRel(rhoLiquid, 1e-6));   // the pin 8eb3b778: 41.45 kg/m^3
+    CHECK(run["rho_oct"] < 5.0);                             // the vapour of n-octane at 100 C (1.78 kg/m^3)
+    CHECK_THAT(run["P_oct"], WithinRel(CoolProp::PropsSI("P", "T", 373.15, "Q", 1, "n-Octane"), 1e-6));
+}
+
+// ============================================================================
 // CS-BUG-COMMON-PROC: $COMMON is not supported (maintainer decision): the body of a
 // FUNCTION/PROCEDURE saw 0 for the variables of its $COMMON list while the run reported
 // SUCCESS. It is now an error that names the directive, the variables and the routine and
@@ -20720,9 +20831,9 @@ TEST_CASE("CS-GAP-FLUIDS-ABS: LaTeX rendering writes the underscore of the routi
 // ============================================================================
 // `LiBr` was registered as a pure incompressible: with no concentration every call failed ("CoolProp returned invalid
 // result (NaN or Inf) for H(INCOMP::LiBr)"). It is a solution like MEG: a concentration in mass % (second positional
-// argument or C=), 0 to 75 %. CoolProp has density, specific heat and the caloric properties integrated from it, no
-// viscosity and no conductivity. The caloric properties get the warning C004 (no enthalpy of mixing, other reference
-// state than H_LIBR).
+// argument or C=), 0 to 75 %. CoolProp has density, specific heat and the caloric properties integrated from it, and
+// since 8.1.0 the viscosity and the conductivity (CoolProp #3542). The caloric properties get the warning C004 (no
+// enthalpy of mixing, other reference state than H_LIBR).
 
 namespace {
 
@@ -20919,16 +21030,43 @@ TEST_CASE("CS-BUG-INCOMP-LIBR: the concentration is checked, 0 to 75 % is the ra
     }
 }
 
-TEST_CASE("CS-BUG-INCOMP-LIBR: CoolProp has no viscosity and no conductivity for the solution: an error naming the call", "[library-gaps][incomp-libr]") {
-    // CoolProp: "INCOMP::LiBr does not define a viscosity" (it returns Inf): never a value, never a silent 1e4
-    requireLiBrCallError("viscosity(LiBr, 50, T=40, P=1e5)", {"viscosity", "LiBr"});
-    requireLiBrCallError("conductivity(LiBr, 50, T=40, P=1e5)", {"conductivity", "LiBr"});
-    requireLiBrCallError("viscosity(LiBr, T=40, P=1e5, C=50)", {"viscosity"});
-    requireLiBrCallError("kinematicviscosity(LiBr, 50, T=40, P=1e5)", {"viscosity", "LiBr"});
-    // the other solutions have them (the error is about LiBr, not about the path)
-    auto meg = runModel("mu = viscosity(MEG, 30, T=40, P=1e5)\nk = conductivity(MEG, 30, T=40, P=1e5)\n");
-    REQUIRE(meg.solveOk);
-    CHECK(meg.verified);
+TEST_CASE("CS-BUG-INCOMP-LIBR: viscosity and conductivity of the solution are CoolProp's (8.1.0 fits)", "[library-gaps][incomp-libr]") {
+    // CoolProp 8.1.0 (#3542): viscosity from Flessner & Ziegler (2023) up to 383 K and Lee et al. (1990) above,
+    // conductivity from DiGuilio et al. (1990); CoolProp 8.0 had neither (the call was an error naming it)
+    const double mu = librCoolProp("V", 0.5, 313.15, 1e5);
+    const double k = librCoolProp("L", 0.5, 313.15, 1e5);
+    REQUIRE(std::isfinite(mu));
+    REQUIRE(std::isfinite(k));
+    CHECK(mu > 2e-3);   // a 50 % solution at 40 C is about 3 times as viscous as water (0.65 mPa-s)
+    CHECK(mu < 5e-3);
+    CHECK(k > 0.40);    // and conducts heat a little less than water (0.63 W/m-K)
+    CHECK(k < 0.55);
+    auto run = runModel(
+        "mu1 = viscosity(LiBr, 50, T=40, P=1e5)\n"
+        "mu2 = viscosity(LiBr, T=40, P=1e5, C=50)\n"
+        "k1 = conductivity(LiBr, 50, T=40, P=1e5)\n"
+        "nu1 = kinematicviscosity(LiBr, 50, T=40, P=1e5)\n"
+        "rho1 = density(LiBr, 50, T=40, P=1e5)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK(run.warnings.empty());   // the transport properties are not caloric properties of the warning C004
+    CHECK_THAT(run["mu1"], WithinRel(mu, 1e-9));
+    CHECK_THAT(run["mu2"], WithinRel(mu, 1e-9));
+    CHECK_THAT(run["k1"], WithinRel(k, 1e-9));
+    CHECK_THAT(run["nu1"], WithinRel(mu / run["rho1"], 1e-9));
+    SECTION("Newton solves an unknown temperature through the viscosity") {
+        auto inv = runModel("mu = " + numText(librCoolProp("V", 0.55, 333.15, 1e5)) + "\n"
+                            "viscosity(LiBr, 55, T=T, P=1E5) = mu\n");
+        INFO(inv.message);
+        REQUIRE(inv.solveOk);
+        CHECK(inv.verified);
+        CHECK_THAT(inv["T"], WithinAbs(60.0, 1e-5));
+    }
+    SECTION("above 75 % there is no fit: an error naming the call, never a value") {
+        requireLiBrCallError("viscosity(LiBr, 80, T=40, P=1e5)", {"viscosity", "LiBr"});
+        requireLiBrCallError("conductivity(LiBr, T=40, P=1e5, C=80)", {"conductivity", "LiBr"});
+    }
 }
 
 TEST_CASE("CS-BUG-INCOMP-LIBR: the caloric properties give one warning C004 per run, density and cp none", "[library-gaps][incomp-libr]") {
@@ -21363,8 +21501,14 @@ TEST_CASE("CS-GAP-INCOMPRESSIBLE: the LiBr solution with T and C alone, density 
     REQUIRE(h.solveOk);
     CHECK(librCaloricWarnings(h) == 1);
     CHECK_THAT(h["h"], WithinRel(librCoolProp("H", 0.5, 313.15, 101325.0), 1e-9));
-    // CoolProp has no viscosity of it: still an error naming the call
-    requireLiBrCallError("viscosity(LiBr, T=40, C=50)", {"viscosity", "LiBr"});
+    // the transport properties too (CoolProp 8.1.0), at the same 1 atm, without warning
+    auto mu = runModel("mu = viscosity(LiBr, T=40, C=50)\nk = conductivity(LiBr, T=40, C=50)\n");
+    INFO(mu.message);
+    REQUIRE(mu.solveOk);
+    CHECK(mu.verified);
+    CHECK(mu.warnings.empty());
+    CHECK_THAT(mu["mu"], WithinRel(librCoolProp("V", 0.5, 313.15, 101325.0), 1e-9));
+    CHECK_THAT(mu["k"], WithinRel(librCoolProp("L", 0.5, 313.15, 101325.0), 1e-9));
 }
 
 TEST_CASE("CS-GAP-INCOMPRESSIBLE: the concentration is never read as a temperature by the parse-time hints",

@@ -12,6 +12,29 @@ changes introduced.
 
 Notes of the changes merged since v0.5, gathered for the next changelog.
 
+### Behaviour changes
+
+- **CoolProp 8.1.0** (`4e195377`, the release tag, was the 8.1.0dev commit `8eb3b778`): the examples and the 354
+  library targets give the same results. What moves: the mixtures below, the transport properties of `LiBr`.
+
+### Fixed
+
+- **Near-azeotropic mixtures** (R410A, R404A, R507A written as their components, `'R32[0.6976]&R125[0.3024]'`): the
+  (T,P) flash called most two-phase states single-phase (quality ±100, enthalpies up to 179 kJ/kg off, no error) and
+  every (P,h) call failed (CoolProp #3427, fixed by #3571). The pseudo-pure `R410A`, `R404A`, `R507A` were not
+  concerned.
+- **Superancillaries off** (`--no-superancillary`): subcooled liquid R1234yf near saturation was a vapour (41.5 kg/m³
+  instead of 1085 kg/m³); n-octane had the same kind of error (CoolProp #3544).
+
+### New
+
+- **`LiBr` solution: viscosity and conductivity** (CoolProp 8.1.0 fits of Flessner & Ziegler 2023, Lee et al. 1990
+  and DiGuilio et al. 1990): `viscosity(LiBr, 55, T=60, P=1E5)` was an error.
+
+### Dependencies
+
+- CoolProp `4e195377` (8.1.0, 22 November 2026), was `8eb3b778` (8.1.0dev).
+
 ---
 
 ## v0.5 — November 2026 (current)

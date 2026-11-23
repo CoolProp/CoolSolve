@@ -5,8 +5,8 @@ versions 2026-10-20 and 2026-10-31), to be reviewed before merging. Phases 0 to 
 (§5); what remains is in §9.
 **References:** [CoolPlot](https://github.com/CoolProp/CoolPlot) `v1.5.0` = `7338f48`
 (2026-11-03), coolplot-core 1.5.0 from its `cpp/` folder; [CoolProp](https://github.com/CoolProp/CoolProp)
-`8eb3b778` (2026-10-31), the commit CoolSolve is pinned to, which has `CoolProp::Plot`
-(CoolProp PRs #3512 and #3519; unchanged on `master` since).
+`4e195377` (8.1.0, 2026-11-22), the commit CoolSolve is pinned to, which has `CoolProp::Plot`
+(CoolProp PRs #3512 and #3519; unchanged since `8eb3b778`, 2026-10-31, the pin of the first phases).
 
 This document plans how the **Diagrams** tab of the GUI adopts CoolPlot, the
 property-diagram package of the CoolProp project, instead of growing its own plotting
@@ -637,7 +637,7 @@ stored definition with the last solve, in the print theme, as `thermo_diagrams.p
 `thermo_diagram_2.pdf`, …; the `.tex` takes them with `\IfFileExists` and falls back to the PNG
 of the browser, kept because the tab's default chart is not stored until it is edited and a
 server without fonts writes no PDF), and `coolsolve --diagram`. The versions line is
-CoolPlot's (`CoolProp 8.1.0dev (8eb3b77), CoolPlot 1.5.0`, the core's version): it does not
+CoolPlot's (`CoolProp 8.1.0 (4e19537), CoolPlot 1.5.0`, the core's version): it does not
 name CoolSolve, so that an exported spec draws the same badge in CoolPlot. New definitions
 write no `branding`, i.e. CoolPlot's defaults; definitions saved in phases 1 to 3 keep
 `{"references": "none", "versions": false}`.
@@ -767,7 +767,7 @@ of humid air under the cursor 0.7 to 0.85 ms over HTTP.
 |---|---|---|
 | D1 | How the GUI draws the scene | coolplot-core's SVG with a TypeScript interaction layer (§3.2). It also serves the CLI, the report and pages of model folders. |
 | D2 | Where the glue lives | In `src/diagram/`, with CoolPlot's module boundaries. Nothing has moved upstream yet: coolplot-core has no `plan()` (CoolPlot's review lists "line values with rounding" for it), `CoolProp::Plot` has no cycle paths or humid-air lines (CoolPlot's C0 plan had them). A part that moves upstream later is dropped here then. To agree with the CoolPlot maintainers, with a request to document the compose record and the 1.5 scene ids in `contracts.md`. |
-| D3 | CoolProp pin | Settled: `8eb3b778` (`d9545e6`). |
+| D3 | CoolProp pin | Settled: `8eb3b778` (`d9545e6`), then 8.1.0 `4e195377` (`CoolProp::Plot` unchanged). |
 | D4 | nlohmann/json | Settled: CoolSolve uses 3.12.0, the vendored version of coolplot-core (`5993f9d`). An upstream option to use the caller's `nlohmann_json` target is still worth asking for. |
 | D5 | A TypeScript test runner | Not now: the interaction layer maps coordinates only; the GUI is tested in headless Chromium as `tests/test_gui_shortcuts.py` does. |
 | D6 | Grouping of states | Automatic (§4.2), and arrays. The state editor that corrected and named the states (phase 2) was removed on 2026-11-13 at the maintainer's request (the tab was too complex). |

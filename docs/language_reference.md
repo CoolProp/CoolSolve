@@ -1224,7 +1224,7 @@ in mass %, or the named `C=...` argument):
 | `Methanol` / `MMA`            | Methanol/water           |
 | `EthanolSolution` / `MEA`     | Ethanol/water            |
 | `Glycerol` / `MGL`            | Glycerol/water           |
-| `LiBr`                        | Lithium bromide/water solution (CoolProp, Pátek-Klomfar fits, 0–75 %, 0–227 °C; density, cp, h, s; no viscosity/conductivity) |
+| `LiBr`                        | Lithium bromide/water solution (CoolProp, Pátek-Klomfar fits, 0–75 %, 0–227 °C; density, cp, h, s, viscosity, conductivity) |
 | `SeaWater`                    | Sea water, salinity in mass % (0–12 %, 3.5 % = 35 g/kg), Sharqawy et al. 2010 via CoolProp, 0–120 °C, liquid only; density, cp, viscosity, conductivity, h, s |
 
 Example:
@@ -1267,7 +1267,8 @@ for `C=30`).
 **`LiBr` is the aqueous solution, not a pure fluid**: it needs its concentration like the other solutions
 (`density(LiBr, 50, T=40, P=1E5)` or `C=50`; without it the call is the usual error asking for one). CoolProp has the
 density and the specific heat of the solution, and its enthalpy, entropy and internal energy integrated from the specific
-heat; it has no viscosity and no conductivity (`viscosity(LiBr, 50, …)` is an error naming the call). The concentration
+heat, and (since CoolProp 8.1.0) its viscosity — Flessner & Ziegler (2023) up to 110 °C, Lee et al. (1990, ASHRAE
+RP-527) above, measured up to 65 % — and its conductivity — DiGuilio et al. (1990, RP-527). The concentration
 is limited to 0–75 % (an error naming the call above it). The solution has **no enthalpy of mixing**: its enthalpy and
 entropy are integrated from `cp` at each concentration, with a reference state that is not that of `H_LIBR`, so they
 cannot be used in the energy balance between streams of different concentration (the absorber and the generator of an
