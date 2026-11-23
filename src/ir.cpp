@@ -1021,9 +1021,11 @@ std::string variableToLatex(const std::string& name) {
             subscripts.push_back(latexSegment(segs[i]));
         }
     }
-    // Append array index as the last subscript element
+    // Append array index as the last subscript element. It is model text like every
+    // other part of the name, so it is escaped too: a backslash is a valid name
+    // character and must never reach the .tex file as a TeX command.
     if (!arrayIndex.empty()) {
-        subscripts.push_back(arrayIndex);
+        subscripts.push_back(escapeLatexMath(arrayIndex));
     }
 
     // 5. Build the core symbol
@@ -1053,6 +1055,19 @@ std::string variableToLatex(const std::string& name) {
     }
 
     return core;
+}
+
+/// A binary operator other than `/`, `*` and `^` in math mode: the relations and the logical combinations of the
+/// conditions of IF as symbols, the others as written.
+static std::string binaryOperatorToLatex(const BinaryOp& op) {
+    switch (op.code) {
+        case OpCode::Ne: return "\\neq";
+        case OpCode::Le: return "\\leq";
+        case OpCode::Ge: return "\\geq";
+        case OpCode::And: return "\\;\\mathrm{and}\\;";
+        case OpCode::Or: return "\\;\\mathrm{or}\\;";
+        default: return op.op;
+    }
 }
 
 std::string IR::expressionToLatex(const ExprPtr& expr) const {
@@ -1097,7 +1112,7 @@ std::string IR::expressionToLatex(const ExprPtr& expr) const {
             } else if (node.op == "^") {
                 return left + "^{" + right + "}";
             } else {
-                return left + " " + node.op + " " + right;
+                return left + " " + binaryOperatorToLatex(node) + " " + right;
             }
         } else if constexpr (std::is_same_v<T, FunctionCall>) {
             return functionCallToLatex(node);
@@ -1178,7 +1193,7 @@ std::string expressionToLatex(const ExprPtr& expr) {
             } else if (node.op == "^") {
                 return left + "^{" + right + "}";
             } else {
-                return left + " " + node.op + " " + right;
+                return left + " " + binaryOperatorToLatex(node) + " " + right;
             }
         } else if constexpr (std::is_same_v<T, FunctionCall>) {
             return functionCallToLatex(node);

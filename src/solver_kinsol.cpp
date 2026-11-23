@@ -281,7 +281,7 @@ SolverStatus KINSOLSolver::solveLineSearch(Problem& problem, Eigen::VectorXd& y,
 
         if (lambda == 0.0) {
             // Line search could not find sufficient decrease.
-            if (rhoNorm < options.lsRelaxedTolerance) {
+            if (relaxedResidualNorm(F, problem.residualScale, options.tolerance) < options.lsRelaxedTolerance) {
                 if (trace) { trace->finalStatus = SolverStatus::Success;
                              trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 return SolverStatus::Success;

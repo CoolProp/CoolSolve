@@ -274,7 +274,7 @@ SolverStatus NewtonSolver::solve(Problem& problem,
                 continue;
             }
 
-            if (rhoNorm < options.lsRelaxedTolerance) {
+            if (relaxedResidualNorm(F, problem.residualScale, options.tolerance) < options.lsRelaxedTolerance) {
                 if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 x = y.cwiseProduct(scale);
                 return SolverStatus::Success;

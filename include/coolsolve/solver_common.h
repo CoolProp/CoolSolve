@@ -90,6 +90,35 @@ double weightedResidualNorm(const Eigen::VectorXd& F, const Scale& scale) {
 }
 
 /**
+ * @brief The norm that the looser acceptance threshold `lsRelaxedTolerance` compares (a stalled step, a failed line
+ *        search): ||rho||_inf with rho_i the weighted residual of equation i (`weightedResidual`), except that an
+ *        equation the convergence test of its block does not meet (rho_i >= \p tolerance) is weighted by its own
+ *        scale S, as if it were alone in its block: relative to its terms when they are below 1.
+ *
+ * In a block that also holds terms of order 1 or more, `weightedResidual` gives an equation of tiny terms the absolute
+ * test, so that the rounding noise of the block meets it. The relaxed threshold (1E-2 by default) with that weight
+ * accepted a residual as large as the terms themselves: `1e-5*(y + x^2 + 1) = 0` with `y = x`, which has no real root,
+ * stalled at 7.5E-6 and was reported solved (GitHub #8). An equation of terms of order 1 or more, and every equation of
+ * a block of tiny terms, has the same weight as in `weightedResidualNorm`. An empty or mismatching \p scale means
+ * `weightedResidualNorm`.
+ */
+template <class Scale>   // Eigen::VectorXd or std::vector<double>
+double relaxedResidualNorm(const Eigen::VectorXd& F, const Scale& scale, double tolerance) {
+    if (static_cast<Eigen::Index>(scale.size()) != F.size()) return weightedResidualNorm(F, scale);
+    const double blockScale = blockResidualScale(scale);
+    double norm = 0.0;
+    for (Eigen::Index i = 0; i < F.size(); ++i) {
+        double rho = weightedResidual(F[i], scale[i], blockScale);
+        if (rho >= tolerance) rho = weightedResidual(F[i], scale[i], scale[i]);
+        if (!(rho <= norm)) {
+            if (std::isnan(rho)) return rho;
+            norm = rho;
+        }
+    }
+    return norm;
+}
+
+/**
  * @brief Distance to convergence ||F_i / a_i||_inf, with a_i = max(tolerance * w_i, 64 eps S_i) the residual at which
  *        equation i is met (`weightedResidual`; a_i = tolerance for a non-finite S): the `relativeTolerance` test
  *        compares it with its value at the start. A start of huge terms (a residual of 1E20 at the guess) then does

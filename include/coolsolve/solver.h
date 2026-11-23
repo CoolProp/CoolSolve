@@ -374,8 +374,9 @@ struct SolverOptions {
     // Configurable via coolsolve.conf: enableLatexReport = true/false
     bool enableLatexReport = true;
 
-    // LaTeX compiler command (default: pdflatex).  Used by the GUI to compile
-    // the generated .tex file into a PDF report.
+    // LaTeX compiler (default: pdflatex).  Used by the GUI to compile the
+    // generated .tex file into a PDF report.  The server runs only pdflatex,
+    // xelatex or lualatex and refuses any other value (src/server.cpp).
     std::string latexCompiler = "pdflatex";
 
     // --- Debug output ---
@@ -994,7 +995,11 @@ struct SolveResult {
     // Solution values
     std::map<std::string, double, CaseInsensitiveLess> variables;
     std::map<std::string, std::string, CaseInsensitiveLess> stringVariables;
-    
+
+    /// True for a name of `variables` that is a string variable: its numeric entry is a placeholder 0, which the
+    /// outputs (`.sol`, `.initials`, the variable table of the GUI) leave out (CS-BUG-SOL-STRING, GitHub #4).
+    bool isStringVariable(const std::string& name) const { return stringVariables.count(name) > 0; }
+
     // Statistics
     int totalIterations = 0;
     int blocksEvaluated = 0;

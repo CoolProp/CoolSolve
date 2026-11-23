@@ -1854,7 +1854,8 @@ SolverStatus Solver::solveBlockPartitioned(size_t blockIndex,
         }
 
         if (stepNorm < options.stepTolerance) {
-            if (rhoNorm < options.tolerance * 100 || rhoNorm < options.lsRelaxedTolerance) {
+            if (rhoNorm < options.tolerance * 100 ||
+                relaxedResidualNorm(F, evalResult.scale, options.tolerance) < options.lsRelaxedTolerance) {
                 if (trace) {
                     trace->finalStatus = SolverStatus::Success;
                     trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
@@ -2205,7 +2206,7 @@ SolverStatus Solver::solveBlockTearing(size_t blockIndex,
             // Schur complement is singular — tear Newton step impossible.
             // However, if the acyclic forward sweep already brought the
             // full residual close to tolerance, accept the current x.
-            if (fullRho < std::max(options.tolerance * 1000.0, 1e-3)) {
+            if (relaxedResidualNorm(F, evalResult.scale, options.tolerance) < std::max(options.tolerance * 1000.0, 1e-3)) {
                 if (trace) {
                     trace->finalStatus = SolverStatus::Success;
                     trace->totalTime = std::chrono::high_resolution_clock::now() - startTime;
@@ -3239,8 +3240,11 @@ std::string generateSolveReport(const SolveResult& result) {
     ss << "Total iterations: " << result.totalIterations << "\n";
     ss << "Total time: " << result.totalTime.count() << " s\n";
     
-    ss << "\n--- Variables (" << result.variables.size() << ") ---\n";
+    const auto numericCount = std::count_if(result.variables.begin(), result.variables.end(),
+                                            [&](const auto& v) { return !result.isStringVariable(v.first); });
+    ss << "\n--- Variables (" << numericCount << ") ---\n";
     for (const auto& [name, value] : result.variables) {
+        if (result.isStringVariable(name)) continue;
         ss << "  " << std::setw(20) << std::left << name 
            << " = " << std::scientific << std::setprecision(9) << value << "\n";
     }

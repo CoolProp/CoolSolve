@@ -228,6 +228,115 @@ bool parseTailFields(const std::string& tail, std::string& model,
 
 } // anonymous namespace
 
+// ============================================================================
+// Client networks (IP addresses shortened for display)
+// ============================================================================
+
+namespace {
+
+/// Parse a dotted IPv4 address ("203.0.113.7") into its four bytes.
+bool parseIPv4(const std::string& s, int bytes[4]) {
+    int part = 0;
+    std::size_t pos = 0;
+    while (part < 4) {
+        std::size_t digits = 0;
+        int value = 0;
+        while (pos < s.size() && s[pos] >= '0' && s[pos] <= '9' && digits < 3) {
+            value = value * 10 + (s[pos] - '0');
+            ++pos;
+            ++digits;
+        }
+        if (digits == 0 || value > 255) return false;
+        bytes[part++] = value;
+        if (part < 4) {
+            if (pos >= s.size() || s[pos] != '.') return false;
+            ++pos;
+        }
+    }
+    return pos == s.size();
+}
+
+/// Parse one to four hexadecimal digits ("db8") into a 16-bit group.
+bool parseHexGroup(const std::string& s, unsigned& value) {
+    if (s.empty() || s.size() > 4) return false;
+    value = 0;
+    for (char c : s) {
+        int d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else return false;
+        value = value * 16 + static_cast<unsigned>(d);
+    }
+    return true;
+}
+
+/// Parse the groups on one side of "::" ("2001:db8", or "" for none). A dotted IPv4
+/// address is accepted as the last group and counts as two groups.
+bool parseIPv6Side(const std::string& s, std::vector<unsigned>& groups, bool allowIPv4Tail) {
+    if (s.empty()) return true;
+    std::size_t start = 0;
+    while (true) {
+        const std::size_t colon = s.find(':', start);
+        const std::string piece = s.substr(start, colon == std::string::npos ? std::string::npos
+                                                                               : colon - start);
+        if (colon == std::string::npos && allowIPv4Tail && piece.find('.') != std::string::npos) {
+            int b[4];
+            if (!parseIPv4(piece, b)) return false;
+            groups.push_back(static_cast<unsigned>(b[0] * 256 + b[1]));
+            groups.push_back(static_cast<unsigned>(b[2] * 256 + b[3]));
+            return true;
+        }
+        unsigned value;
+        if (!parseHexGroup(piece, value)) return false;
+        groups.push_back(value);
+        if (colon == std::string::npos) return true;
+        start = colon + 1;
+    }
+}
+
+/// Parse an IPv6 address (with at most one "::") into its eight 16-bit groups.
+bool parseIPv6(std::string s, unsigned groups[8]) {
+    const std::size_t zone = s.find('%');            // "fe80::1%eth0"
+    if (zone != std::string::npos) s.erase(zone);
+    std::vector<unsigned> head, tail;
+    const std::size_t gap = s.find("::");
+    if (gap == std::string::npos) {
+        if (!parseIPv6Side(s, head, true) || head.size() != 8) return false;
+    } else {
+        if (s.find("::", gap + 1) != std::string::npos) return false;
+        if (!parseIPv6Side(s.substr(0, gap), head, false)) return false;
+        if (!parseIPv6Side(s.substr(gap + 2), tail, true)) return false;
+        if (head.size() + tail.size() > 7) return false;
+    }
+    for (int i = 0; i < 8; ++i) groups[i] = 0;
+    for (std::size_t i = 0; i < head.size(); ++i) groups[i] = head[i];
+    for (std::size_t i = 0; i < tail.size(); ++i) groups[8 - tail.size() + i] = tail[i];
+    return true;
+}
+
+std::string ipv4Network(int a, int b, int c) {
+    return std::to_string(a) + "." + std::to_string(b) + "." + std::to_string(c) + ".0/24";
+}
+
+} // namespace
+
+std::string clientNetwork(const std::string& ip) {
+    int b[4];
+    if (parseIPv4(ip, b)) return ipv4Network(b[0], b[1], b[2]);
+
+    unsigned g[8];
+    if (ip.find(':') == std::string::npos || !parseIPv6(ip, g)) return "(other)";
+    // IPv4-mapped (::ffff:a.b.c.d): the client is an IPv4 host
+    if (g[0] == 0 && g[1] == 0 && g[2] == 0 && g[3] == 0 && g[4] == 0 && g[5] == 0xffff) {
+        return ipv4Network(static_cast<int>(g[6] >> 8), static_cast<int>(g[6] & 0xff),
+                           static_cast<int>(g[7] >> 8));
+    }
+    std::ostringstream out;
+    out << std::hex << g[0] << ':' << g[1] << ':' << g[2] << "::/48";
+    return out.str();
+}
+
 UsageLogStats computeUsageLogStats(const std::string& path) {
     // --- Cache: recompute only when the file changed ------------------------
     struct CacheEntry {
@@ -268,6 +377,7 @@ UsageLogStats computeUsageLogStats(const std::string& path) {
 
     NameCountMap models;
     NameCountMap ips;
+    NameCountMap networks;
 
     std::ifstream file(path, std::ios::binary);
     if (!file.is_open()) return stats;   // valid stays false
@@ -318,11 +428,17 @@ UsageLogStats computeUsageLogStats(const std::string& path) {
         stats.histogramCounts[bin]++;
 
         if (!model.empty()) { models[model]++; pruneNameMap(models); }
-        if (!ip.empty()) { ips[ip]++; pruneNameMap(ips); }
+        if (!ip.empty()) {
+            ips[ip]++;
+            pruneNameMap(ips);
+            networks[clientNetwork(ip)]++;
+            pruneNameMap(networks);
+        }
     }
 
     stats.topModels = topOf(models);
     stats.topIps = topOf(ips);
+    stats.topNetworks = topOf(networks);
     stats.uniqueIps = static_cast<long>(ips.size());
 
     // Median / p95 from the histogram (geometric interpolation inside bins).

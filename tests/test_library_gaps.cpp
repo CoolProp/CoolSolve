@@ -229,6 +229,27 @@ CALL p(-5 : c)
     }
 }
 
+TEST_CASE("CS-BUG-IF-IGNORED: reproducer of GitHub #2 (condition without parentheses, :=, EndIf)", "[library-gaps][if-then-else]") {
+    // reported on v0.2: the ELSE branch always ran (c = 3); fixed by c8ce07c (post-v0.3.0)
+    const std::string procedure = R"(
+Procedure calcSoma(a, b : resultado)
+  If a<b Then
+    resultado := 1000
+  Else
+    resultado := a+b
+  EndIf
+End
+)";
+    auto taken = runModel(procedure + "a=1\nb=2\nCall calcSoma(a,b : c)\n");
+    INFO(taken.message);
+    REQUIRE(taken.solveOk);
+    CHECK_THAT(taken["c"], WithinAbs(1000.0, 1e-12));
+    auto other = runModel(procedure + "a=5\nb=2\nCall calcSoma(a,b : c)\n");
+    INFO(other.message);
+    REQUIRE(other.solveOk);
+    CHECK_THAT(other["c"], WithinAbs(7.0, 1e-12));
+}
+
 TEST_CASE("CS-BUG-IF-IGNORED: block form with ELSE and ENDIF", "[library-gaps][if-then-else]") {
     // Layout of the ULiege cpbar library: THEN followed by a comment, ELSE and
     // ENDIF on their own lines, statements separated by semicolons, brace comment after ELSE.
@@ -1693,23 +1714,28 @@ CALL p( 1 , 2 : t )
 // is a named argument only for the functions that take them
 // ============================================================================
 
-TEST_CASE("CS-BUG-ARG-DROP: IF(a=5, 1, 2) is a clear error, not 'Unknown fluid'", "[library-gaps][named-arg]") {
-    // was: parsed as a property call with a named argument 'a', solved with
-    // 'Unknown fluid: ""' (C-147). EES has no comparison inside the IF function.
-    auto run = runModel("a = 5\nt = IF(a=5, 1, 2)\n");
-    CHECK_FALSE(run.parseOk);
-    CHECK_FALSE(run.solveOk);
-    CHECK(anyContains({run.message}, "IF does not take named arguments ('a=5')"));
-    CHECK(anyContains({run.message}, "IF(A, B, X, Y, Z)"));
-    CHECK_FALSE(anyContains({run.message}, "Unknown fluid"));
+TEST_CASE("CS-BUG-ARG-DROP: the = of IF(a=5, 1, 2) is a comparison, never a named argument", "[library-gaps][named-arg]") {
+    // was: parsed as a property call with a named argument 'a', solved with 'Unknown fluid: ""' (C-147), then a parse
+    // error; since GitHub #3/#4 the condition of the 3-argument form is the one of an IF statement
+    auto run = runModel("a = 5\nt = IF(a=5, 1, 2)\nu = if(a = 4, 1, 2)\n");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["t"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(run["u"], WithinAbs(2.0, 1e-12));
+    // inside a FUNCTION body (the statement was once dropped without any message)
+    auto body = runModel("FUNCTION f(a)\n  f = IF(a=5, 1, 2)\nEND\ny = f(5)\nz = f(6)\n");
+    INFO(body.message);
+    REQUIRE(body.solveOk);
+    CHECK_THAT(body["y"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(body["z"], WithinAbs(2.0, 1e-12));
 
-    // the text of the argument is reported as written, with the name of the function as written
-    CHECK(anyContains(parseErrors("t = if(a = 5, 1, 2)\n"), "if does not take named arguments ('a = 5')"));
-    // the 5-argument form too
-    CHECK(anyContains(parseErrors("t = IF(a=5, 1, 2, 3, 4)\n"), "IF does not take named arguments ('a=5')"));
-    // inside a FUNCTION body (the statement was dropped without any message)
-    CHECK(anyContains(parseErrors("FUNCTION f(a)\n  f = IF(a=5, 1, 2)\nEND\ny = f(5)\n"),
-                      "IF does not take named arguments ('a=5')"));
+    // any other argument still refuses it, the text reported as written, with the name of the function as written
+    const auto refused = parseErrors("t = IF(a=5, 1, 2, 3, 4)\n");
+    REQUIRE(refused.size() == 1);
+    CHECK(anyContains(refused, "IF does not take named arguments ('a=5')"));
+    CHECK(anyContains(refused, "IF(a = 5, X, Y)"));
+    CHECK_FALSE(anyContains(refused, "Unknown fluid"));
+    CHECK(anyContains(parseErrors("t = if(c, x = 1, 2)\n"), "if does not take named arguments ('x = 1')"));
 }
 
 TEST_CASE("CS-BUG-ARG-DROP: the forms that do the test are accepted", "[library-gaps][named-arg]") {
@@ -1728,6 +1754,132 @@ t_cmp2 = IF(a >= 6, 1, 2)
     CHECK_THAT(run["t_gt"], WithinAbs(1.0, 1e-12));
     CHECK_THAT(run["t_cmp"], WithinAbs(1.0, 1e-12));
     CHECK_THAT(run["t_cmp2"], WithinAbs(2.0, 1e-12));
+}
+
+TEST_CASE("GitHub #3: AND and OR in the condition of IF(cond, a, b)", "[library-gaps][if-condition]") {
+    // was: "Unknown or unsupported function: IF with 2 arguments" at the solve, then the parse error
+    // "Could not parse argument 1 of 'IF'"; the reproducer of the issue, in a PROCEDURE
+    auto run = runModel(R"(
+Procedure testeAndOr(a, b : r_and, r_or)
+  r_and := IF(a<b AND a>0, 1000, -1)
+  r_or  := IF(a<b OR a>100, 2000, -1)
+End
+a=1
+b=2
+Call testeAndOr(a,b : c, d)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK_THAT(run["c"], WithinAbs(1000.0, 1e-12));
+    CHECK_THAT(run["d"], WithinAbs(2000.0, 1e-12));
+
+    // in the main program, with the other relations of an IF statement; AND and OR are read from left to right
+    // as in EES, a parenthesised group first
+    auto main = runModel(R"(
+a = 1
+b = 2
+t_and = IF(a < b AND a > 5, 1, 2)
+t_or = if(a > b or a = 1, 1, 2)
+t_ne = IF(a <> b, 1, 2)
+t_eq = IF((a = 1), 1, 2)
+t_order = IF(a < 2 OR a > 5 AND b > 5, 1, 2)
+t_group = IF(a < 2 OR (a > 5 AND b > 5), 1, 2)
+t_sign = IF(b - a, 1, 2)
+)");
+    INFO(main.message);
+    REQUIRE(main.solveOk);
+    CHECK_THAT(main["t_and"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(main["t_or"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(main["t_ne"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(main["t_eq"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(main["t_order"], WithinAbs(2.0, 1e-12));   // (a < 2 OR a > 5) AND b > 5
+    CHECK_THAT(main["t_group"], WithinAbs(1.0, 1e-12));
+    CHECK_THAT(main["t_sign"], WithinAbs(1.0, 1e-12));    // no relation: true when > 0
+
+    // a condition that does not parse names the condition of IF
+    const auto bad = parseErrors("a = 1\nt = IF(a < 2 AND, 1, 2)\n");
+    REQUIRE(bad.size() == 1);
+    CHECK(anyContains(bad, "Could not parse the condition of 'IF': 'a < 2 AND'"));
+
+    // the LaTeX report writes the relations and the combinations as symbols and words
+    EESParser parser;
+    auto parsed = parser.parse("t = IF(a <> b AND a <= 1 OR a >= 5, 1, 2)\n");
+    REQUIRE(parsed.success);
+    IR ir = IR::fromAST(parsed.program);
+    const std::string latex = coolsolve::expressionToLatex(ir.getEquations()[0].rhs);
+    CHECK(latex.find("a \\neq b \\;\\mathrm{and}\\; a \\leq 1") != std::string::npos);
+    CHECK(latex.find("\\;\\mathrm{or}\\; a \\geq 5") != std::string::npos);
+}
+
+TEST_CASE("GitHub #4: a string compared in the condition of IF(cond, a, b)", "[library-gaps][if-condition]") {
+    // was: "Unknown fluid:" at the solve, then a parse error recommending IF(A, B, X, Y, Z), which reads strings as 0
+    auto run = runModel(R"(
+layout_teste$ = 'staggered'
+resultado_e = IF(layout_teste$ = 'staggered', 10, 20)
+r_case = IF(layout_teste$ = 'STAGGERED', 10, 20)
+r_ne = IF(layout_teste$ <> 'inline', 10, 20)
+r_false = IF('inline' = layout_teste$, 10, 20)
+coisinha$ = layout_teste$
+r_copy = IF(coisinha$ = 'staggered' AND resultado_e > 5, 10, 20)
+)");
+    INFO(run.message);
+    REQUIRE(run.solveOk);
+    CHECK(run.verified);
+    CHECK_THAT(run["resultado_e"], WithinAbs(10.0, 1e-12));
+    CHECK_THAT(run["r_case"], WithinAbs(10.0, 1e-12));   // without regard to case, as the IF statements
+    CHECK_THAT(run["r_ne"], WithinAbs(10.0, 1e-12));
+    CHECK_THAT(run["r_false"], WithinAbs(20.0, 1e-12));
+    CHECK_THAT(run["r_copy"], WithinAbs(10.0, 1e-12));
+    CHECK(run.strings.at("coisinha$") == "staggered");
+
+    // a string input of a PROCEDURE (case 3 of the issue)
+    auto procedure = runModel(R"(
+Procedure sel(layout_in$, x : y)
+  y := IF(layout_in$ = 'staggered', 2*x, 3*x)
+End
+layout$ = 'staggered'
+Call sel(layout$, 1 : y1)
+Call sel('inline', 1 : y2)
+)");
+    INFO(procedure.message);
+    REQUIRE(procedure.solveOk);
+    CHECK_THAT(procedure["y1"], WithinAbs(2.0, 1e-12));
+    CHECK_THAT(procedure["y2"], WithinAbs(3.0, 1e-12));
+}
+
+TEST_CASE("GitHub #9: a string is never read as a number by IF", "[library-gaps][if-condition]") {
+    // was: IF(s$, 'banana', 10, 20, 30) read both strings as 0 and always gave 20, without any message; EES's
+    // IF(A, B, X, Y, Z) compares numbers (help _if.htm), so a string A or B is a parse error naming the condition
+    // of the 3-argument form, which compares strings
+    const auto fiveArgs = parseErrors("s$ = 'apple'\ny = IF(s$, 'banana', 10, 20, 30)\n");
+    REQUIRE(fiveArgs.size() == 1);
+    CHECK(anyContains(fiveArgs, "IF(A, B, X, Y, Z) compares numbers: A and B cannot be strings (s$, 'banana')"));
+    CHECK(anyContains(fiveArgs, "IF(s$ = 'banana', X, Y)"));
+    CHECK(parseErrors("y = IF('zebra', 'apple', 10, 20, 30)\n").size() == 1);
+    CHECK(parseErrors("y = if(1, lowercase$('A'), 10, 20, 30)\n").size() == 1);   // a string function too
+    // the form the message recommends (the reproducer of the issue rewritten)
+    auto rewritten = runModel(R"(
+s$ = 'apple'
+y_same = IF(s$ = 'apple', 20, 10)
+y_diff = IF(s$ = 'banana', 20, 10)
+)");
+    INFO(rewritten.message);
+    REQUIRE(rewritten.solveOk);
+    CHECK_THAT(rewritten["y_same"], WithinAbs(20.0, 1e-12));
+    CHECK_THAT(rewritten["y_diff"], WithinAbs(10.0, 1e-12));
+
+    // a bare string as the condition, an ordering between strings, a string branch: errors, never 0
+    CHECK(anyContains(parseErrors("s$ = 'b'\ny = IF(s$, 1, 2)\n"),
+                      "The condition of IF is a string (s$): compare it with = or <>, e.g. IF(s$ = 'text', X, Y)"));
+    CHECK(anyContains(parseErrors("s$ = 'b'\ny = IF(s$ < 'c', 1, 2)\n"),
+                      "IF compares strings with = and <> only: '<' between strings in the condition s$ < 'c'"));
+    CHECK(anyContains(parseErrors("s$ = 'b'\ny = IF(x > 0 AND 'c' >= s$, 1, 2)\n"), "'>=' between strings"));
+    CHECK(anyContains(parseErrors("y = IF(1, 'a', 2)\n"), "IF returns a number: argument 2 ('a') cannot be a string"));
+    CHECK(anyContains(parseErrors("y = IF(1, 2, 3, 4, s$)\n"), "argument 5 (s$) cannot be a string"));
+    // in a body too
+    CHECK(parseErrors("FUNCTION f(s$)\n  f = IF(s$, 'x', 1, 2, 3)\nEND\ny = f('x')\n").size() == 1);
+    // numbers compared with numbers are unaffected, a numeric function of a string included
+    CHECK(parseErrors("b = IF(isidealgas('Air'), 0.5, 10, 20, 30)\n").empty());
 }
 
 TEST_CASE("CS-BUG-ARG-DROP: the other built-in functions take no named argument either", "[library-gaps][named-arg]") {
@@ -9259,6 +9411,28 @@ TEST_CASE("CS-BUG-NO-SOL-DELETE: --no-sol leaves an existing .sol untouched and 
     // a normal run still replaces the solution of the previous run
     REQUIRE(runCli(binary, dir, ""));
     CHECK(fileText(dir / "m.sol").find("b = 6.") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("CS-BUG-SOL-STRING (GitHub #4): a string variable is written once, as its string", "[library-gaps][sol-string]") {
+    const fs::path binary = fs::absolute("coolsolve");
+    if (!fs::exists(binary)) SKIP("coolsolve binary not found next to the tests: " << binary.string());
+    const fs::path dir = fs::temp_directory_path() / "coolsolve_test_sol_string";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    // case 1 of the issue: the copy of a string variable; the variable table showed `coisinha$ 0` and
+    // `layout_teste$ 0` beside the strings (the .sol file too: `fluid$ = 0.0` in 74 library baselines)
+    { std::ofstream f(dir / "m.eescode"); f << "layout_teste$ = 'staggered'\ncoisinha$ = layout_teste$\nx = 2\n"; }
+    REQUIRE(runCli(binary, dir, "--guess"));
+    for (const std::string file : {"m.sol", "m.initials"}) {
+        INFO(file);
+        const std::string text = fileText(dir / file);
+        CHECK(text.find("coisinha$ = 'staggered'") != std::string::npos);
+        CHECK(text.find("layout_teste$ = 'staggered'") != std::string::npos);
+        CHECK(text.find("coisinha$ = 0") == std::string::npos);
+        CHECK(text.find("layout_teste$ = 0") == std::string::npos);
+        CHECK(text.find("x = 2.") != std::string::npos);
+    }
     fs::remove_all(dir);
 }
 
@@ -17630,8 +17804,8 @@ TEST_CASE("CS-GAP-GE-ARROW: the comparison of an IF function and of an equation 
 }
 
 TEST_CASE("CS-GAP-GE-ARROW: => and =< are never read as a named argument", "[library-gaps][ge-arrow]") {
-    // `IF(a=5, 1, 2)` is refused on purpose (CS-BUG-ARG-DROP): a named argument of a positional-only built-in
-    const auto refused = parseErrors("a = 5\nZ = IF(a=5, 1, 2)\n");
+    // `IF(a=5, 1, 2, 3, 4)` is refused on purpose (CS-BUG-ARG-DROP): a named argument of a positional-only built-in
+    const auto refused = parseErrors("a = 5\nZ = IF(a=5, 1, 2, 3, 4)\n");
     REQUIRE(refused.size() == 1);
     CHECK(refused[0].find("IF does not take named arguments ('a=5')") != std::string::npos);
     // `a=>5` is a comparison: it is no more refused as the named argument a with the value >5
@@ -24433,6 +24607,50 @@ TEST_CASE("CS-BUG-TINY-IMPLICIT: an energy balance of terms ~5E7 converges at th
     // The first iterations are the trust-region growth of Newton1D from the guess 1 (radius 100, doubling): 14 here,
     // 150 (a stall at |F| = 3.7E-9, then bisection and polish) with the absolute test
     CHECK(run.iterations <= 20);
+}
+
+TEST_CASE("GitHub #8: the relaxed acceptance weighs an unmet equation by its own terms", "[library-gaps][tiny-implicit]") {
+    const double tol = 1e-9;
+    Eigen::VectorXd F(2), S(2);
+    // the stall of the issue: 1e-5*(y + x^2 + 1) = 0 at its minimum (terms ~2.5E-5, residual 7.5E-6) beside y = x
+    // (terms ~2): absolute weight, 7.5E-6 < lsRelaxedTolerance; with its own terms, 0.3
+    F << 7.5e-6, 7.5e-11;
+    S << 2.5e-5, 2.0;
+    CHECK_THAT(weightedResidualNorm(F, S), WithinRel(7.5e-6, 1e-12));
+    CHECK_THAT(relaxedResidualNorm(F, S, tol), WithinRel(0.3, 1e-12));
+    // an equation of tiny terms met by the absolute test of its block (rounding noise of the block) keeps that weight
+    F << 3e-10, 2e-4;
+    S << 1e-13, 1e6;
+    CHECK(relaxedResidualNorm(F, S, tol) == weightedResidualNorm(F, S));
+    // terms of order 1 or more, and a block of tiny terms, as weightedResidualNorm
+    F << 5e-3, 1e-12;
+    S << 2.0, 1e-3;
+    CHECK(relaxedResidualNorm(F, S, tol) == weightedResidualNorm(F, S));
+    S << 0.5, 1e-3;
+    CHECK(relaxedResidualNorm(F, S, tol) == weightedResidualNorm(F, S));
+    // no scale: the plain norm; NaN stays NaN
+    CHECK(relaxedResidualNorm(F, Eigen::VectorXd(), tol) == 5e-3);
+    F[0] = std::numeric_limits<double>::quiet_NaN();
+    CHECK(std::isnan(relaxedResidualNorm(F, S, tol)));
+
+    // the reproducer: no real root, so every pipeline fails (TrustRegion reported SUCCESS and the check passed)
+    const std::string noRoot = "1e-5*(y + x^2 + 1) = 0\ny = x\n";
+    using Strategy = SolverStrategy;
+    for (const auto& pipeline : std::vector<std::vector<Strategy>>{{Strategy::Newton, Strategy::TrustRegion},
+                                                                   {Strategy::Newton, Strategy::LevenbergMarquardt},
+                                                                   {Strategy::TrustRegion}, {Strategy::LevenbergMarquardt}}) {
+        auto run = runModel(noRoot, {}, "", [&](SolverOptions& o) { o.solverPipeline = pipeline; });
+        INFO(run.message);
+        CHECK_FALSE(run.solveOk);
+    }
+    CHECK_FALSE(runModel(noRoot).solveOk);
+    // with a root, the same block of terms 1E-5 beside terms of order 1 solves: x = (sqrt(5) - 1)/2, to the absolute
+    // test of the block (|F| < 1E-9 on terms of 1E-5 leaves x within about 2E-5)
+    auto root = runModel("1e-5*(y + x^2 - 1) = 0\ny = x\n", {}, "x = 0.5\ny = 0.5\n",
+                         [](SolverOptions& o) { o.solverPipeline = {SolverStrategy::Newton, SolverStrategy::TrustRegion}; });
+    INFO(root.message);
+    REQUIRE(root.solveOk);
+    CHECK_THAT(root["x"], WithinAbs((std::sqrt(5.0) - 1.0) / 2.0, 1e-4));
 }
 
 // ============================================================================

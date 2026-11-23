@@ -223,7 +223,7 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
         Eigen::VectorXd g = J.transpose() * F;
         double gNormSq = g.squaredNorm();
         if (gNormSq < 1e-30) {
-            if (rhoNorm < options.lsRelaxedTolerance) {
+            if (relaxedResidualNorm(F, problem.residualScale, options.tolerance) < options.lsRelaxedTolerance) {
                 if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 x = y.cwiseProduct(scale);
                 return SolverStatus::Success;
@@ -320,7 +320,8 @@ SolverStatus TrustRegionSolver::solve(Problem& problem,
 
             if (stepNorm < options.stepTolerance) {
                 double newNorm = weightedResidualNorm(F_new, problem.residualScale);
-                if (newNorm < options.tolerance * 100 || newNorm < options.lsRelaxedTolerance) {
+                if (newNorm < options.tolerance * 100 ||
+                    relaxedResidualNorm(F_new, problem.residualScale, options.tolerance) < options.lsRelaxedTolerance) {
                     if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                     x = y.cwiseProduct(scale);
                     return SolverStatus::Success;

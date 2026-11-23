@@ -177,8 +177,9 @@ in §8); it is not an expression of its own.
 
 `name=value` arguments (`T=`, `P=`, `x=`, …) belong to the thermophysical
 property functions (§3). A built-in function that takes positional arguments
-only (`IF`, `max`, `sin`, …) refuses them with a parse error — in particular a
-comparison inside `IF(a=5, 1, 2)` is not valid (see *Inline selection* below).
+only (`IF`, `max`, `sin`, …) refuses them with a parse error. The `=` of the
+condition of `IF(a = 5, 1, 2)` is a comparison, not a named argument (see
+*Inline selection* below).
 
 ### Directives
 
@@ -438,15 +439,26 @@ main program and inside `FUNCTION` / `PROCEDURE` bodies, nestable, also in
 
 | Form | Result |
 |:-----|:-------|
-| `if(cond, a, b)` | `a` if `cond > 0`, otherwise `b` |
+| `if(cond, a, b)` | `a` if the condition `cond` is true, otherwise `b` |
 | `IF(A, B, X, Y, Z)` | the EES 5-argument form: `X` if `A < B`, `Y` if `A = B`, `Z` if `A > B` |
 
 ```ees
 Q = if(tau, 3600, 10000, 10000, 0)      "10000 W until tau = 3600 s, then 0"
+f = if(Re < 2300, 64/Re, 0.316*Re^(-0.25))
+k = if(layout$ = 'staggered', 0.35, 0.27)
+r = if(a < b AND a > 0, 1000, -1)
 ```
 
-- The test `A = B` is **exact** floating-point equality, as in EES (no
-  tolerance): `0.1 + 0.2` is greater than `0.3`.
+- The condition of `if(cond, a, b)` is written as the condition of an `IF ... THEN`
+  statement (§ IF-THEN-ELSE): relations between numbers with `=`, `<>`, `<`, `>`, `<=`,
+  `>=` (or `=>`, `=<`), strings compared with `=` and `<>` without regard to case
+  (`layout$ = 'Staggered'` matches `'staggered'`), combined with `AND`, `OR` and
+  parentheses, strictly from left to right (no priority of `AND` over `OR`). A
+  condition without a relation is a number, true when it is greater than 0:
+  `if(a - 5, X, Y)` gives `X` if `a > 5`. The 3-argument form is a CoolSolve
+  extension: EES has only the 5-argument form in the main program.
+- The test `A = B` and the relations `=` and `<>` between numbers are **exact**
+  floating-point equality, as in EES (no tolerance): `0.1 + 0.2` is greater than `0.3`.
 - The value and the derivatives are those of the selected branch (`X`, `Y` or
   `Z`, or `a` / `b`); the tested arguments (`cond`, or `A` and `B`) are
   piecewise-constant selectors and contribute no derivative. A branch may
@@ -454,12 +466,16 @@ Q = if(tau, 3600, 10000, 10000, 0)      "10000 W until tau = 3600 s, then 0"
 - All arguments are evaluated, as for any function: the branch that is not
   selected must be computable too.
 - Any other number of arguments is an error that names the two accepted forms.
-  The string form `IF$(...)` is not implemented.
-- There is no comparison inside the function: `IF(a=5, 1, 2)` is the parse
-  error *"IF does not take named arguments ('a=5'); …"* (the `=` would be read
-  as a named argument). Test an equality with the 5-argument form,
-  `IF(a, 5, 2, 1, 2)` (2 if `a < 5`, 1 if `a = 5`, 2 if `a > 5`), and a sign
-  with `IF(a - 5, X, Y)` (`X` if `a - 5 > 0`).
+- `IF` compares and returns numbers, as in EES: `A` and `B` of the 5-argument form,
+  the condition when it is not a comparison, and the branches cannot be strings,
+  and the condition compares strings with `=` and `<>` only. Each is a parse error
+  (a string read as a number would be 0 and select a branch silently):
+  `IF(s$, 'banana', X, Y, Z)` names `IF(s$ = 'banana', X, Y)`. The string form
+  `IF$(...)` is not implemented (register `CS-GAP-IFSTR`).
+- Only the condition takes a comparison: an `=` in any other argument
+  (`IF(a=5, 1, 2, 3, 4)`) is the parse error *"IF does not take named arguments
+  ('a=5'); a comparison is the condition of the 3-argument form, IF(a = 5, X, Y)
+  …"*.
 
 ### String / number conversions
 
@@ -2378,7 +2394,10 @@ terms of `10⁸`). An equation of tiny terms in a block that also holds enthalpi
 residual (a pressure drop of `10⁻²³` Pa, a `MIN(a, b)` of two noisy `10⁻⁸`) is rounding noise of the block, which a
 test relative to its own terms would never meet. The looser acceptance thresholds (`100 · tolerance` on a stalled
 step, `lsRelaxedTolerance`, the fallback of the tearing solver) are applied the same way, with the same rounding level:
-they are never multiplied by it. `relativeTolerance` compares the distance to convergence, the largest
+they are never multiplied by it. The last two (`lsRelaxedTolerance`, `10⁻²` by default, and the tearing fallback)
+weigh an equation that the `tolerance` test does not meet by its own terms, `w = max(S, 10⁻¹²)` when `S < 1`, even
+beside larger terms: a stall at `1e-5*(y + x^2 + 1) = 0` (no real root) with a residual of `7.5·10⁻⁶`, as large as
+its terms, is a failure, not a solution. `relativeTolerance` compares the distance to convergence, the largest
 `|LHS − RHS| / max(tolerance · w, 64·ε·S)`, with its value at the start, so that a guess of huge terms (a residual of
 `10²⁰`) does not make a point that is still wrong look converged. A derivative that is infinite at the point (`sqrt` at
 0) gives no `S`: the absolute test. The merit

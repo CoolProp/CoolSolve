@@ -75,7 +75,11 @@ struct UsageLogStats {
     std::map<std::string, UsageDailyCount> daily;   ///< Sorted by date
 
     std::vector<UsageNameCount> topModels;  ///< Descending, capped (10)
-    std::vector<UsageNameCount> topIps;     ///< Descending, capped (10)
+    std::vector<UsageNameCount> topIps;     ///< Descending, capped (10); full addresses,
+                                            ///< for the operator only (never served over HTTP)
+    /// Client networks (see clientNetwork) by attempts, descending, capped (10). This is
+    /// what the /stats dashboard shows, so that no full client address leaves the server.
+    std::vector<UsageNameCount> topNetworks;
     /// Distinct client IPs seen. Exact while the log holds no more than the
     /// internal name cap (20 000) of them; beyond that the map is pruned and
     /// this becomes a lower bound.
@@ -87,6 +91,12 @@ struct UsageLogStats {
     double medianMs = 0.0;
     double p95Ms = 0.0;
 };
+
+/// Network of a client IP address, for display without the full address: an IPv4
+/// address gives its /24 ("203.0.113.7" -> "203.0.113.0/24"), an IPv6 address its /48
+/// ("2001:db8:1:2::7" -> "2001:db8:1::/48"); an IPv4-mapped IPv6 address
+/// ("::ffff:203.0.113.7") is treated as IPv4. Anything else gives "(other)".
+std::string clientNetwork(const std::string& ip);
 
 /// Compute aggregated statistics for the log file at `path`. Results are
 /// cached and only recomputed when the file's size or modification time

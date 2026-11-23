@@ -243,7 +243,8 @@ SolverStatus LevenbergMarquardtSolver::solve(Problem& problem,
 
             if (stepNorm < options.stepTolerance) {
                 double nn = weightedResidualNorm(F_new, problem.residualScale);
-                if (nn < options.tolerance * 100 || nn < options.lsRelaxedTolerance) {
+                if (nn < options.tolerance * 100 ||
+                    relaxedResidualNorm(F_new, problem.residualScale, options.tolerance) < options.lsRelaxedTolerance) {
                     if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                     x = y.cwiseProduct(scale);
                     return SolverStatus::Success;

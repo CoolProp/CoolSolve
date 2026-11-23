@@ -12,10 +12,36 @@ changes introduced.
 
 Notes of the changes merged since v0.5, gathered for the next changelog.
 
+### Security
+
+- **LaTeX compilation**: `POST /api/v1/latex/compile` ran the compiler named in the request body, or in
+  `latexCompiler` of the session's `coolsolve.conf`, through the shell, so a client could run any command on the
+  server. Only `pdflatex`, `xelatex` and `lualatex` are accepted now (anything else: `400`), plot image names must
+  be plain `.png` names, and on Linux and macOS the compiler runs with `-no-shell-escape`. A `latexCompiler`
+  set to a full path or with extra arguments is now refused: use the bare name and put the TeX binaries on `PATH`.
+- **Cross-site requests**: the `Access-Control-Allow-Origin: *` header is gone, and a `POST`, `PUT` or `DELETE`
+  whose `Origin` names another site is refused (`403`). Scripts that send no `Origin` are not affected.
+- **DNS rebinding**: the server answers only to requests addressed to `localhost`, an IP address, or a name given
+  with the new option `--allowed-host <name>` (others: `403`). **Action for server deployments**: a reverse proxy
+  that forwards the browser's host name (Apache `ProxyPreserveHost On`, as in the
+  [Deployment Guide](deployment_ubuntu_apache.md)) needs `--allowed-host <your domain>` added to the service
+  command line, or every page returns `403`.
+- **LaTeX report**: the index of an array variable (`X[...]`) is now escaped in the generated `.tex` like the rest
+  of the name.
+- **Usage statistics**: `GET /api/v1/stats/log` and the `/stats` dashboard show client networks (`topNetworks`,
+  IPv4 /24 and IPv6 /48) instead of full client addresses (`topIps` is removed). The log file is unchanged.
+
 ### Behaviour changes
 
 - **CoolProp 8.1.0** (`4e195377`, the release tag, was the 8.1.0dev commit `8eb3b778`): the examples and the 354
   library targets give the same results. What moves: the mixtures below, the transport properties of `LiBr`.
+- **Relaxed acceptance of a stalled solver**: when a step stalls or the line search fails, Newton, TrustRegion,
+  Levenberg-Marquardt, KINSOL, the N-D bisection, the partitioned solver and the tearing fallback accept the point
+  only if each equation that `tolerance` does not meet is within `lsRelaxedTolerance` of its own terms when these are
+  below 1 (it was the absolute residual whenever the block also held terms of order 1). A system without a real
+  root whose residual was small only because of its scale, `1e-5*(y + x^2 + 1) = 0` with `y = x`, was reported
+  solved and verified; it now fails (GitHub issue #8). A model whose equations of small terms (viscosities,
+  conductivities, concentrations) stopped short of convergence now fails instead of returning a wrong value.
 
 ### Fixed
 
@@ -29,6 +55,13 @@ Notes of the changes merged since v0.5, gathered for the next changelog.
   naming the call (CoolProp's incompressibles have no molar mass).
 - **`Chlorine`, `Chloroethene`, `EthyleneOxide`, `IsoHexane`** were refused as *not in CoolProp*: they are CoolProp
   fluids. `IsoOctane` is not (the language reference listed it).
+- **String variables written twice**: the `.sol` and `.initials` files and the variable table of the GUI listed
+  each string variable also as the number 0 (`fluid$ = 0.0` beside `fluid$ = 'R22'`); it is now written once, as
+  its string (GitHub issue #4). A tool that compares `.sol` files should ignore the `name$ = 0.0` lines of older
+  ones, as the library regression of CoolSolve now does.
+- **Strings in `IF`**: `IF(s$, 'banana', 10, 20, 30)` read both strings as 0 and always took the "equal" branch,
+  without any message. `IF` compares and returns numbers, as in EES: a string where `IF` expects a number is now a
+  parse error, which names the condition that compares the strings, `IF(s$ = 'banana', X, Y)` (GitHub issue #9).
 
 ### New
 
@@ -44,11 +77,13 @@ Notes of the changes merged since v0.5, gathered for the next changelog.
 - **`LiBr` solution: viscosity and conductivity** (CoolProp 8.1.0 fits of Flessner & Ziegler 2023, Lee et al. 1990
   and DiGuilio et al. 1990): `viscosity(LiBr, 55, T=60, P=1E5)` was an error. The EES routines `VISC_LIBR('SI', T, X)`
   and `COND_LIBR('SI', T, X)` are these properties.
-
 - **`coolsolve.conf`**: `coolpropChebyshevDensitySolver` and `coolpropIncompChebyshevCaloric` (default `true`, the
   defaults of CoolProp 8.1; `false` gives the density solver of the mixtures and the fits of the incompressibles of
   CoolProp 8.0, to compare), in the GUI configuration editor too; the size of the tables of a tabular backend in
   `coolpropBackend` (`BICUBIC&HEOS?{"grid":{"Nx":400,"Ny":400}}`), kept by the configuration editor and the diagrams.
+- **Conditions in `IF(cond, a, b)`**: the condition is written as the one of an `IF ... THEN` statement: `=` and
+  `<>` beside the orderings, strings compared with `=` and `<>` (`IF(layout$ = 'staggered', a, b)`), `AND`, `OR`
+  and parentheses (GitHub issues #3 and #4). `IF(a = 5, 1, 2)`, until now a parse error, tests `a = 5`.
 
 ### Solver
 

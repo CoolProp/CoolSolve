@@ -338,7 +338,7 @@ SolverStatus BisectionNDSolver::solve(Problem& problem,
         // Check simplex diameter convergence
         if (maxLen < options.stepTolerance) {
             x = simplex[bestVtx].x;
-            if (bestRho < options.lsRelaxedTolerance) {
+            if (relaxedResidualNorm(simplex[bestVtx].F, problem.residualScale, options.tolerance) < options.lsRelaxedTolerance) {
                 if (trace) { trace->finalStatus = SolverStatus::Success; trace->totalTime = std::chrono::high_resolution_clock::now() - startTime; }
                 return SolverStatus::Success;
             }
